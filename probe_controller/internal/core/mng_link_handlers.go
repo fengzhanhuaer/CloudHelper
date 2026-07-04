@@ -92,6 +92,24 @@ func mngLinkVirtualRouterHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func mngLinkVirtualRouterRouteRulesHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		result, err := getMngProbeVirtualRouterRouteRules()
+		writeMngLinkResult(w, result, err)
+	case http.MethodPost:
+		payload, err := readMngRawJSONPayload(r)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+			return
+		}
+		result, err := upsertMngProbeVirtualRouterRouteRules(payload, controllerBaseURLFromRequest(r))
+		writeMngLinkResult(w, result, err)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
 func mngLinkVirtualRouterStatusHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

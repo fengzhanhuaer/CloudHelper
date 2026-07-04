@@ -337,6 +337,7 @@ func sanitizeProbeVirtualRouterConfigForCache(input probeVirtualRouterConfig) pr
 		FakeIPCIDR:    strings.TrimSpace(input.FakeIPCIDR),
 		ProbeIPs:      sanitizeProbeVirtualRouterProbeIPs(input.ProbeIPs),
 		TopologyRules: sanitizeProbeVirtualRouterTopologyRules(input.TopologyRules),
+		RouteRules:    sanitizeProbeVirtualRouterRouteRules(input.RouteRules),
 		UpdatedAt:     strings.TrimSpace(input.UpdatedAt),
 	}
 	return out
@@ -426,6 +427,56 @@ func sanitizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopologyR
 			UpdatedAt:         strings.TrimSpace(item.UpdatedAt),
 		})
 	}
+	return out
+}
+
+func sanitizeProbeVirtualRouterRouteRules(items []probeVirtualRouterRouteRule) []probeVirtualRouterRouteRule {
+	if len(items) == 0 {
+		return []probeVirtualRouterRouteRule{}
+	}
+	out := make([]probeVirtualRouterRouteRule, 0, len(items))
+	seen := map[string]struct{}{}
+	for _, item := range items {
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			continue
+		}
+		ruleID := strings.TrimSpace(item.ID)
+		key := firstNonEmpty(ruleID, strings.ToLower(name))
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		entries := make([]string, 0, len(item.Entries))
+		entrySeen := map[string]struct{}{}
+		for _, raw := range item.Entries {
+			entry := strings.TrimSpace(raw)
+			if entry == "" {
+				continue
+			}
+			if _, exists := entrySeen[entry]; exists {
+				continue
+			}
+			entrySeen[entry] = struct{}{}
+			entries = append(entries, entry)
+		}
+		sort.Strings(entries)
+		out = append(out, probeVirtualRouterRouteRule{
+			ID:        ruleID,
+			Name:      name,
+			Entries:   entries,
+			Note:      strings.TrimSpace(item.Note),
+			UpdatedAt: strings.TrimSpace(item.UpdatedAt),
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		left := strings.ToLower(firstNonEmpty(out[i].Name, out[i].ID))
+		right := strings.ToLower(firstNonEmpty(out[j].Name, out[j].ID))
+		if left != right {
+			return left < right
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out
 }
 
@@ -633,6 +684,12 @@ func probeVirtualRouterTopologySignature(config probeVirtualRouterConfig, index 
 			strings.TrimSpace(rule.ToServiceDomain),
 			normalizeProbeVirtualRouterServicePort(rule.ToServicePort),
 		)
+	}
+	for _, rule := range config.RouteRules {
+		fmt.Fprintf(&b, "route_rule|%s|%s\n", strings.TrimSpace(rule.ID), strings.TrimSpace(rule.Name))
+		for _, entry := range rule.Entries {
+			fmt.Fprintf(&b, "route_rule_entry|%s|%s\n", strings.TrimSpace(rule.ID), strings.TrimSpace(entry))
+		}
 	}
 	return b.String()
 }

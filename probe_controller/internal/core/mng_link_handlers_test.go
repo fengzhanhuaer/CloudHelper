@@ -407,3 +407,112 @@ func TestMngLinkVirtualRouterHandlerRejectsInvalidServicePort(t *testing.T) {
 		t.Fatalf("status=%d body=%s, want 400", rr.Code, rr.Body.String())
 	}
 }
+
+func TestMngLinkVirtualRouterRouteRulesHandlerSaveSortsAndTopologySavePreserves(t *testing.T) {
+	oldStore := ProbeLinkChainStore
+	oldProbeStore := ProbeStore
+	t.Cleanup(func() {
+		ProbeLinkChainStore = oldStore
+		ProbeStore = oldProbeStore
+	})
+
+	tmpDir := t.TempDir()
+	ProbeLinkChainStore = &probeLinkChainStore{
+		path: filepath.Join(tmpDir, "probe_link_chains.json"),
+		data: probeLinkChainStoreData{
+			Chains:        []probeLinkChainRecord{},
+			DeletedChains: []probeLinkChainRecord{},
+			NextChainID:   1,
+			EntryProfiles: []probeLinkEntryProfileRecord{},
+			VirtualRouter: probeVirtualRouterConfig{
+				Enabled:    true,
+				FakeIPCIDR: probeVirtualRouterDefaultCIDR,
+			},
+		},
+	}
+	ProbeStore = &probeConfigStore{
+		data: probeConfigData{
+			ProbeNodes: []probeNodeRecord{
+				{NodeNo: 1, NodeName: "node-1"},
+				{NodeNo: 2, NodeName: "node-2"},
+			},
+			ProbeSecrets: map[string]string{},
+		},
+	}
+
+	body := []byte(`{
+  "items": [
+    {
+      "name": "media",
+      "entries": [
+        "domain_suffix:.Reddit.COM",
+        "cidr:91.108.4.9/22",
+        "domain_keyword:API.AAAA",
+        "domain_suffix:reddit.com"
+      ]
+    },
+    {
+      "name": "alpha",
+      "entries": ["domain_prefix:API.AAAA"]
+    }
+  ]
+}`)
+	saveReq := httptest.NewRequest(http.MethodPost, "/mng/api/route/virtual_router/route_rules", bytes.NewReader(body))
+	saveRR := httptest.NewRecorder()
+	mngLinkVirtualRouterRouteRulesHandler(saveRR, saveReq)
+	if saveRR.Code != http.StatusOK {
+		t.Fatalf("save status=%d body=%s", saveRR.Code, saveRR.Body.String())
+	}
+	var savePayload struct {
+		Items []probeVirtualRouterRouteRule `json:"items"`
+	}
+	if err := json.Unmarshal(saveRR.Body.Bytes(), &savePayload); err != nil {
+		t.Fatalf("decode save payload failed: %v", err)
+	}
+	if len(savePayload.Items) != 2 || savePayload.Items[0].Name != "alpha" || savePayload.Items[1].Name != "media" {
+		t.Fatalf("groups not sorted by name: %+v", savePayload.Items)
+	}
+	media := savePayload.Items[1]
+	wantEntries := []string{
+		"cidr:91.108.4.0/22",
+		"domain_keyword:api.aaaa",
+		"domain_suffix:reddit.com",
+	}
+	if strings.Join(media.Entries, "\n") != strings.Join(wantEntries, "\n") {
+		t.Fatalf("entries=%+v, want %+v", media.Entries, wantEntries)
+	}
+
+	topologyBody := []byte(`{
+  "enabled": true,
+  "fake_ip_cidr": "198.18.0.0/15",
+  "probe_ips": [
+    {"node_id":"1","ip":"198.18.0.3"},
+    {"node_id":"2","ip":"198.18.0.4"}
+  ],
+  "topology_rules": [
+    {"id":"rule-a","from_node_id":"1","to_node_id":"2","to_service_port":12040,"enabled":true}
+  ]
+}`)
+	topologyReq := httptest.NewRequest(http.MethodPost, "/mng/api/route/virtual_router", bytes.NewReader(topologyBody))
+	topologyRR := httptest.NewRecorder()
+	mngLinkVirtualRouterHandler(topologyRR, topologyReq)
+	if topologyRR.Code != http.StatusOK {
+		t.Fatalf("topology save status=%d body=%s", topologyRR.Code, topologyRR.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/mng/api/route/virtual_router/route_rules", nil)
+	getRR := httptest.NewRecorder()
+	mngLinkVirtualRouterRouteRulesHandler(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("get status=%d body=%s", getRR.Code, getRR.Body.String())
+	}
+	var getPayload struct {
+		Items []probeVirtualRouterRouteRule `json:"items"`
+	}
+	if err := json.Unmarshal(getRR.Body.Bytes(), &getPayload); err != nil {
+		t.Fatalf("decode get payload failed: %v", err)
+	}
+	if len(getPayload.Items) != 2 || getPayload.Items[1].Name != "media" {
+		t.Fatalf("route rules should survive topology save: %+v", getPayload.Items)
+	}
+}

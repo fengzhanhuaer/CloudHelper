@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 func getMngProbeLinkUsers() (map[string]interface{}, error) {
@@ -70,10 +71,15 @@ func upsertMngProbeVirtualRouterConfig(payload json.RawMessage, controllerBaseUR
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, fmt.Errorf("invalid payload")
 	}
+	req.RouteRules = nil
 	config, err := validateAndNormalizeProbeVirtualRouterConfig(req)
 	if err != nil {
 		return nil, err
 	}
+	ProbeLinkChainStore.mu.RLock()
+	current := normalizeProbeVirtualRouterConfig(ProbeLinkChainStore.data.VirtualRouter)
+	ProbeLinkChainStore.mu.RUnlock()
+	config.RouteRules = current.RouteRules
 	config = enrichProbeVirtualRouterAuthTickets(ensureProbeVirtualRouterAuthFields(config))
 	ProbeLinkChainStore.mu.Lock()
 	ProbeLinkChainStore.data.VirtualRouter = config
@@ -86,6 +92,62 @@ func upsertMngProbeVirtualRouterConfig(payload json.RawMessage, controllerBaseUR
 		"ok":   true,
 		"item": config,
 		"sync": syncResult,
+	}, nil
+}
+
+func getMngProbeVirtualRouterRouteRules() (map[string]interface{}, error) {
+	if ProbeLinkChainStore == nil {
+		return nil, fmt.Errorf("probe link chain store is not initialized")
+	}
+	ProbeLinkChainStore.mu.RLock()
+	config := normalizeProbeVirtualRouterConfig(ProbeLinkChainStore.data.VirtualRouter)
+	ProbeLinkChainStore.mu.RUnlock()
+	return map[string]interface{}{
+		"items": config.RouteRules,
+	}, nil
+}
+
+func upsertMngProbeVirtualRouterRouteRules(payload json.RawMessage, controllerBaseURL string) (map[string]interface{}, error) {
+	if ProbeLinkChainStore == nil {
+		return nil, fmt.Errorf("probe link chain store is not initialized")
+	}
+	var req struct {
+		Items []probeVirtualRouterRouteRule `json:"items"`
+	}
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, fmt.Errorf("invalid payload")
+	}
+	for index, item := range req.Items {
+		if strings.TrimSpace(item.Name) == "" {
+			return nil, fmt.Errorf("route_rules[%d].name is required", index)
+		}
+		if len(item.Entries) > probeVirtualRouterMaxRouteRuleEntries {
+			return nil, fmt.Errorf("route_rules[%d].entries exceeded limit (%d)", index, probeVirtualRouterMaxRouteRuleEntries)
+		}
+		for entryIndex, entry := range item.Entries {
+			if _, ok := normalizeProbeVirtualRouterRouteRuleEntry(entry); !ok {
+				return nil, fmt.Errorf("route_rules[%d].entries[%d] is invalid", index, entryIndex)
+			}
+		}
+	}
+	if len(req.Items) > probeVirtualRouterMaxRouteRules {
+		return nil, fmt.Errorf("route_rules exceeded limit (%d)", probeVirtualRouterMaxRouteRules)
+	}
+	rules := normalizeProbeVirtualRouterRouteRules(req.Items)
+	ProbeLinkChainStore.mu.Lock()
+	config := normalizeProbeVirtualRouterConfig(ProbeLinkChainStore.data.VirtualRouter)
+	config.RouteRules = rules
+	config.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	ProbeLinkChainStore.data.VirtualRouter = config
+	ProbeLinkChainStore.mu.Unlock()
+	if err := ProbeLinkChainStore.Save(); err != nil {
+		return nil, err
+	}
+	syncResult := dispatchProbeLinkConfigSyncToKnownNodes(controllerBaseURL)
+	return map[string]interface{}{
+		"ok":    true,
+		"items": rules,
+		"sync":  syncResult,
 	}, nil
 }
 

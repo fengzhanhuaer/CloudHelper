@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"net/netip"
 	"reflect"
 	"sort"
 	"strconv"
@@ -14,15 +15,17 @@ import (
 )
 
 const (
-	probeVirtualRouterDefaultCIDR        = "198.18.0.0/15"
-	probeVirtualRouterProbeIPPoolSize    = 1024
-	probeVirtualRouterMaxProbeIPCount    = 1024
-	probeVirtualRouterMaxTopologyRules   = 2048
-	probeVirtualRouterDefaultServicePort = 12040
-	probeVirtualRouterDirectionForward   = "forward"
-	probeVirtualRouterReservedGatewayIP  = "198.18.0.1"
-	probeVirtualRouterReservedTUNIP      = "198.18.0.2"
-	probeVirtualRouterRuntimeChainPrefix = "vrouter-"
+	probeVirtualRouterDefaultCIDR         = "198.18.0.0/15"
+	probeVirtualRouterProbeIPPoolSize     = 1024
+	probeVirtualRouterMaxProbeIPCount     = 1024
+	probeVirtualRouterMaxTopologyRules    = 2048
+	probeVirtualRouterMaxRouteRules       = 2048
+	probeVirtualRouterMaxRouteRuleEntries = 8192
+	probeVirtualRouterDefaultServicePort  = 12040
+	probeVirtualRouterDirectionForward    = "forward"
+	probeVirtualRouterReservedGatewayIP   = "198.18.0.1"
+	probeVirtualRouterReservedTUNIP       = "198.18.0.2"
+	probeVirtualRouterRuntimeChainPrefix  = "vrouter-"
 )
 
 type probeVirtualRouterConfig struct {
@@ -30,6 +33,7 @@ type probeVirtualRouterConfig struct {
 	FakeIPCIDR    string                           `json:"fake_ip_cidr,omitempty"`
 	ProbeIPs      []probeVirtualRouterProbeIP      `json:"probe_ips,omitempty"`
 	TopologyRules []probeVirtualRouterTopologyRule `json:"topology_rules,omitempty"`
+	RouteRules    []probeVirtualRouterRouteRule    `json:"route_rules,omitempty"`
 	UpdatedAt     string                           `json:"updated_at,omitempty"`
 }
 
@@ -56,6 +60,14 @@ type probeVirtualRouterTopologyRule struct {
 	Enabled           bool   `json:"enabled"`
 	Note              string `json:"note,omitempty"`
 	UpdatedAt         string `json:"updated_at,omitempty"`
+}
+
+type probeVirtualRouterRouteRule struct {
+	ID        string   `json:"id,omitempty"`
+	Name      string   `json:"name"`
+	Entries   []string `json:"entries,omitempty"`
+	Note      string   `json:"note,omitempty"`
+	UpdatedAt string   `json:"updated_at,omitempty"`
 }
 
 type probeVirtualRouterRuntimeStats struct {
@@ -123,6 +135,7 @@ func defaultProbeVirtualRouterConfig() probeVirtualRouterConfig {
 		FakeIPCIDR:    probeVirtualRouterDefaultCIDR,
 		ProbeIPs:      []probeVirtualRouterProbeIP{},
 		TopologyRules: []probeVirtualRouterTopologyRule{},
+		RouteRules:    []probeVirtualRouterRouteRule{},
 		UpdatedAt:     time.Now().UTC().Format(time.RFC3339),
 	}
 }
@@ -171,6 +184,7 @@ func normalizeProbeVirtualRouterConfig(input probeVirtualRouterConfig) probeVirt
 		FakeIPCIDR:    cidr,
 		ProbeIPs:      normalizeProbeVirtualRouterProbeIPs(cidr, input.ProbeIPs),
 		TopologyRules: normalizeProbeVirtualRouterTopologyRules(input.TopologyRules),
+		RouteRules:    normalizeProbeVirtualRouterRouteRules(input.RouteRules),
 		UpdatedAt:     strings.TrimSpace(input.UpdatedAt),
 	}
 	if out.UpdatedAt == "" {
@@ -218,6 +232,9 @@ func validateAndNormalizeProbeVirtualRouterConfig(input probeVirtualRouterConfig
 	if len(input.TopologyRules) > probeVirtualRouterMaxTopologyRules {
 		return probeVirtualRouterConfig{}, fmt.Errorf("topology_rules exceeded limit (%d)", probeVirtualRouterMaxTopologyRules)
 	}
+	if len(input.RouteRules) > probeVirtualRouterMaxRouteRules {
+		return probeVirtualRouterConfig{}, fmt.Errorf("route_rules exceeded limit (%d)", probeVirtualRouterMaxRouteRules)
+	}
 	for index, item := range input.TopologyRules {
 		fromNodeID := normalizeProbeNodeID(item.FromNodeID)
 		toNodeID := normalizeProbeNodeID(item.ToNodeID)
@@ -232,6 +249,19 @@ func validateAndNormalizeProbeVirtualRouterConfig(input probeVirtualRouterConfig
 		}
 		if item.ToServicePort < 0 || item.ToServicePort > 65535 {
 			return probeVirtualRouterConfig{}, fmt.Errorf("topology_rules[%d].to_service_port must be empty(default %d) or between 1 and 65535", index, probeVirtualRouterDefaultServicePort)
+		}
+	}
+	for index, item := range input.RouteRules {
+		if strings.TrimSpace(item.Name) == "" {
+			return probeVirtualRouterConfig{}, fmt.Errorf("route_rules[%d].name is required", index)
+		}
+		if len(item.Entries) > probeVirtualRouterMaxRouteRuleEntries {
+			return probeVirtualRouterConfig{}, fmt.Errorf("route_rules[%d].entries exceeded limit (%d)", index, probeVirtualRouterMaxRouteRuleEntries)
+		}
+		for entryIndex, entry := range item.Entries {
+			if _, ok := normalizeProbeVirtualRouterRouteRuleEntry(entry); !ok {
+				return probeVirtualRouterConfig{}, fmt.Errorf("route_rules[%d].entries[%d] is invalid", index, entryIndex)
+			}
 		}
 	}
 	config := normalizeProbeVirtualRouterConfig(input)
@@ -342,6 +372,152 @@ func normalizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopology
 		}
 	}
 	return out
+}
+
+func normalizeProbeVirtualRouterRouteRules(items []probeVirtualRouterRouteRule) []probeVirtualRouterRouteRule {
+	if len(items) == 0 {
+		return []probeVirtualRouterRouteRule{}
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	out := make([]probeVirtualRouterRouteRule, 0, len(items))
+	seen := map[string]struct{}{}
+	reserved := collectProbeVirtualRouterReservedRouteRuleIDs(items)
+	nextSeq := 1
+	for _, item := range items {
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			continue
+		}
+		ruleID := strings.TrimSpace(item.ID)
+		if ruleID == "" {
+			ruleID, nextSeq = allocateProbeVirtualRouterRouteRuleID(seen, reserved, nextSeq)
+		}
+		key := ruleID
+		if key == "" {
+			key = strings.ToLower(name)
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		entries := normalizeProbeVirtualRouterRouteRuleEntries(item.Entries)
+		updatedAt := strings.TrimSpace(item.UpdatedAt)
+		if updatedAt == "" {
+			updatedAt = now
+		}
+		out = append(out, probeVirtualRouterRouteRule{
+			ID:        ruleID,
+			Name:      name,
+			Entries:   entries,
+			Note:      strings.TrimSpace(item.Note),
+			UpdatedAt: updatedAt,
+		})
+		if len(out) >= probeVirtualRouterMaxRouteRules {
+			break
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		left := strings.ToLower(firstNonEmptyProbeVirtualRouter(out[i].Name, out[i].ID))
+		right := strings.ToLower(firstNonEmptyProbeVirtualRouter(out[j].Name, out[j].ID))
+		if left != right {
+			return left < right
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+func normalizeProbeVirtualRouterRouteRuleEntries(items []string) []string {
+	if len(items) == 0 {
+		return []string{}
+	}
+	out := make([]string, 0, len(items))
+	seen := map[string]struct{}{}
+	for _, item := range items {
+		entry, ok := normalizeProbeVirtualRouterRouteRuleEntry(item)
+		if !ok {
+			continue
+		}
+		if _, exists := seen[entry]; exists {
+			continue
+		}
+		seen[entry] = struct{}{}
+		out = append(out, entry)
+		if len(out) >= probeVirtualRouterMaxRouteRuleEntries {
+			break
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func normalizeProbeVirtualRouterRouteRuleEntry(raw string) (string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", false
+	}
+	key, value, ok := strings.Cut(trimmed, ":")
+	if !ok {
+		return "", false
+	}
+	key = strings.ToLower(strings.TrimSpace(key))
+	value = strings.TrimSpace(value)
+	if key == "" || value == "" {
+		return "", false
+	}
+	switch key {
+	case "domain_suffix", "domain_prefix", "domain_keyword":
+		normalized := normalizeProbeVirtualRouterRouteRuleDomainValue(key, value)
+		if normalized == "" {
+			return "", false
+		}
+		return key + ":" + normalized, true
+	case "cidr":
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			return "", false
+		}
+		return key + ":" + prefix.Masked().String(), true
+	default:
+		return "", false
+	}
+}
+
+func normalizeProbeVirtualRouterRouteRuleDomainValue(kind string, raw string) string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if kind == "domain_suffix" {
+		value = strings.TrimLeft(value, ".")
+	}
+	if value == "" || strings.ContainsAny(value, " \t\r\n") || strings.Contains(value, ":") {
+		return ""
+	}
+	return value
+}
+
+func collectProbeVirtualRouterReservedRouteRuleIDs(items []probeVirtualRouterRouteRule) map[string]struct{} {
+	reserved := map[string]struct{}{}
+	for _, item := range items {
+		ruleID := strings.TrimSpace(item.ID)
+		if ruleID != "" {
+			reserved[ruleID] = struct{}{}
+		}
+	}
+	return reserved
+}
+
+func allocateProbeVirtualRouterRouteRuleID(seen map[string]struct{}, reserved map[string]struct{}, nextSeq int) (string, int) {
+	if nextSeq <= 0 {
+		nextSeq = 1
+	}
+	for {
+		ruleID := fmt.Sprintf("rr-%d", nextSeq)
+		nextSeq++
+		if _, exists := seen[ruleID]; !exists {
+			if _, exists := reserved[ruleID]; !exists {
+				return ruleID, nextSeq
+			}
+		}
+	}
 }
 
 func collectProbeVirtualRouterReservedRuleIDs(items []probeVirtualRouterTopologyRule) map[string]struct{} {

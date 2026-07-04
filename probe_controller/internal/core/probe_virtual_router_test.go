@@ -5,6 +5,15 @@ import "testing"
 func TestBuildProbeVirtualRouterConfigForNodeReturnsFullVirtualTopology(t *testing.T) {
 	oldStore := ProbeLinkChainStore
 	t.Cleanup(func() { ProbeLinkChainStore = oldStore })
+	setProbeVirtualRouterTestProbeStore(t, probeConfigData{
+		ProbeNodes: []probeNodeRecord{
+			{NodeNo: 1, NodeName: "node-1"},
+			{NodeNo: 2, NodeName: "node-2"},
+			{NodeNo: 3, NodeName: "node-3"},
+			{NodeNo: 4, NodeName: "node-4"},
+		},
+		ProbeSecrets: map[string]string{},
+	})
 
 	ProbeLinkChainStore = &probeLinkChainStore{
 		data: probeLinkChainStoreData{

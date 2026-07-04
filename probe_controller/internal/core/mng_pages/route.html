@@ -26,7 +26,8 @@
     .section.active { display:block; }
     .row { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
     .row label { min-width:92px; color:#8b949e; font-size:13px; }
-    input, select { background:#0d1117; color:#c9d1d9; border:1px solid #30363d; border-radius:8px; padding:7px 8px; min-width:160px; }
+    input, select, textarea { background:#0d1117; color:#c9d1d9; border:1px solid #30363d; border-radius:8px; padding:7px 8px; min-width:160px; }
+    textarea { width:100%; min-height:150px; box-sizing:border-box; resize:vertical; line-height:1.45; }
     input.small, select.small { min-width:110px; }
     input.wide, select.wide { min-width:260px; }
     table { width:100%; border-collapse:collapse; margin-top:8px; }
@@ -47,6 +48,8 @@
     .endpoint-row { display:grid; grid-template-columns:58px minmax(0, 1fr); align-items:center; gap:6px; }
     .endpoint-row .label { color:#8b949e; font-size:12px; }
     .endpoint-row input, .endpoint-row select { min-width:0; width:100%; box-sizing:border-box; }
+    .name-input { min-width:220px; width:100%; box-sizing:border-box; }
+    .rule-editor { min-width:360px; }
   </style>
 </head>
 <body>
@@ -66,6 +69,7 @@
 
     <div class="tabs">
       <button class="tab active" data-tab="topology" type="button">拓扑规则</button>
+      <button class="tab" data-tab="route-rules" type="button">路由规则</button>
       <button class="tab" data-tab="route" type="button">路由状态</button>
     </div>
 
@@ -118,6 +122,25 @@
         </div>
       </section>
 
+      <section id="section-route-rules" class="section">
+        <div class="row">
+          <button id="btn-route-rules-refresh" class="btn" type="button">刷新路由规则</button>
+          <button id="btn-route-rule-add" class="btn" type="button">创建路由规则</button>
+          <button id="btn-route-rules-save" class="btn primary" type="button">保存路由规则</button>
+          <span id="route-rules-summary" class="small muted">未加载</span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th style="width:260px;">路由规则</th>
+              <th>条目</th>
+              <th style="width:96px;">操作</th>
+            </tr>
+          </thead>
+          <tbody id="route-rules-body"></tbody>
+        </table>
+      </section>
+
       <section id="section-route" class="section">
         <div class="row">
           <button id="btn-vr-status-refresh" class="btn" type="button">刷新路由状态</button>
@@ -156,6 +179,7 @@
       activeTab: 'topology',
       nodes: [],
       virtualRouterStatus: [],
+      routeRules: [],
       virtualRouterSpeedSourceID: '',
       virtualRouterSpeedTargetID: '',
       virtualRouter: {
@@ -252,7 +276,9 @@
         fake_ip_cidr: '198.18.0.0/15',
         probe_ips: [],
         topology_rules: [],
+        route_rules: [],
       };
+      state.routeRules = Array.isArray(state.virtualRouter.route_rules) ? state.virtualRouter.route_rules : state.routeRules;
       state.virtualRouterNodeIDs = Array.isArray(payload.node_ids) ? payload.node_ids.map((v) => String(v || '').trim()).filter(Boolean) : [];
       renderVirtualRouter();
       if (!silent) setStatus('拓扑规则已刷新', 'ok');
@@ -263,6 +289,14 @@
       state.virtualRouterStatus = Array.isArray(payload.items) ? payload.items : [];
       renderVirtualRouterStatus();
       if (!silent) setStatus(`路由状态已刷新：${state.virtualRouterStatus.length} 条`, 'ok');
+    }
+
+    async function loadRouteRules(silent) {
+      const payload = await requestJSON('/mng/api/route/virtual_router/route_rules');
+      state.routeRules = Array.isArray(payload.items) ? payload.items : [];
+      state.virtualRouter.route_rules = state.routeRules;
+      renderRouteRules();
+      if (!silent) setStatus(`路由规则已刷新：${state.routeRules.length} 个`, 'ok');
     }
 
     function nodeLabel(nodeID) {
@@ -670,6 +704,99 @@
       }).join('');
     }
 
+    function routeRuleEntriesText(rule) {
+      return (Array.isArray(rule && rule.entries) ? rule.entries : []).map((item) => String(item || '').trim()).filter(Boolean).join('\n');
+    }
+
+    function renderRouteRules() {
+      const body = document.getElementById('route-rules-body');
+      const summary = document.getElementById('route-rules-summary');
+      const rules = Array.isArray(state.routeRules) ? state.routeRules : [];
+      const entryCount = rules.reduce((sum, item) => sum + (Array.isArray(item.entries) ? item.entries.length : 0), 0);
+      summary.textContent = rules.length ? `路由规则 ${rules.length} 个，条目 ${entryCount} 条` : '暂无路由规则';
+      if (!rules.length) {
+        body.innerHTML = '<tr><td colspan="3" class="muted">暂无路由规则。</td></tr>';
+        return;
+      }
+      body.innerHTML = rules.map((rule, idx) => `
+        <tr>
+          <td>
+            <input data-route-rule-name="${idx}" class="name-input" value="${escapeHTML(rule.name || '')}" />
+            <div class="small muted mono">${escapeHTML(rule.id || '')}</div>
+          </td>
+          <td class="rule-editor">
+            <textarea data-route-rule-entries="${idx}" class="mono" spellcheck="false">${escapeHTML(routeRuleEntriesText(rule))}</textarea>
+          </td>
+          <td><button class="btn" data-route-rule-remove="${idx}" type="button">删除</button></td>
+        </tr>
+      `).join('');
+      bindRouteRuleEvents();
+    }
+
+    function bindRouteRuleEvents() {
+      document.querySelectorAll('[data-route-rule-name]').forEach((el) => {
+        el.addEventListener('input', () => {
+          const idx = Number.parseInt(el.getAttribute('data-route-rule-name') || '-1', 10);
+          if (idx >= 0 && idx < state.routeRules.length) state.routeRules[idx].name = String(el.value || '').trim();
+        });
+      });
+      document.querySelectorAll('[data-route-rule-entries]').forEach((el) => {
+        el.addEventListener('input', () => {
+          const idx = Number.parseInt(el.getAttribute('data-route-rule-entries') || '-1', 10);
+          if (idx >= 0 && idx < state.routeRules.length) {
+            state.routeRules[idx].entries = String(el.value || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+          }
+        });
+      });
+      document.querySelectorAll('[data-route-rule-remove]').forEach((el) => {
+        el.addEventListener('click', () => {
+          const idx = Number.parseInt(el.getAttribute('data-route-rule-remove') || '-1', 10);
+          if (idx < 0 || idx >= state.routeRules.length) return;
+          state.routeRules.splice(idx, 1);
+          renderRouteRules();
+        });
+      });
+    }
+
+    function addRouteRule() {
+      if (!Array.isArray(state.routeRules)) state.routeRules = [];
+      state.routeRules.push({
+        id: '',
+        name: `route-rule-${state.routeRules.length + 1}`,
+        entries: [
+          'domain_suffix:reddit.com',
+          'domain_prefix:api.aaaa',
+          'domain_keyword:api.aaaa',
+          'cidr:91.108.4.0/22',
+        ],
+      });
+      renderRouteRules();
+    }
+
+    async function saveRouteRules() {
+      const items = (Array.isArray(state.routeRules) ? state.routeRules : []).map((rule) => ({
+        id: String(rule.id || '').trim(),
+        name: String(rule.name || '').trim(),
+        entries: Array.isArray(rule.entries) ? rule.entries.map((item) => String(item || '').trim()).filter(Boolean) : [],
+        note: String(rule.note || '').trim(),
+      })).filter((rule) => rule.name);
+      const result = await requestJSON('/mng/api/route/virtual_router/route_rules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items }),
+      });
+      state.routeRules = Array.isArray(result.items) ? result.items : items;
+      state.virtualRouter.route_rules = state.routeRules;
+      renderRouteRules();
+      const sync = result.sync || {};
+      const dispatched = Number(sync.dispatched || 0);
+      const offline = Number(sync.offline || 0);
+      const failed = Number(sync.failed || 0);
+      const total = Number(sync.total || 0);
+      const syncText = total > 0 ? `，已通知在线探针 ${dispatched}/${total}，离线 ${offline}，失败 ${failed}` : '';
+      setStatus(`路由规则已保存并排序${syncText}`, failed > 0 ? 'warn' : 'ok');
+    }
+
     async function triggerVirtualRouterLatencyProbe() {
       const result = await requestJSON('/mng/api/route/virtual_router/latency_probe', {
         method: 'POST',
@@ -730,6 +857,9 @@
           if (state.activeTab === 'topology') {
             Promise.all([loadCloudflareDDNSRecords(), loadVirtualRouter(true)]).catch((err) => setStatus(`刷新拓扑规则失败：${err.message || err}`, 'err'));
           }
+          if (state.activeTab === 'route-rules') {
+            loadRouteRules(true).catch((err) => setStatus(`刷新路由规则失败：${err.message || err}`, 'err'));
+          }
           if (state.activeTab === 'route') {
             loadVirtualRouterStatus(true).catch((err) => setStatus(`刷新路由状态失败：${err.message || err}`, 'err'));
           }
@@ -746,6 +876,13 @@
       document.getElementById('btn-vr-add-rule').addEventListener('click', addVirtualRouterRule);
       document.getElementById('btn-vr-save').addEventListener('click', () => {
         saveVirtualRouter().catch((err) => setStatus(`保存拓扑规则失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('btn-route-rules-refresh').addEventListener('click', () => {
+        loadRouteRules(false).catch((err) => setStatus(`刷新路由规则失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('btn-route-rule-add').addEventListener('click', addRouteRule);
+      document.getElementById('btn-route-rules-save').addEventListener('click', () => {
+        saveRouteRules().catch((err) => setStatus(`保存路由规则失败：${err.message || err}`, 'err'));
       });
       document.getElementById('btn-vr-status-refresh').addEventListener('click', () => {
         loadVirtualRouterStatus(false).catch((err) => setStatus(`刷新路由状态失败：${err.message || err}`, 'err'));
@@ -775,6 +912,7 @@
       await loadNodes();
       await loadCloudflareDDNSRecords().catch(() => {});
       await loadVirtualRouter(true);
+      await loadRouteRules(true).catch(() => {});
       await loadVirtualRouterStatus(true).catch(() => {});
       setStatus('路由管理页面初始化完成', 'ok');
     }

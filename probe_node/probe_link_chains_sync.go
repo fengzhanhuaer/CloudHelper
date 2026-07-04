@@ -63,6 +63,7 @@ type probeVirtualRouterConfig struct {
 	FakeIPCIDR    string                           `json:"fake_ip_cidr,omitempty"`
 	ProbeIPs      []probeVirtualRouterProbeIP      `json:"probe_ips,omitempty"`
 	TopologyRules []probeVirtualRouterTopologyRule `json:"topology_rules,omitempty"`
+	RouteRules    []probeVirtualRouterRouteRule    `json:"route_rules,omitempty"`
 	UpdatedAt     string                           `json:"updated_at,omitempty"`
 }
 
@@ -89,6 +90,14 @@ type probeVirtualRouterTopologyRule struct {
 	Enabled           bool   `json:"enabled"`
 	Note              string `json:"note,omitempty"`
 	UpdatedAt         string `json:"updated_at,omitempty"`
+}
+
+type probeVirtualRouterRouteRule struct {
+	ID        string   `json:"id,omitempty"`
+	Name      string   `json:"name"`
+	Entries   []string `json:"entries,omitempty"`
+	Note      string   `json:"note,omitempty"`
+	UpdatedAt string   `json:"updated_at,omitempty"`
 }
 
 type probeVirtualRouterCacheFile struct {
