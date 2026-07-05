@@ -676,7 +676,6 @@ func applyProbeVirtualRouterConfigForNode(config probeVirtualRouterConfig, nodeI
 	probeVirtualRouterState.mu.Unlock()
 	if topologyChanged {
 		clearProbeVirtualRouterRouteCache("config updated")
-		closeProbeVirtualRouterFrameLinks("config updated")
 	}
 	if ensureLocalInterface {
 		scheduleProbeVirtualRouterLocalInterfaceIPEnsure("config_updated")
@@ -2354,6 +2353,7 @@ func (s *probeVirtualRouterFrameLink) AttachCarrier(conn net.Conn, sessionID str
 	}
 	token := newProbeVirtualRouterPhysicalCarrier(conn, sessionID, remoteAddr)
 	var old *probeVirtualRouterPhysicalCarrier
+	rejectDuplicate := false
 	s.mu.Lock()
 	select {
 	case <-s.done:
@@ -2363,6 +2363,15 @@ func (s *probeVirtualRouterFrameLink) AttachCarrier(conn net.Conn, sessionID str
 	default:
 	}
 	old = s.carrier
+	if s.runtime != nil && old != nil && len(s.tx) == 0 && probeVirtualRouterPhysicalCarrierRecentlyActive(old, probeVirtualRouterCarrierStaleRXGrace) {
+		rejectDuplicate = true
+	}
+	if rejectDuplicate {
+		s.mu.Unlock()
+		token.close()
+		log.Printf("probe virtual router physical carrier duplicate rejected: chain=%s key=%s current_session=%s current_remote=%s new_session=%s new_remote=%s", probeVirtualRouterRuntimeLogChainID(s.runtime), strings.TrimSpace(s.key), strings.TrimSpace(old.sessionID), strings.TrimSpace(old.remoteAddr), strings.TrimSpace(sessionID), strings.TrimSpace(remoteAddr))
+		return nil
+	}
 	s.carrier = token
 	s.openedAt = token.connectedAt
 	s.lastUsed = token.connectedAt
@@ -2372,6 +2381,28 @@ func (s *probeVirtualRouterFrameLink) AttachCarrier(conn net.Conn, sessionID str
 		old.close()
 	}
 	return token
+}
+
+func probeVirtualRouterPhysicalCarrierRecentlyActive(token *probeVirtualRouterPhysicalCarrier, maxIdle time.Duration) bool {
+	if token == nil {
+		return false
+	}
+	if maxIdle <= 0 {
+		maxIdle = probeVirtualRouterCarrierStaleRXGrace
+	}
+	token.mu.Lock()
+	lastReadAt := token.lastReadAt
+	lastWriteAt := token.lastWriteAt
+	connectedAt := token.connectedAt
+	token.mu.Unlock()
+	lastActiveAt := lastReadAt
+	if lastWriteAt.After(lastActiveAt) {
+		lastActiveAt = lastWriteAt
+	}
+	if lastActiveAt.IsZero() {
+		lastActiveAt = connectedAt
+	}
+	return !lastActiveAt.IsZero() && time.Since(lastActiveAt) < maxIdle
 }
 
 func (s *probeVirtualRouterFrameLink) signalCarrierChangedLocked() {
@@ -2741,13 +2772,18 @@ func (s *probeVirtualRouterFrameLink) detachCarrier(token *probeVirtualRouterPhy
 	if s == nil || token == nil {
 		return
 	}
+	detached := false
 	s.mu.Lock()
 	if s.carrier == token {
 		s.carrier = nil
 		s.signalCarrierChangedLocked()
+		detached = true
 	}
 	s.mu.Unlock()
 	token.close()
+	if detached && s.runtime != nil {
+		clearProbeVirtualRouterRuntimePingError(s.runtime.cfg.chainID)
+	}
 }
 
 func (c *probeVirtualRouterPhysicalCarrier) markRead() {
@@ -4259,7 +4295,7 @@ func recordProbeVirtualRouterRuntimeOpenSuccess(chainID string, latency time.Dur
 		item.LastOpenLatencyMS = probeDurationMilliseconds(latency)
 		item.LastOpenError = ""
 		item.LastOpenAt = time.Now().UTC().Format(time.RFC3339)
-		item.LastPingFailureCount = 0
+		resetProbeVirtualRouterRuntimePingStateLocked(item)
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
 }
@@ -4304,17 +4340,21 @@ func recordProbeVirtualRouterRuntimePingError(rt *probeVirtualRouterRuntime, dir
 	chainID, bridgeStatus, bridgeSession := snapshotProbeVirtualRouterPingContext(rt, direction)
 	normalizedErr := normalizeProbeVirtualRouterBridgeError(err.Error())
 	failureCount := 0
+	shouldClearRouteCache := false
 	probeVirtualRouterRuntimeStatsState.mu.Lock()
 	item := probeVirtualRouterRuntimeStatsForUpdateLocked(chainID)
 	if item != nil {
 		item.LastPingError = normalizedErr
 		item.LastPingFailureCount++
 		failureCount = item.LastPingFailureCount
+		shouldClearRouteCache = failureCount >= probeVirtualRouterCarrierStalePingFailures
 		item.LastPingAt = time.Now().UTC().Format(time.RFC3339)
 		applyProbeVirtualRouterPingContext(item, direction, bridgeStatus, bridgeSession)
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
-	clearProbeVirtualRouterRouteCache("bridge ping error")
+	if shouldClearRouteCache {
+		clearProbeVirtualRouterRouteCache("bridge ping error threshold")
+	}
 	log.Printf("probe virtual router bridge ping error retained carrier: chain=%s direction=%s failures=%d err=%s", chainID, normalizeProbeChainBridgeRole(direction), failureCount, normalizedErr)
 	detachProbeVirtualRouterStalePhysicalCarrier(rt, failureCount, normalizedErr)
 }
@@ -4521,9 +4561,24 @@ func clearProbeVirtualRouterRuntimePingError(chainID string) {
 	probeVirtualRouterRuntimeStatsState.mu.Lock()
 	item := probeVirtualRouterRuntimeStatsForUpdateLocked(chainID)
 	if item != nil {
-		item.LastPingError = ""
+		resetProbeVirtualRouterRuntimePingStateLocked(item)
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+}
+
+func resetProbeVirtualRouterRuntimePingStateLocked(item *probeVirtualRouterRuntimeStats) {
+	if item == nil {
+		return
+	}
+	item.LastPingLatencyMS = 0
+	item.LastPingError = ""
+	item.LastPingAt = ""
+	item.LastPingFailureCount = 0
+	item.LastPingDirection = ""
+	item.LastPingBridgeConnections = 0
+	item.LastPingBridgeSessionID = ""
+	item.LastPingBridgeRemote = ""
+	item.LastPingBridgeConnectedAt = ""
 }
 
 func snapshotProbeVirtualRouterRuntimeStats(chainID string) *probeVirtualRouterRuntimeStats {

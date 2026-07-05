@@ -237,6 +237,7 @@ func stopProbeVirtualRouterRuntime(chainID string, reason string) bool {
 	close(rt.stopCh)
 	rt.closeRuntimeResources()
 	closeProbeVirtualRouterRuntimeFrameLink(rt)
+	clearProbeVirtualRouterRuntimePingError(target)
 	log.Printf("probe virtual router runtime stopped: chain=%s reason=%s", target, strings.TrimSpace(reason))
 	return true
 }
