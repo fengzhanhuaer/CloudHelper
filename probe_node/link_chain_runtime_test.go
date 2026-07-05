@@ -1138,6 +1138,30 @@ func TestResolveProbeChainDialIPHostWithPolicyPreservesCFDomain(t *testing.T) {
 	}
 }
 
+func TestResolveProbeVirtualRouterBridgeDialIPHostUsesPureIP(t *testing.T) {
+	resetProbeChainRelayResolveCacheForTest()
+	defer resetProbeChainRelayResolveCacheForTest()
+
+	originalLookup := probeChainRelayLookupIP
+	probeChainRelayLookupIP = func(ctx context.Context, network string, host string) ([]net.IP, error) {
+		if host != "relay.example.com" {
+			t.Fatalf("unexpected lookup host: %s", host)
+		}
+		return []net.IP{net.ParseIP("203.0.113.44")}, nil
+	}
+	defer func() {
+		probeChainRelayLookupIP = originalLookup
+	}()
+
+	dialHost, hostHeader, err := resolveProbeVirtualRouterBridgeDialIPHost("relay.example.com")
+	if err != nil {
+		t.Fatalf("resolveProbeVirtualRouterBridgeDialIPHost returned error: %v", err)
+	}
+	if dialHost != "203.0.113.44" || hostHeader != "203.0.113.44" {
+		t.Fatalf("unexpected virtual-router result: dialHost=%s hostHeader=%s", dialHost, hostHeader)
+	}
+}
+
 func TestRefreshProbeChainRelayResolveCacheOnConnectSuccessExtendsTTLToOneDay(t *testing.T) {
 	resetProbeChainRelayResolveCacheForTest()
 	defer resetProbeChainRelayResolveCacheForTest()

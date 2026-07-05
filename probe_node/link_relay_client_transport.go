@@ -327,7 +327,7 @@ func openProbeVirtualRouterBridgeRelayNetConn(chainID string, secret string, rel
 }
 
 func openProbeVirtualRouterBridgeRelayNetConnWithDomainPolicy(chainID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration, preserveDomain bool) (net.Conn, error) {
-	relayDialHost, relayHostHeader, err := resolveProbeChainDialIPHostWithPolicy(relayHost, preserveDomain)
+	relayDialHost, relayHostHeader, err := resolveProbeVirtualRouterBridgeDialIPHost(relayHost)
 	if err != nil {
 		return nil, err
 	}
@@ -2212,6 +2212,10 @@ func buildProbeChainRelayWebSocketURL(host string, port int, chainID string) (st
 
 func resolveProbeChainDialIPHost(rawHost string) (dialHost string, hostHeader string, err error) {
 	return resolveProbeChainDialIPHostWithPolicy(rawHost, false)
+}
+
+func resolveProbeVirtualRouterBridgeDialIPHost(rawHost string) (dialHost string, hostHeader string, err error) {
+	return resolveProbeChainDialIPHost(rawHost)
 }
 
 func resolveProbeChainDialIPHostWithPolicy(rawHost string, preserveDomain bool) (dialHost string, hostHeader string, err error) {

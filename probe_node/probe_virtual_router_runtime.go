@@ -414,11 +414,89 @@ func ensureProbeVirtualRouterRuntimeFrameLink(rt *probeVirtualRouterRuntime) (*p
 
 func buildProbeVirtualRouterRelayHandler() http.Handler {
 	mux := http.NewServeMux()
-	registerProbeOpenAIStyleCamouflageRoutes(mux)
+	registerProbeVirtualRouterOpenAIStyleCamouflageRoutes(mux)
 	mux.HandleFunc(probeChainRelayAPIPath, func(w http.ResponseWriter, r *http.Request) {
 		handleProbeVirtualRouterRelayDispatch(w, r)
 	})
 	return mux
+}
+
+func registerProbeVirtualRouterOpenAIStyleCamouflageRoutes(mux *http.ServeMux) {
+	if mux == nil {
+		return
+	}
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodGet {
+			writeProbeVirtualRouterOpenAIStyleMethodNotAllowed(w, r.Method)
+			return
+		}
+		sleepProbeVirtualRouterOpenAIStyleJitter()
+		writeProbeVirtualRouterOpenAIStyleJSON(w, http.StatusOK, map[string]any{
+			"message":   "OpenAI-compatible API endpoint",
+			"api_base":  "/v1",
+			"version":   BuildVersion,
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+		})
+	})
+	mux.HandleFunc("/v1", func(w http.ResponseWriter, r *http.Request) {
+		sleepProbeVirtualRouterOpenAIStyleJitter()
+		writeProbeVirtualRouterOpenAIStyleUnauthorized(w)
+	})
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		sleepProbeVirtualRouterOpenAIStyleJitter()
+		writeProbeVirtualRouterOpenAIStyleUnauthorized(w)
+	})
+	mux.HandleFunc("/v1/", func(w http.ResponseWriter, r *http.Request) {
+		sleepProbeVirtualRouterOpenAIStyleJitter()
+		writeProbeVirtualRouterOpenAIStyleUnauthorized(w)
+	})
+}
+
+func writeProbeVirtualRouterOpenAIStyleUnauthorized(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", "Bearer")
+	writeProbeVirtualRouterOpenAIStyleJSON(w, http.StatusUnauthorized, map[string]any{
+		"error": map[string]any{
+			"message": "Incorrect API key provided.",
+			"type":    "invalid_request_error",
+			"param":   nil,
+			"code":    "invalid_api_key",
+		},
+	})
+}
+
+func writeProbeVirtualRouterOpenAIStyleMethodNotAllowed(w http.ResponseWriter, method string) {
+	writeProbeVirtualRouterOpenAIStyleJSON(w, http.StatusMethodNotAllowed, map[string]any{
+		"error": map[string]any{
+			"message": fmt.Sprintf("Method %s is not allowed for this endpoint.", strings.TrimSpace(method)),
+			"type":    "invalid_request_error",
+			"param":   nil,
+			"code":    "method_not_allowed",
+		},
+	})
+}
+
+func probeVirtualRouterOpenAIStyleJitterDuration() time.Duration {
+	const minMs = int64(300)
+	const spanMs = int64(701)
+	offset := time.Now().UnixNano() % spanMs
+	if offset < 0 {
+		offset = -offset
+	}
+	return time.Duration(minMs+offset) * time.Millisecond
+}
+
+func sleepProbeVirtualRouterOpenAIStyleJitter() {
+	time.Sleep(probeVirtualRouterOpenAIStyleJitterDuration())
+}
+
+func writeProbeVirtualRouterOpenAIStyleJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
 }
 
 func handleProbeVirtualRouterRelayDispatch(w http.ResponseWriter, r *http.Request) {
