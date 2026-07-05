@@ -16,7 +16,8 @@ type probeRouteConfigStore struct {
 }
 
 type probeRouteConfigStoreData struct {
-	VirtualRouter probeVirtualRouterConfig `json:"virtual_router,omitempty"`
+	VirtualRouter       probeVirtualRouterConfig        `json:"virtual_router,omitempty"`
+	VirtualRouterFakeIP probeVirtualRouterFakeIPLibrary `json:"virtual_router_fake_ip,omitempty"`
 }
 
 var ProbeRouteConfigStore *probeRouteConfigStore
@@ -26,7 +27,8 @@ func initProbeRouteConfigStore() {
 	ProbeRouteConfigStore = &probeRouteConfigStore{
 		path: storePath,
 		data: probeRouteConfigStoreData{
-			VirtualRouter: defaultProbeVirtualRouterConfig(),
+			VirtualRouter:       defaultProbeVirtualRouterConfig(),
+			VirtualRouterFakeIP: defaultProbeVirtualRouterFakeIPLibrary(),
 		},
 	}
 
@@ -41,6 +43,7 @@ func initProbeRouteConfigStore() {
 				log.Fatalf("failed to parse probe route config store: %v", unmarshalErr)
 			}
 			ProbeRouteConfigStore.data.VirtualRouter = normalizeProbeVirtualRouterConfig(raw.VirtualRouter)
+			ProbeRouteConfigStore.data.VirtualRouterFakeIP = normalizeProbeVirtualRouterFakeIPLibrary(raw.VirtualRouterFakeIP)
 		}
 	} else if os.IsNotExist(err) {
 		if saveErr := ProbeRouteConfigStore.Save(); saveErr != nil {

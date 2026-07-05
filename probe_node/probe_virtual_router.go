@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -67,6 +68,12 @@ var probeVirtualRouterState = struct {
 	neighbors         map[string]map[string]struct{}
 	rulesByID         map[string]probeVirtualRouterTopologyRule
 	topologySignature string
+}{}
+
+var probeVirtualRouterControllerState = struct {
+	mu                sync.RWMutex
+	identity          nodeIdentity
+	controllerBaseURL string
 }{}
 
 type probeVirtualRouterTopologyIndex struct {
@@ -338,9 +345,60 @@ func sanitizeProbeVirtualRouterConfigForCache(input probeVirtualRouterConfig) pr
 		ProbeIPs:      sanitizeProbeVirtualRouterProbeIPs(input.ProbeIPs),
 		TopologyRules: sanitizeProbeVirtualRouterTopologyRules(input.TopologyRules),
 		RouteRules:    sanitizeProbeVirtualRouterRouteRules(input.RouteRules),
+		FakeIPLibrary: sanitizeProbeVirtualRouterFakeIPLibrary(input.FakeIPLibrary),
 		UpdatedAt:     strings.TrimSpace(input.UpdatedAt),
 	}
 	return out
+}
+
+func sanitizeProbeVirtualRouterFakeIPLibrary(input probeVirtualRouterFakeIPLibrary) probeVirtualRouterFakeIPLibrary {
+	version := input.Version
+	if version < 0 {
+		version = 0
+	}
+	out := probeVirtualRouterFakeIPLibrary{
+		Version:   version,
+		UpdatedAt: strings.TrimSpace(input.UpdatedAt),
+		Items:     []probeVirtualRouterFakeIPEntry{},
+	}
+	seenDomain := map[string]struct{}{}
+	seenIP := map[string]struct{}{}
+	for _, item := range input.Items {
+		domain := normalizeProbeVirtualRouterDomain(item.Domain)
+		ip := strings.TrimSpace(item.FakeIP)
+		if domain == "" || net.ParseIP(ip).To4() == nil {
+			continue
+		}
+		if _, ok := seenDomain[domain]; ok {
+			continue
+		}
+		if _, ok := seenIP[ip]; ok {
+			continue
+		}
+		seenDomain[domain] = struct{}{}
+		seenIP[ip] = struct{}{}
+		out.Items = append(out.Items, probeVirtualRouterFakeIPEntry{
+			Domain:     domain,
+			FakeIP:     ip,
+			RuleID:     strings.TrimSpace(item.RuleID),
+			Action:     sanitizeProbeVirtualRouterRouteRuleAction(item.Action, item.ExitNodeID),
+			ExitNodeID: normalizeProbeChainNodeID(item.ExitNodeID),
+			ExpiresAt:  strings.TrimSpace(item.ExpiresAt),
+			UpdatedAt:  strings.TrimSpace(item.UpdatedAt),
+		})
+	}
+	sort.SliceStable(out.Items, func(i, j int) bool {
+		return out.Items[i].Domain < out.Items[j].Domain
+	})
+	return out
+}
+
+func normalizeProbeVirtualRouterDomain(raw string) string {
+	domain := strings.ToLower(strings.TrimSpace(strings.Trim(raw, ".")))
+	if domain == "" || strings.ContainsAny(domain, " \t\r\n:/") {
+		return ""
+	}
+	return domain
 }
 
 func sanitizeProbeVirtualRouterProbeIPs(items []probeVirtualRouterProbeIP) []probeVirtualRouterProbeIP {
@@ -622,6 +680,8 @@ func applyProbeVirtualRouterConfigForNode(config probeVirtualRouterConfig, nodeI
 	}
 	if ensureLocalInterface {
 		scheduleProbeVirtualRouterLocalInterfaceIPEnsure("config_updated")
+	} else if err := cleanupProbeVirtualRouterPlatformRoutes(); err != nil {
+		log.Printf("warning: cleanup probe virtual router platform routes failed: %v", err)
 	}
 }
 
@@ -727,6 +787,158 @@ func currentProbeVirtualRouterConfig() probeVirtualRouterConfig {
 	probeVirtualRouterState.mu.RLock()
 	defer probeVirtualRouterState.mu.RUnlock()
 	return sanitizeProbeVirtualRouterConfigForCache(probeVirtualRouterState.config)
+}
+
+func currentProbeVirtualRouterFakeIPCIDR() string {
+	config := currentProbeVirtualRouterConfig()
+	if cidr := strings.TrimSpace(config.FakeIPCIDR); cidr != "" {
+		return cidr
+	}
+	return probeLocalFakeIPDefaultCIDR
+}
+
+func currentProbeVirtualRouterFakeIPLibrary() probeVirtualRouterFakeIPLibrary {
+	config := currentProbeVirtualRouterConfig()
+	return sanitizeProbeVirtualRouterFakeIPLibrary(config.FakeIPLibrary)
+}
+
+func currentProbeVirtualRouterFakeIPEntryByDomain(domain string) (probeVirtualRouterFakeIPEntry, bool) {
+	cleanDomain := normalizeProbeVirtualRouterDomain(domain)
+	if cleanDomain == "" {
+		return probeVirtualRouterFakeIPEntry{}, false
+	}
+	now := time.Now().UTC()
+	probeVirtualRouterState.mu.RLock()
+	defer probeVirtualRouterState.mu.RUnlock()
+	for _, item := range probeVirtualRouterState.config.FakeIPLibrary.Items {
+		if item.Domain != cleanDomain {
+			continue
+		}
+		if probeVirtualRouterFakeIPEntryExpired(item, now) {
+			return probeVirtualRouterFakeIPEntry{}, false
+		}
+		return item, true
+	}
+	return probeVirtualRouterFakeIPEntry{}, false
+}
+
+func currentProbeVirtualRouterRouteRuleForDomain(domain string) (probeVirtualRouterRouteRule, bool) {
+	cleanDomain := normalizeProbeVirtualRouterDomain(domain)
+	if cleanDomain == "" {
+		return probeVirtualRouterRouteRule{}, false
+	}
+	config := currentProbeVirtualRouterConfig()
+	for _, rule := range config.RouteRules {
+		action := sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID)
+		if action == "" {
+			continue
+		}
+		for _, entry := range rule.Entries {
+			if probeVirtualRouterRouteRuleEntryMatchesDomain(cleanDomain, entry) {
+				rule.Action = action
+				rule.ExitNodeID = normalizeProbeChainNodeID(rule.ExitNodeID)
+				return rule, true
+			}
+		}
+	}
+	return probeVirtualRouterRouteRule{}, false
+}
+
+func resolveProbeVirtualRouterFakeIPForDNS(domain string, rule probeVirtualRouterRouteRule) (probeVirtualRouterFakeIPEntry, error) {
+	cleanDomain := normalizeProbeVirtualRouterDomain(domain)
+	if cleanDomain == "" {
+		return probeVirtualRouterFakeIPEntry{}, errors.New("virtual router dns domain is empty")
+	}
+	identity, controllerBaseURL, ok := currentProbeVirtualRouterController()
+	if ok {
+		ctx, cancel := context.WithTimeout(context.Background(), probeLinkChainsSyncFetchTimeout)
+		item, library, err := probeRequestRouteFakeIP(ctx, controllerBaseURL, identity, cleanDomain, rule)
+		cancel()
+		if err == nil && strings.TrimSpace(item.FakeIP) != "" {
+			applyProbeVirtualRouterFakeIPLibrary(library)
+			return item, nil
+		}
+		if err != nil {
+			logProbeWarnf("probe virtual router fake ip allocate failed: domain=%s exit_node=%s err=%v", cleanDomain, strings.TrimSpace(rule.ExitNodeID), err)
+		}
+	}
+	if item, exists := currentProbeVirtualRouterFakeIPEntryByDomain(cleanDomain); exists {
+		return item, nil
+	}
+	if ok {
+		return probeVirtualRouterFakeIPEntry{}, errors.New("virtual router fake ip is unavailable after controller sync")
+	}
+	return probeVirtualRouterFakeIPEntry{}, errors.New("virtual router controller is unavailable")
+}
+
+func probeVirtualRouterRouteRuleEntryMatchesDomain(domain string, entry string) bool {
+	key, value, ok := strings.Cut(strings.TrimSpace(entry), ":")
+	if !ok {
+		return false
+	}
+	key = strings.ToLower(strings.TrimSpace(key))
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return false
+	}
+	switch key {
+	case "domain_suffix":
+		return domain == value || strings.HasSuffix(domain, "."+value)
+	case "domain_prefix":
+		return strings.HasPrefix(domain, value)
+	case "domain_keyword":
+		return strings.Contains(domain, value)
+	default:
+		return false
+	}
+}
+
+func currentProbeVirtualRouterFakeIPEntryByIP(ip string) (probeVirtualRouterFakeIPEntry, bool) {
+	target := net.ParseIP(strings.TrimSpace(ip)).To4()
+	if target == nil {
+		return probeVirtualRouterFakeIPEntry{}, false
+	}
+	now := time.Now().UTC()
+	probeVirtualRouterState.mu.RLock()
+	defer probeVirtualRouterState.mu.RUnlock()
+	return probeVirtualRouterFakeIPEntryByIPLocked(target.String(), now)
+}
+
+func probeVirtualRouterFakeIPEntryByIPLocked(ip string, now time.Time) (probeVirtualRouterFakeIPEntry, bool) {
+	target := net.ParseIP(strings.TrimSpace(ip)).To4()
+	if target == nil {
+		return probeVirtualRouterFakeIPEntry{}, false
+	}
+	targetText := target.String()
+	for _, item := range probeVirtualRouterState.config.FakeIPLibrary.Items {
+		if strings.TrimSpace(item.FakeIP) != targetText {
+			continue
+		}
+		if probeVirtualRouterFakeIPEntryExpired(item, now) {
+			return probeVirtualRouterFakeIPEntry{}, false
+		}
+		return item, true
+	}
+	return probeVirtualRouterFakeIPEntry{}, false
+}
+
+func probeVirtualRouterFakeIPEntryExpired(item probeVirtualRouterFakeIPEntry, now time.Time) bool {
+	expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(item.ExpiresAt))
+	return err == nil && !expiresAt.IsZero() && !now.Before(expiresAt)
+}
+
+func applyProbeVirtualRouterFakeIPLibrary(library probeVirtualRouterFakeIPLibrary) {
+	nextLibrary := sanitizeProbeVirtualRouterFakeIPLibrary(library)
+	probeVirtualRouterState.mu.Lock()
+	currentVersion := probeVirtualRouterState.config.FakeIPLibrary.Version
+	if nextLibrary.Version >= currentVersion {
+		probeVirtualRouterState.config.FakeIPLibrary = nextLibrary
+	}
+	nextConfig := sanitizeProbeVirtualRouterConfigForCache(probeVirtualRouterState.config)
+	probeVirtualRouterState.mu.Unlock()
+	if nextLibrary.Version >= currentVersion {
+		_ = persistProbeRouteConfigCache(nextConfig)
+	}
 }
 
 func probeVirtualRouterCloneNodeToIPLocked() map[string]string {
@@ -1377,6 +1589,11 @@ func currentProbeVirtualRouterPathToIP(ip string) []string {
 	probeVirtualRouterState.mu.RLock()
 	nodeID := strings.TrimSpace(probeVirtualRouterState.localNodeID)
 	targetNodeID := probeVirtualRouterState.ipToNode[targetIP.String()]
+	if targetNodeID == "" {
+		if entry, ok := probeVirtualRouterFakeIPEntryByIPLocked(targetIP.String(), time.Now().UTC()); ok {
+			targetNodeID = normalizeProbeChainNodeID(entry.ExitNodeID)
+		}
+	}
 	probeVirtualRouterState.mu.RUnlock()
 	return currentProbeVirtualRouterPathBetweenNodes(nodeID, targetNodeID)
 }
@@ -1391,6 +1608,11 @@ func currentProbeVirtualRouterPathForPacket(packet []byte, dstIP string) []strin
 	nodeID := strings.TrimSpace(probeVirtualRouterState.localNodeID)
 	sourceNodeID := probeVirtualRouterState.ipToNode[sourceIP.String()]
 	targetNodeID := probeVirtualRouterState.ipToNode[targetIP.String()]
+	if targetNodeID == "" {
+		if entry, ok := probeVirtualRouterFakeIPEntryByIPLocked(targetIP.String(), time.Now().UTC()); ok {
+			targetNodeID = normalizeProbeChainNodeID(entry.ExitNodeID)
+		}
+	}
 	probeVirtualRouterState.mu.RUnlock()
 	if nodeID == "" {
 		nodeID = sourceNodeID
@@ -1400,6 +1622,21 @@ func currentProbeVirtualRouterPathForPacket(packet []byte, dstIP string) []strin
 
 func probeVirtualRouterPacketTargetsLocalIP(runtime *probeVirtualRouterRuntime, dstIP string) bool {
 	return probeVirtualRouterIPMatches(dstIP, currentProbeVirtualRouterLocalIPForRuntime(runtime))
+}
+
+func probeVirtualRouterPacketTargetsLocalDelivery(runtime *probeVirtualRouterRuntime, dstIP string, path []string) bool {
+	if probeVirtualRouterPacketTargetsLocalIP(runtime, dstIP) {
+		return true
+	}
+	entry, ok := currentProbeVirtualRouterFakeIPEntryByIP(dstIP)
+	if !ok {
+		return false
+	}
+	localNodeID := currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)
+	if normalizeProbeChainNodeID(entry.ExitNodeID) != localNodeID || localNodeID == "" {
+		return false
+	}
+	return len(path) == 0 || normalizeProbeChainNodeID(path[len(path)-1]) == localNodeID
 }
 
 func probeVirtualRouterIPMatches(target string, local string) bool {
@@ -1806,6 +2043,9 @@ func writeProbeVirtualRouterAll(writer io.Writer, payload []byte) error {
 }
 
 func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
+	if !probeVirtualRouterLocalEntryEnabled() {
+		return false
+	}
 	dstIP := probeVirtualRouterIPv4Destination(packet)
 	if dstIP == "" {
 		return false
@@ -1814,6 +2054,11 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 		return false
 	}
 	path := currentProbeVirtualRouterPathForPacket(packet, dstIP)
+	if len(path) < 2 && probeVirtualRouterIPInCurrentFakeCIDR(dstIP) {
+		if refreshProbeVirtualRouterRouteConfigFromController("fake_ip_path_miss") {
+			path = currentProbeVirtualRouterPathForPacket(packet, dstIP)
+		}
+	}
 	if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
 		log.Printf("probe virtual router icmp tun rx: trace_code=icmp-trace-v2 kind=%s src=%s dst=%s id=%d seq=%d local_node=%s path=%s bytes=%d", info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, currentProbeVirtualRouterLocalNodeID(), strings.Join(path, ">"), len(packet))
 	}
@@ -1836,6 +2081,30 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 	if err := forwardProbeVirtualRouterPacketAlongPath(packet, dstIP, path, trace); err != nil {
 		log.Printf("probe virtual router frame forward failed: dst=%s path=%s err=%v", dstIP, strings.Join(path, ">"), err)
 		return true
+	}
+	return true
+}
+
+func probeVirtualRouterIPInCurrentFakeCIDR(ipText string) bool {
+	ip := net.ParseIP(strings.TrimSpace(ipText)).To4()
+	if ip == nil {
+		return false
+	}
+	_, network, err := net.ParseCIDR(currentProbeVirtualRouterFakeIPCIDR())
+	return err == nil && network != nil && network.Contains(ip)
+}
+
+func refreshProbeVirtualRouterRouteConfigFromController(reason string) bool {
+	identity, controllerBaseURL, ok := currentProbeVirtualRouterController()
+	if !ok {
+		return false
+	}
+	if cleanReason := strings.TrimSpace(reason); cleanReason != "" {
+		log.Printf("probe virtual router route config sync start: reason=%s", cleanReason)
+	}
+	if err := syncProbeRouteConfig(identity, controllerBaseURL); err != nil {
+		log.Printf("probe virtual router route config sync failed: reason=%s err=%v", strings.TrimSpace(reason), err)
+		return false
 	}
 	return true
 }
@@ -3422,7 +3691,7 @@ func handleProbeVirtualRouterIPFrame(runtime *probeVirtualRouterRuntime, link *p
 	}
 	srcIP := probeVirtualRouterIPv4Source(packet)
 	localIP := currentProbeVirtualRouterLocalIPForRuntime(runtime)
-	localMatch := probeVirtualRouterIPMatches(dstIP, localIP)
+	localMatch := probeVirtualRouterPacketTargetsLocalDelivery(runtime, dstIP, path)
 	recordProbeVirtualRouterRuntimeFrameDecision(runtime, srcIP, dstIP, localIP, path, localMatch)
 	if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
 		trace = appendProbeVirtualRouterICMPTrace(trace, runtime, "frame_rx", "", "")

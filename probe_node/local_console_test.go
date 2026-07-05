@@ -25,6 +25,7 @@ func setupProbeLocalConsoleTest(t *testing.T) *http.ServeMux {
 	resetProbeLocalAuthManagerForTest()
 	resetProbeLocalControlStateForTest()
 	resetProbeLocalDNSServiceForTest()
+	resetProbeVirtualRouterLocalSettingsForTest()
 	resetProbeLocalTUNGroupRuntimeRegistryForTest()
 	setProbeLocalProxyRuntimeContext(nodeIdentity{}, "")
 	probeLocalVNetFeatureEnabled = func() bool { return true }
@@ -34,6 +35,7 @@ func setupProbeLocalConsoleTest(t *testing.T) *http.ServeMux {
 		resetProbeLocalAuthManagerForTest()
 		resetProbeLocalControlStateForTest()
 		resetProbeLocalDNSServiceForTest()
+		resetProbeVirtualRouterLocalSettingsForTest()
 		resetProbeLocalTUNGroupRuntimeRegistryForTest()
 		resetProbeLocalProxyHooksForTest()
 		resetProbeLocalTUNHooksForTest()

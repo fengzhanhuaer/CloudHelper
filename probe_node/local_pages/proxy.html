@@ -92,6 +92,14 @@
       background: #0d1117;
       color: #c9d1d9;
     }
+    .checkbox-row {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 34px;
+      padding: 6px 0;
+      color: #d0d7de;
+    }
     button {
       padding: 8px 12px;
       border: 1px solid transparent;
@@ -231,6 +239,7 @@
       <button class="tab-btn active" data-tab="groups">线路组</button>
       <button class="tab-btn" data-tab="links">链路状态</button>
       <button class="tab-btn" data-tab="connections">连接诊断</button>
+      <button class="tab-btn" data-tab="virtual-router">虚拟路由</button>
     </div>
 
     <section id="panelProxy" class="card proxy-tab-panel active" data-tab-panel="groups">
@@ -253,6 +262,26 @@
       </div>
       <div id="proxyRuleGroups" class="rule-group-list"></div>
       <p class="hint">参照 manager：按“每个线路组”展示可选策略（直连 + 拒绝 + 可用链路），刷新线路组会清空本地 DNS / Fake IP 缓存。</p>
+    </section>
+
+    <section id="panelVirtualRouter" class="card proxy-tab-panel" data-tab-panel="virtual-router">
+      <strong>虚拟路由</strong>
+      <div class="kv">
+        <div>入口功能</div><div id="vrouterEntryStatus">-</div>
+        <div>虚拟 DNS</div><div id="vrouterDNSStatus">-</div>
+        <div>本机节点</div><div id="vrouterLocalNode">-</div>
+        <div>本机虚拟 IP</div><div id="vrouterLocalIP">-</div>
+        <div>Fake IP CIDR</div><div id="vrouterFakeCIDR">-</div>
+        <div>Fake IP 库</div><div id="vrouterFakeLibrary">-</div>
+      </div>
+      <div class="toolbar">
+        <label class="checkbox-row"><input id="vrouterEntryEnabled" type="checkbox" /> 虚拟路由入口</label>
+        <label class="checkbox-row"><input id="vrouterDNSEnabled" type="checkbox" /> 虚拟 DNS 服务</label>
+      </div>
+      <div class="actions">
+        <button id="vrouterSettingsSaveBtn" class="secondary">保存虚拟路由设置</button>
+        <button id="vrouterSettingsRefreshBtn" class="secondary">刷新虚拟路由状态</button>
+      </div>
     </section>
 
     <section id="panelProxyLinks" class="card proxy-tab-panel" data-tab-panel="links">
@@ -2691,6 +2720,40 @@
       }, PROXY_STATUS_POLL_INTERVAL_MS);
     }
 
+    function formatEnabled(value) {
+      return value ? '开启' : '关闭';
+    }
+
+    async function loadVirtualRouterSettings() {
+      const data = await requestJSON('/local/api/virtual_router/settings', { method: 'GET' });
+      document.getElementById('vrouterEntryEnabled').checked = !!data.virtual_router_enabled;
+      document.getElementById('vrouterDNSEnabled').checked = !!data.virtual_dns_enabled;
+      document.getElementById('vrouterEntryStatus').textContent = formatEnabled(!!data.virtual_router_enabled);
+      document.getElementById('vrouterDNSStatus').textContent = formatEnabled(!!data.virtual_dns_enabled);
+      document.getElementById('vrouterLocalNode').textContent = data.local_node_id || '-';
+      document.getElementById('vrouterLocalIP').textContent = data.local_ip || '-';
+      document.getElementById('vrouterFakeCIDR').textContent = data.fake_ip_cidr || '-';
+      const library = data.fake_ip_library || {};
+      const version = Number(library.version || 0);
+      const count = Number(data.fake_ip_count || 0);
+      document.getElementById('vrouterFakeLibrary').textContent =
+        `v${version || 0} / ${count} 条 / ${library.updated_at || '-'}`;
+      return data;
+    }
+
+    async function saveVirtualRouterSettings() {
+      const payload = {
+        virtual_router_enabled: document.getElementById('vrouterEntryEnabled').checked,
+        virtual_dns_enabled: document.getElementById('vrouterDNSEnabled').checked,
+      };
+      const data = await requestJSON('/local/api/virtual_router/settings', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      await loadVirtualRouterSettings();
+      return data;
+    }
+
     async function refreshAll() {
       setMessage('');
       const ok = await ensureSession();
@@ -2707,6 +2770,10 @@
         loadProxyConnectionStatus().catch(() => {
         });
         loadProxyDiagnostics().catch(() => {
+        });
+      }
+      if (document.querySelector('.tab-btn[data-tab="virtual-router"].active')) {
+        loadVirtualRouterSettings().catch(() => {
         });
       }
       if (isProxyGloballyEnabled()) {
@@ -2729,10 +2796,49 @@
         loadProxyConnectionStatus().catch((err) => setMessage('读取连接状态失败：' + err.message, 'error'));
         loadProxyDiagnostics().catch((err) => setMessage('读取关联线索失败：' + err.message, 'error'));
       }
+      if (clean === 'virtual-router') {
+        loadVirtualRouterSettings().catch((err) => setMessage('读取虚拟路由状态失败：' + err.message, 'error'));
+      }
+    }
+
+    function initialProxyTabFromHash() {
+      const hash = String(window.location.hash || '').replace(/^#/, '').trim();
+      if (hash === 'links' || hash === 'connections' || hash === 'virtual-router') {
+        return hash;
+      }
+      return 'groups';
     }
 
     document.querySelectorAll('.tab-btn').forEach((btn) => {
-      btn.addEventListener('click', () => switchProxyTab(btn.getAttribute('data-tab')));
+      btn.addEventListener('click', () => {
+        const tab = btn.getAttribute('data-tab');
+        if (tab && tab !== 'groups') {
+          window.location.hash = tab;
+        } else {
+          history.replaceState(null, '', window.location.pathname + window.location.search);
+        }
+        switchProxyTab(tab);
+      });
+    });
+
+    document.getElementById('vrouterSettingsRefreshBtn').addEventListener('click', async () => {
+      setMessage('刷新虚拟路由状态...');
+      try {
+        await loadVirtualRouterSettings();
+        setMessage('虚拟路由状态已刷新', 'success');
+      } catch (err) {
+        setMessage('刷新虚拟路由状态失败：' + err.message, 'error');
+      }
+    });
+
+    document.getElementById('vrouterSettingsSaveBtn').addEventListener('click', async () => {
+      setMessage('保存虚拟路由设置...');
+      try {
+        await saveVirtualRouterSettings();
+        setMessage('虚拟路由设置已保存', 'success');
+      } catch (err) {
+        setMessage('保存虚拟路由设置失败：' + err.message, 'error');
+      }
     });
 
     document.getElementById('proxyLinkStatusRefreshBtn').addEventListener('click', async () => {
@@ -2996,6 +3102,8 @@
       }
     });
 
+    switchProxyTab(initialProxyTabFromHash());
+    window.addEventListener('hashchange', () => switchProxyTab(initialProxyTabFromHash()));
     startProxyStatusPolling();
     syncDiagnosticBusinessTypeOptions();
     refreshAll().catch((err) => setMessage('初始化失败：' + err.message, 'error'));

@@ -297,6 +297,11 @@ func runProbeLocalDNSCachePersistLoop(stopCh <-chan struct{}) {
 
 func ensureProbeLocalDNSServiceStarted() {
 	ensureProbeLocalDNSCacheLoaded()
+	if !probeVirtualRouterLocalDNSEnabled() {
+		stopProbeLocalDNSLoopbackListener()
+		stopProbeLocalDNSTUNListener()
+		return
+	}
 	probeLocalDNSState.mu.Lock()
 	alreadyStarted := probeLocalDNSState.started
 	if !alreadyStarted {
@@ -315,6 +320,11 @@ func reconcileProbeLocalDNSRuntime() {
 }
 
 func reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(tunProxyEnabled bool) {
+	if !probeVirtualRouterLocalDNSEnabled() {
+		stopProbeLocalDNSLoopbackListener()
+		stopProbeLocalDNSTUNListener()
+		return
+	}
 	if runtime.GOOS != "windows" {
 		stopProbeLocalDNSTUNListener()
 		return
@@ -332,6 +342,10 @@ func reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(tunProxyEnabled bool) {
 }
 
 func startProbeLocalDNSLoopbackListener() {
+	if !probeVirtualRouterLocalDNSEnabled() {
+		stopProbeLocalDNSLoopbackListener()
+		return
+	}
 	candidates := []struct {
 		port         int
 		fallbackUsed bool
@@ -343,6 +357,17 @@ func startProbeLocalDNSLoopbackListener() {
 	var lastErr error
 	for _, candidate := range candidates {
 		addr := net.JoinHostPort(probeLocalDNSListenHost, strconv.Itoa(candidate.port))
+		probeLocalDNSState.mu.Lock()
+		if probeLocalDNSState.conn != nil && probeLocalDNSState.status.Enabled && strings.EqualFold(strings.TrimSpace(probeLocalDNSState.status.ListenAddr), addr) {
+			probeLocalDNSState.mu.Unlock()
+			return
+		}
+		oldConn := probeLocalDNSState.conn
+		probeLocalDNSState.conn = nil
+		probeLocalDNSState.mu.Unlock()
+		if oldConn != nil {
+			_ = oldConn.Close()
+		}
 		conn, err := probeLocalDNSListenPacket("udp", addr)
 		if err != nil {
 			lastErr = err
@@ -381,7 +406,30 @@ func startProbeLocalDNSLoopbackListener() {
 	}
 }
 
+func stopProbeLocalDNSLoopbackListener() {
+	probeLocalDNSState.mu.Lock()
+	conn := probeLocalDNSState.conn
+	probeLocalDNSState.conn = nil
+	probeLocalDNSState.started = false
+	probeLocalDNSState.status = probeLocalDNSStatus{
+		Enabled:      false,
+		ListenAddr:   "",
+		Port:         0,
+		FallbackUsed: false,
+		LastError:    "",
+		UpdatedAt:    probeLocalDNSNow().UTC().Format(time.RFC3339),
+	}
+	probeLocalDNSState.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
+	}
+}
+
 func startProbeLocalDNSTUNListener(host string) {
+	if !probeVirtualRouterLocalDNSEnabled() {
+		stopProbeLocalDNSTUNListener()
+		return
+	}
 	cleanHost := strings.TrimSpace(host)
 	ip := net.ParseIP(cleanHost)
 	if ip == nil || ip.To4() == nil {
@@ -512,6 +560,9 @@ func resolveProbeLocalDNSResponse(packet []byte) ([]byte, string, []string, prob
 
 func resolveProbeLocalDNSApplicationResponse(packet []byte) (probeLocalDNSApplicationResponse, error) {
 	domain, qType := parseProbeLocalDNSQueryDomainAndType(packet)
+	if result, handled, err := resolveProbeVirtualRouterDNSApplicationResponse(packet, domain, qType); handled {
+		return result, err
+	}
 	decision := resolveProbeLocalDNSRouteDecision(domain)
 	result := probeLocalDNSApplicationResponse{
 		Domain:   domain,
@@ -536,6 +587,77 @@ func resolveProbeLocalDNSApplicationResponse(packet []byte) (probeLocalDNSApplic
 	result.Response = response
 	result.RealIPs = realIPs
 	return result, err
+}
+
+func resolveProbeVirtualRouterDNSApplicationResponse(packet []byte, domain string, qType dnsmessage.Type) (probeLocalDNSApplicationResponse, bool, error) {
+	if !probeVirtualRouterLocalDNSEnabled() {
+		return probeLocalDNSApplicationResponse{}, false, nil
+	}
+	cleanDomain := normalizeProbeVirtualRouterDomain(domain)
+	if cleanDomain == "" {
+		return probeLocalDNSApplicationResponse{}, false, nil
+	}
+	decision := probeLocalDNSRouteDecision{
+		Group:  "virtual-router",
+		Action: "direct",
+	}
+	result := probeLocalDNSApplicationResponse{
+		Domain:   cleanDomain,
+		Decision: decision,
+	}
+	rule, matched := currentProbeVirtualRouterRouteRuleForDomain(cleanDomain)
+	if !matched {
+		response, realIPs, err := resolveProbeVirtualRouterDNSRealResponse(packet, cleanDomain, qType, decision)
+		result.Response = response
+		result.RealIPs = realIPs
+		return result, true, err
+	}
+	action := strings.TrimSpace(rule.Action)
+	switch action {
+	case "reject":
+		decision.Reject = true
+		decision.Action = "reject"
+		result.Decision = decision
+		result.Response = buildProbeLocalDNSRefused(packet)
+		return result, true, nil
+	case "direct":
+		response, realIPs, err := resolveProbeVirtualRouterDNSRealResponse(packet, cleanDomain, qType, decision)
+		result.Response = response
+		result.RealIPs = realIPs
+		return result, true, err
+	case "probe_exit":
+		decision.Action = "tunnel"
+		decision.Group = "virtual-router:" + normalizeProbeChainNodeID(rule.ExitNodeID)
+		decision.TunnelNodeID = normalizeProbeChainNodeID(rule.ExitNodeID)
+		result.Decision = decision
+		if qType != dnsmessage.TypeA {
+			response, realIPs, err := resolveProbeVirtualRouterDNSRealResponse(packet, cleanDomain, qType, decision)
+			result.Response = response
+			result.RealIPs = realIPs
+			return result, true, err
+		}
+		item, err := resolveProbeVirtualRouterFakeIPForDNS(cleanDomain, rule)
+		if err != nil {
+			result.Response = buildProbeLocalDNSServfail(packet)
+			return result, true, err
+		}
+		result.Response = buildProbeLocalDNSSuccessA(packet, item.FakeIP)
+		return result, true, nil
+	default:
+		response, realIPs, err := resolveProbeVirtualRouterDNSRealResponse(packet, cleanDomain, qType, decision)
+		result.Response = response
+		result.RealIPs = realIPs
+		return result, true, err
+	}
+}
+
+func resolveProbeVirtualRouterDNSRealResponse(packet []byte, domain string, qType dnsmessage.Type, decision probeLocalDNSRouteDecision) ([]byte, []string, error) {
+	if qType == dnsmessage.TypeA {
+		if response, realIPs, ok := resolveProbeLocalDNSApplicationCachedOrHostResponse(packet, domain, decision); ok {
+			return response, realIPs, nil
+		}
+	}
+	return resolveProbeLocalDNSApplicationUpstreamResponse(packet, domain, decision)
 }
 
 func resolveProbeLocalDNSApplicationFakeIPResponse(packet []byte, domain string, decision probeLocalDNSRouteDecision) []byte {

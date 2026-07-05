@@ -23,6 +23,7 @@ const (
 	probeLinkChainsSyncAPIPath         = "/api/probe/link/chains"
 	probeLinkChainGroupedConfigAPIPath = "/api/probe/link/config/grouped"
 	probeRouteConfigAPIPath            = "/api/probe/route/config"
+	probeRouteFakeIPResolveAPIPath     = "/api/probe/route/fake_ip/resolve"
 	probeLinkChainsSyncPollInterval    = 60 * time.Minute
 	probeLinkChainsSyncFetchTimeout    = 15 * time.Second
 	probeChainTopologyCacheFileName    = "probe_link_chain_config.json"
@@ -68,7 +69,24 @@ type probeVirtualRouterConfig struct {
 	ProbeIPs      []probeVirtualRouterProbeIP      `json:"probe_ips,omitempty"`
 	TopologyRules []probeVirtualRouterTopologyRule `json:"topology_rules,omitempty"`
 	RouteRules    []probeVirtualRouterRouteRule    `json:"route_rules,omitempty"`
+	FakeIPLibrary probeVirtualRouterFakeIPLibrary  `json:"fake_ip_library,omitempty"`
 	UpdatedAt     string                           `json:"updated_at,omitempty"`
+}
+
+type probeVirtualRouterFakeIPLibrary struct {
+	Version   int64                           `json:"version"`
+	UpdatedAt string                          `json:"updated_at,omitempty"`
+	Items     []probeVirtualRouterFakeIPEntry `json:"items,omitempty"`
+}
+
+type probeVirtualRouterFakeIPEntry struct {
+	Domain     string `json:"domain"`
+	FakeIP     string `json:"fake_ip"`
+	RuleID     string `json:"rule_id,omitempty"`
+	Action     string `json:"action,omitempty"`
+	ExitNodeID string `json:"exit_node_id,omitempty"`
+	ExpiresAt  string `json:"expires_at,omitempty"`
+	UpdatedAt  string `json:"updated_at,omitempty"`
 }
 
 type probeVirtualRouterProbeIP struct {
@@ -111,9 +129,16 @@ type probeRouteConfigCacheFile struct {
 	Item      probeVirtualRouterConfig `json:"item"`
 }
 
+type probeRouteFakeIPResolveResponse struct {
+	NodeID        string                          `json:"node_id"`
+	Item          probeVirtualRouterFakeIPEntry   `json:"item"`
+	FakeIPLibrary probeVirtualRouterFakeIPLibrary `json:"fake_ip_library"`
+}
+
 var (
 	probeRequestLinkChainConfig = requestProbeLinkChainConfig
 	probeRequestRouteConfig     = requestProbeRouteConfig
+	probeRequestRouteFakeIP     = requestProbeRouteFakeIP
 )
 
 // probeLinkChainServerItem is a single chain record returned by the controller.
@@ -284,6 +309,7 @@ func fetchProbeLinkChainConfig(ctx context.Context, controllerBaseURL string, id
 }
 
 func syncProbeRouteConfig(identity nodeIdentity, controllerBaseURL string) error {
+	rememberProbeVirtualRouterController(identity, controllerBaseURL)
 	ctx, cancel := context.WithTimeout(context.Background(), probeLinkChainsSyncFetchTimeout)
 	config, err := fetchProbeRouteConfig(ctx, controllerBaseURL, identity)
 	cancel()
@@ -302,6 +328,21 @@ func syncProbeRouteConfig(identity nodeIdentity, controllerBaseURL string) error
 	applyProbeVirtualRouterConfigForNode(config, identity.NodeID)
 	applyProbeVirtualRouterRuntimesForNode(identity, controllerBaseURL, config)
 	return nil
+}
+
+func rememberProbeVirtualRouterController(identity nodeIdentity, controllerBaseURL string) {
+	probeVirtualRouterControllerState.mu.Lock()
+	probeVirtualRouterControllerState.identity = identity
+	probeVirtualRouterControllerState.controllerBaseURL = strings.TrimSpace(controllerBaseURL)
+	probeVirtualRouterControllerState.mu.Unlock()
+}
+
+func currentProbeVirtualRouterController() (nodeIdentity, string, bool) {
+	probeVirtualRouterControllerState.mu.RLock()
+	defer probeVirtualRouterControllerState.mu.RUnlock()
+	identity := probeVirtualRouterControllerState.identity
+	baseURL := strings.TrimSpace(probeVirtualRouterControllerState.controllerBaseURL)
+	return identity, baseURL, strings.TrimSpace(identity.NodeID) != "" && strings.TrimSpace(identity.Secret) != "" && baseURL != ""
 }
 
 func fetchProbeRouteConfig(ctx context.Context, controllerBaseURL string, identity nodeIdentity) (probeVirtualRouterConfig, error) {
@@ -441,6 +482,57 @@ func requestProbeRouteConfig(ctx context.Context, controllerBaseURL string, iden
 		return probeVirtualRouterConfig{}, err
 	}
 	return sanitizeProbeVirtualRouterConfigForCache(payload.VirtualRouter), nil
+}
+
+func requestProbeRouteFakeIP(ctx context.Context, controllerBaseURL string, identity nodeIdentity, domain string, rule probeVirtualRouterRouteRule) (probeVirtualRouterFakeIPEntry, probeVirtualRouterFakeIPLibrary, error) {
+	baseURL := strings.TrimRight(strings.TrimSpace(controllerBaseURL), "/")
+	if baseURL == "" {
+		return probeVirtualRouterFakeIPEntry{}, probeVirtualRouterFakeIPLibrary{}, errors.New("controller base url is required")
+	}
+	nodeID := strings.TrimSpace(identity.NodeID)
+	secret := strings.TrimSpace(identity.Secret)
+	if nodeID == "" || secret == "" {
+		return probeVirtualRouterFakeIPEntry{}, probeVirtualRouterFakeIPLibrary{}, errors.New("node identity is missing node id or secret")
+	}
+	query := url.Values{}
+	query.Set("node_id", nodeID)
+	query.Set("secret", secret)
+	endpoint := baseURL + probeRouteFakeIPResolveAPIPath + "?" + query.Encode()
+	body, err := json.Marshal(map[string]string{
+		"domain":       strings.TrimSpace(domain),
+		"rule_id":      strings.TrimSpace(rule.ID),
+		"action":       strings.TrimSpace(rule.Action),
+		"exit_node_id": strings.TrimSpace(rule.ExitNodeID),
+	})
+	if err != nil {
+		return probeVirtualRouterFakeIPEntry{}, probeVirtualRouterFakeIPLibrary{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(body)))
+	if err != nil {
+		return probeVirtualRouterFakeIPEntry{}, probeVirtualRouterFakeIPLibrary{}, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	client, closeClient, err := newProbeResolvedHTTPClientForURL(endpoint, probeLinkChainsSyncFetchTimeout)
+	if err != nil {
+		return probeVirtualRouterFakeIPEntry{}, probeVirtualRouterFakeIPLibrary{}, err
+	}
+	defer closeClient()
+	resp, err := client.Do(req)
+	if err != nil {
+		return probeVirtualRouterFakeIPEntry{}, probeVirtualRouterFakeIPLibrary{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return probeVirtualRouterFakeIPEntry{}, probeVirtualRouterFakeIPLibrary{}, fmt.Errorf("request route fake ip failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var payload probeRouteFakeIPResolveResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&payload); err != nil {
+		return probeVirtualRouterFakeIPEntry{}, probeVirtualRouterFakeIPLibrary{}, err
+	}
+	return payload.Item, payload.FakeIPLibrary, nil
 }
 
 // applyProbeLinkChainServerItems diffs server items against running runtimes.

@@ -110,6 +110,19 @@ func mngLinkVirtualRouterRouteRulesHandler(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+func mngLinkVirtualRouterFakeIPResetHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	library, err := resetProbeVirtualRouterFakeIPLibrary()
+	result := map[string]any{"fake_ip_library": library}
+	if err == nil {
+		result["sync"] = dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURLFromRequest(r))
+	}
+	writeMngLinkResult(w, result, err)
+}
+
 func mngLinkVirtualRouterStatusHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

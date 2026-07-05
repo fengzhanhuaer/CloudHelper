@@ -54,6 +54,7 @@ func getMngProbeVirtualRouterConfig() (map[string]interface{}, error) {
 	ensureProbeVirtualRouterStoredAuthFields()
 	ProbeRouteConfigStore.mu.RLock()
 	config := normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter)
+	config.FakeIPLibrary = normalizeProbeVirtualRouterFakeIPLibrary(ProbeRouteConfigStore.data.VirtualRouterFakeIP)
 	ProbeRouteConfigStore.mu.RUnlock()
 	config = enrichProbeVirtualRouterAuthTickets(ensureProbeVirtualRouterAuthFields(ensureProbeVirtualRouterProbeIPsForKnownNodes(config)))
 	return map[string]interface{}{
@@ -101,6 +102,7 @@ func getMngProbeVirtualRouterRouteRules() (map[string]interface{}, error) {
 	}
 	ProbeRouteConfigStore.mu.RLock()
 	config := normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter)
+	config.FakeIPLibrary = normalizeProbeVirtualRouterFakeIPLibrary(ProbeRouteConfigStore.data.VirtualRouterFakeIP)
 	ProbeRouteConfigStore.mu.RUnlock()
 	return map[string]interface{}{
 		"items": config.RouteRules,

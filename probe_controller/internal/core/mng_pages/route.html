@@ -39,6 +39,8 @@
     .stack { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
     @media (max-width: 1080px) { .stack { grid-template-columns:1fr; } }
     .box { border:1px solid #30363d; border-radius:10px; padding:10px; }
+    .fake-ip-toolbar { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; margin-top:12px; }
+    .fake-ip-scroll { max-height:260px; overflow:auto; }
     .route-state { display:inline-block; font-size:12px; border-radius:999px; padding:2px 8px; border:1px solid #30363d; }
     .route-state.ok { color:#7ee787; border-color:#238636; }
     .route-state.warn { color:#f2cc60; border-color:#9e6a03; }
@@ -129,6 +131,29 @@
           <button id="btn-route-rules-save" class="btn primary" type="button">保存路由规则</button>
           <span id="route-rules-summary" class="small muted">未加载</span>
         </div>
+        <div class="box" style="margin-bottom:12px;">
+          <div class="fake-ip-toolbar">
+            <div>
+              <div class="muted">Fake IP 库</div>
+              <div id="fake-ip-library-summary" class="small muted">未加载</div>
+            </div>
+            <button id="btn-fake-ip-reset" class="btn" type="button">重置全部 Fake IP</button>
+          </div>
+          <div class="fake-ip-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>域名</th>
+                  <th>Fake IP</th>
+                  <th>动作</th>
+                  <th>规则/出口</th>
+                  <th>过期时间</th>
+                </tr>
+              </thead>
+              <tbody id="fake-ip-library-body"></tbody>
+            </table>
+          </div>
+        </div>
         <table>
           <thead>
             <tr>
@@ -188,6 +213,7 @@
         fake_ip_cidr: '198.18.0.0/15',
         probe_ips: [],
         topology_rules: [],
+        fake_ip_library: { version: 1, updated_at: '', items: [] },
       },
       virtualRouterNodeIDs: [],
       cloudflareDDNSRecords: [],
@@ -278,10 +304,12 @@
         probe_ips: [],
         topology_rules: [],
         route_rules: [],
+        fake_ip_library: { version: 1, updated_at: '', items: [] },
       };
       state.routeRules = Array.isArray(state.virtualRouter.route_rules) ? state.virtualRouter.route_rules : state.routeRules;
       state.virtualRouterNodeIDs = Array.isArray(payload.node_ids) ? payload.node_ids.map((v) => String(v || '').trim()).filter(Boolean) : [];
       renderVirtualRouter();
+      renderFakeIPLibrary();
       if (!silent) setStatus('拓扑规则已刷新', 'ok');
     }
 
@@ -297,6 +325,7 @@
       state.routeRules = Array.isArray(payload.items) ? payload.items : [];
       state.virtualRouter.route_rules = state.routeRules;
       renderRouteRules();
+      renderFakeIPLibrary();
       if (!silent) setStatus(`路由规则已刷新：${state.routeRules.length} 个`, 'ok');
     }
 
@@ -767,6 +796,58 @@
       bindRouteRuleEvents();
     }
 
+    function currentFakeIPLibrary() {
+      const library = state.virtualRouter && state.virtualRouter.fake_ip_library ? state.virtualRouter.fake_ip_library : {};
+      return {
+        version: Number(library.version || 0),
+        updated_at: String(library.updated_at || '').trim(),
+        items: Array.isArray(library.items) ? library.items : [],
+      };
+    }
+
+    function renderFakeIPLibrary() {
+      const summary = document.getElementById('fake-ip-library-summary');
+      const body = document.getElementById('fake-ip-library-body');
+      if (!summary || !body) return;
+      const library = currentFakeIPLibrary();
+      summary.textContent = `版本 v${library.version || 0}，${library.items.length} 条，更新时间 ${library.updated_at || '-'}`;
+      if (!library.items.length) {
+        body.innerHTML = '<tr><td colspan="5" class="muted">暂无 Fake IP 映射。DNS 命中探针出口规则后会由主控分配。</td></tr>';
+        return;
+      }
+      body.innerHTML = library.items.map((item) => {
+        const action = String(item && item.action || '').trim() || '-';
+        const ruleID = String(item && item.rule_id || '').trim();
+        const exitNodeID = normalizeNodeID(item && item.exit_node_id);
+        const ruleExit = [ruleID ? `规则 ${ruleID}` : '', exitNodeID ? `出口 ${nodeLabel(exitNodeID)}` : ''].filter(Boolean).join(' / ') || '-';
+        return `<tr>
+          <td class="mono">${escapeHTML(item && item.domain || '-')}</td>
+          <td class="mono">${escapeHTML(item && item.fake_ip || '-')}</td>
+          <td>${escapeHTML(action)}</td>
+          <td>${escapeHTML(ruleExit)}</td>
+          <td class="mono">${escapeHTML(item && item.expires_at || '-')}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    async function resetFakeIPLibrary() {
+      if (!window.confirm('确认重置全部虚拟路由 Fake IP？现有域名映射会失效，在线探针会收到同步通知。')) return;
+      const result = await requestJSON('/mng/api/route/virtual_router/fake_ip/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      state.virtualRouter.fake_ip_library = result.fake_ip_library || { version: 1, updated_at: '', items: [] };
+      renderFakeIPLibrary();
+      const sync = result.sync || {};
+      const total = Number(sync.total || 0);
+      const dispatched = Number(sync.dispatched || 0);
+      const offline = Number(sync.offline || 0);
+      const failed = Number(sync.failed || 0);
+      const syncText = total > 0 ? `，已通知在线探针 ${dispatched}/${total}，离线 ${offline}，失败 ${failed}` : '';
+      setStatus(`Fake IP 库已重置${syncText}`, failed > 0 ? 'warn' : 'ok');
+    }
+
     function bindRouteRuleEvents() {
       document.querySelectorAll('[data-route-rule-name]').forEach((el) => {
         el.addEventListener('input', () => {
@@ -850,6 +931,7 @@
       state.routeRules = Array.isArray(result.items) ? result.items : items;
       state.virtualRouter.route_rules = state.routeRules;
       renderRouteRules();
+      renderFakeIPLibrary();
       const sync = result.sync || {};
       const dispatched = Number(sync.dispatched || 0);
       const offline = Number(sync.offline || 0);
@@ -920,7 +1002,7 @@
             Promise.all([loadCloudflareDDNSRecords(), loadVirtualRouter(true)]).catch((err) => setStatus(`刷新拓扑规则失败：${err.message || err}`, 'err'));
           }
           if (state.activeTab === 'route-rules') {
-            loadRouteRules(true).catch((err) => setStatus(`刷新路由规则失败：${err.message || err}`, 'err'));
+            Promise.all([loadVirtualRouter(true), loadRouteRules(true)]).catch((err) => setStatus(`刷新路由规则失败：${err.message || err}`, 'err'));
           }
           if (state.activeTab === 'route') {
             loadVirtualRouterStatus(true).catch((err) => setStatus(`刷新路由状态失败：${err.message || err}`, 'err'));
@@ -940,11 +1022,14 @@
         saveVirtualRouter().catch((err) => setStatus(`保存拓扑规则失败：${err.message || err}`, 'err'));
       });
       document.getElementById('btn-route-rules-refresh').addEventListener('click', () => {
-        loadRouteRules(false).catch((err) => setStatus(`刷新路由规则失败：${err.message || err}`, 'err'));
+        Promise.all([loadVirtualRouter(true), loadRouteRules(false)]).catch((err) => setStatus(`刷新路由规则失败：${err.message || err}`, 'err'));
       });
       document.getElementById('btn-route-rule-add').addEventListener('click', addRouteRule);
       document.getElementById('btn-route-rules-save').addEventListener('click', () => {
         saveRouteRules().catch((err) => setStatus(`保存路由规则失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('btn-fake-ip-reset').addEventListener('click', () => {
+        resetFakeIPLibrary().catch((err) => setStatus(`重置 Fake IP 库失败：${err.message || err}`, 'err'));
       });
       document.getElementById('btn-vr-status-refresh').addEventListener('click', () => {
         loadVirtualRouterStatus(false).catch((err) => setStatus(`刷新路由状态失败：${err.message || err}`, 'err'));

@@ -17,7 +17,9 @@ import (
 const (
 	probeVirtualRouterDefaultCIDR           = "198.18.0.0/15"
 	probeVirtualRouterProbeIPPoolSize       = 1024
+	probeVirtualRouterFakeIPDefaultTTL      = 30 * 24 * time.Hour
 	probeVirtualRouterMaxProbeIPCount       = 1024
+	probeVirtualRouterMaxFakeIPCount        = 65536
 	probeVirtualRouterMaxTopologyRules      = 2048
 	probeVirtualRouterMaxRouteRules         = 2048
 	probeVirtualRouterMaxRouteRuleEntries   = 8192
@@ -37,7 +39,24 @@ type probeVirtualRouterConfig struct {
 	ProbeIPs      []probeVirtualRouterProbeIP      `json:"probe_ips,omitempty"`
 	TopologyRules []probeVirtualRouterTopologyRule `json:"topology_rules,omitempty"`
 	RouteRules    []probeVirtualRouterRouteRule    `json:"route_rules,omitempty"`
+	FakeIPLibrary probeVirtualRouterFakeIPLibrary  `json:"fake_ip_library,omitempty"`
 	UpdatedAt     string                           `json:"updated_at,omitempty"`
+}
+
+type probeVirtualRouterFakeIPLibrary struct {
+	Version   int64                           `json:"version"`
+	UpdatedAt string                          `json:"updated_at,omitempty"`
+	Items     []probeVirtualRouterFakeIPEntry `json:"items,omitempty"`
+}
+
+type probeVirtualRouterFakeIPEntry struct {
+	Domain     string `json:"domain"`
+	FakeIP     string `json:"fake_ip"`
+	RuleID     string `json:"rule_id,omitempty"`
+	Action     string `json:"action,omitempty"`
+	ExitNodeID string `json:"exit_node_id,omitempty"`
+	ExpiresAt  string `json:"expires_at,omitempty"`
+	UpdatedAt  string `json:"updated_at,omitempty"`
 }
 
 type probeVirtualRouterProbeIP struct {
@@ -141,7 +160,16 @@ func defaultProbeVirtualRouterConfig() probeVirtualRouterConfig {
 		ProbeIPs:      []probeVirtualRouterProbeIP{},
 		TopologyRules: []probeVirtualRouterTopologyRule{},
 		RouteRules:    []probeVirtualRouterRouteRule{},
+		FakeIPLibrary: defaultProbeVirtualRouterFakeIPLibrary(),
 		UpdatedAt:     time.Now().UTC().Format(time.RFC3339),
+	}
+}
+
+func defaultProbeVirtualRouterFakeIPLibrary() probeVirtualRouterFakeIPLibrary {
+	return probeVirtualRouterFakeIPLibrary{
+		Version:   1,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		Items:     []probeVirtualRouterFakeIPEntry{},
 	}
 }
 
@@ -150,6 +178,7 @@ func buildProbeVirtualRouterConfigForNodeLocked(nodeID string) probeVirtualRoute
 		return defaultProbeVirtualRouterConfig()
 	}
 	config := enrichProbeVirtualRouterAuthTickets(ensureProbeVirtualRouterAuthFields(ensureProbeVirtualRouterProbeIPsForKnownNodes(normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter))))
+	config.FakeIPLibrary = normalizeProbeVirtualRouterFakeIPLibrary(ProbeRouteConfigStore.data.VirtualRouterFakeIP)
 	if !config.Enabled {
 		config.ProbeIPs = []probeVirtualRouterProbeIP{}
 		config.TopologyRules = []probeVirtualRouterTopologyRule{}
@@ -190,6 +219,7 @@ func normalizeProbeVirtualRouterConfig(input probeVirtualRouterConfig) probeVirt
 		ProbeIPs:      normalizeProbeVirtualRouterProbeIPs(cidr, input.ProbeIPs),
 		TopologyRules: normalizeProbeVirtualRouterTopologyRules(input.TopologyRules),
 		RouteRules:    normalizeProbeVirtualRouterRouteRules(input.RouteRules),
+		FakeIPLibrary: normalizeProbeVirtualRouterFakeIPLibrary(input.FakeIPLibrary),
 		UpdatedAt:     strings.TrimSpace(input.UpdatedAt),
 	}
 	if out.UpdatedAt == "" {
@@ -450,6 +480,242 @@ func normalizeProbeVirtualRouterRouteRules(items []probeVirtualRouterRouteRule) 
 		return out[i].ID < out[j].ID
 	})
 	return out
+}
+
+func normalizeProbeVirtualRouterFakeIPLibrary(input probeVirtualRouterFakeIPLibrary) probeVirtualRouterFakeIPLibrary {
+	now := time.Now().UTC()
+	updatedAt := strings.TrimSpace(input.UpdatedAt)
+	if updatedAt == "" {
+		updatedAt = now.Format(time.RFC3339)
+	}
+	version := input.Version
+	if version <= 0 {
+		version = 1
+	}
+	out := probeVirtualRouterFakeIPLibrary{
+		Version:   version,
+		UpdatedAt: updatedAt,
+		Items:     []probeVirtualRouterFakeIPEntry{},
+	}
+	seenDomain := map[string]struct{}{}
+	seenIP := map[string]struct{}{}
+	for _, item := range input.Items {
+		domain := normalizeProbeVirtualRouterFakeIPDomain(item.Domain)
+		ip := normalizeProbeVirtualRouterIP(item.FakeIP)
+		if domain == "" || ip == "" {
+			continue
+		}
+		if _, exists := seenDomain[domain]; exists {
+			continue
+		}
+		if _, exists := seenIP[ip]; exists {
+			continue
+		}
+		expiresAt := strings.TrimSpace(item.ExpiresAt)
+		if expiresAt == "" {
+			expiresAt = now.Add(probeVirtualRouterFakeIPDefaultTTL).Format(time.RFC3339)
+		}
+		itemUpdatedAt := strings.TrimSpace(item.UpdatedAt)
+		if itemUpdatedAt == "" {
+			itemUpdatedAt = updatedAt
+		}
+		seenDomain[domain] = struct{}{}
+		seenIP[ip] = struct{}{}
+		out.Items = append(out.Items, probeVirtualRouterFakeIPEntry{
+			Domain:     domain,
+			FakeIP:     ip,
+			RuleID:     strings.TrimSpace(item.RuleID),
+			Action:     normalizeProbeVirtualRouterRouteRuleAction(item.Action, item.ExitNodeID),
+			ExitNodeID: normalizeProbeNodeID(item.ExitNodeID),
+			ExpiresAt:  expiresAt,
+			UpdatedAt:  itemUpdatedAt,
+		})
+		if len(out.Items) >= probeVirtualRouterMaxFakeIPCount {
+			break
+		}
+	}
+	sort.SliceStable(out.Items, func(i, j int) bool {
+		return out.Items[i].Domain < out.Items[j].Domain
+	})
+	return out
+}
+
+func normalizeProbeVirtualRouterFakeIPDomain(raw string) string {
+	domain := strings.ToLower(strings.TrimSpace(strings.Trim(raw, ".")))
+	if domain == "" || strings.ContainsAny(domain, " \t\r\n:/") {
+		return ""
+	}
+	return domain
+}
+
+func pruneProbeVirtualRouterFakeIPLibraryLocked(now time.Time) bool {
+	if ProbeRouteConfigStore == nil {
+		return false
+	}
+	library := normalizeProbeVirtualRouterFakeIPLibrary(ProbeRouteConfigStore.data.VirtualRouterFakeIP)
+	kept := library.Items[:0]
+	changed := false
+	for _, item := range library.Items {
+		expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(item.ExpiresAt))
+		if err == nil && !expiresAt.IsZero() && !now.Before(expiresAt) {
+			changed = true
+			continue
+		}
+		kept = append(kept, item)
+	}
+	library.Items = kept
+	if changed {
+		bumpProbeVirtualRouterFakeIPLibraryVersion(&library, now)
+		ProbeRouteConfigStore.data.VirtualRouterFakeIP = library
+		return true
+	}
+	ProbeRouteConfigStore.data.VirtualRouterFakeIP = library
+	return false
+}
+
+func bumpProbeVirtualRouterFakeIPLibraryVersion(library *probeVirtualRouterFakeIPLibrary, now time.Time) {
+	if library.Version <= 0 {
+		library.Version = 1
+	} else {
+		library.Version++
+	}
+	library.UpdatedAt = now.UTC().Format(time.RFC3339)
+}
+
+func allocateProbeVirtualRouterFakeIPForDomain(domain string, rule probeVirtualRouterRouteRule) (probeVirtualRouterFakeIPEntry, probeVirtualRouterFakeIPLibrary, error) {
+	if ProbeRouteConfigStore == nil {
+		return probeVirtualRouterFakeIPEntry{}, probeVirtualRouterFakeIPLibrary{}, fmt.Errorf("route config store not initialized")
+	}
+	cleanDomain := normalizeProbeVirtualRouterFakeIPDomain(domain)
+	if cleanDomain == "" {
+		return probeVirtualRouterFakeIPEntry{}, probeVirtualRouterFakeIPLibrary{}, fmt.Errorf("domain is invalid")
+	}
+	action := normalizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID)
+	if action != probeVirtualRouterRouteRuleActionExit {
+		return probeVirtualRouterFakeIPEntry{}, probeVirtualRouterFakeIPLibrary{}, fmt.Errorf("fake ip requires probe exit action")
+	}
+	exitNodeID := normalizeProbeNodeID(rule.ExitNodeID)
+	if exitNodeID == "" || !isProbeVirtualRouterKnownNodeID(exitNodeID) {
+		return probeVirtualRouterFakeIPEntry{}, probeVirtualRouterFakeIPLibrary{}, fmt.Errorf("exit node is unavailable")
+	}
+
+	now := time.Now().UTC()
+	ProbeRouteConfigStore.mu.Lock()
+	defer ProbeRouteConfigStore.mu.Unlock()
+	pruneProbeVirtualRouterFakeIPLibraryLocked(now)
+	config := ensureProbeVirtualRouterProbeIPsForKnownNodes(normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter))
+	library := normalizeProbeVirtualRouterFakeIPLibrary(ProbeRouteConfigStore.data.VirtualRouterFakeIP)
+	expiresAt := now.Add(probeVirtualRouterFakeIPDefaultTTL).Format(time.RFC3339)
+	for index := range library.Items {
+		if library.Items[index].Domain != cleanDomain {
+			continue
+		}
+		library.Items[index].RuleID = strings.TrimSpace(rule.ID)
+		library.Items[index].Action = action
+		library.Items[index].ExitNodeID = exitNodeID
+		library.Items[index].ExpiresAt = expiresAt
+		library.Items[index].UpdatedAt = now.Format(time.RFC3339)
+		bumpProbeVirtualRouterFakeIPLibraryVersion(&library, now)
+		ProbeRouteConfigStore.data.VirtualRouter = config
+		ProbeRouteConfigStore.data.VirtualRouterFakeIP = library
+		return library.Items[index], library, nil
+	}
+
+	ip := allocateProbeVirtualRouterFreeDomainFakeIP(config, library)
+	if ip == "" {
+		return probeVirtualRouterFakeIPEntry{}, library, fmt.Errorf("virtual router fake ip pool exhausted")
+	}
+	entry := probeVirtualRouterFakeIPEntry{
+		Domain:     cleanDomain,
+		FakeIP:     ip,
+		RuleID:     strings.TrimSpace(rule.ID),
+		Action:     action,
+		ExitNodeID: exitNodeID,
+		ExpiresAt:  expiresAt,
+		UpdatedAt:  now.Format(time.RFC3339),
+	}
+	library.Items = append(library.Items, entry)
+	sort.SliceStable(library.Items, func(i, j int) bool {
+		return library.Items[i].Domain < library.Items[j].Domain
+	})
+	bumpProbeVirtualRouterFakeIPLibraryVersion(&library, now)
+	ProbeRouteConfigStore.data.VirtualRouter = config
+	ProbeRouteConfigStore.data.VirtualRouterFakeIP = library
+	return entry, library, nil
+}
+
+func allocateProbeVirtualRouterFreeDomainFakeIP(config probeVirtualRouterConfig, library probeVirtualRouterFakeIPLibrary) string {
+	_, network, err := net.ParseCIDR(strings.TrimSpace(firstNonEmptyProbeVirtualRouter(config.FakeIPCIDR, probeVirtualRouterDefaultCIDR)))
+	if err != nil || network == nil || network.IP.To4() == nil {
+		return ""
+	}
+	used := map[string]struct{}{
+		probeVirtualRouterReservedGatewayIP: {},
+		probeVirtualRouterReservedTUNIP:     {},
+	}
+	for _, item := range config.ProbeIPs {
+		if ip := normalizeProbeVirtualRouterIP(item.IP); ip != "" {
+			used[ip] = struct{}{}
+		}
+	}
+	for _, item := range library.Items {
+		if ip := normalizeProbeVirtualRouterIP(item.FakeIP); ip != "" {
+			used[ip] = struct{}{}
+		}
+	}
+	base := binary.BigEndian.Uint32(network.IP.To4())
+	ones, bits := network.Mask.Size()
+	if bits != 32 || ones < 0 {
+		return ""
+	}
+	size := uint64(1) << uint(32-ones)
+	start := uint64(probeVirtualRouterProbeIPPoolSize + 1)
+	for offset := start; offset < size; offset++ {
+		raw := make([]byte, 4)
+		binary.BigEndian.PutUint32(raw, base+uint32(offset))
+		ip := net.IP(raw)
+		if !network.Contains(ip) {
+			break
+		}
+		ipText := ip.String()
+		if _, exists := used[ipText]; exists {
+			continue
+		}
+		return ipText
+	}
+	return ""
+}
+
+func resetProbeVirtualRouterFakeIPLibrary() (probeVirtualRouterFakeIPLibrary, error) {
+	if ProbeRouteConfigStore == nil {
+		return probeVirtualRouterFakeIPLibrary{}, fmt.Errorf("route config store not initialized")
+	}
+	now := time.Now().UTC()
+	ProbeRouteConfigStore.mu.Lock()
+	library := normalizeProbeVirtualRouterFakeIPLibrary(ProbeRouteConfigStore.data.VirtualRouterFakeIP)
+	library.Items = []probeVirtualRouterFakeIPEntry{}
+	bumpProbeVirtualRouterFakeIPLibraryVersion(&library, now)
+	ProbeRouteConfigStore.data.VirtualRouterFakeIP = library
+	ProbeRouteConfigStore.mu.Unlock()
+	if err := ProbeRouteConfigStore.Save(); err != nil {
+		return library, err
+	}
+	return library, nil
+}
+
+func reconcileProbeVirtualRouterFakeIPLibraryBestEffort() {
+	if ProbeRouteConfigStore == nil {
+		return
+	}
+	ProbeRouteConfigStore.mu.Lock()
+	changed := pruneProbeVirtualRouterFakeIPLibraryLocked(time.Now().UTC())
+	ProbeRouteConfigStore.mu.Unlock()
+	if !changed {
+		return
+	}
+	if err := ProbeRouteConfigStore.Save(); err != nil {
+		logControllerWarnf("failed to persist virtual router fake ip pruning: %v", err)
+	}
 }
 
 func normalizeProbeVirtualRouterRouteRuleAction(raw string, exitNodeID string) string {

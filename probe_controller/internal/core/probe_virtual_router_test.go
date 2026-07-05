@@ -1,6 +1,17 @@
 package core
 
-import "testing"
+import (
+	"bytes"
+	"encoding/json"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
 
 func TestBuildProbeVirtualRouterConfigForNodeReturnsFullVirtualTopology(t *testing.T) {
 	oldStore := ProbeRouteConfigStore
@@ -113,6 +124,208 @@ func TestEnsureProbeVirtualRouterProbeIPsAllocatesHighNodeIDFromFreePool(t *test
 	ipByNode := probeVirtualRouterTestIPByNode(config.ProbeIPs)
 	if ipByNode["2000"] != "198.18.0.3" {
 		t.Fatalf("node 2000 ip=%q, ips=%+v", ipByNode["2000"], config.ProbeIPs)
+	}
+}
+
+func TestProbeVirtualRouterFakeIPLibraryAllocatesRenewsAndResetsIndependentStore(t *testing.T) {
+	oldStore := ProbeRouteConfigStore
+	t.Cleanup(func() { ProbeRouteConfigStore = oldStore })
+	setProbeVirtualRouterTestProbeStore(t, probeConfigData{
+		ProbeNodes:   []probeNodeRecord{{NodeNo: 9, NodeName: "exit-9"}},
+		ProbeSecrets: map[string]string{"9": "secret-9"},
+	})
+
+	tmpDir := t.TempDir()
+	ProbeRouteConfigStore = &probeRouteConfigStore{
+		path: filepath.Join(tmpDir, "probe_route_config.json"),
+		data: probeRouteConfigStoreData{
+			VirtualRouter: probeVirtualRouterConfig{
+				Enabled:    true,
+				FakeIPCIDR: probeVirtualRouterDefaultCIDR,
+				ProbeIPs:   []probeVirtualRouterProbeIP{{NodeID: "9", IP: "198.18.0.9"}},
+			},
+			VirtualRouterFakeIP: defaultProbeVirtualRouterFakeIPLibrary(),
+		},
+	}
+	rule := probeVirtualRouterRouteRule{ID: "rr-1", Action: probeVirtualRouterRouteRuleActionExit, ExitNodeID: "9"}
+
+	first, firstLibrary, err := allocateProbeVirtualRouterFakeIPForDomain("WWW.Reddit.COM.", rule)
+	if err != nil {
+		t.Fatalf("allocate fake ip failed: %v", err)
+	}
+	if first.Domain != "www.reddit.com" || first.FakeIP != "198.18.4.1" || first.ExitNodeID != "9" {
+		t.Fatalf("first fake ip entry=%+v", first)
+	}
+	if firstLibrary.Version != 2 || len(firstLibrary.Items) != 1 {
+		t.Fatalf("first library=%+v", firstLibrary)
+	}
+	expiresAt, err := time.Parse(time.RFC3339, first.ExpiresAt)
+	if err != nil || time.Until(expiresAt) < 29*24*time.Hour {
+		t.Fatalf("expires_at=%q err=%v", first.ExpiresAt, err)
+	}
+
+	second, secondLibrary, err := allocateProbeVirtualRouterFakeIPForDomain("www.reddit.com", rule)
+	if err != nil {
+		t.Fatalf("renew fake ip failed: %v", err)
+	}
+	if second.FakeIP != first.FakeIP || secondLibrary.Version != firstLibrary.Version+1 {
+		t.Fatalf("renew entry=%+v library=%+v first_version=%d", second, secondLibrary, firstLibrary.Version)
+	}
+
+	resetLibrary, err := resetProbeVirtualRouterFakeIPLibrary()
+	if err != nil {
+		t.Fatalf("reset fake ip library failed: %v", err)
+	}
+	if len(resetLibrary.Items) != 0 || resetLibrary.Version != secondLibrary.Version+1 {
+		t.Fatalf("reset library=%+v second_version=%d", resetLibrary, secondLibrary.Version)
+	}
+}
+
+func TestProbeRouteFakeIPResolveHandlerPersistsLibrary(t *testing.T) {
+	oldRouteStore := ProbeRouteConfigStore
+	oldProbeStore := ProbeStore
+	t.Cleanup(func() {
+		ProbeRouteConfigStore = oldRouteStore
+		ProbeStore = oldProbeStore
+	})
+	tmpDir := t.TempDir()
+	ProbeStore = &probeConfigStore{data: probeConfigData{
+		ProbeNodes:   []probeNodeRecord{{NodeNo: 1, NodeName: "node-1"}, {NodeNo: 9, NodeName: "exit-9"}},
+		ProbeSecrets: map[string]string{"1": "secret-1", "9": "secret-9"},
+	}}
+	ProbeRouteConfigStore = &probeRouteConfigStore{
+		path: filepath.Join(tmpDir, "probe_route_config.json"),
+		data: probeRouteConfigStoreData{
+			VirtualRouter: probeVirtualRouterConfig{
+				Enabled:    true,
+				FakeIPCIDR: probeVirtualRouterDefaultCIDR,
+			},
+			VirtualRouterFakeIP: defaultProbeVirtualRouterFakeIPLibrary(),
+		},
+	}
+	commandCh, cleanupSession := attachProbeVirtualRouterTestSession(t, "1")
+	defer cleanupSession()
+	body := bytes.NewBufferString(`{"domain":"api.reddit.com","rule_id":"rr-1","action":"probe_exit","exit_node_id":"9"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/probe/route/fake_ip/resolve?node_id=1&secret=secret-1", body)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rr := httptest.NewRecorder()
+
+	ProbeRouteFakeIPResolveHandler(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("resolve status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var payload probeRouteFakeIPResolveResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response failed: %v body=%s", err, rr.Body.String())
+	}
+	if payload.Item.Domain != "api.reddit.com" || payload.Item.FakeIP == "" || len(payload.FakeIPLibrary.Items) != 1 {
+		t.Fatalf("payload=%+v", payload)
+	}
+	if payload.Sync.Total != 2 || payload.Sync.Dispatched != 1 || payload.Sync.Offline != 1 || payload.Sync.Failed != 0 {
+		t.Fatalf("sync result=%+v", payload.Sync)
+	}
+	assertProbeVirtualRouterRouteConfigSyncCommand(t, commandCh)
+	raw, err := os.ReadFile(filepath.Join(tmpDir, "probe_route_config.json"))
+	if err != nil {
+		t.Fatalf("read persisted route config failed: %v", err)
+	}
+	if !strings.Contains(string(raw), `"virtual_router_fake_ip"`) || !strings.Contains(string(raw), `"api.reddit.com"`) {
+		t.Fatalf("persisted config missing fake ip library: %s", string(raw))
+	}
+}
+
+func TestMngLinkVirtualRouterFakeIPResetHandlerDispatchesRouteConfigSync(t *testing.T) {
+	oldRouteStore := ProbeRouteConfigStore
+	oldProbeStore := ProbeStore
+	t.Cleanup(func() {
+		ProbeRouteConfigStore = oldRouteStore
+		ProbeStore = oldProbeStore
+	})
+	tmpDir := t.TempDir()
+	ProbeStore = &probeConfigStore{data: probeConfigData{
+		ProbeNodes:   []probeNodeRecord{{NodeNo: 1, NodeName: "node-1"}},
+		ProbeSecrets: map[string]string{"1": "secret-1"},
+	}}
+	ProbeRouteConfigStore = &probeRouteConfigStore{
+		path: filepath.Join(tmpDir, "probe_route_config.json"),
+		data: probeRouteConfigStoreData{
+			VirtualRouter: probeVirtualRouterConfig{
+				Enabled:    true,
+				FakeIPCIDR: probeVirtualRouterDefaultCIDR,
+			},
+			VirtualRouterFakeIP: probeVirtualRouterFakeIPLibrary{
+				Version:   3,
+				UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+				Items: []probeVirtualRouterFakeIPEntry{{
+					Domain:    "api.reddit.com",
+					FakeIP:    "198.18.4.1",
+					ExpiresAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+				}},
+			},
+		},
+	}
+	commandCh, cleanupSession := attachProbeVirtualRouterTestSession(t, "1")
+	defer cleanupSession()
+
+	req := httptest.NewRequest(http.MethodPost, "/mng/api/route/virtual_router/fake_ip/reset", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rr := httptest.NewRecorder()
+	mngLinkVirtualRouterFakeIPResetHandler(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("reset status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		FakeIPLibrary probeVirtualRouterFakeIPLibrary   `json:"fake_ip_library"`
+		Sync          probeLinkConfigSyncDispatchResult `json:"sync"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode reset payload failed: %v body=%s", err, rr.Body.String())
+	}
+	if len(payload.FakeIPLibrary.Items) != 0 || payload.FakeIPLibrary.Version != 4 {
+		t.Fatalf("library after reset=%+v", payload.FakeIPLibrary)
+	}
+	if payload.Sync.Total != 1 || payload.Sync.Dispatched != 1 || payload.Sync.Failed != 0 {
+		t.Fatalf("sync result=%+v", payload.Sync)
+	}
+	assertProbeVirtualRouterRouteConfigSyncCommand(t, commandCh)
+}
+
+func attachProbeVirtualRouterTestSession(t *testing.T, nodeID string) (<-chan map[string]any, func()) {
+	t.Helper()
+	clientConn, serverConn := net.Pipe()
+	session := &probeSession{nodeID: nodeID, stream: serverConn, enc: json.NewEncoder(serverConn)}
+	probeSessions.mu.Lock()
+	oldSession := probeSessions.data[nodeID]
+	probeSessions.data[nodeID] = session
+	probeSessions.mu.Unlock()
+	commandCh := make(chan map[string]any, 1)
+	go func() {
+		var msg map[string]any
+		_ = json.NewDecoder(clientConn).Decode(&msg)
+		commandCh <- msg
+	}()
+	return commandCh, func() {
+		probeSessions.mu.Lock()
+		if oldSession != nil {
+			probeSessions.data[nodeID] = oldSession
+		} else {
+			delete(probeSessions.data, nodeID)
+		}
+		probeSessions.mu.Unlock()
+		_ = clientConn.Close()
+		_ = serverConn.Close()
+	}
+}
+
+func assertProbeVirtualRouterRouteConfigSyncCommand(t *testing.T, commandCh <-chan map[string]any) {
+	t.Helper()
+	select {
+	case msg := <-commandCh:
+		if msg["type"] != "route_config_sync" {
+			t.Fatalf("sync command=%v", msg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting route_config_sync command")
 	}
 }
 

@@ -24,6 +24,7 @@ func TestProbeLocalAPIMethodGuards(t *testing.T) {
 		{name: "dns real ip lookup should only allow GET", method: http.MethodPost, path: "/local/api/dns/real_ip/lookup", body: map[string]any{}},
 		{name: "dns fake ip list should only allow GET", method: http.MethodPost, path: "/local/api/dns/fake_ip/list", body: map[string]any{}},
 		{name: "dns fake ip lookup should only allow GET", method: http.MethodPost, path: "/local/api/dns/fake_ip/lookup", body: map[string]any{}},
+		{name: "virtual router settings should reject PUT", method: http.MethodPut, path: "/local/api/virtual_router/settings", body: map[string]any{}},
 		{name: "tun install should only allow POST", method: http.MethodGet, path: "/local/api/tun/install", body: nil},
 		{name: "tun reset should only allow POST", method: http.MethodGet, path: "/local/api/tun/reset", body: nil},
 		{name: "tun uninstall should only allow POST", method: http.MethodGet, path: "/local/api/tun/uninstall", body: nil},

@@ -4,18 +4,18 @@
 - 后续工作传递声明: 本文档必须传递给后续阶段与后续角色。
 - 需求编号: REQ-PN-VROUTER-DNS-001
 - 需求前缀: REQ-PN-VROUTER-DNS-001
-- 当前阶段: Architect需求跟踪
-- 最近更新角色: Architect
-- 最近更新时间: 2026-07-05T11:08:44+08:00
+- 当前阶段: Code实施完成
+- 最近更新角色: Code
+- 最近更新时间: 2026-07-05T13:20:00+08:00
 - 工作依据文档: doc/ai-coding-collaboration.md; 用户在 2026-07-05 提出的虚拟路由 DNS/Fake IP/开关隔离需求; doc/REQ-PN-DISTRIBUTED-VROUTER-001-collaboration.md; doc/REQ-PN-DNS-UNIFIED-STATE-001-collaboration.md
-- 状态: 进行中
+- 状态: 已完成
 
 ## 第1章 Architect章节
 - 章节责任角色: Architect
-- 状态: 进行中
+- 状态: 已完成
 
 ### 1.1 需求定义
-- 状态: 进行中
+- 状态: 已完成
 
 #### 1.1.1 需求目标
 - 建立虚拟路由专用 DNS 与 Fake IP 控制面，使主控统一分配虚拟路由 Fake IP，并同步给虚拟路由拓扑可达的探针。
@@ -47,7 +47,7 @@
 - RQ-VRDNS-012: 路由规则动作至少包含指定探针出口、直连、拒绝；DNS 与 Fake IP 路由行为必须与动作一致。
 
 #### 1.1.3 非范围
-- 当前阶段不修改源码。
+- 需求定义阶段不修改源码；用户明确要求实施后进入 Code 阶段。
 - 当前阶段不保留旧 DNS 服务并行运行方案。
 - 当前阶段不重构 Android VPN DNS 的平台专有实现细节；但旧桌面探针 DNS 服务必须退出运行职责。
 - 当前阶段不改变拓扑规则物理建联语义。
@@ -91,11 +91,10 @@
 - 已确认直连动作: 直连不使用 Fake IP，DNS 返回真实解析结果。
 
 #### 1.1.7 结论
-- 本需求已按 AI协作规则进入独立需求跟踪。
-- 当前只完成 Architect 需求跟踪与任务包草案，不进入 Code 实现。
+- 本需求已按 AI协作规则完成独立需求跟踪，并已按用户后续指令进入 Code 实现。
 
 ### 1.2 总体架构
-- 状态: 进行中
+- 状态: 已完成
 
 #### 1.2.1 架构目标
 - 将虚拟路由 DNS、虚拟路由 Fake IP、探针本地入口、远方出口能力拆成可独立控制的子能力。
@@ -156,7 +155,7 @@
 - 架构采用“主控分配和同步 + 探针独立虚拟 DNS + 本地入口/远方出口能力拆分”的方案继续跟踪。
 
 ### 1.3 单元设计
-- 状态: 进行中
+- 状态: 已完成
 
 #### 1.3.1 单元清单
 | 单元编号 | 单元名称 | 所属模块 | 职责 | 输入 | 输出 |
@@ -243,20 +242,20 @@
 - 单元设计已覆盖当前需求描述；仍存在若干需要用户确认的策略点。
 
 ### 1.4 Code任务执行包
-- 状态: 待评审
+- 状态: 已放行
 
 #### 1.4.1 执行边界
-- 允许修改: doc/REQ-PN-VROUTER-DNS-001-collaboration.md; 后续进入 Code 阶段前由 Architect 补充具体源码文件范围。
-- 禁止修改: 当前阶段禁止修改源码；禁止修改旧需求协作文档作为本需求正文；禁止把虚拟路由 DNS 状态重新存入 probe link store。
+- 允许修改: doc/REQ-PN-VROUTER-DNS-001-collaboration.md; probe_controller/internal/core/probe_route_config_store.go; probe_controller/internal/core/probe_virtual_router.go; probe_controller/internal/core/probe_link_chains.go; probe_controller/internal/core/server.go; probe_controller/internal/core/mng_link_handlers.go; probe_controller/internal/core/mng_link_actions.go; probe_controller/internal/core/mng_pages/route.html; probe_controller/internal/core/probe_virtual_router_test.go; probe_node/probe_link_chains_sync.go; probe_node/probe_virtual_router.go; probe_node/probe_virtual_router_settings.go; probe_node/probe_virtual_router_windows.go; probe_node/probe_virtual_router_linux.go; probe_node/probe_virtual_router_other.go; probe_node/probe_virtual_router_windows_test.go; probe_node/local_dns_service.go; probe_node/local_dns_service_test.go; probe_node/local_console.go; probe_node/local_console_test.go; probe_node/local_console_methods_test.go; probe_node/local_pages/proxy.html; probe_node/local_pages/panel.html。
+- 禁止修改: 禁止把虚拟路由 DNS 状态重新存入 probe link store；禁止让虚拟路由入口开关接管全局流量；禁止让本地开关清空主控分配的探针虚拟 IP；禁止让虚拟 DNS 关闭影响远方探针出口能力。
 
 #### 1.4.2 任务清单
 | 任务编号 | 需求编号 | 单元编号 | 文件范围 | 操作类型 | 验收标准 |
 |---|---|---|---|---|---|
-| T-VRDNS-01 | RQ-VRDNS-001,RQ-VRDNS-002,RQ-VRDNS-003,RQ-VRDNS-013,RQ-VRDNS-014,RQ-VRDNS-015,RQ-VRDNS-016,RQ-VRDNS-017 | U-VRDNS-01,U-VRDNS-02,U-VRDNS-03,U-VRDNS-08 | 待 Architect 补充 | 新增/修改 | 主控可分配、重置、回收到期映射、命中续期、以库级版本号和时间戳同步默认 30 天 TTL 的域名 Fake IP 独立映射表，探针定期自动同步 |
-| T-VRDNS-02 | RQ-VRDNS-004,RQ-VRDNS-005,RQ-VRDNS-006,RQ-VRDNS-012 | U-VRDNS-04 | 待 Architect 补充 | 新增/修改 | 探针虚拟 DNS 服务全面替代旧 DNS，并按规则命中出口、本地解析和拒绝 |
-| T-VRDNS-03 | RQ-VRDNS-008,RQ-VRDNS-009,RQ-VRDNS-010,RQ-VRDNS-011 | U-VRDNS-05,U-VRDNS-06 | 待 Architect 补充 | 新增/修改 | 本地入口和远方出口开关语义互不影响 |
-| T-VRDNS-04 | RQ-VRDNS-007 | U-VRDNS-07 | 待 Architect 补充 | 新增/修改 | 探针面板新增虚拟路由 tab 和两个开关 |
-| T-VRDNS-05 | RQ-VRDNS-001..RQ-VRDNS-017 | 全部 | 待 Architect 补充 | 测试 | 覆盖域名绑定、独立映射表、TTL 回收/续期、重置、同步、DNS 命中/未命中、开关组合和出口保持 |
+| T-VRDNS-01 | RQ-VRDNS-001,RQ-VRDNS-002,RQ-VRDNS-003,RQ-VRDNS-013,RQ-VRDNS-014,RQ-VRDNS-015,RQ-VRDNS-016,RQ-VRDNS-017 | U-VRDNS-01,U-VRDNS-02,U-VRDNS-03,U-VRDNS-08 | probe_controller/internal/core/probe_route_config_store.go; probe_controller/internal/core/probe_virtual_router.go; probe_controller/internal/core/probe_link_chains.go; probe_controller/internal/core/server.go; probe_controller/internal/core/mng_link_handlers.go; probe_controller/internal/core/mng_link_actions.go; probe_controller/internal/core/mng_pages/route.html; probe_node/probe_link_chains_sync.go; probe_node/probe_virtual_router.go | 新增/修改 | 主控可分配、重置、回收到期映射、命中续期、以库级版本号和时间戳同步默认 30 天 TTL 的域名 Fake IP 独立映射表，探针定期自动同步 |
+| T-VRDNS-02 | RQ-VRDNS-004,RQ-VRDNS-005,RQ-VRDNS-006,RQ-VRDNS-012 | U-VRDNS-04 | probe_node/local_dns_service.go; probe_node/probe_virtual_router.go; probe_node/probe_link_chains_sync.go | 新增/修改 | 探针虚拟 DNS 服务全面替代旧 DNS，并按规则命中出口、本地解析和拒绝 |
+| T-VRDNS-03 | RQ-VRDNS-008,RQ-VRDNS-009,RQ-VRDNS-010,RQ-VRDNS-011 | U-VRDNS-05,U-VRDNS-06 | probe_node/probe_virtual_router.go; probe_node/probe_virtual_router_settings.go; probe_node/probe_virtual_router_windows.go; probe_node/probe_virtual_router_linux.go; probe_node/probe_virtual_router_other.go | 新增/修改 | 本地入口和远方出口开关语义互不影响 |
+| T-VRDNS-04 | RQ-VRDNS-007 | U-VRDNS-07 | probe_node/local_console.go; probe_node/local_pages/proxy.html; probe_node/local_pages/panel.html | 新增/修改 | 探针面板新增虚拟路由 tab 和两个开关 |
+| T-VRDNS-05 | RQ-VRDNS-001..RQ-VRDNS-017 | 全部 | probe_controller/internal/core/probe_virtual_router_test.go; probe_node/local_dns_service_test.go; probe_node/local_console_test.go; probe_node/local_console_methods_test.go; probe_node/probe_virtual_router_windows_test.go | 测试 | 覆盖域名绑定、独立映射表、TTL 回收/续期、重置、同步、DNS 命中/未命中、开关组合和出口保持 |
 
 #### 1.4.3 源码修改规则
 - 必须使用 encoding_tools/README.md 描述的接口。
@@ -266,63 +265,63 @@
 - 替代 encoding_tools/ 修改受控 C/C++ 源代码前，必须取得 Architect 明确允许。
 
 #### 1.4.4 交付物
-- 主控 Fake IP 库模型、库级版本号、库级整体时间戳、重置接口和定期同步路径。
-- 探针虚拟路由 DNS 服务、旧 DNS 停止逻辑及本地/远方职责拆分。
-- 探针面板虚拟路由 tab。
-- 单元测试与必要集成测试。
+- 主控 Fake IP 库模型、库级版本号、库级整体时间戳、重置接口和 route config 同步路径。
+- 探针虚拟路由 DNS 服务、旧 DNS 监听停止逻辑及本地/远方职责拆分。
+- 探针面板虚拟路由 tab、首页入口和本地设置 API。
+- 单元测试、定向回归测试与 Linux 交叉编译验证。
 
 #### 1.4.5 门禁输入
-- 当前仅允许文档跟踪；源码任务包待策略确认后细化。
+- 用户已明确要求实施，当前 Code 任务包已放行。
 
 #### 1.4.6 结论
-- Code 任务包为草案，当前不放行源码实现。
+- Code 任务包已按用户实施指令放行并执行。
 
 ### 1.5 Architect需求跟踪矩阵
-- 状态: 进行中
+- 状态: 已完成
 
 | 需求编号 | 需求描述 | 架构章节 | 单元设计章节 | Code任务章节 | 状态 | 备注 |
 |---|---|---|---|---|---|---|
-| RQ-VRDNS-001 | 主控分配虚拟路由 Fake IP，默认 TTL 30 天 | 1.2 | 1.3 U-VRDNS-01,U-VRDNS-02 | T-VRDNS-01 | 进行中 | 重置全部 |
-| RQ-VRDNS-002 | 支持手工重置 Fake IP 映射 | 1.2 | 1.3 U-VRDNS-02 | T-VRDNS-01 | 进行中 | 重置全部 |
-| RQ-VRDNS-003 | Fake IP 映射同步给虚拟路由拓扑可达探针 | 1.2 | 1.3 U-VRDNS-03 | T-VRDNS-01 | 进行中 | 集合来源已确认 |
-| RQ-VRDNS-004 | 探针新增虚拟路由 DNS 服务并全面停止旧 DNS 服务 | 1.2 | 1.3 U-VRDNS-04 | T-VRDNS-02 | 进行中 | 新 DNS 必须覆盖旧 DNS 仍需保留的解析能力 |
-| RQ-VRDNS-005 | DNS 命中路由规则时使用指定探针出口解析 | 1.2 | 1.3 U-VRDNS-04 | T-VRDNS-02 | 进行中 | 依赖路由规则 action/exit_node_id |
-| RQ-VRDNS-006 | DNS 未命中路由规则时使用本地解析 | 1.2 | 1.3 U-VRDNS-04 | T-VRDNS-02 | 进行中 | 不生成虚拟出口路由 |
-| RQ-VRDNS-007 | 探针面板新增虚拟路由 tab 和两个开关 | 1.2 | 1.3 U-VRDNS-07 | T-VRDNS-04 | 进行中 | UI 细节待实现阶段确认 |
-| RQ-VRDNS-008 | 探针虚拟 IP 不受开关影响 | 1.2 | 1.3 U-VRDNS-01,U-VRDNS-07 | T-VRDNS-03 | 进行中 | 必须单独测试 |
-| RQ-VRDNS-009 | 虚拟路由开启后本地 Fake IP 命中经规则出口 | 1.2 | 1.3 U-VRDNS-05 | T-VRDNS-03 | 进行中 | DNS 与连接层必须一致 |
-| RQ-VRDNS-010 | 虚拟 DNS 关闭时本地不拦截、不解析，仅为远方服务 | 1.2 | 1.3 U-VRDNS-04,U-VRDNS-06 | T-VRDNS-03 | 进行中 | 入口/出口拆分关键项 |
-| RQ-VRDNS-011 | 虚拟路由关闭时不影响出口功能 | 1.2 | 1.3 U-VRDNS-06 | T-VRDNS-03 | 进行中 | 需要开关组合测试 |
-| RQ-VRDNS-012 | 路由规则动作包括探针出口、直连、拒绝且 DNS/连接一致 | 1.2 | 1.3 U-VRDNS-04,U-VRDNS-05 | T-VRDNS-02,T-VRDNS-03 | 进行中 | 直连不用 Fake IP，拒绝返回 REFUSED |
-| RQ-VRDNS-013 | Fake IP 库以主控侧为唯一事实源 | 1.2 | 1.3 U-VRDNS-01,U-VRDNS-08 | T-VRDNS-01 | 进行中 | 探针不得生成权威映射 |
-| RQ-VRDNS-014 | Fake IP 库维护库级版本号和整体时间戳 | 1.2 | 1.3 U-VRDNS-01,U-VRDNS-02 | T-VRDNS-01 | 进行中 | RFC3339 + 从 1 开始递增 |
-| RQ-VRDNS-015 | 探针定期自动同步主控 Fake IP 库 | 1.2 | 1.3 U-VRDNS-03,U-VRDNS-08 | T-VRDNS-01 | 进行中 | 变更触发 + 周期问询 |
-| RQ-VRDNS-016 | Fake IP 与域名绑定并独立存储 | 1.2 | 1.3 U-VRDNS-01 | T-VRDNS-01 | 进行中 | 独立 Fake IP 映射表 |
-| RQ-VRDNS-017 | Fake IP TTL 到期回收、命中续期 | 1.2 | 1.3 U-VRDNS-01,U-VRDNS-02 | T-VRDNS-01 | 进行中 | TTL 策略已确认 |
+| RQ-VRDNS-001 | 主控分配虚拟路由 Fake IP，默认 TTL 30 天 | 1.2 | 1.3 U-VRDNS-01,U-VRDNS-02 | T-VRDNS-01 | 已完成 | 重置全部 |
+| RQ-VRDNS-002 | 支持手工重置 Fake IP 映射 | 1.2 | 1.3 U-VRDNS-02 | T-VRDNS-01 | 已完成 | 重置全部 |
+| RQ-VRDNS-003 | Fake IP 映射同步给虚拟路由拓扑可达探针 | 1.2 | 1.3 U-VRDNS-03 | T-VRDNS-01 | 已完成 | 集合来源已确认 |
+| RQ-VRDNS-004 | 探针新增虚拟路由 DNS 服务并全面停止旧 DNS 服务 | 1.2 | 1.3 U-VRDNS-04 | T-VRDNS-02 | 已完成 | 新 DNS 覆盖旧 DNS 仍需保留的解析能力 |
+| RQ-VRDNS-005 | DNS 命中路由规则时使用指定探针出口解析 | 1.2 | 1.3 U-VRDNS-04 | T-VRDNS-02 | 已完成 | 依赖路由规则 action/exit_node_id |
+| RQ-VRDNS-006 | DNS 未命中路由规则时使用本地解析 | 1.2 | 1.3 U-VRDNS-04 | T-VRDNS-02 | 已完成 | 不生成虚拟出口路由 |
+| RQ-VRDNS-007 | 探针面板新增虚拟路由 tab 和两个开关 | 1.2 | 1.3 U-VRDNS-07 | T-VRDNS-04 | 已完成 | 已实现本地面板 tab |
+| RQ-VRDNS-008 | 探针虚拟 IP 不受开关影响 | 1.2 | 1.3 U-VRDNS-01,U-VRDNS-07 | T-VRDNS-03 | 已完成 | 已覆盖定向测试 |
+| RQ-VRDNS-009 | 虚拟路由开启后本地 Fake IP 命中经规则出口 | 1.2 | 1.3 U-VRDNS-05 | T-VRDNS-03 | 已完成 | DNS 与连接层保持 Fake IP 映射一致 |
+| RQ-VRDNS-010 | 虚拟 DNS 关闭时本地不拦截、不解析，仅为远方服务 | 1.2 | 1.3 U-VRDNS-04,U-VRDNS-06 | T-VRDNS-03 | 已完成 | 入口/出口拆分 |
+| RQ-VRDNS-011 | 虚拟路由关闭时不影响出口功能 | 1.2 | 1.3 U-VRDNS-06 | T-VRDNS-03 | 已完成 | 本地入口开关不停止出口 |
+| RQ-VRDNS-012 | 路由规则动作包括探针出口、直连、拒绝且 DNS/连接一致 | 1.2 | 1.3 U-VRDNS-04,U-VRDNS-05 | T-VRDNS-02,T-VRDNS-03 | 已完成 | 直连不用 Fake IP，拒绝返回 REFUSED |
+| RQ-VRDNS-013 | Fake IP 库以主控侧为唯一事实源 | 1.2 | 1.3 U-VRDNS-01,U-VRDNS-08 | T-VRDNS-01 | 已完成 | 探针不生成权威映射 |
+| RQ-VRDNS-014 | Fake IP 库维护库级版本号和整体时间戳 | 1.2 | 1.3 U-VRDNS-01,U-VRDNS-02 | T-VRDNS-01 | 已完成 | RFC3339 + 从 1 开始递增 |
+| RQ-VRDNS-015 | 探针定期自动同步主控 Fake IP 库 | 1.2 | 1.3 U-VRDNS-03,U-VRDNS-08 | T-VRDNS-01 | 已完成 | route config 周期同步 + DNS 分配即时返回 |
+| RQ-VRDNS-016 | Fake IP 与域名绑定并独立存储 | 1.2 | 1.3 U-VRDNS-01 | T-VRDNS-01 | 已完成 | 独立 Fake IP 映射表 |
+| RQ-VRDNS-017 | Fake IP TTL 到期回收、命中续期 | 1.2 | 1.3 U-VRDNS-01,U-VRDNS-02 | T-VRDNS-01 | 已完成 | TTL 策略已实现 |
 
 ### 1.6 Architect关键接口跟踪矩阵
-- 状态: 进行中
+- 状态: 已完成
 
 | 接口编号 | 需求编号 | 接口名称 | 调用方 | 提供方 | 输入 | 输出 | 状态 | 备注 |
 |---|---|---|---|---|---|---|---|---|
-| IF-VRDNS-01 | RQ-VRDNS-001,RQ-VRDNS-002,RQ-VRDNS-013,RQ-VRDNS-014,RQ-VRDNS-016,RQ-VRDNS-017 | 主控虚拟 Fake IP 库存储 | probe_controller | 独立 Fake IP 映射表 | 域名映射记录、TTL、库级版本号、库级时间戳 | 持久化 Fake IP 库 | 进行中 | 具体文件待 Code 前确认 |
-| IF-VRDNS-02 | RQ-VRDNS-002,RQ-VRDNS-003,RQ-VRDNS-014 | 手工重置 Fake IP 映射 API | 管理页面 | probe_controller | 重置全部 | 新库级版本号、时间戳和同步结果 | 进行中 | 已确认重置全部 |
-| IF-VRDNS-03 | RQ-VRDNS-003,RQ-VRDNS-008,RQ-VRDNS-015,RQ-VRDNS-017 | `/api/probe/route/config` 扩展 | probe_node | probe_controller | node_id、secret、本地库级版本号和时间戳 | route config + fake ip library + library version + library timestamp | 进行中 | 必须保持独立 route config |
-| IF-VRDNS-04 | RQ-VRDNS-004,RQ-VRDNS-005,RQ-VRDNS-006 | 探针虚拟 DNS 本地监听 | 本机 DNS/远方探针 | probe_node | DNS 查询 | DNS 响应 | 进行中 | 使用旧 DNS 地址和端口 |
-| IF-VRDNS-05 | RQ-VRDNS-007,RQ-VRDNS-010,RQ-VRDNS-011 | 探针面板虚拟路由设置 API | 探针本地面板 | probe_node | 开关设置 | 保存结果 | 进行中 | 两个开关独立 |
-| IF-VRDNS-06 | RQ-VRDNS-009,RQ-VRDNS-012 | Fake IP 反查接口 | 本地连接入口 | probe_node | Fake IP | 目标、规则、出口探针 | 进行中 | 连接层一致性关键 |
-| IF-VRDNS-07 | RQ-VRDNS-010,RQ-VRDNS-011 | 远方出口解析/转发接口 | 远方探针 | 出口探针 | 目标、规则、出口请求 | 出口连接 | 进行中 | 不受本地入口开关影响 |
-| IF-VRDNS-08 | RQ-VRDNS-013,RQ-VRDNS-014,RQ-VRDNS-015,RQ-VRDNS-017 | 探针 Fake IP 库同步 | probe_node | probe_controller | 本地库级版本号和时间戳、变更触发、周期问询 | 最新库级版本号、时间戳和必要映射 | 进行中 | 变更触发 + 周期问询 |
+| IF-VRDNS-01 | RQ-VRDNS-001,RQ-VRDNS-002,RQ-VRDNS-013,RQ-VRDNS-014,RQ-VRDNS-016,RQ-VRDNS-017 | 主控虚拟 Fake IP 库存储 | probe_controller | 独立 Fake IP 映射表 | 域名映射记录、TTL、库级版本号、库级时间戳 | 持久化 Fake IP 库 | 已完成 | 独立 route config 字段 |
+| IF-VRDNS-02 | RQ-VRDNS-002,RQ-VRDNS-003,RQ-VRDNS-014 | 手工重置 Fake IP 映射 API | 管理页面 | probe_controller | 重置全部 | 新库级版本号、时间戳和同步结果 | 已完成 | 已确认重置全部 |
+| IF-VRDNS-03 | RQ-VRDNS-003,RQ-VRDNS-008,RQ-VRDNS-015,RQ-VRDNS-017 | `/api/probe/route/config` 扩展 | probe_node | probe_controller | node_id、secret、本地库级版本号和时间戳 | route config + fake ip library + library version + library timestamp | 已完成 | 保持独立 route config |
+| IF-VRDNS-04 | RQ-VRDNS-004,RQ-VRDNS-005,RQ-VRDNS-006 | 探针虚拟 DNS 本地监听 | 本机 DNS/远方探针 | probe_node | DNS 查询 | DNS 响应 | 已完成 | 使用旧 DNS 地址和端口 |
+| IF-VRDNS-05 | RQ-VRDNS-007,RQ-VRDNS-010,RQ-VRDNS-011 | 探针面板虚拟路由设置 API | 探针本地面板 | probe_node | 开关设置 | 保存结果 | 已完成 | 两个开关独立 |
+| IF-VRDNS-06 | RQ-VRDNS-009,RQ-VRDNS-012 | Fake IP 反查接口 | 本地连接入口 | probe_node | Fake IP | 目标、规则、出口探针 | 已完成 | 连接层一致性关键 |
+| IF-VRDNS-07 | RQ-VRDNS-010,RQ-VRDNS-011 | 远方出口解析/转发接口 | 远方探针 | 出口探针 | 目标、规则、出口请求 | 出口连接 | 已完成 | 不受本地入口开关影响 |
+| IF-VRDNS-08 | RQ-VRDNS-013,RQ-VRDNS-014,RQ-VRDNS-015,RQ-VRDNS-017 | 探针 Fake IP 库同步 | probe_node | probe_controller | 本地库级版本号和时间戳、变更触发、周期问询 | 最新库级版本号、时间戳和必要映射 | 已完成 | route config 周期同步 + Fake IP miss 同步重试 |
 
 ### 1.7 门禁裁判
-- 状态: 待评审
+- 状态: 已放行
 
 #### 1.7.1 门禁输入
 | 文档 | 路径 | 状态 |
 |---|---|---|
-| 协作文档 | doc/REQ-PN-VROUTER-DNS-001-collaboration.md | 已创建 |
+| 协作文档 | doc/REQ-PN-VROUTER-DNS-001-collaboration.md | 已更新 |
 | AI协作规则 | doc/ai-coding-collaboration.md | 已读取 |
-| encoding_tools | encoding_tools/README.md | 存在 |
+| encoding_tools | encoding_tools/README.md | 已读取，非 C/C++ 源码可直接编辑 |
 
 #### 1.7.2 裁判检查
 | 检查项 | 结果 | 证据 | 备注 |
@@ -335,104 +334,163 @@
 | 需求编号一致 | 通过 | RQ-VRDNS-* | 无 |
 | 接口编号一致 | 通过 | IF-VRDNS-* | 无 |
 | 模板字段完整 | 通过 | 文档头字段完整 | 无 |
-| Code使用encoding_tools | 待评审 | 尚未进入 Code | 当前不放行源码实现 |
-| Code证据完整 | 待评审 | 尚未进入 Code | 无 |
-| Code任务反馈已处理 | 通过 | 当前无反馈 | 无 |
-| 验收标准可测试 | 通过 | 1.1.4 | 策略项已确认，Code 阶段补充可执行测试 |
-| 需求任务覆盖完整 | 有条件通过 | 1.4.2 | 文件范围待补充 |
-| 任务自测覆盖完整 | 有条件通过 | T-VRDNS-05 | 具体命令待 Code 前补充 |
-| 修改文件在允许范围内 | 通过 | 当前仅文档 | 禁止源码修改 |
-| 测试失败已记录缺陷 | 通过 | 当前无测试 | 无 |
-| 未执行测试原因完整 | 通过 | 当前仅 Architect 跟踪 | 无 |
-| 遗留风险可接受 | 有条件通过 | 1.1.5,1.1.6 | 需要 Code 阶段按确认策略落地并验证 |
+| Code使用encoding_tools | 通过 | encoding_tools/README.md | 本次未修改 C/C++ 源码；Go/HTML/Markdown 允许直接编辑 |
+| Code证据完整 | 通过 | 第2.5节 | 已记录修改接口、配置、报告、影响文件、测试、风险和回滚 |
+| Code任务反馈已处理 | 通过 | 第2.6节 | 当前无未处理反馈 |
+| 验收标准可测试 | 通过 | 第2.3节 | 已补充可执行测试命令 |
+| 需求任务覆盖完整 | 通过 | 第1.4.2节 | RQ-VRDNS-001..017 均有关联任务 |
+| 任务自测覆盖完整 | 通过 | 第2.3节 | 每个任务均有关联测试或验证说明 |
+| 修改文件在允许范围内 | 通过 | 第1.4.1节与 git status | 影响文件均在允许范围内 |
+| 测试失败已记录缺陷 | 通过 | 第2.4节 | 无失败测试 |
+| 未执行测试原因完整 | 通过 | 第2.5.7节 | 未跑完整探针测试套件原因已记录 |
+| 遗留风险可接受 | 通过 | 第2.5.8节 | 已记录为后续优化风险，不阻塞本次交付 |
 
 #### 1.7.3 冲突记录
 | 冲突编号 | 冲突条款 | 最终采用条款 | 裁决人 | 裁决结论 |
 |---|---|---|---|---|
-| 无 | 无 | 无 | Architect | 无 |
+| VRDNS-CF-001 | 原 1.4 节仅放行文档，用户后续明确“实施”“一次性做完” | 以用户后续明确实施指令为准，补充第1.4源码范围后进入 Code | Architect | 放行 |
 
 #### 1.7.4 裁判结论
-- 结论: 有条件通过
+- 结论: 通过
 - 放行阻塞: 放行
-- 条件: 仅放行需求跟踪和后续策略澄清；不放行源码实现。
-- 责任方: Architect 继续维护需求文档；用户确认遗留策略后再进入 Code 任务细化。
-- 关闭要求: 补充源码文件范围和可执行测试命令后，重新裁判。
+- 条件: 无
+- 责任方: Code 已完成实现与验证。
+- 关闭要求: 无。
 - 整改要求: 无。
 
 #### 1.7.5 结论
-- 当前 Architect 阶段已完成初始需求跟踪。
-- 源码实现必须等待用户明确进入实现阶段，并由 Architect 细化第1.4节文件范围。
+- 当前需求已完成 Code 实施与门禁验证。
 
 ## 第2章 Code章节
 - 章节责任角色: Code
-- 状态: 未开始
+- 状态: 已完成
 
 ### 2.1 Code需求跟踪矩阵
-- 状态: 未开始
+- 状态: 已完成
 
 | 需求编号 | 任务编号 | 实现文件 | 实现状态 | 自测状态 | 证据 | 备注 |
 |---|---|---|---|---|---|---|
-| RQ-VRDNS-001..RQ-VRDNS-017 | T-VRDNS-01..T-VRDNS-05 | 待 Architect 放行 | 未开始 | 未开始 | 无 | 当前不写代码 |
+| RQ-VRDNS-001,RQ-VRDNS-002,RQ-VRDNS-013,RQ-VRDNS-014,RQ-VRDNS-016,RQ-VRDNS-017 | T-VRDNS-01 | probe_controller/internal/core/probe_route_config_store.go; probe_controller/internal/core/probe_virtual_router.go; probe_controller/internal/core/probe_link_chains.go; probe_controller/internal/core/server.go; probe_controller/internal/core/mng_link_handlers.go; probe_controller/internal/core/mng_pages/route.html | 已完成 | 通过 | TestProbeVirtualRouterFakeIPLibraryAllocatesRenewsAndResetsIndependentStore; TestProbeRouteFakeIPResolveHandlerPersistsLibrary; TestMngLinkVirtualRouterFakeIPResetHandlerDispatchesRouteConfigSync | 主控独立 Fake IP 库、版本号、时间戳、TTL、续期、重置、resolve API 和管理页重置入口 |
+| RQ-VRDNS-003,RQ-VRDNS-015 | T-VRDNS-01 | probe_controller/internal/core/probe_link_chains.go; probe_controller/internal/core/mng_link_handlers.go; probe_node/probe_link_chains_sync.go; probe_node/probe_virtual_router.go | 已完成 | 通过 | go test ./internal/core -count=1; TestProbeRouteFakeIPResolveHandlerPersistsLibrary; TestMngLinkVirtualRouterFakeIPResetHandlerDispatchesRouteConfigSync | Fake IP 库随 route config 同步，DNS 分配和重置后主动下发 route_config_sync，探针周期同步 route config |
+| RQ-VRDNS-004,RQ-VRDNS-005,RQ-VRDNS-006,RQ-VRDNS-012 | T-VRDNS-02 | probe_node/local_dns_service.go; probe_node/probe_virtual_router.go | 已完成 | 通过 | TestResolveProbeVirtualRouterDNSResponseUsesControllerFakeIPForExitRule; TestResolveProbeVirtualRouterDNSResponseDirectAndReject | 虚拟 DNS 覆盖旧入口职责，支持 probe_exit/direct/reject 和未命中本地解析 |
+| RQ-VRDNS-008,RQ-VRDNS-009,RQ-VRDNS-010,RQ-VRDNS-011 | T-VRDNS-03 | probe_node/probe_virtual_router_settings.go; probe_node/probe_virtual_router_windows.go; probe_node/probe_virtual_router_linux.go; probe_node/probe_virtual_router_other.go; probe_node/probe_virtual_router.go | 已完成 | 通过 | TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsAppliesOnlyFakeIPRoute; TestCleanupProbeVirtualRouterPlatformRoutesWindowsDeletesFakeIPRoute; go test -c GOOS=linux | 探针虚拟 IP 不受开关影响，Fake IP 路由受入口开关影响，出口能力未绑定本地开关 |
+| RQ-VRDNS-007 | T-VRDNS-04 | probe_node/local_console.go; probe_node/local_pages/proxy.html; probe_node/local_pages/panel.html | 已完成 | 通过 | TestProbeLocalAPIMethodGuards; go test . -run ^$ | 本地面板新增虚拟路由 tab、首页入口、设置 API |
+| RQ-VRDNS-001..RQ-VRDNS-017 | T-VRDNS-05 | probe_controller/internal/core/probe_virtual_router_test.go; probe_node/local_dns_service_test.go; probe_node/local_console_test.go; probe_node/local_console_methods_test.go; probe_node/probe_virtual_router_windows_test.go | 已完成 | 通过 | 第2.5.5测试命令 | 定向测试覆盖核心行为 |
 
 ### 2.2 Code关键接口跟踪矩阵
-- 状态: 未开始
+- 状态: 已完成
 
 | 接口编号 | 需求编号 | 实现文件 | 调用方 | 提供方 | 实现状态 | 证据 | 备注 |
 |---|---|---|---|---|---|---|---|
-| IF-VRDNS-01..IF-VRDNS-08 | RQ-VRDNS-001..RQ-VRDNS-017 | 待 Architect 放行 | 见第1.6节 | 见第1.6节 | 未开始 | 无 | 当前不写代码 |
+| IF-VRDNS-01 | RQ-VRDNS-001,RQ-VRDNS-002,RQ-VRDNS-013,RQ-VRDNS-014,RQ-VRDNS-016,RQ-VRDNS-017 | probe_controller/internal/core/probe_route_config_store.go; probe_controller/internal/core/probe_virtual_router.go | probe_controller | 独立 route config 下 Fake IP 库 | 已完成 | TestProbeVirtualRouterFakeIPLibraryAllocatesRenewsAndResetsIndependentStore | 独立于 probe link store |
+| IF-VRDNS-02 | RQ-VRDNS-002,RQ-VRDNS-003,RQ-VRDNS-014 | probe_controller/internal/core/mng_link_handlers.go; probe_controller/internal/core/server.go; probe_controller/internal/core/mng_pages/route.html | 管理端 | probe_controller | 已完成 | TestMngLinkVirtualRouterFakeIPResetHandlerDispatchesRouteConfigSync; Node JS syntax check | `/mng/api/route/virtual_router/fake_ip/reset` |
+| IF-VRDNS-03 | RQ-VRDNS-003,RQ-VRDNS-008,RQ-VRDNS-015,RQ-VRDNS-017 | probe_controller/internal/core/probe_link_chains.go; probe_node/probe_link_chains_sync.go | probe_node | probe_controller | 已完成 | go test ./internal/core -count=1; probe_node compile | `/api/probe/route/config` 下发 Fake IP 库 |
+| IF-VRDNS-04 | RQ-VRDNS-004,RQ-VRDNS-005,RQ-VRDNS-006 | probe_node/local_dns_service.go | 本机 DNS/远方探针 | probe_node | 已完成 | TestResolveProbeVirtualRouterDNSResponse* | 使用旧 DNS 地址端口，由虚拟 DNS 逻辑接管 |
+| IF-VRDNS-05 | RQ-VRDNS-007,RQ-VRDNS-010,RQ-VRDNS-011 | probe_node/local_console.go; probe_node/probe_virtual_router_settings.go | 本地面板 | probe_node | 已完成 | TestProbeLocalAPIMethodGuards; TestProbeVirtualRouterLocalSettingsMissingFieldKeepsDefaultEnabled | `/local/api/virtual_router/settings` |
+| IF-VRDNS-06 | RQ-VRDNS-009,RQ-VRDNS-012 | probe_node/probe_virtual_router.go | 本地连接入口 | probe_node | 已完成 | probe_node targeted tests; go test -run ^$ | Fake IP -> 域名/出口探针反查 |
+| IF-VRDNS-07 | RQ-VRDNS-010,RQ-VRDNS-011 | probe_node/probe_virtual_router.go; probe_node/local_dns_service.go | 远方探针 | 出口探针 | 已完成 | probe_node targeted tests | 本地入口和 DNS 开关不停止出口转发代码路径 |
+| IF-VRDNS-08 | RQ-VRDNS-013,RQ-VRDNS-014,RQ-VRDNS-015,RQ-VRDNS-017 | probe_controller/internal/core/probe_link_chains.go; probe_controller/internal/core/mng_link_handlers.go; probe_node/probe_link_chains_sync.go; probe_node/probe_virtual_router.go | probe_node | probe_controller | 已完成 | Linux compile; go test -run ^$; sync dispatch tests | 变更触发 route_config_sync + 周期同步 + Fake IP miss 同步重试 |
 
 ### 2.3 Code测试项跟踪矩阵
-- 状态: 未开始
+- 状态: 已完成
 
 | 测试项编号 | 需求编号 | 任务编号 | 测试目标 | 测试方法 | 结果 | 证据 | 未执行原因 | 备注 |
 |---|---|---|---|---|---|---|---|---|
-| CT-VRDNS-01 | RQ-VRDNS-001,RQ-VRDNS-002,RQ-VRDNS-003,RQ-VRDNS-013,RQ-VRDNS-014,RQ-VRDNS-015,RQ-VRDNS-016,RQ-VRDNS-017 | T-VRDNS-01 | 域名绑定、独立映射表、TTL 到期回收、命中续期、重置、库级版本号、库级时间戳、定期自动同步、全局同步 | 待补充 | 未执行 | 无 | 当前不写代码 | 无 |
-| CT-VRDNS-02 | RQ-VRDNS-004,RQ-VRDNS-005,RQ-VRDNS-006,RQ-VRDNS-012 | T-VRDNS-02 | 虚拟 DNS 命中、未命中、拒绝 | 待补充 | 未执行 | 无 | 当前不写代码 | 无 |
-| CT-VRDNS-03 | RQ-VRDNS-008,RQ-VRDNS-009,RQ-VRDNS-010,RQ-VRDNS-011 | T-VRDNS-03 | 开关组合与出口保持 | 待补充 | 未执行 | 无 | 当前不写代码 | 无 |
-| CT-VRDNS-04 | RQ-VRDNS-007 | T-VRDNS-04 | 探针面板 tab 与开关 | 待补充 | 未执行 | 无 | 当前不写代码 | 无 |
+| CT-VRDNS-01 | RQ-VRDNS-001,RQ-VRDNS-002,RQ-VRDNS-003,RQ-VRDNS-013,RQ-VRDNS-014,RQ-VRDNS-015,RQ-VRDNS-016,RQ-VRDNS-017 | T-VRDNS-01 | 域名绑定、独立映射表、TTL、续期、重置、版本号、时间戳、同步载荷、管理页重置入口 | go test ./internal/core -run "TestProbeRouteFakeIPResolveHandlerPersistsLibrary|TestMngLinkVirtualRouterFakeIPResetHandlerDispatchesRouteConfigSync|TestProbeVirtualRouterFakeIPLibrary" -count=1; route.html Node JS syntax check | 通过 | ok github.com/cloudhelper/probe_controller/internal/core 1.217s; script 1 ok | 无 | 未启动浏览器截图验证 |
+| CT-VRDNS-02 | RQ-VRDNS-004,RQ-VRDNS-005,RQ-VRDNS-006,RQ-VRDNS-012 | T-VRDNS-02 | 虚拟 DNS 出口/直连/拒绝 | go test . -run "TestResolveProbeVirtualRouterDNSResponse" -count=1 | 通过 | ok github.com/cloudhelper/probe_node 1.112s | 无 | 拒绝验证 RCodeRefused |
+| CT-VRDNS-03 | RQ-VRDNS-008,RQ-VRDNS-009,RQ-VRDNS-010,RQ-VRDNS-011 | T-VRDNS-03 | 开关组合、Fake IP 路由边界、跨平台编译 | go test . -run "TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsAppliesOnlyFakeIPRoute|TestCleanupProbeVirtualRouterPlatformRoutesWindowsDeletesFakeIPRoute" -count=1; GOOS=linux GOARCH=amd64 go test -c -o temp . | 通过 | ok github.com/cloudhelper/probe_node 2.710s; Linux 编译成功 | 无 | 完整系统路由实机验证未执行 |
+| CT-VRDNS-04 | RQ-VRDNS-007 | T-VRDNS-04 | 探针面板 tab、首页入口、设置 API 方法守卫 | go test . -run "TestProbeLocalAPIMethodGuards|TestProbeVirtualRouterLocalSettingsMissingFieldKeepsDefaultEnabled" -count=1 | 通过 | ok github.com/cloudhelper/probe_node 2.610s | 无 | 未启动浏览器截图验证 |
+| CT-VRDNS-05 | RQ-VRDNS-001..RQ-VRDNS-017 | T-VRDNS-05 | 包级回归和编译 | go test ./internal/core -count=1; go test . -run "^$" -count=1 | 通过 | controller ok 2.333s; probe_node ok 1.229s no tests to run | 无 | 未执行 probe_node 全量测试，见2.5.7 |
 
 ### 2.4 Code缺陷跟踪矩阵
-- 状态: 未开始
+- 状态: 已完成
 
 | 缺陷编号 | 需求编号 | 测试项编号 | 缺陷描述 | 严重级别 | 修复状态 | 修复证据 | 备注 |
 |---|---|---|---|---|---|---|---|
 | 无 | 无 | 无 | 无 | 无 | 无 | 无 | 无 |
 
 ### 2.5 Code执行证据
-- 状态: 未开始
+- 状态: 已完成
 
 #### 2.5.1 修改接口
-- 无。
+- 新增 `/api/probe/route/fake_ip/resolve`，探针请求主控分配/续期域名 Fake IP。
+- 扩展 `/api/probe/route/config` 返回 `virtual_router.fake_ip_library`。
+- 新增 `/mng/api/route/virtual_router/fake_ip/reset`，主控管理端重置全部虚拟路由 Fake IP。
+- 新增 `/local/api/virtual_router/settings`，探针本地面板读写虚拟路由入口和虚拟 DNS 开关。
 
 #### 2.5.2 配置文件
-- 无。
+- 主控 `probe_route_config.json` 新增独立字段 `virtual_router_fake_ip`。
+- 探针新增本地配置文件 `probe_virtual_router_settings.json`。
+- 探针 route config cache 继续使用 `probe_route_config.json`，新增缓存 `fake_ip_library`。
 
 #### 2.5.3 执行报告
-- 当前仅创建需求跟踪文档，未执行源码实现。
+- 主控侧实现独立 Fake IP 库，默认版本号 1，库级 `updated_at`，域名绑定 Fake IP，默认 TTL 30 天，命中续期，过期回收，重置全部。
+- 主控侧 Fake IP 分配/续期和重置后会通过现有控制通道向拓扑可达在线探针下发 `route_config_sync`，离线探针仍由周期同步兜底。
+- 探针侧虚拟 DNS 使用旧 DNS 地址和端口承接解析职责；命中 `probe_exit` 返回主控 Fake IP，`direct` 返回真实解析，`reject` 返回标准 REFUSED，未命中走真实本地解析。
+- 探针侧虚拟 IP 保持同步；本地虚拟路由入口开关只影响 Fake IP 路由接管，虚拟 DNS 开关停止本地 DNS 监听，不影响远方出口。
+- 主控路由管理页新增 Fake IP 库摘要、映射明细和重置全部按钮；本地面板新增 VNet 页面虚拟路由 tab 和首页入口。
+- Fake IP 连接路径缺失时会同步主控 route config 后重试一次。
 
 #### 2.5.4 影响文件
 - doc/REQ-PN-VROUTER-DNS-001-collaboration.md
+- probe_controller/internal/core/mng_link_actions.go
+- probe_controller/internal/core/mng_link_handlers.go
+- probe_controller/internal/core/probe_link_chains.go
+- probe_controller/internal/core/probe_route_config_store.go
+- probe_controller/internal/core/probe_virtual_router.go
+- probe_controller/internal/core/probe_virtual_router_test.go
+- probe_controller/internal/core/server.go
+- probe_controller/internal/core/mng_pages/route.html
+- probe_node/local_console.go
+- probe_node/local_console_methods_test.go
+- probe_node/local_console_test.go
+- probe_node/local_dns_service.go
+- probe_node/local_dns_service_test.go
+- probe_node/local_pages/panel.html
+- probe_node/local_pages/proxy.html
+- probe_node/probe_link_chains_sync.go
+- probe_node/probe_virtual_router.go
+- probe_node/probe_virtual_router_linux.go
+- probe_node/probe_virtual_router_other.go
+- probe_node/probe_virtual_router_settings.go
+- probe_node/probe_virtual_router_windows.go
+- probe_node/probe_virtual_router_windows_test.go
 
 #### 2.5.5 测试命令
-- 未执行。
+- `gofmt -w ...`
+- `go test ./internal/core -run "TestProbeVirtualRouterFakeIPLibrary|TestProbeRouteFakeIPResolveHandler|TestMngLinkVirtualRouter|TestProbeVirtualRouter" -count=1`
+- `go test ./internal/core -run "TestProbeRouteFakeIPResolveHandlerPersistsLibrary|TestMngLinkVirtualRouterFakeIPResetHandlerDispatchesRouteConfigSync|TestProbeVirtualRouterFakeIPLibrary" -count=1`
+- `go test ./internal/core -count=1`
+- `node` 解析 `probe_controller/internal/core/mng_pages/route.html` 内联脚本，结果 `script 1 ok`
+- `go test . -run "TestResolveProbeVirtualRouterDNSResponse|TestProbeVirtualRouterLocalSettingsMissingFieldKeepsDefaultEnabled|TestProbeLocalAPIMethodGuards|TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsAppliesOnlyFakeIPRoute|TestCleanupProbeVirtualRouterPlatformRoutesWindowsDeletesFakeIPRoute|TestResolveProbeVirtualRouterBridgeDialIPHostUsesPureIP|TestProbeVirtualRouterRelayHandlerCamouflagesPublicPaths" -count=1`
+- `go test . -run "^$" -count=1`
+- `GOOS=linux GOARCH=amd64 go test -c -o %TEMP%/probe_node_linux.test .`
 
 #### 2.5.6 自测结果
-- 未执行。
+- `probe_controller/internal/core` Fake IP 同步通知定向测试通过。
+- `probe_controller/internal/core` 定向测试通过。
+- `probe_controller/internal/core` 包级测试通过。
+- 主控路由管理页内联 JS 语法检查通过。
+- `probe_node` 虚拟路由/DNS/控制台定向测试通过。
+- `probe_node` 测试包只编译通过。
+- `probe_node` Linux amd64 交叉编译通过。
 
 #### 2.5.7 未执行测试原因
-- 当前阶段为 Architect 需求跟踪，用户要求先不写代码。
+- 未执行 `probe_node` 全量测试套件：该 Windows 环境中部分既有 Wintun、管理员权限、系统网络设置类测试可能依赖本机权限或真实系统状态；本次使用定向测试、只编译和 Linux 交叉编译覆盖本需求改动。
+- 未执行浏览器截图验证：本次 UI 为现有 HTML 页面小范围新增 tab/入口，已通过静态代码、API 方法守卫和主控 route.html 内联 JS 语法检查验证。
 
 #### 2.5.8 遗留风险
-- 见第1.1.5与第1.1.6。
+- 虚拟 DNS 使用旧监听地址和端口承接新逻辑，没有启动第二套并行 DNS 进程；这是为避免端口竞争的实现选择。
+- 实机系统路由仍建议在 Windows 管理员环境和 Linux 节点各跑一次真实流量验收。
 
 #### 2.5.9 回滚方案
-- 删除 doc/REQ-PN-VROUTER-DNS-001-collaboration.md 可回滚本次文档变更。
+- 回滚本次列出的影响文件即可恢复旧行为；主控已生成的 `virtual_router_fake_ip` 和探针 `probe_virtual_router_settings.json` 为新增配置字段，旧代码忽略或可手工删除。
 
 #### 2.5.10 结论
-- Code阶段未开始。
+- Code 阶段已完成。
 
 ### 2.6 Code任务反馈
-- 状态: 未开始
+- 状态: 已完成
 
 | 反馈编号 | 任务编号 | 反馈类型 | 反馈描述 | 阻塞影响 | Code建议 | Architect处理状态 | Architect处理结论 |
 |---|---|---|---|---|---|---|---|

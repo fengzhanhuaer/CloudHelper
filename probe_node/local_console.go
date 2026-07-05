@@ -3133,6 +3133,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/dns/real_ip/lookup", probeLocalDNSRealIPLookupHandler)
 	mux.HandleFunc("/local/api/dns/fake_ip/list", probeLocalDNSFakeIPListHandler)
 	mux.HandleFunc("/local/api/dns/fake_ip/lookup", probeLocalDNSFakeIPLookupHandler)
+	mux.HandleFunc("/local/api/virtual_router/settings", probeLocalVirtualRouterSettingsHandler)
 	mux.HandleFunc("/local/api/system/upgrade", probeLocalSystemUpgradeHandler)
 	mux.HandleFunc("/local/api/system/upgrade/check", probeLocalSystemUpgradeCheckHandler)
 	mux.HandleFunc("/local/api/system/upgrade/status", probeLocalSystemUpgradeStatusHandler)
@@ -3739,6 +3740,50 @@ func probeLocalDNSFakeIPLookupHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"item": item})
+}
+
+func probeLocalVirtualRouterSettingsHandler(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, probeLocalVirtualRouterSettingsPayload(loadProbeVirtualRouterLocalSettings()))
+	case http.MethodPost:
+		var req struct {
+			VirtualRouterEnabled bool `json:"virtual_router_enabled"`
+			VirtualDNSEnabled    bool `json:"virtual_dns_enabled"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		settings, err := saveProbeVirtualRouterLocalSettings(probeVirtualRouterLocalSettings{
+			VirtualRouterEnabled: req.VirtualRouterEnabled,
+			VirtualDNSEnabled:    req.VirtualDNSEnabled,
+		})
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, probeLocalVirtualRouterSettingsPayload(settings))
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func probeLocalVirtualRouterSettingsPayload(settings probeVirtualRouterLocalSettings) map[string]any {
+	library := currentProbeVirtualRouterFakeIPLibrary()
+	return map[string]any{
+		"virtual_router_enabled": settings.VirtualRouterEnabled,
+		"virtual_dns_enabled":    settings.VirtualDNSEnabled,
+		"updated_at":             settings.UpdatedAt,
+		"local_node_id":          currentProbeVirtualRouterLocalNodeID(),
+		"local_ip":               currentProbeVirtualRouterLocalIP(),
+		"fake_ip_cidr":           currentProbeVirtualRouterFakeIPCIDR(),
+		"fake_ip_library":        library,
+		"fake_ip_count":          len(library.Items),
+	}
 }
 
 func probeLocalProxyEnableHandler(w http.ResponseWriter, r *http.Request) {
