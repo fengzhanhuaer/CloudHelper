@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gvisor.dev/gvisor/pkg/tcpip"
 )
 
 func TestProbeVirtualRouterReachableViaCommonNode(t *testing.T) {
@@ -1522,6 +1524,201 @@ func TestProbeVirtualRouterTUNPacketEnsuresDirectBypassForOrdinaryTarget(t *test
 	}
 	if len(targets) != 1 {
 		t.Fatalf("fake ip should not add direct bypass target, got %v", targets)
+	}
+}
+
+func TestProbeVirtualRouterFakeIPExitPacketUsesNetstack(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeVirtualRouterStateForTest()
+	resetProbeVirtualRouterExitNetstackForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(resetProbeVirtualRouterExitNetstackForTest)
+
+	config := probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "16", IP: "198.18.0.18"},
+			{NodeID: "19", IP: "198.18.0.21"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "16", ToNodeID: "19", Enabled: true},
+		},
+		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{
+			Items: []probeVirtualRouterFakeIPEntry{{
+				Domain:     "127.0.0.1",
+				FakeIP:     "198.18.4.9",
+				Action:     "probe_exit",
+				ExitNodeID: "19",
+			}},
+		},
+	}
+	applyProbeVirtualRouterConfigForNode(config, "19")
+
+	oldWriter := probeVirtualRouterLocalTUNPacketWriter
+	var tunWrites int
+	probeVirtualRouterLocalTUNPacketWriter = func(packet []byte) error {
+		tunWrites++
+		return nil
+	}
+	t.Cleanup(func() { probeVirtualRouterLocalTUNPacketWriter = oldWriter })
+
+	rt := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-16-19", identity: nodeIdentity{NodeID: "19"}}}
+	packet := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.18", "198.18.4.9", 49152, 443)
+	if err := handleProbeVirtualRouterIPFrame(rt, nil, packet, []string{"16", "19"}, nil); err != nil {
+		t.Fatalf("handle fake ip exit packet failed: %v", err)
+	}
+	if tunWrites != 0 {
+		t.Fatalf("fake ip exit packet should be consumed by netstack, local tun writes=%d", tunWrites)
+	}
+	if probeVirtualRouterExitNetstackState.runner == nil {
+		t.Fatalf("fake ip exit packet should start exit netstack")
+	}
+}
+
+func TestProbeVirtualRouterFakeIPExitTargetsResolveRealIP(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeVirtualRouterStateForTest()
+	resetProbeLocalDNSServiceForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(resetProbeLocalDNSServiceForTest)
+
+	probeLocalDNSBootstrapLookupIPv4 = func(domain string) ([]string, error) {
+		if domain != "api.example.com" {
+			t.Fatalf("unexpected bootstrap domain: %s", domain)
+		}
+		return []string{"203.0.113.10"}, nil
+	}
+
+	config := probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "19", IP: "198.18.0.21"},
+		},
+		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{
+			Items: []probeVirtualRouterFakeIPEntry{{
+				Domain:     "api.example.com",
+				FakeIP:     "198.18.4.9",
+				Action:     "probe_exit",
+				ExitNodeID: "19",
+			}},
+		},
+	}
+	applyProbeVirtualRouterConfigForNode(config, "19")
+
+	targets, err := probeVirtualRouterFakeIPTargetsFromTransportID(tcpip.AddrFrom4([4]byte{198, 18, 4, 9}), 443)
+	if err != nil {
+		t.Fatalf("resolve fake ip targets failed: %v", err)
+	}
+	if !reflect.DeepEqual(targets, []string{"203.0.113.10:443"}) {
+		t.Fatalf("targets=%v, want [203.0.113.10:443]", targets)
+	}
+}
+
+func TestProbeVirtualRouterFakeIPExitICMPEchoUsesRealTarget(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeVirtualRouterStateForTest()
+	resetProbeLocalDNSServiceForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(resetProbeLocalDNSServiceForTest)
+
+	probeLocalDNSBootstrapLookupIPv4 = func(domain string) ([]string, error) {
+		if domain != "api.example.com" {
+			t.Fatalf("unexpected bootstrap domain: %s", domain)
+		}
+		return []string{"203.0.113.10"}, nil
+	}
+
+	oldEnsure := probeVirtualRouterEnsureDirectBypass
+	var bypassTargets []string
+	probeVirtualRouterEnsureDirectBypass = func(target string) error {
+		bypassTargets = append(bypassTargets, target)
+		return nil
+	}
+	t.Cleanup(func() { probeVirtualRouterEnsureDirectBypass = oldEnsure })
+
+	oldSend := probeVirtualRouterSendICMPEcho
+	var sentTarget string
+	probeVirtualRouterSendICMPEcho = func(target string, payload []byte, timeout time.Duration) ([]byte, error) {
+		sentTarget = target
+		reply := append([]byte(nil), payload...)
+		reply[0] = 0
+		reply[1] = 0
+		reply[2], reply[3] = 0, 0
+		binary.BigEndian.PutUint16(reply[2:4], probeVirtualRouterChecksum(reply))
+		return reply, nil
+	}
+	t.Cleanup(func() { probeVirtualRouterSendICMPEcho = oldSend })
+
+	config := probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "16", IP: "198.18.0.18"},
+			{NodeID: "19", IP: "198.18.0.21"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "16", ToNodeID: "19", Enabled: true},
+		},
+		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{
+			Items: []probeVirtualRouterFakeIPEntry{{
+				Domain:     "api.example.com",
+				FakeIP:     "198.18.4.9",
+				Action:     "probe_exit",
+				ExitNodeID: "19",
+			}},
+		},
+	}
+	applyProbeVirtualRouterConfigForNode(config, "19")
+
+	left, right := net.Pipe()
+	defer right.Close()
+	link := newProbeVirtualRouterFrameLink("test-fake-ip-icmp-exit-link", nil, left, nil)
+	link.Start()
+	defer stopProbeVirtualRouterFrameLink(link)
+	replyCh := make(chan struct {
+		frame probeVirtualRouterFrame
+		err   error
+	}, 1)
+	go func() {
+		frame, err := readProbeVirtualRouterWireFrame(bufio.NewReader(right))
+		replyCh <- struct {
+			frame probeVirtualRouterFrame
+			err   error
+		}{frame: frame, err: err}
+	}()
+
+	rt := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-16-19", identity: nodeIdentity{NodeID: "19"}}}
+	request := buildProbeVirtualRouterTestICMPEchoRequest(t, "198.18.0.18", "198.18.4.9")
+	if err := handleProbeVirtualRouterIPFrame(rt, link, request, []string{"16", "19"}, nil); err != nil {
+		t.Fatalf("handle fake ip icmp exit packet failed: %v", err)
+	}
+
+	select {
+	case got := <-replyCh:
+		if got.err != nil {
+			t.Fatalf("read reply failed: %v", got.err)
+		}
+		control, err := probeVirtualRouterFrameControl(got.frame, nil)
+		if err != nil {
+			t.Fatalf("read reply control failed: %v", err)
+		}
+		info, ok := probeVirtualRouterParseICMPEchoLogInfo(got.frame.Data)
+		if !ok || info.Kind != "echo_reply" || info.SourceIP != "198.18.4.9" || info.DestinationIP != "198.18.0.18" {
+			t.Fatalf("reply info=%+v ok=%v", info, ok)
+		}
+		if got.frame.MainType != probeVirtualRouterFrameMainTypeIP || got.frame.SubType != probeVirtualRouterIPSubTypeIPv4 || !reflect.DeepEqual(control.Path, []string{"19", "16"}) {
+			t.Fatalf("reply frame=%+v path=%v, want data/ip4 path [19 16]", got.frame, control.Path)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for fake ip icmp reply")
+	}
+	if sentTarget != "203.0.113.10" {
+		t.Fatalf("icmp target=%q, want 203.0.113.10", sentTarget)
+	}
+	if !reflect.DeepEqual(bypassTargets, []string{"203.0.113.10:0"}) {
+		t.Fatalf("bypass targets=%v, want [203.0.113.10:0]", bypassTargets)
 	}
 }
 

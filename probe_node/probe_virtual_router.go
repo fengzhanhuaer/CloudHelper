@@ -3826,6 +3826,10 @@ func handleProbeVirtualRouterIPFrame(runtime *probeVirtualRouterRuntime, link *p
 			recordProbeVirtualRouterRuntimePacketDelivered(runtime, len(packet))
 			return nil
 		}
+		if handleProbeVirtualRouterFakeIPExitPacket(runtime, link, packet, path) {
+			recordProbeVirtualRouterRuntimePacketDelivered(runtime, len(packet))
+			return nil
+		}
 		deliverStartedAt := time.Now()
 		if err := writeProbeVirtualRouterLocalTUNPacket(packet); err != nil {
 			recordProbeVirtualRouterRuntimeDeliveryError(runtime, err)
