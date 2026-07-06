@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsAppliesOnlyFakeIPRoute(t *testing.T) {
+func TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsAppliesTakeoverAndLocalBypassRoutes(t *testing.T) {
 	resetProbeLocalTUNInstallWindowsHooksForTest()
 	resetProbeLocalTUNDataPlaneHooksForTest()
 	resetProbeLocalWindowsTakeoverStateForTest()
@@ -37,19 +37,20 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsAppliesOnlyFakeIPRout
 
 	var routeCreateCalls []probeLocalWindowsRouteDef
 	oldCreateRoute := probeLocalCreateWindowsRouteEntry
+	oldResolvePrimaryEgress := probeLocalResolveWindowsPrimaryEgressRoute
 	probeLocalCreateWindowsRouteEntry = func(routeDef probeLocalWindowsRouteDef) (bool, error) {
 		routeCreateCalls = append(routeCreateCalls, routeDef)
-		switch strings.TrimSpace(routeDef.Prefix) {
-		case probeLocalWindowsRouteSplitPrefixA, probeLocalWindowsRouteSplitPrefixB:
-			t.Fatalf("virtual router must not create global takeover route: %+v", routeDef)
-		}
-		if strings.TrimSpace(routeDef.Mask) == probeLocalWindowsHostRouteMask {
-			t.Fatalf("virtual router must not create DNS capture route: %+v", routeDef)
-		}
 		return true, nil
+	}
+	probeLocalResolveWindowsPrimaryEgressRoute = func(excludedIfIndex int) (probeLocalWindowsDirectBypassRouteTarget, error) {
+		if excludedIfIndex != 40 {
+			t.Fatalf("excludedIfIndex=%d want 40", excludedIfIndex)
+		}
+		return probeLocalWindowsDirectBypassRouteTarget{InterfaceIndex: 13, NextHop: "192.168.50.1"}, nil
 	}
 	t.Cleanup(func() {
 		probeLocalCreateWindowsRouteEntry = oldCreateRoute
+		probeLocalResolveWindowsPrimaryEgressRoute = oldResolvePrimaryEgress
 	})
 
 	upsertCalls := 0
@@ -80,15 +81,100 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsAppliesOnlyFakeIPRout
 	if upsertCalls != 1 {
 		t.Fatalf("upsertCalls=%d want 1", upsertCalls)
 	}
-	if len(routeCreateCalls) != 1 {
-		t.Fatalf("routeCreateCalls=%d want 1 calls=%+v", len(routeCreateCalls), routeCreateCalls)
+	if len(routeCreateCalls) != 6 {
+		t.Fatalf("routeCreateCalls=%d want 6 calls=%+v", len(routeCreateCalls), routeCreateCalls)
 	}
-	routeDef := routeCreateCalls[0]
-	if strings.TrimSpace(routeDef.Prefix) != "198.18.0.0" || strings.TrimSpace(routeDef.Mask) != "255.254.0.0" {
-		t.Fatalf("route=%+v want fake ip 198.18.0.0/15", routeDef)
+	assertProbeVirtualRouterWindowsRouteDef(t, routeCreateCalls, probeLocalWindowsRouteDef{
+		Prefix:        "198.18.0.0",
+		Mask:          "255.254.0.0",
+		Gateway:       probeLocalTUNRouteGatewayIPv4,
+		InterfaceLUID: 77,
+		IfIndex:       40,
+	})
+	assertProbeVirtualRouterWindowsRouteDef(t, routeCreateCalls, probeLocalWindowsRouteDef{
+		Prefix:        probeVirtualRouterWindowsRouteSplitPrefixA,
+		Mask:          probeVirtualRouterWindowsRouteSplitMaskA,
+		Gateway:       probeLocalTUNRouteGatewayIPv4,
+		InterfaceLUID: 77,
+		IfIndex:       40,
+	})
+	assertProbeVirtualRouterWindowsRouteDef(t, routeCreateCalls, probeLocalWindowsRouteDef{
+		Prefix:        probeVirtualRouterWindowsRouteSplitPrefixB,
+		Mask:          probeVirtualRouterWindowsRouteSplitMaskB,
+		Gateway:       probeLocalTUNRouteGatewayIPv4,
+		InterfaceLUID: 77,
+		IfIndex:       40,
+	})
+	for _, prefix := range []string{"10.0.0.0", "172.16.0.0", "192.168.0.0"} {
+		assertProbeVirtualRouterWindowsRouteDef(t, routeCreateCalls, probeLocalWindowsRouteDef{
+			Prefix:  prefix,
+			Gateway: "192.168.50.1",
+			IfIndex: 13,
+		})
 	}
-	if strings.TrimSpace(routeDef.Gateway) != probeLocalTUNRouteGatewayIPv4 || routeDef.InterfaceLUID != 77 || routeDef.IfIndex != 40 {
-		t.Fatalf("route target=%+v want gateway=%s luid=77 ifindex=40", routeDef, probeLocalTUNRouteGatewayIPv4)
+}
+
+func TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsDisabledKeepsFakeRouteAndCleansTakeoverRoutes(t *testing.T) {
+	resetProbeLocalTUNInstallWindowsHooksForTest()
+	resetProbeLocalTUNDataPlaneHooksForTest()
+	resetProbeLocalWindowsTakeoverStateForTest()
+	resetProbeVirtualRouterWindowsRouteStateForTest()
+	resetProbeVirtualRouterLocalSettingsForTest()
+	enableProbeVirtualRouterLocalSettingsForTest(false, false)
+	t.Cleanup(func() {
+		resetProbeLocalTUNInstallWindowsHooksForTest()
+		resetProbeLocalTUNDataPlaneHooksForTest()
+		resetProbeLocalWindowsTakeoverStateForTest()
+		resetProbeVirtualRouterWindowsRouteStateForTest()
+		resetProbeVirtualRouterLocalSettingsForTest()
+	})
+
+	probeVirtualRouterWindowsRouteState.mu.Lock()
+	probeVirtualRouterWindowsRouteState.takeoverRouteDefs = []probeLocalWindowsRouteDef{{
+		Prefix:  probeVirtualRouterWindowsRouteSplitPrefixA,
+		Mask:    probeVirtualRouterWindowsRouteSplitMaskA,
+		Gateway: probeLocalTUNRouteGatewayIPv4,
+		IfIndex: 40,
+	}}
+	probeVirtualRouterWindowsRouteState.mu.Unlock()
+	probeLocalTUNDataPlaneState.mu.Lock()
+	probeLocalTUNDataPlaneState.dataPlane = &fakeProbeLocalTUNDataPlane{stats: probeLocalTUNDataPlaneStats{Running: true}}
+	probeLocalTUNDataPlaneState.interfaceLUID = 77
+	probeLocalTUNDataPlaneState.ifIndex = 40
+	probeLocalTUNDataPlaneState.mu.Unlock()
+	t.Cleanup(func() {
+		probeLocalTUNDataPlaneState.mu.Lock()
+		probeLocalTUNDataPlaneState.dataPlane = nil
+		probeLocalTUNDataPlaneState.interfaceLUID = 0
+		probeLocalTUNDataPlaneState.ifIndex = 0
+		probeLocalTUNDataPlaneState.mu.Unlock()
+	})
+
+	var created []probeLocalWindowsRouteDef
+	var deleted []probeLocalWindowsRouteDef
+	oldCreateRoute := probeLocalCreateWindowsRouteEntry
+	oldDeleteRoute := probeLocalDeleteWindowsRouteEntry
+	probeLocalCreateWindowsRouteEntry = func(routeDef probeLocalWindowsRouteDef) (bool, error) {
+		created = append(created, routeDef)
+		return true, nil
+	}
+	probeLocalDeleteWindowsRouteEntry = func(routeDef probeLocalWindowsRouteDef) error {
+		deleted = append(deleted, routeDef)
+		return nil
+	}
+	t.Cleanup(func() {
+		probeLocalCreateWindowsRouteEntry = oldCreateRoute
+		probeLocalDeleteWindowsRouteEntry = oldDeleteRoute
+	})
+
+	if err := ensureProbeVirtualRouterPlatformInterfaceIP("198.18.0.21"); err != nil {
+		t.Fatalf("ensure disabled virtual router route failed: %v", err)
+	}
+	if len(created) != 1 || strings.TrimSpace(created[0].Prefix) != "198.18.0.0" {
+		t.Fatalf("created routes=%+v, want only fake ip route", created)
+	}
+	if len(deleted) != 1 || strings.TrimSpace(deleted[0].Prefix) != probeVirtualRouterWindowsRouteSplitPrefixA {
+		t.Fatalf("deleted takeover routes=%+v", deleted)
 	}
 }
 
@@ -108,8 +194,8 @@ func TestCleanupProbeVirtualRouterPlatformRoutesWindowsDeletesFakeIPRoute(t *tes
 		IfIndex:       40,
 	}
 	probeVirtualRouterWindowsRouteState.mu.Lock()
-	probeVirtualRouterWindowsRouteState.routeDef = routeDef
-	probeVirtualRouterWindowsRouteState.applied = true
+	probeVirtualRouterWindowsRouteState.fakeRouteDef = routeDef
+	probeVirtualRouterWindowsRouteState.fakeApplied = true
 	probeVirtualRouterWindowsRouteState.mu.Unlock()
 
 	var deleted []probeLocalWindowsRouteDef
@@ -129,7 +215,7 @@ func TestCleanupProbeVirtualRouterPlatformRoutesWindowsDeletesFakeIPRoute(t *tes
 		t.Fatalf("deleted=%+v want %+v", deleted, routeDef)
 	}
 	probeVirtualRouterWindowsRouteState.mu.Lock()
-	applied := probeVirtualRouterWindowsRouteState.applied
+	applied := probeVirtualRouterWindowsRouteState.fakeApplied
 	probeVirtualRouterWindowsRouteState.mu.Unlock()
 	if applied {
 		t.Fatalf("virtual router windows route state should be cleared")
@@ -138,7 +224,31 @@ func TestCleanupProbeVirtualRouterPlatformRoutesWindowsDeletesFakeIPRoute(t *tes
 
 func resetProbeVirtualRouterWindowsRouteStateForTest() {
 	probeVirtualRouterWindowsRouteState.mu.Lock()
-	probeVirtualRouterWindowsRouteState.routeDef = probeLocalWindowsRouteDef{}
-	probeVirtualRouterWindowsRouteState.applied = false
+	probeVirtualRouterWindowsRouteState.fakeRouteDef = probeLocalWindowsRouteDef{}
+	probeVirtualRouterWindowsRouteState.fakeApplied = false
+	probeVirtualRouterWindowsRouteState.takeoverRouteDefs = nil
 	probeVirtualRouterWindowsRouteState.mu.Unlock()
+}
+
+func assertProbeVirtualRouterWindowsRouteDef(t *testing.T, routes []probeLocalWindowsRouteDef, want probeLocalWindowsRouteDef) {
+	t.Helper()
+	for _, routeDef := range routes {
+		if strings.TrimSpace(want.Prefix) != "" && strings.TrimSpace(routeDef.Prefix) != strings.TrimSpace(want.Prefix) {
+			continue
+		}
+		if strings.TrimSpace(want.Mask) != "" && strings.TrimSpace(routeDef.Mask) != strings.TrimSpace(want.Mask) {
+			continue
+		}
+		if strings.TrimSpace(want.Gateway) != "" && strings.TrimSpace(routeDef.Gateway) != strings.TrimSpace(want.Gateway) {
+			continue
+		}
+		if want.InterfaceLUID != 0 && routeDef.InterfaceLUID != want.InterfaceLUID {
+			continue
+		}
+		if want.IfIndex != 0 && routeDef.IfIndex != want.IfIndex {
+			continue
+		}
+		return
+	}
+	t.Fatalf("missing route %+v in %+v", want, routes)
 }

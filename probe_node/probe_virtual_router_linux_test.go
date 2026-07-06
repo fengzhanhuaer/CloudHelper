@@ -16,11 +16,15 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPLinuxAddsDNSAndNodeIP(t *tes
 	oldLookPath := probeLocalLinuxLookPath
 	oldRun := probeLocalLinuxRunCommand
 	oldNewRunner := probeLocalLinuxNewTUNDataPlaneRunner
+	resetProbeVirtualRouterLinuxRouteStateForTest()
+	resetProbeVirtualRouterLocalSettingsForTest()
 	t.Cleanup(func() {
 		probeLocalLinuxStat = oldStat
 		probeLocalLinuxLookPath = oldLookPath
 		probeLocalLinuxRunCommand = oldRun
 		probeLocalLinuxNewTUNDataPlaneRunner = oldNewRunner
+		resetProbeVirtualRouterLinuxRouteStateForTest()
+		resetProbeVirtualRouterLocalSettingsForTest()
 		_ = stopProbeLocalTUNDataPlane()
 	})
 
@@ -63,6 +67,56 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPLinuxAddsDNSAndNodeIP(t *tes
 	}
 }
 
+func TestEnsureProbeVirtualRouterPlatformInterfaceIPLinuxAppliesTakeoverAndLocalBypassRoutes(t *testing.T) {
+	oldStat := probeLocalLinuxStat
+	oldLookPath := probeLocalLinuxLookPath
+	oldRun := probeLocalLinuxRunCommand
+	oldNewRunner := probeLocalLinuxNewTUNDataPlaneRunner
+	resetProbeVirtualRouterLinuxRouteStateForTest()
+	resetProbeVirtualRouterLocalSettingsForTest()
+	enableProbeVirtualRouterLocalSettingsForTest(true, false)
+	t.Cleanup(func() {
+		probeLocalLinuxStat = oldStat
+		probeLocalLinuxLookPath = oldLookPath
+		probeLocalLinuxRunCommand = oldRun
+		probeLocalLinuxNewTUNDataPlaneRunner = oldNewRunner
+		resetProbeVirtualRouterLinuxRouteStateForTest()
+		resetProbeVirtualRouterLocalSettingsForTest()
+		_ = stopProbeLocalTUNDataPlane()
+	})
+
+	t.Setenv("PROBE_LOCAL_TUN_DEV", "probe0")
+	probeLocalLinuxStat = func(name string) (os.FileInfo, error) { return fakeProbeLocalLinuxFileInfo{}, nil }
+	probeLocalLinuxLookPath = func(file string) (string, error) { return "/sbin/ip", nil }
+	calls := make([]string, 0, 10)
+	probeLocalLinuxRunCommand = func(timeout time.Duration, name string, args ...string) (string, error) {
+		joined := strings.Join(args, " ")
+		calls = append(calls, name+" "+joined)
+		if joined == "-4 route show default" {
+			return "default via 192.168.50.1 dev eth0 proto dhcp metric 100\n", nil
+		}
+		return "", nil
+	}
+	probeLocalLinuxNewTUNDataPlaneRunner = func(dev string) (probeLocalTUNDataPlane, error) {
+		return &fakeProbeLocalLinuxTUNRunner{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
+	}
+
+	if err := ensureProbeVirtualRouterPlatformInterfaceIP("198.18.0.11"); err != nil {
+		t.Fatalf("ensure failed: %v", err)
+	}
+	for _, want := range []string{
+		"ip -4 route replace 0.0.0.0/1 dev probe0 src 198.18.0.11 metric 3",
+		"ip -4 route replace 128.0.0.0/1 dev probe0 src 198.18.0.11 metric 3",
+		"ip -4 route replace 10.0.0.0/8 via 192.168.50.1 dev eth0 metric 3",
+		"ip -4 route replace 172.16.0.0/12 via 192.168.50.1 dev eth0 metric 3",
+		"ip -4 route replace 192.168.0.0/16 via 192.168.50.1 dev eth0 metric 3",
+	} {
+		if !hasProbeVirtualRouterLinuxCommand(calls, want) {
+			t.Fatalf("missing command %q calls=%v", want, calls)
+		}
+	}
+}
+
 func TestSnapshotProbeVirtualRouterRuntimeStatsIncludesLinuxTUNDataPlaneStats(t *testing.T) {
 	resetProbeLocalTUNDataPlaneHooksForTest()
 	t.Cleanup(resetProbeLocalTUNDataPlaneHooksForTest)
@@ -98,11 +152,15 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPLinuxCreatesDefaultDeviceWhe
 	oldLookPath := probeLocalLinuxLookPath
 	oldRun := probeLocalLinuxRunCommand
 	oldNewRunner := probeLocalLinuxNewTUNDataPlaneRunner
+	resetProbeVirtualRouterLinuxRouteStateForTest()
+	resetProbeVirtualRouterLocalSettingsForTest()
 	t.Cleanup(func() {
 		probeLocalLinuxStat = oldStat
 		probeLocalLinuxLookPath = oldLookPath
 		probeLocalLinuxRunCommand = oldRun
 		probeLocalLinuxNewTUNDataPlaneRunner = oldNewRunner
+		resetProbeVirtualRouterLinuxRouteStateForTest()
+		resetProbeVirtualRouterLocalSettingsForTest()
 		_ = stopProbeLocalTUNDataPlane()
 	})
 
@@ -157,12 +215,16 @@ func TestApplyProbeVirtualRouterConfigForNodeLinuxStartsTUNAndVirtualIP(t *testi
 	oldLookPath := probeLocalLinuxLookPath
 	oldRun := probeLocalLinuxRunCommand
 	oldNewRunner := probeLocalLinuxNewTUNDataPlaneRunner
+	resetProbeVirtualRouterLinuxRouteStateForTest()
+	resetProbeVirtualRouterLocalSettingsForTest()
 	t.Cleanup(func() {
 		probeLocalTUNLinkFeatureEnabled = func() bool { return false }
 		probeLocalLinuxStat = oldStat
 		probeLocalLinuxLookPath = oldLookPath
 		probeLocalLinuxRunCommand = oldRun
 		probeLocalLinuxNewTUNDataPlaneRunner = oldNewRunner
+		resetProbeVirtualRouterLinuxRouteStateForTest()
+		resetProbeVirtualRouterLocalSettingsForTest()
 		_ = stopProbeLocalTUNDataPlane()
 		probeVirtualRouterState.mu.Lock()
 		probeVirtualRouterState.config = probeVirtualRouterConfig{}
@@ -228,4 +290,12 @@ func hasProbeVirtualRouterLinuxCommand(calls []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func resetProbeVirtualRouterLinuxRouteStateForTest() {
+	probeVirtualRouterLinuxRouteState.mu.Lock()
+	probeVirtualRouterLinuxRouteState.fakeRouteDef = probeVirtualRouterLinuxRouteDef{}
+	probeVirtualRouterLinuxRouteState.fakeApplied = false
+	probeVirtualRouterLinuxRouteState.takeoverRouteDefs = nil
+	probeVirtualRouterLinuxRouteState.mu.Unlock()
 }
