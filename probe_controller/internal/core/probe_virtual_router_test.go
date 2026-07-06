@@ -348,8 +348,8 @@ func TestMngLinkVirtualRouterFakeIPResetHandlerDispatchesRouteConfigSync(t *test
 		t.Fatalf("reset status=%d body=%s", rr.Code, rr.Body.String())
 	}
 	var payload struct {
-		FakeIPLibrary probeVirtualRouterFakeIPLibrary   `json:"fake_ip_library"`
-		Sync          probeLinkConfigSyncDispatchResult `json:"sync"`
+		FakeIPLibrary probeVirtualRouterFakeIPLibrary    `json:"fake_ip_library"`
+		Sync          probeRouteConfigSyncDispatchResult `json:"sync"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode reset payload failed: %v body=%s", err, rr.Body.String())
@@ -430,7 +430,7 @@ func probeVirtualRouterTestIPByNode(items []probeVirtualRouterProbeIP) map[strin
 	return out
 }
 
-func TestProbeVirtualRouterRuntimeChainIDIsStableAcrossServiceEndpointChanges(t *testing.T) {
+func TestProbeVirtualRouterRuntimeRouteIDIsStableAcrossServiceEndpointChanges(t *testing.T) {
 	base := probeVirtualRouterTopologyRule{
 		ID:                "edge-a-b",
 		FromNodeID:        "1",
@@ -449,14 +449,14 @@ func TestProbeVirtualRouterRuntimeChainIDIsStableAcrossServiceEndpointChanges(t 
 	changedEndpoint.FromNodeID = "3"
 	changedEndpoint.ToNodeID = "4"
 
-	if left, right := probeVirtualRouterRuntimeChainID(base), probeVirtualRouterRuntimeChainID(changedEndpoint); left != right {
-		t.Fatalf("same rule should keep chain id across topology endpoint changes: %s != %s", left, right)
+	if left, right := probeVirtualRouterRuntimeRouteID(base), probeVirtualRouterRuntimeRouteID(changedEndpoint); left != right {
+		t.Fatalf("same rule should keep route id across topology endpoint changes: %s != %s", left, right)
 	}
 
 	changedRule := base
 	changedRule.ID = "edge-a-b-other"
-	if left, right := probeVirtualRouterRuntimeChainID(base), probeVirtualRouterRuntimeChainID(changedRule); left == right {
-		t.Fatalf("different rule ids should produce different chain ids: %s", left)
+	if left, right := probeVirtualRouterRuntimeRouteID(base), probeVirtualRouterRuntimeRouteID(changedRule); left == right {
+		t.Fatalf("different rule ids should produce different route ids: %s", left)
 	}
 }
 

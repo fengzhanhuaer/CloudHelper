@@ -76,38 +76,38 @@ type cpuSampler struct {
 }
 
 type configRefreshSummary struct {
-	SelfChains   int
+	SelfRoutes   int
 	RouteEntries int
 	ConfigDir    string
 }
 
 var reportCPUSampler cpuSampler
 
-type chainLinkControlMessage struct {
+type routeControlMessage struct {
 	Type              string `json:"type"`
 	RequestID         string `json:"request_id"`
 	Action            string `json:"action"`
-	ChainID           string `json:"chain_id"`
-	ChainType         string `json:"chain_type"`
+	RouteID           string `json:"route_id"`
+	RouteType         string `json:"route_type"`
 	ClientEntryID     string `json:"client_entry_id,omitempty"`
 	ClientEntryType   string `json:"client_entry_type,omitempty"`
 	Name              string `json:"name"`
 	UserID            string `json:"user_id"`
 	UserPublicKey     string `json:"user_public_key"`
-	LinkSecret        string `json:"link_secret"`
+	RouteSecret       string `json:"route_secret"`
 	AuthTicket        string `json:"auth_ticket"`
 	Role              string `json:"role"`
 	ListenHost        string `json:"listen_host"`
 	ListenPort        int    `json:"listen_port"`
 	InternalPort      int    `json:"internal_port"`
-	LinkLayer         string `json:"link_layer"`
-	NextLinkLayer     string `json:"next_link_layer"`
+	RouteLayer        string `json:"route_layer"`
+	NextRouteLayer    string `json:"next_route_layer"`
 	NextDialMode      string `json:"next_dial_mode"`
 	NextHost          string `json:"next_host"`
 	NextPort          int    `json:"next_port"`
 	PrevHost          string `json:"prev_host"`
 	PrevPort          int    `json:"prev_port"`
-	PrevLinkLayer     string `json:"prev_link_layer"`
+	PrevRouteLayer    string `json:"prev_route_layer"`
 	PrevDialMode      string `json:"prev_dial_mode"`
 	RequireUserAuth   bool   `json:"require_user_auth"`
 	NextAuthMode      string `json:"next_auth_mode"`
@@ -161,18 +161,18 @@ func RefreshConfig(controllerURL string, nodeID string, nodeSecret string, confi
 	setControllerDirectTarget(controllerURL)
 	summary, err := refreshConfigFiles(controllerURL, nodeID, nodeSecret, configDir)
 	if err != nil {
-		if applied, restoreErr := applyMobileChainRuntimesFromConfigDir(configDir, mobileNodeIdentity{NodeID: nodeID, Secret: nodeSecret}); restoreErr == nil && applied > 0 {
-			androidLogStore.add("chain", "normal", fmt.Sprintf("restored android chain runtimes from cache: count=%d", applied))
-			return fmt.Sprintf("配置刷新失败：%s；已从缓存恢复本机链路=%d", err.Error(), applied)
+		if applied, restoreErr := applyMobileRouteRuntimesFromConfigDir(configDir, mobileNodeIdentity{NodeID: nodeID, Secret: nodeSecret}); restoreErr == nil && applied > 0 {
+			androidLogStore.add("route", "normal", fmt.Sprintf("restored android route runtimes from cache: count=%d", applied))
+			return fmt.Sprintf("配置刷新失败：%s；已从缓存恢复本机路由=%d", err.Error(), applied)
 		}
 		return "配置刷新失败：" + err.Error()
 	}
-	if applied, err := applyMobileChainRuntimesFromConfigDir(configDir, mobileNodeIdentity{NodeID: nodeID, Secret: nodeSecret}); err != nil {
-		androidLogStore.add("chain", "warn", "apply android chain runtimes failed: "+err.Error())
+	if applied, err := applyMobileRouteRuntimesFromConfigDir(configDir, mobileNodeIdentity{NodeID: nodeID, Secret: nodeSecret}); err != nil {
+		androidLogStore.add("route", "warn", "apply android route runtimes failed: "+err.Error())
 	} else if applied > 0 {
-		androidLogStore.add("chain", "normal", fmt.Sprintf("applied android chain runtimes from config: count=%d", applied))
+		androidLogStore.add("route", "normal", fmt.Sprintf("applied android route runtimes from config: count=%d", applied))
 	}
-	return fmt.Sprintf("配置刷新完成：本机链路=%d，路由入口=%d", summary.SelfChains, summary.RouteEntries)
+	return fmt.Sprintf("配置刷新完成：本机路由=%d，路由入口=%d", summary.SelfRoutes, summary.RouteEntries)
 }
 
 func Stop() string {
@@ -182,7 +182,7 @@ func Stop() string {
 		close(manager.cancel)
 		manager.cancel = nil
 	}
-	stopAllMobileChainRuntimes("mobilecore stop")
+	stopAllMobileRouteRuntimes("mobilecore stop")
 	manager.status = "stopped"
 	return manager.status
 }
@@ -609,10 +609,10 @@ func writeMobileStreamJSON(stream net.Conn, writeMu *sync.Mutex, payload any) er
 	if err != nil {
 		return err
 	}
-	frameKind := mobileChainFrameKindControl
-	frame := mobileChainFrame{Kind: frameKind}
-	if len(data) > mobileChainFrameMaxControlBytes {
-		frameKind = mobileChainFrameKindData
+	frameKind := mobileRouteFrameKindControl
+	frame := mobileRouteFrame{Kind: frameKind}
+	if len(data) > mobileRouteFrameMaxControlBytes {
+		frameKind = mobileRouteFrameKindData
 		frame.Kind = frameKind
 		frame.Data = data
 		return writeMobileStreamFrame(stream, writeMu, frame)
@@ -621,13 +621,13 @@ func writeMobileStreamJSON(stream net.Conn, writeMu *sync.Mutex, payload any) er
 	return writeMobileStreamFrame(stream, writeMu, frame)
 }
 
-func writeMobileStreamFrame(stream net.Conn, writeMu *sync.Mutex, frame mobileChainFrame) error {
+func writeMobileStreamFrame(stream net.Conn, writeMu *sync.Mutex, frame mobileRouteFrame) error {
 	if writeMu != nil {
 		writeMu.Lock()
 		defer writeMu.Unlock()
 	}
 	_ = stream.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	err := writeMobileChainFrame(stream, frame)
+	err := writeMobileRouteFrame(stream, frame)
 	_ = stream.SetWriteDeadline(time.Time{})
 	return err
 }

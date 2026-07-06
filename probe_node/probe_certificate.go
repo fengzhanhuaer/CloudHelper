@@ -180,7 +180,7 @@ func parseProbeCertificateLeaf(certPEM []byte, keyPEM []byte) (*x509.Certificate
 		return nil, err
 	}
 	if len(pair.Certificate) == 0 {
-		return nil, errors.New("certificate chain is empty")
+		return nil, errors.New("certificate bundle is empty")
 	}
 	return x509.ParseCertificate(pair.Certificate[0])
 }

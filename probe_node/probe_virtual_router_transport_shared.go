@@ -24,8 +24,8 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
-type probeChainBridgeSessionSnapshot struct {
-	ChainID             string `json:"chain_id,omitempty"`
+type probeRouteBridgeSessionSnapshot struct {
+	RouteID             string `json:"route_id,omitempty"`
 	RuntimeRole         string `json:"runtime_role,omitempty"`
 	Direction           string `json:"direction,omitempty"`
 	SessionID           string `json:"session_id,omitempty"`
@@ -50,30 +50,30 @@ type probeChainBridgeSessionSnapshot struct {
 	Closed              bool   `json:"closed,omitempty"`
 }
 
-type probeChainBridgeRuntimeStatus struct {
+type probeRouteBridgeRuntimeStatus struct {
 	DownstreamActive int                               `json:"downstream_active"`
 	UpstreamActive   int                               `json:"upstream_active"`
-	Sessions         []probeChainBridgeSessionSnapshot `json:"sessions,omitempty"`
+	Sessions         []probeRouteBridgeSessionSnapshot `json:"sessions,omitempty"`
 	UpdatedAt        string                            `json:"updated_at,omitempty"`
 }
 
-type probeChainAuthEnvelope struct {
+type probeRouteAuthEnvelope struct {
 	Type       string                     `json:"type,omitempty"`
 	APIVersion string                     `json:"api_version,omitempty"`
 	RequestID  string                     `json:"request_id,omitempty"`
 	Timestamp  string                     `json:"timestamp,omitempty"`
-	Auth       *probeChainAuthPayloadBody `json:"auth,omitempty"`
+	Auth       *probeRouteAuthPayloadBody `json:"auth,omitempty"`
 	Mode       string                     `json:"mode,omitempty"`
-	ChainID    string                     `json:"chain_id,omitempty"`
+	RouteID    string                     `json:"route_id,omitempty"`
 	Nonce      string                     `json:"nonce,omitempty"`
 	Signature  string                     `json:"signature,omitempty"`
 	MAC        string                     `json:"mac,omitempty"`
 	AuthTicket string                     `json:"auth_ticket,omitempty"`
 }
 
-type probeChainAuthPayloadBody struct {
+type probeRouteAuthPayloadBody struct {
 	Mode       string `json:"mode,omitempty"`
-	ChainID    string `json:"chain_id,omitempty"`
+	RouteID    string `json:"route_id,omitempty"`
 	Nonce      string `json:"nonce,omitempty"`
 	Timestamp  string `json:"timestamp,omitempty"`
 	Signature  string `json:"signature,omitempty"`
@@ -81,24 +81,24 @@ type probeChainAuthPayloadBody struct {
 	AuthTicket string `json:"auth_ticket,omitempty"`
 }
 
-type probeChainAuthIPState struct {
+type probeRouteAuthIPState struct {
 	FailedAttempts int
 	BlacklistedTil time.Time
 	Manual         bool
 }
 
-type probeChainAuthBlacklistEntry struct {
+type probeRouteAuthBlacklistEntry struct {
 	IP        string `json:"ip"`
 	Until     string `json:"until,omitempty"`
 	Manual    bool   `json:"manual,omitempty"`
 	ExpiresIn string `json:"expires_in,omitempty"`
 }
 
-type probeChainAuthBlacklistFile struct {
+type probeRouteAuthBlacklistFile struct {
 	IPs []string `json:"ips"`
 }
 
-type probeChainAssociationV2Meta struct {
+type probeRouteAssociationV2Meta struct {
 	Version          int    `json:"version"`
 	AssocKeyV2       string `json:"assoc_key_v2,omitempty"`
 	FlowID           string `json:"flow_id,omitempty"`
@@ -122,90 +122,87 @@ type probeChainAssociationV2Meta struct {
 }
 
 const (
-	probeChainRelayAPIPath    = "/api/node/chain/relay"
-	probeChainAuthNoncePrefix = "CHNONCE "
+	probeRouteRelayAPIPath    = "/api/node/route/relay"
+	probeRouteAuthNoncePrefix = "CHNONCE "
 
-	probeChainLegacyChainIDHeader   = "X-CH-Chain-ID"
-	probeChainCodexChainIDHeader    = "X-Codex-Chain-Id"
-	probeChainCodexAuthModeHeader   = "X-Codex-Auth-Mode"
-	probeChainCodexMACHeader        = "X-Codex-Mac"
-	probeChainCodexAuthTicketHeader = "X-Codex-User-Auth-Ticket"
-	probeChainCodexAuthTimeHeader   = "X-Codex-Auth-Timestamp"
-	probeChainCodexVersionHeader    = "X-Codex-Api-Version"
-	probeChainCodexRelayModeHeader  = "X-Codex-Relay-Mode"
-	probeChainCodexRelayRoleHeader  = "X-Codex-Relay-Role"
-	probeChainCodexConnIDHeader     = "X-Codex-Conn-Id"
-	probeChainCodexSpeedBytesHeader = "X-Codex-Speed-Bytes"
+	probeRouteLegacyRouteIDHeader   = "X-CH-Route-ID"
+	probeRouteCodexRouteIDHeader    = "X-Codex-Route-Id"
+	probeRouteCodexAuthModeHeader   = "X-Codex-Auth-Mode"
+	probeRouteCodexMACHeader        = "X-Codex-Mac"
+	probeRouteCodexAuthTicketHeader = "X-Codex-User-Auth-Ticket"
+	probeRouteCodexAuthTimeHeader   = "X-Codex-Auth-Timestamp"
+	probeRouteCodexVersionHeader    = "X-Codex-Api-Version"
+	probeRouteCodexRelayModeHeader  = "X-Codex-Relay-Mode"
+	probeRouteCodexRelayRoleHeader  = "X-Codex-Relay-Role"
+	probeRouteCodexConnIDHeader     = "X-Codex-Conn-Id"
+	probeRouteCodexSpeedBytesHeader = "X-Codex-Speed-Bytes"
 
-	probeChainRelayModeBridge     = "bridge"
-	probeChainRelayModeSpeedTest  = "speed_test"
-	probeChainRelayModeSpeedDebug = "speed_debug"
-	probeChainBridgeRoleToNext    = "to_next"
-	probeChainBridgeRoleToPrev    = "to_prev"
+	probeRouteRelayModeBridge     = "bridge"
+	probeRouteRelayModeSpeedTest  = "speed_test"
+	probeRouteRelayModeSpeedDebug = "speed_debug"
+	probeRouteBridgeRoleToNext    = "to_next"
+	probeRouteBridgeRoleToPrev    = "to_prev"
 
-	probeChainDialModeForward = "forward"
-	probeChainDialModeReverse = "reverse"
-	probeChainDialModeNone    = "none"
+	probeRouteDialModeForward = "forward"
+	probeRouteDialModeReverse = "reverse"
+	probeRouteDialModeNone    = "none"
 
-	probeChainBridgeRetryMin = 1 * time.Second
-	probeChainBridgeRetryMax = 15 * time.Second
+	probeRouteBridgeRetryMin = 1 * time.Second
+	probeRouteBridgeRetryMax = 15 * time.Second
 
-	probeChainPortForwardNetworkTCP = "tcp"
-	probeChainPortForwardNetworkUDP = "udp"
+	probeRouteUDPSessionIdleTTL         = 90 * time.Second
+	probeRouteUDPSessionGCInterval      = 15 * time.Second
+	probeRouteRelayDialTimeout          = 12 * time.Second
+	probeRouteRelayResponseReadDeadline = 10 * time.Second
 
-	probeChainPortForwardSessionIdleTTL       = 90 * time.Second
-	probeChainPortForwardSessionGCInterval    = 15 * time.Second
-	probeChainPortForwardDialTimeout          = 12 * time.Second
-	probeChainPortForwardResponseReadDeadline = 10 * time.Second
+	probeRouteRelayProtocolQualityTTL          = 10 * time.Minute
+	probeRouteRelayProtocolNegativeTTL         = 60 * time.Second
+	probeRouteRelayProtocolProbeTimeout        = 6 * time.Second
+	probeRouteRelayProtocolSwitchMinHold       = 30 * time.Second
+	probeRouteRelaySpeedTestBytes              = 128 * 1024 * 1024
+	probeRouteRelaySpeedTestMaxBytes           = 256 * 1024 * 1024
+	probeRouteRelaySpeedTestTimeout            = 10 * time.Second
+	probeRouteRelaySpeedTestChunkBytes         = 1024 * 1024
+	probeRouteRelayWebSocketBufferBytes        = 512 * 1024
+	probeRouteRelayWebSocketWriteBatchBytes    = 1024 * 1024
+	probeRouteRelayWebSocketWriteQueueDepth    = 64
+	probeRouteRelayTCPSocketBufferBytes        = 8 * 1024 * 1024
+	probeRouteRelayUDPSocketBufferBytes        = 64 * 1024 * 1024
+	probeRouteRelayTCPKeepAlivePeriod          = 30 * time.Second
+	probeRouteRelayQUICInitialStreamWindow     = 128 * 1024 * 1024
+	probeRouteRelayQUICMaxStreamWindow         = 512 * 1024 * 1024
+	probeRouteRelayQUICInitialConnectionWindow = 512 * 1024 * 1024
+	probeRouteRelayQUICMaxConnectionWindow     = 1024 * 1024 * 1024
+	probeRouteRelayQUICMaxIncomingStreams      = 1024
+	probeRouteRelayQUICDatagramMaxPayloadBytes = 1200
 
-	probeChainRelayProtocolQualityTTL          = 10 * time.Minute
-	probeChainRelayProtocolNegativeTTL         = 60 * time.Second
-	probeChainRelayProtocolProbeTimeout        = 6 * time.Second
-	probeChainRelayProtocolSwitchMinHold       = 30 * time.Second
-	probeChainRelaySpeedTestBytes              = 128 * 1024 * 1024
-	probeChainRelaySpeedTestMaxBytes           = 256 * 1024 * 1024
-	probeChainRelaySpeedTestTimeout            = 10 * time.Second
-	probeChainRelaySpeedTestChunkBytes         = 1024 * 1024
-	probeChainRelayWebSocketBufferBytes        = 512 * 1024
-	probeChainRelayWebSocketWriteBatchBytes    = 1024 * 1024
-	probeChainRelayWebSocketWriteQueueDepth    = 64
-	probeChainRelayTCPSocketBufferBytes        = 8 * 1024 * 1024
-	probeChainRelayUDPSocketBufferBytes        = 64 * 1024 * 1024
-	probeChainRelayTCPKeepAlivePeriod          = 30 * time.Second
-	probeChainRelayQUICInitialStreamWindow     = 128 * 1024 * 1024
-	probeChainRelayQUICMaxStreamWindow         = 512 * 1024 * 1024
-	probeChainRelayQUICInitialConnectionWindow = 512 * 1024 * 1024
-	probeChainRelayQUICMaxConnectionWindow     = 1024 * 1024 * 1024
-	probeChainRelayQUICMaxIncomingStreams      = 1024
-	probeChainRelayQUICDatagramMaxPayloadBytes = 1200
-
-	probeChainAuthPacketType        = "github_copilot_auth_request"
-	probeChainAuthPacketVersion     = "2025-03-22"
-	probeChainAuthFailureThreshold  = 5
-	probeChainAuthBlacklistTTL      = 5 * time.Hour
-	probeChainAuthFailureMinDelayMs = 200
-	probeChainAuthFailureMaxDelayMs = 400
-	probeChainAuthReplayTTL         = 10 * time.Minute
+	probeRouteAuthPacketType        = "github_copilot_auth_request"
+	probeRouteAuthPacketVersion     = "2025-03-22"
+	probeRouteAuthFailureThreshold  = 5
+	probeRouteAuthBlacklistTTL      = 5 * time.Hour
+	probeRouteAuthFailureMinDelayMs = 200
+	probeRouteAuthFailureMaxDelayMs = 400
+	probeRouteAuthReplayTTL         = 10 * time.Minute
 )
 
-var probeChainAuthIPStateMap = struct {
+var probeRouteAuthIPStateMap = struct {
 	mu    sync.Mutex
-	items map[string]probeChainAuthIPState
-}{items: make(map[string]probeChainAuthIPState)}
+	items map[string]probeRouteAuthIPState
+}{items: make(map[string]probeRouteAuthIPState)}
 
-var probeChainAuthTicketStore = struct {
+var probeRouteAuthTicketStore = struct {
 	mu    sync.RWMutex
 	items map[string]string
 }{items: make(map[string]string)}
 
-var probeChainAuthTicketNow = time.Now
+var probeRouteAuthTicketNow = time.Now
 
-var probeChainAuthReplayStore = struct {
+var probeRouteAuthReplayStore = struct {
 	mu    sync.Mutex
 	items map[string]time.Time
 }{items: make(map[string]time.Time)}
 
-func normalizeProbeChainLinkLayer(raw string) string {
+func normalizeProbeRouteRouteLayer(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "websocket-h3", "h3", "http3", "quic":
 		return "websocket-h3"
@@ -214,18 +211,18 @@ func normalizeProbeChainLinkLayer(raw string) string {
 	}
 }
 
-func normalizeProbeChainDialMode(raw string) string {
+func normalizeProbeRouteDialMode(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case probeChainDialModeReverse, "rev":
-		return probeChainDialModeReverse
-	case probeChainDialModeNone:
-		return probeChainDialModeNone
+	case probeRouteDialModeReverse, "rev":
+		return probeRouteDialModeReverse
+	case probeRouteDialModeNone:
+		return probeRouteDialModeNone
 	default:
-		return probeChainDialModeForward
+		return probeRouteDialModeForward
 	}
 }
 
-func parseProbeChainUserPublicKey(raw string) (ed25519.PublicKey, error) {
+func parseProbeRouteUserPublicKey(raw string) (ed25519.PublicKey, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return nil, fmt.Errorf("public key is required")
@@ -257,65 +254,65 @@ func parseProbeChainUserPublicKey(raw string) (ed25519.PublicKey, error) {
 	return nil, fmt.Errorf("unsupported public key format")
 }
 
-func nextProbeChainBridgeBackoff(current time.Duration) time.Duration {
+func nextProbeRouteBridgeBackoff(current time.Duration) time.Duration {
 	if current <= 0 {
-		return probeChainBridgeRetryMin
+		return probeRouteBridgeRetryMin
 	}
 	next := current * 2
-	if next > probeChainBridgeRetryMax {
-		return probeChainBridgeRetryMax
+	if next > probeRouteBridgeRetryMax {
+		return probeRouteBridgeRetryMax
 	}
 	return next
 }
 
-func normalizeProbeChainBridgeRole(raw string) string {
+func normalizeProbeRouteBridgeRole(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case probeChainBridgeRoleToPrev:
-		return probeChainBridgeRoleToPrev
+	case probeRouteBridgeRoleToPrev:
+		return probeRouteBridgeRoleToPrev
 	default:
-		return probeChainBridgeRoleToNext
+		return probeRouteBridgeRoleToNext
 	}
 }
 
-func resolveProbeChainIDFromRequest(r *http.Request) string {
+func resolveProbeRouteIDFromRequest(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
-	chainID := strings.TrimSpace(r.URL.Query().Get("chain_id"))
-	if chainID == "" {
-		chainID = strings.TrimSpace(r.Header.Get(probeChainCodexChainIDHeader))
+	routeID := strings.TrimSpace(r.URL.Query().Get("route_id"))
+	if routeID == "" {
+		routeID = strings.TrimSpace(r.Header.Get(probeRouteCodexRouteIDHeader))
 	}
-	if chainID == "" {
-		chainID = strings.TrimSpace(r.Header.Get(probeChainLegacyChainIDHeader))
+	if routeID == "" {
+		routeID = strings.TrimSpace(r.Header.Get(probeRouteLegacyRouteIDHeader))
 	}
-	return chainID
+	return routeID
 }
 
-func readProbeChainAuthEnvelopeFromHeaders(headers http.Header, chainID string) (probeChainAuthEnvelope, error) {
-	nonce, err := parseProbeChainBearerToken(headers.Get("Authorization"))
+func readProbeRouteAuthEnvelopeFromHeaders(headers http.Header, routeID string) (probeRouteAuthEnvelope, error) {
+	nonce, err := parseProbeRouteBearerToken(headers.Get("Authorization"))
 	if err != nil {
-		return probeChainAuthEnvelope{}, err
+		return probeRouteAuthEnvelope{}, err
 	}
-	env := probeChainAuthEnvelope{
-		Type:       probeChainAuthPacketType,
-		APIVersion: strings.TrimSpace(headers.Get(probeChainCodexVersionHeader)),
-		Timestamp:  strings.TrimSpace(headers.Get(probeChainCodexAuthTimeHeader)),
-		Mode:       strings.ToLower(strings.TrimSpace(headers.Get(probeChainCodexAuthModeHeader))),
-		ChainID:    strings.TrimSpace(chainID),
+	env := probeRouteAuthEnvelope{
+		Type:       probeRouteAuthPacketType,
+		APIVersion: strings.TrimSpace(headers.Get(probeRouteCodexVersionHeader)),
+		Timestamp:  strings.TrimSpace(headers.Get(probeRouteCodexAuthTimeHeader)),
+		Mode:       strings.ToLower(strings.TrimSpace(headers.Get(probeRouteCodexAuthModeHeader))),
+		RouteID:    strings.TrimSpace(routeID),
 		Nonce:      nonce,
-		MAC:        strings.TrimSpace(headers.Get(probeChainCodexMACHeader)),
-		AuthTicket: strings.TrimSpace(headers.Get(probeChainCodexAuthTicketHeader)),
+		MAC:        strings.TrimSpace(headers.Get(probeRouteCodexMACHeader)),
+		AuthTicket: strings.TrimSpace(headers.Get(probeRouteCodexAuthTicketHeader)),
 	}
 	if env.APIVersion == "" {
-		env.APIVersion = probeChainAuthPacketVersion
+		env.APIVersion = probeRouteAuthPacketVersion
 	}
-	if env.ChainID == "" {
-		env.ChainID = strings.TrimSpace(headers.Get(probeChainCodexChainIDHeader))
+	if env.RouteID == "" {
+		env.RouteID = strings.TrimSpace(headers.Get(probeRouteCodexRouteIDHeader))
 	}
 	return env, nil
 }
 
-func parseProbeChainBearerToken(raw string) (string, error) {
+func parseProbeRouteBearerToken(raw string) (string, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
 		return "", errors.New("authorization bearer token is required")
@@ -327,120 +324,120 @@ func parseProbeChainBearerToken(raw string) (string, error) {
 	return "", errors.New("authorization bearer token is invalid")
 }
 
-type probeChainTunedTCPListener struct {
+type probeRouteTunedTCPListener struct {
 	*net.TCPListener
 }
 
-func (l *probeChainTunedTCPListener) Accept() (net.Conn, error) {
+func (l *probeRouteTunedTCPListener) Accept() (net.Conn, error) {
 	conn, err := l.AcceptTCP()
 	if err != nil {
 		return nil, err
 	}
-	applyProbeChainTCPConnTuning(conn)
+	applyProbeRouteTCPConnTuning(conn)
 	return conn, nil
 }
 
-func applyProbeChainTCPConnTuning(conn *net.TCPConn) {
+func applyProbeRouteTCPConnTuning(conn *net.TCPConn) {
 	if conn == nil {
 		return
 	}
 	_ = conn.SetKeepAlive(true)
-	_ = conn.SetKeepAlivePeriod(probeChainRelayTCPKeepAlivePeriod)
-	_ = conn.SetReadBuffer(probeChainRelayTCPSocketBufferBytes)
-	_ = conn.SetWriteBuffer(probeChainRelayTCPSocketBufferBytes)
+	_ = conn.SetKeepAlivePeriod(probeRouteRelayTCPKeepAlivePeriod)
+	_ = conn.SetReadBuffer(probeRouteRelayTCPSocketBufferBytes)
+	_ = conn.SetWriteBuffer(probeRouteRelayTCPSocketBufferBytes)
 }
 
-func newProbeChainQUICConfig(maxIncomingStreams int64) *quic.Config {
+func newProbeRouteQUICConfig(maxIncomingStreams int64) *quic.Config {
 	return &quic.Config{
-		InitialStreamReceiveWindow:     probeChainRelayQUICInitialStreamWindow,
-		MaxStreamReceiveWindow:         probeChainRelayQUICMaxStreamWindow,
-		InitialConnectionReceiveWindow: probeChainRelayQUICInitialConnectionWindow,
-		MaxConnectionReceiveWindow:     probeChainRelayQUICMaxConnectionWindow,
+		InitialStreamReceiveWindow:     probeRouteRelayQUICInitialStreamWindow,
+		MaxStreamReceiveWindow:         probeRouteRelayQUICMaxStreamWindow,
+		InitialConnectionReceiveWindow: probeRouteRelayQUICInitialConnectionWindow,
+		MaxConnectionReceiveWindow:     probeRouteRelayQUICMaxConnectionWindow,
 		MaxIncomingStreams:             maxIncomingStreams,
 		EnableDatagrams:                true,
 	}
 }
 
-func recordProbeChainAuthNonce(chainID string, nonce string) error {
-	cleanChainID := strings.TrimSpace(chainID)
+func recordProbeRouteAuthNonce(routeID string, nonce string) error {
+	cleanRouteID := strings.TrimSpace(routeID)
 	cleanNonce := strings.TrimSpace(nonce)
-	if cleanChainID == "" || cleanNonce == "" {
+	if cleanRouteID == "" || cleanNonce == "" {
 		return errors.New("auth nonce is required")
 	}
-	key := cleanChainID + "\n" + cleanNonce
+	key := cleanRouteID + "\n" + cleanNonce
 	now := time.Now()
-	probeChainAuthReplayStore.mu.Lock()
-	defer probeChainAuthReplayStore.mu.Unlock()
-	for itemKey, expiresAt := range probeChainAuthReplayStore.items {
+	probeRouteAuthReplayStore.mu.Lock()
+	defer probeRouteAuthReplayStore.mu.Unlock()
+	for itemKey, expiresAt := range probeRouteAuthReplayStore.items {
 		if now.After(expiresAt) {
-			delete(probeChainAuthReplayStore.items, itemKey)
+			delete(probeRouteAuthReplayStore.items, itemKey)
 		}
 	}
-	if expiresAt, exists := probeChainAuthReplayStore.items[key]; exists && expiresAt.After(now) {
+	if expiresAt, exists := probeRouteAuthReplayStore.items[key]; exists && expiresAt.After(now) {
 		return errors.New("auth nonce replay detected")
 	}
-	probeChainAuthReplayStore.items[key] = now.Add(probeChainAuthReplayTTL)
+	probeRouteAuthReplayStore.items[key] = now.Add(probeRouteAuthReplayTTL)
 	return nil
 }
 
-func rememberProbeChainAuthTicket(chainID string, authTicket string) {
-	id := strings.TrimSpace(chainID)
+func rememberProbeRouteAuthTicket(routeID string, authTicket string) {
+	id := strings.TrimSpace(routeID)
 	ticket := strings.TrimSpace(authTicket)
 	if id == "" || ticket == "" {
 		return
 	}
-	probeChainAuthTicketStore.mu.Lock()
-	probeChainAuthTicketStore.items[id] = ticket
-	for key, value := range probeChainAuthTicketStore.items {
+	probeRouteAuthTicketStore.mu.Lock()
+	probeRouteAuthTicketStore.items[id] = ticket
+	for key, value := range probeRouteAuthTicketStore.items {
 		if strings.EqualFold(strings.TrimSpace(key), id) && key != id {
-			delete(probeChainAuthTicketStore.items, key)
-			probeChainAuthTicketStore.items[id] = value
+			delete(probeRouteAuthTicketStore.items, key)
+			probeRouteAuthTicketStore.items[id] = value
 		}
 	}
-	probeChainAuthTicketStore.mu.Unlock()
+	probeRouteAuthTicketStore.mu.Unlock()
 }
 
-func lookupProbeChainAuthTicket(chainID string) string {
-	id := strings.TrimSpace(chainID)
+func lookupProbeRouteAuthTicket(routeID string) string {
+	id := strings.TrimSpace(routeID)
 	if id == "" {
 		return ""
 	}
-	probeChainAuthTicketStore.mu.RLock()
-	ticket := strings.TrimSpace(probeChainAuthTicketStore.items[id])
-	probeChainAuthTicketStore.mu.RUnlock()
+	probeRouteAuthTicketStore.mu.RLock()
+	ticket := strings.TrimSpace(probeRouteAuthTicketStore.items[id])
+	probeRouteAuthTicketStore.mu.RUnlock()
 	if ticket != "" {
 		return ticket
 	}
 	lower := strings.ToLower(id)
-	probeChainAuthTicketStore.mu.Lock()
-	for key, value := range probeChainAuthTicketStore.items {
+	probeRouteAuthTicketStore.mu.Lock()
+	for key, value := range probeRouteAuthTicketStore.items {
 		if strings.EqualFold(strings.TrimSpace(key), lower) {
-			probeChainAuthTicketStore.items[id] = value
+			probeRouteAuthTicketStore.items[id] = value
 			ticket = strings.TrimSpace(value)
 			break
 		}
 	}
-	probeChainAuthTicketStore.mu.Unlock()
+	probeRouteAuthTicketStore.mu.Unlock()
 	return ticket
 }
 
-func applyProbeChainAuthTicketHeader(headers http.Header, chainID string) {
+func applyProbeRouteAuthTicketHeader(headers http.Header, routeID string) {
 	if headers == nil {
 		return
 	}
-	if ticket := lookupProbeChainAuthTicket(chainID); ticket != "" {
-		headers.Set(probeChainCodexAuthTicketHeader, ticket)
+	if ticket := lookupProbeRouteAuthTicket(routeID); ticket != "" {
+		headers.Set(probeRouteCodexAuthTicketHeader, ticket)
 	}
 }
 
-type probeChainUserAuthTicketPayload struct {
+type probeRouteUserAuthTicketPayload struct {
 	Version       string `json:"version,omitempty"`
-	ChainID       string `json:"chain_id,omitempty"`
+	RouteID       string `json:"route_id,omitempty"`
 	UserPublicKey string `json:"user_public_key,omitempty"`
 	IssuedAt      string `json:"issued_at,omitempty"`
 }
 
-func verifyProbeChainAuthTicketIssuedAt(raw string, now time.Time) error {
+func verifyProbeRouteAuthTicketIssuedAt(raw string, now time.Time) error {
 	text := strings.TrimSpace(raw)
 	if text == "" {
 		return errors.New("auth_ticket issued_at is required")
@@ -458,40 +455,40 @@ func verifyProbeChainAuthTicketIssuedAt(raw string, now time.Time) error {
 	return nil
 }
 
-func buildProbeChainHMAC(secret string, chainID string, nonce string) string {
+func buildProbeRouteHMAC(secret string, routeID string, nonce string) string {
 	mac := hmac.New(sha256.New, []byte(strings.TrimSpace(secret)))
-	_, _ = mac.Write([]byte(strings.TrimSpace(chainID)))
+	_, _ = mac.Write([]byte(strings.TrimSpace(routeID)))
 	_, _ = mac.Write([]byte("\n"))
 	_, _ = mac.Write([]byte(strings.TrimSpace(nonce)))
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func resolveProbeChainSourceIPFromRequest(r *http.Request) string {
+func resolveProbeRouteSourceIPFromRequest(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
 	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwarded != "" {
 		parts := strings.Split(forwarded, ",")
 		if len(parts) > 0 {
-			if ip := normalizeProbeChainIP(strings.TrimSpace(parts[0])); ip != "" {
+			if ip := normalizeProbeRouteIP(strings.TrimSpace(parts[0])); ip != "" {
 				return ip
 			}
 		}
 	}
-	return resolveProbeChainSourceIPFromAddrString(strings.TrimSpace(r.RemoteAddr))
+	return resolveProbeRouteSourceIPFromAddrString(strings.TrimSpace(r.RemoteAddr))
 }
 
-func resolveProbeChainSourceIPFromAddrString(raw string) string {
+func resolveProbeRouteSourceIPFromAddrString(raw string) string {
 	if raw == "" {
 		return ""
 	}
 	if host, _, err := net.SplitHostPort(raw); err == nil {
-		return normalizeProbeChainIP(host)
+		return normalizeProbeRouteIP(host)
 	}
-	return normalizeProbeChainIP(raw)
+	return normalizeProbeRouteIP(raw)
 }
 
-func normalizeProbeChainIP(raw string) string {
+func normalizeProbeRouteIP(raw string) string {
 	clean := strings.TrimSpace(strings.Trim(raw, "[]"))
 	if clean == "" {
 		return ""
@@ -502,16 +499,16 @@ func normalizeProbeChainIP(raw string) string {
 	return ""
 }
 
-func delayProbeChainAuthFailure() {
-	delay := probeChainAuthFailureDelay()
+func delayProbeRouteAuthFailure() {
+	delay := probeRouteAuthFailureDelay()
 	if delay > 0 {
 		time.Sleep(delay)
 	}
 }
 
-func probeChainAuthFailureDelay() time.Duration {
-	minDelay := probeChainAuthFailureMinDelayMs
-	maxDelay := probeChainAuthFailureMaxDelayMs
+func probeRouteAuthFailureDelay() time.Duration {
+	minDelay := probeRouteAuthFailureMinDelayMs
+	maxDelay := probeRouteAuthFailureMaxDelayMs
 	if maxDelay < minDelay {
 		maxDelay = minDelay
 	}
@@ -529,15 +526,15 @@ func probeChainAuthFailureDelay() time.Duration {
 	return time.Duration(minDelay+randomOffset) * time.Millisecond
 }
 
-func isProbeChainAuthIPBlacklisted(ip string) (bool, time.Time) {
+func isProbeRouteAuthIPBlacklisted(ip string) (bool, time.Time) {
 	target := strings.TrimSpace(ip)
 	if target == "" {
 		return false, time.Time{}
 	}
 	now := time.Now()
-	probeChainAuthIPStateMap.mu.Lock()
-	defer probeChainAuthIPStateMap.mu.Unlock()
-	state, ok := probeChainAuthIPStateMap.items[target]
+	probeRouteAuthIPStateMap.mu.Lock()
+	defer probeRouteAuthIPStateMap.mu.Unlock()
+	state, ok := probeRouteAuthIPStateMap.items[target]
 	if !ok {
 		return false, time.Time{}
 	}
@@ -548,22 +545,22 @@ func isProbeChainAuthIPBlacklisted(ip string) (bool, time.Time) {
 		return true, state.BlacklistedTil
 	}
 	if !state.BlacklistedTil.IsZero() {
-		delete(probeChainAuthIPStateMap.items, target)
+		delete(probeRouteAuthIPStateMap.items, target)
 	}
 	return false, time.Time{}
 }
 
-func recordProbeChainAuthFailure(ip string) (failures int, blacklisted bool, until time.Time) {
+func recordProbeRouteAuthFailure(ip string) (failures int, blacklisted bool, until time.Time) {
 	target := strings.TrimSpace(ip)
 	if target == "" {
 		return 0, false, time.Time{}
 	}
 	now := time.Now()
-	probeChainAuthIPStateMap.mu.Lock()
-	defer probeChainAuthIPStateMap.mu.Unlock()
-	state := probeChainAuthIPStateMap.items[target]
+	probeRouteAuthIPStateMap.mu.Lock()
+	defer probeRouteAuthIPStateMap.mu.Unlock()
+	state := probeRouteAuthIPStateMap.items[target]
 	if state.Manual {
-		return probeChainAuthFailureThreshold, true, time.Time{}
+		return probeRouteAuthFailureThreshold, true, time.Time{}
 	}
 	if !state.BlacklistedTil.IsZero() && !now.Before(state.BlacklistedTil) {
 		state.BlacklistedTil = time.Time{}
@@ -571,68 +568,68 @@ func recordProbeChainAuthFailure(ip string) (failures int, blacklisted bool, unt
 	}
 	state.FailedAttempts++
 	failures = state.FailedAttempts
-	if state.FailedAttempts >= probeChainAuthFailureThreshold {
-		state.BlacklistedTil = now.Add(probeChainAuthBlacklistTTL)
+	if state.FailedAttempts >= probeRouteAuthFailureThreshold {
+		state.BlacklistedTil = now.Add(probeRouteAuthBlacklistTTL)
 		state.FailedAttempts = 0
 		blacklisted = true
 		until = state.BlacklistedTil
-		failures = probeChainAuthFailureThreshold
+		failures = probeRouteAuthFailureThreshold
 	}
-	probeChainAuthIPStateMap.items[target] = state
+	probeRouteAuthIPStateMap.items[target] = state
 	return failures, blacklisted, until
 }
 
-func resetProbeChainAuthFailure(ip string) {
+func resetProbeRouteAuthFailure(ip string) {
 	target := strings.TrimSpace(ip)
 	if target == "" {
 		return
 	}
-	probeChainAuthIPStateMap.mu.Lock()
-	defer probeChainAuthIPStateMap.mu.Unlock()
-	state, ok := probeChainAuthIPStateMap.items[target]
+	probeRouteAuthIPStateMap.mu.Lock()
+	defer probeRouteAuthIPStateMap.mu.Unlock()
+	state, ok := probeRouteAuthIPStateMap.items[target]
 	if ok && state.Manual {
 		state.FailedAttempts = 0
-		probeChainAuthIPStateMap.items[target] = state
+		probeRouteAuthIPStateMap.items[target] = state
 		return
 	}
-	delete(probeChainAuthIPStateMap.items, target)
+	delete(probeRouteAuthIPStateMap.items, target)
 }
 
-func resolveProbeChainAuthBlacklistPath() (string, error) {
+func resolveProbeRouteAuthBlacklistPath() (string, error) {
 	dataPath, err := resolveDataDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dataPath, "probe_chain_auth_blacklist.json"), nil
+	return filepath.Join(dataPath, "probe_route_auth_blacklist.json"), nil
 }
 
-func loadProbeChainAuthBlacklistFromDisk() error {
-	path, err := resolveProbeChainAuthBlacklistPath()
+func loadProbeRouteAuthBlacklistFromDisk() error {
+	path, err := resolveProbeRouteAuthBlacklistPath()
 	if err != nil {
 		return err
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return persistProbeChainAuthBlacklistManualIPs(nil)
+			return persistProbeRouteAuthBlacklistManualIPs(nil)
 		}
 		return err
 	}
-	var payload probeChainAuthBlacklistFile
+	var payload probeRouteAuthBlacklistFile
 	if len(strings.TrimSpace(string(raw))) > 0 {
 		if err := json.Unmarshal(raw, &payload); err != nil {
 			return err
 		}
 	}
-	return setProbeChainAuthBlacklistManualIPs(payload.IPs, false)
+	return setProbeRouteAuthBlacklistManualIPs(payload.IPs, false)
 }
 
-func persistProbeChainAuthBlacklistManualIPs(ips []string) error {
-	path, err := resolveProbeChainAuthBlacklistPath()
+func persistProbeRouteAuthBlacklistManualIPs(ips []string) error {
+	path, err := resolveProbeRouteAuthBlacklistPath()
 	if err != nil {
 		return err
 	}
-	payload := probeChainAuthBlacklistFile{IPs: normalizeProbeChainAuthBlacklistIPs(ips)}
+	payload := probeRouteAuthBlacklistFile{IPs: normalizeProbeRouteAuthBlacklistIPs(ips)}
 	raw, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return err
@@ -640,22 +637,22 @@ func persistProbeChainAuthBlacklistManualIPs(ips []string) error {
 	return os.WriteFile(path, raw, 0o644)
 }
 
-func setProbeChainAuthBlacklistManualIPs(ips []string, persist bool) error {
-	normalized := normalizeProbeChainAuthBlacklistIPs(ips)
-	probeChainAuthIPStateMap.mu.Lock()
-	next := make(map[string]probeChainAuthIPState, len(normalized))
+func setProbeRouteAuthBlacklistManualIPs(ips []string, persist bool) error {
+	normalized := normalizeProbeRouteAuthBlacklistIPs(ips)
+	probeRouteAuthIPStateMap.mu.Lock()
+	next := make(map[string]probeRouteAuthIPState, len(normalized))
 	for _, ip := range normalized {
-		next[ip] = probeChainAuthIPState{Manual: true}
+		next[ip] = probeRouteAuthIPState{Manual: true}
 	}
-	probeChainAuthIPStateMap.items = next
-	probeChainAuthIPStateMap.mu.Unlock()
+	probeRouteAuthIPStateMap.items = next
+	probeRouteAuthIPStateMap.mu.Unlock()
 	if persist {
-		return persistProbeChainAuthBlacklistManualIPs(normalized)
+		return persistProbeRouteAuthBlacklistManualIPs(normalized)
 	}
 	return nil
 }
 
-func normalizeProbeChainAuthBlacklistIPs(ips []string) []string {
+func normalizeProbeRouteAuthBlacklistIPs(ips []string) []string {
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(ips))
 	for _, raw := range ips {
@@ -676,7 +673,7 @@ func normalizeProbeChainAuthBlacklistIPs(ips []string) []string {
 	return out
 }
 
-func parseProbeChainAuthBlacklistContent(content string) ([]string, error) {
+func parseProbeRouteAuthBlacklistContent(content string) ([]string, error) {
 	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
 	ips := make([]string, 0, len(lines))
 	for index, line := range lines {
@@ -693,27 +690,27 @@ func parseProbeChainAuthBlacklistContent(content string) ([]string, error) {
 		}
 		ips = append(ips, parsed.String())
 	}
-	return normalizeProbeChainAuthBlacklistIPs(ips), nil
+	return normalizeProbeRouteAuthBlacklistIPs(ips), nil
 }
 
-func listProbeChainAuthBlacklistEntries() []probeChainAuthBlacklistEntry {
+func listProbeRouteAuthBlacklistEntries() []probeRouteAuthBlacklistEntry {
 	now := time.Now()
-	probeChainAuthIPStateMap.mu.Lock()
-	defer probeChainAuthIPStateMap.mu.Unlock()
-	items := make([]probeChainAuthBlacklistEntry, 0, len(probeChainAuthIPStateMap.items))
-	for ip, state := range probeChainAuthIPStateMap.items {
+	probeRouteAuthIPStateMap.mu.Lock()
+	defer probeRouteAuthIPStateMap.mu.Unlock()
+	items := make([]probeRouteAuthBlacklistEntry, 0, len(probeRouteAuthIPStateMap.items))
+	for ip, state := range probeRouteAuthIPStateMap.items {
 		if state.Manual {
-			items = append(items, probeChainAuthBlacklistEntry{IP: ip, Manual: true})
+			items = append(items, probeRouteAuthBlacklistEntry{IP: ip, Manual: true})
 			continue
 		}
 		if state.BlacklistedTil.IsZero() {
 			continue
 		}
 		if !now.Before(state.BlacklistedTil) {
-			delete(probeChainAuthIPStateMap.items, ip)
+			delete(probeRouteAuthIPStateMap.items, ip)
 			continue
 		}
-		items = append(items, probeChainAuthBlacklistEntry{
+		items = append(items, probeRouteAuthBlacklistEntry{
 			IP:        ip,
 			Until:     state.BlacklistedTil.UTC().Format(time.RFC3339),
 			ExpiresIn: time.Until(state.BlacklistedTil).Round(time.Second).String(),
@@ -725,8 +722,8 @@ func listProbeChainAuthBlacklistEntries() []probeChainAuthBlacklistEntry {
 	return items
 }
 
-func probeChainAuthBlacklistContent() string {
-	entries := listProbeChainAuthBlacklistEntries()
+func probeRouteAuthBlacklistContent() string {
+	entries := listProbeRouteAuthBlacklistEntries()
 	lines := make([]string, 0, len(entries))
 	for _, item := range entries {
 		lines = append(lines, item.IP)

@@ -68,41 +68,41 @@ type probeRelayProtocolStateSnapshot struct {
 }
 
 type probeRelayStatusItem struct {
-	ChainID        string                            `json:"chain_id"`
-	ChainName      string                            `json:"chain_name,omitempty"`
-	ChainType      string                            `json:"chain_type,omitempty"`
+	RouteID        string                            `json:"route_id"`
+	RouteName      string                            `json:"route_name,omitempty"`
+	RouteType      string                            `json:"route_type,omitempty"`
 	Role           string                            `json:"role,omitempty"`
 	ListenHost     string                            `json:"listen_host,omitempty"`
 	ListenPort     int                               `json:"listen_port,omitempty"`
-	LinkLayer      string                            `json:"link_layer,omitempty"`
+	RouteLayer     string                            `json:"route_layer,omitempty"`
 	NextHost       string                            `json:"next_host,omitempty"`
 	NextPort       int                               `json:"next_port,omitempty"`
 	NextNodeID     string                            `json:"next_node_id,omitempty"`
-	NextLinkLayer  string                            `json:"next_link_layer,omitempty"`
+	NextRouteLayer string                            `json:"next_route_layer,omitempty"`
 	NextDialMode   string                            `json:"next_dial_mode,omitempty"`
 	PrevHost       string                            `json:"prev_host,omitempty"`
 	PrevPort       int                               `json:"prev_port,omitempty"`
 	PrevNodeID     string                            `json:"prev_node_id,omitempty"`
-	PrevLinkLayer  string                            `json:"prev_link_layer,omitempty"`
+	PrevRouteLayer string                            `json:"prev_route_layer,omitempty"`
 	PrevDialMode   string                            `json:"prev_dial_mode,omitempty"`
 	ListenState    *probeRelayProtocolStateSnapshot  `json:"listen_state,omitempty"`
 	NextState      *probeRelayProtocolStateSnapshot  `json:"next_state,omitempty"`
 	PrevState      *probeRelayProtocolStateSnapshot  `json:"prev_state,omitempty"`
 	VirtualRouter  *probeVirtualRouterRuntimeStats   `json:"virtual_router,omitempty"`
-	BridgeStatus   *probeChainBridgeRuntimeStatus    `json:"bridge_status,omitempty"`
-	BridgeSessions []probeChainBridgeSessionSnapshot `json:"bridge_sessions,omitempty"`
+	BridgeStatus   *probeRouteBridgeRuntimeStatus    `json:"bridge_status,omitempty"`
+	BridgeSessions []probeRouteBridgeSessionSnapshot `json:"bridge_sessions,omitempty"`
 	UpdatedAt      string                            `json:"updated_at,omitempty"`
 }
 
-type probeChainBridgeRuntimeStatus struct {
+type probeRouteBridgeRuntimeStatus struct {
 	DownstreamActive int                               `json:"downstream_active"`
 	UpstreamActive   int                               `json:"upstream_active"`
-	Sessions         []probeChainBridgeSessionSnapshot `json:"sessions,omitempty"`
+	Sessions         []probeRouteBridgeSessionSnapshot `json:"sessions,omitempty"`
 	UpdatedAt        string                            `json:"updated_at,omitempty"`
 }
 
-type probeChainBridgeSessionSnapshot struct {
-	ChainID             string `json:"chain_id,omitempty"`
+type probeRouteBridgeSessionSnapshot struct {
+	RouteID             string `json:"route_id,omitempty"`
 	RuntimeRole         string `json:"runtime_role,omitempty"`
 	Direction           string `json:"direction,omitempty"`
 	SessionID           string `json:"session_id,omitempty"`
@@ -293,22 +293,22 @@ func cloneProbeRelayStatusItems(values []probeRelayStatusItem) []probeRelayStatu
 	out := make([]probeRelayStatusItem, 0, len(values))
 	for _, raw := range values {
 		item := raw
-		item.ChainID = strings.TrimSpace(item.ChainID)
-		if item.ChainID == "" {
+		item.RouteID = strings.TrimSpace(item.RouteID)
+		if item.RouteID == "" {
 			continue
 		}
-		item.ChainName = strings.TrimSpace(item.ChainName)
-		item.ChainType = strings.TrimSpace(item.ChainType)
+		item.RouteName = strings.TrimSpace(item.RouteName)
+		item.RouteType = strings.TrimSpace(item.RouteType)
 		item.Role = strings.TrimSpace(item.Role)
 		item.ListenHost = strings.TrimSpace(item.ListenHost)
-		item.LinkLayer = strings.TrimSpace(item.LinkLayer)
+		item.RouteLayer = strings.TrimSpace(item.RouteLayer)
 		item.NextHost = strings.TrimSpace(item.NextHost)
 		item.NextNodeID = strings.TrimSpace(item.NextNodeID)
-		item.NextLinkLayer = strings.TrimSpace(item.NextLinkLayer)
+		item.NextRouteLayer = strings.TrimSpace(item.NextRouteLayer)
 		item.NextDialMode = strings.TrimSpace(item.NextDialMode)
 		item.PrevHost = strings.TrimSpace(item.PrevHost)
 		item.PrevNodeID = strings.TrimSpace(item.PrevNodeID)
-		item.PrevLinkLayer = strings.TrimSpace(item.PrevLinkLayer)
+		item.PrevRouteLayer = strings.TrimSpace(item.PrevRouteLayer)
 		item.PrevDialMode = strings.TrimSpace(item.PrevDialMode)
 		item.UpdatedAt = strings.TrimSpace(item.UpdatedAt)
 		out = append(out, item)

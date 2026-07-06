@@ -23,15 +23,15 @@ import (
 )
 
 const (
-	probeVirtualRouterRuntimeChainIDPrefix    = "vrouter-"
-	probeVirtualRouterRuntimeLinkLayer        = "websocket"
+	probeVirtualRouterRuntimeRouteIDPrefix    = "vrouter-"
+	probeVirtualRouterRuntimeRouteLayer       = "websocket"
 	probeVirtualRouterRuntimeRole             = "virtual_router"
 	probeVirtualRouterFrameLinkTXBufferFrames = 1024
 	probeVirtualRouterFrameLinkRXBufferFrames = 1024
 )
 
 type probeVirtualRouterRuntimeConfig struct {
-	chainID       string
+	routeID       string
 	name          string
 	userID        string
 	rawPublicKey  string
@@ -40,7 +40,7 @@ type probeVirtualRouterRuntimeConfig struct {
 	authTicket    string
 	listenHost    string
 	listenPort    int
-	linkLayer     string
+	routeLayer    string
 	fromNodeID    string
 	toNodeID      string
 	localNodeID   string
@@ -102,7 +102,7 @@ type probeVirtualRouterPhysicalCarrier struct {
 type probeVirtualRouterRuleRuntime struct {
 	RuleID            string
 	RuleName          string
-	ChainID           string
+	RouteID           string
 	FromNodeID        string
 	ToNodeID          string
 	LocalNodeID       string
@@ -136,12 +136,12 @@ var probeVirtualRouterRuleRuntimeState = struct {
 	items map[string]*probeVirtualRouterRuleRuntime
 }{items: make(map[string]*probeVirtualRouterRuleRuntime)}
 
-func isProbeVirtualRouterRuntimeChainID(chainID string) bool {
-	return strings.HasPrefix(strings.TrimSpace(chainID), probeVirtualRouterRuntimeChainIDPrefix)
+func isProbeVirtualRouterRuntimeRouteID(routeID string) bool {
+	return strings.HasPrefix(strings.TrimSpace(routeID), probeVirtualRouterRuntimeRouteIDPrefix)
 }
 
 func applyProbeVirtualRouterRuntimesForNode(identity nodeIdentity, controllerBaseURL string, config probeVirtualRouterConfig) {
-	localNodeID := normalizeProbeChainNodeID(identity.NodeID)
+	localNodeID := normalizeProbeRouteNodeID(identity.NodeID)
 	if localNodeID == "" {
 		stopProbeVirtualRouterRuntimesExcept(nil, "virtual router local node id empty")
 		return
@@ -155,22 +155,22 @@ func applyProbeVirtualRouterRuntimesForNode(identity nodeIdentity, controllerBas
 	configs := buildProbeVirtualRouterRuntimeConfigsForNode(config, identity, controllerBaseURL)
 	desired := make(map[string]struct{}, len(configs))
 	for _, cfg := range configs {
-		desired[strings.TrimSpace(cfg.chainID)] = struct{}{}
+		desired[strings.TrimSpace(cfg.routeID)] = struct{}{}
 	}
 	stopProbeVirtualRouterRuntimesExcept(desired, "virtual router topology changed")
 	clearProbeVirtualRouterRuleRuntimesExcept(desired)
 	for _, cfg := range configs {
-		if strings.TrimSpace(cfg.chainID) == "" {
+		if strings.TrimSpace(cfg.routeID) == "" {
 			continue
 		}
-		if isSameProbeVirtualRouterRuntimeConfig(cfg.chainID, cfg) {
-			updateRunningProbeVirtualRouterAuthTicket(cfg.chainID, cfg.authTicket)
+		if isSameProbeVirtualRouterRuntimeConfig(cfg.routeID, cfg) {
+			updateRunningProbeVirtualRouterAuthTicket(cfg.routeID, cfg.authTicket)
 			upsertProbeVirtualRouterRuleRuntime(config, cfg)
 			continue
 		}
 		if _, err := startProbeVirtualRouterRuntime(cfg); err != nil {
-			log.Printf("warning: probe virtual router runtime start failed: chain=%s local=%s peer=%s err=%v", cfg.chainID, localNodeID, cfg.peerNodeID, err)
-			clearProbeVirtualRouterRuleRuntime(cfg.chainID)
+			log.Printf("warning: probe virtual router runtime start failed: route=%s local=%s peer=%s err=%v", cfg.routeID, localNodeID, cfg.peerNodeID, err)
+			clearProbeVirtualRouterRuleRuntime(cfg.routeID)
 			continue
 		}
 		upsertProbeVirtualRouterRuleRuntime(config, cfg)
@@ -178,18 +178,18 @@ func applyProbeVirtualRouterRuntimesForNode(identity nodeIdentity, controllerBas
 }
 
 func startProbeVirtualRouterRuntime(cfg probeVirtualRouterRuntimeConfig) (*probeVirtualRouterRuntime, error) {
-	cfg.chainID = strings.TrimSpace(cfg.chainID)
-	if cfg.chainID == "" {
-		return nil, errors.New("virtual router chain_id is required")
+	cfg.routeID = strings.TrimSpace(cfg.routeID)
+	if cfg.routeID == "" {
+		return nil, errors.New("virtual router route_id is required")
 	}
-	_ = stopProbeVirtualRouterRuntime(cfg.chainID, "restart before apply")
+	_ = stopProbeVirtualRouterRuntime(cfg.routeID, "restart before apply")
 	if cfg.authTicket == "" {
-		cfg.authTicket = lookupProbeChainAuthTicket(cfg.chainID)
+		cfg.authTicket = lookupProbeRouteAuthTicket(cfg.routeID)
 	}
 	if cfg.authTicket == "" {
 		return nil, errors.New("virtual router auth ticket is required")
 	}
-	rememberProbeChainAuthTicket(cfg.chainID, cfg.authTicket)
+	rememberProbeRouteAuthTicket(cfg.routeID, cfg.authTicket)
 	rt := &probeVirtualRouterRuntime{
 		cfg:          cfg,
 		stopCh:       make(chan struct{}),
@@ -208,7 +208,7 @@ func startProbeVirtualRouterRuntime(cfg probeVirtualRouterRuntimeConfig) (*probe
 		return nil, err
 	}
 	probeVirtualRouterRuntimeState.mu.Lock()
-	probeVirtualRouterRuntimeState.runtimes[cfg.chainID] = rt
+	probeVirtualRouterRuntimeState.runtimes[cfg.routeID] = rt
 	probeVirtualRouterRuntimeState.mu.Unlock()
 	startProbeVirtualRouterBridgeWorker(rt)
 	startProbeVirtualRouterKeepAliveWorker(rt)
@@ -216,12 +216,12 @@ func startProbeVirtualRouterRuntime(cfg probeVirtualRouterRuntimeConfig) (*probe
 	if !cfg.dialer {
 		listenText = net.JoinHostPort(cfg.listenHost, strconv.Itoa(cfg.listenPort))
 	}
-	log.Printf("probe virtual router runtime started: chain=%s listen=%s peer=%s dialer=%t", cfg.chainID, listenText, cfg.peerNodeID, cfg.dialer)
+	log.Printf("probe virtual router runtime started: route=%s listen=%s peer=%s dialer=%t", cfg.routeID, listenText, cfg.peerNodeID, cfg.dialer)
 	return rt, nil
 }
 
-func stopProbeVirtualRouterRuntime(chainID string, reason string) bool {
-	target := strings.TrimSpace(chainID)
+func stopProbeVirtualRouterRuntime(routeID string, reason string) bool {
+	target := strings.TrimSpace(routeID)
 	if target == "" {
 		return false
 	}
@@ -238,7 +238,7 @@ func stopProbeVirtualRouterRuntime(chainID string, reason string) bool {
 	rt.closeRuntimeResources()
 	closeProbeVirtualRouterRuntimeFrameLink(rt)
 	clearProbeVirtualRouterRuntimePingError(target)
-	log.Printf("probe virtual router runtime stopped: chain=%s reason=%s", target, strings.TrimSpace(reason))
+	log.Printf("probe virtual router runtime stopped: route=%s reason=%s", target, strings.TrimSpace(reason))
 	return true
 }
 
@@ -261,8 +261,8 @@ func stopProbeVirtualRouterRuntimesExcept(desired map[string]struct{}, reason st
 	}
 }
 
-func getProbeVirtualRouterRuntime(chainID string) *probeVirtualRouterRuntime {
-	cleanID := strings.TrimSpace(chainID)
+func getProbeVirtualRouterRuntime(routeID string) *probeVirtualRouterRuntime {
+	cleanID := strings.TrimSpace(routeID)
 	if cleanID == "" {
 		return nil
 	}
@@ -272,15 +272,15 @@ func getProbeVirtualRouterRuntime(chainID string) *probeVirtualRouterRuntime {
 	return rt
 }
 
-func isSameProbeVirtualRouterRuntimeConfig(chainID string, cfg probeVirtualRouterRuntimeConfig) bool {
-	rt := getProbeVirtualRouterRuntime(chainID)
+func isSameProbeVirtualRouterRuntimeConfig(routeID string, cfg probeVirtualRouterRuntimeConfig) bool {
+	rt := getProbeVirtualRouterRuntime(routeID)
 	if rt == nil {
 		return false
 	}
 	c := rt.cfg
 	return c.listenHost == cfg.listenHost &&
 		c.listenPort == cfg.listenPort &&
-		c.linkLayer == cfg.linkLayer &&
+		c.routeLayer == cfg.routeLayer &&
 		c.fromNodeID == cfg.fromNodeID &&
 		c.toNodeID == cfg.toNodeID &&
 		c.localNodeID == cfg.localNodeID &&
@@ -294,17 +294,17 @@ func isSameProbeVirtualRouterRuntimeConfig(chainID string, cfg probeVirtualRoute
 		c.rawPublicKey == cfg.rawPublicKey
 }
 
-func updateRunningProbeVirtualRouterAuthTicket(chainID string, authTicket string) {
+func updateRunningProbeVirtualRouterAuthTicket(routeID string, authTicket string) {
 	cleanTicket := strings.TrimSpace(authTicket)
 	if cleanTicket == "" {
 		return
 	}
-	rt := getProbeVirtualRouterRuntime(chainID)
+	rt := getProbeVirtualRouterRuntime(routeID)
 	if rt == nil {
 		return
 	}
 	rt.cfg.authTicket = cleanTicket
-	rememberProbeChainAuthTicket(rt.cfg.chainID, cleanTicket)
+	rememberProbeRouteAuthTicket(rt.cfg.routeID, cleanTicket)
 }
 
 func (rt *probeVirtualRouterRuntime) closeRuntimeResources() {
@@ -343,7 +343,7 @@ func startProbeVirtualRouterRelayServer(rt *probeVirtualRouterRuntime) error {
 	if err != nil {
 		return fmt.Errorf("prepare virtual router relay certificate failed: %w", err)
 	}
-	listenConfig := net.ListenConfig{KeepAlive: probeChainRelayTCPKeepAlivePeriod}
+	listenConfig := net.ListenConfig{KeepAlive: probeRouteRelayTCPKeepAlivePeriod}
 	tcpListener, err := listenConfig.Listen(context.Background(), "tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("listen virtual router relay tcp failed: %w", err)
@@ -363,7 +363,7 @@ func startProbeVirtualRouterRelayServer(rt *probeVirtualRouterRuntime) error {
 	}()
 	rt.relayListenAddr = listenAddr
 	rt.relay = relay
-	log.Printf("probe virtual router relay started: chain=%s listen=%s", cfg.chainID, listenAddr)
+	log.Printf("probe virtual router relay started: route=%s listen=%s", cfg.routeID, listenAddr)
 	return nil
 }
 
@@ -416,7 +416,7 @@ func ensureProbeVirtualRouterRuntimeFrameLink(rt *probeVirtualRouterRuntime) (*p
 func buildProbeVirtualRouterRelayHandler() http.Handler {
 	mux := http.NewServeMux()
 	registerProbeVirtualRouterOpenAIStyleCamouflageRoutes(mux)
-	mux.HandleFunc(probeChainRelayAPIPath, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(probeRouteRelayAPIPath, func(w http.ResponseWriter, r *http.Request) {
 		handleProbeVirtualRouterRelayDispatch(w, r)
 	})
 	return mux
@@ -501,24 +501,24 @@ func writeProbeVirtualRouterOpenAIStyleJSON(w http.ResponseWriter, status int, p
 }
 
 func handleProbeVirtualRouterRelayDispatch(w http.ResponseWriter, r *http.Request) {
-	chainID := resolveProbeChainIDFromRequest(r)
-	if strings.TrimSpace(chainID) == "" {
-		log.Printf("probe virtual router relay request rejected: remote=%s method=%s proto=%s host=%s reason=missing_chain_id", r.RemoteAddr, r.Method, r.Proto, r.Host)
-		http.Error(w, "chain_id is required", http.StatusBadRequest)
+	routeID := resolveProbeRouteIDFromRequest(r)
+	if strings.TrimSpace(routeID) == "" {
+		log.Printf("probe virtual router relay request rejected: remote=%s method=%s proto=%s host=%s reason=missing_route_id", r.RemoteAddr, r.Method, r.Proto, r.Host)
+		http.Error(w, "route_id is required", http.StatusBadRequest)
 		return
 	}
-	rt := getProbeVirtualRouterRuntime(chainID)
+	rt := getProbeVirtualRouterRuntime(routeID)
 	if rt == nil {
-		log.Printf("probe virtual router relay request rejected: requested_chain=%s remote=%s method=%s proto=%s host=%s reason=runtime_not_found", strings.TrimSpace(chainID), r.RemoteAddr, r.Method, r.Proto, r.Host)
+		log.Printf("probe virtual router relay request rejected: requested_route=%s remote=%s method=%s proto=%s host=%s reason=runtime_not_found", strings.TrimSpace(routeID), r.RemoteAddr, r.Method, r.Proto, r.Host)
 		http.Error(w, "virtual router runtime not found", http.StatusNotFound)
 		return
 	}
-	if err := verifyProbeVirtualRouterRelayRequestAuth(rt, r, chainID); err != nil {
-		log.Printf("probe virtual router relay request rejected: chain=%s remote=%s method=%s proto=%s host=%s reason=unauthorized err=%v", rt.cfg.chainID, r.RemoteAddr, r.Method, r.Proto, r.Host, err)
+	if err := verifyProbeVirtualRouterRelayRequestAuth(rt, r, routeID); err != nil {
+		log.Printf("probe virtual router relay request rejected: route=%s remote=%s method=%s proto=%s host=%s reason=unauthorized err=%v", rt.cfg.routeID, r.RemoteAddr, r.Method, r.Proto, r.Host, err)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	bridgeRole := normalizeProbeChainBridgeRole(r.Header.Get(probeChainCodexRelayRoleHeader))
+	bridgeRole := normalizeProbeRouteBridgeRole(r.Header.Get(probeRouteCodexRelayRoleHeader))
 	if websocket.IsWebSocketUpgrade(r) {
 		handleProbeVirtualRouterBridgeRelayWebSocket(rt, bridgeRole, w, r)
 		return
@@ -533,13 +533,13 @@ func handleProbeVirtualRouterBridgeRelayWebSocket(rt *probeVirtualRouterRuntime,
 	}
 	upgrader := websocket.Upgrader{
 		CheckOrigin:       func(*http.Request) bool { return true },
-		ReadBufferSize:    probeChainRelayWebSocketBufferBytes,
-		WriteBufferSize:   probeChainRelayWebSocketBufferBytes,
+		ReadBufferSize:    probeRouteRelayWebSocketBufferBytes,
+		WriteBufferSize:   probeRouteRelayWebSocketBufferBytes,
 		EnableCompression: false,
 	}
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("probe virtual router websocket relay upgrade failed: chain=%s remote=%s err=%v", rt.cfg.chainID, r.RemoteAddr, err)
+		log.Printf("probe virtual router websocket relay upgrade failed: route=%s remote=%s err=%v", rt.cfg.routeID, r.RemoteAddr, err)
 		return
 	}
 	defer ws.Close()
@@ -548,26 +548,26 @@ func handleProbeVirtualRouterBridgeRelayWebSocket(rt *probeVirtualRouterRuntime,
 	runProbeVirtualRouterPhysicalCarrier(rt, conn, sessionID, strings.TrimSpace(r.RemoteAddr))
 }
 
-func verifyProbeVirtualRouterRelayRequestAuth(rt *probeVirtualRouterRuntime, r *http.Request, chainID string) error {
+func verifyProbeVirtualRouterRelayRequestAuth(rt *probeVirtualRouterRuntime, r *http.Request, routeID string) error {
 	if rt == nil {
 		return errors.New("virtual router runtime is nil")
 	}
-	env, err := readProbeChainAuthEnvelopeFromHeaders(r.Header, chainID)
+	env, err := readProbeRouteAuthEnvelopeFromHeaders(r.Header, routeID)
 	if err != nil {
-		delayProbeChainAuthFailure()
+		delayProbeRouteAuthFailure()
 		return err
 	}
 	if err := verifyProbeVirtualRouterInboundAuth(rt.cfg, env); err != nil {
-		delayProbeChainAuthFailure()
+		delayProbeRouteAuthFailure()
 		return err
 	}
-	resetProbeChainAuthFailure(resolveProbeChainSourceIPFromRequest(r))
+	resetProbeRouteAuthFailure(resolveProbeRouteSourceIPFromRequest(r))
 	return nil
 }
 
-func verifyProbeVirtualRouterInboundAuth(cfg probeVirtualRouterRuntimeConfig, env probeChainAuthEnvelope) error {
-	if env.ChainID != "" && env.ChainID != cfg.chainID {
-		return fmt.Errorf("virtual router chain id mismatch")
+func verifyProbeVirtualRouterInboundAuth(cfg probeVirtualRouterRuntimeConfig, env probeRouteAuthEnvelope) error {
+	if env.RouteID != "" && env.RouteID != cfg.routeID {
+		return fmt.Errorf("virtual router route id mismatch")
 	}
 	if env.Nonce == "" {
 		return fmt.Errorf("nonce is required")
@@ -582,14 +582,14 @@ func verifyProbeVirtualRouterInboundAuth(cfg probeVirtualRouterRuntimeConfig, en
 	if env.MAC == "" {
 		return fmt.Errorf("mac is required")
 	}
-	expected := buildProbeChainHMAC(cfg.secret, cfg.chainID, env.Nonce)
+	expected := buildProbeRouteHMAC(cfg.secret, cfg.routeID, env.Nonce)
 	if !hmac.Equal([]byte(strings.ToLower(env.MAC)), []byte(strings.ToLower(expected))) {
 		return fmt.Errorf("authentication failed")
 	}
 	if err := verifyProbeVirtualRouterUserAuthTicket(cfg, env.AuthTicket); err != nil {
 		return err
 	}
-	if err := recordProbeChainAuthNonce(cfg.chainID, env.Nonce); err != nil {
+	if err := recordProbeRouteAuthNonce(cfg.routeID, env.Nonce); err != nil {
 		return err
 	}
 	return nil
@@ -618,20 +618,20 @@ func verifyProbeVirtualRouterUserAuthTicket(cfg probeVirtualRouterRuntimeConfig,
 	if len(signature) != ed25519.SignatureSize || !ed25519.Verify(cfg.userPublicKey, payloadBytes, signature) {
 		return fmt.Errorf("user auth ticket verification failed")
 	}
-	var payload probeChainUserAuthTicketPayload
+	var payload probeRouteUserAuthTicketPayload
 	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
 		return fmt.Errorf("invalid user auth ticket payload json")
 	}
-	if strings.TrimSpace(payload.Version) != "chain-auth-v1" {
+	if strings.TrimSpace(payload.Version) != "route-auth-v1" {
 		return fmt.Errorf("unsupported user auth ticket version")
 	}
-	if strings.TrimSpace(payload.ChainID) != strings.TrimSpace(cfg.chainID) {
-		return fmt.Errorf("user auth ticket chain mismatch")
+	if strings.TrimSpace(payload.RouteID) != strings.TrimSpace(cfg.routeID) {
+		return fmt.Errorf("user auth ticket route mismatch")
 	}
 	if strings.TrimSpace(payload.UserPublicKey) != strings.TrimSpace(cfg.rawPublicKey) {
 		return fmt.Errorf("user auth ticket public key mismatch")
 	}
-	if err := verifyProbeChainAuthTicketIssuedAt(payload.IssuedAt, probeChainAuthTicketNow()); err != nil {
+	if err := verifyProbeRouteAuthTicketIssuedAt(payload.IssuedAt, probeRouteAuthTicketNow()); err != nil {
 		return err
 	}
 	return nil
@@ -645,7 +645,7 @@ func startProbeVirtualRouterBridgeWorker(rt *probeVirtualRouterRuntime) {
 }
 
 func runProbeVirtualRouterBridgeDialer(rt *probeVirtualRouterRuntime) {
-	backoff := probeChainBridgeRetryMin
+	backoff := probeRouteBridgeRetryMin
 	for {
 		select {
 		case <-rt.stopCh:
@@ -653,26 +653,26 @@ func runProbeVirtualRouterBridgeDialer(rt *probeVirtualRouterRuntime) {
 		default:
 		}
 		conn, err := openProbeVirtualRouterBridgeRelayNetConnWithDomainPolicy(
-			rt.cfg.chainID,
+			rt.cfg.routeID,
 			rt.cfg.secret,
 			rt.cfg.peerHost,
 			rt.cfg.peerPort,
-			rt.cfg.linkLayer,
-			probeChainBridgeRoleToNext,
-			probeChainPortForwardDialTimeout+probeChainPortForwardResponseReadDeadline,
+			rt.cfg.routeLayer,
+			probeRouteBridgeRoleToNext,
+			probeRouteRelayDialTimeout+probeRouteRelayResponseReadDeadline,
 			true,
 		)
 		if err != nil {
-			log.Printf("probe virtual router bridge dial failed: chain=%s peer=%s:%d err=%v", rt.cfg.chainID, rt.cfg.peerHost, rt.cfg.peerPort, err)
+			log.Printf("probe virtual router bridge dial failed: route=%s peer=%s:%d err=%v", rt.cfg.routeID, rt.cfg.peerHost, rt.cfg.peerPort, err)
 			sleepProbeVirtualRouterBridgeBackoff(rt, backoff)
-			backoff = nextProbeChainBridgeBackoff(backoff)
+			backoff = nextProbeRouteBridgeBackoff(backoff)
 			continue
 		}
-		backoff = probeChainBridgeRetryMin
+		backoff = probeRouteBridgeRetryMin
 		sessionID := rt.nextBridgeSessionID("vrouter-carrier")
 		runProbeVirtualRouterPhysicalCarrier(rt, conn, sessionID, net.JoinHostPort(rt.cfg.peerHost, strconv.Itoa(rt.cfg.peerPort)))
 		sleepProbeVirtualRouterBridgeBackoff(rt, backoff)
-		backoff = nextProbeChainBridgeBackoff(backoff)
+		backoff = nextProbeRouteBridgeBackoff(backoff)
 	}
 }
 
@@ -704,19 +704,19 @@ func sleepProbeVirtualRouterBridgeBackoff(rt *probeVirtualRouterRuntime, delay t
 
 func clearProbeVirtualRouterRuleRuntimesExcept(desired map[string]struct{}) {
 	probeVirtualRouterRuleRuntimeState.mu.Lock()
-	for chainID := range probeVirtualRouterRuleRuntimeState.items {
+	for routeID := range probeVirtualRouterRuleRuntimeState.items {
 		if desired != nil {
-			if _, ok := desired[chainID]; ok {
+			if _, ok := desired[routeID]; ok {
 				continue
 			}
 		}
-		delete(probeVirtualRouterRuleRuntimeState.items, chainID)
+		delete(probeVirtualRouterRuleRuntimeState.items, routeID)
 	}
 	probeVirtualRouterRuleRuntimeState.mu.Unlock()
 }
 
-func clearProbeVirtualRouterRuleRuntime(chainID string) {
-	cleanID := strings.TrimSpace(chainID)
+func clearProbeVirtualRouterRuleRuntime(routeID string) {
+	cleanID := strings.TrimSpace(routeID)
 	if cleanID == "" {
 		return
 	}
@@ -726,18 +726,18 @@ func clearProbeVirtualRouterRuleRuntime(chainID string) {
 }
 
 func upsertProbeVirtualRouterRuleRuntime(config probeVirtualRouterConfig, runtimeConfig probeVirtualRouterRuntimeConfig) {
-	chainID := strings.TrimSpace(runtimeConfig.chainID)
-	if chainID == "" {
+	routeID := strings.TrimSpace(runtimeConfig.routeID)
+	if routeID == "" {
 		return
 	}
-	rule, ok := probeVirtualRouterRuleByChainID(config, chainID)
+	rule, ok := probeVirtualRouterRuleByRouteID(config, routeID)
 	if !ok {
 		return
 	}
 	item := &probeVirtualRouterRuleRuntime{
 		RuleID:            strings.TrimSpace(rule.ID),
 		RuleName:          strings.TrimSpace(rule.Name),
-		ChainID:           chainID,
+		RouteID:           routeID,
 		FromNodeID:        runtimeConfig.fromNodeID,
 		ToNodeID:          runtimeConfig.toNodeID,
 		LocalNodeID:       runtimeConfig.localNodeID,
@@ -756,14 +756,14 @@ func upsertProbeVirtualRouterRuleRuntime(config probeVirtualRouterConfig, runtim
 		UpdatedAt:         time.Now(),
 	}
 	probeVirtualRouterRuleRuntimeState.mu.Lock()
-	probeVirtualRouterRuleRuntimeState.items[chainID] = item
+	probeVirtualRouterRuleRuntimeState.items[routeID] = item
 	probeVirtualRouterRuleRuntimeState.mu.Unlock()
 }
 
-func probeVirtualRouterRuleByChainID(config probeVirtualRouterConfig, chainID string) (probeVirtualRouterTopologyRule, bool) {
-	target := strings.TrimSpace(chainID)
+func probeVirtualRouterRuleByRouteID(config probeVirtualRouterConfig, routeID string) (probeVirtualRouterTopologyRule, bool) {
+	target := strings.TrimSpace(routeID)
 	for _, rule := range config.TopologyRules {
-		if probeVirtualRouterRuntimeChainID(rule) == target {
+		if probeVirtualRouterRuntimeRouteID(rule) == target {
 			return rule, true
 		}
 	}
@@ -781,15 +781,15 @@ func snapshotProbeVirtualRouterRuleRuntimes() []probeVirtualRouterRuleRuntime {
 	}
 	probeVirtualRouterRuleRuntimeState.mu.RUnlock()
 	sort.SliceStable(items, func(i, j int) bool {
-		left := firstNonEmpty(strings.TrimSpace(items[i].RuleID), strings.TrimSpace(items[i].ChainID))
-		right := firstNonEmpty(strings.TrimSpace(items[j].RuleID), strings.TrimSpace(items[j].ChainID))
+		left := firstNonEmpty(strings.TrimSpace(items[i].RuleID), strings.TrimSpace(items[i].RouteID))
+		right := firstNonEmpty(strings.TrimSpace(items[j].RuleID), strings.TrimSpace(items[j].RouteID))
 		return left < right
 	})
 	return items
 }
 
 func buildProbeVirtualRouterRuntimeConfigsForNode(config probeVirtualRouterConfig, identity nodeIdentity, controllerBaseURL string) []probeVirtualRouterRuntimeConfig {
-	localNodeID := normalizeProbeChainNodeID(identity.NodeID)
+	localNodeID := normalizeProbeRouteNodeID(identity.NodeID)
 	if localNodeID == "" {
 		return []probeVirtualRouterRuntimeConfig{}
 	}
@@ -803,8 +803,8 @@ func buildProbeVirtualRouterRuntimeConfigsForNode(config probeVirtualRouterConfi
 		if !rule.Enabled {
 			continue
 		}
-		fromNodeID := normalizeProbeChainNodeID(rule.FromNodeID)
-		toNodeID := normalizeProbeChainNodeID(rule.ToNodeID)
+		fromNodeID := normalizeProbeRouteNodeID(rule.FromNodeID)
+		toNodeID := normalizeProbeRouteNodeID(rule.ToNodeID)
 		if fromNodeID == "" || toNodeID == "" || fromNodeID == toNodeID {
 			continue
 		}
@@ -815,22 +815,22 @@ func buildProbeVirtualRouterRuntimeConfigsForNode(config probeVirtualRouterConfi
 		if !ok {
 			continue
 		}
-		if _, exists := seen[cfg.chainID]; exists {
+		if _, exists := seen[cfg.routeID]; exists {
 			continue
 		}
-		seen[cfg.chainID] = struct{}{}
+		seen[cfg.routeID] = struct{}{}
 		out = append(out, cfg)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		return out[i].chainID < out[j].chainID
+		return out[i].routeID < out[j].routeID
 	})
 	return out
 }
 
 func buildProbeVirtualRouterRuntimeConfigForRule(rule probeVirtualRouterTopologyRule, identity nodeIdentity, controllerBaseURL string) (probeVirtualRouterRuntimeConfig, bool) {
-	localNodeID := normalizeProbeChainNodeID(identity.NodeID)
-	fromNodeID := normalizeProbeChainNodeID(rule.FromNodeID)
-	toNodeID := normalizeProbeChainNodeID(rule.ToNodeID)
+	localNodeID := normalizeProbeRouteNodeID(identity.NodeID)
+	fromNodeID := normalizeProbeRouteNodeID(rule.FromNodeID)
+	toNodeID := normalizeProbeRouteNodeID(rule.ToNodeID)
 	if localNodeID == "" || fromNodeID == "" || toNodeID == "" || fromNodeID == toNodeID {
 		return probeVirtualRouterRuntimeConfig{}, false
 	}
@@ -848,7 +848,7 @@ func buildProbeVirtualRouterRuntimeConfigForRule(rule probeVirtualRouterTopology
 		localPort = normalizeProbeVirtualRouterServicePort(rule.ToServicePort)
 	}
 
-	chainID := probeVirtualRouterRuntimeChainID(rule)
+	routeID := probeVirtualRouterRuntimeRouteID(rule)
 	dialerNodeID := probeVirtualRouterRuleDialerNodeID(rule)
 	if dialerNodeID == "" {
 		return probeVirtualRouterRuntimeConfig{}, false
@@ -857,16 +857,16 @@ func buildProbeVirtualRouterRuntimeConfigForRule(rule probeVirtualRouterTopology
 	authTicket := strings.TrimSpace(rule.AuthTicket)
 	rawPublicKey := strings.TrimSpace(rule.UserPublicKey)
 	if secret == "" || authTicket == "" || rawPublicKey == "" {
-		log.Printf("warning: probe virtual router rule skipped: chain=%s missing link auth fields", chainID)
+		log.Printf("warning: probe virtual router rule skipped: route=%s missing route auth fields", routeID)
 		return probeVirtualRouterRuntimeConfig{}, false
 	}
-	userPublicKey, err := parseProbeChainUserPublicKey(rawPublicKey)
+	userPublicKey, err := parseProbeRouteUserPublicKey(rawPublicKey)
 	if err != nil {
-		log.Printf("warning: probe virtual router rule skipped: chain=%s invalid user_public_key: %v", chainID, err)
+		log.Printf("warning: probe virtual router rule skipped: route=%s invalid user_public_key: %v", routeID, err)
 		return probeVirtualRouterRuntimeConfig{}, false
 	}
 	cfg := probeVirtualRouterRuntimeConfig{
-		chainID:       chainID,
+		routeID:       routeID,
 		name:          "Virtual Router " + firstNonEmpty(strings.TrimSpace(rule.Name), strings.TrimSpace(rule.ID), fromNodeID+"-"+toNodeID),
 		userID:        strings.TrimSpace(rule.UserID),
 		rawPublicKey:  rawPublicKey,
@@ -875,7 +875,7 @@ func buildProbeVirtualRouterRuntimeConfigForRule(rule probeVirtualRouterTopology
 		authTicket:    authTicket,
 		listenHost:    "0.0.0.0",
 		listenPort:    localPort,
-		linkLayer:     probeVirtualRouterRuntimeLinkLayer,
+		routeLayer:    probeVirtualRouterRuntimeRouteLayer,
 		fromNodeID:    fromNodeID,
 		toNodeID:      toNodeID,
 		localNodeID:   localNodeID,
@@ -895,17 +895,17 @@ func buildProbeVirtualRouterRuntimeConfigForRule(rule probeVirtualRouterTopology
 	return cfg, true
 }
 
-func probeVirtualRouterRuntimeChainID(rule probeVirtualRouterTopologyRule) string {
+func probeVirtualRouterRuntimeRouteID(rule probeVirtualRouterTopologyRule) string {
 	sum := sha256.Sum256([]byte(strings.Join([]string{
-		"chain",
+		"route",
 		strings.TrimSpace(rule.ID),
 	}, "|")))
-	return probeVirtualRouterRuntimeChainIDPrefix + hex.EncodeToString(sum[:])[:24]
+	return probeVirtualRouterRuntimeRouteIDPrefix + hex.EncodeToString(sum[:])[:24]
 }
 
 func probeVirtualRouterRuleDialerNodeID(rule probeVirtualRouterTopologyRule) string {
-	fromNodeID := normalizeProbeChainNodeID(rule.FromNodeID)
-	toNodeID := normalizeProbeChainNodeID(rule.ToNodeID)
+	fromNodeID := normalizeProbeRouteNodeID(rule.FromNodeID)
+	toNodeID := normalizeProbeRouteNodeID(rule.ToNodeID)
 	if fromNodeID == "" || toNodeID == "" || fromNodeID == toNodeID {
 		return ""
 	}

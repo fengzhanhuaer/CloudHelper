@@ -278,15 +278,15 @@ func rememberProbeVirtualRouterAuthTickets(config probeVirtualRouterConfig) {
 		if !rule.Enabled {
 			continue
 		}
-		chainID := strings.TrimSpace(probeVirtualRouterRuntimeChainID(rule))
-		if chainID == "" {
+		routeID := strings.TrimSpace(probeVirtualRouterRuntimeRouteID(rule))
+		if routeID == "" {
 			continue
 		}
-		rememberProbeChainAuthTicket(chainID, rule.AuthTicket)
+		rememberProbeRouteAuthTicket(routeID, rule.AuthTicket)
 	}
 }
 
-func normalizeProbeChainNodeID(raw string) string {
+func normalizeProbeRouteNodeID(raw string) string {
 	value := strings.TrimSpace(raw)
 	if value == "" {
 		return ""

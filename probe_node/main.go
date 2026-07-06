@@ -79,7 +79,7 @@ type probeReportPayload struct {
 	System               systemStatus                `json:"system"`
 	MachineUptimeSeconds int64                       `json:"machine_uptime_seconds,omitempty"`
 	Version              string                      `json:"version,omitempty"`
-	RelayStatus          []probeChainRelayReportItem `json:"relay_status,omitempty"`
+	RelayStatus          []probeRouteRelayReportItem `json:"relay_status,omitempty"`
 	Timestamp            string                      `json:"timestamp"`
 }
 
@@ -111,27 +111,27 @@ type probeControlMessage struct {
 	Mode                string                           `json:"mode"`
 	Action              string                           `json:"action"`
 	Protocol            string                           `json:"protocol"`
-	ChainID             string                           `json:"chain_id"`
-	ChainType           string                           `json:"chain_type"`
+	RouteID             string                           `json:"route_id"`
+	RouteType           string                           `json:"route_type"`
 	ClientEntryID       string                           `json:"client_entry_id,omitempty"`
 	ClientEntryType     string                           `json:"client_entry_type,omitempty"`
 	Name                string                           `json:"name"`
 	UserID              string                           `json:"user_id"`
 	UserPublicKey       string                           `json:"user_public_key"`
-	LinkSecret          string                           `json:"link_secret"`
+	RouteSecret         string                           `json:"route_secret"`
 	AuthTicket          string                           `json:"auth_ticket"`
 	Role                string                           `json:"role"`
 	ListenHost          string                           `json:"listen_host"`
 	ListenPort          int                              `json:"listen_port"`
-	LinkLayer           string                           `json:"link_layer"`
-	NextLinkLayer       string                           `json:"next_link_layer"`
+	RouteLayer          string                           `json:"route_layer"`
+	NextRouteLayer      string                           `json:"next_route_layer"`
 	NextDialMode        string                           `json:"next_dial_mode"`
 	InternalPort        int                              `json:"internal_port"`
 	NextHost            string                           `json:"next_host"`
 	NextPort            int                              `json:"next_port"`
 	PrevHost            string                           `json:"prev_host"`
 	PrevPort            int                              `json:"prev_port"`
-	PrevLinkLayer       string                           `json:"prev_link_layer"`
+	PrevRouteLayer      string                           `json:"prev_route_layer"`
 	PrevDialMode        string                           `json:"prev_dial_mode"`
 	RequireUserAuth     bool                             `json:"require_user_auth"`
 	NextAuthMode        string                           `json:"next_auth_mode"`
@@ -309,8 +309,8 @@ func runProbeNode(options probeLaunchOptions) error {
 	if err := ensureprobeLocalRouteDefaultsInitialized(); err != nil {
 		return fmt.Errorf("failed to initialize local proxy default files: %w", err)
 	}
-	if err := loadProbeChainAuthBlacklistFromDisk(); err != nil {
-		logProbeWarnf("probe chain auth blacklist restore failed: %v", err)
+	if err := loadProbeRouteAuthBlacklistFromDisk(); err != nil {
+		logProbeWarnf("probe route auth blacklist restore failed: %v", err)
 	}
 	ensureProbeVirtualRouterDNSRuntime()
 	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(options.ControllerURL), strings.TrimSpace(options.ControllerWS))
@@ -679,7 +679,7 @@ func sendProbeReport(stream net.Conn, encoder *json.Encoder, identity nodeIdenti
 		System:               system,
 		MachineUptimeSeconds: readMachineUptimeSeconds(),
 		Version:              BuildVersion,
-		RelayStatus:          snapshotProbeChainRelayReports(),
+		RelayStatus:          snapshotProbeRouteRelayReports(),
 		Timestamp:            time.Now().UTC().Format(time.RFC3339),
 	}
 
@@ -711,20 +711,12 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 		go runProbeLogFetch(msg, identity, stream, encoder, writeMu)
 		return
 	}
-	if typeName == "udp_associations_get" {
-		go runProbeUDPAssociationsFetch(msg, identity, stream, encoder, writeMu)
-		return
-	}
 	if typeName == "tcp_debug_get" {
 		go runProbeTCPDebugFetch(msg, identity, stream, encoder, writeMu)
 		return
 	}
 	if typeName == "speed_debug_get" {
 		go runProbeSpeedDebugFetch(msg, identity, stream, encoder, writeMu)
-		return
-	}
-	if typeName == "link_test_control" {
-		go runProbeLinkTestControl(msg, identity, stream, encoder, writeMu)
 		return
 	}
 	if typeName == "network_monitor_test" {
@@ -735,20 +727,12 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 		go applyProbeNetworkMonitorTasks(msg, identity, stream, encoder, writeMu)
 		return
 	}
-	if typeName == "peer_status_get" {
-		go runProbePeerStatusFetch(msg, identity, stream, encoder, writeMu)
-		return
-	}
 	if typeName == "shell_exec" {
 		go runProbeShellExec(msg, identity, stream, encoder, writeMu)
 		return
 	}
 	if typeName == "shell_session_control" {
 		go runProbeShellSessionControl(msg, identity, stream, encoder, writeMu)
-		return
-	}
-	if typeName == "link_config_sync" {
-		go runProbeLinkConfigSyncControl(msg, identity)
 		return
 	}
 	if typeName == "route_config_sync" {
@@ -763,8 +747,8 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 		go runProbeVirtualRouterSpeedTestControl(msg, identity, stream, encoder, writeMu)
 		return
 	}
-	if typeName == "local_console_proxy" {
-		go runProbeLocalConsoleProxy(msg, identity, stream, encoder, writeMu)
+	if typeName == "local_console_bridge" {
+		go runProbeLocalConsoleBridge(msg, identity, stream, encoder, writeMu)
 		return
 	}
 	if typeName == "local_console_control" {
@@ -775,21 +759,6 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 		return
 	}
 	go runProbeUpgrade(msg, identity)
-}
-
-func runProbePeerStatusFetch(msg probeControlMessage, identity nodeIdentity, stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex) {
-	requestID := strings.TrimSpace(msg.RequestID)
-	if requestID == "" {
-		return
-	}
-	scope := strings.TrimSpace(msg.Scope)
-	if scope == "" {
-		scope = "chain_exit"
-	}
-	payload := snapshotProbePeerStatusSidePayload(strings.TrimSpace(identity.NodeID), requestID, scope, snapshotProbeChainProtocolState("", 0))
-	if writeErr := writeProbeStreamJSON(stream, encoder, writeMu, payload); writeErr != nil {
-		log.Printf("probe peer status response send failed: request_id=%s err=%v", requestID, writeErr)
-	}
 }
 
 func writeProbeStreamJSON(stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex, payload any) error {
@@ -842,22 +811,6 @@ func runProbeLocalConsoleControl(msg probeControlMessage) {
 		return
 	}
 	logProbeInfof("probe local console control applied: enabled=%t", msg.LocalConsole)
-}
-
-func runProbeLinkConfigSyncControl(msg probeControlMessage, identity nodeIdentity) {
-	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(msg.ControllerBaseURL), "")
-	if strings.TrimSpace(controllerBaseURL) == "" {
-		runtimeContext := currentprobeLocalRouteRuntimeContext()
-		controllerBaseURL = strings.TrimSpace(runtimeContext.ControllerBaseURL)
-	}
-	if strings.TrimSpace(controllerBaseURL) == "" {
-		logProbeWarnf("probe route config sync skipped: controller base url is empty")
-		return
-	}
-	logProbeInfof("legacy link config sync requested by controller; syncing route config only")
-	if err := syncProbeRouteConfig(identity, controllerBaseURL); err != nil {
-		logProbeWarnf("probe route config sync failed: err=%v", err)
-	}
 }
 
 func runProbeRouteConfigSyncControl(msg probeControlMessage, identity nodeIdentity) {
@@ -956,10 +909,10 @@ type webSocketWriteResult struct {
 }
 
 func newWebSocketNetConn(ws *websocket.Conn) net.Conn {
-	configureProbeChainWebSocketConn(ws)
+	configureProbeRouteWebSocketConn(ws)
 	conn := &webSocketNetConn{
 		ws:           ws,
-		writeCh:      make(chan *webSocketWriteRequest, probeChainRelayWebSocketWriteQueueDepth),
+		writeCh:      make(chan *webSocketWriteRequest, probeRouteRelayWebSocketWriteQueueDepth),
 		writeDoneCh:  make(chan struct{}),
 		writeCloseCh: make(chan struct{}),
 	}
@@ -967,15 +920,15 @@ func newWebSocketNetConn(ws *websocket.Conn) net.Conn {
 	return conn
 }
 
-func configureProbeChainWebSocketConn(ws *websocket.Conn) {
+func configureProbeRouteWebSocketConn(ws *websocket.Conn) {
 	if ws == nil {
 		return
 	}
 	ws.EnableWriteCompression(false)
-	tuneProbeChainNetConn(ws.UnderlyingConn())
+	tuneProbeRouteNetConn(ws.UnderlyingConn())
 }
 
-func tuneProbeChainNetConn(conn net.Conn) {
+func tuneProbeRouteNetConn(conn net.Conn) {
 	base := conn
 	for depth := 0; depth < 4 && base != nil; depth++ {
 		if unwrap, ok := base.(interface{ NetConn() net.Conn }); ok {
@@ -1002,17 +955,17 @@ func tuneProbeChainNetConn(conn net.Conn) {
 	}
 	_ = tcpConn.SetNoDelay(true)
 	_ = tcpConn.SetKeepAlive(true)
-	_ = tcpConn.SetKeepAlivePeriod(probeChainRelayTCPKeepAlivePeriod)
-	_ = tcpConn.SetReadBuffer(probeChainRelayTCPSocketBufferBytes)
-	_ = tcpConn.SetWriteBuffer(probeChainRelayTCPSocketBufferBytes)
+	_ = tcpConn.SetKeepAlivePeriod(probeRouteRelayTCPKeepAlivePeriod)
+	_ = tcpConn.SetReadBuffer(probeRouteRelayTCPSocketBufferBytes)
+	_ = tcpConn.SetWriteBuffer(probeRouteRelayTCPSocketBufferBytes)
 }
 
-func tuneProbeChainUDPConn(conn *net.UDPConn) {
+func tuneProbeRouteUDPConn(conn *net.UDPConn) {
 	if conn == nil {
 		return
 	}
-	_ = conn.SetReadBuffer(probeChainRelayUDPSocketBufferBytes)
-	_ = conn.SetWriteBuffer(probeChainRelayUDPSocketBufferBytes)
+	_ = conn.SetReadBuffer(probeRouteRelayUDPSocketBufferBytes)
+	_ = conn.SetWriteBuffer(probeRouteRelayUDPSocketBufferBytes)
 }
 
 func (c *webSocketNetConn) Read(p []byte) (int, error) {
@@ -1091,9 +1044,9 @@ func (c *webSocketNetConn) runWriteLoop() {
 func (c *webSocketNetConn) writeBatch(first *webSocketWriteRequest) error {
 	batch := []*webSocketWriteRequest{first}
 	total := len(first.payload)
-	if total < probeChainRelayWebSocketWriteBatchBytes {
+	if total < probeRouteRelayWebSocketWriteBatchBytes {
 	collect:
-		for total < probeChainRelayWebSocketWriteBatchBytes {
+		for total < probeRouteRelayWebSocketWriteBatchBytes {
 			select {
 			case req := <-c.writeCh:
 				if req == nil {

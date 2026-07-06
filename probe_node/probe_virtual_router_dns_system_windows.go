@@ -72,9 +72,9 @@ func restoreProbeVirtualRouterSystemDNS() error {
 }
 
 func currentProbeVirtualRouterTUNIfIndex() int {
-	probeLocalTUNDataPlaneState.mu.Lock()
-	defer probeLocalTUNDataPlaneState.mu.Unlock()
-	return probeLocalTUNDataPlaneState.ifIndex
+	probeVirtualRouterTUNDataPlaneState.mu.Lock()
+	defer probeVirtualRouterTUNDataPlaneState.mu.Unlock()
+	return probeVirtualRouterTUNDataPlaneState.ifIndex
 }
 
 func sameProbeVirtualRouterDNSServers(left []string, right []string) bool {

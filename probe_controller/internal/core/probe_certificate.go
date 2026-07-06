@@ -450,16 +450,16 @@ func (m *probeCertificateManager) issueCertificateWithDNS01(ctx context.Context,
 	if err != nil {
 		return nil, nil, time.Time{}, time.Time{}, err
 	}
-	derChain, _, err := client.CreateOrderCert(ctx, order.FinalizeURL, csrDER, true)
+	certDERs, _, err := client.CreateOrderCert(ctx, order.FinalizeURL, csrDER, true)
 	if err != nil {
 		return nil, nil, time.Time{}, time.Time{}, fmt.Errorf("acme create cert failed: %w", err)
 	}
-	if len(derChain) == 0 {
-		return nil, nil, time.Time{}, time.Time{}, errors.New("acme returned empty certificate chain")
+	if len(certDERs) == 0 {
+		return nil, nil, time.Time{}, time.Time{}, errors.New("acme returned empty certificate bundle")
 	}
 
 	var certBuf bytes.Buffer
-	for _, der := range derChain {
+	for _, der := range certDERs {
 		if pemErr := pem.Encode(&certBuf, &pem.Block{Type: "CERTIFICATE", Bytes: der}); pemErr != nil {
 			return nil, nil, time.Time{}, time.Time{}, pemErr
 		}
@@ -631,7 +631,7 @@ func parseProbeCertificateLeaf(certPEM []byte, keyPEM []byte) (*x509.Certificate
 		return nil, err
 	}
 	if len(pair.Certificate) == 0 {
-		return nil, errors.New("certificate chain is empty")
+		return nil, errors.New("certificate bundle is empty")
 	}
 	return x509.ParseCertificate(pair.Certificate[0])
 }

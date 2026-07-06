@@ -497,7 +497,7 @@ func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRetriesOnBindableTime
 	probeLocalTUNInstallSleep = func(_ time.Duration) { sleepCalls++ }
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
-	err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(18)
+	err := ensureProbeRouteWindowsRouteTargetByInterfaceIndex(18)
 	if err == nil {
 		t.Fatal("expected route target configure error")
 	}
@@ -515,8 +515,8 @@ func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRetryRecovers(t *test
 	probeLocalTUNInstallSleep = func(_ time.Duration) {}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
-	if err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(18); err != nil {
-		t.Fatalf("ensureProbeLocalWindowsRouteTargetByInterfaceIndex returned error: %v", err)
+	if err := ensureProbeRouteWindowsRouteTargetByInterfaceIndex(18); err != nil {
+		t.Fatalf("ensureProbeRouteWindowsRouteTargetByInterfaceIndex returned error: %v", err)
 	}
 	if calls != 1 {
 		t.Fatalf("ensure calls=%d, want 1", calls)
@@ -543,9 +543,9 @@ func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRepairPathRecovers(t 
 	probeLocalTUNInstallSleep = func(_ time.Duration) {}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
-	err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(18)
+	err := ensureProbeRouteWindowsRouteTargetByInterfaceIndex(18)
 	if err == nil {
-		t.Fatal("expected ensureProbeLocalWindowsRouteTargetByInterfaceIndex error")
+		t.Fatal("expected ensureProbeRouteWindowsRouteTargetByInterfaceIndex error")
 	}
 	if repairCalls != 0 {
 		t.Fatalf("repair calls=%d, want 0", repairCalls)
@@ -568,7 +568,7 @@ func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRepairPathFails(t *te
 	probeLocalTUNInstallSleep = func(_ time.Duration) {}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
-	err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(18)
+	err := ensureProbeRouteWindowsRouteTargetByInterfaceIndex(18)
 	if err == nil {
 		t.Fatal("expected repair path error")
 	}
@@ -596,9 +596,9 @@ func TestEnsureProbeLocalWindowsRouteTargetByInterfaceIndexRecyclePathRecovers(t
 	probeLocalTUNInstallSleep = func(_ time.Duration) {}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
-	err := ensureProbeLocalWindowsRouteTargetByInterfaceIndex(18)
+	err := ensureProbeRouteWindowsRouteTargetByInterfaceIndex(18)
 	if err == nil {
-		t.Fatal("expected ensureProbeLocalWindowsRouteTargetByInterfaceIndex error")
+		t.Fatal("expected ensureProbeRouteWindowsRouteTargetByInterfaceIndex error")
 	}
 	if repairCalls != 0 {
 		t.Fatalf("repair calls=%d, want 0", repairCalls)
@@ -714,8 +714,8 @@ func TestEnsureProbeLocalWindowsRouteTargetConfiguredFallbackAfterBindableTimeou
 	probeLocalTUNInstallSleep = func(_ time.Duration) {}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
-	if err := ensureProbeLocalWindowsRouteTargetConfigured(); err != nil {
-		t.Fatalf("ensureProbeLocalWindowsRouteTargetConfigured returned error: %v", err)
+	if err := ensureProbeRouteWindowsRouteTargetConfigured(); err != nil {
+		t.Fatalf("ensureProbeRouteWindowsRouteTargetConfigured returned error: %v", err)
 	}
 	if got := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")); got != "19" {
 		t.Fatalf("PROBE_LOCAL_TUN_IF_INDEX=%q, want 19", got)
@@ -747,12 +747,12 @@ func TestEnsureProbeLocalWindowsRouteTargetConfiguredRecoversSameFallbackIfIndex
 	probeLocalTUNInstallSleep = func(_ time.Duration) {}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
-	if err := ensureProbeLocalWindowsRouteTargetConfigured(); err != nil {
+	if err := ensureProbeRouteWindowsRouteTargetConfigured(); err != nil {
 		if !strings.Contains(strings.ToLower(err.Error()), "bindable") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	} else {
-		t.Fatal("expected ensureProbeLocalWindowsRouteTargetConfigured error")
+		t.Fatal("expected ensureProbeRouteWindowsRouteTargetConfigured error")
 	}
 }
 
@@ -783,9 +783,9 @@ func TestEnsureProbeLocalWindowsRouteTargetConfiguredRecoversWhenSameIfIndexRecy
 	probeLocalTUNInstallSleep = func(_ time.Duration) {}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
-	err := ensureProbeLocalWindowsRouteTargetConfigured()
+	err := ensureProbeRouteWindowsRouteTargetConfigured()
 	if err == nil {
-		t.Fatal("expected ensureProbeLocalWindowsRouteTargetConfigured error")
+		t.Fatal("expected ensureProbeRouteWindowsRouteTargetConfigured error")
 	}
 	if convertCalls == 0 {
 		t.Fatalf("convertCalls=%d, want >0", convertCalls)
@@ -821,9 +821,9 @@ func TestEnsureProbeLocalWindowsRouteTargetConfiguredRetriesSameFallbackIfIndexA
 	probeLocalTUNInstallSleep = func(_ time.Duration) {}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
-	err := ensureProbeLocalWindowsRouteTargetConfigured()
+	err := ensureProbeRouteWindowsRouteTargetConfigured()
 	if err == nil {
-		t.Fatal("expected ensureProbeLocalWindowsRouteTargetConfigured error")
+		t.Fatal("expected ensureProbeRouteWindowsRouteTargetConfigured error")
 	}
 	if convertCalls > 1 {
 		t.Fatalf("convertCalls=%d, want <=1", convertCalls)
@@ -935,8 +935,8 @@ func TestEnsureProbeLocalWindowsRouteTargetConfiguredFallbackAfterCreateUnicastN
 	probeLocalTUNInstallSleep = func(_ time.Duration) {}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
-	if err := ensureProbeLocalWindowsRouteTargetConfigured(); err != nil {
-		t.Fatalf("ensureProbeLocalWindowsRouteTargetConfigured returned error: %v", err)
+	if err := ensureProbeRouteWindowsRouteTargetConfigured(); err != nil {
+		t.Fatalf("ensureProbeRouteWindowsRouteTargetConfigured returned error: %v", err)
 	}
 	if got := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")); got != "19" {
 		t.Fatalf("PROBE_LOCAL_TUN_IF_INDEX=%q, want 19", got)
@@ -973,8 +973,8 @@ func TestEnsureProbeLocalWindowsRouteTargetConfiguredFallbackAfterStaleLUID(t *t
 	}
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
-	if err := ensureProbeLocalWindowsRouteTargetByInterfaceLUID(12345); err != nil {
-		t.Fatalf("ensureProbeLocalWindowsRouteTargetByInterfaceLUID returned error: %v", err)
+	if err := ensureProbeRouteWindowsRouteTargetByInterfaceLUID(12345); err != nil {
+		t.Fatalf("ensureProbeRouteWindowsRouteTargetByInterfaceLUID returned error: %v", err)
 	}
 	if got := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_IF_INDEX")); got != "53" {
 		t.Fatalf("PROBE_LOCAL_TUN_IF_INDEX=%q, want 53", got)
@@ -1123,8 +1123,8 @@ func TestEnsureProbeLocalWindowsRouteTargetConfiguredRetriesWhenFallbackIfIndexN
 	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "19")
 	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
 
-	err := ensureProbeLocalWindowsRouteTargetConfigured()
+	err := ensureProbeRouteWindowsRouteTargetConfigured()
 	if err == nil {
-		t.Fatal("expected ensureProbeLocalWindowsRouteTargetConfigured error")
+		t.Fatal("expected ensureProbeRouteWindowsRouteTargetConfigured error")
 	}
 }

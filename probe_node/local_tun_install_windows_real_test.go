@@ -47,8 +47,8 @@ func TestEnsureProbeLocalWindowsRouteTargetConfiguredRealNIC(t *testing.T) {
 		t.Skip("skip real NIC integration test: wintun interface index is invalid")
 	}
 
-	if err := ensureProbeLocalWindowsRouteTargetConfigured(); err != nil {
-		t.Fatalf("ensureProbeLocalWindowsRouteTargetConfigured failed: %v", err)
+	if err := ensureProbeRouteWindowsRouteTargetConfigured(); err != nil {
+		t.Fatalf("ensureProbeRouteWindowsRouteTargetConfigured failed: %v", err)
 	}
 
 	if gotGateway := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_GATEWAY")); gotGateway != probeLocalTUNRouteGatewayIPv4 {

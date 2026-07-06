@@ -132,10 +132,10 @@
     const stopBtn = document.getElementById('stopBtn');
     let activeController = null;
     let activeStartedAt = 0;
-    let controllerProxyMode = false;
-    const proxyModeReady = fetch(window.location.href, { method: 'GET', credentials: 'same-origin' }).then((res) => {
-      controllerProxyMode = res.headers.get('X-Probe-Console-Proxy') === 'controller';
-      if (controllerProxyMode) {
+    let controllerBridgeMode = false;
+    const bridgeModeReady = fetch(window.location.href, { method: 'GET', credentials: 'same-origin' }).then((res) => {
+      controllerBridgeMode = res.headers.get('X-Probe-Console-Bridge') === 'controller';
+      if (controllerBridgeMode) {
         document.getElementById('shell-subtitle').textContent = '本机命令执行，主控代理模式下返回完整结果';
       }
     }).catch(() => {});
@@ -176,7 +176,7 @@
     }
 
     async function runCommandFallback(command, timeoutSec, started) {
-      if (controllerProxyMode) {
+      if (controllerBridgeMode) {
         timeoutSec = Math.min(timeoutSec, 20);
       }
       const data = await requestJSON('/local/api/shell/exec', {
@@ -208,8 +208,8 @@
       const started = new Date();
       metaEl.textContent = '开始 ' + started.toLocaleString();
       try {
-        await proxyModeReady;
-        if (controllerProxyMode) {
+        await bridgeModeReady;
+        if (controllerBridgeMode) {
           setStatus('代理模式执行中...');
           await runCommandFallback(command, timeoutSec, started);
           return;

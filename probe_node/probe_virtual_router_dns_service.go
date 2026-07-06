@@ -306,5 +306,5 @@ func resolveProbeVirtualRouterDNSRealPacket(packet []byte, domain string) ([]byt
 		Group:  "virtual-router",
 		Action: "direct",
 	}
-	return resolveProbeLocalDNSApplicationUpstreamResponse(packet, domain, decision)
+	return resolveProbeVirtualRouterDNSUpstreamResponse(packet, domain, decision)
 }

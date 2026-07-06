@@ -113,29 +113,29 @@ type mngRouteRelayStatusView struct {
 	NodeID         string                            `json:"node_id"`
 	Online         bool                              `json:"online"`
 	LastSeen       string                            `json:"last_seen,omitempty"`
-	ChainID        string                            `json:"chain_id"`
-	ChainName      string                            `json:"chain_name,omitempty"`
-	ChainType      string                            `json:"chain_type,omitempty"`
+	RouteID        string                            `json:"route_id"`
+	RouteName      string                            `json:"route_name,omitempty"`
+	RouteType      string                            `json:"route_type,omitempty"`
 	Role           string                            `json:"role,omitempty"`
 	ListenHost     string                            `json:"listen_host,omitempty"`
 	ListenPort     int                               `json:"listen_port,omitempty"`
-	LinkLayer      string                            `json:"link_layer,omitempty"`
+	RouteLayer     string                            `json:"route_layer,omitempty"`
 	NextHost       string                            `json:"next_host,omitempty"`
 	NextPort       int                               `json:"next_port,omitempty"`
 	NextNodeID     string                            `json:"next_node_id,omitempty"`
-	NextLinkLayer  string                            `json:"next_link_layer,omitempty"`
+	NextRouteLayer string                            `json:"next_route_layer,omitempty"`
 	NextDialMode   string                            `json:"next_dial_mode,omitempty"`
 	PrevHost       string                            `json:"prev_host,omitempty"`
 	PrevPort       int                               `json:"prev_port,omitempty"`
 	PrevNodeID     string                            `json:"prev_node_id,omitempty"`
-	PrevLinkLayer  string                            `json:"prev_link_layer,omitempty"`
+	PrevRouteLayer string                            `json:"prev_route_layer,omitempty"`
 	PrevDialMode   string                            `json:"prev_dial_mode,omitempty"`
 	ListenState    *probeRelayProtocolStateSnapshot  `json:"listen_state,omitempty"`
 	NextState      *probeRelayProtocolStateSnapshot  `json:"next_state,omitempty"`
 	PrevState      *probeRelayProtocolStateSnapshot  `json:"prev_state,omitempty"`
 	VirtualRouter  *probeVirtualRouterRuntimeStats   `json:"virtual_router,omitempty"`
-	BridgeStatus   *probeChainBridgeRuntimeStatus    `json:"bridge_status,omitempty"`
-	BridgeSessions []probeChainBridgeSessionSnapshot `json:"bridge_sessions,omitempty"`
+	BridgeStatus   *probeRouteBridgeRuntimeStatus    `json:"bridge_status,omitempty"`
+	BridgeSessions []probeRouteBridgeSessionSnapshot `json:"bridge_sessions,omitempty"`
 	UpdatedAt      string                            `json:"updated_at,omitempty"`
 }
 
@@ -156,14 +156,14 @@ type mngVirtualRouterRouteSideStatus struct {
 	NextState      *probeRelayProtocolStateSnapshot  `json:"next_state,omitempty"`
 	PrevState      *probeRelayProtocolStateSnapshot  `json:"prev_state,omitempty"`
 	VirtualRouter  *probeVirtualRouterRuntimeStats   `json:"virtual_router,omitempty"`
-	BridgeStatus   *probeChainBridgeRuntimeStatus    `json:"bridge_status,omitempty"`
-	BridgeSessions []probeChainBridgeSessionSnapshot `json:"bridge_sessions,omitempty"`
+	BridgeStatus   *probeRouteBridgeRuntimeStatus    `json:"bridge_status,omitempty"`
+	BridgeSessions []probeRouteBridgeSessionSnapshot `json:"bridge_sessions,omitempty"`
 }
 
 type mngVirtualRouterRouteStatusView struct {
 	RuleID             string                          `json:"rule_id,omitempty"`
 	RuleName           string                          `json:"rule_name,omitempty"`
-	ChainID            string                          `json:"chain_id"`
+	RouteID            string                          `json:"route_id"`
 	Enabled            bool                            `json:"enabled"`
 	Direction          string                          `json:"direction"`
 	FromNodeID         string                          `json:"from_node_id"`
@@ -202,7 +202,7 @@ func listMngVirtualRouterRouteStatus() []mngVirtualRouterRouteStatusView {
 
 	runtimes := listProbeRuntimes()
 	runtimeByNode := make(map[string]probeRuntimeStatus, len(runtimes))
-	statusByNodeChain := make(map[string]mngRouteRelayStatusView)
+	statusByNodeRoute := make(map[string]mngRouteRelayStatusView)
 	for _, runtime := range runtimes {
 		nodeID := normalizeProbeNodeID(runtime.NodeID)
 		if nodeID == "" {
@@ -210,30 +210,30 @@ func listMngVirtualRouterRouteStatus() []mngVirtualRouterRouteStatusView {
 		}
 		runtimeByNode[nodeID] = runtime
 		for _, status := range runtime.RelayStatus {
-			chainID := strings.TrimSpace(status.ChainID)
-			if chainID == "" {
+			routeID := strings.TrimSpace(status.RouteID)
+			if routeID == "" {
 				continue
 			}
-			statusByNodeChain[nodeID+"|"+chainID] = mngRouteRelayStatusView{
+			statusByNodeRoute[nodeID+"|"+routeID] = mngRouteRelayStatusView{
 				NodeID:         nodeID,
 				Online:         runtime.Online,
 				LastSeen:       strings.TrimSpace(runtime.LastSeen),
-				ChainID:        chainID,
-				ChainName:      strings.TrimSpace(status.ChainName),
-				ChainType:      strings.TrimSpace(status.ChainType),
+				RouteID:        routeID,
+				RouteName:      strings.TrimSpace(status.RouteName),
+				RouteType:      strings.TrimSpace(status.RouteType),
 				Role:           strings.TrimSpace(status.Role),
 				ListenHost:     strings.TrimSpace(status.ListenHost),
 				ListenPort:     status.ListenPort,
-				LinkLayer:      strings.TrimSpace(status.LinkLayer),
+				RouteLayer:     strings.TrimSpace(status.RouteLayer),
 				NextHost:       strings.TrimSpace(status.NextHost),
 				NextPort:       status.NextPort,
 				NextNodeID:     strings.TrimSpace(status.NextNodeID),
-				NextLinkLayer:  strings.TrimSpace(status.NextLinkLayer),
+				NextRouteLayer: strings.TrimSpace(status.NextRouteLayer),
 				NextDialMode:   strings.TrimSpace(status.NextDialMode),
 				PrevHost:       strings.TrimSpace(status.PrevHost),
 				PrevPort:       status.PrevPort,
 				PrevNodeID:     strings.TrimSpace(status.PrevNodeID),
-				PrevLinkLayer:  strings.TrimSpace(status.PrevLinkLayer),
+				PrevRouteLayer: strings.TrimSpace(status.PrevRouteLayer),
 				PrevDialMode:   strings.TrimSpace(status.PrevDialMode),
 				ListenState:    status.ListenState,
 				NextState:      status.NextState,
@@ -259,13 +259,13 @@ func listMngVirtualRouterRouteStatus() []mngVirtualRouterRouteStatusView {
 		if fromNodeID == "" || toNodeID == "" {
 			continue
 		}
-		chainID := probeVirtualRouterRuntimeChainID(rule)
-		from := buildMngVirtualRouterRouteSideStatus(fromNodeID, chainID, runtimeByNode, statusByNodeChain)
-		to := buildMngVirtualRouterRouteSideStatus(toNodeID, chainID, runtimeByNode, statusByNodeChain)
+		routeID := probeVirtualRouterRuntimeRouteID(rule)
+		from := buildMngVirtualRouterRouteSideStatus(fromNodeID, routeID, runtimeByNode, statusByNodeRoute)
+		to := buildMngVirtualRouterRouteSideStatus(toNodeID, routeID, runtimeByNode, statusByNodeRoute)
 		view := mngVirtualRouterRouteStatusView{
 			RuleID:     strings.TrimSpace(rule.ID),
 			RuleName:   strings.TrimSpace(rule.Name),
-			ChainID:    chainID,
+			RouteID:    routeID,
 			Enabled:    rule.Enabled,
 			Direction:  "A->B",
 			FromNodeID: fromNodeID,
@@ -292,16 +292,16 @@ func listMngVirtualRouterRouteStatus() []mngVirtualRouterRouteStatusView {
 		if items[i].Enabled != items[j].Enabled {
 			return items[i].Enabled
 		}
-		left := firstNonEmptyString(items[i].RuleName, items[i].RuleID, items[i].ChainID)
-		right := firstNonEmptyString(items[j].RuleName, items[j].RuleID, items[j].ChainID)
+		left := firstNonEmptyString(items[i].RuleName, items[i].RuleID, items[i].RouteID)
+		right := firstNonEmptyString(items[j].RuleName, items[j].RuleID, items[j].RouteID)
 		return left < right
 	})
 	return items
 }
 
-func buildMngVirtualRouterRouteSideStatus(nodeID string, chainID string, runtimes map[string]probeRuntimeStatus, statuses map[string]mngRouteRelayStatusView) mngVirtualRouterRouteSideStatus {
+func buildMngVirtualRouterRouteSideStatus(nodeID string, routeID string, runtimes map[string]probeRuntimeStatus, statuses map[string]mngRouteRelayStatusView) mngVirtualRouterRouteSideStatus {
 	runtime, onlineKnown := runtimes[nodeID]
-	status, found := statuses[nodeID+"|"+chainID]
+	status, found := statuses[nodeID+"|"+routeID]
 	side := mngVirtualRouterRouteSideStatus{
 		NodeID:       nodeID,
 		Online:       onlineKnown && runtime.Online,
@@ -536,7 +536,7 @@ func isMngVirtualRouterSideErrorStale(side mngVirtualRouterRouteSideStatus, erro
 	return false
 }
 
-func mngVirtualRouterSideBridgeSessions(side mngVirtualRouterRouteSideStatus) []probeChainBridgeSessionSnapshot {
+func mngVirtualRouterSideBridgeSessions(side mngVirtualRouterRouteSideStatus) []probeRouteBridgeSessionSnapshot {
 	if side.BridgeStatus != nil {
 		return side.BridgeStatus.Sessions
 	}

@@ -127,15 +127,6 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 				msg.NodeID = nodeID
 			}
 			consumeProbeLogsResult(msg)
-		case "udp_associations_result":
-			var msg probeUDPAssociationsResultMessage
-			if err := json.Unmarshal(raw, &msg); err != nil {
-				continue
-			}
-			if strings.TrimSpace(msg.NodeID) == "" {
-				msg.NodeID = nodeID
-			}
-			consumeProbeUDPAssociationsResult(msg)
 		case "tcp_debug_result":
 			var msg probeTCPDebugResultMessage
 			if err := json.Unmarshal(raw, &msg); err != nil {
@@ -145,15 +136,6 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 				msg.NodeID = nodeID
 			}
 			consumeProbeTCPDebugResult(msg)
-		case "link_test_control_result":
-			var msg probeLinkTestControlResultMessage
-			if err := json.Unmarshal(raw, &msg); err != nil {
-				continue
-			}
-			if strings.TrimSpace(msg.NodeID) == "" {
-				msg.NodeID = nodeID
-			}
-			consumeProbeLinkTestControlResult(msg)
 		case "network_monitor_result":
 			var msg probeNetworkMonitorResultMessage
 			if err := json.Unmarshal(raw, &msg); err != nil {
@@ -181,15 +163,15 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 				msg.NodeID = nodeID
 			}
 			consumeProbeShellSessionResult(msg)
-		case "local_console_proxy_result":
-			var msg probeLocalConsoleProxyResultMessage
+		case "local_console_bridge_result":
+			var msg probeLocalConsoleBridgeResultMessage
 			if err := json.Unmarshal(raw, &msg); err != nil {
 				continue
 			}
 			if strings.TrimSpace(msg.NodeID) == "" {
 				msg.NodeID = nodeID
 			}
-			consumeProbeLocalConsoleProxyResult(msg)
+			consumeProbeLocalConsoleBridgeResult(msg)
 		case "controller_rpc_request":
 			var req probeControllerRPCRequest
 			if err := json.Unmarshal(raw, &req); err != nil {

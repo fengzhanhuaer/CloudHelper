@@ -728,7 +728,7 @@
         const latencyText = Number.isFinite(latency) && latency > 0 ? `${Math.trunc(latency)}ms` : '-';
         const err = item.last_error ? `<div class="small route-error">${escapeHTML(item.last_error)}</div>` : '';
         return `<tr>
-          <td><div class="small muted mono">${escapeHTML(item.chain_id || '-')}</div><div class="small muted">${escapeHTML(item.direction || '-')}</div></td>
+          <td><div class="small muted mono">${escapeHTML(item.route_id || '-')}</div><div class="small muted">${escapeHTML(item.direction || '-')}</div></td>
           <td><span class="${routeStatusClass(item.status)}">${escapeHTML(routeStatusLabel(item.status))}</span>${err}</td>
           <td><div>${escapeHTML(fromName)}</div>${renderRouteSide(item.from)}</td>
           <td><div>${escapeHTML(toName)}</div>${renderRouteSide(item.to)}</td>

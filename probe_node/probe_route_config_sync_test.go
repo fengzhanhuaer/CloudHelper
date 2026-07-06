@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestNormalizeProbeChainNodeID(t *testing.T) {
+func TestNormalizeProbeRouteNodeID(t *testing.T) {
 	tests := []struct {
 		name string
 		in   string
@@ -23,8 +23,8 @@ func TestNormalizeProbeChainNodeID(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := normalizeProbeChainNodeID(tc.in); got != tc.want {
-				t.Fatalf("normalizeProbeChainNodeID(%q)=%q, want %q", tc.in, got, tc.want)
+			if got := normalizeProbeRouteNodeID(tc.in); got != tc.want {
+				t.Fatalf("normalizeProbeRouteNodeID(%q)=%q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}

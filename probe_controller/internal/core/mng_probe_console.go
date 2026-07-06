@@ -16,10 +16,10 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Control-channel request/response for proxying a probe's local console.
+// Control-channel request/response for bridging a probe's local console.
 // ---------------------------------------------------------------------------
 
-type probeLocalConsoleProxyCommand struct {
+type probeLocalConsoleBridgeCommand struct {
 	Type           string              `json:"type"`
 	RequestID      string              `json:"request_id"`
 	ConsoleMethod  string              `json:"console_method"`
@@ -29,7 +29,7 @@ type probeLocalConsoleProxyCommand struct {
 	Timestamp      string              `json:"timestamp"`
 }
 
-type probeLocalConsoleProxyResultMessage struct {
+type probeLocalConsoleBridgeResultMessage struct {
 	Type       string              `json:"type"`
 	RequestID  string              `json:"request_id"`
 	NodeID     string              `json:"node_id"`
@@ -41,45 +41,45 @@ type probeLocalConsoleProxyResultMessage struct {
 	Timestamp  string              `json:"timestamp,omitempty"`
 }
 
-const probeLocalConsoleProxyMaxBodyBytes = 8 << 20 // 8 MiB
+const probeLocalConsoleBridgeMaxBodyBytes = 8 << 20 // 8 MiB
 
-var probeLocalConsoleProxyRequestSeq atomic.Uint64
+var probeLocalConsoleBridgeRequestSeq atomic.Uint64
 
-var probeLocalConsoleProxyWaiters = struct {
+var probeLocalConsoleBridgeWaiters = struct {
 	mu   sync.Mutex
-	data map[string]chan probeLocalConsoleProxyResultMessage
-}{data: make(map[string]chan probeLocalConsoleProxyResultMessage)}
+	data map[string]chan probeLocalConsoleBridgeResultMessage
+}{data: make(map[string]chan probeLocalConsoleBridgeResultMessage)}
 
-func newProbeLocalConsoleProxyRequestID(nodeID string) string {
-	seq := probeLocalConsoleProxyRequestSeq.Add(1)
+func newProbeLocalConsoleBridgeRequestID(nodeID string) string {
+	seq := probeLocalConsoleBridgeRequestSeq.Add(1)
 	return fmt.Sprintf("probe-console-%s-%d-%d", normalizeProbeNodeID(nodeID), time.Now().UnixNano(), seq)
 }
 
 // dispatchProbeLocalConsoleRequest forwards one HTTP request to the probe's local
 // console over the control channel and waits for the response.
-func dispatchProbeLocalConsoleRequest(nodeID, method, path string, headers map[string][]string, body []byte) (probeLocalConsoleProxyResultMessage, error) {
+func dispatchProbeLocalConsoleRequest(nodeID, method, path string, headers map[string][]string, body []byte) (probeLocalConsoleBridgeResultMessage, error) {
 	normalizedID := normalizeProbeNodeID(nodeID)
 	if normalizedID == "" {
-		return probeLocalConsoleProxyResultMessage{}, fmt.Errorf("node_id is required")
+		return probeLocalConsoleBridgeResultMessage{}, fmt.Errorf("node_id is required")
 	}
 	session, ok := getProbeSession(normalizedID)
 	if !ok {
-		return probeLocalConsoleProxyResultMessage{}, fmt.Errorf("probe is offline")
+		return probeLocalConsoleBridgeResultMessage{}, fmt.Errorf("probe is offline")
 	}
 
-	requestID := newProbeLocalConsoleProxyRequestID(normalizedID)
-	waiter := make(chan probeLocalConsoleProxyResultMessage, 1)
-	probeLocalConsoleProxyWaiters.mu.Lock()
-	probeLocalConsoleProxyWaiters.data[requestID] = waiter
-	probeLocalConsoleProxyWaiters.mu.Unlock()
+	requestID := newProbeLocalConsoleBridgeRequestID(normalizedID)
+	waiter := make(chan probeLocalConsoleBridgeResultMessage, 1)
+	probeLocalConsoleBridgeWaiters.mu.Lock()
+	probeLocalConsoleBridgeWaiters.data[requestID] = waiter
+	probeLocalConsoleBridgeWaiters.mu.Unlock()
 	defer func() {
-		probeLocalConsoleProxyWaiters.mu.Lock()
-		delete(probeLocalConsoleProxyWaiters.data, requestID)
-		probeLocalConsoleProxyWaiters.mu.Unlock()
+		probeLocalConsoleBridgeWaiters.mu.Lock()
+		delete(probeLocalConsoleBridgeWaiters.data, requestID)
+		probeLocalConsoleBridgeWaiters.mu.Unlock()
 	}()
 
-	cmd := probeLocalConsoleProxyCommand{
-		Type:           "local_console_proxy",
+	cmd := probeLocalConsoleBridgeCommand{
+		Type:           "local_console_bridge",
 		RequestID:      requestID,
 		ConsoleMethod:  method,
 		ConsolePath:    path,
@@ -89,7 +89,7 @@ func dispatchProbeLocalConsoleRequest(nodeID, method, path string, headers map[s
 	}
 	if err := session.writeJSON(cmd); err != nil {
 		unregisterProbeSession(normalizedID, session)
-		return probeLocalConsoleProxyResultMessage{}, err
+		return probeLocalConsoleBridgeResultMessage{}, err
 	}
 
 	timer := time.NewTimer(25 * time.Second)
@@ -104,21 +104,21 @@ func dispatchProbeLocalConsoleRequest(nodeID, method, path string, headers map[s
 		}
 		return result, nil
 	case <-timer.C:
-		return probeLocalConsoleProxyResultMessage{}, fmt.Errorf("probe local console proxy timeout")
+		return probeLocalConsoleBridgeResultMessage{}, fmt.Errorf("probe local console bridge timeout")
 	}
 }
 
-func consumeProbeLocalConsoleProxyResult(result probeLocalConsoleProxyResultMessage) {
+func consumeProbeLocalConsoleBridgeResult(result probeLocalConsoleBridgeResultMessage) {
 	requestID := strings.TrimSpace(result.RequestID)
 	if requestID == "" {
 		return
 	}
-	probeLocalConsoleProxyWaiters.mu.Lock()
-	waiter, ok := probeLocalConsoleProxyWaiters.data[requestID]
+	probeLocalConsoleBridgeWaiters.mu.Lock()
+	waiter, ok := probeLocalConsoleBridgeWaiters.data[requestID]
 	if ok {
-		delete(probeLocalConsoleProxyWaiters.data, requestID)
+		delete(probeLocalConsoleBridgeWaiters.data, requestID)
 	}
-	probeLocalConsoleProxyWaiters.mu.Unlock()
+	probeLocalConsoleBridgeWaiters.mu.Unlock()
 	if !ok {
 		return
 	}
@@ -129,10 +129,10 @@ func consumeProbeLocalConsoleProxyResult(result probeLocalConsoleProxyResultMess
 }
 
 // ---------------------------------------------------------------------------
-// Browser-facing reverse proxy: /mng/probe-console (entry, mng-authed) mints a
+// Browser-facing console bridge: /mng/probe-console (entry, mng-authed) mints a
 // capability token and redirects into /mng/probe-console/session/{token}/local/*.
 // Keeping the token in the URL path lets multiple probe consoles stay open in
-// the same browser. Legacy /local/* cookie-based proxying is still accepted for
+// the same browser. Legacy /local/* cookie-based bridging is still accepted for
 // old tabs and links.
 // ---------------------------------------------------------------------------
 
@@ -154,7 +154,7 @@ var mngProbeConsoleTokens = struct {
 	data map[string]mngProbeConsoleToken
 }{data: map[string]mngProbeConsoleToken{}}
 
-type mngProbeConsoleProxyRoute struct {
+type mngProbeConsoleBridgeRoute struct {
 	TokenRecord mngProbeConsoleToken
 	ConsolePath string
 	URLPrefix   string
@@ -259,14 +259,14 @@ func mngProbeConsoleEntryHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, mngProbeConsoleSessionPrefix+token+"/local/panel", http.StatusFound)
 }
 
-// mngProbeConsoleProxyHandler serves /local/* by forwarding to the token-selected
+// mngProbeConsoleBridgeHandler serves /local/* by forwarding to the token-selected
 // probe node. New console tabs carry the token in a session-scoped URL prefix so
 // multiple probe consoles can coexist in the same browser. The legacy /local/*
 // cookie mode is kept for already-open tabs and old links.
-func mngProbeConsoleProxyHandler(w http.ResponseWriter, r *http.Request) {
-	route, ok := resolveMngProbeConsoleProxyRoute(r)
+func mngProbeConsoleBridgeHandler(w http.ResponseWriter, r *http.Request) {
+	route, ok := resolveMngProbeConsoleBridgeRoute(r)
 	if !ok {
-		mngProbeConsoleProxyDenied(w, r)
+		mngProbeConsoleBridgeDenied(w, r)
 		return
 	}
 	tokenRecord := route.TokenRecord
@@ -276,7 +276,7 @@ func mngProbeConsoleProxyHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.RawQuery != "" {
 		path += "?" + r.URL.RawQuery
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, probeLocalConsoleProxyMaxBodyBytes))
+	body, err := io.ReadAll(io.LimitReader(r.Body, probeLocalConsoleBridgeMaxBodyBytes))
 	if err != nil {
 		http.Error(w, "failed to read request body", http.StatusBadRequest)
 		return
@@ -317,7 +317,7 @@ func mngProbeConsoleProxyHandler(w http.ResponseWriter, r *http.Request) {
 			w.Header().Add(canonical, value)
 		}
 	}
-	w.Header().Set("X-Probe-Console-Proxy", "controller")
+	w.Header().Set("X-Probe-Console-Bridge", "controller")
 	status := result.StatusCode
 	if status == 0 {
 		status = http.StatusOK
@@ -326,7 +326,7 @@ func mngProbeConsoleProxyHandler(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(decoded)
 }
 
-func resolveMngProbeConsoleProxyRoute(r *http.Request) (mngProbeConsoleProxyRoute, bool) {
+func resolveMngProbeConsoleBridgeRoute(r *http.Request) (mngProbeConsoleBridgeRoute, bool) {
 	path := strings.TrimSpace(r.URL.Path)
 	if strings.HasPrefix(path, mngProbeConsoleSessionPrefix) {
 		rest := strings.TrimPrefix(path, mngProbeConsoleSessionPrefix)
@@ -338,12 +338,12 @@ func resolveMngProbeConsoleProxyRoute(r *http.Request) (mngProbeConsoleProxyRout
 		}
 		tokenRecord, ok := resolveMngProbeConsoleTokenRecord(token)
 		if !ok {
-			return mngProbeConsoleProxyRoute{}, false
+			return mngProbeConsoleBridgeRoute{}, false
 		}
 		if !strings.HasPrefix(consolePath, "/local/") {
 			consolePath = "/local/panel"
 		}
-		return mngProbeConsoleProxyRoute{
+		return mngProbeConsoleBridgeRoute{
 			TokenRecord: tokenRecord,
 			ConsolePath: consolePath,
 			URLPrefix:   mngProbeConsoleSessionPrefix + strings.TrimSpace(token),
@@ -352,13 +352,13 @@ func resolveMngProbeConsoleProxyRoute(r *http.Request) (mngProbeConsoleProxyRout
 
 	cookie, err := r.Cookie(mngProbeConsoleCookieName)
 	if err != nil {
-		return mngProbeConsoleProxyRoute{}, false
+		return mngProbeConsoleBridgeRoute{}, false
 	}
 	tokenRecord, ok := resolveMngProbeConsoleTokenRecord(cookie.Value)
 	if !ok {
-		return mngProbeConsoleProxyRoute{}, false
+		return mngProbeConsoleBridgeRoute{}, false
 	}
-	return mngProbeConsoleProxyRoute{
+	return mngProbeConsoleBridgeRoute{
 		TokenRecord: tokenRecord,
 		ConsolePath: path,
 	}, true
@@ -459,7 +459,7 @@ func mngProbeConsoleLooksLikeHTML(headers map[string][]string) bool {
 	return false
 }
 
-func mngProbeConsoleProxyDenied(w http.ResponseWriter, r *http.Request) {
+func mngProbeConsoleBridgeDenied(w http.ResponseWriter, r *http.Request) {
 	// Top-level navigations recover gracefully: if we still remember the node, send
 	// the browser through the mng-authenticated entry to transparently re-mint a
 	// token (or to the mng login if the admin session also lapsed). API/asset calls

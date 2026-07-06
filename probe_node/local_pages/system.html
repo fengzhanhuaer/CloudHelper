@@ -131,7 +131,7 @@
     <div class="topbar">
       <div>
         <h1>系统设置</h1>
-        <p class="hint">系统升级、IP 上送、链路认证黑名单与服务操作。</p>
+        <p class="hint">系统升级、IP 上送、路由认证黑名单与服务操作。</p>
       </div>
       <div class="nav">
         <a href="/local/panel">首页</a>
@@ -171,16 +171,16 @@
       </section>
 
       <section class="card">
-        <h2>链路认证黑名单</h2>
-        <p class="hint">每行一个源 IP，保存后写入本地 data/probe_chain_auth_blacklist.json。</p>
+        <h2>路由认证黑名单</h2>
+        <p class="hint">每行一个源 IP，保存后写入本地 data/probe_route_auth_blacklist.json。</p>
         <div class="kv">
-          <div>当前数量</div><div id="chainAuthBlacklistCount">0</div>
+          <div>当前数量</div><div id="routeAuthBlacklistCount">0</div>
           <div>黑名单</div>
-          <div><textarea id="chainAuthBlacklistContent" spellcheck="false" placeholder="例如：&#10;123.232.8.66"></textarea></div>
+          <div><textarea id="routeAuthBlacklistContent" spellcheck="false" placeholder="例如：&#10;123.232.8.66"></textarea></div>
         </div>
         <div class="actions">
-          <button id="chainAuthBlacklistSaveBtn">保存黑名单</button>
-          <button id="chainAuthBlacklistRefreshBtn" class="secondary">刷新黑名单</button>
+          <button id="routeAuthBlacklistSaveBtn">保存黑名单</button>
+          <button id="routeAuthBlacklistRefreshBtn" class="secondary">刷新黑名单</button>
         </div>
       </section>
 
@@ -204,7 +204,7 @@
   <script>
     const messageEl = document.getElementById('message');
     const ipReportInterfacesEl = document.getElementById('ipReportInterfaces');
-    const chainAuthBlacklistContentEl = document.getElementById('chainAuthBlacklistContent');
+    const routeAuthBlacklistContentEl = document.getElementById('routeAuthBlacklistContent');
     let upgradeStatusPollingTimer = null;
 
     function setMessage(text, type) {
@@ -429,23 +429,23 @@
       }
     }
 
-    function renderChainAuthBlacklist(data) {
-      chainAuthBlacklistContentEl.value = String(data && data.content || '').trim();
-      setText('chainAuthBlacklistCount', String(Array.isArray(data && data.items) ? data.items.length : 0));
+    function renderRouteAuthBlacklist(data) {
+      routeAuthBlacklistContentEl.value = String(data && data.content || '').trim();
+      setText('routeAuthBlacklistCount', String(Array.isArray(data && data.items) ? data.items.length : 0));
     }
 
-    async function loadChainAuthBlacklist() {
-      const data = await requestJSON('/local/api/system/chain_auth_blacklist', { method: 'GET' });
-      renderChainAuthBlacklist(data || {});
+    async function loadRouteAuthBlacklist() {
+      const data = await requestJSON('/local/api/system/route_auth_blacklist', { method: 'GET' });
+      renderRouteAuthBlacklist(data || {});
     }
 
-    async function saveChainAuthBlacklist() {
-      const data = await requestJSON('/local/api/system/chain_auth_blacklist', {
+    async function saveRouteAuthBlacklist() {
+      const data = await requestJSON('/local/api/system/route_auth_blacklist', {
         method: 'POST',
-        body: JSON.stringify({ content: chainAuthBlacklistContentEl.value || '' }),
+        body: JSON.stringify({ content: routeAuthBlacklistContentEl.value || '' }),
       });
-      renderChainAuthBlacklist(data || {});
-      setMessage('链路认证黑名单已保存', 'success');
+      renderRouteAuthBlacklist(data || {});
+      setMessage('路由认证黑名单已保存', 'success');
     }
 
     async function refreshAll() {
@@ -453,7 +453,7 @@
       if (!ok) return;
       await loadIPReportSettings();
       await loadUpgradeStatus();
-      await loadChainAuthBlacklist();
+      await loadRouteAuthBlacklist();
     }
 
     document.getElementById('upgradeCheckDirectBtn').addEventListener('click', () => checkSystemUpgrade('direct'));
@@ -475,8 +475,8 @@
     });
     document.getElementById('ipReportSaveBtn').addEventListener('click', () => saveIPReportSettings().catch((err) => setMessage('保存 IP 上送设置失败：' + err.message, 'error')));
     document.getElementById('ipReportRefreshBtn').addEventListener('click', () => loadIPReportSettings().then(() => setMessage('网卡已刷新', 'success')).catch((err) => setMessage('刷新网卡失败：' + err.message, 'error')));
-    document.getElementById('chainAuthBlacklistSaveBtn').addEventListener('click', () => saveChainAuthBlacklist().catch((err) => setMessage('保存链路认证黑名单失败：' + err.message, 'error')));
-    document.getElementById('chainAuthBlacklistRefreshBtn').addEventListener('click', () => loadChainAuthBlacklist().then(() => setMessage('链路认证黑名单已刷新', 'success')).catch((err) => setMessage('刷新链路认证黑名单失败：' + err.message, 'error')));
+    document.getElementById('routeAuthBlacklistSaveBtn').addEventListener('click', () => saveRouteAuthBlacklist().catch((err) => setMessage('保存路由认证黑名单失败：' + err.message, 'error')));
+    document.getElementById('routeAuthBlacklistRefreshBtn').addEventListener('click', () => loadRouteAuthBlacklist().then(() => setMessage('路由认证黑名单已刷新', 'success')).catch((err) => setMessage('刷新路由认证黑名单失败：' + err.message, 'error')));
 
     refreshAll().catch((err) => setMessage('初始化失败：' + err.message, 'error'));
   </script>

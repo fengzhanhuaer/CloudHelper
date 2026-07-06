@@ -32,7 +32,7 @@ const (
 	probeVirtualRouterRouteRuleActionReject = "reject"
 	probeVirtualRouterReservedGatewayIP     = "198.18.0.1"
 	probeVirtualRouterReservedTUNIP         = "198.18.0.2"
-	probeVirtualRouterRuntimeChainPrefix    = "vrouter-"
+	probeVirtualRouterRuntimeRoutePrefix    = "vrouter-"
 )
 
 type probeVirtualRouterConfig struct {
@@ -944,12 +944,12 @@ func normalizeProbeVirtualRouterServicePort(port int) int {
 	return port
 }
 
-func probeVirtualRouterRuntimeChainID(rule probeVirtualRouterTopologyRule) string {
+func probeVirtualRouterRuntimeRouteID(rule probeVirtualRouterTopologyRule) string {
 	sum := sha256.Sum256([]byte(strings.Join([]string{
-		"chain",
+		"route",
 		strings.TrimSpace(rule.ID),
 	}, "|")))
-	return probeVirtualRouterRuntimeChainPrefix + hex.EncodeToString(sum[:])[:24]
+	return probeVirtualRouterRuntimeRoutePrefix + hex.EncodeToString(sum[:])[:24]
 }
 
 func normalizeProbeVirtualRouterDirection(raw string) string {

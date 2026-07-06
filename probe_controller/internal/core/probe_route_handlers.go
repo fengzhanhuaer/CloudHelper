@@ -12,10 +12,10 @@ type probeRouteConfigResponse struct {
 }
 
 type probeRouteFakeIPResolveResponse struct {
-	NodeID        string                            `json:"node_id"`
-	Item          probeVirtualRouterFakeIPEntry     `json:"item"`
-	FakeIPLibrary probeVirtualRouterFakeIPLibrary   `json:"fake_ip_library"`
-	Sync          probeLinkConfigSyncDispatchResult `json:"sync"`
+	NodeID        string                             `json:"node_id"`
+	Item          probeVirtualRouterFakeIPEntry      `json:"item"`
+	FakeIPLibrary probeVirtualRouterFakeIPLibrary    `json:"fake_ip_library"`
+	Sync          probeRouteConfigSyncDispatchResult `json:"sync"`
 }
 
 func ProbeRouteConfigHandler(w http.ResponseWriter, r *http.Request) {
@@ -84,7 +84,7 @@ func ProbeRouteFakeIPResolveHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	var syncResult probeLinkConfigSyncDispatchResult
+	var syncResult probeRouteConfigSyncDispatchResult
 	if changed {
 		if err := ProbeRouteConfigStore.Save(); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

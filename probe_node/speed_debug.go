@@ -15,7 +15,7 @@ const probeSpeedDebugMaxRecent = 64
 
 type probeSpeedDebugItemPayload struct {
 	ID                 string `json:"id"`
-	ChainID            string `json:"chain_id,omitempty"`
+	RouteID            string `json:"route_id,omitempty"`
 	Role               string `json:"role,omitempty"`
 	Side               string `json:"side,omitempty"`
 	Transport          string `json:"transport,omitempty"`
@@ -63,7 +63,7 @@ type probeSpeedDebugState struct {
 
 type probeSpeedDebugItem struct {
 	id             string
-	chainID        string
+	routeID        string
 	role           string
 	side           string
 	transport      string
@@ -85,7 +85,7 @@ type probeSpeedDebugItem struct {
 }
 
 type probeSpeedDebugBeginOptions struct {
-	ChainID        string
+	RouteID        string
 	Role           string
 	Side           string
 	Transport      string
@@ -108,7 +108,7 @@ func (s *probeSpeedDebugState) begin(opts probeSpeedDebugBeginOptions) *probeSpe
 	id := "speed-" + strings.ToLower(randomHexToken(6)) + "-" + time.Now().Format("150405.000")
 	item := &probeSpeedDebugItem{
 		id:             id,
-		chainID:        strings.TrimSpace(opts.ChainID),
+		routeID:        strings.TrimSpace(opts.RouteID),
 		role:           strings.TrimSpace(opts.Role),
 		side:           firstNonEmpty(strings.TrimSpace(opts.Side), "remote"),
 		transport:      strings.TrimSpace(opts.Transport),
@@ -222,7 +222,7 @@ func (i *probeSpeedDebugItem) snapshot(now time.Time) probeSpeedDebugItemPayload
 	}
 	item := probeSpeedDebugItemPayload{
 		ID:                strings.TrimSpace(i.id),
-		ChainID:           strings.TrimSpace(i.chainID),
+		RouteID:           strings.TrimSpace(i.routeID),
 		Role:              strings.TrimSpace(i.role),
 		Side:              strings.TrimSpace(i.side),
 		Transport:         strings.TrimSpace(i.transport),
@@ -275,46 +275,46 @@ func runProbeSpeedDebugFetch(cmd probeControlMessage, identity nodeIdentity, str
 	}
 }
 
-type probeLocalRouteLinkSpeedStatus struct {
-	ChainID   string                           `json:"chain_id"`
+type probeLocalRouteSpeedStatus struct {
+	RouteID   string                           `json:"route_id"`
 	UpdatedAt string                           `json:"updated_at,omitempty"`
-	Results   []probeChainRelaySpeedTestResult `json:"results,omitempty"`
+	Results   []probeRouteRelaySpeedTestResult `json:"results,omitempty"`
 }
 
-var probeLocalRouteLinkSpeedState = struct {
+var probeLocalRouteSpeedState = struct {
 	mu    sync.Mutex
-	items map[string]probeLocalRouteLinkSpeedStatus
-}{items: map[string]probeLocalRouteLinkSpeedStatus{}}
+	items map[string]probeLocalRouteSpeedStatus
+}{items: map[string]probeLocalRouteSpeedStatus{}}
 
-func recordprobeLocalRouteLinkSpeedStatus(chainID string, results []probeChainRelaySpeedTestResult) {
-	cleanID := strings.TrimSpace(chainID)
+func recordprobeLocalRouteSpeedStatus(routeID string, results []probeRouteRelaySpeedTestResult) {
+	cleanID := strings.TrimSpace(routeID)
 	if cleanID == "" {
 		return
 	}
-	copied := append([]probeChainRelaySpeedTestResult(nil), results...)
-	probeLocalRouteLinkSpeedState.mu.Lock()
-	if probeLocalRouteLinkSpeedState.items == nil {
-		probeLocalRouteLinkSpeedState.items = map[string]probeLocalRouteLinkSpeedStatus{}
+	copied := append([]probeRouteRelaySpeedTestResult(nil), results...)
+	probeLocalRouteSpeedState.mu.Lock()
+	if probeLocalRouteSpeedState.items == nil {
+		probeLocalRouteSpeedState.items = map[string]probeLocalRouteSpeedStatus{}
 	}
-	probeLocalRouteLinkSpeedState.items[strings.ToLower(cleanID)] = probeLocalRouteLinkSpeedStatus{
-		ChainID:   cleanID,
+	probeLocalRouteSpeedState.items[strings.ToLower(cleanID)] = probeLocalRouteSpeedStatus{
+		RouteID:   cleanID,
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 		Results:   copied,
 	}
-	probeLocalRouteLinkSpeedState.mu.Unlock()
+	probeLocalRouteSpeedState.mu.Unlock()
 }
 
-func snapshotprobeLocalRouteLinkSpeedStatus(chainID string) *probeLocalRouteLinkSpeedStatus {
-	cleanID := strings.ToLower(strings.TrimSpace(chainID))
+func snapshotprobeLocalRouteSpeedStatus(routeID string) *probeLocalRouteSpeedStatus {
+	cleanID := strings.ToLower(strings.TrimSpace(routeID))
 	if cleanID == "" {
 		return nil
 	}
-	probeLocalRouteLinkSpeedState.mu.Lock()
-	defer probeLocalRouteLinkSpeedState.mu.Unlock()
-	item, ok := probeLocalRouteLinkSpeedState.items[cleanID]
+	probeLocalRouteSpeedState.mu.Lock()
+	defer probeLocalRouteSpeedState.mu.Unlock()
+	item, ok := probeLocalRouteSpeedState.items[cleanID]
 	if !ok {
 		return nil
 	}
-	item.Results = append([]probeChainRelaySpeedTestResult(nil), item.Results...)
+	item.Results = append([]probeRouteRelaySpeedTestResult(nil), item.Results...)
 	return &item
 }

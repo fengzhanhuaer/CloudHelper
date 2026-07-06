@@ -24,8 +24,7 @@ func setupProbeLocalConsoleTest(t *testing.T) *http.ServeMux {
 	resetProbeLocalDNSServiceForTest()
 	resetProbeVirtualRouterLocalSettingsForTest()
 	setprobeLocalRouteRuntimeContext(nodeIdentity{}, "")
-	probeLocalTUNLinkFeatureEnabled = func() bool { return true }
-	probeLocalFlushSystemDNSCache = func() error { return nil }
+	probeLocalTUNRouteFeatureEnabled = func() bool { return true }
 	t.Cleanup(func() {
 		resetProbeLocalAuthManagerForTest()
 		resetProbeLocalControlStateForTest()
@@ -35,7 +34,7 @@ func setupProbeLocalConsoleTest(t *testing.T) *http.ServeMux {
 		resetProbeLocalTUNHooksForTest()
 		resetProbeLocalUpgradeHooksForTest()
 		setprobeLocalRouteRuntimeContext(nodeIdentity{}, "")
-		probeLocalTUNLinkFeatureEnabled = func() bool { return false }
+		probeLocalTUNRouteFeatureEnabled = func() bool { return false }
 	})
 	return buildProbeLocalConsoleMux()
 }
@@ -315,22 +314,9 @@ func TestProbeLocalDNSStartupLoadsCacheThenHostMapping(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("persist host mappings failed: %v", err)
 	}
-	packet, err := buildProbeLocalDNSQueryA("static.example.com")
-	if err != nil {
-		t.Fatalf("build dns query failed: %v", err)
-	}
-	response, domain, ips, _, err := resolveProbeLocalDNSResponse(packet)
-	if err != nil {
-		t.Fatalf("resolveProbeLocalDNSResponse returned error: %v", err)
-	}
-	if domain != "static.example.com" {
-		t.Fatalf("domain=%q", domain)
-	}
+	ips := lookupProbeLocalDNSCacheIPv4ByDomain("static.example.com")
 	if strings.Join(ips, ",") != "203.0.113.10" {
 		t.Fatalf("ips=%v", ips)
-	}
-	if got := strings.Join(extractProbeLocalDNSResponseIPsBestEffort(response), ","); got != "203.0.113.10" {
-		t.Fatalf("response ips=%q", got)
 	}
 }
 
@@ -379,22 +365,9 @@ func TestProbeLocalDNSCachePersistsToDiskAndReloads(t *testing.T) {
 		t.Fatalf("reloaded cache ips=%q", got)
 	}
 
-	packet, err := buildProbeLocalDNSQueryA("persist.example")
-	if err != nil {
-		t.Fatalf("build dns query failed: %v", err)
-	}
-	response, domain, ips, _, err := resolveProbeLocalDNSResponse(packet)
-	if err != nil {
-		t.Fatalf("resolveProbeLocalDNSResponse returned error: %v", err)
-	}
-	if domain != "persist.example" {
-		t.Fatalf("domain=%q", domain)
-	}
+	ips := lookupProbeLocalDNSCacheIPv4ByDomain("persist.example")
 	if strings.Join(ips, ",") != "203.0.113.30" {
 		t.Fatalf("ips=%v", ips)
-	}
-	if got := strings.Join(extractProbeLocalDNSResponseIPsBestEffort(response), ","); got != "203.0.113.30" {
-		t.Fatalf("response ips=%q", got)
 	}
 }
 
@@ -407,12 +380,7 @@ func TestProbeLocalTUNResetAndUninstallHandlers(t *testing.T) {
 	probeLocalControl.tun.Enabled = true
 	probeLocalControl.mu.Unlock()
 
-	restoreDNSCalls := 0
 	uninstallCalls := 0
-	probeLocalRestoreTUNPrimaryDNS = func() error {
-		restoreDNSCalls++
-		return nil
-	}
 	probeLocalUninstallTUNDriver = func() error {
 		uninstallCalls++
 		return nil
@@ -435,8 +403,8 @@ func TestProbeLocalTUNResetAndUninstallHandlers(t *testing.T) {
 	if enabled, _ := resetTun["enabled"].(bool); enabled {
 		t.Fatalf("tun/reset enabled should be false")
 	}
-	if restoreDNSCalls != 0 || uninstallCalls != 0 {
-		t.Fatalf("after reset restoreDNS=%d uninstall=%d", restoreDNSCalls, uninstallCalls)
+	if uninstallCalls != 0 {
+		t.Fatalf("after reset uninstall=%d", uninstallCalls)
 	}
 
 	uninstallResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/tun/uninstall", map[string]any{}, sessionCookie)
@@ -451,8 +419,8 @@ func TestProbeLocalTUNResetAndUninstallHandlers(t *testing.T) {
 	if installed, _ := uninstallTun["installed"].(bool); installed {
 		t.Fatalf("tun/uninstall installed should be false")
 	}
-	if restoreDNSCalls != 0 || uninstallCalls != 1 {
-		t.Fatalf("after uninstall restoreDNS=%d uninstall=%d", restoreDNSCalls, uninstallCalls)
+	if uninstallCalls != 1 {
+		t.Fatalf("after uninstall uninstall=%d", uninstallCalls)
 	}
 }
 
@@ -725,28 +693,28 @@ func TestProbeLocalSystemUpgradeRejectsInvalidMode(t *testing.T) {
 	}
 }
 
-func TestProbeLocalSystemChainAuthBlacklistSaveAndGet(t *testing.T) {
-	resetProbeChainAuthIPStateForTest()
-	defer resetProbeChainAuthIPStateForTest()
+func TestProbeLocalSystemRouteAuthBlacklistSaveAndGet(t *testing.T) {
+	resetProbeRouteAuthIPStateForTest()
+	defer resetProbeRouteAuthIPStateForTest()
 
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
 
-	saveResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/system/chain_auth_blacklist", map[string]any{
+	saveResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/system/route_auth_blacklist", map[string]any{
 		"content": "203.0.113.10\n\n# comment\n203.0.113.11 extra",
 	}, sessionCookie)
 	if saveResp.Code != http.StatusOK {
-		t.Fatalf("chain_auth_blacklist save status=%d body=%s", saveResp.Code, saveResp.Body.String())
+		t.Fatalf("route_auth_blacklist save status=%d body=%s", saveResp.Code, saveResp.Body.String())
 	}
 	payload := decodeProbeLocalJSON(t, saveResp)
 	if content, _ := payload["content"].(string); content != "203.0.113.10\n203.0.113.11" {
-		t.Fatalf("chain_auth_blacklist content=%q", content)
+		t.Fatalf("route_auth_blacklist content=%q", content)
 	}
-	if blocked, _ := isProbeChainAuthIPBlacklisted("203.0.113.10"); !blocked {
+	if blocked, _ := isProbeRouteAuthIPBlacklisted("203.0.113.10"); !blocked {
 		t.Fatalf("expected saved ip to be blacklisted")
 	}
 
-	path, err := resolveProbeChainAuthBlacklistPath()
+	path, err := resolveProbeRouteAuthBlacklistPath()
 	if err != nil {
 		t.Fatalf("resolve blacklist path: %v", err)
 	}
@@ -758,17 +726,17 @@ func TestProbeLocalSystemChainAuthBlacklistSaveAndGet(t *testing.T) {
 		t.Fatalf("blacklist file missing saved ip: %s", string(raw))
 	}
 
-	getResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/system/chain_auth_blacklist", nil, sessionCookie)
+	getResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/system/route_auth_blacklist", nil, sessionCookie)
 	if getResp.Code != http.StatusOK {
-		t.Fatalf("chain_auth_blacklist get status=%d body=%s", getResp.Code, getResp.Body.String())
+		t.Fatalf("route_auth_blacklist get status=%d body=%s", getResp.Code, getResp.Body.String())
 	}
 	getPayload := decodeProbeLocalJSON(t, getResp)
 	items, ok := getPayload["items"].([]any)
 	if !ok || len(items) != 2 {
-		t.Fatalf("chain_auth_blacklist items=%T %v", getPayload["items"], getPayload["items"])
+		t.Fatalf("route_auth_blacklist items=%T %v", getPayload["items"], getPayload["items"])
 	}
 
-	invalidResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/system/chain_auth_blacklist", map[string]any{
+	invalidResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/system/route_auth_blacklist", map[string]any{
 		"content": "not-an-ip",
 	}, sessionCookie)
 	if invalidResp.Code != http.StatusBadRequest {
@@ -1166,9 +1134,9 @@ func TestProbeLocalTUNStartupRecoveryRepairsTUNOnlyStateWithoutDataPlane(t *test
 	probeLocalResolveWintunPathForDataPlane = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
 	probeLocalCreateWintunAdapterForDataPlane = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
 	probeLocalCloseWintunAdapterForDataPlane = func(_ string, _ uintptr) error { return nil }
-	probeLocalNewTUNDataPlaneRunner = func(_ string, _ uintptr, _ func([]byte), _ func(string, ...any)) (probeLocalTUNDataPlane, error) {
+	probeVirtualRouterNewTUNDataPlaneRunner = func(_ string, _ uintptr, _ func([]byte), _ func(string, ...any)) (probeVirtualRouterTUNDataPlane, error) {
 		dataPlaneCalls++
-		return &fakeProbeLocalTUNDataPlane{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
+		return &fakeProbeVirtualRouterTUNDataPlane{stats: probeVirtualRouterTUNDataPlaneStats{Running: true}}, nil
 	}
 	t.Cleanup(func() { resetProbeLocalTUNHooksForTest(); resetprobeLocalRouteHooksForTest() })
 
@@ -1223,9 +1191,9 @@ func TestProbeLocalTUNStartupRecoveryRepairsPersistedEnabledState(t *testing.T) 
 	probeLocalResolveWintunPathForDataPlane = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
 	probeLocalCreateWintunAdapterForDataPlane = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
 	probeLocalCloseWintunAdapterForDataPlane = func(_ string, _ uintptr) error { return nil }
-	probeLocalNewTUNDataPlaneRunner = func(_ string, _ uintptr, _ func([]byte), _ func(string, ...any)) (probeLocalTUNDataPlane, error) {
+	probeVirtualRouterNewTUNDataPlaneRunner = func(_ string, _ uintptr, _ func([]byte), _ func(string, ...any)) (probeVirtualRouterTUNDataPlane, error) {
 		dataPlaneCalls++
-		return &fakeProbeLocalTUNDataPlane{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
+		return &fakeProbeVirtualRouterTUNDataPlane{stats: probeVirtualRouterTUNDataPlaneStats{Running: true}}, nil
 	}
 	t.Cleanup(func() { resetProbeLocalTUNHooksForTest(); resetprobeLocalRouteHooksForTest() })
 
@@ -1266,7 +1234,6 @@ func TestProbeLocalTUNStartupRecoveryRestoresPersistedEnabledState(t *testing.T)
 	probeLocalDetectTUNInstalled = func() (bool, error) { return true, nil }
 	probeLocalInstallTUNDriver = func() error { return nil }
 	probeLocalCheckTUNReadyAfterInstall = func() error { return nil }
-	probeLocalApplyTUNPrimaryDNS = func() error { return nil }
 	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
 	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
 	dataPlaneCalls := 0
@@ -1274,9 +1241,9 @@ func TestProbeLocalTUNStartupRecoveryRestoresPersistedEnabledState(t *testing.T)
 	probeLocalResolveWintunPathForDataPlane = func() (string, error) { return `C:\\temp\\wintun.dll`, nil }
 	probeLocalCreateWintunAdapterForDataPlane = func(_, _, _ string) (uintptr, error) { return uintptr(1), nil }
 	probeLocalCloseWintunAdapterForDataPlane = func(_ string, _ uintptr) error { return nil }
-	probeLocalNewTUNDataPlaneRunner = func(_ string, _ uintptr, _ func([]byte), _ func(string, ...any)) (probeLocalTUNDataPlane, error) {
+	probeVirtualRouterNewTUNDataPlaneRunner = func(_ string, _ uintptr, _ func([]byte), _ func(string, ...any)) (probeVirtualRouterTUNDataPlane, error) {
 		dataPlaneCalls++
-		return &fakeProbeLocalTUNDataPlane{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
+		return &fakeProbeVirtualRouterTUNDataPlane{stats: probeVirtualRouterTUNDataPlaneStats{Running: true}}, nil
 	}
 	t.Cleanup(func() { resetProbeLocalTUNHooksForTest(); resetprobeLocalRouteHooksForTest() })
 

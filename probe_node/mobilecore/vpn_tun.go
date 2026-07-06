@@ -87,7 +87,7 @@ type vpnRouteDecision struct {
 	Reject          bool
 	TargetAddr      string
 	Group           string
-	SelectedChainID string
+	SelectedRouteID string
 }
 
 type androidVPNDNSState struct {
@@ -107,7 +107,7 @@ type androidVPNDNSFakeEntry struct {
 	Group           string
 	Direct          bool
 	Reject          bool
-	SelectedChainID string
+	SelectedRouteID string
 	ExpiresAt       time.Time
 }
 
@@ -134,7 +134,7 @@ type androidVPNDNSPersistFakeEntry struct {
 	Group           string    `json:"group,omitempty"`
 	Direct          bool      `json:"direct,omitempty"`
 	Reject          bool      `json:"reject,omitempty"`
-	SelectedChainID string    `json:"selected_chain_id,omitempty"`
+	SelectedRouteID string    `json:"selected_route_id,omitempty"`
 	ExpiresAt       time.Time `json:"expires_at"`
 }
 
@@ -220,7 +220,7 @@ func ensureAndroidVPNDNSCacheLoaded(configDir string) {
 			Group:           strings.TrimSpace(item.Group),
 			Direct:          item.Direct,
 			Reject:          item.Reject,
-			SelectedChainID: strings.TrimSpace(item.SelectedChainID),
+			SelectedRouteID: strings.TrimSpace(item.SelectedRouteID),
 			ExpiresAt:       item.ExpiresAt,
 		}
 	}
@@ -319,7 +319,7 @@ func persistAndroidVPNDNSCacheForState(configDir string, state *androidVPNDNSSta
 			Group:           entry.Group,
 			Direct:          entry.Direct,
 			Reject:          entry.Reject,
-			SelectedChainID: entry.SelectedChainID,
+			SelectedRouteID: entry.SelectedRouteID,
 			ExpiresAt:       entry.ExpiresAt,
 		})
 	}
@@ -443,7 +443,7 @@ func VpnStatus() string {
 	updatedAt := vpnRuntime.updatedAt
 	vpnRuntime.mu.Unlock()
 	dnsStatus := snapshotAndroidVPNDNSStatus()
-	return marshalLinkJSON(map[string]any{
+	return marshalRouteJSON(map[string]any{
 		"ok":         true,
 		"running":    running,
 		"status":     status,
@@ -457,7 +457,7 @@ func VpnStatus() string {
 func VpnSelfCheck(configDir string) string {
 	result := runAndroidVPNSelfCheck(strings.TrimSpace(configDir))
 	setVPNSelfCheckResult(result)
-	return marshalLinkJSON(result)
+	return marshalRouteJSON(result)
 }
 
 func runVPNStartupSelfCheck(configDir string) {
@@ -527,7 +527,7 @@ func runAndroidVPNSelfCheck(configDir string) map[string]any {
 		"direct":            route.Direct,
 		"reject":            route.Reject,
 		"target":            route.TargetAddr,
-		"selected_chain_id": route.SelectedChainID,
+		"selected_route_id": route.SelectedRouteID,
 	}
 	if route.Reject {
 		result["status"] = "route_rejected"
@@ -541,15 +541,15 @@ func runAndroidVPNSelfCheck(configDir string) map[string]any {
 		result["updated_at"] = time.Now().UTC().Format(time.RFC3339)
 		return result
 	}
-	if strings.TrimSpace(route.SelectedChainID) == "" {
-		result["status"] = "chain_missing"
-		result["error"] = "tunnel route missing selected_chain_id"
+	if strings.TrimSpace(route.SelectedRouteID) == "" {
+		result["status"] = "route_missing"
+		result["error"] = "tunnel route missing selected_route_id"
 		result["updated_at"] = time.Now().UTC().Format(time.RFC3339)
 		return result
 	}
-	conn, err := openMobileRouteChainStream(route.SelectedChainID, "tcp", route.TargetAddr)
+	conn, err := openMobileRoutePathStream(route.SelectedRouteID, "tcp", route.TargetAddr)
 	if err != nil {
-		result["status"] = "chain_open_failed"
+		result["status"] = "route_open_failed"
 		result["error"] = err.Error()
 		result["updated_at"] = time.Now().UTC().Format(time.RFC3339)
 		return result
@@ -565,12 +565,12 @@ func runAndroidVPNSelfCheck(configDir string) map[string]any {
 				"direct":            rawRoute.Direct,
 				"reject":            rawRoute.Reject,
 				"target":            rawRoute.TargetAddr,
-				"selected_chain_id": rawRoute.SelectedChainID,
+				"selected_route_id": rawRoute.SelectedRouteID,
 			}
-			if !rawRoute.Direct && !rawRoute.Reject && strings.TrimSpace(rawRoute.SelectedChainID) != "" {
-				ipConn, ipErr := openMobileRouteChainStream(rawRoute.SelectedChainID, "tcp", rawRoute.TargetAddr)
+			if !rawRoute.Direct && !rawRoute.Reject && strings.TrimSpace(rawRoute.SelectedRouteID) != "" {
+				ipConn, ipErr := openMobileRoutePathStream(rawRoute.SelectedRouteID, "tcp", rawRoute.TargetAddr)
 				if ipErr != nil {
-					result["status"] = "ip_chain_open_failed"
+					result["status"] = "ip_route_open_failed"
 					result["error"] = ipErr.Error()
 					result["updated_at"] = time.Now().UTC().Format(time.RFC3339)
 					result["duration_ms"] = time.Since(startedAt).Milliseconds()
@@ -1096,7 +1096,7 @@ func dialVPNRouteTCPWithFlow(route vpnRouteDecision, flowID string) (net.Conn, e
 		dialer := net.Dialer{Timeout: mobileRouteConnectTimeout}
 		return dialer.Dial("tcp", route.TargetAddr)
 	}
-	return openMobileRouteChainStreamWithFlow(route.SelectedChainID, "tcp", route.TargetAddr, flowID)
+	return openMobileRoutePathStreamWithFlow(route.SelectedRouteID, "tcp", route.TargetAddr, flowID)
 }
 
 func openVPNOutboundUDP(targetAddr string) (*net.UDPConn, error) {
@@ -1134,11 +1134,11 @@ func openVPNOutboundUDPStream(id stack.TransportEndpointID, targetAddr string) (
 	dstIP := strings.TrimSpace(id.LocalAddress.String())
 	assocKey := strings.ToLower(strings.TrimSpace(route.TargetAddr)) + "|" + srcIP + ":" + strconv.Itoa(int(id.RemotePort)) + "->" + dstIP + ":" + strconv.Itoa(int(id.LocalPort))
 	flowID = assocKey
-	association := &linkAssociationV2Meta{
+	association := &routeAssociationV2Meta{
 		Version:          2,
 		Transport:        "udp",
 		RouteGroup:       strings.TrimSpace(route.Group),
-		RouteNodeID:      strings.TrimSpace(route.SelectedChainID),
+		RouteNodeID:      strings.TrimSpace(route.SelectedRouteID),
 		RouteTarget:      strings.TrimSpace(route.TargetAddr),
 		RouteFingerprint: strings.ToLower(strings.TrimSpace(route.TargetAddr)),
 		NATMode:          "default",
@@ -1162,7 +1162,7 @@ func openVPNOutboundUDPStream(id stack.TransportEndpointID, targetAddr string) (
 			association.IPFamily = 6
 		}
 	}
-	stream, err := openMobileRouteChainPacketStream(route.SelectedChainID, "udp", route.TargetAddr, association)
+	stream, err := openMobileRoutePathPacketStream(route.SelectedRouteID, "udp", route.TargetAddr, association)
 	if err != nil {
 		return nil, route, flowID, err
 	}
@@ -1176,10 +1176,10 @@ func decideVPNRouteForTarget(targetAddr string) (vpnRouteDecision, error) {
 			Reject:          fakeEntry.Reject,
 			TargetAddr:      rewrittenTarget,
 			Group:           firstNonEmptyString(strings.TrimSpace(fakeEntry.Group), "fallback"),
-			SelectedChainID: strings.TrimSpace(fakeEntry.SelectedChainID),
+			SelectedRouteID: strings.TrimSpace(fakeEntry.SelectedRouteID),
 		}
-		if !route.Direct && !route.Reject && route.SelectedChainID == "" {
-			return vpnRouteDecision{}, errors.New("fake ip tunnel route missing selected_chain_id")
+		if !route.Direct && !route.Reject && route.SelectedRouteID == "" {
+			return vpnRouteDecision{}, errors.New("fake ip tunnel route missing selected_route_id")
 		}
 		if strings.TrimSpace(route.Group) == "" {
 			route.Group = "fallback"
@@ -1190,7 +1190,7 @@ func decideVPNRouteForTarget(targetAddr string) (vpnRouteDecision, error) {
 			Reject:          route.Reject,
 			TargetAddr:      route.TargetAddr,
 			Group:           route.Group,
-			SelectedChainID: route.SelectedChainID,
+			SelectedRouteID: route.SelectedRouteID,
 		}, nil
 	}
 	route, err := decideAndroidRouteForTarget(targetAddr)
@@ -1202,7 +1202,7 @@ func decideVPNRouteForTarget(targetAddr string) (vpnRouteDecision, error) {
 		Reject:          route.Reject,
 		TargetAddr:      route.TargetAddr,
 		Group:           route.Group,
-		SelectedChainID: route.SelectedChainID,
+		SelectedRouteID: route.SelectedRouteID,
 	}, nil
 }
 
@@ -1599,7 +1599,7 @@ func lookupAndroidVPNDNSRouteHint(configDir string, ipText string, port string) 
 	if err != nil {
 		return androidRouteDecision{}, false
 	}
-	if !route.Direct && !route.Reject && strings.TrimSpace(route.SelectedChainID) != "" {
+	if !route.Direct && !route.Reject && strings.TrimSpace(route.SelectedRouteID) != "" {
 		route.TargetAddr = net.JoinHostPort(entry.Domain, firstNonEmptyString(strings.TrimSpace(port), "443"))
 	} else {
 		route.TargetAddr = net.JoinHostPort(ip.String(), firstNonEmptyString(strings.TrimSpace(port), "443"))
@@ -1646,7 +1646,7 @@ func buildAndroidVPNIPv4FallbackRoute(route vpnRouteDecision, err error) (vpnRou
 			Reject:          route4.Reject,
 			TargetAddr:      net.JoinHostPort(ip4.String(), firstNonEmptyString(strings.TrimSpace(port), "443")),
 			Group:           firstNonEmptyString(strings.TrimSpace(route4.Group), strings.TrimSpace(hint.Group)),
-			SelectedChainID: route4.SelectedChainID,
+			SelectedRouteID: route4.SelectedRouteID,
 		}, true
 	}
 	return vpnRouteDecision{}, false
@@ -1836,7 +1836,7 @@ func snapshotAndroidVPNDNSStatus() map[string]any {
 			"group":             entry.Group,
 			"direct":            entry.Direct,
 			"reject":            entry.Reject,
-			"selected_chain_id": entry.SelectedChainID,
+			"selected_route_id": entry.SelectedRouteID,
 			"expires_at":        entry.ExpiresAt.UTC().Format(time.RFC3339),
 		})
 	}
@@ -1875,7 +1875,7 @@ func shouldUseAndroidVPNDNSFakeIP(route androidRouteDecision, qType dnsmessage.T
 	if route.Direct || route.Reject {
 		return false
 	}
-	if strings.TrimSpace(route.SelectedChainID) == "" {
+	if strings.TrimSpace(route.SelectedRouteID) == "" {
 		return false
 	}
 	return strings.TrimSpace(domain) != ""
@@ -1897,7 +1897,7 @@ func allocateAndroidVPNDNSFakeIP(domain string, route androidRouteDecision) (str
 		entry.Group = strings.TrimSpace(route.Group)
 		entry.Direct = route.Direct
 		entry.Reject = route.Reject
-		entry.SelectedChainID = strings.TrimSpace(route.SelectedChainID)
+		entry.SelectedRouteID = strings.TrimSpace(route.SelectedRouteID)
 		entry.ExpiresAt = now.Add(vpnDNSCacheTTL)
 		vpnDNSState.fakeIPToEntry[existingIP] = entry
 		vpnDNSState.mu.Unlock()
@@ -1919,7 +1919,7 @@ func allocateAndroidVPNDNSFakeIP(domain string, route androidRouteDecision) (str
 			Group:           strings.TrimSpace(route.Group),
 			Direct:          route.Direct,
 			Reject:          route.Reject,
-			SelectedChainID: strings.TrimSpace(route.SelectedChainID),
+			SelectedRouteID: strings.TrimSpace(route.SelectedRouteID),
 			ExpiresAt:       now.Add(vpnDNSCacheTTL),
 		}
 		vpnDNSState.mu.Unlock()
@@ -2055,7 +2055,7 @@ func (c *vpnTunnelUDPConn) Read(payload []byte) (int, error) {
 	}
 	c.readMu.Lock()
 	defer c.readMu.Unlock()
-	return readMobileRouteFramedPacket(c.reader, payload)
+	return readMobileVPNRouteFramedPacketInto(c.reader, payload)
 }
 
 func (c *vpnTunnelUDPConn) Write(payload []byte) (int, error) {
@@ -2067,7 +2067,7 @@ func (c *vpnTunnelUDPConn) Write(payload []byte) (int, error) {
 	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	if err := writeMobileRouteFramedPacket(c.stream, payload); err != nil {
+	if err := writeMobileVPNRouteFramedPacket(c.stream, payload); err != nil {
 		return 0, err
 	}
 	return len(payload), nil
@@ -2097,7 +2097,7 @@ func vpnTransportIDToTarget(addr tcpip.Address, port uint16) (string, error) {
 	return net.JoinHostPort(host, strconv.Itoa(int(port))), nil
 }
 
-func readMobileRouteFramedPacket(reader *bufio.Reader, payload []byte) (int, error) {
+func readMobileVPNRouteFramedPacketInto(reader *bufio.Reader, payload []byte) (int, error) {
 	var lengthBytes [2]byte
 	if _, err := io.ReadFull(reader, lengthBytes[:]); err != nil {
 		return 0, err
@@ -2118,7 +2118,7 @@ func readMobileRouteFramedPacket(reader *bufio.Reader, payload []byte) (int, err
 	return length, nil
 }
 
-func writeMobileRouteFramedPacket(writer io.Writer, payload []byte) error {
+func writeMobileVPNRouteFramedPacket(writer io.Writer, payload []byte) error {
 	size := len(payload)
 	if size <= 0 || size > 65535 {
 		return errors.New("invalid framed packet payload")

@@ -11,7 +11,7 @@ func TestProbeTCPDebugCompletedConnectionKeepsDomain(t *testing.T) {
 		Route: probeLocalTunnelRouteDecision{
 			TargetAddr:   "example.com:443",
 			Group:        "fallback",
-			TunnelNodeID: "chain:1",
+			TunnelNodeID: "route:1",
 		},
 	})
 	if relay == nil {

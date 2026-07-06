@@ -15,7 +15,7 @@ type probeLocalTunnelRouteDecision struct {
 	TargetAddr      string
 	TargetAddrs     []string
 	Group           string
-	SelectedChainID string
+	SelectedRouteID string
 	TunnelNodeID    string
 	FlowID          string
 }
@@ -162,14 +162,14 @@ func dialProbeLocalRoutedTCP(route probeLocalTunnelRouteDecision) (net.Conn, pro
 	if !route.Direct {
 		return nil, route, errProbeLocalTunnelRouteUnavailable
 	}
-	if err := ensureProbeLocalDirectBypass(route.TargetAddr); err != nil {
+	if err := ensureProbeRouteDirectBypass(route.TargetAddr); err != nil {
 		logProbeWarnf("probe local routed tcp direct bypass failed: target=%s err=%v", route.TargetAddr, err)
 	}
-	dialer := applyProbeLocalEgressDialer(&net.Dialer{Timeout: 10 * time.Second})
-	conn, err := dialer.Dial(probeLocalEgressDialNetwork("tcp", route.TargetAddr), strings.TrimSpace(route.TargetAddr))
+	dialer := applyProbeRouteEgressDialer(&net.Dialer{Timeout: 10 * time.Second})
+	conn, err := dialer.Dial(probeRouteEgressDialNetwork("tcp", route.TargetAddr), strings.TrimSpace(route.TargetAddr))
 	if err != nil {
 		return nil, route, err
 	}
-	tuneProbeChainNetConn(conn)
+	tuneProbeRouteNetConn(conn)
 	return conn, route, nil
 }

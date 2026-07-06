@@ -15,17 +15,17 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPLinuxAddsDNSAndNodeIP(t *tes
 	oldStat := probeLocalLinuxStat
 	oldLookPath := probeLocalLinuxLookPath
 	oldRun := probeLocalLinuxRunCommand
-	oldNewRunner := probeLocalLinuxNewTUNDataPlaneRunner
+	oldNewRunner := probeVirtualRouterLinuxNewTUNDataPlaneRunner
 	resetProbeVirtualRouterLinuxRouteStateForTest()
 	resetProbeVirtualRouterLocalSettingsForTest()
 	t.Cleanup(func() {
 		probeLocalLinuxStat = oldStat
 		probeLocalLinuxLookPath = oldLookPath
 		probeLocalLinuxRunCommand = oldRun
-		probeLocalLinuxNewTUNDataPlaneRunner = oldNewRunner
+		probeVirtualRouterLinuxNewTUNDataPlaneRunner = oldNewRunner
 		resetProbeVirtualRouterLinuxRouteStateForTest()
 		resetProbeVirtualRouterLocalSettingsForTest()
-		_ = stopProbeLocalTUNDataPlane()
+		_ = stopProbeVirtualRouterTUNDataPlane()
 	})
 
 	t.Setenv("PROBE_LOCAL_TUN_DEV", "probe0")
@@ -46,8 +46,8 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPLinuxAddsDNSAndNodeIP(t *tes
 		calls = append(calls, name+" "+strings.Join(args, " "))
 		return "", nil
 	}
-	probeLocalLinuxNewTUNDataPlaneRunner = func(dev string) (probeLocalTUNDataPlane, error) {
-		return &fakeProbeLocalLinuxTUNRunner{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
+	probeVirtualRouterLinuxNewTUNDataPlaneRunner = func(dev string) (probeVirtualRouterTUNDataPlane, error) {
+		return &fakeProbeVirtualRouterLinuxTUNDataPlane{stats: probeVirtualRouterTUNDataPlaneStats{Running: true}}, nil
 	}
 
 	if err := ensureProbeVirtualRouterPlatformInterfaceIP("198.18.0.11"); err != nil {
@@ -71,7 +71,7 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPLinuxAppliesTakeoverAndLocal
 	oldStat := probeLocalLinuxStat
 	oldLookPath := probeLocalLinuxLookPath
 	oldRun := probeLocalLinuxRunCommand
-	oldNewRunner := probeLocalLinuxNewTUNDataPlaneRunner
+	oldNewRunner := probeVirtualRouterLinuxNewTUNDataPlaneRunner
 	resetProbeVirtualRouterLinuxRouteStateForTest()
 	resetProbeVirtualRouterLocalSettingsForTest()
 	enableProbeVirtualRouterLocalSettingsForTest(true, false)
@@ -79,10 +79,10 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPLinuxAppliesTakeoverAndLocal
 		probeLocalLinuxStat = oldStat
 		probeLocalLinuxLookPath = oldLookPath
 		probeLocalLinuxRunCommand = oldRun
-		probeLocalLinuxNewTUNDataPlaneRunner = oldNewRunner
+		probeVirtualRouterLinuxNewTUNDataPlaneRunner = oldNewRunner
 		resetProbeVirtualRouterLinuxRouteStateForTest()
 		resetProbeVirtualRouterLocalSettingsForTest()
-		_ = stopProbeLocalTUNDataPlane()
+		_ = stopProbeVirtualRouterTUNDataPlane()
 	})
 
 	t.Setenv("PROBE_LOCAL_TUN_DEV", "probe0")
@@ -97,8 +97,8 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPLinuxAppliesTakeoverAndLocal
 		}
 		return "", nil
 	}
-	probeLocalLinuxNewTUNDataPlaneRunner = func(dev string) (probeLocalTUNDataPlane, error) {
-		return &fakeProbeLocalLinuxTUNRunner{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
+	probeVirtualRouterLinuxNewTUNDataPlaneRunner = func(dev string) (probeVirtualRouterTUNDataPlane, error) {
+		return &fakeProbeVirtualRouterLinuxTUNDataPlane{stats: probeVirtualRouterTUNDataPlaneStats{Running: true}}, nil
 	}
 
 	if err := ensureProbeVirtualRouterPlatformInterfaceIP("198.18.0.11"); err != nil {
@@ -118,9 +118,9 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPLinuxAppliesTakeoverAndLocal
 }
 
 func TestSnapshotProbeVirtualRouterRuntimeStatsIncludesLinuxTUNDataPlaneStats(t *testing.T) {
-	resetProbeLocalTUNDataPlaneHooksForTest()
-	t.Cleanup(resetProbeLocalTUNDataPlaneHooksForTest)
-	fake := &fakeProbeLocalLinuxTUNRunner{stats: probeLocalTUNDataPlaneStats{Running: true, RXPackets: 12, RXBytes: 1200, TXPackets: 4, TXBytes: 400}}
+	resetProbeVirtualRouterTUNDataPlaneHooksForTest()
+	t.Cleanup(resetProbeVirtualRouterTUNDataPlaneHooksForTest)
+	fake := &fakeProbeVirtualRouterLinuxTUNDataPlane{stats: probeVirtualRouterTUNDataPlaneStats{Running: true, RXPackets: 12, RXBytes: 1200, TXPackets: 4, TXBytes: 400}}
 	probeLocalLinuxTUNDataPlaneState.mu.Lock()
 	probeLocalLinuxTUNDataPlaneState.runner = fake
 	probeLocalLinuxTUNDataPlaneState.dev = "probe0"
@@ -151,17 +151,17 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPLinuxCreatesDefaultDeviceWhe
 	oldStat := probeLocalLinuxStat
 	oldLookPath := probeLocalLinuxLookPath
 	oldRun := probeLocalLinuxRunCommand
-	oldNewRunner := probeLocalLinuxNewTUNDataPlaneRunner
+	oldNewRunner := probeVirtualRouterLinuxNewTUNDataPlaneRunner
 	resetProbeVirtualRouterLinuxRouteStateForTest()
 	resetProbeVirtualRouterLocalSettingsForTest()
 	t.Cleanup(func() {
 		probeLocalLinuxStat = oldStat
 		probeLocalLinuxLookPath = oldLookPath
 		probeLocalLinuxRunCommand = oldRun
-		probeLocalLinuxNewTUNDataPlaneRunner = oldNewRunner
+		probeVirtualRouterLinuxNewTUNDataPlaneRunner = oldNewRunner
 		resetProbeVirtualRouterLinuxRouteStateForTest()
 		resetProbeVirtualRouterLocalSettingsForTest()
-		_ = stopProbeLocalTUNDataPlane()
+		_ = stopProbeVirtualRouterTUNDataPlane()
 	})
 
 	probeLocalLinuxStat = func(name string) (os.FileInfo, error) {
@@ -180,8 +180,8 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPLinuxCreatesDefaultDeviceWhe
 		}
 		return "", nil
 	}
-	probeLocalLinuxNewTUNDataPlaneRunner = func(dev string) (probeLocalTUNDataPlane, error) {
-		return &fakeProbeLocalLinuxTUNRunner{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
+	probeVirtualRouterLinuxNewTUNDataPlaneRunner = func(dev string) (probeVirtualRouterTUNDataPlane, error) {
+		return &fakeProbeVirtualRouterLinuxTUNDataPlane{stats: probeVirtualRouterTUNDataPlaneStats{Running: true}}, nil
 	}
 
 	if err := ensureProbeVirtualRouterPlatformInterfaceIP("198.18.0.11"); err != nil {
@@ -210,22 +210,22 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPLinuxRejectsInvalidIP(t *tes
 
 func TestApplyProbeVirtualRouterConfigForNodeLinuxStartsTUNAndVirtualIP(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
-	probeLocalTUNLinkFeatureEnabled = func() bool { return true }
+	probeLocalTUNRouteFeatureEnabled = func() bool { return true }
 	oldStat := probeLocalLinuxStat
 	oldLookPath := probeLocalLinuxLookPath
 	oldRun := probeLocalLinuxRunCommand
-	oldNewRunner := probeLocalLinuxNewTUNDataPlaneRunner
+	oldNewRunner := probeVirtualRouterLinuxNewTUNDataPlaneRunner
 	resetProbeVirtualRouterLinuxRouteStateForTest()
 	resetProbeVirtualRouterLocalSettingsForTest()
 	t.Cleanup(func() {
-		probeLocalTUNLinkFeatureEnabled = func() bool { return false }
+		probeLocalTUNRouteFeatureEnabled = func() bool { return false }
 		probeLocalLinuxStat = oldStat
 		probeLocalLinuxLookPath = oldLookPath
 		probeLocalLinuxRunCommand = oldRun
-		probeLocalLinuxNewTUNDataPlaneRunner = oldNewRunner
+		probeVirtualRouterLinuxNewTUNDataPlaneRunner = oldNewRunner
 		resetProbeVirtualRouterLinuxRouteStateForTest()
 		resetProbeVirtualRouterLocalSettingsForTest()
-		_ = stopProbeLocalTUNDataPlane()
+		_ = stopProbeVirtualRouterTUNDataPlane()
 		probeVirtualRouterState.mu.Lock()
 		probeVirtualRouterState.config = probeVirtualRouterConfig{}
 		probeVirtualRouterState.localNodeID = ""
@@ -243,11 +243,11 @@ func TestApplyProbeVirtualRouterConfigForNodeLinuxStartsTUNAndVirtualIP(t *testi
 		return "", nil
 	}
 	starts := 0
-	probeLocalLinuxNewTUNDataPlaneRunner = func(dev string) (probeLocalTUNDataPlane, error) {
+	probeVirtualRouterLinuxNewTUNDataPlaneRunner = func(dev string) (probeVirtualRouterTUNDataPlane, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		starts++
-		return &fakeProbeLocalLinuxTUNRunner{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
+		return &fakeProbeVirtualRouterLinuxTUNDataPlane{stats: probeVirtualRouterTUNDataPlaneStats{Running: true}}, nil
 	}
 
 	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
@@ -262,7 +262,7 @@ func TestApplyProbeVirtualRouterConfigForNodeLinuxStartsTUNAndVirtualIP(t *testi
 		mu.Lock()
 		started := starts
 		mu.Unlock()
-		if started == 1 && probeLocalTUNDataPlaneRunning() {
+		if started == 1 && probeVirtualRouterTUNDataPlaneRunning() {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -272,7 +272,7 @@ func TestApplyProbeVirtualRouterConfigForNodeLinuxStartsTUNAndVirtualIP(t *testi
 	if starts != 1 {
 		t.Fatalf("linux tun data plane starts=%d want 1", starts)
 	}
-	if !probeLocalTUNDataPlaneRunning() {
+	if !probeVirtualRouterTUNDataPlaneRunning() {
 		t.Fatalf("linux tun data plane should be running")
 	}
 	if !hasProbeVirtualRouterLinuxCommand(calls, "ip -4 addr replace 198.18.0.21/15 dev cloudhelper0") {

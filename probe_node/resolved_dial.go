@@ -80,15 +80,15 @@ func normalizeProbeResolvedDialTimeout(timeout time.Duration) time.Duration {
 func newProbeResolvedDialContext(target probeResolvedURLDialTarget, timeout time.Duration) func(context.Context, string, string) (net.Conn, error) {
 	dialTimeout := normalizeProbeResolvedDialTimeout(timeout)
 	return func(ctx context.Context, network string, addr string) (net.Conn, error) {
-		dialer := applyProbeLocalEgressDialer(&net.Dialer{
+		dialer := applyProbeRouteEgressDialer(&net.Dialer{
 			Timeout:   dialTimeout,
 			KeepAlive: 30 * time.Second,
 		})
 		if strings.EqualFold(strings.TrimSpace(addr), strings.TrimSpace(target.OriginalEndpoint)) {
-			if err := ensureProbeLocalDirectBypass(target.DialEndpoint); err != nil {
+			if err := ensureProbeRouteDirectBypass(target.DialEndpoint); err != nil {
 				logProbeWarnf("probe resolved dial direct bypass failed: target=%s err=%v", target.DialEndpoint, err)
 			}
-			return dialer.DialContext(ctx, probeLocalEgressDialNetwork(network, target.DialEndpoint), target.DialEndpoint)
+			return dialer.DialContext(ctx, probeRouteEgressDialNetwork(network, target.DialEndpoint), target.DialEndpoint)
 		}
 		return dialer.DialContext(ctx, network, addr)
 	}

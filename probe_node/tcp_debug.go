@@ -211,7 +211,7 @@ func (w *probeTCPDebugWriter) Write(payload []byte) (int, error) {
 }
 
 func (s *probeTCPDebugState) beginRelay(target string) *probeTCPDebugRelay {
-	return s.beginRelayWithScope("chain", target, probeLocalTunnelRouteDecision{})
+	return s.beginRelayWithScope("route", target, probeLocalTunnelRouteDecision{})
 }
 
 func (s *probeTCPDebugState) beginRelayWithRoute(target string, route probeLocalTunnelRouteDecision) *probeTCPDebugRelay {

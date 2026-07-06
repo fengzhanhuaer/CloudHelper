@@ -59,12 +59,6 @@ type probeLocalConsoleControlCommand struct {
 	Timestamp    string `json:"timestamp"`
 }
 
-type probeLinkConfigSyncCommand struct {
-	Type              string `json:"type"`
-	ControllerBaseURL string `json:"controller_base_url"`
-	Timestamp         string `json:"timestamp"`
-}
-
 type probeRouteConfigSyncCommand struct {
 	Type              string `json:"type"`
 	ControllerBaseURL string `json:"controller_base_url"`
@@ -85,7 +79,7 @@ type probeVirtualRouterSpeedTestCommand struct {
 	Timestamp    string `json:"timestamp"`
 }
 
-type probeLinkConfigSyncDispatchResult struct {
+type probeRouteConfigSyncDispatchResult struct {
 	Total      int      `json:"total"`
 	Dispatched int      `json:"dispatched"`
 	Offline    int      `json:"offline"`
@@ -117,17 +111,6 @@ type probeNetworkMonitorCommand struct {
 	Count     int                             `json:"count,omitempty"`
 	TimeoutMS int                             `json:"timeout_ms,omitempty"`
 	Timestamp string                          `json:"timestamp"`
-}
-
-type probeLinkTestControlCommand struct {
-	Type              string `json:"type"`
-	RequestID         string `json:"request_id"`
-	Action            string `json:"action"`
-	Protocol          string `json:"protocol,omitempty"`
-	ListenHost        string `json:"listen_host,omitempty"`
-	InternalPort      int    `json:"internal_port,omitempty"`
-	ControllerBaseURL string `json:"controller_base_url,omitempty"`
-	Timestamp         string `json:"timestamp"`
 }
 
 type probeShellExecCommand struct {
@@ -162,20 +145,6 @@ type probeLogsResultMessage struct {
 	Entries      []probeLogEntry `json:"entries,omitempty"`
 	Error        string          `json:"error,omitempty"`
 	Timestamp    string          `json:"timestamp,omitempty"`
-}
-
-type probeLinkTestControlResultMessage struct {
-	Type         string `json:"type"`
-	RequestID    string `json:"request_id"`
-	NodeID       string `json:"node_id"`
-	OK           bool   `json:"ok"`
-	Action       string `json:"action,omitempty"`
-	Protocol     string `json:"protocol,omitempty"`
-	ListenHost   string `json:"listen_host,omitempty"`
-	InternalPort int    `json:"internal_port,omitempty"`
-	Message      string `json:"message,omitempty"`
-	Error        string `json:"error,omitempty"`
-	Timestamp    string `json:"timestamp,omitempty"`
 }
 
 type probeNetworkMonitorTargetResult struct {
@@ -256,13 +225,6 @@ var probeLogWaiters = struct {
 	data map[string]chan probeLogsResultMessage
 }{data: make(map[string]chan probeLogsResultMessage)}
 
-var probeLinkTestRequestSeq atomic.Uint64
-
-var probeLinkTestWaiters = struct {
-	mu   sync.Mutex
-	data map[string]chan probeLinkTestControlResultMessage
-}{data: make(map[string]chan probeLinkTestControlResultMessage)}
-
 var probeNetworkMonitorRequestSeq atomic.Uint64
 
 var probeNetworkMonitorWaiters = struct {
@@ -334,22 +296,18 @@ func (s *probeSession) writeJSON(v interface{}) error {
 	return err
 }
 
-func dispatchProbeLinkConfigSyncToKnownNodes(controllerBaseURL string) probeLinkConfigSyncDispatchResult {
-	return dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURL)
-}
-
-func dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURL string) probeLinkConfigSyncDispatchResult {
+func dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURL string) probeRouteConfigSyncDispatchResult {
 	return dispatchProbeRouteConfigSyncToNodes(listProbeVirtualRouterKnownNodeIDs(), controllerBaseURL)
 }
 
-func dispatchProbeVirtualRouterLatencyProbeToKnownNodes() probeLinkConfigSyncDispatchResult {
+func dispatchProbeVirtualRouterLatencyProbeToKnownNodes() probeRouteConfigSyncDispatchResult {
 	return dispatchProbeVirtualRouterLatencyProbeToNodes(listProbeVirtualRouterKnownNodeIDs())
 }
 
-func dispatchProbeVirtualRouterSpeedTestToNode(sourceNodeID string, targetNodeID string) probeLinkConfigSyncDispatchResult {
+func dispatchProbeVirtualRouterSpeedTestToNode(sourceNodeID string, targetNodeID string) probeRouteConfigSyncDispatchResult {
 	sourceNodeID = normalizeProbeNodeID(sourceNodeID)
 	targetNodeID = normalizeProbeNodeID(targetNodeID)
-	result := probeLinkConfigSyncDispatchResult{Total: 1}
+	result := probeRouteConfigSyncDispatchResult{Total: 1}
 	if sourceNodeID == "" || targetNodeID == "" {
 		result.Failed = 1
 		result.Failures = append(result.Failures, "source_node_id and target_node_id are required")
@@ -383,8 +341,8 @@ func dispatchProbeVirtualRouterSpeedTestToNode(sourceNodeID string, targetNodeID
 	return result
 }
 
-func dispatchProbeVirtualRouterLatencyProbeToNodes(nodeIDs []string) probeLinkConfigSyncDispatchResult {
-	result := probeLinkConfigSyncDispatchResult{
+func dispatchProbeVirtualRouterLatencyProbeToNodes(nodeIDs []string) probeRouteConfigSyncDispatchResult {
+	result := probeRouteConfigSyncDispatchResult{
 		Total: len(nodeIDs),
 	}
 	if len(nodeIDs) == 0 {
@@ -421,12 +379,8 @@ func dispatchProbeVirtualRouterLatencyProbeToNodes(nodeIDs []string) probeLinkCo
 	return result
 }
 
-func dispatchProbeLinkConfigSyncToNodes(nodeIDs []string, controllerBaseURL string) probeLinkConfigSyncDispatchResult {
-	return dispatchProbeRouteConfigSyncToNodes(nodeIDs, controllerBaseURL)
-}
-
-func dispatchProbeRouteConfigSyncToNodes(nodeIDs []string, controllerBaseURL string) probeLinkConfigSyncDispatchResult {
-	result := probeLinkConfigSyncDispatchResult{
+func dispatchProbeRouteConfigSyncToNodes(nodeIDs []string, controllerBaseURL string) probeRouteConfigSyncDispatchResult {
+	result := probeRouteConfigSyncDispatchResult{
 		Total: len(nodeIDs),
 	}
 	for _, nodeID := range nodeIDs {
@@ -822,121 +776,6 @@ func consumeProbeLogsResult(result probeLogsResultMessage) {
 	}
 }
 
-func dispatchProbeLinkTestControl(nodeID string, action string, protocol string, internalPort int, controllerBaseURL string) (probeLinkTestControlResultMessage, error) {
-	normalizedID := normalizeProbeNodeID(nodeID)
-	if normalizedID == "" {
-		return probeLinkTestControlResultMessage{}, fmt.Errorf("node_id is required")
-	}
-	normalizedAction := strings.ToLower(strings.TrimSpace(action))
-	if normalizedAction != "start" && normalizedAction != "stop" {
-		return probeLinkTestControlResultMessage{}, fmt.Errorf("invalid action")
-	}
-
-	normalizedProtocol := normalizeProbeLinkTestProtocol(protocol)
-	if normalizedAction == "start" {
-		if normalizedProtocol == "" {
-			return probeLinkTestControlResultMessage{}, fmt.Errorf("protocol must be http/https/http3")
-		}
-		if internalPort <= 0 || internalPort > 65535 {
-			return probeLinkTestControlResultMessage{}, fmt.Errorf("internal_port must be between 1 and 65535")
-		}
-	}
-
-	session, ok := getProbeSession(normalizedID)
-	if !ok {
-		return probeLinkTestControlResultMessage{}, fmt.Errorf("probe is offline")
-	}
-
-	requestID := newProbeLinkTestRequestID(normalizedID)
-	waiter := make(chan probeLinkTestControlResultMessage, 1)
-
-	probeLinkTestWaiters.mu.Lock()
-	probeLinkTestWaiters.data[requestID] = waiter
-	probeLinkTestWaiters.mu.Unlock()
-	defer func() {
-		probeLinkTestWaiters.mu.Lock()
-		delete(probeLinkTestWaiters.data, requestID)
-		probeLinkTestWaiters.mu.Unlock()
-	}()
-
-	cmd := probeLinkTestControlCommand{
-		Type:              "link_test_control",
-		RequestID:         requestID,
-		Action:            normalizedAction,
-		Protocol:          normalizedProtocol,
-		ListenHost:        "0.0.0.0",
-		InternalPort:      internalPort,
-		ControllerBaseURL: strings.TrimSpace(controllerBaseURL),
-		Timestamp:         time.Now().UTC().Format(time.RFC3339),
-	}
-	if normalizedAction == "stop" {
-		cmd.Protocol = ""
-		cmd.InternalPort = 0
-	}
-
-	if err := session.writeJSON(cmd); err != nil {
-		unregisterProbeSession(normalizedID, session)
-		return probeLinkTestControlResultMessage{}, err
-	}
-
-	waitTimeout := 20 * time.Second
-	if normalizedAction == "stop" {
-		waitTimeout = 8 * time.Second
-	} else if normalizedAction == "start" && (normalizedProtocol == "https" || normalizedProtocol == "http3") {
-		waitTimeout = 2 * time.Minute
-	}
-	timer := time.NewTimer(waitTimeout)
-	defer timer.Stop()
-
-	select {
-	case result := <-waiter:
-		if strings.TrimSpace(result.NodeID) == "" {
-			result.NodeID = normalizedID
-		}
-		if !result.OK {
-			errMsg := strings.TrimSpace(result.Error)
-			if errMsg == "" {
-				errMsg = "probe link test control failed"
-			}
-			return result, errors.New(errMsg)
-		}
-		return result, nil
-	case <-timer.C:
-		if normalizedAction == "stop" {
-			return probeLinkTestControlResultMessage{
-				Type:      "link_test_control_result",
-				RequestID: requestID,
-				NodeID:    normalizedID,
-				OK:        true,
-				Action:    "stop",
-				Message:   "stop command dispatched, but probe ack timed out",
-				Timestamp: time.Now().UTC().Format(time.RFC3339),
-			}, nil
-		}
-		return probeLinkTestControlResultMessage{}, fmt.Errorf("probe link test control timeout (action=%s protocol=%s)", normalizedAction, normalizedProtocol)
-	}
-}
-
-func consumeProbeLinkTestControlResult(result probeLinkTestControlResultMessage) {
-	requestID := strings.TrimSpace(result.RequestID)
-	if requestID == "" {
-		return
-	}
-	probeLinkTestWaiters.mu.Lock()
-	waiter, ok := probeLinkTestWaiters.data[requestID]
-	if ok {
-		delete(probeLinkTestWaiters.data, requestID)
-	}
-	probeLinkTestWaiters.mu.Unlock()
-	if !ok {
-		return
-	}
-	select {
-	case waiter <- result:
-	default:
-	}
-}
-
 func dispatchProbeNetworkMonitor(nodeID string, targets []string, count int, timeoutMS int) (probeNetworkMonitorResultMessage, error) {
 	normalizedID := normalizeProbeNodeID(nodeID)
 	if normalizedID == "" {
@@ -1301,11 +1140,6 @@ func newProbeLogRequestID(nodeID string) string {
 	return fmt.Sprintf("probe-log-%s-%d-%d", normalizeProbeNodeID(nodeID), time.Now().UnixNano(), seq)
 }
 
-func newProbeLinkTestRequestID(nodeID string) string {
-	seq := probeLinkTestRequestSeq.Add(1)
-	return fmt.Sprintf("probe-link-test-%s-%d-%d", normalizeProbeNodeID(nodeID), time.Now().UnixNano(), seq)
-}
-
 func newProbeNetworkMonitorRequestID(nodeID string) string {
 	seq := probeNetworkMonitorRequestSeq.Add(1)
 	return fmt.Sprintf("probe-network-monitor-%s-%d-%d", normalizeProbeNodeID(nodeID), time.Now().UnixNano(), seq)
@@ -1319,19 +1153,6 @@ func newProbeShellExecRequestID(nodeID string) string {
 func newProbeShellSessionRequestID(nodeID string) string {
 	seq := probeShellSessionRequestSeq.Add(1)
 	return fmt.Sprintf("probe-shell-session-%s-%d-%d", normalizeProbeNodeID(nodeID), time.Now().UnixNano(), seq)
-}
-
-func normalizeProbeLinkTestProtocol(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "http":
-		return "http"
-	case "https":
-		return "https"
-	case "http3", "h3":
-		return "http3"
-	default:
-		return ""
-	}
 }
 
 func normalizeProbeShellExecTimeoutSec(raw int) int {

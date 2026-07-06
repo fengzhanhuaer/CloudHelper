@@ -22,7 +22,7 @@ func probeLocalTUNEgressSnapshot() (probeLocalTUNEgressStatus, error) {
 	}
 
 	excludedIfIndex := 0
-	if routeTarget, err := resolveProbeLocalWindowsRouteTarget(); err == nil {
+	if routeTarget, err := resolveProbeRouteWindowsTUNRouteTarget(); err == nil {
 		excludedIfIndex = routeTarget.InterfaceIndex
 	}
 	options, err := probeLocalWindowsPrimaryEgressRouteOptions(excludedIfIndex)
@@ -34,7 +34,7 @@ func probeLocalTUNEgressSnapshot() (probeLocalTUNEgressStatus, error) {
 		status.Selected = probeLocalTUNEgressOptionFromCandidate(options[0])
 	}
 
-	manualTarget, manualID, manualLabel, manualOK := currentProbeLocalWindowsDirectBypassManualRouteTarget()
+	manualTarget, manualID, manualLabel, manualOK := currentProbeRouteWindowsDirectManualRouteTarget()
 	if manualOK {
 		status.ManualEnabled = true
 		status.Mode = "manual"
@@ -71,16 +71,16 @@ func probeLocalTUNEgressSnapshot() (probeLocalTUNEgressStatus, error) {
 func probeLocalTUNEgressUpdate(req probeLocalTUNEgressUpdateRequest) (probeLocalTUNEgressStatus, error) {
 	mode := strings.ToLower(strings.TrimSpace(req.Mode))
 	excludedIfIndex := 0
-	if routeTarget, err := resolveProbeLocalWindowsRouteTarget(); err == nil {
+	if routeTarget, err := resolveProbeRouteWindowsTUNRouteTarget(); err == nil {
 		excludedIfIndex = routeTarget.InterfaceIndex
 	}
 	switch mode {
 	case "", "auto":
-		clearProbeLocalWindowsDirectBypassManualRouteTarget()
+		clearProbeRouteWindowsDirectManualRouteTarget()
 		if err := persistProbeLocalTUNEgressAutoState(); err != nil {
 			return probeLocalTUNEgressStatus{}, err
 		}
-		if err := prepareProbeLocalWindowsDirectBypassRouteTarget(); err != nil {
+		if err := prepareProbeRouteWindowsDirectRouteTarget(); err != nil {
 			logProbeWarnf("probe local tun egress auto refresh failed: %v", err)
 		}
 		return probeLocalTUNEgressSnapshot()
@@ -93,8 +93,8 @@ func probeLocalTUNEgressUpdate(req probeLocalTUNEgressUpdateRequest) (probeLocal
 		if !ok {
 			return probeLocalTUNEgressStatus{}, &probeLocalHTTPError{Status: 404, Message: "candidate not found"}
 		}
-		setProbeLocalWindowsDirectBypassManualRouteTarget(
-			probeLocalWindowsDirectBypassRouteTarget{
+		setProbeRouteWindowsDirectManualRouteTarget(
+			probeRouteWindowsDirectRouteTarget{
 				InterfaceIndex: candidate.InterfaceIndex,
 				NextHop:        candidate.NextHop,
 			},
@@ -104,7 +104,7 @@ func probeLocalTUNEgressUpdate(req probeLocalTUNEgressUpdateRequest) (probeLocal
 		if err := persistProbeLocalTUNEgressManualState(candidate); err != nil {
 			return probeLocalTUNEgressStatus{}, err
 		}
-		if err := prepareProbeLocalWindowsDirectBypassRouteTarget(); err != nil {
+		if err := prepareProbeRouteWindowsDirectRouteTarget(); err != nil {
 			logProbeWarnf("probe local tun egress manual refresh failed: %v", err)
 		}
 		return probeLocalTUNEgressSnapshot()
@@ -115,16 +115,16 @@ func probeLocalTUNEgressUpdate(req probeLocalTUNEgressUpdateRequest) (probeLocal
 
 func applyProbeLocalTUNEgressPersistentState(egress probeLocalTUNEgressPersistentState) {
 	if !strings.EqualFold(strings.TrimSpace(egress.Mode), "manual") {
-		clearProbeLocalWindowsDirectBypassManualRouteTarget()
+		clearProbeRouteWindowsDirectManualRouteTarget()
 		return
 	}
 	if egress.InterfaceIndex <= 0 || strings.TrimSpace(egress.NextHop) == "" {
 		logProbeWarnf("probe local tun egress persisted manual target ignored: if_index=%d next_hop=%s", egress.InterfaceIndex, strings.TrimSpace(egress.NextHop))
-		clearProbeLocalWindowsDirectBypassManualRouteTarget()
+		clearProbeRouteWindowsDirectManualRouteTarget()
 		return
 	}
-	setProbeLocalWindowsDirectBypassManualRouteTarget(
-		probeLocalWindowsDirectBypassRouteTarget{
+	setProbeRouteWindowsDirectManualRouteTarget(
+		probeRouteWindowsDirectRouteTarget{
 			InterfaceIndex: egress.InterfaceIndex,
 			NextHop:        strings.TrimSpace(egress.NextHop),
 		},
@@ -237,7 +237,7 @@ func probeLocalTUNEgressFindCandidateByRequest(options []probeLocalTUNEgressRout
 	return probeLocalTUNEgressRouteTargetOption{}, false
 }
 
-func probeLocalTUNEgressFindCandidate(options []probeLocalTUNEgressRouteTargetOption, candidateID string, target probeLocalWindowsDirectBypassRouteTarget) (probeLocalTUNEgressRouteTargetOption, bool) {
+func probeLocalTUNEgressFindCandidate(options []probeLocalTUNEgressRouteTargetOption, candidateID string, target probeRouteWindowsDirectRouteTarget) (probeLocalTUNEgressRouteTargetOption, bool) {
 	cleanID := strings.ToLower(strings.TrimSpace(candidateID))
 	for _, option := range options {
 		if cleanID != "" && strings.EqualFold(strings.TrimSpace(option.CandidateID), cleanID) {

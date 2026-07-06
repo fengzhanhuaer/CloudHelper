@@ -17,9 +17,9 @@ func TestMngVirtualRouterSideStatsErrorIgnoresStaleErrorAfterBridgeReconnect(t *
 			LastPingError: "upstream bridge is unavailable",
 			LastPingAt:    "2026-06-28T00:12:00Z",
 		},
-		BridgeStatus: &probeChainBridgeRuntimeStatus{
+		BridgeStatus: &probeRouteBridgeRuntimeStatus{
 			UpstreamActive: 1,
-			Sessions: []probeChainBridgeSessionSnapshot{
+			Sessions: []probeRouteBridgeSessionSnapshot{
 				{
 					Direction:   "upstream",
 					ConnectedAt: "2026-06-28T00:13:23Z",
@@ -85,11 +85,11 @@ func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T)
 			},
 		},
 	}
-	chainID := probeVirtualRouterRuntimeChainID(rule)
+	routeID := probeVirtualRouterRuntimeRouteID(rule)
 	updateProbeRuntimeReportWithRelay("1", nil, nil, probeSystemMetrics{}, "v1", []probeRelayStatusItem{
 		{
-			ChainID:    chainID,
-			ChainType:  "virtual_router",
+			RouteID:    routeID,
+			RouteType:  "virtual_router",
 			Role:       "relay",
 			ListenHost: "0.0.0.0",
 			ListenPort: 12040,
@@ -102,7 +102,7 @@ func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T)
 				},
 			},
 			NextState: &probeRelayProtocolStateSnapshot{Endpoint: "node-2.local:12040", SelectedProtocol: "websocket"},
-			BridgeSessions: []probeChainBridgeSessionSnapshot{
+			BridgeSessions: []probeRouteBridgeSessionSnapshot{
 				{
 					Direction:           "upstream",
 					RemoteAddr:          "node-2.local:12040",
@@ -136,8 +136,8 @@ func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T)
 	})
 	updateProbeRuntimeReportWithRelay("2", nil, nil, probeSystemMetrics{}, "v1", []probeRelayStatusItem{
 		{
-			ChainID:    chainID,
-			ChainType:  "virtual_router",
+			RouteID:    routeID,
+			RouteType:  "virtual_router",
 			Role:       "relay",
 			ListenHost: "0.0.0.0",
 			ListenPort: 12040,
@@ -174,7 +174,7 @@ func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T)
 		t.Fatalf("items=%d body=%s", len(payload.Items), rr.Body.String())
 	}
 	item := payload.Items[0]
-	if item.Status != "ready" || item.ChainID != chainID {
+	if item.Status != "ready" || item.RouteID != routeID {
 		t.Fatalf("unexpected route status: %+v", item)
 	}
 	if item.Direction != "A->B" {

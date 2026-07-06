@@ -19,9 +19,9 @@ const (
 
 var probeVirtualRouterWindowsRouteState = struct {
 	mu                sync.Mutex
-	fakeRouteDef      probeLocalWindowsRouteDef
+	fakeRouteDef      probeRouteWindowsRouteDef
 	fakeApplied       bool
-	takeoverRouteDefs []probeLocalWindowsRouteDef
+	takeoverRouteDefs []probeRouteWindowsRouteDef
 }{}
 
 func ensureProbeVirtualRouterPlatformInterfaceIP(ip string) error {
@@ -29,15 +29,15 @@ func ensureProbeVirtualRouterPlatformInterfaceIP(ip string) error {
 	if cleanIP == "" {
 		return nil
 	}
-	if !probeLocalTUNDataPlaneRunning() {
-		if err := startProbeLocalTUNDataPlane(); err != nil {
+	if !probeVirtualRouterTUNDataPlaneRunning() {
+		if err := startProbeVirtualRouterTUNDataPlane(); err != nil {
 			return err
 		}
 	}
-	probeLocalTUNDataPlaneState.mu.Lock()
-	interfaceLUID := probeLocalTUNDataPlaneState.interfaceLUID
-	ifIndex := probeLocalTUNDataPlaneState.ifIndex
-	probeLocalTUNDataPlaneState.mu.Unlock()
+	probeVirtualRouterTUNDataPlaneState.mu.Lock()
+	interfaceLUID := probeVirtualRouterTUNDataPlaneState.interfaceLUID
+	ifIndex := probeVirtualRouterTUNDataPlaneState.ifIndex
+	probeVirtualRouterTUNDataPlaneState.mu.Unlock()
 	if interfaceLUID > 0 {
 		if err := probeLocalUpsertWindowsInterfaceIPv4ByLUID(interfaceLUID, ifIndex, cleanIP, probeLocalTUNRouteIPv4PrefixLen); err != nil {
 			return err
@@ -72,7 +72,7 @@ func ensureProbeVirtualRouterWindowsRoutes(interfaceLUID uint64, ifIndex int) er
 
 func ensureProbeVirtualRouterWindowsFakeIPRoute(interfaceLUID uint64, ifIndex int) error {
 	prefix, mask := probeVirtualRouterWindowsRoutePrefixAndMask(currentProbeVirtualRouterFakeIPCIDR())
-	routeDef := probeLocalWindowsRouteDef{
+	routeDef := probeRouteWindowsRouteDef{
 		Prefix:        prefix,
 		Mask:          mask,
 		Gateway:       probeLocalTUNRouteGatewayIPv4,
@@ -110,7 +110,7 @@ func ensureProbeVirtualRouterWindowsTakeoverRoutes(interfaceLUID uint64, ifIndex
 		return err
 	}
 	probeVirtualRouterWindowsRouteState.mu.Lock()
-	oldRouteDefs := append([]probeLocalWindowsRouteDef(nil), probeVirtualRouterWindowsRouteState.takeoverRouteDefs...)
+	oldRouteDefs := append([]probeRouteWindowsRouteDef(nil), probeVirtualRouterWindowsRouteState.takeoverRouteDefs...)
 	if probeVirtualRouterWindowsRouteDefsEqual(oldRouteDefs, routeDefs) {
 		probeVirtualRouterWindowsRouteState.mu.Unlock()
 		return nil
@@ -132,13 +132,13 @@ func ensureProbeVirtualRouterWindowsTakeoverRoutes(interfaceLUID uint64, ifIndex
 		return allErr
 	}
 	probeVirtualRouterWindowsRouteState.mu.Lock()
-	probeVirtualRouterWindowsRouteState.takeoverRouteDefs = append([]probeLocalWindowsRouteDef(nil), routeDefs...)
+	probeVirtualRouterWindowsRouteState.takeoverRouteDefs = append([]probeRouteWindowsRouteDef(nil), routeDefs...)
 	probeVirtualRouterWindowsRouteState.mu.Unlock()
 	return nil
 }
 
-func buildProbeVirtualRouterWindowsTakeoverRouteDefs(interfaceLUID uint64, ifIndex int) ([]probeLocalWindowsRouteDef, error) {
-	routeDefs := []probeLocalWindowsRouteDef{
+func buildProbeVirtualRouterWindowsTakeoverRouteDefs(interfaceLUID uint64, ifIndex int) ([]probeRouteWindowsRouteDef, error) {
+	routeDefs := []probeRouteWindowsRouteDef{
 		{Prefix: probeVirtualRouterWindowsRouteSplitPrefixA, Mask: probeVirtualRouterWindowsRouteSplitMaskA, Gateway: probeLocalTUNRouteGatewayIPv4, InterfaceLUID: interfaceLUID, IfIndex: ifIndex},
 		{Prefix: probeVirtualRouterWindowsRouteSplitPrefixB, Mask: probeVirtualRouterWindowsRouteSplitMaskB, Gateway: probeLocalTUNRouteGatewayIPv4, InterfaceLUID: interfaceLUID, IfIndex: ifIndex},
 	}
@@ -154,8 +154,8 @@ func cleanupProbeVirtualRouterWindowsRoutes() error {
 	probeVirtualRouterWindowsRouteState.mu.Lock()
 	fakeRouteDef := probeVirtualRouterWindowsRouteState.fakeRouteDef
 	fakeApplied := probeVirtualRouterWindowsRouteState.fakeApplied
-	takeoverRouteDefs := append([]probeLocalWindowsRouteDef(nil), probeVirtualRouterWindowsRouteState.takeoverRouteDefs...)
-	probeVirtualRouterWindowsRouteState.fakeRouteDef = probeLocalWindowsRouteDef{}
+	takeoverRouteDefs := append([]probeRouteWindowsRouteDef(nil), probeVirtualRouterWindowsRouteState.takeoverRouteDefs...)
+	probeVirtualRouterWindowsRouteState.fakeRouteDef = probeRouteWindowsRouteDef{}
 	probeVirtualRouterWindowsRouteState.fakeApplied = false
 	probeVirtualRouterWindowsRouteState.takeoverRouteDefs = nil
 	probeVirtualRouterWindowsRouteState.mu.Unlock()
@@ -176,7 +176,7 @@ func cleanupProbeVirtualRouterWindowsRoutes() error {
 
 func cleanupProbeVirtualRouterWindowsTakeoverRoutes() error {
 	probeVirtualRouterWindowsRouteState.mu.Lock()
-	routeDefs := append([]probeLocalWindowsRouteDef(nil), probeVirtualRouterWindowsRouteState.takeoverRouteDefs...)
+	routeDefs := append([]probeRouteWindowsRouteDef(nil), probeVirtualRouterWindowsRouteState.takeoverRouteDefs...)
 	probeVirtualRouterWindowsRouteState.takeoverRouteDefs = nil
 	probeVirtualRouterWindowsRouteState.mu.Unlock()
 
@@ -189,18 +189,18 @@ func cleanupProbeVirtualRouterWindowsTakeoverRoutes() error {
 	return allErr
 }
 
-func deleteProbeVirtualRouterWindowsRoute(routeDef probeLocalWindowsRouteDef) error {
+func deleteProbeVirtualRouterWindowsRoute(routeDef probeRouteWindowsRouteDef) error {
 	if strings.TrimSpace(routeDef.Prefix) == "" || strings.TrimSpace(routeDef.Mask) == "" {
 		return nil
 	}
 	return probeVirtualRouterDeleteWindowsRoute(routeDef)
 }
 
-func ensureProbeVirtualRouterWindowsRoute(routeDef probeLocalWindowsRouteDef) (bool, error) {
+func ensureProbeVirtualRouterWindowsRoute(routeDef probeRouteWindowsRouteDef) (bool, error) {
 	return probeLocalCreateWindowsRouteEntry(routeDef)
 }
 
-func probeVirtualRouterDeleteWindowsRoute(routeDef probeLocalWindowsRouteDef) error {
+func probeVirtualRouterDeleteWindowsRoute(routeDef probeRouteWindowsRouteDef) error {
 	if strings.TrimSpace(routeDef.Gateway) == "" || (routeDef.InterfaceLUID == 0 && routeDef.IfIndex <= 0) {
 		return nil
 	}
@@ -230,16 +230,16 @@ func probeVirtualRouterWindowsRoutePrefixAndMask(cidr string) (string, string) {
 	return prefix.String(), mask
 }
 
-func probeVirtualRouterWindowsLocalBypassRouteDefs(routeTarget probeLocalWindowsDirectBypassRouteTarget) []probeLocalWindowsRouteDef {
-	return []probeLocalWindowsRouteDef{
+func probeVirtualRouterWindowsLocalBypassRouteDefs(routeTarget probeRouteWindowsDirectRouteTarget) []probeRouteWindowsRouteDef {
+	return []probeRouteWindowsRouteDef{
 		{Prefix: "10.0.0.0", Mask: "255.0.0.0", Gateway: routeTarget.NextHop, IfIndex: routeTarget.InterfaceIndex},
 		{Prefix: "172.16.0.0", Mask: "255.240.0.0", Gateway: routeTarget.NextHop, IfIndex: routeTarget.InterfaceIndex},
 		{Prefix: "192.168.0.0", Mask: "255.255.0.0", Gateway: routeTarget.NextHop, IfIndex: routeTarget.InterfaceIndex},
 	}
 }
 
-func dedupeProbeVirtualRouterWindowsRouteDefs(routeDefs []probeLocalWindowsRouteDef) []probeLocalWindowsRouteDef {
-	out := make([]probeLocalWindowsRouteDef, 0, len(routeDefs))
+func dedupeProbeVirtualRouterWindowsRouteDefs(routeDefs []probeRouteWindowsRouteDef) []probeRouteWindowsRouteDef {
+	out := make([]probeRouteWindowsRouteDef, 0, len(routeDefs))
 	seen := make(map[string]struct{}, len(routeDefs))
 	for _, routeDef := range routeDefs {
 		key := strings.Join([]string{
@@ -258,7 +258,7 @@ func dedupeProbeVirtualRouterWindowsRouteDefs(routeDefs []probeLocalWindowsRoute
 	return out
 }
 
-func probeVirtualRouterWindowsRouteDefsEqual(a, b []probeLocalWindowsRouteDef) bool {
+func probeVirtualRouterWindowsRouteDefsEqual(a, b []probeRouteWindowsRouteDef) bool {
 	if len(a) != len(b) {
 		return false
 	}
@@ -270,7 +270,7 @@ func probeVirtualRouterWindowsRouteDefsEqual(a, b []probeLocalWindowsRouteDef) b
 	return true
 }
 
-func probeVirtualRouterWindowsRouteDefEqual(a, b probeLocalWindowsRouteDef) bool {
+func probeVirtualRouterWindowsRouteDefEqual(a, b probeRouteWindowsRouteDef) bool {
 	return strings.EqualFold(strings.TrimSpace(a.Prefix), strings.TrimSpace(b.Prefix)) &&
 		strings.EqualFold(strings.TrimSpace(a.Mask), strings.TrimSpace(b.Mask)) &&
 		strings.EqualFold(strings.TrimSpace(a.Gateway), strings.TrimSpace(b.Gateway)) &&

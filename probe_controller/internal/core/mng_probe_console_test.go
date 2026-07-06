@@ -30,11 +30,11 @@ func TestMngProbeConsoleTokenRoundTrip(t *testing.T) {
 	}
 }
 
-func TestMngProbeConsoleProxyDeniedWithoutCookie(t *testing.T) {
+func TestMngProbeConsoleBridgeDeniedWithoutCookie(t *testing.T) {
 	// API-style request -> 401 JSON.
 	req := httptest.NewRequest(http.MethodGet, "/local/api/anything", nil)
 	rec := httptest.NewRecorder()
-	mngProbeConsoleProxyHandler(rec, req)
+	mngProbeConsoleBridgeHandler(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 without cookie, got %d", rec.Code)
 	}
@@ -43,7 +43,7 @@ func TestMngProbeConsoleProxyDeniedWithoutCookie(t *testing.T) {
 	nav := httptest.NewRequest(http.MethodGet, "/local/panel", nil)
 	nav.Header.Set("Accept", "text/html")
 	navRec := httptest.NewRecorder()
-	mngProbeConsoleProxyHandler(navRec, nav)
+	mngProbeConsoleBridgeHandler(navRec, nav)
 	if navRec.Code != http.StatusFound {
 		t.Fatalf("expected redirect for html navigation, got %d", navRec.Code)
 	}
@@ -81,12 +81,12 @@ func TestMngProbeConsoleSessionRouteSupportsMultipleProbeTabs(t *testing.T) {
 	}
 
 	reqA := httptest.NewRequest(http.MethodGet, mngProbeConsoleSessionPrefix+tokenA+"/local/panel", nil)
-	routeA, ok := resolveMngProbeConsoleProxyRoute(reqA)
+	routeA, ok := resolveMngProbeConsoleBridgeRoute(reqA)
 	if !ok {
 		t.Fatal("expected route A to resolve")
 	}
-	reqB := httptest.NewRequest(http.MethodGet, mngProbeConsoleSessionPrefix+tokenB+"/local/proxy", nil)
-	routeB, ok := resolveMngProbeConsoleProxyRoute(reqB)
+	reqB := httptest.NewRequest(http.MethodGet, mngProbeConsoleSessionPrefix+tokenB+"/local/shell", nil)
+	routeB, ok := resolveMngProbeConsoleBridgeRoute(reqB)
 	if !ok {
 		t.Fatal("expected route B to resolve")
 	}
@@ -94,7 +94,7 @@ func TestMngProbeConsoleSessionRouteSupportsMultipleProbeTabs(t *testing.T) {
 	if routeA.TokenRecord.NodeID != "7" || routeA.ConsolePath != "/local/panel" {
 		t.Fatalf("unexpected route A: %+v", routeA)
 	}
-	if routeB.TokenRecord.NodeID != "8" || routeB.ConsolePath != "/local/proxy" {
+	if routeB.TokenRecord.NodeID != "8" || routeB.ConsolePath != "/local/shell" {
 		t.Fatalf("unexpected route B: %+v", routeB)
 	}
 	if routeA.URLPrefix == routeB.URLPrefix {
@@ -120,12 +120,12 @@ func TestRewriteMngProbeConsoleHTMLLinksUsesSessionPrefix(t *testing.T) {
 	}
 }
 
-func TestMngProbeConsoleProxyDeniedRemintsWithNodeCookie(t *testing.T) {
+func TestMngProbeConsoleBridgeDeniedRemintsWithNodeCookie(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/local/panel", nil)
 	req.Header.Set("Accept", "text/html")
 	req.AddCookie(&http.Cookie{Name: mngProbeConsoleNodeCookieName, Value: "5"})
 	rec := httptest.NewRecorder()
-	mngProbeConsoleProxyHandler(rec, req)
+	mngProbeConsoleBridgeHandler(rec, req)
 	if rec.Code != http.StatusFound {
 		t.Fatalf("expected redirect, got %d", rec.Code)
 	}
@@ -149,7 +149,7 @@ func TestMngProbeConsoleHeaderFilters(t *testing.T) {
 	}
 }
 
-func TestMngProbeConsoleProxyMarksControllerProxyResponse(t *testing.T) {
+func TestMngProbeConsoleBridgeMarksControllerBridgeResponse(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 	defer serverConn.Close()
@@ -164,7 +164,7 @@ func TestMngProbeConsoleProxyMarksControllerProxyResponse(t *testing.T) {
 		probeRuntimeStore.mu.Unlock()
 	})
 
-	nodeID := "proxy-node"
+	nodeID := "bridge-node"
 	session := &probeSession{nodeID: nodeID, stream: clientConn, enc: json.NewEncoder(clientConn)}
 	probeSessions.mu.Lock()
 	probeSessions.data[nodeID] = session
@@ -179,23 +179,23 @@ func TestMngProbeConsoleProxyMarksControllerProxyResponse(t *testing.T) {
 	go func() {
 		decoder := json.NewDecoder(clientConn)
 		for {
-			var result probeLocalConsoleProxyResultMessage
+			var result probeLocalConsoleBridgeResultMessage
 			if err := decoder.Decode(&result); err != nil {
 				return
 			}
-			consumeProbeLocalConsoleProxyResult(result)
+			consumeProbeLocalConsoleBridgeResult(result)
 		}
 	}()
 
 	go func() {
 		decoder := json.NewDecoder(serverConn)
-		var cmd probeLocalConsoleProxyCommand
+		var cmd probeLocalConsoleBridgeCommand
 		if err := decoder.Decode(&cmd); err != nil {
 			return
 		}
 		nodeWriteMu.Lock()
-		_ = json.NewEncoder(serverConn).Encode(probeLocalConsoleProxyResultMessage{
-			Type:       "local_console_proxy_result",
+		_ = json.NewEncoder(serverConn).Encode(probeLocalConsoleBridgeResultMessage{
+			Type:       "local_console_bridge_result",
 			RequestID:  cmd.RequestID,
 			NodeID:     nodeID,
 			OK:         true,
@@ -206,17 +206,17 @@ func TestMngProbeConsoleProxyMarksControllerProxyResponse(t *testing.T) {
 		nodeWriteMu.Unlock()
 	}()
 
-	token := mintMngProbeConsoleToken(nodeID, "proxy-node")
+	token := mintMngProbeConsoleToken(nodeID, "bridge-node")
 	req := httptest.NewRequest(http.MethodGet, "/local/shell", nil)
 	req.AddCookie(&http.Cookie{Name: mngProbeConsoleCookieName, Value: token})
 	rec := httptest.NewRecorder()
 
-	mngProbeConsoleProxyHandler(rec, req)
+	mngProbeConsoleBridgeHandler(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	if got := rec.Header().Get("X-Probe-Console-Proxy"); got != "controller" {
-		t.Fatalf("expected controller proxy marker, got %q", got)
+	if got := rec.Header().Get("X-Probe-Console-Bridge"); got != "controller" {
+		t.Fatalf("expected controller bridge marker, got %q", got)
 	}
 }
 

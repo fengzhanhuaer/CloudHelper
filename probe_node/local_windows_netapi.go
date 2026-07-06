@@ -49,8 +49,8 @@ var (
 	probeLocalProcFreeMibTableNet                    = probeLocalModIphlpapiNet.NewProc("FreeMibTable")
 	probeLocalProcSetInterfaceDnsSettingsNet         = probeLocalModIphlpapiNet.NewProc("SetInterfaceDnsSettings")
 
-	probeLocalCreateWindowsRouteEntry          = ensureProbeLocalWindowsRouteNative
-	probeLocalDeleteWindowsRouteEntry          = deleteProbeLocalWindowsRouteNative
+	probeLocalCreateWindowsRouteEntry          = ensureProbeRouteWindowsRouteNative
+	probeLocalDeleteWindowsRouteEntry          = deleteProbeRouteWindowsRouteNative
 	probeLocalListWindowsRouteEntries          = listProbeLocalWindowsIPv4RouteEntries
 	probeLocalResolveWindowsPrimaryEgressRoute = resolveProbeLocalWindowsPrimaryEgressRouteTarget
 	probeLocalSnapshotWindowsIPv4Routes        = snapshotProbeLocalWindowsIPv4Routes
@@ -609,7 +609,7 @@ func probeLocalWindowsNetapiCallErr(op string, ret uintptr, callErr error) error
 	return fmt.Errorf("%s failed: code=%d", op, ret)
 }
 
-func ensureProbeLocalWindowsRouteNative(routeDef probeLocalWindowsRouteDef) (bool, error) {
+func ensureProbeRouteWindowsRouteNative(routeDef probeRouteWindowsRouteDef) (bool, error) {
 	prefixLength, err := probeLocalIPv4PrefixLengthFromMask(routeDef.Mask)
 	if err != nil {
 		return false, err
@@ -630,7 +630,7 @@ func ensureProbeLocalWindowsRouteNative(routeDef probeLocalWindowsRouteDef) (boo
 	row.DestinationPrefix.PrefixLength = uint8(prefixLength)
 	row.NextHop = nextHopAddr
 	row.SitePrefixLength = uint8(prefixLength)
-	row.Metric = uint32(probeLocalWindowsRouteMetric)
+	row.Metric = uint32(probeRouteWindowsRouteMetric)
 
 	ret, _, callErr := probeLocalProcCreateIpForwardEntry2Net.Call(uintptr(unsafe.Pointer(&row)))
 	if ret == 0 {
@@ -646,7 +646,7 @@ func ensureProbeLocalWindowsRouteNative(routeDef probeLocalWindowsRouteDef) (boo
 	return false, nil
 }
 
-func deleteProbeLocalWindowsRouteNative(routeDef probeLocalWindowsRouteDef) error {
+func deleteProbeRouteWindowsRouteNative(routeDef probeRouteWindowsRouteDef) error {
 	prefixLength, err := probeLocalIPv4PrefixLengthFromMask(routeDef.Mask)
 	if err != nil {
 		return err
@@ -703,14 +703,14 @@ func listProbeLocalWindowsIPv4RouteEntries() ([]probeLocalWindowsRouteEntry, err
 	return entries, nil
 }
 
-func resolveProbeLocalWindowsPrimaryEgressRouteTarget(excludedIfIndex int) (probeLocalWindowsDirectBypassRouteTarget, error) {
+func resolveProbeLocalWindowsPrimaryEgressRouteTarget(excludedIfIndex int) (probeRouteWindowsDirectRouteTarget, error) {
 	var tablePtr uintptr
 	ret, _, callErr := probeLocalProcGetIpForwardTable2Net.Call(uintptr(windows.AF_INET), uintptr(unsafe.Pointer(&tablePtr)))
 	if ret != 0 {
-		return probeLocalWindowsDirectBypassRouteTarget{}, probeLocalWindowsNetapiCallErr("GetIpForwardTable2", ret, callErr)
+		return probeRouteWindowsDirectRouteTarget{}, probeLocalWindowsNetapiCallErr("GetIpForwardTable2", ret, callErr)
 	}
 	if tablePtr == 0 {
-		return probeLocalWindowsDirectBypassRouteTarget{}, errors.New("GetIpForwardTable2 returned empty table")
+		return probeRouteWindowsDirectRouteTarget{}, errors.New("GetIpForwardTable2 returned empty table")
 	}
 	defer probeLocalProcFreeMibTableNet.Call(tablePtr)
 
@@ -719,19 +719,19 @@ func resolveProbeLocalWindowsPrimaryEgressRouteTarget(excludedIfIndex int) (prob
 	rows := unsafe.Slice((*probeLocalMIBIPForwardRow2)(unsafe.Pointer(rowsBase)), int(header.NumEntries))
 	adapters, err := windowsListAdaptersIPv4()
 	if err != nil {
-		return probeLocalWindowsDirectBypassRouteTarget{}, err
+		return probeRouteWindowsDirectRouteTarget{}, err
 	}
 	return selectProbeLocalWindowsPrimaryEgressRouteTarget(rows, adapters, excludedIfIndex)
 }
 
-func selectProbeLocalWindowsPrimaryEgressRouteTarget(rows []probeLocalMIBIPForwardRow2, adapters []windowsAdapterInfo, excludedIfIndex int) (probeLocalWindowsDirectBypassRouteTarget, error) {
+func selectProbeLocalWindowsPrimaryEgressRouteTarget(rows []probeLocalMIBIPForwardRow2, adapters []windowsAdapterInfo, excludedIfIndex int) (probeRouteWindowsDirectRouteTarget, error) {
 	adapterByIfIndex := make(map[int]windowsAdapterInfo, len(adapters))
 	for _, adapter := range adapters {
 		if adapter.InterfaceIndex > 0 {
 			adapterByIfIndex[adapter.InterfaceIndex] = adapter
 		}
 	}
-	best := probeLocalWindowsDirectBypassRouteTarget{}
+	best := probeRouteWindowsDirectRouteTarget{}
 	bestTotalMetric := ^uint64(0)
 	bestRouteMetric := ^uint32(0)
 	bestInterfaceMetric := ^uint32(0)
@@ -764,14 +764,14 @@ func selectProbeLocalWindowsPrimaryEgressRouteTarget(rows []probeLocalMIBIPForwa
 			(totalMetric == bestTotalMetric && row.Metric < bestRouteMetric) ||
 			(totalMetric == bestTotalMetric && row.Metric == bestRouteMetric && adapterMetric < bestInterfaceMetric) ||
 			(totalMetric == bestTotalMetric && row.Metric == bestRouteMetric && adapterMetric == bestInterfaceMetric && int(row.InterfaceIndex) < best.InterfaceIndex) {
-			best = probeLocalWindowsDirectBypassRouteTarget{InterfaceIndex: int(row.InterfaceIndex), NextHop: nextHop}
+			best = probeRouteWindowsDirectRouteTarget{InterfaceIndex: int(row.InterfaceIndex), NextHop: nextHop}
 			bestTotalMetric = totalMetric
 			bestRouteMetric = row.Metric
 			bestInterfaceMetric = adapterMetric
 		}
 	}
 	if best.InterfaceIndex <= 0 || strings.TrimSpace(best.NextHop) == "" {
-		return probeLocalWindowsDirectBypassRouteTarget{}, errors.New("usable ipv4 default route not found")
+		return probeRouteWindowsDirectRouteTarget{}, errors.New("usable ipv4 default route not found")
 	}
 	return best, nil
 }

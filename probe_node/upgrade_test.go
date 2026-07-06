@@ -156,7 +156,7 @@ func TestNormalizeExecutablePathForUpgradeTarget(t *testing.T) {
 			want: "/opt/cloudhelper/probe_node/probe_node",
 		},
 		{
-			name: "timestamp and bak suffix chain",
+			name: "timestamp and bak suffix sequence",
 			in:   "/opt/cloudhelper/probe_node/probe_node.bak.20260317084600.bak.bak",
 			want: "/opt/cloudhelper/probe_node/probe_node",
 		},
@@ -183,7 +183,7 @@ func TestLooksLikeLegacyUpgradeBackup(t *testing.T) {
 		{name: "keep single bak", base: "probe_node", fileName: "probe_node.bak", want: false},
 		{name: "remove repeated bak", base: "probe_node", fileName: "probe_node.bak.bak", want: true},
 		{name: "remove timestamp backup", base: "probe_node", fileName: "probe_node.bak.20260317084600", want: true},
-		{name: "remove timestamp bak chain", base: "probe_node", fileName: "probe_node.bak.20260317084600.bak", want: true},
+		{name: "remove timestamp bak sequence", base: "probe_node", fileName: "probe_node.bak.20260317084600.bak", want: true},
 		{name: "ignore unrelated file", base: "probe_node", fileName: "probe_node.failed-20260317", want: false},
 	}
 

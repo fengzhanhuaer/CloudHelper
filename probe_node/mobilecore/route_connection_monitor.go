@@ -24,7 +24,7 @@ type androidRouteConnectionItem struct {
 	Scope                string `json:"scope,omitempty"`
 	Target               string `json:"target,omitempty"`
 	RouteTarget          string `json:"route_target,omitempty"`
-	ChainID              string `json:"chain_id,omitempty"`
+	RouteID              string `json:"route_id,omitempty"`
 	Group                string `json:"group,omitempty"`
 	Direct               bool   `json:"direct"`
 	Transport            string `json:"transport,omitempty"`
@@ -55,7 +55,7 @@ type androidRouteConnectionCompleted struct {
 	Scope                string `json:"scope,omitempty"`
 	Target               string `json:"target,omitempty"`
 	RouteTarget          string `json:"route_target,omitempty"`
-	ChainID              string `json:"chain_id,omitempty"`
+	RouteID              string `json:"route_id,omitempty"`
 	Group                string `json:"group,omitempty"`
 	Direct               bool   `json:"direct"`
 	Transport            string `json:"transport,omitempty"`
@@ -89,7 +89,7 @@ type androidRouteConnectionFailure struct {
 	Scope       string `json:"scope,omitempty"`
 	Target      string `json:"target,omitempty"`
 	RouteTarget string `json:"route_target,omitempty"`
-	ChainID     string `json:"chain_id,omitempty"`
+	RouteID     string `json:"route_id,omitempty"`
 	Group       string `json:"group,omitempty"`
 	Direct      bool   `json:"direct"`
 	Transport   string `json:"transport,omitempty"`
@@ -118,7 +118,7 @@ type androidRouteConnectionFailureEvent struct {
 	Side        string
 	Target      string
 	RouteTarget string
-	ChainID     string
+	RouteID     string
 	Group       string
 	Direct      bool
 	Transport   string
@@ -130,7 +130,7 @@ type androidRouteConnectionRoute struct {
 	Direct          bool
 	TargetAddr      string
 	Group           string
-	SelectedChainID string
+	SelectedRouteID string
 }
 
 type androidRouteConnectionOptions struct {
@@ -149,7 +149,7 @@ type androidRouteConnectionRelay struct {
 	scope       string
 	target      string
 	routeTarget string
-	chainID     string
+	routeID     string
 	group       string
 	direct      bool
 	transport   string
@@ -234,7 +234,7 @@ func (s *androidRouteConnectionState) begin(opts androidRouteConnectionOptions) 
 		scope:       firstNonEmptyString(strings.TrimSpace(opts.Scope), "unknown"),
 		target:      strings.TrimSpace(opts.Target),
 		routeTarget: firstNonEmptyString(strings.TrimSpace(opts.Route.TargetAddr), strings.TrimSpace(opts.Target)),
-		chainID:     strings.TrimSpace(opts.Route.SelectedChainID),
+		routeID:     strings.TrimSpace(opts.Route.SelectedRouteID),
 		group:       strings.TrimSpace(opts.Route.Group),
 		direct:      opts.Route.Direct,
 		transport:   transport,
@@ -272,7 +272,7 @@ func (s *androidRouteConnectionState) recordFailure(kind string, opts androidRou
 		Side:        strings.TrimSpace(opts.Side),
 		Target:      strings.TrimSpace(opts.Target),
 		RouteTarget: firstNonEmptyString(strings.TrimSpace(opts.Route.TargetAddr), strings.TrimSpace(opts.Target)),
-		ChainID:     strings.TrimSpace(opts.Route.SelectedChainID),
+		RouteID:     strings.TrimSpace(opts.Route.SelectedRouteID),
 		Group:       strings.TrimSpace(opts.Route.Group),
 		Direct:      opts.Route.Direct,
 		Transport:   transport,
@@ -302,7 +302,7 @@ func (s *androidRouteConnectionState) recordRelayFailure(relay *androidRouteConn
 			Direct:          relay.direct,
 			TargetAddr:      relay.routeTarget,
 			Group:           relay.group,
-			SelectedChainID: relay.chainID,
+			SelectedRouteID: relay.routeID,
 		},
 	}, err)
 }
@@ -349,7 +349,7 @@ func (s *androidRouteConnectionState) snapshot() androidRouteConnectionSnapshot 
 			Scope:                strings.TrimSpace(relay.scope),
 			Target:               strings.TrimSpace(relay.target),
 			RouteTarget:          firstNonEmptyString(strings.TrimSpace(relay.routeTarget), strings.TrimSpace(relay.target)),
-			ChainID:              strings.TrimSpace(relay.chainID),
+			RouteID:              strings.TrimSpace(relay.routeID),
 			Group:                strings.TrimSpace(relay.group),
 			Direct:               relay.direct,
 			Transport:            firstNonEmptyString(strings.TrimSpace(relay.transport), "stream"),
@@ -396,7 +396,7 @@ func (s *androidRouteConnectionState) snapshot() androidRouteConnectionSnapshot 
 			Scope:       strings.TrimSpace(event.Scope),
 			Target:      strings.TrimSpace(event.Target),
 			RouteTarget: firstNonEmptyString(strings.TrimSpace(event.RouteTarget), strings.TrimSpace(event.Target)),
-			ChainID:     strings.TrimSpace(event.ChainID),
+			RouteID:     strings.TrimSpace(event.RouteID),
 			Group:       strings.TrimSpace(event.Group),
 			Direct:      event.Direct,
 			Transport:   firstNonEmptyString(strings.TrimSpace(event.Transport), "stream"),
@@ -516,7 +516,7 @@ func (r *androidRouteConnectionRelay) completedSnapshot(now time.Time, reason st
 		Scope:                strings.TrimSpace(r.scope),
 		Target:               strings.TrimSpace(r.target),
 		RouteTarget:          firstNonEmptyString(strings.TrimSpace(r.routeTarget), strings.TrimSpace(r.target)),
-		ChainID:              strings.TrimSpace(r.chainID),
+		RouteID:              strings.TrimSpace(r.routeID),
 		Group:                strings.TrimSpace(r.group),
 		Direct:               r.direct,
 		Transport:            firstNonEmptyString(strings.TrimSpace(r.transport), "stream"),
@@ -580,7 +580,7 @@ func androidRouteConnectionRouteFromVPN(route vpnRouteDecision) androidRouteConn
 		Direct:          route.Direct,
 		TargetAddr:      route.TargetAddr,
 		Group:           route.Group,
-		SelectedChainID: route.SelectedChainID,
+		SelectedRouteID: route.SelectedRouteID,
 	}
 }
 

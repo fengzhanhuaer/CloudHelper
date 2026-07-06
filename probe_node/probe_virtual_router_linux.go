@@ -64,7 +64,7 @@ func ensureProbeVirtualRouterPlatformInterfaceIP(ip string) error {
 	} else if err := ensureProbeVirtualRouterLinuxTakeoverRoutes(dev, cleanIP); err != nil {
 		return err
 	}
-	if err := startProbeLocalTUNDataPlane(); err != nil {
+	if err := startProbeVirtualRouterTUNDataPlane(); err != nil {
 		return err
 	}
 	return nil
@@ -256,7 +256,7 @@ func ensureProbeVirtualRouterLinuxRoute(routeDef probeVirtualRouterLinuxRouteDef
 }
 
 func deleteProbeVirtualRouterLinuxRoute(routeDef probeVirtualRouterLinuxRouteDef) error {
-	return deleteProbeLocalLinuxSplitRoute(strings.TrimSpace(routeDef.Prefix), strings.TrimSpace(routeDef.Dev), strings.TrimSpace(routeDef.Gateway))
+	return deleteProbeRouteLinuxSplitRoute(strings.TrimSpace(routeDef.Prefix), strings.TrimSpace(routeDef.Dev), strings.TrimSpace(routeDef.Gateway))
 }
 
 func probeVirtualRouterLinuxRouteDefsEqual(a, b []probeVirtualRouterLinuxRouteDef) bool {

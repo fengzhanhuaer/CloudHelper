@@ -34,11 +34,10 @@ const (
 	probeLocalMaxUsernameLength  = 64
 	probeLocalAuthReadBodyMaxLen = 64 * 1024
 
-	probeLocalTUNStateFileName            = "tun_state.json"
-	probeLocalTUNEgressStateFileName      = "tun_egress.json"
-	probeLocalDNSHostFileName             = "dns_host.txt"
-	probeLocalTUNPrimaryDNSBackupFileName = "tun_primary_dns_backup.json"
-	probeLocalRouteReadBodyMaxLen         = 512 * 1024
+	probeLocalTUNStateFileName       = "tun_state.json"
+	probeLocalTUNEgressStateFileName = "tun_egress.json"
+	probeLocalDNSHostFileName        = "dns_host.txt"
+	probeLocalRouteReadBodyMaxLen    = 512 * 1024
 )
 
 type probeLocalAuthState struct {
@@ -175,7 +174,7 @@ type probeLocalUpgradeCheckResult struct {
 	CheckedAt      string `json:"checked_at"`
 }
 
-type probeLocalChainAuthBlacklistSaveRequest struct {
+type probeLocalRouteAuthBlacklistSaveRequest struct {
 	Content string   `json:"content"`
 	IPs     []string `json:"ips,omitempty"`
 }
@@ -203,17 +202,15 @@ func defaultProbeLocalDetectTUNInstalled() (bool, error) {
 }
 
 var (
-	errProbeLocalTUNLinkFeaturePaused     = errors.New("probe local TUN link feature is paused")
+	errProbeLocalTUNRouteFeaturePaused    = errors.New("probe local TUN route feature is paused")
 	errProbeLocalTUNUnsupported           = errors.New("probe local tun install is not supported on this platform")
-	probeLocalTUNLinkFeatureEnabled       = func() bool { return false }
+	probeLocalTUNRouteFeatureEnabled      = func() bool { return false }
 	probeLocalInstallTUNDriver            = installProbeLocalTUNDriver
 	probeLocalCheckTUNReadyAfterInstall   = probeLocalNoopPostInstallTUNReadyCheck
 	probeLocalDetectTUNInstalled          = defaultProbeLocalDetectTUNInstalled
 	probeLocalResetTUNDetectInstalledHook = func() { probeLocalDetectTUNInstalled = defaultProbeLocalDetectTUNInstalled }
-	probeLocalApplyTUNPrimaryDNS          = applyProbeLocalTUNPrimaryDNS
-	probeLocalRestoreTUNPrimaryDNS        = restoreProbeLocalTUNPrimaryDNS
 	probeLocalUninstallTUNDriver          = uninstallProbeLocalTUNDriver
-	probeLocalRouteRelaySpeedDebugFetch   = probeChainRelayFetchSpeedDebugDefault
+	probeLocalRouteRelaySpeedDebugFetch   = probeRouteRelayFetchSpeedDebugDefault
 	probeLocalStartCFIPOptimizeTask       = func(fn func()) { go fn() }
 	probeLocalRunUpgrade                  = runProbeUpgrade
 	probeLocalFetchRelease                = fetchProbeRelease
@@ -221,8 +218,8 @@ var (
 	probeLocalLookupIPv4ForBypass         = lookupProbeLocalIPv4ForBypass
 )
 
-func probeLocalTUNLinkFeatureActive() bool {
-	return probeLocalTUNLinkFeatureEnabled != nil && probeLocalTUNLinkFeatureEnabled()
+func probeLocalTUNRouteFeatureActive() bool {
+	return probeLocalTUNRouteFeatureEnabled != nil && probeLocalTUNRouteFeatureEnabled()
 }
 
 var probeLocalConsoleRefreshState = struct {
@@ -344,7 +341,7 @@ func (m *probeLocalControlManager) tunStatus() probeLocalTunRuntimeState {
 			status.Platform = runtime.GOOS
 		}
 	}
-	stats := probeLocalTUNDataPlaneStatsSnapshot()
+	stats := probeVirtualRouterTUNDataPlaneStatsSnapshot()
 	if !status.Installed && stats.Running {
 		status.Installed = true
 	}
@@ -506,7 +503,7 @@ func startProbeLocalTUNStartupRecoveryLoop() {
 	}()
 }
 
-func recoverProbeLocalTUNRuntimeAfterChainConfigSync() {
+func recoverProbeLocalTUNRuntimeAfterRouteConfigSync() {
 }
 
 func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
@@ -600,7 +597,6 @@ func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
 	m.tun.UpdatedAt = now
 	m.mu.Unlock()
 	persistProbeLocalTUNStateBestEffort(installed, restoreTUN)
-	reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(false)
 	m.setTUNRecoveryStatus("recovered", attempt, time.Time{}, "")
 	logProbeInfof("probe local tun startup recovered adapter only: persisted_tun_enabled=%v", restoreTUN)
 	return nil
@@ -698,7 +694,7 @@ func (m *probeLocalControlManager) installTUN() (probeLocalTunRuntimeState, erro
 		return m.tun, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: m.tun.LastError, Payload: buildProbeLocalTUNErrorPayload(wrappedErr)}
 	}
 	if runtime.GOOS == "windows" {
-		if err := startProbeLocalTUNDataPlane(); err != nil {
+		if err := startProbeVirtualRouterTUNDataPlane(); err != nil {
 			wrappedErr := newProbeLocalTUNInstallError(
 				probeLocalTUNInstallCodeRouteTargetFailed,
 				"post_install_dataplane_start",
@@ -711,7 +707,6 @@ func (m *probeLocalControlManager) installTUN() (probeLocalTunRuntimeState, erro
 			logProbeWarnf("probe local tun post-install data plane start failed elapsed=%s err=%v", time.Since(startedAt).String(), err)
 			return m.tun, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: m.tun.LastError, Payload: buildProbeLocalTUNErrorPayload(wrappedErr)}
 		}
-		reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(false)
 	}
 	ensureProbeVirtualRouterLocalInterfaceIP()
 
@@ -730,7 +725,7 @@ func (m *probeLocalControlManager) installTUN() (probeLocalTunRuntimeState, erro
 		m.tun.InstallObservation = cloneProbeLocalTUNInstallObservationPointer(&fallbackObservation)
 		m.tun.LastInstallObservation = cloneProbeLocalTUNInstallObservationPointer(&fallbackObservation)
 	}
-	stats := probeLocalTUNDataPlaneStatsSnapshot()
+	stats := probeVirtualRouterTUNDataPlaneStatsSnapshot()
 	m.tun.DataPlane = stats.Running
 	m.tun.DataPlaneRX = stats.RXPackets
 	m.tun.DataPlaneBytes = stats.RXBytes
@@ -755,8 +750,7 @@ func (m *probeLocalControlManager) resetTUNLocked(uninstall bool) (probeLocalTun
 	defer m.mu.Unlock()
 
 	var allErr error
-	reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(false)
-	if err := stopProbeLocalTUNDataPlane(); err != nil {
+	if err := stopProbeVirtualRouterTUNDataPlane(); err != nil {
 		allErr = errors.Join(allErr, err)
 	}
 	if uninstall {
@@ -1356,7 +1350,7 @@ func persistProbeLocalTUNStateFile(payload probeLocalTUNStateFile) error {
 }
 
 func shouldRestoreProbeLocalTUNFromState(state probeLocalTUNPersistentState) bool {
-	return probeLocalTUNLinkFeatureActive() && state.Enabled
+	return probeLocalTUNRouteFeatureActive() && state.Enabled
 }
 
 func persistProbeLocalTUNPersistentState(installed, enabled bool) error {
@@ -1368,14 +1362,6 @@ func persistProbeLocalTUNPersistentState(installed, enabled bool) error {
 	state.TUN.Enabled = enabled
 	state.TUN.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	return persistProbeLocalTUNStateFile(state)
-}
-
-func resolveProbeLocalTUNPrimaryDNSBackupPath() (string, error) {
-	dataDir, err := resolveDataDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dataDir, probeLocalTUNPrimaryDNSBackupFileName), nil
 }
 
 func parseProbeLocalHostMappings(content string) ([]probeLocalHostMapping, error) {
@@ -1656,7 +1642,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/system/upgrade/status", probeLocalSystemUpgradeStatusHandler)
 	mux.HandleFunc("/local/api/system/restart", probeLocalSystemRestartHandler)
 	mux.HandleFunc("/local/api/system/ip_report_settings", probeLocalSystemIPReportSettingsHandler)
-	mux.HandleFunc("/local/api/system/chain_auth_blacklist", probeLocalSystemChainAuthBlacklistHandler)
+	mux.HandleFunc("/local/api/system/route_auth_blacklist", probeLocalSystemRouteAuthBlacklistHandler)
 	mux.HandleFunc("/local/api/shell/exec", probeLocalShellExecHandler)
 	mux.HandleFunc("/local/api/shell/stream", probeLocalShellStreamHandler)
 	mux.HandleFunc("/local/api/sync/status", probeLocalSyncStatusHandler)
@@ -1681,7 +1667,7 @@ type probeLocalLoginRequest struct {
 
 type probeLocalRouteEnableRequest struct {
 	Group           string `json:"group"`
-	SelectedChainID string `json:"selected_chain_id"`
+	SelectedRouteID string `json:"selected_route_id"`
 	TunnelNodeID    string `json:"tunnel_node_id"`
 }
 
@@ -2088,17 +2074,6 @@ func probeLocalVirtualRouterSettingsPayload(settings probeVirtualRouterLocalSett
 	}
 }
 
-func probeLocalPeerStatusMonitorHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if _, ok := requireProbeLocalSession(w, r); !ok {
-		return
-	}
-	writeJSON(w, http.StatusOK, currentProbeLocalPeerStatusMonitorSnapshot())
-}
-
 func probeLocalSystemUpgradeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -2230,7 +2205,7 @@ func probeLocalSystemUpgradeStatusHandler(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, currentProbeLocalUpgradeState())
 }
 
-func probeLocalSystemChainAuthBlacklistHandler(w http.ResponseWriter, r *http.Request) {
+func probeLocalSystemRouteAuthBlacklistHandler(w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireProbeLocalSession(w, r); !ok {
 		return
 	}
@@ -2238,15 +2213,15 @@ func probeLocalSystemChainAuthBlacklistHandler(w http.ResponseWriter, r *http.Re
 	case http.MethodGet:
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":      true,
-			"items":   listProbeChainAuthBlacklistEntries(),
-			"content": probeChainAuthBlacklistContent(),
+			"items":   listProbeRouteAuthBlacklistEntries(),
+			"content": probeRouteAuthBlacklistContent(),
 		})
 	case http.MethodPost:
 		body := http.MaxBytesReader(w, r.Body, probeLocalRouteReadBodyMaxLen)
 		defer body.Close()
 		decoder := json.NewDecoder(body)
 		decoder.DisallowUnknownFields()
-		var req probeLocalChainAuthBlacklistSaveRequest
+		var req probeLocalRouteAuthBlacklistSaveRequest
 		if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 			return
@@ -2257,23 +2232,23 @@ func probeLocalSystemChainAuthBlacklistHandler(w http.ResponseWriter, r *http.Re
 		}
 		ips := req.IPs
 		if len(ips) == 0 {
-			parsed, err := parseProbeChainAuthBlacklistContent(req.Content)
+			parsed, err := parseProbeRouteAuthBlacklistContent(req.Content)
 			if err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
 			ips = parsed
 		} else {
-			ips = normalizeProbeChainAuthBlacklistIPs(ips)
+			ips = normalizeProbeRouteAuthBlacklistIPs(ips)
 		}
-		if err := setProbeChainAuthBlacklistManualIPs(ips, true); err != nil {
+		if err := setProbeRouteAuthBlacklistManualIPs(ips, true); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":      true,
-			"items":   listProbeChainAuthBlacklistEntries(),
-			"content": probeChainAuthBlacklistContent(),
+			"items":   listProbeRouteAuthBlacklistEntries(),
+			"content": probeRouteAuthBlacklistContent(),
 		})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -2498,7 +2473,7 @@ func probeLocalShellStreamHandler(w http.ResponseWriter, r *http.Request) {
 
 func prepareProbeLocalProcessRestart() {
 	logProbeInfof("probe local restart preparing: closing listeners")
-	_ = stopProbeLocalTUNDataPlane()
+	_ = stopProbeVirtualRouterTUNDataPlane()
 	stopProbeLocalConsoleServer("process restart")
 	time.Sleep(300 * time.Millisecond)
 }
@@ -2710,9 +2685,9 @@ func resetProbeLocalControlStateForTest() {
 }
 
 func resetprobeLocalRouteHooksForTest() {
-	probeLocalTUNLinkFeatureEnabled = func() bool { return false }
+	probeLocalTUNRouteFeatureEnabled = func() bool { return false }
 	probeLocalLookupIPv4ForBypass = lookupProbeLocalIPv4ForBypass
-	probeLocalRouteRelaySpeedDebugFetch = probeChainRelayFetchSpeedDebugDefault
+	probeLocalRouteRelaySpeedDebugFetch = probeRouteRelayFetchSpeedDebugDefault
 	probeLocalStartCFIPOptimizeTask = func(fn func()) { go fn() }
 }
 
@@ -2720,10 +2695,8 @@ func resetProbeLocalTUNHooksForTest() {
 	probeLocalInstallTUNDriver = installProbeLocalTUNDriver
 	probeLocalCheckTUNReadyAfterInstall = probeLocalNoopPostInstallTUNReadyCheck
 	probeLocalResetTUNDetectInstalledHook()
-	probeLocalApplyTUNPrimaryDNS = applyProbeLocalTUNPrimaryDNS
-	probeLocalRestoreTUNPrimaryDNS = restoreProbeLocalTUNPrimaryDNS
 	probeLocalUninstallTUNDriver = uninstallProbeLocalTUNDriver
-	resetProbeLocalTUNDataPlaneHooksForTest()
+	resetProbeVirtualRouterTUNDataPlaneHooksForTest()
 }
 
 func resetProbeLocalUpgradeHooksForTest() {

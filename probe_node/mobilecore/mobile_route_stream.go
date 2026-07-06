@@ -14,18 +14,18 @@ const (
 	mobileRouteResponseReadTimeout = 10 * time.Second
 )
 
-var mobileRouteSessions = &mobileRouteSessionStore{sessions: map[string]*mobileRouteChainSession{}}
+var mobileRouteSessions = &mobileRouteSessionStore{sessions: map[string]*mobileRoutePathSession{}}
 
 type mobileRouteSessionStore struct {
 	mu        sync.Mutex
 	configDir string
-	sessions  map[string]*mobileRouteChainSession
+	sessions  map[string]*mobileRoutePathSession
 }
 
-type mobileRouteChainSession struct {
-	chainID string
+type mobileRoutePathSession struct {
+	routeID string
 	conn    net.Conn
-	session *mobileChainFrameSession
+	session *mobileRouteFrameSession
 }
 
 type androidRouteDecision struct {
@@ -33,7 +33,7 @@ type androidRouteDecision struct {
 	Reject          bool
 	TargetAddr      string
 	Group           string
-	SelectedChainID string
+	SelectedRouteID string
 }
 
 func setMobileRouteConfigDir(configDir string) {
@@ -51,55 +51,55 @@ func mobileRouteConfigDir() string {
 func closeMobileRouteSessions() {
 	mobileRouteSessions.mu.Lock()
 	sessions := mobileRouteSessions.sessions
-	mobileRouteSessions.sessions = map[string]*mobileRouteChainSession{}
+	mobileRouteSessions.sessions = map[string]*mobileRoutePathSession{}
 	mobileRouteSessions.mu.Unlock()
 	for _, sess := range sessions {
-		closeMobileRouteChainSession(sess)
+		closeMobileRoutePathSession(sess)
 	}
 }
 
-func openMobileRouteChainStream(selectedChainID string, network string, targetAddr string) (net.Conn, error) {
-	return openMobileRouteChainStreamWithFlow(selectedChainID, network, targetAddr, newAndroidRouteFlowID("chain", targetAddr))
+func openMobileRoutePathStream(selectedRouteID string, network string, targetAddr string) (net.Conn, error) {
+	return openMobileRoutePathStreamWithFlow(selectedRouteID, network, targetAddr, newAndroidRouteFlowID("route", targetAddr))
 }
 
-func openMobileRouteChainStreamWithFlow(selectedChainID string, network string, targetAddr string, flowID string) (net.Conn, error) {
-	item, endpoint, err := loadLinkEndpointByID(mobileRouteConfigDir(), selectedChainID)
+func openMobileRoutePathStreamWithFlow(selectedRouteID string, network string, targetAddr string, flowID string) (net.Conn, error) {
+	item, endpoint, err := loadRouteEndpointByID(mobileRouteConfigDir(), selectedRouteID)
 	if err != nil {
 		return nil, err
 	}
-	request := linkTunnelOpenRequest{
+	request := routeTunnelOpenRequest{
 		Type:             "open",
 		Network:          strings.ToLower(strings.TrimSpace(network)),
 		Address:          strings.TrimSpace(targetAddr),
 		FlowID:           strings.TrimSpace(flowID),
-		AppProtocol:      resolveLinkTunnelAppProtocol(network, targetAddr, nil),
-		Priority:         resolveLinkTunnelPriority(network, targetAddr, nil),
-		ResumePolicy:     resolveLinkTunnelResumePolicy(network, nil),
-		LatencySensitive: isLinkTunnelLatencySensitive(network, targetAddr, nil),
+		AppProtocol:      resolveRouteTunnelAppProtocol(network, targetAddr, nil),
+		Priority:         resolveRouteTunnelPriority(network, targetAddr, nil),
+		ResumePolicy:     resolveRouteTunnelResumePolicy(network, nil),
+		LatencySensitive: isRouteTunnelLatencySensitive(network, targetAddr, nil),
 	}
 	return openMobileRouteIndependentStream(item, endpoint, request)
 }
 
-func openMobileRouteChainPacketStream(selectedChainID string, network string, targetAddr string, association *linkAssociationV2Meta) (net.Conn, error) {
-	item, endpoint, err := loadLinkEndpointByID(mobileRouteConfigDir(), selectedChainID)
+func openMobileRoutePathPacketStream(selectedRouteID string, network string, targetAddr string, association *routeAssociationV2Meta) (net.Conn, error) {
+	item, endpoint, err := loadRouteEndpointByID(mobileRouteConfigDir(), selectedRouteID)
 	if err != nil {
 		return nil, err
 	}
-	request := linkTunnelOpenRequest{
+	request := routeTunnelOpenRequest{
 		Type:             "open",
 		Network:          strings.ToLower(strings.TrimSpace(network)),
 		Address:          strings.TrimSpace(targetAddr),
 		FlowID:           strings.TrimSpace(association.FlowID),
-		AppProtocol:      resolveLinkTunnelAppProtocol(network, targetAddr, association),
-		Priority:         resolveLinkTunnelPriority(network, targetAddr, association),
-		ResumePolicy:     resolveLinkTunnelResumePolicy(network, association),
-		LatencySensitive: isLinkTunnelLatencySensitive(network, targetAddr, association),
+		AppProtocol:      resolveRouteTunnelAppProtocol(network, targetAddr, association),
+		Priority:         resolveRouteTunnelPriority(network, targetAddr, association),
+		ResumePolicy:     resolveRouteTunnelResumePolicy(network, association),
+		LatencySensitive: isRouteTunnelLatencySensitive(network, targetAddr, association),
 		AssociationV2:    association,
 	}
 	return openMobileRouteIndependentStream(item, endpoint, request)
 }
 
-func resolveLinkTunnelPriority(network string, targetAddr string, association *linkAssociationV2Meta) string {
+func resolveRouteTunnelPriority(network string, targetAddr string, association *routeAssociationV2Meta) string {
 	if association != nil && strings.EqualFold(strings.TrimSpace(association.Transport), "udp") {
 		return "realtime"
 	}
@@ -114,14 +114,14 @@ func resolveLinkTunnelPriority(network string, targetAddr string, association *l
 	}
 }
 
-func resolveLinkTunnelAppProtocol(network string, targetAddr string, association *linkAssociationV2Meta) string {
+func resolveRouteTunnelAppProtocol(network string, targetAddr string, association *routeAssociationV2Meta) string {
 	if association != nil && strings.EqualFold(strings.TrimSpace(association.Transport), "udp") {
 		return "udp-association"
 	}
 	if strings.EqualFold(strings.TrimSpace(network), "udp") {
 		return "udp-association"
 	}
-	switch port := linkTunnelTargetPort(targetAddr); {
+	switch port := routeTunnelTargetPort(targetAddr); {
 	case port == 3389:
 		return "rdp"
 	case port >= 5900 && port <= 5999:
@@ -135,7 +135,7 @@ func resolveLinkTunnelAppProtocol(network string, targetAddr string, association
 	}
 }
 
-func resolveLinkTunnelResumePolicy(network string, association *linkAssociationV2Meta) string {
+func resolveRouteTunnelResumePolicy(network string, association *routeAssociationV2Meta) string {
 	if association != nil && strings.EqualFold(strings.TrimSpace(association.Transport), "udp") {
 		return "rebind"
 	}
@@ -145,21 +145,21 @@ func resolveLinkTunnelResumePolicy(network string, association *linkAssociationV
 	return "replay_required"
 }
 
-func isLinkTunnelLatencySensitive(network string, targetAddr string, association *linkAssociationV2Meta) bool {
-	return resolveLinkTunnelPriority(network, targetAddr, association) == "realtime"
+func isRouteTunnelLatencySensitive(network string, targetAddr string, association *routeAssociationV2Meta) bool {
+	return resolveRouteTunnelPriority(network, targetAddr, association) == "realtime"
 }
 
 func isLinkRealtimeTCPPort(targetAddr string) bool {
-	switch linkTunnelTargetPort(targetAddr) {
+	switch routeTunnelTargetPort(targetAddr) {
 	case 22, 3389, 4000:
 		return true
 	default:
-		port := linkTunnelTargetPort(targetAddr)
+		port := routeTunnelTargetPort(targetAddr)
 		return port >= 5900 && port <= 5999
 	}
 }
 
-func linkTunnelTargetPort(targetAddr string) int {
+func routeTunnelTargetPort(targetAddr string) int {
 	_, portText, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
 	if err != nil {
 		return 0
@@ -171,21 +171,21 @@ func linkTunnelTargetPort(targetAddr string) int {
 	return port
 }
 
-func openMobileRouteIndependentStream(item linkChainServerItem, endpoint linkEndpoint, request linkTunnelOpenRequest) (net.Conn, error) {
+func openMobileRouteIndependentStream(item routeServerItem, endpoint routeEndpoint, request routeTunnelOpenRequest) (net.Conn, error) {
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
-		session, err := ensureMobileRouteChainSession(item, endpoint)
+		session, err := ensureMobileRoutePathSession(item, endpoint)
 		if err != nil {
 			return nil, err
 		}
 		stream, err := session.OpenWithRequest(request, mobileRouteResponseReadTimeout)
 		if err != nil {
 			lastErr = err
-			androidLogStore.add("route", "warn", "open frame stream failed: chain="+strings.TrimSpace(endpoint.ChainID)+" target="+strings.TrimSpace(request.Address)+" attempt="+strconv.Itoa(attempt+1)+" err="+err.Error())
-			invalidateMobileRouteChainSession(endpoint.ChainID, session)
+			androidLogStore.add("route", "warn", "open frame stream failed: route="+strings.TrimSpace(endpoint.RouteID)+" target="+strings.TrimSpace(request.Address)+" attempt="+strconv.Itoa(attempt+1)+" err="+err.Error())
+			invalidateMobileRoutePathSession(endpoint.RouteID, session)
 			continue
 		}
-		androidLogStore.add("route", "debug", "open frame stream ok: chain="+strings.TrimSpace(endpoint.ChainID)+" target="+strings.TrimSpace(request.Address)+" priority="+strings.TrimSpace(request.Priority))
+		androidLogStore.add("route", "debug", "open frame stream ok: route="+strings.TrimSpace(endpoint.RouteID)+" target="+strings.TrimSpace(request.Address)+" priority="+strings.TrimSpace(request.Priority))
 		return stream, nil
 	}
 	if lastErr != nil {
@@ -194,55 +194,55 @@ func openMobileRouteIndependentStream(item linkChainServerItem, endpoint linkEnd
 	return nil, errors.New("open route bridge stream failed")
 }
 
-func ensureMobileRouteChainSession(item linkChainServerItem, endpoint linkEndpoint) (*mobileChainFrameSession, error) {
+func ensureMobileRoutePathSession(item routeServerItem, endpoint routeEndpoint) (*mobileRouteFrameSession, error) {
 	mobileRouteSessions.mu.Lock()
-	if existing := mobileRouteSessions.sessions[endpoint.ChainID]; existing != nil && existing.session != nil && !existing.session.IsClosed() {
+	if existing := mobileRouteSessions.sessions[endpoint.RouteID]; existing != nil && existing.session != nil && !existing.session.IsClosed() {
 		session := existing.session
 		mobileRouteSessions.mu.Unlock()
-		androidLogStore.add("route", "debug", "reuse frame session: chain="+strings.TrimSpace(endpoint.ChainID))
+		androidLogStore.add("route", "debug", "reuse frame session: route="+strings.TrimSpace(endpoint.RouteID))
 		return session, nil
 	}
 	mobileRouteSessions.mu.Unlock()
 
-	conn, err := openMobileRouteLinkRelayConn(item, endpoint)
+	conn, err := openMobileRouteRouteRelayConn(item, endpoint)
 	if err != nil {
 		return nil, err
 	}
-	session, err := newMobileChainFrameClient(conn)
+	session, err := newMobileRouteFrameClient(conn)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
 	ready := session.WaitReady(mobileRouteResponseReadTimeout)
-	androidLogStore.add("route", "debug", "frame session ready: chain="+strings.TrimSpace(endpoint.ChainID)+" ready="+strconv.FormatBool(ready))
+	androidLogStore.add("route", "debug", "frame session ready: route="+strings.TrimSpace(endpoint.RouteID)+" ready="+strconv.FormatBool(ready))
 	if !ready {
 		_ = session.Close()
 		_ = conn.Close()
 		return nil, errors.New("frame session negotiation timeout")
 	}
-	androidLogStore.add("route", "normal", "created frame session: chain="+strings.TrimSpace(endpoint.ChainID))
+	androidLogStore.add("route", "normal", "created frame session: route="+strings.TrimSpace(endpoint.RouteID))
 	mobileRouteSessions.mu.Lock()
-	if old := mobileRouteSessions.sessions[endpoint.ChainID]; old != nil {
-		closeMobileRouteChainSession(old)
+	if old := mobileRouteSessions.sessions[endpoint.RouteID]; old != nil {
+		closeMobileRoutePathSession(old)
 	}
-	mobileRouteSessions.sessions[endpoint.ChainID] = &mobileRouteChainSession{chainID: effectiveLinkRelayChainID(item), conn: conn, session: session}
+	mobileRouteSessions.sessions[endpoint.RouteID] = &mobileRoutePathSession{routeID: effectiveRouteRelayRouteID(item), conn: conn, session: session}
 	mobileRouteSessions.mu.Unlock()
 	return session, nil
 }
 
-func openMobileRouteLinkRelayConn(item linkChainServerItem, endpoint linkEndpoint) (net.Conn, error) {
-	protocols := linkReachabilityProtocolsForEndpoint(item, endpoint)
+func openMobileRouteRouteRelayConn(item routeServerItem, endpoint routeEndpoint) (net.Conn, error) {
+	protocols := routeReachabilityProtocolsForEndpoint(item, endpoint)
 	var lastErr error
 	for _, protocol := range protocols {
-		conn, err := openLinkRelayConn(endpoint, protocol, mobileRouteConnectTimeout+mobileRouteResponseReadTimeout)
+		conn, err := openRouteRelayConn(endpoint, protocol, mobileRouteConnectTimeout+mobileRouteResponseReadTimeout)
 		if err == nil {
-			if normalizeLinkLayer(endpoint.LinkLayer) == "" {
-				androidLogStore.add("route", "normal", "relay protocol selected: chain="+endpoint.ChainID+" protocol="+normalizeLinkLayer(protocol))
+			if normalizeRouteLayer(endpoint.RouteLayer) == "" {
+				androidLogStore.add("route", "normal", "relay protocol selected: route="+endpoint.RouteID+" protocol="+normalizeRouteLayer(protocol))
 			}
 			return conn, nil
 		}
 		lastErr = err
-		androidLogStore.add("route", "warn", "relay protocol failed: chain="+endpoint.ChainID+" protocol="+normalizeLinkLayer(protocol)+" err="+err.Error())
+		androidLogStore.add("route", "warn", "relay protocol failed: route="+endpoint.RouteID+" protocol="+normalizeRouteLayer(protocol)+" err="+err.Error())
 	}
 	if lastErr != nil {
 		return nil, lastErr
@@ -250,19 +250,19 @@ func openMobileRouteLinkRelayConn(item linkChainServerItem, endpoint linkEndpoin
 	return nil, errors.New("no supported relay protocol")
 }
 
-func invalidateMobileRouteChainSession(chainID string, session *mobileChainFrameSession) {
+func invalidateMobileRoutePathSession(routeID string, session *mobileRouteFrameSession) {
 	mobileRouteSessions.mu.Lock()
-	existing := mobileRouteSessions.sessions[strings.TrimSpace(chainID)]
+	existing := mobileRouteSessions.sessions[strings.TrimSpace(routeID)]
 	if existing != nil && existing.session == session {
-		delete(mobileRouteSessions.sessions, strings.TrimSpace(chainID))
+		delete(mobileRouteSessions.sessions, strings.TrimSpace(routeID))
 	}
 	mobileRouteSessions.mu.Unlock()
 	if existing != nil {
-		closeMobileRouteChainSession(existing)
+		closeMobileRoutePathSession(existing)
 	}
 }
 
-func closeMobileRouteChainSession(sess *mobileRouteChainSession) {
+func closeMobileRoutePathSession(sess *mobileRoutePathSession) {
 	if sess == nil {
 		return
 	}

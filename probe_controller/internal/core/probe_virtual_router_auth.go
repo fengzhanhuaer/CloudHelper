@@ -9,13 +9,13 @@ import (
 	"time"
 )
 
-const probeVirtualRouterAuthTicketVersion = "chain-auth-v1"
+const probeVirtualRouterAuthTicketVersion = "route-auth-v1"
 
 var probeVirtualRouterAuthTicketNow = time.Now
 
 type probeVirtualRouterAuthTicketPayload struct {
 	Version       string `json:"v"`
-	ChainID       string `json:"chain_id"`
+	RouteID       string `json:"route_id"`
 	ClientEntryID string `json:"client_entry_id,omitempty"`
 	UserID        string `json:"user_id"`
 	UserPublicKey string `json:"user_public_key"`
@@ -23,9 +23,9 @@ type probeVirtualRouterAuthTicketPayload struct {
 }
 
 func buildProbeVirtualRouterAuthTicket(rule probeVirtualRouterTopologyRule, priv ed25519.PrivateKey) (string, error) {
-	chainID := probeVirtualRouterRuntimeChainID(rule)
-	if chainID == "" {
-		return "", fmt.Errorf("chain_id is required")
+	routeID := probeVirtualRouterRuntimeRouteID(rule)
+	if routeID == "" {
+		return "", fmt.Errorf("route_id is required")
 	}
 	if len(priv) != ed25519.PrivateKeySize {
 		return "", fmt.Errorf("admin private key is invalid")
@@ -36,11 +36,11 @@ func buildProbeVirtualRouterAuthTicket(rule probeVirtualRouterTopologyRule, priv
 	}
 	clientEntryID := strings.TrimSpace(rule.ID)
 	if clientEntryID == "" {
-		clientEntryID = chainID
+		clientEntryID = routeID
 	}
 	payload := probeVirtualRouterAuthTicketPayload{
 		Version:       probeVirtualRouterAuthTicketVersion,
-		ChainID:       chainID,
+		RouteID:       routeID,
 		ClientEntryID: clientEntryID,
 		UserID:        strings.TrimSpace(rule.UserID),
 		UserPublicKey: userPublicKey,
