@@ -13,9 +13,7 @@ import (
 )
 
 func probeLocalTUNEgressSnapshot() (probeLocalTUNEgressStatus, error) {
-	applyProbeLocalTUNEgressPersistentState(probeLocalProxyStateFile{
-		TUNEgress: currentProbeLocalTUNEgressPersistentStateBestEffort(),
-	})
+	applyProbeLocalTUNEgressPersistentState(currentProbeLocalTUNEgressPersistentStateBestEffort())
 	status := probeLocalTUNEgressStatus{
 		APIVersion: probeLocalTUNEgressAPIVersion,
 		Supported:  true,
@@ -115,8 +113,7 @@ func probeLocalTUNEgressUpdate(req probeLocalTUNEgressUpdateRequest) (probeLocal
 	}
 }
 
-func applyProbeLocalTUNEgressPersistentState(state probeLocalProxyStateFile) {
-	egress := state.TUNEgress
+func applyProbeLocalTUNEgressPersistentState(egress probeLocalTUNEgressPersistentState) {
 	if !strings.EqualFold(strings.TrimSpace(egress.Mode), "manual") {
 		clearProbeLocalWindowsDirectBypassManualRouteTarget()
 		return

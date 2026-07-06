@@ -8,7 +8,7 @@ import (
 )
 
 func startProbeLocalTUNDataPlane() error {
-	return fmt.Errorf("%w: %s", errProbeLocalProxyUnsupported, runtime.GOOS)
+	return fmt.Errorf("%w: %s", errprobeLocalRouteUnsupported, runtime.GOOS)
 }
 
 func stopProbeLocalTUNDataPlane() error {
@@ -24,7 +24,7 @@ func probeLocalTUNDataPlaneRunning() bool {
 }
 
 func writeProbeLocalTUNPacket(_ []byte) error {
-	return fmt.Errorf("%w: %s", errProbeLocalProxyUnsupported, runtime.GOOS)
+	return fmt.Errorf("%w: %s", errprobeLocalRouteUnsupported, runtime.GOOS)
 }
 
 func resetProbeLocalTUNDataPlaneHooksForTest() {}

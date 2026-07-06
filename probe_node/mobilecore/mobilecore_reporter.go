@@ -55,7 +55,7 @@ type peerStatusControlResult struct {
 	OK          bool                           `json:"ok"`
 	Scope       string                         `json:"scope,omitempty"`
 	Status      map[string]any                 `json:"status,omitempty"`
-	Connections androidProxyConnectionSnapshot `json:"connections,omitempty"`
+	Connections androidRouteConnectionSnapshot `json:"connections,omitempty"`
 	DNS         map[string]any                 `json:"dns,omitempty"`
 	Logs        []androidLogEntry              `json:"logs,omitempty"`
 	Chain       map[string]any                 `json:"chain,omitempty"`
@@ -289,7 +289,7 @@ func buildPeerStatusControlResult(msg peerStatusControlMessage, identity mobileN
 		OK:          true,
 		Scope:       scope,
 		Status:      map[string]any{},
-		Connections: globalAndroidProxyConnectionState.snapshot(),
+		Connections: globalandroidRouteConnectionState.snapshot(),
 		DNS:         snapshotAndroidVPNDNSStatus(),
 		Logs:        androidLogStore.snapshot(120),
 		Chain:       buildMobilePeerChainSnapshot(),

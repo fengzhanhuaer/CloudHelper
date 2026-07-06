@@ -162,9 +162,9 @@
         <div class="progress"><div id="upgradeProgressFill" class="progress-fill"></div></div>
         <div class="actions">
           <button id="upgradeCheckDirectBtn" class="secondary">直连检查</button>
-          <button id="upgradeCheckProxyBtn" class="secondary">VNet 检查</button>
+          <button id="upgradeCheckProxyBtn" class="secondary">控制器通道检查</button>
           <button id="upgradeDirectBtn">直连升级</button>
-          <button id="upgradeProxyBtn" class="secondary">VNet 升级</button>
+          <button id="upgradeProxyBtn" class="secondary">控制器通道升级</button>
           <button id="restartServiceBtn" class="secondary">重启服务</button>
           <button id="logoutBtn" class="warn">退出登录</button>
         </div>
@@ -394,7 +394,7 @@
     async function checkSystemUpgrade(mode) {
       const releaseRepo = String(document.getElementById('upgradeRepoInput').value || '').trim();
       setUpgradeButtonsBusy(true);
-      setMessage(`${mode === 'proxy' ? 'VNet' : '直连'}检查升级中...`);
+      setMessage(`${mode === 'proxy' ? '控制器通道' : '直连'}检查升级中...`);
       try {
         const data = await requestJSON('/local/api/system/upgrade/check', {
           method: 'POST',
@@ -412,7 +412,7 @@
     async function triggerSystemUpgrade(mode) {
       const releaseRepo = String(document.getElementById('upgradeRepoInput').value || '').trim();
       setUpgradeButtonsBusy(true);
-      setMessage(`提交${mode === 'proxy' ? 'VNet' : '直连'}升级中...`);
+      setMessage(`提交${mode === 'proxy' ? '控制器通道' : '直连'}升级中...`);
       try {
         await requestJSON('/local/api/system/upgrade', {
           method: 'POST',

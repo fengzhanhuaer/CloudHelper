@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -35,15 +34,11 @@ const (
 	probeLocalMaxUsernameLength  = 64
 	probeLocalAuthReadBodyMaxLen = 64 * 1024
 
-	probeLocalProxyModeDirect       = "direct"
-	probeLocalProxyModeLegacyTunnel = "tunnel"
-
-	probeLocalProxyGroupFileName          = "proxy_group.json"
-	probeLocalProxyStateFileName          = "proxy_state.json"
-	probeLocalProxyHostFileName           = "proxy_host.txt"
+	probeLocalTUNStateFileName            = "tun_state.json"
+	probeLocalTUNEgressStateFileName      = "tun_egress.json"
+	probeLocalDNSHostFileName             = "dns_host.txt"
 	probeLocalTUNPrimaryDNSBackupFileName = "tun_primary_dns_backup.json"
-	probeLocalProxyBackupAPIPath          = "/api/probe/proxy_group/backup"
-	probeLocalProxyReadBodyMaxLen         = 512 * 1024
+	probeLocalRouteReadBodyMaxLen         = 512 * 1024
 )
 
 type probeLocalAuthState struct {
@@ -105,7 +100,7 @@ type probeLocalTunRuntimeState struct {
 	UpdatedAt              string                           `json:"updated_at,omitempty"`
 }
 
-type probeLocalProxyRuntimeState struct {
+type probeLocalRouteRuntimeState struct {
 	Enabled   bool   `json:"enabled"`
 	Mode      string `json:"mode"`
 	LastError string `json:"last_error,omitempty"`
@@ -113,55 +108,13 @@ type probeLocalProxyRuntimeState struct {
 }
 
 type probeLocalControlManager struct {
-	mu    sync.RWMutex
-	tun   probeLocalTunRuntimeState
-	proxy probeLocalProxyRuntimeState
-}
-
-type probeLocalProxyGroupEntry struct {
-	Group     string   `json:"group"`
-	Rules     []string `json:"rules,omitempty"`
-	RulesText string   `json:"rules_text,omitempty"`
-}
-
-type probeLocalProxyGroupFile struct {
-	Version         int                         `json:"version"`
-	DNSServers      []string                    `json:"dns_servers,omitempty"`
-	DoTServers      []string                    `json:"dot_servers,omitempty"`
-	DoHServers      []string                    `json:"doh_servers,omitempty"`
-	DoHProxyServers []string                    `json:"doh_proxy_servers,omitempty"`
-	FakeIPCIDR      string                      `json:"fake_ip_cidr,omitempty"`
-	LegacyTUN       json.RawMessage             `json:"tun,omitempty"`
-	Groups          []probeLocalProxyGroupEntry `json:"groups"`
-	Note            string                      `json:"note,omitempty"`
-}
-
-type probeLocalProxyStateGroupEntry struct {
-	Group           string `json:"group"`
-	Action          string `json:"action,omitempty"`
-	SelectedChainID string `json:"selected_chain_id,omitempty"`
-	TunnelNodeID    string `json:"tunnel_node_id,omitempty"`
-	RuntimeStatus   string `json:"runtime_status,omitempty"`
-}
-
-type probeLocalProxyBackupState struct {
-	LastUploadedAt    string `json:"last_uploaded_at,omitempty"`
-	LastUploadStatus  string `json:"last_upload_status,omitempty"`
-	LastUploadError   string `json:"last_upload_error,omitempty"`
-	LastRestoredAt    string `json:"last_restored_at,omitempty"`
-	LastRestoreStatus string `json:"last_restore_status,omitempty"`
-	LastRestoreError  string `json:"last_restore_error,omitempty"`
+	mu  sync.RWMutex
+	tun probeLocalTunRuntimeState
 }
 
 type probeLocalTUNPersistentState struct {
 	Installed bool   `json:"installed"`
 	Enabled   bool   `json:"enabled"`
-	UpdatedAt string `json:"updated_at,omitempty"`
-}
-
-type probeLocalProxyPersistentState struct {
-	Enabled   bool   `json:"enabled"`
-	Mode      string `json:"mode"`
 	UpdatedAt string `json:"updated_at,omitempty"`
 }
 
@@ -174,26 +127,16 @@ type probeLocalTUNEgressPersistentState struct {
 	UpdatedAt      string `json:"updated_at,omitempty"`
 }
 
-type probeLocalProxyStateFile struct {
-	Version   int                                `json:"version"`
-	UpdatedAt string                             `json:"updated_at"`
-	Groups    []probeLocalProxyStateGroupEntry   `json:"groups"`
-	Backup    probeLocalProxyBackupState         `json:"backup"`
-	TUN       probeLocalTUNPersistentState       `json:"tun"`
-	TUNEgress probeLocalTUNEgressPersistentState `json:"tun_egress,omitempty"`
-	Proxy     probeLocalProxyPersistentState     `json:"proxy"`
+type probeLocalTUNStateFile struct {
+	Version   int                          `json:"version"`
+	UpdatedAt string                       `json:"updated_at"`
+	TUN       probeLocalTUNPersistentState `json:"tun"`
 }
 
-type probeLocalProxyGroupRuntimeSnapshot struct {
-	Group                         string                               `json:"group,omitempty"`
-	SelectedChainID               string                               `json:"selected_chain_id,omitempty"`
-	GroupRuntimeStatus            string                               `json:"group_runtime_status,omitempty"`
-	SelectedChainKeepalive        string                               `json:"selected_chain_keepalive,omitempty"`
-	SelectedChainLatencyMS        *int64                               `json:"selected_chain_latency_ms,omitempty"`
-	SelectedChainLatencyStatus    string                               `json:"selected_chain_latency_status,omitempty"`
-	SelectedChainLatencyUpdatedAt string                               `json:"selected_chain_latency_updated_at,omitempty"`
-	SelectedChainLatencyError     string                               `json:"selected_chain_latency_error,omitempty"`
-	ProtocolState                 probeChainRelayProtocolStateSnapshot `json:"protocol_state,omitempty"`
+type probeLocalTUNEgressStateFile struct {
+	Version   int                                `json:"version"`
+	UpdatedAt string                             `json:"updated_at"`
+	TUNEgress probeLocalTUNEgressPersistentState `json:"tun_egress"`
 }
 
 type probeLocalHostMapping struct {
@@ -201,7 +144,7 @@ type probeLocalHostMapping struct {
 	IP  string `json:"ip"`
 }
 
-type probeLocalProxyRuntimeContext struct {
+type probeLocalRouteRuntimeContext struct {
 	Identity          nodeIdentity
 	ControllerBaseURL string
 }
@@ -262,7 +205,6 @@ func defaultProbeLocalDetectTUNInstalled() (bool, error) {
 var (
 	errProbeLocalTUNLinkFeaturePaused     = errors.New("probe local TUN link feature is paused")
 	errProbeLocalTUNUnsupported           = errors.New("probe local tun install is not supported on this platform")
-	probeLocalVNetFeatureEnabled          = func() bool { return false }
 	probeLocalTUNLinkFeatureEnabled       = func() bool { return false }
 	probeLocalInstallTUNDriver            = installProbeLocalTUNDriver
 	probeLocalCheckTUNReadyAfterInstall   = probeLocalNoopPostInstallTUNReadyCheck
@@ -271,7 +213,7 @@ var (
 	probeLocalApplyTUNPrimaryDNS          = applyProbeLocalTUNPrimaryDNS
 	probeLocalRestoreTUNPrimaryDNS        = restoreProbeLocalTUNPrimaryDNS
 	probeLocalUninstallTUNDriver          = uninstallProbeLocalTUNDriver
-	probeLocalProxyRelaySpeedDebugFetch   = probeChainRelayFetchSpeedDebugDefault
+	probeLocalRouteRelaySpeedDebugFetch   = probeChainRelayFetchSpeedDebugDefault
 	probeLocalStartCFIPOptimizeTask       = func(fn func()) { go fn() }
 	probeLocalRunUpgrade                  = runProbeUpgrade
 	probeLocalFetchRelease                = fetchProbeRelease
@@ -279,15 +221,11 @@ var (
 	probeLocalLookupIPv4ForBypass         = lookupProbeLocalIPv4ForBypass
 )
 
-func probeLocalVNetFeatureActive() bool {
-	return probeLocalVNetFeatureEnabled != nil && probeLocalVNetFeatureEnabled()
-}
-
 func probeLocalTUNLinkFeatureActive() bool {
 	return probeLocalTUNLinkFeatureEnabled != nil && probeLocalTUNLinkFeatureEnabled()
 }
 
-var probeLocalProxyStatusRefreshState = struct {
+var probeLocalConsoleRefreshState = struct {
 	mu             sync.Mutex
 	running        bool
 	lastStartedAt  string
@@ -304,34 +242,7 @@ func newProbeLocalControlManager() *probeLocalControlManager {
 			Enabled:   false,
 			UpdatedAt: now,
 		},
-		proxy: probeLocalProxyRuntimeState{
-			Enabled:   false,
-			Mode:      probeLocalProxyModeDirect,
-			UpdatedAt: now,
-		},
 	}
-}
-
-func preconnectProbeLocalTUNGroupRuntimesFromState(reason string) {
-	_ = reason
-}
-
-func preconnectProbeLocalTUNGroupRuntimes(state probeLocalProxyStateFile, reason string) {
-	_, _ = state, reason
-}
-
-type probeLocalProxyPreconnectResult struct {
-	Attempted int                 `json:"attempted"`
-	Connected int                 `json:"connected"`
-	Skipped   int                 `json:"skipped,omitempty"`
-	Failed    int                 `json:"failed,omitempty"`
-	Ready     bool                `json:"ready"`
-	Groups    []map[string]string `json:"groups"`
-}
-
-func preconnectProbeLocalTUNGroupRuntimesWithResult(state probeLocalProxyStateFile, reason string, resolveLatency bool) probeLocalProxyPreconnectResult {
-	_, _, _ = state, reason, resolveLatency
-	return probeLocalProxyPreconnectResult{Ready: true, Groups: []map[string]string{}}
 }
 
 func lookupProbeLocalIPv4ForBypass(host string) ([]string, error) {
@@ -415,7 +326,7 @@ func (m *probeLocalControlManager) tunStatus() probeLocalTunRuntimeState {
 		status.RecoveryLastError = "tun control is busy"
 		status.RecoveryUpdatedAt = now
 		status.UpdatedAt = now
-		if state, err := loadProbeLocalProxyStateFile(); err == nil {
+		if state, err := loadProbeLocalTUNStateFile(); err == nil {
 			status.Installed = state.TUN.Installed
 			status.Enabled = state.TUN.Enabled
 			status.UpdatedAt = firstNonEmpty(strings.TrimSpace(state.TUN.UpdatedAt), strings.TrimSpace(state.UpdatedAt), now)
@@ -495,11 +406,11 @@ func (m *probeLocalControlManager) setTUNRecoveryStatus(status string, attempt i
 }
 
 func (m *probeLocalControlManager) shouldRecoverTUNOnStartup() bool {
-	state, err := loadProbeLocalProxyStateFile()
+	state, err := loadProbeLocalTUNStateFile()
 	if err != nil {
 		return false
 	}
-	if !shouldRestoreProbeLocalTUNFromState(state) {
+	if !shouldRestoreProbeLocalTUNFromState(state.TUN) {
 		return false
 	}
 	status := m.tunStatus()
@@ -604,19 +515,19 @@ func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
 	}
 	m.setTUNRecoveryStatus("running", attempt, time.Time{}, "")
 	logProbeInfof("probe local tun startup recovery attempt started: attempt=%d", attempt)
-	state, err := loadProbeLocalProxyStateFile()
+	state, err := loadProbeLocalTUNStateFile()
 	if err != nil {
 		m.setTUNRecoveryStatus("failed", attempt, time.Time{}, strings.TrimSpace(err.Error()))
 		return err
 	}
-	applyProbeLocalTUNEgressPersistentState(state)
+	applyProbeLocalTUNEgressPersistentState(currentProbeLocalTUNEgressPersistentStateBestEffort())
 
 	detectedInstalled, detectErr := probeLocalDetectTUNInstalled()
 	if detectErr != nil && !errors.Is(detectErr, errProbeLocalTUNUnsupported) {
 		logProbeWarnf("probe local tun startup detect failed: %v", detectErr)
 	}
 	installed := detectedInstalled && detectErr == nil
-	restoreTUN := shouldRestoreProbeLocalTUNFromState(state)
+	restoreTUN := shouldRestoreProbeLocalTUNFromState(state.TUN)
 	now := time.Now().UTC().Format(time.RFC3339)
 	installErrText := ""
 
@@ -653,18 +564,10 @@ func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
 		m.tun.LastError = "tun adapter is not available after startup detection"
 	}
 	m.tun.UpdatedAt = now
-	m.proxy.Enabled = false
-	m.proxy.Mode = probeLocalProxyModeDirect
-	m.proxy.UpdatedAt = now
 	m.mu.Unlock()
 
 	if installed != state.TUN.Installed {
 		persistProbeLocalTUNStateBestEffort(installed, restoreTUN)
-	}
-	if state.Proxy.Enabled || strings.TrimSpace(state.Proxy.Mode) != probeLocalProxyModeDirect {
-		if err := persistProbeLocalProxyPersistentState(false, probeLocalProxyModeDirect); err != nil {
-			logProbeWarnf("probe local proxy persist direct state failed: %v", err)
-		}
 	}
 	if !installed {
 		errText := strings.TrimSpace(m.tunStatus().LastError)
@@ -695,26 +598,12 @@ func (m *probeLocalControlManager) recoverTUNOnStartup(attempt int) error {
 	m.tun.DataPlaneTXBytes = 0
 	m.tun.LastError = ""
 	m.tun.UpdatedAt = now
-	m.proxy.Enabled = false
-	m.proxy.Mode = probeLocalProxyModeDirect
-	m.proxy.LastError = ""
-	m.proxy.UpdatedAt = now
 	m.mu.Unlock()
 	persistProbeLocalTUNStateBestEffort(installed, restoreTUN)
-	if err := persistProbeLocalProxyPersistentState(false, probeLocalProxyModeDirect); err != nil {
-		logProbeWarnf("probe local proxy persist direct state failed: %v", err)
-	}
 	reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(false)
-	stopProbeLocalProxyMonitor()
 	m.setTUNRecoveryStatus("recovered", attempt, time.Time{}, "")
 	logProbeInfof("probe local tun startup recovered adapter only: persisted_tun_enabled=%v", restoreTUN)
 	return nil
-}
-
-func (m *probeLocalControlManager) proxyStatus() probeLocalProxyRuntimeState {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.proxy
 }
 
 func (m *probeLocalControlManager) installTUN() (probeLocalTunRuntimeState, error) {
@@ -867,7 +756,6 @@ func (m *probeLocalControlManager) resetTUNLocked(uninstall bool) (probeLocalTun
 
 	var allErr error
 	reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(false)
-	stopProbeLocalProxyMonitor()
 	if err := stopProbeLocalTUNDataPlane(); err != nil {
 		allErr = errors.Join(allErr, err)
 	}
@@ -896,24 +784,13 @@ func (m *probeLocalControlManager) resetTUNLocked(uninstall bool) (probeLocalTun
 	m.tun.DataPlaneTX = 0
 	m.tun.DataPlaneTXBytes = 0
 	m.tun.UpdatedAt = now
-	m.proxy.Enabled = false
-	m.proxy.Mode = probeLocalProxyModeDirect
-	m.proxy.UpdatedAt = now
 	if allErr != nil {
 		m.tun.LastError = strings.TrimSpace(allErr.Error())
-		m.proxy.LastError = m.tun.LastError
 		persistProbeLocalTUNStateBestEffort(m.tun.Installed, false)
-		if err := persistProbeLocalProxyPersistentState(false, probeLocalProxyModeDirect); err != nil {
-			logProbeWarnf("probe local proxy persist reset state failed: %v", err)
-		}
 		return m.tun, &probeLocalHTTPError{Status: http.StatusInternalServerError, Message: m.tun.LastError}
 	}
 	m.tun.LastError = ""
-	m.proxy.LastError = ""
 	persistProbeLocalTUNStateBestEffort(m.tun.Installed, false)
-	if err := persistProbeLocalProxyPersistentState(false, probeLocalProxyModeDirect); err != nil {
-		logProbeWarnf("probe local proxy persist reset state failed: %v", err)
-	}
 	return m.tun, nil
 }
 
@@ -930,19 +807,8 @@ var probeLocalTUNStartupRecoveryLoopState = struct {
 
 var probeLocalRuntimeState = struct {
 	mu      sync.RWMutex
-	context probeLocalProxyRuntimeContext
+	context probeLocalRouteRuntimeContext
 }{}
-
-var probeLocalProxyViewState = struct {
-	mu       sync.RWMutex
-	groups   probeLocalProxyGroupFile
-	state    probeLocalProxyStateFile
-	runtimes map[string]probeLocalProxyGroupRuntimeSnapshot
-}{
-	groups:   defaultProbeLocalProxyGroupFile(),
-	state:    defaultProbeLocalProxyStateFile(),
-	runtimes: map[string]probeLocalProxyGroupRuntimeSnapshot{},
-}
 
 var probeLocalUpgradeState = struct {
 	mu    sync.RWMutex
@@ -1374,79 +1240,32 @@ func buildProbeLocalTUNErrorPayload(err error) map[string]any {
 	return payload
 }
 
-func defaultProbeLocalProxyGroupFile() probeLocalProxyGroupFile {
-	return probeLocalProxyGroupFile{
-		Version:         1,
-		DNSServers:      append([]string(nil), defaultProbeLocalDNSServers()...),
-		DoTServers:      append([]string(nil), defaultProbeLocalDoTServers()...),
-		DoHServers:      append([]string(nil), defaultProbeLocalDoHServers()...),
-		DoHProxyServers: append([]string(nil), defaultProbeLocalDoHProxyServers()...),
-		FakeIPCIDR:      "198.18.0.0/15",
-		Groups: []probeLocalProxyGroupEntry{
-			{Group: "default", Rules: []string{"domain_suffix:example.com", "domain_prefix:api."}},
-			{Group: "media", Rules: []string{"domain_keyword:stream"}},
-		},
-		Note: "fallback is built in; rules are examples",
-	}
-}
-
-func defaultProbeLocalProxyStateFile() probeLocalProxyStateFile {
-	now := time.Now().UTC().Format(time.RFC3339)
-	return probeLocalProxyStateFile{
-		Version:   1,
-		UpdatedAt: now,
-		Groups:    []probeLocalProxyStateGroupEntry{},
-		Backup: probeLocalProxyBackupState{
-			LastUploadedAt:    "",
-			LastUploadStatus:  "idle",
-			LastUploadError:   "",
-			LastRestoredAt:    "",
-			LastRestoreStatus: "idle",
-			LastRestoreError:  "",
-		},
-		TUN: probeLocalTUNPersistentState{
-			Installed: false,
-			Enabled:   false,
-			UpdatedAt: now,
-		},
-		TUNEgress: probeLocalTUNEgressPersistentState{
-			Mode:      "auto",
-			UpdatedAt: now,
-		},
-		Proxy: probeLocalProxyPersistentState{
-			Enabled:   false,
-			Mode:      probeLocalProxyModeDirect,
-			UpdatedAt: now,
-		},
-	}
-}
-
-func defaultProbeLocalProxyHostContent() string {
+func defaultProbeLocalDNSHostContent() string {
 	return "# dns,ip\n"
 }
 
-func resolveProbeLocalProxyGroupPath() (string, error) {
+func resolveProbeLocalTUNStatePath() (string, error) {
 	dataDir, err := resolveDataDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dataDir, probeLocalProxyGroupFileName), nil
+	return filepath.Join(dataDir, probeLocalTUNStateFileName), nil
 }
 
-func resolveProbeLocalProxyStatePath() (string, error) {
+func resolveProbeLocalTUNEgressStatePath() (string, error) {
 	dataDir, err := resolveDataDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dataDir, probeLocalProxyStateFileName), nil
+	return filepath.Join(dataDir, probeLocalTUNEgressStateFileName), nil
 }
 
-func resolveProbeLocalProxyHostPath() (string, error) {
+func resolveProbeLocalDNSHostPath() (string, error) {
 	dataDir, err := resolveDataDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dataDir, probeLocalProxyHostFileName), nil
+	return filepath.Join(dataDir, probeLocalDNSHostFileName), nil
 }
 
 func decodeProbeLocalJSONStrict(raw []byte, out any) error {
@@ -1464,124 +1283,6 @@ func decodeProbeLocalJSONStrict(raw []byte, out any) error {
 	return nil
 }
 
-func normalizeProbeLocalProxyGroupDNSConfig(payload *probeLocalProxyGroupFile) {
-	if payload == nil {
-		return
-	}
-	payload.DNSServers = normalizeProbeLocalDNSHostPortList(payload.DNSServers, "53", defaultProbeLocalDNSServers())
-	payload.DoTServers = normalizeProbeLocalDNSHostPortList(payload.DoTServers, "853", defaultProbeLocalDoTServers())
-	payload.DoHServers = normalizeProbeLocalDoHURLList(payload.DoHServers, defaultProbeLocalDoHServers())
-	payload.DoHProxyServers = normalizeProbeLocalDoHURLList(payload.DoHProxyServers, defaultProbeLocalDoHProxyServers())
-	payload.FakeIPCIDR = strings.TrimSpace(payload.FakeIPCIDR)
-	if payload.FakeIPCIDR == "" {
-		payload.FakeIPCIDR = "198.18.0.0/15"
-	}
-	payload.LegacyTUN = nil
-}
-
-func normalizeProbeLocalProxyGroupRules(payload *probeLocalProxyGroupFile) {
-	if payload == nil {
-		return
-	}
-	for i := range payload.Groups {
-		rules := payload.Groups[i].Rules
-		if len(rules) == 0 {
-			legacy := strings.TrimSpace(payload.Groups[i].RulesText)
-			if legacy != "" {
-				lines := strings.Split(strings.ReplaceAll(legacy, "\r\n", "\n"), "\n")
-				rules = make([]string, 0, len(lines))
-				for _, line := range lines {
-					trimmed := strings.TrimSpace(line)
-					if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-						continue
-					}
-					rules = append(rules, trimmed)
-				}
-			}
-		}
-		normalized := make([]string, 0, len(rules))
-		for _, rule := range rules {
-			trimmed := strings.TrimSpace(rule)
-			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-				continue
-			}
-			normalized = append(normalized, trimmed)
-		}
-		payload.Groups[i].Rules = normalized
-		payload.Groups[i].RulesText = ""
-	}
-}
-
-func validateProbeLocalProxyGroupFile(payload probeLocalProxyGroupFile) error {
-	payload.FakeIPCIDR = strings.TrimSpace(payload.FakeIPCIDR)
-	if payload.FakeIPCIDR != "" && payload.FakeIPCIDR != "0.0.0.0/0" {
-		ipValue, ipnet, err := net.ParseCIDR(payload.FakeIPCIDR)
-		if err != nil || ipValue == nil || ipnet == nil || ipValue.To4() == nil {
-			return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: "fake_ip_cidr is invalid"}
-		}
-	}
-	for i, item := range payload.DNSServers {
-		if strings.TrimSpace(item) == "" {
-			continue
-		}
-		if _, ok := normalizeProbeLocalDNSHostPort(item, "53"); !ok {
-			return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("dns_servers[%d] is invalid", i)}
-		}
-	}
-	for i, item := range payload.DoTServers {
-		if strings.TrimSpace(item) == "" {
-			continue
-		}
-		if _, ok := normalizeProbeLocalDNSHostPort(item, "853"); !ok {
-			return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("dot_servers[%d] is invalid", i)}
-		}
-	}
-	for i, item := range payload.DoHServers {
-		if strings.TrimSpace(item) == "" {
-			continue
-		}
-		if _, ok := normalizeProbeLocalDoHURL(item); !ok {
-			return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("doh_servers[%d] is invalid", i)}
-		}
-	}
-	for i, item := range payload.DoHProxyServers {
-		if strings.TrimSpace(item) == "" {
-			continue
-		}
-		if _, ok := normalizeProbeLocalDoHURL(item); !ok {
-			return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("doh_proxy_servers[%d] is invalid", i)}
-		}
-	}
-	if len(payload.Groups) == 0 {
-		return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: "groups is required"}
-	}
-	seen := make(map[string]struct{}, len(payload.Groups))
-	for i, group := range payload.Groups {
-		name := strings.TrimSpace(group.Group)
-		if name == "" {
-			return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("groups[%d].group is required", i)}
-		}
-		if strings.EqualFold(name, "fallback") {
-			return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: "fallback is built in and must not be configured explicitly"}
-		}
-		key := strings.ToLower(name)
-		if _, exists := seen[key]; exists {
-			return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("duplicate group: %s", name)}
-		}
-		seen[key] = struct{}{}
-		for ruleIndex, rule := range group.Rules {
-			trimmed := strings.TrimSpace(rule)
-			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-				continue
-			}
-			if !strings.Contains(trimmed, ":") {
-				return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("groups[%d].rules[%d] must contain ':'", i, ruleIndex)}
-			}
-		}
-	}
-	return nil
-}
-
 func persistProbeLocalJSONFile(path string, payload any) error {
 	encoded, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
@@ -1593,82 +1294,38 @@ func persistProbeLocalJSONFile(path string, payload any) error {
 	return os.WriteFile(path, append(encoded, '\n'), 0o644)
 }
 
-func loadProbeLocalProxyGroupFile() (probeLocalProxyGroupFile, error) {
-	path, err := resolveProbeLocalProxyGroupPath()
+func defaultProbeLocalTUNStateFile() probeLocalTUNStateFile {
+	now := time.Now().UTC().Format(time.RFC3339)
+	return probeLocalTUNStateFile{
+		Version:   1,
+		UpdatedAt: now,
+		TUN: probeLocalTUNPersistentState{
+			Installed: false,
+			Enabled:   false,
+			UpdatedAt: now,
+		},
+	}
+}
+
+func loadProbeLocalTUNStateFile() (probeLocalTUNStateFile, error) {
+	path, err := resolveProbeLocalTUNStatePath()
 	if err != nil {
-		return probeLocalProxyGroupFile{}, err
+		return probeLocalTUNStateFile{}, err
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			def := defaultProbeLocalProxyGroupFile()
-			if writeErr := persistProbeLocalProxyGroupFile(def); writeErr != nil {
-				return probeLocalProxyGroupFile{}, writeErr
+			def := defaultProbeLocalTUNStateFile()
+			if writeErr := persistProbeLocalTUNStateFile(def); writeErr != nil {
+				return probeLocalTUNStateFile{}, writeErr
 			}
 			return def, nil
 		}
-		return probeLocalProxyGroupFile{}, err
+		return probeLocalTUNStateFile{}, err
 	}
-	payload := probeLocalProxyGroupFile{}
+	payload := probeLocalTUNStateFile{}
 	if err := decodeProbeLocalJSONStrict(raw, &payload); err != nil {
-		return probeLocalProxyGroupFile{}, err
-	}
-	if payload.Version <= 0 {
-		payload.Version = 1
-	}
-	for i := range payload.Groups {
-		payload.Groups[i].Group = strings.TrimSpace(payload.Groups[i].Group)
-	}
-	normalizeProbeLocalProxyGroupDNSConfig(&payload)
-	normalizeProbeLocalProxyGroupRules(&payload)
-	payload.Note = firstNonEmpty(strings.TrimSpace(payload.Note), "fallback is built in")
-	if err := validateProbeLocalProxyGroupFile(payload); err != nil {
-		return probeLocalProxyGroupFile{}, err
-	}
-	setProbeLocalProxyViewGroups(payload)
-	return payload, nil
-}
-
-func persistProbeLocalProxyGroupFile(payload probeLocalProxyGroupFile) error {
-	if payload.Version <= 0 {
-		payload.Version = 1
-	}
-	normalizeProbeLocalProxyGroupDNSConfig(&payload)
-	normalizeProbeLocalProxyGroupRules(&payload)
-	payload.Note = firstNonEmpty(strings.TrimSpace(payload.Note), "fallback is built in")
-	if err := validateProbeLocalProxyGroupFile(payload); err != nil {
-		return err
-	}
-	path, err := resolveProbeLocalProxyGroupPath()
-	if err != nil {
-		return err
-	}
-	if err := persistProbeLocalJSONFile(path, payload); err != nil {
-		return err
-	}
-	setProbeLocalProxyViewGroups(payload)
-	return nil
-}
-
-func loadProbeLocalProxyStateFile() (probeLocalProxyStateFile, error) {
-	path, err := resolveProbeLocalProxyStatePath()
-	if err != nil {
-		return probeLocalProxyStateFile{}, err
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			def := defaultProbeLocalProxyStateFile()
-			if writeErr := persistProbeLocalProxyStateFile(def); writeErr != nil {
-				return probeLocalProxyStateFile{}, writeErr
-			}
-			return def, nil
-		}
-		return probeLocalProxyStateFile{}, err
-	}
-	payload := probeLocalProxyStateFile{}
-	if err := decodeProbeLocalJSONStrict(raw, &payload); err != nil {
-		return probeLocalProxyStateFile{}, err
+		return probeLocalTUNStateFile{}, err
 	}
 	if payload.Version <= 0 {
 		payload.Version = 1
@@ -1676,134 +1333,41 @@ func loadProbeLocalProxyStateFile() (probeLocalProxyStateFile, error) {
 	if strings.TrimSpace(payload.UpdatedAt) == "" {
 		payload.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	}
-	if payload.Groups == nil {
-		payload.Groups = []probeLocalProxyStateGroupEntry{}
-	}
-	if strings.TrimSpace(payload.Backup.LastUploadStatus) == "" {
-		payload.Backup.LastUploadStatus = "idle"
-	}
-	if strings.TrimSpace(payload.Backup.LastRestoreStatus) == "" {
-		payload.Backup.LastRestoreStatus = "idle"
-	}
 	if strings.TrimSpace(payload.TUN.UpdatedAt) == "" {
 		payload.TUN.UpdatedAt = payload.UpdatedAt
 	}
-	normalizeProbeLocalTUNEgressPersistentState(&payload)
-	normalizeProbeLocalProxyPersistentState(&payload)
-	setProbeLocalProxyViewState(payload)
 	return payload, nil
 }
 
-func persistProbeLocalProxyStateFile(payload probeLocalProxyStateFile) error {
+func persistProbeLocalTUNStateFile(payload probeLocalTUNStateFile) error {
 	if payload.Version <= 0 {
 		payload.Version = 1
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	payload.UpdatedAt = now
-	if payload.Groups == nil {
-		payload.Groups = []probeLocalProxyStateGroupEntry{}
-	}
-	if strings.TrimSpace(payload.Backup.LastUploadStatus) == "" {
-		payload.Backup.LastUploadStatus = "idle"
-	}
-	if strings.TrimSpace(payload.Backup.LastRestoreStatus) == "" {
-		payload.Backup.LastRestoreStatus = "idle"
-	}
 	if strings.TrimSpace(payload.TUN.UpdatedAt) == "" {
 		payload.TUN.UpdatedAt = now
 	}
-	normalizeProbeLocalTUNEgressPersistentState(&payload)
-	normalizeProbeLocalProxyPersistentState(&payload)
-	path, err := resolveProbeLocalProxyStatePath()
+	path, err := resolveProbeLocalTUNStatePath()
 	if err != nil {
 		return err
 	}
-	if err := persistProbeLocalJSONFile(path, payload); err != nil {
-		return err
-	}
-	setProbeLocalProxyViewState(payload)
-	return nil
+	return persistProbeLocalJSONFile(path, payload)
 }
 
-func normalizeProbeLocalProxyPersistentState(payload *probeLocalProxyStateFile) {
-	if payload == nil {
-		return
-	}
-	payload.Proxy.Enabled = false
-	payload.Proxy.Mode = probeLocalProxyModeDirect
-	if strings.TrimSpace(payload.Proxy.UpdatedAt) == "" {
-		payload.Proxy.UpdatedAt = payload.UpdatedAt
-	}
-}
-
-func normalizeProbeLocalTUNEgressPersistentState(payload *probeLocalProxyStateFile) {
-	if payload == nil {
-		return
-	}
-	mode := strings.ToLower(strings.TrimSpace(payload.TUNEgress.Mode))
-	if mode != "manual" {
-		mode = "auto"
-		payload.TUNEgress.CandidateID = ""
-		payload.TUNEgress.InterfaceIndex = 0
-		payload.TUNEgress.NextHop = ""
-		payload.TUNEgress.Label = ""
-	}
-	payload.TUNEgress.Mode = mode
-	payload.TUNEgress.CandidateID = strings.TrimSpace(payload.TUNEgress.CandidateID)
-	payload.TUNEgress.NextHop = strings.TrimSpace(payload.TUNEgress.NextHop)
-	payload.TUNEgress.Label = strings.TrimSpace(payload.TUNEgress.Label)
-	if strings.TrimSpace(payload.TUNEgress.UpdatedAt) == "" {
-		payload.TUNEgress.UpdatedAt = payload.UpdatedAt
-	}
-}
-
-func shouldRestoreProbeLocalTUNFromState(state probeLocalProxyStateFile) bool {
-	return probeLocalTUNLinkFeatureActive() && state.TUN.Enabled
-}
-
-func cleanupProbeLocalVNetSystemSettingsWhenPaused(state probeLocalProxyStateFile) {
-	if probeLocalVNetFeatureActive() || !state.Proxy.Enabled {
-		return
-	}
-	reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(false)
-	stopProbeLocalProxyMonitor()
-	if err := persistProbeLocalProxyPersistentState(false, probeLocalProxyModeDirect); err != nil {
-		logProbeWarnf("probe local VNet/gVisor paused persist direct state failed: %v", err)
-	}
-	logProbeInfof("probe local VNet/gVisor paused cleanup completed: enabled=false")
+func shouldRestoreProbeLocalTUNFromState(state probeLocalTUNPersistentState) bool {
+	return probeLocalTUNLinkFeatureActive() && state.Enabled
 }
 
 func persistProbeLocalTUNPersistentState(installed, enabled bool) error {
-	state, err := loadProbeLocalProxyStateFile()
+	state, err := loadProbeLocalTUNStateFile()
 	if err != nil {
 		return err
 	}
 	state.TUN.Installed = installed
 	state.TUN.Enabled = enabled
 	state.TUN.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	if err := persistProbeLocalProxyStateFile(state); err != nil {
-		return err
-	}
-	resetProbeLocalDNSRuntimeCachesForProxyGroupRefresh()
-	return nil
-}
-
-func persistProbeLocalProxyPersistentState(enabled bool, mode string) error {
-	state, err := loadProbeLocalProxyStateFile()
-	if err != nil {
-		return err
-	}
-	cleanMode := strings.ToLower(strings.TrimSpace(mode))
-	cleanMode = probeLocalProxyModeDirect
-	enabled = false
-	state.Proxy.Enabled = enabled
-	state.Proxy.Mode = cleanMode
-	state.Proxy.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	if err := persistProbeLocalProxyStateFile(state); err != nil {
-		return err
-	}
-	resetProbeLocalDNSRuntimeCachesForProxyGroupRefresh()
-	return nil
+	return persistProbeLocalTUNStateFile(state)
 }
 
 func resolveProbeLocalTUNPrimaryDNSBackupPath() (string, error) {
@@ -1812,178 +1376,6 @@ func resolveProbeLocalTUNPrimaryDNSBackupPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dataDir, probeLocalTUNPrimaryDNSBackupFileName), nil
-}
-
-func validateProbeLocalRuntimeAction(action string) bool {
-	switch strings.ToLower(strings.TrimSpace(action)) {
-	case "", "direct", "reject", "tunnel":
-		return true
-	default:
-		return false
-	}
-}
-
-func validateProbeLocalRuntimeGroup(group string) error {
-	group = strings.TrimSpace(group)
-	if group == "" {
-		return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: "group is required"}
-	}
-	if strings.EqualFold(group, "fallback") {
-		return nil
-	}
-	payload, err := loadProbeLocalProxyGroupFile()
-	if err != nil {
-		return err
-	}
-	for _, item := range payload.Groups {
-		if strings.EqualFold(strings.TrimSpace(item.Group), group) {
-			return nil
-		}
-	}
-	return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("group %q not found", group)}
-}
-
-func normalizeProbeLocalTunnelNodeID(raw string) (normalized string, chainID string, err error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return "", "", nil
-	}
-	if len(trimmed) >= len("chain:") && strings.EqualFold(trimmed[:len("chain:")], "chain:") {
-		trimmed = strings.TrimSpace(trimmed[len("chain:"):])
-	}
-	if trimmed == "" {
-		return "", "", &probeLocalHTTPError{Status: http.StatusBadRequest, Message: "tunnel_node_id is invalid"}
-	}
-	return "chain:" + trimmed, trimmed, nil
-}
-
-func normalizeProbeLocalSelectedChainID(raw string) (string, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return "", nil
-	}
-	if len(trimmed) >= len("chain:") && strings.EqualFold(trimmed[:len("chain:")], "chain:") {
-		trimmed = strings.TrimSpace(trimmed[len("chain:"):])
-	}
-	if trimmed == "" || strings.ContainsAny(trimmed, " \t\r\n") {
-		return "", &probeLocalHTTPError{Status: http.StatusBadRequest, Message: "selected_chain_id is invalid"}
-	}
-	return trimmed, nil
-}
-
-func mustProbeLocalSelectedChainIDFromLegacy(raw string) string {
-	selected, err := normalizeProbeLocalSelectedChainID(raw)
-	if err != nil {
-		return ""
-	}
-	return selected
-}
-
-func formatProbeLocalLegacyTunnelNodeID(selectedChainID string) string {
-	trimmed := strings.TrimSpace(selectedChainID)
-	if trimmed == "" {
-		return ""
-	}
-	if len(trimmed) >= len("chain:") && strings.EqualFold(trimmed[:len("chain:")], "chain:") {
-		return trimmed
-	}
-	return "chain:" + trimmed
-}
-
-func validateProbeLocalRuntimeTunnelSelection(tunnelNodeID string) (string, error) {
-	_, chainID, err := normalizeProbeLocalTunnelNodeID(tunnelNodeID)
-	if err != nil {
-		return "", err
-	}
-	if chainID == "" {
-		return "", nil
-	}
-	return "", &probeLocalHTTPError{Status: http.StatusBadRequest, Message: "legacy probe link chain selection has been removed"}
-}
-
-func resolveProbeLocalProxyEnableSelection(req probeLocalProxyEnableRequest) (group string, tunnelNodeID string, err error) {
-	group = firstNonEmpty(strings.TrimSpace(req.Group), "fallback")
-	if err := validateProbeLocalRuntimeGroup(group); err != nil {
-		return "", "", err
-	}
-	selectedChainRaw := firstNonEmpty(strings.TrimSpace(req.SelectedChainID), strings.TrimSpace(req.TunnelNodeID))
-	tunnelNodeID, err = validateProbeLocalRuntimeTunnelSelection(selectedChainRaw)
-	if err != nil {
-		return "", "", err
-	}
-	return group, tunnelNodeID, nil
-}
-
-func resolveProbeLocalProxyDirectGroup(req probeLocalProxyDirectRequest) (string, error) {
-	group := firstNonEmpty(strings.TrimSpace(req.Group), "fallback")
-	if err := validateProbeLocalRuntimeGroup(group); err != nil {
-		return "", err
-	}
-	return group, nil
-}
-
-func upsertProbeLocalRuntimeStateGroup(group, action, tunnelNodeID, runtimeStatus string) error {
-	group = strings.TrimSpace(group)
-	action = strings.ToLower(strings.TrimSpace(action))
-	tunnelNodeID = strings.TrimSpace(tunnelNodeID)
-	runtimeStatus = strings.TrimSpace(runtimeStatus)
-	selectedChainID := mustProbeLocalSelectedChainIDFromLegacy(tunnelNodeID)
-	if group == "" {
-		return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: "group is required"}
-	}
-	if !validateProbeLocalRuntimeAction(action) {
-		return &probeLocalHTTPError{Status: http.StatusBadRequest, Message: "invalid runtime action"}
-	}
-	state, err := loadProbeLocalProxyStateFile()
-	if err != nil {
-		return err
-	}
-	matched := false
-	for i := range state.Groups {
-		if strings.EqualFold(strings.TrimSpace(state.Groups[i].Group), group) {
-			state.Groups[i].Group = group
-			state.Groups[i].Action = action
-			if selectedChainID != "" {
-				state.Groups[i].SelectedChainID = selectedChainID
-				state.Groups[i].TunnelNodeID = tunnelNodeID
-			}
-			state.Groups[i].RuntimeStatus = runtimeStatus
-			matched = true
-			break
-		}
-	}
-	if !matched {
-		state.Groups = append(state.Groups, probeLocalProxyStateGroupEntry{
-			Group:           group,
-			Action:          action,
-			SelectedChainID: selectedChainID,
-			TunnelNodeID:    tunnelNodeID,
-			RuntimeStatus:   runtimeStatus,
-		})
-	}
-	return persistProbeLocalProxyStateFile(state)
-}
-
-func setProbeLocalBackupStatus(status, lastError, uploadedAt string) error {
-	state, err := loadProbeLocalProxyStateFile()
-	if err != nil {
-		return err
-	}
-	state.Backup.LastUploadStatus = firstNonEmpty(strings.TrimSpace(status), "idle")
-	state.Backup.LastUploadError = strings.TrimSpace(lastError)
-	state.Backup.LastUploadedAt = strings.TrimSpace(uploadedAt)
-	return persistProbeLocalProxyStateFile(state)
-}
-
-func setProbeLocalBackupRestoreStatus(status, lastError, restoredAt string) error {
-	state, err := loadProbeLocalProxyStateFile()
-	if err != nil {
-		return err
-	}
-	state.Backup.LastRestoreStatus = firstNonEmpty(strings.TrimSpace(status), "idle")
-	state.Backup.LastRestoreError = strings.TrimSpace(lastError)
-	state.Backup.LastRestoredAt = strings.TrimSpace(restoredAt)
-	return persistProbeLocalProxyStateFile(state)
 }
 
 func parseProbeLocalHostMappings(content string) ([]probeLocalHostMapping, error) {
@@ -1997,15 +1389,15 @@ func parseProbeLocalHostMappings(content string) ([]probeLocalHostMapping, error
 		}
 		parts := strings.SplitN(trimmed, ",", 2)
 		if len(parts) != 2 {
-			return nil, &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("proxy_host.txt line %d must be dns,ip", i+1)}
+			return nil, &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("dns_host.txt line %d must be dns,ip", i+1)}
 		}
 		dns := strings.ToLower(strings.TrimSpace(parts[0]))
 		ipText := strings.TrimSpace(parts[1])
 		if dns == "" {
-			return nil, &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("proxy_host.txt line %d dns is empty", i+1)}
+			return nil, &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("dns_host.txt line %d dns is empty", i+1)}
 		}
 		if net.ParseIP(ipText) == nil {
-			return nil, &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("proxy_host.txt line %d ip is invalid", i+1)}
+			return nil, &probeLocalHTTPError{Status: http.StatusBadRequest, Message: fmt.Sprintf("dns_host.txt line %d ip is invalid", i+1)}
 		}
 		entry := probeLocalHostMapping{DNS: dns, IP: ipText}
 		if idx, exists := indexByDNS[dns]; exists {
@@ -2021,7 +1413,7 @@ func parseProbeLocalHostMappings(content string) ([]probeLocalHostMapping, error
 
 func encodeProbeLocalHostMappingsContent(hosts []probeLocalHostMapping) string {
 	if len(hosts) == 0 {
-		return defaultProbeLocalProxyHostContent()
+		return defaultProbeLocalDNSHostContent()
 	}
 	lines := make([]string, 0, len(hosts))
 	for _, host := range hosts {
@@ -2033,111 +1425,20 @@ func encodeProbeLocalHostMappingsContent(hosts []probeLocalHostMapping) string {
 		lines = append(lines, dns+","+ipText)
 	}
 	if len(lines) == 0 {
-		return defaultProbeLocalProxyHostContent()
+		return defaultProbeLocalDNSHostContent()
 	}
 	return strings.Join(lines, "\n") + "\n"
 }
 
-func cloneProbeLocalProxyGroupFile(payload probeLocalProxyGroupFile) probeLocalProxyGroupFile {
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return payload
-	}
-	var cloned probeLocalProxyGroupFile
-	if err := json.Unmarshal(raw, &cloned); err != nil {
-		return payload
-	}
-	return cloned
-}
-
-func cloneProbeLocalProxyStateFile(payload probeLocalProxyStateFile) probeLocalProxyStateFile {
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return payload
-	}
-	var cloned probeLocalProxyStateFile
-	if err := json.Unmarshal(raw, &cloned); err != nil {
-		return payload
-	}
-	return cloned
-}
-
-func setProbeLocalProxyViewGroups(payload probeLocalProxyGroupFile) {
-	probeLocalProxyViewState.mu.Lock()
-	probeLocalProxyViewState.groups = cloneProbeLocalProxyGroupFile(payload)
-	probeLocalProxyViewState.mu.Unlock()
-}
-
-func currentProbeLocalProxyViewGroups() probeLocalProxyGroupFile {
-	probeLocalProxyViewState.mu.RLock()
-	defer probeLocalProxyViewState.mu.RUnlock()
-	return cloneProbeLocalProxyGroupFile(probeLocalProxyViewState.groups)
-}
-
-func setProbeLocalProxyViewState(payload probeLocalProxyStateFile) {
-	probeLocalProxyViewState.mu.Lock()
-	probeLocalProxyViewState.state = cloneProbeLocalProxyStateFile(payload)
-	probeLocalProxyViewState.mu.Unlock()
-}
-
-func currentProbeLocalProxyViewState() probeLocalProxyStateFile {
-	probeLocalProxyViewState.mu.RLock()
-	defer probeLocalProxyViewState.mu.RUnlock()
-	return cloneProbeLocalProxyStateFile(probeLocalProxyViewState.state)
-}
-
-func setProbeLocalProxyViewGroupRuntimeSnapshot(group string, snapshot probeLocalProxyGroupRuntimeSnapshot) {
-	cleanGroup := strings.TrimSpace(group)
-	if cleanGroup == "" {
-		return
-	}
-	snapshot.Group = cleanGroup
-	probeLocalProxyViewState.mu.Lock()
-	if probeLocalProxyViewState.runtimes == nil {
-		probeLocalProxyViewState.runtimes = make(map[string]probeLocalProxyGroupRuntimeSnapshot)
-	}
-	key := strings.ToLower(cleanGroup)
-	if snapshot.SelectedChainLatencyMS != nil {
-		value := *snapshot.SelectedChainLatencyMS
-		snapshot.SelectedChainLatencyMS = &value
-	}
-	probeLocalProxyViewState.runtimes[key] = snapshot
-	probeLocalProxyViewState.mu.Unlock()
-}
-
-func currentProbeLocalProxyViewGroupRuntimeSnapshot(group string) (probeLocalProxyGroupRuntimeSnapshot, bool) {
-	cleanGroup := strings.TrimSpace(group)
-	if cleanGroup == "" {
-		return probeLocalProxyGroupRuntimeSnapshot{}, false
-	}
-	probeLocalProxyViewState.mu.RLock()
-	defer probeLocalProxyViewState.mu.RUnlock()
-	snapshot, ok := probeLocalProxyViewState.runtimes[strings.ToLower(cleanGroup)]
-	if !ok {
-		return probeLocalProxyGroupRuntimeSnapshot{}, false
-	}
-	if snapshot.SelectedChainLatencyMS != nil {
-		value := *snapshot.SelectedChainLatencyMS
-		snapshot.SelectedChainLatencyMS = &value
-	}
-	return snapshot, true
-}
-
-func resetProbeLocalProxyViewGroupRuntimeSnapshots() {
-	probeLocalProxyViewState.mu.Lock()
-	probeLocalProxyViewState.runtimes = make(map[string]probeLocalProxyGroupRuntimeSnapshot)
-	probeLocalProxyViewState.mu.Unlock()
-}
-
 func loadProbeLocalHostMappingsWithContent() (string, []probeLocalHostMapping, error) {
-	path, err := resolveProbeLocalProxyHostPath()
+	path, err := resolveProbeLocalDNSHostPath()
 	if err != nil {
 		return "", nil, err
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			content := defaultProbeLocalProxyHostContent()
+			content := defaultProbeLocalDNSHostContent()
 			hosts, parseErr := parseProbeLocalHostMappings(content)
 			if parseErr != nil {
 				return "", nil, parseErr
@@ -2158,7 +1459,7 @@ func loadProbeLocalHostMappingsWithContent() (string, []probeLocalHostMapping, e
 }
 
 func persistProbeLocalHostMappings(hosts []probeLocalHostMapping) error {
-	path, err := resolveProbeLocalProxyHostPath()
+	path, err := resolveProbeLocalDNSHostPath()
 	if err != nil {
 		return err
 	}
@@ -2169,141 +1470,11 @@ func persistProbeLocalHostMappings(hosts []probeLocalHostMapping) error {
 	return os.WriteFile(path, []byte(content), 0o644)
 }
 
-func ensureProbeLocalProxyDefaultsInitialized() error {
-	if groups, err := loadProbeLocalProxyGroupFile(); err != nil {
-		logProbeErrorf("probe local proxy group config invalid, service will continue with defaults until fixed: %v", err)
-		setProbeLocalProxyViewGroups(defaultProbeLocalProxyGroupFile())
-	} else {
-		setProbeLocalProxyViewGroups(groups)
-	}
-	state, err := loadProbeLocalProxyStateFile()
-	if err != nil {
-		logProbeErrorf("probe local proxy state config invalid, service will continue with defaults until fixed: %v", err)
-		setProbeLocalProxyViewState(defaultProbeLocalProxyStateFile())
-	} else if strings.TrimSpace(state.TUN.UpdatedAt) == "" {
-		state.TUN.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		if err := persistProbeLocalProxyStateFile(state); err != nil {
-			logProbeErrorf("probe local proxy state update failed, service will continue: %v", err)
-		}
-		cleanupProbeLocalVNetSystemSettingsWhenPaused(state)
-	} else {
-		cleanupProbeLocalVNetSystemSettingsWhenPaused(state)
-	}
+func ensureprobeLocalRouteDefaultsInitialized() error {
 	if _, _, err := loadProbeLocalHostMappingsWithContent(); err != nil {
-		logProbeErrorf("probe local proxy host config invalid, service will continue without static host mappings until fixed: %v", err)
+		logProbeErrorf("probe local dns host config invalid, service will continue without static host mappings until fixed: %v", err)
 	}
 	return nil
-}
-
-func backupProbeLocalProxyGroupToController(ctx context.Context) error {
-	runtimeContext := currentProbeLocalProxyRuntimeContext()
-	baseURL := strings.TrimSpace(runtimeContext.ControllerBaseURL)
-	if baseURL == "" {
-		return &probeLocalHTTPError{Status: http.StatusConflict, Message: "controller base url is empty"}
-	}
-	path, err := resolveProbeLocalProxyGroupPath()
-	if err != nil {
-		return err
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	body, err := json.Marshal(map[string]any{
-		"file_name":      probeLocalProxyGroupFileName,
-		"content_base64": base64.StdEncoding.EncodeToString(raw),
-	})
-	if err != nil {
-		return err
-	}
-	requestURL := strings.TrimRight(baseURL, "/") + probeLocalProxyBackupAPIPath
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	for key, value := range buildProbeAuthHeaders(runtimeContext.Identity) {
-		req.Header.Set(key, value)
-	}
-	client, closeClient, err := newProbeResolvedHTTPClientForURL(requestURL, 15*time.Second)
-	if err != nil {
-		return err
-	}
-	defer closeClient()
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		message := strings.TrimSpace(string(responseBody))
-		if message == "" {
-			message = "controller backup upload failed"
-		}
-		return &probeLocalHTTPError{Status: http.StatusBadGateway, Message: fmt.Sprintf("controller backup upload failed: %d %s", resp.StatusCode, message)}
-	}
-	return nil
-}
-
-func restoreProbeLocalProxyGroupFromController(ctx context.Context) (string, error) {
-	runtimeContext := currentProbeLocalProxyRuntimeContext()
-	baseURL := strings.TrimSpace(runtimeContext.ControllerBaseURL)
-	if baseURL == "" {
-		return "", &probeLocalHTTPError{Status: http.StatusConflict, Message: "controller base url is empty"}
-	}
-
-	requestURL := strings.TrimRight(baseURL, "/") + probeLocalProxyBackupAPIPath
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
-	if err != nil {
-		return "", err
-	}
-	for key, value := range buildProbeAuthHeaders(runtimeContext.Identity) {
-		req.Header.Set(key, value)
-	}
-	client, closeClient, err := newProbeResolvedHTTPClientForURL(requestURL, 15*time.Second)
-	if err != nil {
-		return "", err
-	}
-	defer closeClient()
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		message := strings.TrimSpace(string(responseBody))
-		if message == "" {
-			message = "controller backup restore failed"
-		}
-		return "", &probeLocalHTTPError{Status: http.StatusBadGateway, Message: fmt.Sprintf("controller backup restore failed: %d %s", resp.StatusCode, message)}
-	}
-
-	var payload struct {
-		FileName      string `json:"file_name"`
-		ContentBase64 string `json:"content_base64"`
-		UpdatedAt     string `json:"updated_at"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, probeLocalProxyReadBodyMaxLen)).Decode(&payload); err != nil {
-		return "", &probeLocalHTTPError{Status: http.StatusBadGateway, Message: "controller backup restore response is invalid"}
-	}
-	if fileName := firstNonEmpty(strings.TrimSpace(payload.FileName), probeLocalProxyGroupFileName); fileName != probeLocalProxyGroupFileName {
-		return "", &probeLocalHTTPError{Status: http.StatusBadGateway, Message: "controller backup file_name is invalid"}
-	}
-	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(payload.ContentBase64))
-	if err != nil || len(raw) == 0 {
-		return "", &probeLocalHTTPError{Status: http.StatusBadGateway, Message: "controller backup content_base64 is invalid"}
-	}
-	var groups probeLocalProxyGroupFile
-	if err := decodeProbeLocalJSONStrict(raw, &groups); err != nil {
-		return "", &probeLocalHTTPError{Status: http.StatusBadGateway, Message: "controller backup content is invalid"}
-	}
-	if err := persistProbeLocalProxyGroupFile(groups); err != nil {
-		return "", err
-	}
-	resetProbeLocalDNSRuntimeCachesForProxyGroupRefresh()
-	return strings.TrimSpace(payload.UpdatedAt), nil
 }
 
 func normalizeProbeLocalListenAddr(raw string) string {
@@ -2508,27 +1679,23 @@ type probeLocalLoginRequest struct {
 	Password string `json:"password"`
 }
 
-type probeLocalProxyEnableRequest struct {
+type probeLocalRouteEnableRequest struct {
 	Group           string `json:"group"`
 	SelectedChainID string `json:"selected_chain_id"`
 	TunnelNodeID    string `json:"tunnel_node_id"`
 }
 
-type probeLocalProxyDirectRequest struct {
+type probeLocalRouteDirectRequest struct {
 	Group string `json:"group"`
 }
 
-type probeLocalProxyRejectRequest struct {
+type probeLocalRouteRejectRequest struct {
 	Group string `json:"group"`
 }
 
 type probeLocalSystemUpgradeRequest struct {
 	Mode        string `json:"mode"`
 	ReleaseRepo string `json:"release_repo"`
-}
-
-type probeLocalProxyHostsSaveRequest struct {
-	Content string `json:"content"`
 }
 
 type probeLocalSyncSettingsRequest struct {
@@ -2583,7 +1750,7 @@ func probeLocalPanelPageHandler(w http.ResponseWriter, r *http.Request) {
 	serveProbeLocalHTMLPage(w, r, "/local/panel", probeLocalPanelPageHTML)
 }
 
-func probeLocalProxyPageHandler(w http.ResponseWriter, r *http.Request) {
+func probeLocalRoutePageHandler(w http.ResponseWriter, r *http.Request) {
 	http.NotFound(w, r)
 }
 
@@ -2932,109 +2099,6 @@ func probeLocalPeerStatusMonitorHandler(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, currentProbeLocalPeerStatusMonitorSnapshot())
 }
 
-func selectedProbeLocalProxyGroupsByChainID(state probeLocalProxyStateFile) map[string][]string {
-	out := make(map[string][]string, len(state.Groups))
-	for _, entry := range state.Groups {
-		if !strings.EqualFold(strings.TrimSpace(entry.Action), "tunnel") {
-			continue
-		}
-		group := strings.TrimSpace(entry.Group)
-		chainID := firstNonEmpty(strings.TrimSpace(entry.SelectedChainID), mustProbeLocalSelectedChainIDFromLegacy(entry.TunnelNodeID))
-		if group == "" || chainID == "" {
-			continue
-		}
-		out[strings.ToLower(chainID)] = append(out[strings.ToLower(chainID)], group)
-	}
-	return out
-}
-
-func probeLocalProxyChainIDMatchVariants(values ...string) []string {
-	seen := make(map[string]struct{}, len(values)*2)
-	out := make([]string, 0, len(values)*2)
-	add := func(raw string) {
-		clean := strings.TrimSpace(raw)
-		if clean == "" {
-			return
-		}
-		if strings.HasPrefix(strings.ToLower(clean), "chain:") {
-			clean = strings.TrimSpace(clean[len("chain:"):])
-		}
-		if clean == "" {
-			return
-		}
-		variants := []string{clean, strings.ToLower(clean)}
-		lower := strings.ToLower(clean)
-		if strings.HasSuffix(lower, "_pub") || strings.HasSuffix(lower, "-pub") {
-			variants = append(variants, clean[:len(clean)-4], lower[:len(lower)-4])
-		}
-		for _, variant := range variants {
-			key := strings.ToLower(strings.TrimSpace(variant))
-			if key == "" {
-				continue
-			}
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			out = append(out, key)
-		}
-	}
-	for _, value := range values {
-		add(value)
-	}
-	return out
-}
-
-func buildProbeLocalProxyStateGroupPayload(entry probeLocalProxyStateGroupEntry) map[string]any {
-	group := strings.TrimSpace(entry.Group)
-	action := strings.TrimSpace(entry.Action)
-	selectedChainID := firstNonEmpty(
-		strings.TrimSpace(entry.SelectedChainID),
-		mustProbeLocalSelectedChainIDFromLegacy(entry.TunnelNodeID),
-	)
-	tunnelNodeID := firstNonEmpty(strings.TrimSpace(entry.TunnelNodeID), formatProbeLocalLegacyTunnelNodeID(selectedChainID))
-	runtimeStatus := strings.TrimSpace(entry.RuntimeStatus)
-
-	payload := map[string]any{
-		"group": group,
-	}
-	if action != "" {
-		payload["action"] = action
-	}
-	if selectedChainID != "" {
-		payload["selected_chain_id"] = selectedChainID
-	}
-	if tunnelNodeID != "" {
-		payload["tunnel_node_id"] = tunnelNodeID
-	}
-
-	if strings.EqualFold(action, "tunnel") && group != "" && selectedChainID != "" {
-		if snapshot, ok := currentProbeLocalProxyViewGroupRuntimeSnapshot(group); ok {
-			if groupRuntimeStatus := strings.TrimSpace(snapshot.GroupRuntimeStatus); groupRuntimeStatus != "" {
-				payload["group_runtime_status"] = groupRuntimeStatus
-			}
-			if keepalive := strings.TrimSpace(snapshot.SelectedChainKeepalive); keepalive != "" {
-				payload["selected_chain_keepalive"] = keepalive
-			}
-			latencyStatus := firstNonEmpty(strings.TrimSpace(snapshot.SelectedChainLatencyStatus), "unreachable")
-			if snapshot.SelectedChainLatencyMS != nil {
-				payload["selected_chain_latency_ms"] = *snapshot.SelectedChainLatencyMS
-			}
-			payload["selected_chain_latency_status"] = latencyStatus
-			payload["selected_chain_latency_updated_at"] = strings.TrimSpace(snapshot.SelectedChainLatencyUpdatedAt)
-			payload["selected_chain_latency_error"] = strings.TrimSpace(snapshot.SelectedChainLatencyError)
-			if strings.TrimSpace(snapshot.ProtocolState.Endpoint) != "" {
-				payload["protocol_state"] = snapshot.ProtocolState
-			}
-		}
-	}
-
-	if runtimeStatus != "" {
-		payload["runtime_status"] = runtimeStatus
-	}
-	return payload
-}
-
 func probeLocalSystemUpgradeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -3043,7 +2107,7 @@ func probeLocalSystemUpgradeHandler(w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireProbeLocalSession(w, r); !ok {
 		return
 	}
-	body := http.MaxBytesReader(w, r.Body, probeLocalProxyReadBodyMaxLen)
+	body := http.MaxBytesReader(w, r.Body, probeLocalRouteReadBodyMaxLen)
 	defer body.Close()
 	decoder := json.NewDecoder(body)
 	decoder.DisallowUnknownFields()
@@ -3064,7 +2128,7 @@ func probeLocalSystemUpgradeHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "mode must be direct or proxy"})
 		return
 	}
-	runtimeContext := currentProbeLocalProxyRuntimeContext()
+	runtimeContext := currentprobeLocalRouteRuntimeContext()
 	if mode == "proxy" && strings.TrimSpace(runtimeContext.ControllerBaseURL) == "" {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "controller base url is empty"})
 		return
@@ -3100,7 +2164,7 @@ func probeLocalSystemUpgradeCheckHandler(w http.ResponseWriter, r *http.Request)
 	if _, ok := requireProbeLocalSession(w, r); !ok {
 		return
 	}
-	body := http.MaxBytesReader(w, r.Body, probeLocalProxyReadBodyMaxLen)
+	body := http.MaxBytesReader(w, r.Body, probeLocalRouteReadBodyMaxLen)
 	defer body.Close()
 	decoder := json.NewDecoder(body)
 	decoder.DisallowUnknownFields()
@@ -3121,7 +2185,7 @@ func probeLocalSystemUpgradeCheckHandler(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "mode must be direct or proxy"})
 		return
 	}
-	runtimeContext := currentProbeLocalProxyRuntimeContext()
+	runtimeContext := currentprobeLocalRouteRuntimeContext()
 	if mode == "proxy" && strings.TrimSpace(runtimeContext.ControllerBaseURL) == "" {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "controller base url is empty"})
 		return
@@ -3178,7 +2242,7 @@ func probeLocalSystemChainAuthBlacklistHandler(w http.ResponseWriter, r *http.Re
 			"content": probeChainAuthBlacklistContent(),
 		})
 	case http.MethodPost:
-		body := http.MaxBytesReader(w, r.Body, probeLocalProxyReadBodyMaxLen)
+		body := http.MaxBytesReader(w, r.Body, probeLocalRouteReadBodyMaxLen)
 		defer body.Close()
 		decoder := json.NewDecoder(body)
 		decoder.DisallowUnknownFields()
@@ -3434,7 +2498,6 @@ func probeLocalShellStreamHandler(w http.ResponseWriter, r *http.Request) {
 
 func prepareProbeLocalProcessRestart() {
 	logProbeInfof("probe local restart preparing: closing listeners")
-	stopProbeLocalProxyMonitor()
 	_ = stopProbeLocalTUNDataPlane()
 	stoppedChains := stopAllProbeChainRuntimes("process restart")
 	if stoppedChains > 0 {
@@ -3640,23 +2703,20 @@ func resetProbeLocalAuthManagerForTest() {
 }
 
 func resetProbeLocalControlStateForTest() {
-	resetProbeLocalProxyMonitorForTest()
 	clearProbeLocalTUNInstallObservation()
-	resetProbeLocalProxyViewGroupRuntimeSnapshots()
-	probeLocalProxyStatusRefreshState.mu.Lock()
-	probeLocalProxyStatusRefreshState.running = false
-	probeLocalProxyStatusRefreshState.lastStartedAt = ""
-	probeLocalProxyStatusRefreshState.lastFinishedAt = ""
-	probeLocalProxyStatusRefreshState.lastError = ""
-	probeLocalProxyStatusRefreshState.mu.Unlock()
+	probeLocalConsoleRefreshState.mu.Lock()
+	probeLocalConsoleRefreshState.running = false
+	probeLocalConsoleRefreshState.lastStartedAt = ""
+	probeLocalConsoleRefreshState.lastFinishedAt = ""
+	probeLocalConsoleRefreshState.lastError = ""
+	probeLocalConsoleRefreshState.mu.Unlock()
 	probeLocalControl = newProbeLocalControlManager()
 }
 
-func resetProbeLocalProxyHooksForTest() {
-	probeLocalVNetFeatureEnabled = func() bool { return false }
+func resetprobeLocalRouteHooksForTest() {
 	probeLocalTUNLinkFeatureEnabled = func() bool { return false }
 	probeLocalLookupIPv4ForBypass = lookupProbeLocalIPv4ForBypass
-	probeLocalProxyRelaySpeedDebugFetch = probeChainRelayFetchSpeedDebugDefault
+	probeLocalRouteRelaySpeedDebugFetch = probeChainRelayFetchSpeedDebugDefault
 	probeLocalStartCFIPOptimizeTask = func(fn func()) { go fn() }
 }
 
@@ -3677,16 +2737,16 @@ func resetProbeLocalUpgradeHooksForTest() {
 	resetProbeLocalUpgradeRuntimeStateForTest()
 }
 
-func setProbeLocalProxyRuntimeContext(identity nodeIdentity, controllerBaseURL string) {
+func setprobeLocalRouteRuntimeContext(identity nodeIdentity, controllerBaseURL string) {
 	probeLocalRuntimeState.mu.Lock()
-	probeLocalRuntimeState.context = probeLocalProxyRuntimeContext{
+	probeLocalRuntimeState.context = probeLocalRouteRuntimeContext{
 		Identity:          identity,
 		ControllerBaseURL: strings.TrimSpace(controllerBaseURL),
 	}
 	probeLocalRuntimeState.mu.Unlock()
 }
 
-func currentProbeLocalProxyRuntimeContext() probeLocalProxyRuntimeContext {
+func currentprobeLocalRouteRuntimeContext() probeLocalRouteRuntimeContext {
 	probeLocalRuntimeState.mu.RLock()
 	defer probeLocalRuntimeState.mu.RUnlock()
 	return probeLocalRuntimeState.context

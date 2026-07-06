@@ -1034,7 +1034,7 @@ func TestWrapProbeChainRelayDialErrorForWebSocketH3UDPSocketResource(t *testing.
 		t.Fatalf("expected wrapped error")
 	}
 	text := err.Error()
-	if !strings.Contains(text, "websocket-h3 udp socket unavailable") || !strings.Contains(text, "each_proxy_group_uses_independent_quic_connection") {
+	if !strings.Contains(text, "websocket-h3 udp socket unavailable") || !strings.Contains(text, "each_route_uses_independent_quic_connection") {
 		t.Fatalf("unexpected wrapped error: %v", err)
 	}
 	if !errors.Is(err, baseErr) {

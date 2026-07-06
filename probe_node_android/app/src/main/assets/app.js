@@ -2,13 +2,11 @@ let saveFeedbackTimer = 0;
 let toastTimer = 0;
 let upgradeStatusTimer = 0;
 let bootErrorLogged = false;
-const proxyGroupExpanded = new Set();
 
 const pages = {
   status: ["状态", "当前 Android 节点配置与运行状态。"],
   link: ["链路", "查看链路入口，并执行真实 relay 延迟与测速测试。"],
-  proxy: ["VNet", "启动或停止 Android VNet 运行时。"],
-  settings: ["设置", "配置主控与节点密钥，并执行直连或 VNet 升级。"]
+  settings: ["设置", "配置主控与节点密钥，并执行直连升级。"]
 };
 
 window.CloudHelperUI = {
@@ -28,7 +26,7 @@ window.CloudHelperUI = {
     const button = byId("vpnSelfCheckButton");
     if (button) {
       button.disabled = false;
-      button.textContent = "VNet 自检";
+      button.textContent = "VPN 自检";
     }
     refreshConnectionsIfVisible();
     refreshLogsIfVisible();
@@ -109,30 +107,11 @@ function saveConfig(showFeedback) {
   }
 }
 
-function startCore() {
-  const result = window.CloudHelper.startProxy();
-  appendUILog("proxy", result);
-  setRuntimeStatus(`启动：${result}`);
-  refreshSummary();
-  refreshProxyGroups();
-  window.setTimeout(refreshProxyGroups, 1200);
-  window.setTimeout(refreshProxyGroups, 3000);
-}
-
-function stopCore() {
-  const result = window.CloudHelper.stopProxy();
-  appendUILog("proxy", result);
-  setRuntimeStatus(`停止：${result}`);
-  refreshSummary();
-  refreshProxyGroups();
-  window.setTimeout(refreshProxyGroups, 1200);
-}
-
 function checkUpgrade(mode) {
   if (!saveConfig(false)) {
     return;
   }
-  const modeLabel = mode === "proxy" ? "VNet" : "Direct";
+  const modeLabel = mode === "controller" ? "Controller" : "Direct";
   const text = `正在检查 ${modeLabel} 升级...`;
   setUpgradeButtonsDisabled(true);
   setUpgradeStatus(text);
@@ -165,60 +144,6 @@ function refreshLinks() {
   }
 }
 
-function refreshProxyGroups() {
-  const list = byId("proxyGroupList");
-  if (!list) {
-    return;
-  }
-  setRuntimeStatus("正在读取线路组...");
-  try {
-    renderProxyGroups(window.CloudHelper.proxyStatus(), window.CloudHelper.vpnStatus ? window.CloudHelper.vpnStatus() : "{}");
-  } catch (error) {
-    setRuntimeStatus(`读取线路组失败：${error && error.message ? error.message : error}`);
-  }
-}
-
-function renderProxyGroups(payload, vpnPayload) {
-  const data = parseJSON(payload);
-  const vpnData = parseJSON(vpnPayload || "{}");
-  const list = byId("proxyGroupList");
-  if (!list) {
-    return;
-  }
-  list.innerHTML = "";
-  if (!data.ok) {
-    renderProxyRuntimeStatus(data, vpnData);
-    return;
-  }
-  renderProxyRuntimeStatus(data, vpnData);
-  const groups = sortProxyGroups(Array.isArray(data.groups) ? data.groups : []);
-  const chains = Array.isArray(data.chains) ? data.chains : [];
-  if (!groups.length) {
-    const empty = document.createElement("div");
-    empty.className = "status-box";
-    empty.textContent = "暂无线路组配置，请先在设置中刷新配置。";
-    list.appendChild(empty);
-    return;
-  }
-  groups.forEach((group) => list.appendChild(renderProxyGroupItem(group, chains)));
-}
-
-function renderProxyRuntimeStatus(data, vpnData) {
-  const vpnRunning = isVPNRunning(vpnData);
-  const vpnStarting = isVPNStarting(vpnData);
-  const httpRunning = !!data.http_enabled;
-  const socksRunning = !!data.socks5_enabled;
-  const errors = [data.error, data.last_error, vpnData.last_error, vpnData.android_error].filter(Boolean).join("；");
-  const text = [
-    `VNet：${vpnRunning ? "运行中" : (vpnStarting ? "启动中" : "未启动")}`,
-    vpnData.android_message || "",
-    `HTTP：${httpRunning ? data.http_addr || "运行中" : "未启动"}`,
-    `SOCKS5：${socksRunning ? data.socks5_addr || "运行中" : "未启动"}`,
-    errors ? `错误：${errors}` : ""
-  ].filter(Boolean).join("；");
-  setRuntimeStatus(text);
-}
-
 function isVPNRunning(data) {
   if (!data) {
     return false;
@@ -231,161 +156,6 @@ function isVPNRunning(data) {
 
 function isVPNStarting(data) {
   return !!(data && (data.android_starting || data.status === "starting" || data.android_phase === "data_plane_pending" || data.android_phase === "start_data_plane"));
-}
-
-function renderProxyGroupItem(group, chains) {
-  const item = document.createElement("article");
-  item.className = "proxy-group-item";
-  const groupKey = group.group || "fallback";
-  item.dataset.group = groupKey;
-  const expanded = proxyGroupExpanded.has(proxyGroupStorageKey(groupKey));
-
-  const header = document.createElement("button");
-  header.className = "proxy-group-header";
-  header.type = "button";
-  header.setAttribute("aria-expanded", expanded ? "true" : "false");
-  header.onclick = () => toggleProxyGroup(groupKey);
-
-  const heading = document.createElement("span");
-  heading.className = "proxy-group-heading";
-  const title = document.createElement("span");
-  title.className = "link-title";
-  title.textContent = groupKey;
-
-  const meta = document.createElement("span");
-  meta.className = "link-meta";
-  meta.textContent = `当前：${formatProxyAction(group.action)}${group.selected_chain_id ? ` · ${chainNameById(chains, group.selected_chain_id)}` : ""}`;
-  heading.append(title, meta);
-
-  const toggle = document.createElement("span");
-  toggle.className = "proxy-group-toggle";
-  toggle.textContent = expanded ? "收起" : "展开";
-  header.append(heading, toggle);
-
-  const result = document.createElement("div");
-  result.className = "link-result";
-  result.textContent = "点击选项立即生效";
-
-  const options = document.createElement("div");
-  options.className = "proxy-option-grid";
-  options.appendChild(renderProxyOption(item, group, "direct", "", "直连", "不走链路"));
-  chains.forEach((entry) => {
-    const id = entry.chain_id || entry.client_entry_id || "";
-    if (!id) {
-      return;
-    }
-    options.appendChild(renderProxyOption(item, group, "tunnel", id, entry.name || id, entry.relay_chain_id ? `Relay ${entry.relay_chain_id}` : id));
-  });
-  options.appendChild(renderProxyOption(item, group, "reject", "", "拒绝", "阻断命中流量"));
-
-  const body = document.createElement("div");
-  body.className = "proxy-group-body";
-  body.hidden = !expanded;
-  body.append(options, result);
-
-  item.append(header, body);
-  return item;
-}
-
-function sortProxyGroups(groups) {
-  return groups.slice().sort((left, right) => {
-    const leftFallback = String(left.group || "fallback").toLowerCase() === "fallback";
-    const rightFallback = String(right.group || "fallback").toLowerCase() === "fallback";
-    if (leftFallback === rightFallback) {
-      return 0;
-    }
-    return leftFallback ? 1 : -1;
-  });
-}
-
-function toggleProxyGroup(group) {
-  const key = proxyGroupStorageKey(group);
-  if (proxyGroupExpanded.has(key)) {
-    proxyGroupExpanded.delete(key);
-  } else {
-    proxyGroupExpanded.add(key);
-  }
-  refreshProxyGroups();
-}
-
-function proxyGroupStorageKey(group) {
-  return String(group || "fallback").trim().toLowerCase() || "fallback";
-}
-
-function renderProxyOption(panel, group, action, selectedChainId, label, subLabel) {
-  const currentAction = (group.action || "direct").toLowerCase();
-  const currentChain = String(group.selected_chain_id || "").trim().toLowerCase();
-  const optionChain = String(selectedChainId || "").trim().toLowerCase();
-  const active = currentAction === action && (action !== "tunnel" || currentChain === optionChain);
-  const button = document.createElement("button");
-  button.className = "proxy-option";
-  button.classList.toggle("active", active);
-  button.type = "button";
-  button.onclick = () => saveProxyGroup(group.group || "fallback", action, selectedChainId || "", panel);
-
-  const mark = document.createElement("span");
-  mark.className = "proxy-radio";
-  const text = document.createElement("span");
-  text.className = "proxy-option-text";
-  const main = document.createElement("span");
-  main.className = "proxy-option-main";
-  main.textContent = label;
-  const sub = document.createElement("span");
-  sub.className = "proxy-option-sub";
-  sub.textContent = subLabel || "";
-  text.append(main, sub);
-  button.append(mark, text);
-  return button;
-}
-
-function saveProxyGroup(group, action, selectedChainId, item) {
-  const result = item ? item.querySelector(".link-result") : null;
-  if (result) {
-    result.textContent = "正在保存...";
-    result.classList.remove("error");
-  }
-  if (action === "tunnel" && !selectedChainId) {
-    if (result) {
-      result.textContent = "请选择链路";
-      result.classList.add("error");
-    }
-    return;
-  }
-  const payload = parseJSON(window.CloudHelper.proxySetGroup(group, action, selectedChainId || ""));
-  if (!payload.ok) {
-    if (result) {
-      result.textContent = payload.error || "保存失败";
-      result.classList.add("error");
-    }
-    return;
-  }
-  if (result) {
-    result.textContent = "已保存";
-  }
-  appendUILog("proxy", `线路组已保存：${group} -> ${formatProxyAction(action)} ${selectedChainId || ""}`.trim());
-  refreshProxyGroups();
-}
-
-function formatProxyAction(action) {
-  switch ((action || "direct").toLowerCase()) {
-    case "tunnel":
-      return "链路";
-    case "reject":
-      return "拒绝";
-    default:
-      return "直连";
-  }
-}
-
-function chainNameById(chains, id) {
-  const clean = String(id || "").trim().toLowerCase();
-  const item = chains.find((entry) => {
-    return [entry.chain_id, entry.client_entry_id, entry.relay_chain_id].some((value) => String(value || "").trim().toLowerCase() === clean);
-  });
-  if (!item) {
-    return id;
-  }
-  return item.name || item.chain_id || id;
 }
 
 function runLinkLatency(chainId) {
@@ -843,42 +613,39 @@ function refreshConnections() {
     return;
   }
   try {
-    const proxyData = parseJSON(window.CloudHelper.proxyStatus ? window.CloudHelper.proxyStatus() : "{}");
     const vpnData = parseJSON(window.CloudHelper.vpnStatus ? window.CloudHelper.vpnStatus() : "{}");
-    renderConnections(proxyData, vpnData);
+    renderConnections(vpnData);
   } catch (error) {
     setText("connectionStatus", `读取连接失败：${error && error.message ? error.message : error}`);
   }
 }
 
-function renderConnections(proxyData, vpnData) {
+function renderConnections(vpnData) {
   const list = byId("connectionList");
   if (!list) {
     return;
   }
   list.innerHTML = "";
-  const connectionData = proxyData.connections || {};
+  const connectionData = vpnData.connections || {};
   const active = Array.isArray(connectionData.active) ? connectionData.active : [];
   const completed = Array.isArray(connectionData.completed) ? connectionData.completed : [];
   const failures = Array.isArray(connectionData.failures) ? connectionData.failures : [];
   const runtimeText = [
-    isVPNRunning(vpnData) ? "VNet 运行中" : (isVPNStarting(vpnData) ? "VNet 启动中" : "VNet 未启动"),
-    proxyData.http_enabled ? `HTTP ${proxyData.http_addr || ""}`.trim() : "HTTP 未启动",
-    proxyData.socks5_enabled ? `SOCKS5 ${proxyData.socks5_addr || ""}`.trim() : "SOCKS5 未启动",
+    isVPNRunning(vpnData) ? "VPN 运行中" : (isVPNStarting(vpnData) ? "VPN 启动中" : "VPN 未启动"),
     connectionData.fetched_at ? `刷新 ${formatCompactTime(connectionData.fetched_at)}` : ""
   ].filter(Boolean).join("；");
   setText("connectionStatus", `${runtimeText}；活动 ${active.length}；完成 ${completed.length}；失败 ${failures.length}`);
-  if (!proxyData.ok) {
+  if (!vpnData.ok) {
     const item = document.createElement("div");
     item.className = "status-box";
-    item.textContent = proxyData.error || "VNet 状态不可用。";
+    item.textContent = vpnData.error || "VPN 状态不可用。";
     list.appendChild(item);
     return;
   }
   if (!active.length && !completed.length && !failures.length) {
     const empty = document.createElement("div");
     empty.className = "status-box";
-    empty.textContent = "暂无活动 VNet 连接。打开 VNet 或本地 HTTP/SOCKS 通道后，新连接会显示在这里。";
+    empty.textContent = "暂无活动 VPN 连接。";
     list.appendChild(empty);
     return;
   }
@@ -1084,15 +851,15 @@ function runVPNSelfCheck() {
     button.disabled = true;
     button.textContent = "检测中";
   }
-  setStatus("正在执行 VNet 自检...");
+  setStatus("正在执行 VPN 自检...");
   try {
-    const message = window.CloudHelper.vpnSelfCheck ? window.CloudHelper.vpnSelfCheck() : "VNet 自检不可用";
-    setStatus(message || "VNet 自检已开始");
+    const message = window.CloudHelper.vpnSelfCheck ? window.CloudHelper.vpnSelfCheck() : "VPN 自检不可用";
+    setStatus(message || "VPN 自检已开始");
   } catch (error) {
-    setStatus(`VNet 自检失败：${error && error.message ? error.message : error}`);
+    setStatus(`VPN 自检失败：${error && error.message ? error.message : error}`);
     if (button) {
       button.disabled = false;
-      button.textContent = "VNet 自检";
+      button.textContent = "VPN 自检";
     }
   }
 }
@@ -1219,7 +986,7 @@ function renderUpgradeStatus(data) {
 }
 
 function setUpgradeButtonsDisabled(disabled) {
-  ["directUpgradeButton", "proxyUpgradeButton"].forEach((id) => {
+  ["directUpgradeButton"].forEach((id) => {
     const button = byId(id);
     if (button) {
       button.disabled = Boolean(disabled);
@@ -1355,9 +1122,6 @@ function initPage() {
   }
   if (page === "link") {
     refreshLinks();
-  }
-  if (page === "proxy") {
-    refreshProxyGroups();
   }
   if (page === "settings") {
     setupSettingsTabs();

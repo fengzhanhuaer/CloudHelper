@@ -8,7 +8,7 @@ func TestBuildProbeSubstreamMonitorItemFiltersLegacyExplicitProxy(t *testing.T) 
 		Status:      "active",
 		TrackingID:  "track-explicit-1",
 		Scope:       "explicit",
-		Side:        "socks5",
+		Side:        "local",
 		FlowID:      "explicit-flow",
 		Target:      "example.com:443",
 		RouteTarget: "203.0.113.10:443",
@@ -18,7 +18,7 @@ func TestBuildProbeSubstreamMonitorItemFiltersLegacyExplicitProxy(t *testing.T) 
 	}
 
 	if _, ok := buildProbeSubstreamMonitorItem(item); ok {
-		t.Fatal("legacy explicit proxy item should not be rendered as a substream")
+		t.Fatal("legacy explicit route item should not be rendered as a substream")
 	}
 }
 

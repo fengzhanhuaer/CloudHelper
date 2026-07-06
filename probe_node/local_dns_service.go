@@ -74,9 +74,8 @@ type probeLocalDNSUnifiedRecordView struct {
 }
 
 type probeLocalDNSUpstreamCandidate struct {
-	Kind     string
-	Address  string
-	ViaProxy bool
+	Kind    string
+	Address string
 }
 
 type probeLocalDNSApplicationResponse struct {
@@ -115,9 +114,7 @@ type probeLocalDNSCachePersistFile struct {
 	Records []probeLocalDNSCachePersistRecord
 }
 
-// probeLocalDNSRouteDecision is transient routing state.
-// Unified DNS records only persist domain/group/real_ips/fake_ip; action and
-// selected_chain_id must always be resolved live from group runtime / proxy_state.
+// probeLocalDNSRouteDecision is transient routing state for DNS handling.
 type probeLocalDNSRouteDecision struct {
 	Group           string
 	Action          string
@@ -211,10 +208,6 @@ func defaultProbeLocalDoHServers() []string {
 	return []string{"https://dns.alidns.com/dns-query", "https://doh.pub/dns-query"}
 }
 
-func defaultProbeLocalDoHProxyServers() []string {
-	return []string{"https://cloudflare-dns.com/dns-query", "https://dns.google/dns-query"}
-}
-
 func ensureProbeLocalDNSCacheLoaded() {
 	probeLocalDNSState.mu.Lock()
 	alreadyLoaded := probeLocalDNSState.cacheLoaded
@@ -236,7 +229,7 @@ func ensureProbeLocalDNSCacheLoaded() {
 	}
 	hosts, hostErr := probeLocalDNSLoadHostMappings()
 	if hostErr != nil {
-		logProbeWarnf("probe local dns proxy_host load failed: %v", hostErr)
+		logProbeWarnf("probe local dns host mapping load failed: %v", hostErr)
 	}
 	now := probeLocalDNSNow().UTC()
 	probeLocalDNSState.mu.Lock()
@@ -660,7 +653,7 @@ func resolveProbeLocalDNSApplicationUpstreamResponse(packet []byte, domain strin
 		var err error
 		switch candidate.Kind {
 		case "doh":
-			response, err = queryProbeLocalDNSViaDoH(candidate.Address, packet, decision, candidate.ViaProxy)
+			response, err = queryProbeLocalDNSViaDoH(candidate.Address, packet)
 		case "dot":
 			response, err = queryProbeLocalDNSViaDoT(candidate.Address, packet)
 		case "dns":
@@ -741,7 +734,7 @@ func resolveProbeLocalDNSRealIPv4sFromUpstreams(domain string, decision probeLoc
 		var queryErr error
 		switch candidate.Kind {
 		case "doh":
-			response, queryErr = queryProbeLocalDNSViaDoH(candidate.Address, query, decision, candidate.ViaProxy)
+			response, queryErr = queryProbeLocalDNSViaDoH(candidate.Address, query)
 		case "dot":
 			response, queryErr = queryProbeLocalDNSViaDoT(candidate.Address, query)
 		case "dns":
@@ -771,11 +764,7 @@ func currentProbeLocalDNSUpstreamCandidatesForDecision(decision probeLocalDNSRou
 }
 
 func currentProbeLocalDNSUpstreamCandidatesForRouteDecision(decision probeLocalDNSRouteDecision) []probeLocalDNSUpstreamCandidate {
-	cfg, err := loadProbeLocalProxyGroupFile()
-	if err != nil {
-		logProbeWarnf("load proxy_group for dns upstream failed, use defaults: %v", err)
-		cfg = defaultProbeLocalProxyGroupFile()
-	}
+	_ = decision
 	candidates := make([]probeLocalDNSUpstreamCandidate, 0, 20)
 	seen := make(map[string]struct{}, 16)
 	appendDoH := func(items []string) {
@@ -793,23 +782,6 @@ func currentProbeLocalDNSUpstreamCandidatesForRouteDecision(decision probeLocalD
 			}
 			seen[key] = struct{}{}
 			candidates = append(candidates, probeLocalDNSUpstreamCandidate{Kind: "doh", Address: normalized})
-		}
-	}
-	appendProxyDoH := func(items []string) {
-		for _, item := range items {
-			normalized, ok := normalizeProbeLocalDoHURL(item)
-			if !ok {
-				continue
-			}
-			if !shouldIncludeProbeLocalDNSUpstreamCandidate("doh", normalized) {
-				continue
-			}
-			key := "doh_proxy|" + normalized
-			if _, exists := seen[key]; exists {
-				continue
-			}
-			seen[key] = struct{}{}
-			candidates = append(candidates, probeLocalDNSUpstreamCandidate{Kind: "doh", Address: normalized, ViaProxy: true})
 		}
 	}
 	appendHostPort := func(kind string, items []string, defaultPort string) {
@@ -830,13 +802,9 @@ func currentProbeLocalDNSUpstreamCandidatesForRouteDecision(decision probeLocalD
 		}
 	}
 
-	useProxyFirst := strings.EqualFold(strings.TrimSpace(decision.Action), "tunnel") && !strings.EqualFold(strings.TrimSpace(decision.Group), "fallback")
-	if useProxyFirst {
-		appendProxyDoH(cfg.DoHProxyServers)
-	}
-	appendDoH(cfg.DoHServers)
-	appendHostPort("dot", cfg.DoTServers, "853")
-	appendHostPort("dns", cfg.DNSServers, "53")
+	appendDoH(defaultProbeLocalDoHServers())
+	appendHostPort("dot", defaultProbeLocalDoTServers(), "853")
+	appendHostPort("dns", defaultProbeLocalDNSServers(), "53")
 	appendHostPort("dns", probeLocalDNSSystemServers(), "53")
 	return candidates
 }
@@ -905,13 +873,10 @@ func (c *probeLocalDNSProxyDialConn) Close() error {
 	return c.Conn.Close()
 }
 
-func queryProbeLocalDNSViaDoH(endpoint string, packet []byte, decision probeLocalDNSRouteDecision, viaProxy bool) ([]byte, error) {
+func queryProbeLocalDNSViaDoH(endpoint string, packet []byte) ([]byte, error) {
 	cleanEndpoint, ok := normalizeProbeLocalDoHURL(endpoint)
 	if !ok {
 		return nil, fmt.Errorf("invalid doh endpoint: %q", endpoint)
-	}
-	if viaProxy {
-		return queryProbeLocalDNSViaDoHOverProxy(cleanEndpoint, packet, decision)
 	}
 	dialTarget, serverName, transportEndpoint, err := resolveProbeLocalDoHDialTarget(cleanEndpoint)
 	if err != nil {
@@ -956,11 +921,6 @@ func queryProbeLocalDNSViaDoH(endpoint string, packet []byte, decision probeLoca
 		return nil, errors.New("doh upstream returned empty payload")
 	}
 	return payload, nil
-}
-
-func queryProbeLocalDNSViaDoHOverProxy(endpoint string, packet []byte, decision probeLocalDNSRouteDecision) ([]byte, error) {
-	_, _, _ = endpoint, packet, decision
-	return nil, errProbeLocalLegacyTunnelRouteRemoved
 }
 
 func queryProbeLocalDNSViaDoT(address string, packet []byte) ([]byte, error) {
@@ -1277,33 +1237,6 @@ func resolveProbeLocalDoHDialTarget(endpoint string) (dialTarget string, serverN
 	return net.JoinHostPort(resolvedIP, strconv.Itoa(portNum)), host, transportEndpoint, nil
 }
 
-func resolveProbeLocalDoHProxyTransportEndpoint(endpoint string) (transportEndpoint string, serverName string, err error) {
-	parsed, parseErr := url.Parse(strings.TrimSpace(endpoint))
-	if parseErr != nil {
-		return "", "", parseErr
-	}
-	host := strings.TrimSpace(parsed.Hostname())
-	if host == "" {
-		return "", "", errors.New("doh proxy upstream host is empty")
-	}
-	port := strings.TrimSpace(parsed.Port())
-	if port == "" {
-		if strings.EqualFold(strings.TrimSpace(parsed.Scheme), "http") {
-			port = "80"
-		} else {
-			port = "443"
-		}
-	}
-	portNum, convErr := strconv.Atoi(port)
-	if convErr != nil || portNum <= 0 || portNum > 65535 {
-		return "", "", fmt.Errorf("invalid doh proxy upstream port: %s", port)
-	}
-	if net.ParseIP(host) == nil {
-		serverName = host
-	}
-	return net.JoinHostPort(host, strconv.Itoa(portNum)), serverName, nil
-}
-
 func resolveProbeLocalDNSUpstreamHostIPv4(host string) (string, error) {
 	ips, err := resolveProbeLocalDNSIPv4s(host)
 	if err != nil {
@@ -1368,10 +1301,6 @@ func resolveProbeLocalDNSIPv4s(host string) ([]string, error) {
 }
 
 func currentProbeLocalDNSBootstrapServerTargets() []string {
-	cfg, err := loadProbeLocalProxyGroupFile()
-	if err != nil {
-		cfg = defaultProbeLocalProxyGroupFile()
-	}
 	seen := make(map[string]struct{}, 8)
 	out := make([]string, 0, 8)
 	appendServer := func(items []string) {
@@ -1387,7 +1316,7 @@ func currentProbeLocalDNSBootstrapServerTargets() []string {
 			out = append(out, target)
 		}
 	}
-	appendServer(cfg.DNSServers)
+	appendServer(defaultProbeLocalDNSServers())
 	appendServer(probeLocalDNSSystemServers())
 	return out
 }
@@ -1602,40 +1531,8 @@ func normalizeProbeLocalDoHURLList(items []string, fallback []string) []string {
 }
 
 func resolveProbeLocalDNSRouteDecision(domain string) probeLocalDNSRouteDecision {
-	return resolveProbeLocalProxyRouteDecisionByDomain(domain)
-}
-
-func probeLocalDNSDomainMatchesRules(domain string, rules []string) bool {
-	cleanDomain := strings.TrimSpace(strings.ToLower(strings.Trim(domain, ".")))
-	if cleanDomain == "" {
-		return false
-	}
-	for _, rule := range rules {
-		key, value, ok := splitProbeLocalProxyRule(rule)
-		if !ok {
-			continue
-		}
-		value = strings.ToLower(value)
-		switch key {
-		case "domain_suffix":
-			if cleanDomain == value || strings.HasSuffix(cleanDomain, "."+value) {
-				return true
-			}
-		case "domain_keyword":
-			if strings.Contains(cleanDomain, value) {
-				return true
-			}
-		case "domain_prefix":
-			if strings.HasPrefix(cleanDomain, value) {
-				return true
-			}
-		case "domain":
-			if cleanDomain == value {
-				return true
-			}
-		}
-	}
-	return false
+	_ = domain
+	return probeLocalDNSRouteDecision{Group: "fallback", Action: "direct"}
 }
 
 func shouldUseProbeLocalDNSFakeIP(domain string, qType dnsmessage.Type, decision probeLocalDNSRouteDecision) bool {
@@ -1726,11 +1623,7 @@ func allocateProbeLocalDNSFakeIP(domain string, decision probeLocalDNSRouteDecis
 }
 
 func ensureProbeLocalDNSFakePoolLocked() {
-	cfg, err := loadProbeLocalProxyGroupFile()
-	if err != nil {
-		cfg = defaultProbeLocalProxyGroupFile()
-	}
-	cidr := strings.TrimSpace(cfg.FakeIPCIDR)
+	cidr := strings.TrimSpace(currentProbeVirtualRouterFakeIPCIDR())
 	if cidr == "" {
 		cidr = probeLocalFakeIPDefaultCIDR
 	}
@@ -1788,21 +1681,9 @@ func rebuildProbeLocalDNSRuntimeIndexesLocked(now time.Time) {
 }
 
 func reconcileProbeLocalDNSRecordsForProxyRulesLocked(now time.Time) {
-	cfg, err := loadProbeLocalProxyGroupFile()
-	if err != nil {
-		cfg = defaultProbeLocalProxyGroupFile()
-	}
-	fakeCIDR := strings.TrimSpace(cfg.FakeIPCIDR)
+	fakeCIDR := strings.TrimSpace(currentProbeVirtualRouterFakeIPCIDR())
 	if fakeCIDR == "" {
 		fakeCIDR = probeLocalFakeIPDefaultCIDR
-	}
-	prevCIDR := strings.TrimSpace(probeLocalDNSState.fakeCIDR)
-	cidrChanged := !strings.EqualFold(prevCIDR, fakeCIDR)
-	previousFakeByDomain := make(map[string]string, len(probeLocalDNSState.cache))
-	for domain, record := range probeLocalDNSState.cache {
-		if fakeIP := strings.TrimSpace(record.FakeIP); fakeIP != "" {
-			previousFakeByDomain[domain] = fakeIP
-		}
 	}
 	probeLocalDNSState.fakeCIDR = fakeCIDR
 	probeLocalDNSState.fakeCursor = 0
@@ -1817,50 +1698,8 @@ func reconcileProbeLocalDNSRecordsForProxyRulesLocked(now time.Time) {
 	probeLocalDNSState.routeHints = make(map[string]probeLocalDNSRouteHintEntry)
 	probeLocalDNSState.routeIPHints = make(map[string]probeLocalDNSRouteHintEntry)
 	for domain, record := range probeLocalDNSState.cache {
-		decision := resolveProbeLocalProxyRouteDecisionByDomain(domain)
-		previousGroup := strings.TrimSpace(record.Group)
-		record.Group = strings.TrimSpace(decision.Group)
-		keepFake := !cidrChanged && strings.EqualFold(previousGroup, strings.TrimSpace(record.Group))
-		if keepFake {
-			fakeIP := strings.TrimSpace(previousFakeByDomain[domain])
-			if fakeIP != "" && net.ParseIP(fakeIP) != nil {
-				record.FakeIP = fakeIP
-				probeLocalDNSState.fakeDomainToIP[domain] = fakeIP
-				probeLocalDNSState.fakeIPToEntry[fakeIP] = probeLocalDNSFakeIPRuntimeEntry{
-					Domain:    domain,
-					Group:     record.Group,
-					ExpiresAt: now.Add(probeLocalDNSCacheTTL),
-				}
-			} else {
-				record.FakeIP = ""
-			}
-		} else if strings.EqualFold(strings.TrimSpace(decision.Action), "tunnel") && !strings.EqualFold(strings.TrimSpace(record.Group), "fallback") {
-			fakeIP := nextProbeLocalDNSFakeIPLocked(now)
-			if fakeIP != "" {
-				record.FakeIP = fakeIP
-				probeLocalDNSState.fakeDomainToIP[domain] = fakeIP
-				probeLocalDNSState.fakeIPToEntry[fakeIP] = probeLocalDNSFakeIPRuntimeEntry{
-					Domain:    domain,
-					Group:     record.Group,
-					ExpiresAt: now.Add(probeLocalDNSCacheTTL),
-				}
-			} else {
-				record.FakeIP = ""
-			}
-		} else {
-			record.FakeIP = ""
-		}
-		if len(record.RealIPs) > 0 && !strings.EqualFold(strings.TrimSpace(record.Group), "fallback") {
-			storeProbeLocalDNSRouteHintLocked(domain, record.Group, now)
-			for _, ip := range record.RealIPs {
-				probeLocalDNSState.routeIPHints[ip] = probeLocalDNSRouteHintEntry{
-					Domain:    domain,
-					IP:        ip,
-					Group:     record.Group,
-					ExpiresAt: now.Add(probeLocalDNSCacheTTL),
-				}
-			}
-		}
+		record.Group = "fallback"
+		record.FakeIP = ""
 		record.UpdatedAt = now
 		probeLocalDNSState.cache[domain] = record
 	}
@@ -1889,22 +1728,7 @@ func rebuildProbeLocalDNSRouteHintsLocked(now time.Time) {
 	probeLocalDNSState.routeHints = make(map[string]probeLocalDNSRouteHintEntry)
 	probeLocalDNSState.routeIPHints = make(map[string]probeLocalDNSRouteHintEntry)
 	for _, record := range probeLocalDNSState.cache {
-		if len(record.RealIPs) == 0 {
-			continue
-		}
-		decision := resolveProbeLocalProxyRouteDecisionByDomain(record.Domain)
-		if strings.EqualFold(strings.TrimSpace(decision.Group), "fallback") {
-			continue
-		}
-		storeProbeLocalDNSRouteHintLocked(record.Domain, decision.Group, now)
-		for _, ip := range record.RealIPs {
-			probeLocalDNSState.routeIPHints[ip] = probeLocalDNSRouteHintEntry{
-				Domain:    record.Domain,
-				IP:        ip,
-				Group:     strings.TrimSpace(decision.Group),
-				ExpiresAt: now.Add(probeLocalDNSCacheTTL),
-			}
-		}
+		_ = record
 	}
 }
 
@@ -2030,12 +1854,8 @@ func storeProbeLocalDNSRouteHints(domain string, ips []string, decision probeLoc
 }
 
 func lookupProbeLocalDNSRouteHintByIP(ipText string) (probeLocalDNSRouteDecision, bool) {
-	entry, ok := lookupProbeLocalDNSRouteHintEntryByIP(ipText)
-	if !ok {
-		return probeLocalDNSRouteDecision{}, false
-	}
-	decision := resolveProbeLocalProxyRouteDecisionByDomain(entry.Domain)
-	return decision, true
+	_ = ipText
+	return probeLocalDNSRouteDecision{}, false
 }
 
 func lookupProbeLocalDNSRouteHintEntryByIP(ipText string) (probeLocalDNSRouteHintEntry, bool) {
@@ -2063,15 +1883,12 @@ func queryProbeLocalDNSFakeIPEntries() []probeLocalDNSFakeIPEntry {
 	pruneProbeLocalDNSFakeEntriesLocked(now)
 	out := make([]probeLocalDNSFakeIPEntry, 0, len(probeLocalDNSState.fakeIPToEntry))
 	for ip, entry := range probeLocalDNSState.fakeIPToEntry {
-		decision := resolveProbeLocalProxyRouteDecisionByDomain(entry.Domain)
 		out = append(out, probeLocalDNSFakeIPEntry{
-			Domain:          entry.Domain,
-			FakeIP:          ip,
-			Group:           firstNonEmpty(strings.TrimSpace(entry.Group), strings.TrimSpace(decision.Group)),
-			Action:          decision.Action,
-			SelectedChainID: firstNonEmpty(strings.TrimSpace(decision.SelectedChainID), mustProbeLocalSelectedChainIDFromLegacy(decision.TunnelNodeID)),
-			TunnelNodeID:    decision.TunnelNodeID,
-			ExpiresAt:       entry.ExpiresAt.UTC().Format(time.RFC3339),
+			Domain:    entry.Domain,
+			FakeIP:    ip,
+			Group:     firstNonEmpty(strings.TrimSpace(entry.Group), "fallback"),
+			Action:    "direct",
+			ExpiresAt: entry.ExpiresAt.UTC().Format(time.RFC3339),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Domain < out[j].Domain })
@@ -2092,15 +1909,12 @@ func lookupProbeLocalDNSFakeIPEntry(ip string) (probeLocalDNSFakeIPEntry, bool) 
 	if !ok {
 		return probeLocalDNSFakeIPEntry{}, false
 	}
-	decision := resolveProbeLocalProxyRouteDecisionByDomain(entry.Domain)
 	return probeLocalDNSFakeIPEntry{
-		Domain:          entry.Domain,
-		FakeIP:          cleanIP,
-		Group:           firstNonEmpty(strings.TrimSpace(entry.Group), strings.TrimSpace(decision.Group)),
-		Action:          decision.Action,
-		SelectedChainID: firstNonEmpty(strings.TrimSpace(decision.SelectedChainID), mustProbeLocalSelectedChainIDFromLegacy(decision.TunnelNodeID)),
-		TunnelNodeID:    decision.TunnelNodeID,
-		ExpiresAt:       entry.ExpiresAt.UTC().Format(time.RFC3339),
+		Domain:    entry.Domain,
+		FakeIP:    cleanIP,
+		Group:     firstNonEmpty(strings.TrimSpace(entry.Group), "fallback"),
+		Action:    "direct",
+		ExpiresAt: entry.ExpiresAt.UTC().Format(time.RFC3339),
 	}, true
 }
 
@@ -2215,8 +2029,7 @@ func queryProbeLocalDNSUnifiedRecords() []probeLocalDNSUnifiedRecordView {
 }
 
 func buildProbeLocalDNSUnifiedRecordView(entry probeLocalDNSUnifiedRecord) probeLocalDNSUnifiedRecordView {
-	decision := resolveProbeLocalProxyRouteDecisionByDomain(entry.Domain)
-	group := firstNonEmpty(strings.TrimSpace(entry.Group), strings.TrimSpace(decision.Group))
+	group := firstNonEmpty(strings.TrimSpace(entry.Group), "fallback")
 	view := probeLocalDNSUnifiedRecordView{
 		Domain:    entry.Domain,
 		Group:     group,
@@ -2225,15 +2038,7 @@ func buildProbeLocalDNSUnifiedRecordView(entry probeLocalDNSUnifiedRecord) probe
 		UpdatedAt: entry.UpdatedAt.UTC().Format(time.RFC3339),
 		ExpiresAt: entry.ExpiresAt.UTC().Format(time.RFC3339),
 	}
-	if view.FakeIP != "" {
-		view.Action = "tunnel"
-		view.SelectedChainID = firstNonEmpty(strings.TrimSpace(decision.SelectedChainID), mustProbeLocalSelectedChainIDFromLegacy(decision.TunnelNodeID))
-		view.TunnelNodeID = firstNonEmpty(strings.TrimSpace(decision.TunnelNodeID), formatProbeLocalLegacyTunnelNodeID(view.SelectedChainID))
-	} else {
-		view.Action = strings.TrimSpace(decision.Action)
-		view.SelectedChainID = firstNonEmpty(strings.TrimSpace(decision.SelectedChainID), mustProbeLocalSelectedChainIDFromLegacy(decision.TunnelNodeID))
-		view.TunnelNodeID = firstNonEmpty(strings.TrimSpace(decision.TunnelNodeID), formatProbeLocalLegacyTunnelNodeID(view.SelectedChainID))
-	}
+	view.Action = "direct"
 	return view
 }
 
@@ -2442,7 +2247,7 @@ func currentProbeLocalDNSStatus() probeLocalDNSStatus {
 	return status
 }
 
-func resetProbeLocalDNSRuntimeCachesForProxyGroupRefresh() {
+func resetProbeLocalDNSRuntimeCachesForRouteRefresh() {
 	ensureProbeLocalDNSCacheLoaded()
 	probeLocalDNSState.mu.Lock()
 	now := probeLocalDNSNow().UTC().Format(time.RFC3339)

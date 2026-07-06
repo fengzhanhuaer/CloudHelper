@@ -5,7 +5,6 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -25,7 +24,6 @@ import (
 )
 
 const defaultReportIntervalSec = 60
-const configRefreshTimeout = 20 * time.Second
 const androidLogMaxEntries = 300
 const mobileWebSocketWriteBatchBytes = 1024 * 1024
 const mobileWebSocketWriteQueueDepth = 64
@@ -78,22 +76,12 @@ type cpuSampler struct {
 }
 
 type configRefreshSummary struct {
-	ProxyGroupUpdated bool
-	SelfChains        int
-	ProxyEntries      int
-	ConfigDir         string
+	SelfChains   int
+	RouteEntries int
+	ConfigDir    string
 }
 
 var reportCPUSampler cpuSampler
-
-type proxyGroupBackupResponse struct {
-	OK            bool   `json:"ok"`
-	NodeID        string `json:"node_id"`
-	FileName      string `json:"file_name"`
-	ContentBase64 string `json:"content_base64"`
-	UpdatedAt     string `json:"updated_at"`
-	Error         string `json:"error"`
-}
 
 type chainLinkControlMessage struct {
 	Type              string `json:"type"`
@@ -184,11 +172,7 @@ func RefreshConfig(controllerURL string, nodeID string, nodeSecret string, confi
 	} else if applied > 0 {
 		androidLogStore.add("chain", "normal", fmt.Sprintf("applied android chain runtimes from config: count=%d", applied))
 	}
-	proxyGroupText := "未更新"
-	if summary.ProxyGroupUpdated {
-		proxyGroupText = "已更新"
-	}
-	return fmt.Sprintf("配置刷新完成：代理组=%s，本机链路=%d，代理入口=%d", proxyGroupText, summary.SelfChains, summary.ProxyEntries)
+	return fmt.Sprintf("配置刷新完成：本机链路=%d，路由入口=%d", summary.SelfChains, summary.RouteEntries)
 }
 
 func Stop() string {
@@ -256,8 +240,7 @@ func currentVersionLocked() string {
 }
 
 func refreshConfigFiles(controllerURL string, nodeID string, nodeSecret string, configDir string) (configRefreshSummary, error) {
-	baseURL, err := normalizeControllerBaseURL(controllerURL)
-	if err != nil {
+	if _, err := normalizeControllerBaseURL(controllerURL); err != nil {
 		return configRefreshSummary{}, err
 	}
 	nodeID = strings.TrimSpace(nodeID)
@@ -272,56 +255,7 @@ func refreshConfigFiles(controllerURL string, nodeID string, nodeSecret string, 
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		return configRefreshSummary{}, fmt.Errorf("create config dir: %w", err)
 	}
-
-	client := &http.Client{Timeout: configRefreshTimeout}
-	summary := configRefreshSummary{ConfigDir: configDir}
-	proxyGroupUpdated, err := refreshProxyGroupFile(client, baseURL, nodeID, nodeSecret, configDir)
-	if err != nil {
-		return summary, err
-	}
-	summary.ProxyGroupUpdated = proxyGroupUpdated
-
-	return summary, nil
-}
-
-func refreshProxyGroupFile(client *http.Client, baseURL string, nodeID string, nodeSecret string, configDir string) (bool, error) {
-	requestURL := strings.TrimRight(baseURL, "/") + "/api/probe/proxy_group/backup"
-	req, err := http.NewRequest(http.MethodGet, requestURL, nil)
-	if err != nil {
-		return false, err
-	}
-	applyAuthHeaders(req, nodeID, nodeSecret)
-	resp, err := client.Do(req)
-	if err != nil {
-		return false, fmt.Errorf("fetch proxy group: %w", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
-	if resp.StatusCode == http.StatusNotFound {
-		return false, nil
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return false, fmt.Errorf("fetch proxy group status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	var payload proxyGroupBackupResponse
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return false, fmt.Errorf("decode proxy group response: %w", err)
-	}
-	encoded := strings.TrimSpace(payload.ContentBase64)
-	if encoded == "" {
-		return false, nil
-	}
-	decoded, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		return false, fmt.Errorf("decode proxy group content: %w", err)
-	}
-	if !json.Valid(decoded) {
-		return false, errors.New("proxy group content is not valid json")
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "proxy_group.json"), decoded, 0600); err != nil {
-		return false, fmt.Errorf("write proxy_group.json: %w", err)
-	}
-	return true, nil
+	return configRefreshSummary{ConfigDir: configDir}, nil
 }
 
 func writeJSONFile(path string, value any) error {
@@ -400,6 +334,17 @@ func parseControllerHostPort(controllerURL string) (string, string, bool) {
 		return "", "", false
 	}
 	return host, port, true
+}
+
+func normalizeDirectTargetHost(host string) string {
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	if host == "" {
+		return ""
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
+	}
+	return strings.ToLower(strings.Trim(host, "."))
 }
 
 func collectIPs() ([]string, []string) {

@@ -23,7 +23,6 @@ type probeConfigData struct {
 	ProbeSecrets           map[string]string                      `json:"probe_secrets"`
 	ProbeShellShortcuts    []probeShellShortcutRecord             `json:"probe_shell_shortcuts"`
 	DeletedProbeNodeNos    []int                                  `json:"deleted_probe_node_nos,omitempty"`
-	ProbeProxyGroupBackups map[string]probeProxyGroupBackupRecord `json:"probe_proxy_group_backups,omitempty"`
 	NetworkMonitorTasks    []probeNetworkMonitorTaskRecord        `json:"network_monitor_tasks,omitempty"`
 }
 
@@ -39,7 +38,6 @@ func initProbeStore() {
 			ProbeSecrets:           map[string]string{},
 			ProbeShellShortcuts:    []probeShellShortcutRecord{},
 			DeletedProbeNodeNos:    []int{},
-			ProbeProxyGroupBackups: map[string]probeProxyGroupBackupRecord{},
 			NetworkMonitorTasks:    []probeNetworkMonitorTaskRecord{},
 		},
 	}
@@ -67,7 +65,6 @@ func initProbeStore() {
 			ProbeStore.data.ProbeSecrets = secrets
 			ProbeStore.data.ProbeShellShortcuts = shortcuts
 			ProbeStore.data.DeletedProbeNodeNos = deletedNos
-			ProbeStore.data.ProbeProxyGroupBackups = normalizeProbeProxyGroupBackups(raw.ProbeProxyGroupBackups)
 			ProbeStore.data.NetworkMonitorTasks = normalizeProbeNetworkMonitorTasks(raw.NetworkMonitorTasks)
 		}
 	} else if os.IsNotExist(err) {
@@ -77,7 +74,6 @@ func initProbeStore() {
 		ProbeStore.data.ProbeSecrets = secrets
 		ProbeStore.data.ProbeShellShortcuts = shortcuts
 		ProbeStore.data.DeletedProbeNodeNos = deletedNos
-		ProbeStore.data.ProbeProxyGroupBackups = map[string]probeProxyGroupBackupRecord{}
 		ProbeStore.data.NetworkMonitorTasks = []probeNetworkMonitorTaskRecord{}
 		if saveErr := ProbeStore.Save(); saveErr != nil {
 			log.Fatalf("failed to initialize probe config file: %v", saveErr)

@@ -2050,7 +2050,7 @@ func wrapProbeChainRelayDialError(layer string, relayDialHost string, relayPort 
 		return err
 	}
 	return fmt.Errorf(
-		"probe relay websocket-h3 udp socket unavailable: relay=%s:%d note=each_proxy_group_uses_independent_quic_connection err=%w",
+		"probe relay websocket-h3 udp socket unavailable: relay=%s:%d note=each_route_uses_independent_quic_connection err=%w",
 		strings.TrimSpace(relayDialHost),
 		relayPort,
 		err,

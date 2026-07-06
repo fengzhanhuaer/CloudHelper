@@ -136,14 +136,7 @@
             <input id="virtualRouterEnabled" type="checkbox" />
             <span>
               <span class="check-title">虚拟路由</span><br />
-              <span class="hint">开启后接管系统流量；关闭时仅保留 Fake IP / 虚拟 IP 网段转发能力。</span>
-            </span>
-          </label>
-          <label class="check-row">
-            <input id="virtualDNSEnabled" type="checkbox" />
-            <span>
-              <span class="check-title">虚拟 DNS</span><br />
-              <span class="hint">开启后把系统 DNS 指向本机虚拟 DNS；关闭时恢复系统 DNS。</span>
+              <span class="hint">开启后同时启用虚拟路由与虚拟 DNS；关闭时恢复系统 DNS，并仅保留 Fake IP / 虚拟 IP 网段转发能力。</span>
             </span>
           </label>
         </div>
@@ -210,9 +203,8 @@
   <script>
     const messageEl = document.getElementById('message');
     const routerEnabledEl = document.getElementById('virtualRouterEnabled');
-    const dnsEnabledEl = document.getElementById('virtualDNSEnabled');
     const tunEgressSelectEl = document.getElementById('tunEgressSelect');
-    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260706-mode-candidate';
+    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260706-merged-switch';
     const REQUEST_TIMEOUT_DEFAULT_MS = 20000;
     const REQUEST_TIMEOUT_TUN_INSTALL_MS = 90000;
     let tunPollingTimer = null;
@@ -281,8 +273,7 @@
     }
 
     function renderSettings(data) {
-      routerEnabledEl.checked = !!(data && data.virtual_router_enabled);
-      dnsEnabledEl.checked = !!(data && data.virtual_dns_enabled);
+      routerEnabledEl.checked = !!(data && (data.virtual_router_enabled || data.virtual_dns_enabled));
       setText('settingsUpdatedAt', data && data.updated_at);
       setText('localNodeID', data && data.local_node_id);
       setText('localIP', data && data.local_ip);
@@ -390,7 +381,7 @@
         method: 'POST',
         body: JSON.stringify({
           virtual_router_enabled: routerEnabledEl.checked,
-          virtual_dns_enabled: dnsEnabledEl.checked,
+          virtual_dns_enabled: routerEnabledEl.checked,
         }),
       });
       renderSettings(data || {});

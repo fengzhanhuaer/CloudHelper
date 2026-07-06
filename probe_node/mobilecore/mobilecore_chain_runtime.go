@@ -282,7 +282,7 @@ func buildMobileChainRuntimeConfig(cmd chainLinkControlMessage) (mobileChainRunt
 	nextHost := strings.TrimSpace(cmd.NextHost)
 	nextPort := normalizeMobileChainPort(cmd.NextPort)
 	nextDialMode := normalizeMobileChainDialMode(cmd.NextDialMode)
-	if nextAuthMode != "proxy" {
+	if nextAuthMode != "route" {
 		if nextHost == "" || nextPort <= 0 {
 			return mobileChainRuntimeConfig{}, errors.New("next_host and next_port are required")
 		}
@@ -684,7 +684,7 @@ func handleMobileChainSpeedTest(w http.ResponseWriter, r *http.Request) {
 
 func startMobileChainBridgeWorkers(rt *mobileChainRuntime) {
 	cfg := rt.cfg
-	if cfg.NextAuthMode != "proxy" && normalizeMobileChainDialMode(cfg.NextDialMode) == mobileChainDialForward {
+	if cfg.NextAuthMode != "route" && normalizeMobileChainDialMode(cfg.NextDialMode) == mobileChainDialForward {
 		go runMobileChainBridgeDialLoop(rt, mobileChainBridgeDialTarget{
 			Host:                cfg.NextHost,
 			Port:                cfg.NextPort,
@@ -779,8 +779,8 @@ func acceptMobileChainBridgeStreams(rt *mobileChainRuntime, session *mobileChain
 func handleMobileChainConn(rt *mobileChainRuntime, conn net.Conn, preferredSessionID string) {
 	defer conn.Close()
 	if frameStream, ok := conn.(*mobileChainFrameStream); ok {
-		if rt.cfg.NextAuthMode == "proxy" {
-			_ = handleMobileChainProxyStream(conn)
+		if rt.cfg.NextAuthMode == "route" {
+			_ = handleMobileChainRouteStream(conn)
 			return
 		}
 		req := mobileChainOpenRequestFromStream(frameStream)
@@ -800,7 +800,7 @@ func handleMobileChainReverseConn(rt *mobileChainRuntime, conn net.Conn, preferr
 	if frameStream, ok := conn.(*mobileChainFrameStream); ok {
 		role := normalizeMobileChainRole(rt.cfg.Role)
 		if role == mobileChainRoleEntry || role == mobileChainRoleEntryExit {
-			_ = handleMobileChainProxyStream(conn)
+			_ = handleMobileChainRouteStream(conn)
 			return
 		}
 		req := mobileChainOpenRequestFromStream(frameStream)
@@ -815,7 +815,7 @@ func handleMobileChainReverseConn(rt *mobileChainRuntime, conn net.Conn, preferr
 	androidLogStore.add("chain", "warning", "rejected non-frame upstream stream: chain="+rt.cfg.ChainID)
 }
 
-func handleMobileChainProxyStream(stream net.Conn) error {
+func handleMobileChainRouteStream(stream net.Conn) error {
 	var req mobileChainTunnelOpenRequest
 	var responder func(mobileChainTunnelOpenResponse) error
 	frameStream, ok := stream.(*mobileChainFrameStream)
@@ -1659,8 +1659,8 @@ func normalizeMobileChainRole(raw string) string {
 
 func normalizeMobileChainAuthMode(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "proxy":
-		return "proxy"
+	case "route":
+		return "route"
 	case "secret", "hmac":
 		return "secret"
 	default:
@@ -1842,7 +1842,7 @@ func findMobileChainHopForNode(item linkChainServerItem, nodeID string) linkChai
 
 func resolveMobileChainNextHop(item linkChainServerItem, nodeID string, role string) (host string, port int, layer string, dialMode string, authMode string) {
 	if role == mobileChainRoleExit || role == mobileChainRoleEntryExit {
-		return "", 0, "", mobileChainDialNone, "proxy"
+		return "", 0, "", mobileChainDialNone, "route"
 	}
 	route := buildMobileChainRoute(item)
 	target := normalizeMobileChainNodeID(nodeID)

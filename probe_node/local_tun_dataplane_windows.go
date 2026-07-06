@@ -39,7 +39,6 @@ var probeLocalTUNDataPlaneState = struct {
 	interfaceLUID uint64
 	ifIndex       int
 	dataPlane     probeLocalTUNDataPlane
-	packetStack   probeLocalTUNPacketStack
 }{}
 
 func startProbeLocalTUNDataPlane() error {
@@ -120,23 +119,6 @@ func startProbeLocalTUNDataPlane() error {
 	probeLocalTUNDataPlaneState.dataPlane = dataPlane
 	probeLocalTUNDataPlaneState.mu.Unlock()
 
-	if probeLocalVNetFeatureActive() {
-		if err := startProbeLocalTUNPacketStack(); err != nil {
-			probeLocalTUNDataPlaneState.mu.Lock()
-			if probeLocalTUNDataPlaneState.dataPlane == dataPlane {
-				probeLocalTUNDataPlaneState.dataPlane = nil
-				probeLocalTUNDataPlaneState.adapterHandle = 0
-				probeLocalTUNDataPlaneState.libraryPath = ""
-				probeLocalTUNDataPlaneState.interfaceLUID = 0
-				probeLocalTUNDataPlaneState.ifIndex = 0
-			}
-			probeLocalTUNDataPlaneState.mu.Unlock()
-			_ = dataPlane.Close()
-			_ = probeLocalCloseWintunAdapterForDataPlane(libraryPath, handle)
-			clearProbeLocalWindowsDirectBypassRouteTarget()
-			return err
-		}
-	}
 	ensureProbeVirtualRouterLocalInterfaceIP()
 
 	stats := dataPlane.Stats()
@@ -178,7 +160,6 @@ func stopProbeLocalTUNDataPlane() error {
 	probeLocalTUNDataPlaneState.mu.Unlock()
 
 	defer clearProbeLocalWindowsDirectBypassRouteTarget()
-	errStack := stopProbeLocalTUNPacketStack()
 	var allErr error
 	if dataPlane != nil {
 		stats := dataPlane.Stats()
@@ -190,7 +171,6 @@ func stopProbeLocalTUNDataPlane() error {
 	if closeErr := probeLocalCloseWintunAdapterForDataPlane(libraryPath, handle); closeErr != nil {
 		allErr = errors.Join(allErr, closeErr)
 	}
-	allErr = errors.Join(allErr, errStack)
 	stopProbeLocalDNSTUNListener()
 	return allErr
 }
@@ -237,37 +217,11 @@ func writeProbeLocalTUNPacket(packet []byte) error {
 	return dataPlane.WritePacket(packet)
 }
 
-func writeProbeLocalTUNInboundPacketToStack(packet []byte) error {
-	if len(packet) == 0 {
-		return nil
-	}
-	probeLocalTUNDataPlaneState.mu.Lock()
-	packetStack := probeLocalTUNDataPlaneState.packetStack
-	probeLocalTUNDataPlaneState.mu.Unlock()
-	if packetStack == nil {
-		return nil
-	}
-	_, err := packetStack.Write(packet)
-	return err
-}
-
 func handleProbeLocalTUNInboundPacket(packet []byte) {
-	if handleProbeVirtualRouterTUNPacket(packet) {
-		return
-	}
-	if !probeLocalVNetFeatureActive() {
-		return
-	}
-	if handleProbeLocalTUNICMPDirectBypass(packet) {
-		return
-	}
-	if err := writeProbeLocalTUNInboundPacketToStack(packet); err != nil {
-		logProbeWarnf("probe local tun packet stack write failed: %v", err)
-	}
+	_ = handleProbeVirtualRouterTUNPacket(packet)
 }
 
 func resetProbeLocalTUNDataPlaneHooksForTest() {
-	probeLocalVNetFeatureEnabled = func() bool { return true }
 	probeLocalEnsureWintunLibraryForDataPlane = ensureProbeEmbeddedWintunLibrary
 	probeLocalResolveWintunPathForDataPlane = resolveProbeWintunPath
 	probeLocalCreateWintunAdapterForDataPlane = createProbeLocalWintunAdapter

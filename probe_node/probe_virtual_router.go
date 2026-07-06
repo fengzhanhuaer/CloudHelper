@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -57,6 +58,8 @@ const (
 	probeVirtualRouterCarrierStalePingFailures        = 4
 	probeVirtualRouterCarrierStaleRXGrace             = 2 * probeVirtualRouterPingPongInterval
 )
+
+var probeVirtualRouterEnsureDirectBypass = ensureProbeLocalDirectBypass
 
 var probeVirtualRouterState = struct {
 	mu                sync.RWMutex
@@ -2068,6 +2071,9 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 		log.Printf("probe virtual router icmp tun rx: trace_code=icmp-trace-v2 kind=%s src=%s dst=%s id=%d seq=%d local_node=%s path=%s bytes=%d", info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, currentProbeVirtualRouterLocalNodeID(), strings.Join(path, ">"), len(packet))
 	}
 	if len(path) < 2 {
+		if probeVirtualRouterEnsureDirectBypassForOrdinaryTarget(packet, dstIP) {
+			return false
+		}
 		if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
 			log.Printf("probe virtual router icmp tun drop: kind=%s src=%s dst=%s id=%d seq=%d reason=path_unavailable local_node=%s", info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, currentProbeVirtualRouterLocalNodeID())
 		}
@@ -2088,6 +2094,37 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 		return true
 	}
 	return true
+}
+
+func probeVirtualRouterEnsureDirectBypassForOrdinaryTarget(packet []byte, dstIP string) bool {
+	if !probeVirtualRouterLocalEntryEnabled() || probeVirtualRouterIPInCurrentFakeCIDR(dstIP) {
+		return false
+	}
+	targetIP := net.ParseIP(strings.TrimSpace(dstIP)).To4()
+	if targetIP == nil {
+		return false
+	}
+	probeVirtualRouterState.mu.RLock()
+	_, isVirtualNodeIP := probeVirtualRouterState.ipToNode[targetIP.String()]
+	probeVirtualRouterState.mu.RUnlock()
+	if isVirtualNodeIP {
+		return false
+	}
+	targetAddr := probeVirtualRouterDirectBypassTargetAddr(packet, targetIP.String())
+	if targetAddr == "" {
+		return false
+	}
+	if err := probeVirtualRouterEnsureDirectBypass(targetAddr); err != nil {
+		log.Printf("probe virtual router direct bypass route failed: dst=%s target=%s err=%v", targetIP.String(), targetAddr, err)
+	}
+	return true
+}
+
+func probeVirtualRouterDirectBypassTargetAddr(packet []byte, dstIP string) string {
+	if info, ok := probeVirtualRouterParseTCPUDPLogInfo(packet); ok && info.DestinationPort > 0 {
+		return net.JoinHostPort(strings.TrimSpace(dstIP), strconv.Itoa(int(info.DestinationPort)))
+	}
+	return net.JoinHostPort(strings.TrimSpace(dstIP), "0")
 }
 
 func probeVirtualRouterTUNPacketAllowedWhenEntryDisabled(dstIP string, path []string) bool {

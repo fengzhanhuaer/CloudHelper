@@ -192,7 +192,7 @@ func probeLocalWindowsDirectBypassIPsContainProtectedRange(ips []string) bool {
 	if len(ips) == 0 {
 		return false
 	}
-	networks := parseProbeLocalTunnelIPv4Networks(append([]string{currentProbeLocalDNSFakeIPCIDR()}, probeLocalTunnelCIDRRules()...))
+	networks := parseProbeLocalTunnelIPv4Networks([]string{currentProbeLocalDNSFakeIPCIDR(), currentProbeVirtualRouterFakeIPCIDR()})
 	if len(networks) == 0 {
 		return false
 	}

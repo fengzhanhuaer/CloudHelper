@@ -12,12 +12,12 @@ import (
 )
 
 const (
-	androidProxyConnectionMaxFailures           = 128
-	androidProxyConnectionMaxCompleted          = 128
-	androidProxyConnectionBlockedWriteThreshold = 50 * time.Millisecond
+	androidRouteConnectionMaxFailures           = 128
+	androidRouteConnectionMaxCompleted          = 128
+	androidRouteConnectionBlockedWriteThreshold = 50 * time.Millisecond
 )
 
-type androidProxyConnectionItem struct {
+type androidRouteConnectionItem struct {
 	ID                   string `json:"id"`
 	FlowID               string `json:"flow_id,omitempty"`
 	Side                 string `json:"side,omitempty"`
@@ -48,7 +48,7 @@ type androidProxyConnectionItem struct {
 	LastWriteBlockMSDown int64  `json:"last_write_block_ms_down,omitempty"`
 }
 
-type androidProxyConnectionCompleted struct {
+type androidRouteConnectionCompleted struct {
 	ID                   string `json:"id"`
 	FlowID               string `json:"flow_id,omitempty"`
 	Side                 string `json:"side,omitempty"`
@@ -81,7 +81,7 @@ type androidProxyConnectionCompleted struct {
 	LastWriteBlockMSDown int64  `json:"last_write_block_ms_down,omitempty"`
 }
 
-type androidProxyConnectionFailure struct {
+type androidRouteConnectionFailure struct {
 	Kind        string `json:"kind"`
 	Reason      string `json:"reason,omitempty"`
 	FlowID      string `json:"flow_id,omitempty"`
@@ -97,20 +97,20 @@ type androidProxyConnectionFailure struct {
 	LastSeen    string `json:"last_seen,omitempty"`
 }
 
-type androidProxyConnectionSnapshot struct {
+type androidRouteConnectionSnapshot struct {
 	Type           string                            `json:"type"`
 	OK             bool                              `json:"ok"`
 	Scope          string                            `json:"scope,omitempty"`
 	ActiveCount    int                               `json:"active_count"`
-	Active         []androidProxyConnectionItem      `json:"active"`
-	Completed      []androidProxyConnectionCompleted `json:"completed"`
+	Active         []androidRouteConnectionItem      `json:"active"`
+	Completed      []androidRouteConnectionCompleted `json:"completed"`
 	CompletedCount int                               `json:"completed_count"`
 	FailureCount   int                               `json:"failure_count"`
-	Failures       []androidProxyConnectionFailure   `json:"failures"`
+	Failures       []androidRouteConnectionFailure   `json:"failures"`
 	FetchedAt      string                            `json:"fetched_at,omitempty"`
 }
 
-type androidProxyConnectionFailureEvent struct {
+type androidRouteConnectionFailureEvent struct {
 	Kind        string
 	Reason      string
 	Scope       string
@@ -126,23 +126,23 @@ type androidProxyConnectionFailureEvent struct {
 	At          time.Time
 }
 
-type androidProxyConnectionRoute struct {
+type androidRouteConnectionRoute struct {
 	Direct          bool
 	TargetAddr      string
 	Group           string
 	SelectedChainID string
 }
 
-type androidProxyConnectionOptions struct {
+type androidRouteConnectionOptions struct {
 	Scope     string
 	FlowID    string
 	Side      string
 	Target    string
-	Route     androidProxyConnectionRoute
+	Route     androidRouteConnectionRoute
 	Transport string
 }
 
-type androidProxyConnectionRelay struct {
+type androidRouteConnectionRelay struct {
 	id          string
 	flowID      string
 	side        string
@@ -154,7 +154,7 @@ type androidProxyConnectionRelay struct {
 	direct      bool
 	transport   string
 	openedAt    time.Time
-	state       *androidProxyConnectionState
+	state       *androidRouteConnectionState
 
 	lastActiveUnix     atomic.Int64
 	lastBlockedUnix    atomic.Int64
@@ -177,27 +177,27 @@ type androidProxyConnectionRelay struct {
 	activeSides        atomic.Int32
 }
 
-type androidProxyConnectionState struct {
+type androidRouteConnectionState struct {
 	mu        sync.Mutex
 	seq       atomic.Uint64
-	active    map[string]*androidProxyConnectionRelay
-	completed []androidProxyConnectionCompleted
-	failures  []androidProxyConnectionFailureEvent
+	active    map[string]*androidRouteConnectionRelay
+	completed []androidRouteConnectionCompleted
+	failures  []androidRouteConnectionFailureEvent
 }
 
-type androidProxyConnectionWriter struct {
+type androidRouteConnectionWriter struct {
 	dst       io.Writer
-	relay     *androidProxyConnectionRelay
+	relay     *androidRouteConnectionRelay
 	direction string
 }
 
-var globalAndroidProxyConnectionState = newAndroidProxyConnectionState()
+var globalandroidRouteConnectionState = newandroidRouteConnectionState()
 
-func newAndroidProxyConnectionState() *androidProxyConnectionState {
-	return &androidProxyConnectionState{active: map[string]*androidProxyConnectionRelay{}}
+func newandroidRouteConnectionState() *androidRouteConnectionState {
+	return &androidRouteConnectionState{active: map[string]*androidRouteConnectionRelay{}}
 }
 
-func (w *androidProxyConnectionWriter) Write(payload []byte) (int, error) {
+func (w *androidRouteConnectionWriter) Write(payload []byte) (int, error) {
 	if w == nil || w.dst == nil {
 		return 0, net.ErrClosed
 	}
@@ -213,12 +213,12 @@ func (w *androidProxyConnectionWriter) Write(payload []byte) (int, error) {
 	return n, err
 }
 
-func (s *androidProxyConnectionState) begin(opts androidProxyConnectionOptions) *androidProxyConnectionRelay {
+func (s *androidRouteConnectionState) begin(opts androidRouteConnectionOptions) *androidRouteConnectionRelay {
 	if s == nil {
 		return nil
 	}
 	now := time.Now().UTC()
-	id := "android-proxy-" + strconv.FormatInt(now.UnixNano(), 10) + "-" + strconv.FormatUint(s.seq.Add(1), 10)
+	id := "android-route-" + strconv.FormatInt(now.UnixNano(), 10) + "-" + strconv.FormatUint(s.seq.Add(1), 10)
 	transport := strings.TrimSpace(opts.Transport)
 	if transport == "" {
 		if opts.Route.Direct {
@@ -227,7 +227,7 @@ func (s *androidProxyConnectionState) begin(opts androidProxyConnectionOptions) 
 			transport = "stream"
 		}
 	}
-	relay := &androidProxyConnectionRelay{
+	relay := &androidRouteConnectionRelay{
 		id:          id,
 		flowID:      strings.TrimSpace(opts.FlowID),
 		side:        strings.TrimSpace(opts.Side),
@@ -245,14 +245,14 @@ func (s *androidProxyConnectionState) begin(opts androidProxyConnectionOptions) 
 	relay.activeSides.Store(2)
 	s.mu.Lock()
 	if s.active == nil {
-		s.active = map[string]*androidProxyConnectionRelay{}
+		s.active = map[string]*androidRouteConnectionRelay{}
 	}
 	s.active[id] = relay
 	s.mu.Unlock()
 	return relay
 }
 
-func (s *androidProxyConnectionState) recordFailure(kind string, opts androidProxyConnectionOptions, err error) {
+func (s *androidRouteConnectionState) recordFailure(kind string, opts androidRouteConnectionOptions, err error) {
 	if s == nil || err == nil {
 		return
 	}
@@ -264,9 +264,9 @@ func (s *androidProxyConnectionState) recordFailure(kind string, opts androidPro
 			transport = "stream"
 		}
 	}
-	event := androidProxyConnectionFailureEvent{
+	event := androidRouteConnectionFailureEvent{
 		Kind:        strings.TrimSpace(kind),
-		Reason:      classifyAndroidProxyConnectionError(kind, err),
+		Reason:      classifyandroidRouteConnectionError(kind, err),
 		Scope:       firstNonEmptyString(strings.TrimSpace(opts.Scope), "unknown"),
 		FlowID:      strings.TrimSpace(opts.FlowID),
 		Side:        strings.TrimSpace(opts.Side),
@@ -281,24 +281,24 @@ func (s *androidProxyConnectionState) recordFailure(kind string, opts androidPro
 	}
 	s.mu.Lock()
 	s.failures = append(s.failures, event)
-	if len(s.failures) > androidProxyConnectionMaxFailures {
-		s.failures = append([]androidProxyConnectionFailureEvent(nil), s.failures[len(s.failures)-androidProxyConnectionMaxFailures:]...)
+	if len(s.failures) > androidRouteConnectionMaxFailures {
+		s.failures = append([]androidRouteConnectionFailureEvent(nil), s.failures[len(s.failures)-androidRouteConnectionMaxFailures:]...)
 	}
 	s.mu.Unlock()
 }
 
-func (s *androidProxyConnectionState) recordRelayFailure(relay *androidProxyConnectionRelay, err error) {
-	if s == nil || relay == nil || err == nil || isAndroidProxyExpectedRelayError(err) {
+func (s *androidRouteConnectionState) recordRelayFailure(relay *androidRouteConnectionRelay, err error) {
+	if s == nil || relay == nil || err == nil || isAndroidRouteExpectedRelayError(err) {
 		return
 	}
-	relay.markCloseReason(classifyAndroidProxyConnectionError("relay_failed", err))
-	s.recordFailure("relay_failed", androidProxyConnectionOptions{
+	relay.markCloseReason(classifyandroidRouteConnectionError("relay_failed", err))
+	s.recordFailure("relay_failed", androidRouteConnectionOptions{
 		Scope:     relay.scope,
 		FlowID:    relay.flowID,
 		Side:      relay.side,
 		Target:    relay.target,
 		Transport: relay.transport,
-		Route: androidProxyConnectionRoute{
+		Route: androidRouteConnectionRoute{
 			Direct:          relay.direct,
 			TargetAddr:      relay.routeTarget,
 			Group:           relay.group,
@@ -307,24 +307,24 @@ func (s *androidProxyConnectionState) recordRelayFailure(relay *androidProxyConn
 	}, err)
 }
 
-func classifyAndroidProxyRelayClose(err error) string {
+func classifyAndroidRouteRelayClose(err error) string {
 	if err == nil {
 		return "eof"
 	}
-	if isAndroidProxyExpectedRelayError(err) {
-		return classifyAndroidProxyConnectionError("closed", err)
+	if isAndroidRouteExpectedRelayError(err) {
+		return classifyandroidRouteConnectionError("closed", err)
 	}
-	return classifyAndroidProxyConnectionError("relay_failed", err)
+	return classifyandroidRouteConnectionError("relay_failed", err)
 }
 
-func (s *androidProxyConnectionState) snapshot() androidProxyConnectionSnapshot {
-	payload := androidProxyConnectionSnapshot{
-		Type:      "android_proxy_connections",
+func (s *androidRouteConnectionState) snapshot() androidRouteConnectionSnapshot {
+	payload := androidRouteConnectionSnapshot{
+		Type:      "android_route_connections",
 		OK:        true,
 		Scope:     "android",
-		Active:    []androidProxyConnectionItem{},
-		Completed: []androidProxyConnectionCompleted{},
-		Failures:  []androidProxyConnectionFailure{},
+		Active:    []androidRouteConnectionItem{},
+		Completed: []androidRouteConnectionCompleted{},
+		Failures:  []androidRouteConnectionFailure{},
 		FetchedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	if s == nil {
@@ -332,17 +332,17 @@ func (s *androidProxyConnectionState) snapshot() androidProxyConnectionSnapshot 
 	}
 	now := time.Now().UTC()
 	s.mu.Lock()
-	active := make([]*androidProxyConnectionRelay, 0, len(s.active))
+	active := make([]*androidRouteConnectionRelay, 0, len(s.active))
 	for _, relay := range s.active {
 		if relay != nil {
 			active = append(active, relay)
 		}
 	}
-	failures := append([]androidProxyConnectionFailureEvent(nil), s.failures...)
-	completed := append([]androidProxyConnectionCompleted(nil), s.completed...)
+	failures := append([]androidRouteConnectionFailureEvent(nil), s.failures...)
+	completed := append([]androidRouteConnectionCompleted(nil), s.completed...)
 	s.mu.Unlock()
 	for _, relay := range active {
-		item := androidProxyConnectionItem{
+		item := androidRouteConnectionItem{
 			ID:                   strings.TrimSpace(relay.id),
 			FlowID:               strings.TrimSpace(relay.flowID),
 			Side:                 strings.TrimSpace(relay.side),
@@ -388,7 +388,7 @@ func (s *androidProxyConnectionState) snapshot() androidProxyConnectionSnapshot 
 		return payload.Active[i].Target < payload.Active[j].Target
 	})
 	for _, event := range failures {
-		payload.Failures = append(payload.Failures, androidProxyConnectionFailure{
+		payload.Failures = append(payload.Failures, androidRouteConnectionFailure{
 			Kind:        strings.TrimSpace(event.Kind),
 			Reason:      strings.TrimSpace(event.Reason),
 			FlowID:      strings.TrimSpace(event.FlowID),
@@ -417,48 +417,48 @@ func (s *androidProxyConnectionState) snapshot() androidProxyConnectionSnapshot 
 	return payload
 }
 
-func (r *androidProxyConnectionRelay) touch(direction string, n int) {
+func (r *androidRouteConnectionRelay) touch(direction string, n int) {
 	if r == nil || n <= 0 {
 		return
 	}
 	r.lastActiveUnix.Store(time.Now().UTC().Unix())
-	if normalizeAndroidProxyConnectionDirection(direction) == "down" {
+	if normalizeandroidRouteConnectionDirection(direction) == "down" {
 		r.bytesDown.Add(int64(n))
 		return
 	}
 	r.bytesUp.Add(int64(n))
 }
 
-func (r *androidProxyConnectionRelay) recordWrite(direction string, elapsed time.Duration) {
+func (r *androidRouteConnectionRelay) recordWrite(direction string, elapsed time.Duration) {
 	if r == nil {
 		return
 	}
-	side := normalizeAndroidProxyConnectionDirection(direction)
+	side := normalizeandroidRouteConnectionDirection(direction)
 	elapsedMS := elapsed.Milliseconds()
 	if side == "down" {
 		r.writesDown.Add(1)
-		if elapsed >= androidProxyConnectionBlockedWriteThreshold {
+		if elapsed >= androidRouteConnectionBlockedWriteThreshold {
 			r.blockedDown.Add(1)
 			r.blockMSDown.Add(elapsedMS)
 			r.lastBlockMSDown.Store(elapsedMS)
-			updateAndroidProxyConnectionMax(&r.maxBlockMSDown, elapsedMS)
+			updateandroidRouteConnectionMax(&r.maxBlockMSDown, elapsedMS)
 			r.lastBlockedUnix.Store(time.Now().UTC().Unix())
 			r.lastCongestionSide.Store("down")
 		}
 		return
 	}
 	r.writesUp.Add(1)
-	if elapsed >= androidProxyConnectionBlockedWriteThreshold {
+	if elapsed >= androidRouteConnectionBlockedWriteThreshold {
 		r.blockedUp.Add(1)
 		r.blockMSUp.Add(elapsedMS)
 		r.lastBlockMSUp.Store(elapsedMS)
-		updateAndroidProxyConnectionMax(&r.maxBlockMSUp, elapsedMS)
+		updateandroidRouteConnectionMax(&r.maxBlockMSUp, elapsedMS)
 		r.lastBlockedUnix.Store(time.Now().UTC().Unix())
 		r.lastCongestionSide.Store("up")
 	}
 }
 
-func (r *androidProxyConnectionRelay) releaseSide() {
+func (r *androidRouteConnectionRelay) releaseSide() {
 	if r == nil || r.state == nil {
 		return
 	}
@@ -471,7 +471,7 @@ func (r *androidProxyConnectionRelay) releaseSide() {
 	r.state.mu.Unlock()
 }
 
-func (r *androidProxyConnectionRelay) finish(defaultReason string) {
+func (r *androidRouteConnectionRelay) finish(defaultReason string) {
 	if r == nil || r.state == nil || !r.completed.CompareAndSwap(false, true) {
 		return
 	}
@@ -481,13 +481,13 @@ func (r *androidProxyConnectionRelay) finish(defaultReason string) {
 	item := r.completedSnapshot(now, reason)
 	r.state.mu.Lock()
 	r.state.completed = append(r.state.completed, item)
-	if len(r.state.completed) > androidProxyConnectionMaxCompleted {
-		r.state.completed = append([]androidProxyConnectionCompleted(nil), r.state.completed[len(r.state.completed)-androidProxyConnectionMaxCompleted:]...)
+	if len(r.state.completed) > androidRouteConnectionMaxCompleted {
+		r.state.completed = append([]androidRouteConnectionCompleted(nil), r.state.completed[len(r.state.completed)-androidRouteConnectionMaxCompleted:]...)
 	}
 	r.state.mu.Unlock()
 }
 
-func (r *androidProxyConnectionRelay) markCloseReason(reason string) {
+func (r *androidRouteConnectionRelay) markCloseReason(reason string) {
 	if r == nil {
 		return
 	}
@@ -498,7 +498,7 @@ func (r *androidProxyConnectionRelay) markCloseReason(reason string) {
 	r.closeReason.Store(clean)
 }
 
-func (r *androidProxyConnectionRelay) closeReasonString() string {
+func (r *androidRouteConnectionRelay) closeReasonString() string {
 	if r == nil {
 		return ""
 	}
@@ -508,8 +508,8 @@ func (r *androidProxyConnectionRelay) closeReasonString() string {
 	return ""
 }
 
-func (r *androidProxyConnectionRelay) completedSnapshot(now time.Time, reason string) androidProxyConnectionCompleted {
-	item := androidProxyConnectionCompleted{
+func (r *androidRouteConnectionRelay) completedSnapshot(now time.Time, reason string) androidRouteConnectionCompleted {
+	item := androidRouteConnectionCompleted{
 		ID:                   strings.TrimSpace(r.id),
 		FlowID:               strings.TrimSpace(r.flowID),
 		Side:                 strings.TrimSpace(r.side),
@@ -551,7 +551,7 @@ func (r *androidProxyConnectionRelay) completedSnapshot(now time.Time, reason st
 	return item
 }
 
-func updateAndroidProxyConnectionMax(target *atomic.Int64, value int64) {
+func updateandroidRouteConnectionMax(target *atomic.Int64, value int64) {
 	if target == nil || value <= 0 {
 		return
 	}
@@ -566,17 +566,17 @@ func updateAndroidProxyConnectionMax(target *atomic.Int64, value int64) {
 	}
 }
 
-func newAndroidProxyFlowID(scope string, target string) string {
+func newAndroidRouteFlowID(scope string, target string) string {
 	cleanScope := strings.ToLower(strings.TrimSpace(scope))
 	if cleanScope == "" {
-		cleanScope = "proxy"
+		cleanScope = "route"
 	}
-	token := strconv.FormatUint(globalAndroidProxyConnectionState.seq.Add(1), 36)
+	token := strconv.FormatUint(globalandroidRouteConnectionState.seq.Add(1), 36)
 	return cleanScope + "-" + token + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 }
 
-func androidProxyConnectionRouteFromProxy(route proxyRouteDecision) androidProxyConnectionRoute {
-	return androidProxyConnectionRoute{
+func androidRouteConnectionRouteFromVPN(route vpnRouteDecision) androidRouteConnectionRoute {
+	return androidRouteConnectionRoute{
 		Direct:          route.Direct,
 		TargetAddr:      route.TargetAddr,
 		Group:           route.Group,
@@ -584,23 +584,14 @@ func androidProxyConnectionRouteFromProxy(route proxyRouteDecision) androidProxy
 	}
 }
 
-func androidProxyConnectionRouteFromVPN(route vpnRouteDecision) androidProxyConnectionRoute {
-	return androidProxyConnectionRoute{
-		Direct:          route.Direct,
-		TargetAddr:      route.TargetAddr,
-		Group:           route.Group,
-		SelectedChainID: route.SelectedChainID,
-	}
-}
-
-func normalizeAndroidProxyConnectionDirection(direction string) string {
+func normalizeandroidRouteConnectionDirection(direction string) string {
 	if strings.EqualFold(strings.TrimSpace(direction), "down") {
 		return "down"
 	}
 	return "up"
 }
 
-func isAndroidProxyExpectedRelayError(err error) bool {
+func isAndroidRouteExpectedRelayError(err error) bool {
 	if err == nil {
 		return true
 	}
@@ -608,7 +599,7 @@ func isAndroidProxyExpectedRelayError(err error) bool {
 	return text == "" || strings.Contains(text, "closed") || strings.Contains(text, "eof") || strings.Contains(text, "use of closed network connection")
 }
 
-func classifyAndroidProxyConnectionError(defaultReason string, err error) string {
+func classifyandroidRouteConnectionError(defaultReason string, err error) string {
 	if err == nil {
 		return strings.TrimSpace(defaultReason)
 	}

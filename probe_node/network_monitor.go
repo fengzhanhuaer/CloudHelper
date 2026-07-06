@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
@@ -13,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"encoding/json"
 )
 
 type probeNetworkMonitorTargetResult struct {

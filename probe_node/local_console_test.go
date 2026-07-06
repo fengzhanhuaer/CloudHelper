@@ -23,8 +23,7 @@ func setupProbeLocalConsoleTest(t *testing.T) *http.ServeMux {
 	resetProbeLocalControlStateForTest()
 	resetProbeLocalDNSServiceForTest()
 	resetProbeVirtualRouterLocalSettingsForTest()
-	setProbeLocalProxyRuntimeContext(nodeIdentity{}, "")
-	probeLocalVNetFeatureEnabled = func() bool { return true }
+	setprobeLocalRouteRuntimeContext(nodeIdentity{}, "")
 	probeLocalTUNLinkFeatureEnabled = func() bool { return true }
 	probeLocalFlushSystemDNSCache = func() error { return nil }
 	t.Cleanup(func() {
@@ -32,11 +31,10 @@ func setupProbeLocalConsoleTest(t *testing.T) *http.ServeMux {
 		resetProbeLocalControlStateForTest()
 		resetProbeLocalDNSServiceForTest()
 		resetProbeVirtualRouterLocalSettingsForTest()
-		resetProbeLocalProxyHooksForTest()
+		resetprobeLocalRouteHooksForTest()
 		resetProbeLocalTUNHooksForTest()
 		resetProbeLocalUpgradeHooksForTest()
-		setProbeLocalProxyRuntimeContext(nodeIdentity{}, "")
-		probeLocalVNetFeatureEnabled = func() bool { return false }
+		setprobeLocalRouteRuntimeContext(nodeIdentity{}, "")
 		probeLocalTUNLinkFeatureEnabled = func() bool { return false }
 	})
 	return buildProbeLocalConsoleMux()
@@ -230,33 +228,6 @@ func TestProbeLocalProtectedRoutesRequireSession(t *testing.T) {
 	}
 }
 
-func TestEnsureProbeLocalProxyDefaultsInitializedKeepsServiceRunningOnInvalidGroupConfig(t *testing.T) {
-	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
-	path, err := resolveProbeLocalProxyGroupPath()
-	if err != nil {
-		t.Fatalf("resolve proxy group path failed: %v", err)
-	}
-	broken := []byte(`{"version":1,"groups":[{"group":"google","rules":["domain_suffix:google.ru" "domain_suffix:googleapis.com"]}]}`)
-	if err := os.WriteFile(path, broken, 0o644); err != nil {
-		t.Fatalf("write broken proxy group failed: %v", err)
-	}
-
-	if err := ensureProbeLocalProxyDefaultsInitialized(); err != nil {
-		t.Fatalf("ensure defaults should not fail on invalid proxy group config: %v", err)
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read proxy group failed: %v", err)
-	}
-	if string(raw) != string(broken) {
-		t.Fatalf("invalid proxy group config should be reported but not overwritten")
-	}
-	groups := currentProbeLocalProxyViewGroups()
-	if len(groups.Groups) == 0 {
-		t.Fatalf("runtime view should fall back to default groups")
-	}
-}
-
 func TestResolveProbeLocalDNSUpstreamBypassTarget(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	if err := persistProbeLocalHostMappings([]probeLocalHostMapping{
@@ -306,14 +277,6 @@ func TestResolveProbeLocalDNSUpstreamBypassTarget(t *testing.T) {
 
 func TestCurrentProbeLocalDNSUpstreamCandidatesAppendsSystemDNSLast(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
-	cfg := defaultProbeLocalProxyGroupFile()
-	cfg.DoHProxyServers = []string{"https://proxy.example/dns-query"}
-	cfg.DoHServers = []string{"https://doh.example/dns-query"}
-	cfg.DoTServers = []string{"1.1.1.1:853"}
-	cfg.DNSServers = []string{"8.8.8.8:53"}
-	if err := persistProbeLocalProxyGroupFile(cfg); err != nil {
-		t.Fatalf("persist groups failed: %v", err)
-	}
 	oldSystemDNS := probeLocalDNSSystemServers
 	probeLocalDNSSystemServers = func() []string { return []string{"192.168.1.1", "8.8.8.8"} }
 	t.Cleanup(func() {
@@ -327,65 +290,14 @@ func TestCurrentProbeLocalDNSUpstreamCandidatesAppendsSystemDNSLast(t *testing.T
 		got = append(got, item.Kind+"|"+item.Address)
 	}
 	want := []string{
-		"doh|https://doh.example/dns-query",
-		"dot|1.1.1.1:853",
-		"dns|8.8.8.8:53",
-		"dns|192.168.1.1:53",
-	}
-	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("candidates=\n%v\nwant=\n%v", got, want)
-	}
-}
-
-func TestCurrentProbeLocalDNSUpstreamCandidatesKeepsDomainUpstreamsWhenTunnelEnabled(t *testing.T) {
-	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
-	cfg := defaultProbeLocalProxyGroupFile()
-	cfg.DoHProxyServers = []string{"https://proxy.example/dns-query", "https://1.1.1.1/dns-query"}
-	cfg.DoHServers = []string{"https://doh.example/dns-query", "https://8.8.8.8/dns-query"}
-	cfg.DoTServers = []string{"dns.alidns.com:853", "1.0.0.1:853"}
-	cfg.DNSServers = []string{"dns.example.com:53", "223.5.5.5:53"}
-	if err := persistProbeLocalProxyGroupFile(cfg); err != nil {
-		t.Fatalf("persist groups failed: %v", err)
-	}
-	oldSystemDNS := probeLocalDNSSystemServers
-	probeLocalDNSSystemServers = func() []string { return []string{"resolver.example", "192.168.1.1"} }
-	probeLocalControl.mu.Lock()
-	oldProxy := probeLocalControl.proxy
-	probeLocalControl.proxy.Enabled = true
-	probeLocalControl.proxy.Mode = probeLocalProxyModeLegacyTunnel
-	probeLocalControl.mu.Unlock()
-	t.Cleanup(func() {
-		probeLocalDNSSystemServers = oldSystemDNS
-		probeLocalControl.mu.Lock()
-		probeLocalControl.proxy = oldProxy
-		probeLocalControl.mu.Unlock()
-		resetProbeLocalDNSServiceForTest()
-	})
-
-	candidates := currentProbeLocalDNSUpstreamCandidatesForDecision(probeLocalDNSRouteDecision{
-		Group:           "google",
-		Action:          "tunnel",
-		SelectedChainID: "chain-1",
-	})
-	got := make([]string, 0, len(candidates))
-	for _, item := range candidates {
-		prefix := item.Kind
-		if item.ViaProxy {
-			prefix = prefix + "_proxy"
-		}
-		got = append(got, prefix+"|"+item.Address)
-	}
-	want := []string{
-		"doh_proxy|https://proxy.example/dns-query",
-		"doh_proxy|https://1.1.1.1/dns-query",
-		"doh|https://doh.example/dns-query",
-		"doh|https://8.8.8.8/dns-query",
+		"doh|https://dns.alidns.com/dns-query",
+		"doh|https://doh.pub/dns-query",
 		"dot|dns.alidns.com:853",
-		"dot|1.0.0.1:853",
-		"dns|dns.example.com:53",
+		"dot|dot.pub:853",
 		"dns|223.5.5.5:53",
-		"dns|resolver.example:53",
+		"dns|119.29.29.29:53",
 		"dns|192.168.1.1:53",
+		"dns|8.8.8.8:53",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("candidates=\n%v\nwant=\n%v", got, want)
@@ -419,57 +331,6 @@ func TestProbeLocalDNSStartupLoadsCacheThenHostMapping(t *testing.T) {
 	}
 	if got := strings.Join(extractProbeLocalDNSResponseIPsBestEffort(response), ","); got != "203.0.113.10" {
 		t.Fatalf("response ips=%q", got)
-	}
-}
-
-func TestResolveProbeLocalDNSResponsePrefersFakeIPForTunnelDomainWithRealCache(t *testing.T) {
-	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
-	resetProbeLocalDNSServiceForTest()
-	t.Cleanup(resetProbeLocalDNSServiceForTest)
-
-	groups := defaultProbeLocalProxyGroupFile()
-	groups.Groups = []probeLocalProxyGroupEntry{
-		{Group: "google", Rules: []string{"domain_suffix:google.com"}},
-	}
-	if err := persistProbeLocalProxyGroupFile(groups); err != nil {
-		t.Fatalf("persist groups failed: %v", err)
-	}
-	state := defaultProbeLocalProxyStateFile()
-	state.Groups = []probeLocalProxyStateGroupEntry{
-		{Group: "google", Action: "tunnel", SelectedChainID: "chain-proxy-1", TunnelNodeID: "chain:chain-proxy-1"},
-	}
-	if err := persistProbeLocalProxyStateFile(state); err != nil {
-		t.Fatalf("persist state failed: %v", err)
-	}
-	storeProbeLocalDNSCacheRecords("www.google.com", []string{"35.190.80.1"})
-
-	packet, err := buildProbeLocalDNSQueryA("www.google.com")
-	if err != nil {
-		t.Fatalf("build dns query failed: %v", err)
-	}
-	response, domain, ips, decision, err := resolveProbeLocalDNSResponse(packet)
-	if err != nil {
-		t.Fatalf("resolveProbeLocalDNSResponse returned error: %v", err)
-	}
-	if domain != "www.google.com" {
-		t.Fatalf("domain=%q", domain)
-	}
-	if len(ips) != 0 {
-		t.Fatalf("returned real ips=%v, want none for fake ip response", ips)
-	}
-	if decision.Group != "google" || decision.Action != "tunnel" {
-		t.Fatalf("decision=%+v", decision)
-	}
-	responseIPs := extractProbeLocalDNSResponseIPsBestEffort(response)
-	if len(responseIPs) != 1 || responseIPs[0] == "35.190.80.1" {
-		t.Fatalf("response ips=%v, want allocated fake ip", responseIPs)
-	}
-	if net.ParseIP(responseIPs[0]) == nil {
-		t.Fatalf("response fake ip is invalid: %v", responseIPs)
-	}
-	records := queryProbeLocalDNSUnifiedRecords()
-	if len(records) != 1 || records[0].FakeIP != responseIPs[0] || strings.Join(records[0].RealIPs, ",") != "35.190.80.1" {
-		t.Fatalf("unified records=%+v response_ips=%v", records, responseIPs)
 	}
 }
 
@@ -544,8 +405,6 @@ func TestProbeLocalTUNResetAndUninstallHandlers(t *testing.T) {
 	probeLocalControl.mu.Lock()
 	probeLocalControl.tun.Installed = true
 	probeLocalControl.tun.Enabled = true
-	probeLocalControl.proxy.Enabled = true
-	probeLocalControl.proxy.Mode = probeLocalProxyModeLegacyTunnel
 	probeLocalControl.mu.Unlock()
 
 	restoreDNSCalls := 0
@@ -559,7 +418,7 @@ func TestProbeLocalTUNResetAndUninstallHandlers(t *testing.T) {
 		return nil
 	}
 	probeLocalDetectTUNInstalled = func() (bool, error) { return true, nil }
-	t.Cleanup(func() { resetProbeLocalProxyHooksForTest(); resetProbeLocalTUNHooksForTest() })
+	t.Cleanup(func() { resetprobeLocalRouteHooksForTest(); resetProbeLocalTUNHooksForTest() })
 
 	resetResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/tun/reset", map[string]any{}, sessionCookie)
 	if resetResp.Code != http.StatusOK {
@@ -609,9 +468,9 @@ func TestProbeLocalSystemUpgradeDirectAccepted(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		resetProbeLocalUpgradeHooksForTest()
-		setProbeLocalProxyRuntimeContext(nodeIdentity{}, "")
+		setprobeLocalRouteRuntimeContext(nodeIdentity{}, "")
 	})
-	setProbeLocalProxyRuntimeContext(nodeIdentity{NodeID: "node-upgrade-direct", Secret: "secret-direct"}, "")
+	setprobeLocalRouteRuntimeContext(nodeIdentity{NodeID: "node-upgrade-direct", Secret: "secret-direct"}, "")
 
 	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/system/upgrade", map[string]any{
 		"mode":         "direct",
@@ -674,8 +533,8 @@ func TestProbeLocalSystemUpgradeProxyRequiresController(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
 
-	t.Cleanup(func() { setProbeLocalProxyRuntimeContext(nodeIdentity{}, "") })
-	setProbeLocalProxyRuntimeContext(nodeIdentity{NodeID: "node-upgrade-proxy-empty"}, "")
+	t.Cleanup(func() { setprobeLocalRouteRuntimeContext(nodeIdentity{}, "") })
+	setprobeLocalRouteRuntimeContext(nodeIdentity{NodeID: "node-upgrade-proxy-empty"}, "")
 
 	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/system/upgrade", map[string]any{
 		"mode": "proxy",
@@ -737,8 +596,8 @@ func TestProbeLocalSystemUpgradeCheckDirect(t *testing.T) {
 func TestProbeLocalSystemUpgradeCheckProxyRequiresController(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
-	t.Cleanup(func() { setProbeLocalProxyRuntimeContext(nodeIdentity{}, "") })
-	setProbeLocalProxyRuntimeContext(nodeIdentity{NodeID: "node-upgrade-check-proxy"}, "")
+	t.Cleanup(func() { setprobeLocalRouteRuntimeContext(nodeIdentity{}, "") })
+	setprobeLocalRouteRuntimeContext(nodeIdentity{NodeID: "node-upgrade-check-proxy"}, "")
 
 	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/system/upgrade/check", map[string]any{
 		"mode": "proxy",
@@ -821,9 +680,9 @@ func TestProbeLocalSystemUpgradeProxyAccepted(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		resetProbeLocalUpgradeHooksForTest()
-		setProbeLocalProxyRuntimeContext(nodeIdentity{}, "")
+		setprobeLocalRouteRuntimeContext(nodeIdentity{}, "")
 	})
-	setProbeLocalProxyRuntimeContext(nodeIdentity{NodeID: "node-upgrade-proxy"}, "  https://controller.example.com/base  ")
+	setprobeLocalRouteRuntimeContext(nodeIdentity{NodeID: "node-upgrade-proxy"}, "  https://controller.example.com/base  ")
 
 	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/system/upgrade", map[string]any{
 		"mode": "proxy",
@@ -1143,9 +1002,9 @@ func TestProbeLocalTUNInstallSuccessUpdatesState(t *testing.T) {
 		t.Fatalf("success observation final.success=%v", finalObj["success"])
 	}
 
-	state, err := loadProbeLocalProxyStateFile()
+	state, err := loadProbeLocalTUNStateFile()
 	if err != nil {
-		t.Fatalf("load proxy state failed: %v", err)
+		t.Fatalf("load tun state failed: %v", err)
 	}
 	if !state.TUN.Installed {
 		t.Fatalf("persisted tun installed=%v, want true", state.TUN.Installed)
@@ -1233,15 +1092,12 @@ func TestProbeLocalTUNInstallDoesNotStartDataPlaneWhenProxyDirect(t *testing.T) 
 	if dataPlane, _ := tunObj["data_plane"].(bool); dataPlane {
 		t.Fatalf("tun/install data_plane=%v, want false without proxy enable", dataPlane)
 	}
-	state, err := loadProbeLocalProxyStateFile()
+	state, err := loadProbeLocalTUNStateFile()
 	if err != nil {
-		t.Fatalf("load proxy state failed: %v", err)
+		t.Fatalf("load tun state failed: %v", err)
 	}
 	if !state.TUN.Installed || !state.TUN.Enabled {
 		t.Fatalf("persisted tun state=%+v, want installed=true enabled=true", state.TUN)
-	}
-	if state.Proxy.Enabled || state.Proxy.Mode != probeLocalProxyModeDirect {
-		t.Fatalf("persisted proxy state=%+v, want direct disabled", state.Proxy)
 	}
 }
 
@@ -1268,44 +1124,26 @@ func TestProbeLocalTUNStartupRecoveryDetectsInstalledAdapter(t *testing.T) {
 	if status.Enabled {
 		t.Fatalf("startup recovery enabled=%v, want false without persisted enabled", status.Enabled)
 	}
-	state, err := loadProbeLocalProxyStateFile()
+	state, err := loadProbeLocalTUNStateFile()
 	if err != nil {
-		t.Fatalf("load proxy state failed: %v", err)
+		t.Fatalf("load tun state failed: %v", err)
 	}
 	if !state.TUN.Installed || state.TUN.Enabled {
 		t.Fatalf("persisted tun state=%+v, want installed=true enabled=false", state.TUN)
 	}
 }
 
-func TestProbeLocalTUNStartupRecoveryUsesTUNEnabledIntentWithoutProxy(t *testing.T) {
+func TestProbeLocalTUNStartupRecoveryUsesTUNEnabledIntent(t *testing.T) {
 	_ = setupProbeLocalConsoleTest(t)
 
-	state := defaultProbeLocalProxyStateFile()
+	state := defaultProbeLocalTUNStateFile()
 	state.TUN.Installed = true
 	state.TUN.Enabled = true
-	state.Proxy.Enabled = false
-	state.Proxy.Mode = probeLocalProxyModeDirect
-	if err := persistProbeLocalProxyStateFile(state); err != nil {
+	if err := persistProbeLocalTUNStateFile(state); err != nil {
 		t.Fatalf("persist state failed: %v", err)
 	}
 	if !probeLocalControl.shouldRecoverTUNOnStartup() {
-		t.Fatal("startup recovery should run when tun.enabled is true, even if proxy intent is direct")
-	}
-
-	state.Proxy.Mode = ""
-	state.Proxy.Enabled = false
-	if err := persistProbeLocalProxyStateFile(state); err != nil {
-		t.Fatalf("persist legacy-like state failed: %v", err)
-	}
-	loaded, err := loadProbeLocalProxyStateFile()
-	if err != nil {
-		t.Fatalf("load state failed: %v", err)
-	}
-	if loaded.Proxy.Enabled || loaded.Proxy.Mode != probeLocalProxyModeDirect {
-		t.Fatalf("proxy state=%+v, want direct disabled; tun.enabled must not imply proxy enabled", loaded.Proxy)
-	}
-	if !probeLocalControl.shouldRecoverTUNOnStartup() {
-		t.Fatal("startup recovery should run for tun.enabled-only legacy-like state")
+		t.Fatal("startup recovery should run when tun.enabled is true")
 	}
 }
 
@@ -1316,9 +1154,6 @@ func TestProbeLocalTUNStartupRecoveryRepairsTUNOnlyStateWithoutDataPlane(t *test
 	_ = setupProbeLocalConsoleTest(t)
 	if err := persistProbeLocalTUNPersistentState(true, true); err != nil {
 		t.Fatalf("persist tun state failed: %v", err)
-	}
-	if err := persistProbeLocalProxyPersistentState(false, probeLocalProxyModeDirect); err != nil {
-		t.Fatalf("persist proxy state failed: %v", err)
 	}
 	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "198.18.0.1")
 	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "9")
@@ -1335,7 +1170,7 @@ func TestProbeLocalTUNStartupRecoveryRepairsTUNOnlyStateWithoutDataPlane(t *test
 		dataPlaneCalls++
 		return &fakeProbeLocalTUNDataPlane{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
 	}
-	t.Cleanup(func() { resetProbeLocalTUNHooksForTest(); resetProbeLocalProxyHooksForTest() })
+	t.Cleanup(func() { resetProbeLocalTUNHooksForTest(); resetprobeLocalRouteHooksForTest() })
 
 	if err := recoverProbeLocalTUNRuntimeOnStartup(); err != nil {
 		t.Fatalf("recoverProbeLocalTUNRuntimeOnStartup returned error: %v", err)
@@ -1347,19 +1182,12 @@ func TestProbeLocalTUNStartupRecoveryRepairsTUNOnlyStateWithoutDataPlane(t *test
 	if !status.Installed || !status.Enabled || status.DataPlane {
 		t.Fatalf("startup recovery tun status=%+v, want installed enabled without data plane", status)
 	}
-	proxyStatus := probeLocalControl.proxyStatus()
-	if proxyStatus.Enabled || proxyStatus.Mode != probeLocalProxyModeDirect {
-		t.Fatalf("startup recovery proxy status=%+v, want direct disabled", proxyStatus)
-	}
-	state, err := loadProbeLocalProxyStateFile()
+	state, err := loadProbeLocalTUNStateFile()
 	if err != nil {
-		t.Fatalf("load proxy state failed: %v", err)
+		t.Fatalf("load tun state failed: %v", err)
 	}
 	if !state.TUN.Installed || !state.TUN.Enabled {
 		t.Fatalf("persisted tun state=%+v, want installed=true enabled=true", state.TUN)
-	}
-	if state.Proxy.Enabled || state.Proxy.Mode != probeLocalProxyModeDirect {
-		t.Fatalf("persisted proxy state=%+v, want direct disabled", state.Proxy)
 	}
 }
 
@@ -1370,9 +1198,6 @@ func TestProbeLocalTUNStartupRecoveryRepairsPersistedEnabledState(t *testing.T) 
 	_ = setupProbeLocalConsoleTest(t)
 	if err := persistProbeLocalTUNPersistentState(true, true); err != nil {
 		t.Fatalf("persist tun state failed: %v", err)
-	}
-	if err := persistProbeLocalProxyPersistentState(false, probeLocalProxyModeDirect); err != nil {
-		t.Fatalf("persist proxy state failed: %v", err)
 	}
 
 	detectCalls := 0
@@ -1402,7 +1227,7 @@ func TestProbeLocalTUNStartupRecoveryRepairsPersistedEnabledState(t *testing.T) 
 		dataPlaneCalls++
 		return &fakeProbeLocalTUNDataPlane{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
 	}
-	t.Cleanup(func() { resetProbeLocalTUNHooksForTest(); resetProbeLocalProxyHooksForTest() })
+	t.Cleanup(func() { resetProbeLocalTUNHooksForTest(); resetprobeLocalRouteHooksForTest() })
 
 	if err := recoverProbeLocalTUNRuntimeOnStartup(); err != nil {
 		t.Fatalf("recoverProbeLocalTUNRuntimeOnStartup returned error: %v", err)
@@ -1420,15 +1245,12 @@ func TestProbeLocalTUNStartupRecoveryRepairsPersistedEnabledState(t *testing.T) 
 	if !status.Installed || !status.Enabled || status.DataPlane {
 		t.Fatalf("startup recovery tun status=%+v, want installed enabled without data plane", status)
 	}
-	state, err := loadProbeLocalProxyStateFile()
+	state, err := loadProbeLocalTUNStateFile()
 	if err != nil {
-		t.Fatalf("load proxy state failed: %v", err)
+		t.Fatalf("load tun state failed: %v", err)
 	}
 	if !state.TUN.Installed || !state.TUN.Enabled {
 		t.Fatalf("persisted tun state=%+v, want installed=true enabled=true", state.TUN)
-	}
-	if state.Proxy.Enabled || state.Proxy.Mode != probeLocalProxyModeDirect {
-		t.Fatalf("persisted proxy state=%+v, want direct disabled", state.Proxy)
 	}
 }
 
@@ -1439,9 +1261,6 @@ func TestProbeLocalTUNStartupRecoveryRestoresPersistedEnabledState(t *testing.T)
 	_ = setupProbeLocalConsoleTest(t)
 	if err := persistProbeLocalTUNPersistentState(true, true); err != nil {
 		t.Fatalf("persist tun state failed: %v", err)
-	}
-	if err := persistProbeLocalProxyPersistentState(false, probeLocalProxyModeDirect); err != nil {
-		t.Fatalf("persist proxy state failed: %v", err)
 	}
 
 	probeLocalDetectTUNInstalled = func() (bool, error) { return true, nil }
@@ -1459,7 +1278,7 @@ func TestProbeLocalTUNStartupRecoveryRestoresPersistedEnabledState(t *testing.T)
 		dataPlaneCalls++
 		return &fakeProbeLocalTUNDataPlane{stats: probeLocalTUNDataPlaneStats{Running: true}}, nil
 	}
-	t.Cleanup(func() { resetProbeLocalTUNHooksForTest(); resetProbeLocalProxyHooksForTest() })
+	t.Cleanup(func() { resetProbeLocalTUNHooksForTest(); resetprobeLocalRouteHooksForTest() })
 
 	if err := recoverProbeLocalTUNRuntimeOnStartup(); err != nil {
 		t.Fatalf("recoverProbeLocalTUNRuntimeOnStartup returned error: %v", err)
@@ -1471,38 +1290,19 @@ func TestProbeLocalTUNStartupRecoveryRestoresPersistedEnabledState(t *testing.T)
 	if !status.Installed || !status.Enabled || status.DataPlane {
 		t.Fatalf("startup recovery tun status=%+v, want installed enabled without data plane", status)
 	}
-	proxyStatus := probeLocalControl.proxyStatus()
-	if proxyStatus.Enabled || proxyStatus.Mode != probeLocalProxyModeDirect {
-		t.Fatalf("startup recovery proxy status=%+v, want direct disabled", proxyStatus)
-	}
-	state, err := loadProbeLocalProxyStateFile()
+	state, err := loadProbeLocalTUNStateFile()
 	if err != nil {
-		t.Fatalf("load proxy state failed: %v", err)
+		t.Fatalf("load tun state failed: %v", err)
 	}
 	if !state.TUN.Installed || !state.TUN.Enabled {
 		t.Fatalf("persisted tun state=%+v, want installed=true enabled=true", state.TUN)
 	}
-	if state.Proxy.Enabled || state.Proxy.Mode != probeLocalProxyModeDirect {
-		t.Fatalf("persisted proxy state=%+v, want direct disabled", state.Proxy)
-	}
 }
 
-func TestProbeLocalTUNStartupRecoveryFailureClearsLegacyProxyIntent(t *testing.T) {
+func TestProbeLocalTUNStartupRecoveryFailureRecordsError(t *testing.T) {
 	_ = setupProbeLocalConsoleTest(t)
 	if err := persistProbeLocalTUNPersistentState(true, true); err != nil {
 		t.Fatalf("persist tun state failed: %v", err)
-	}
-	state := defaultProbeLocalProxyStateFile()
-	state.TUN.Installed = true
-	state.TUN.Enabled = true
-	state.Proxy.Enabled = true
-	state.Proxy.Mode = "tunnel"
-	statePath, pathErr := resolveProbeLocalProxyStatePath()
-	if pathErr != nil {
-		t.Fatalf("resolve proxy state path failed: %v", pathErr)
-	}
-	if err := persistProbeLocalJSONFile(statePath, state); err != nil {
-		t.Fatalf("persist proxy state failed: %v", err)
 	}
 
 	probeLocalDetectTUNInstalled = func() (bool, error) { return false, nil }
@@ -1515,13 +1315,6 @@ func TestProbeLocalTUNStartupRecoveryFailureClearsLegacyProxyIntent(t *testing.T
 	}
 	if !strings.Contains(strings.ToLower(err.Error()), "device stack") {
 		t.Fatalf("startup recovery error=%q", err.Error())
-	}
-	state, loadErr := loadProbeLocalProxyStateFile()
-	if loadErr != nil {
-		t.Fatalf("load proxy state failed: %v", loadErr)
-	}
-	if state.Proxy.Enabled || state.Proxy.Mode != probeLocalProxyModeDirect {
-		t.Fatalf("persisted proxy state=%+v, want direct disabled after failed startup recovery", state.Proxy)
 	}
 	status := probeLocalControl.tunStatus()
 	if status.RecoveryStatus != "failed" {
@@ -1641,44 +1434,24 @@ func TestProbeLocalTUNInstallReturnsInternalErrorWhenPostCheckFails(t *testing.T
 	}
 }
 
-func TestEnsureProbeLocalProxyDefaultsInitializedCreatesFiles(t *testing.T) {
+func TestEnsureProbeLocalDNSHostDefaultsInitializedCreatesFile(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
-	groupPath, err := resolveProbeLocalProxyGroupPath()
-	if err != nil {
-		t.Fatalf("resolve group path failed: %v", err)
-	}
-	statePath, err := resolveProbeLocalProxyStatePath()
-	if err != nil {
-		t.Fatalf("resolve state path failed: %v", err)
-	}
-	hostPath, err := resolveProbeLocalProxyHostPath()
+	hostPath, err := resolveProbeLocalDNSHostPath()
 	if err != nil {
 		t.Fatalf("resolve host path failed: %v", err)
 	}
 
-	if _, err := os.Stat(groupPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("group file should not exist before init, err=%v", err)
-	}
-	if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("state file should not exist before init, err=%v", err)
-	}
 	if _, err := os.Stat(hostPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("host file should not exist before init, err=%v", err)
 	}
 
-	if err := ensureProbeLocalProxyDefaultsInitialized(); err != nil {
+	if err := ensureprobeLocalRouteDefaultsInitialized(); err != nil {
 		t.Fatalf("ensure defaults failed: %v", err)
 	}
-	if err := ensureProbeLocalProxyDefaultsInitialized(); err != nil {
+	if err := ensureprobeLocalRouteDefaultsInitialized(); err != nil {
 		t.Fatalf("ensure defaults second call failed: %v", err)
 	}
 
-	if _, err := os.Stat(groupPath); err != nil {
-		t.Fatalf("group file should exist after init: %v", err)
-	}
-	if _, err := os.Stat(statePath); err != nil {
-		t.Fatalf("state file should exist after init: %v", err)
-	}
 	if _, err := os.Stat(hostPath); err != nil {
 		t.Fatalf("host file should exist after init: %v", err)
 	}

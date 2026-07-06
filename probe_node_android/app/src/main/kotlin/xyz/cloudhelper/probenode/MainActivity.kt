@@ -21,16 +21,11 @@ class MainActivity : Activity() {
     private lateinit var webView: WebView
     @Volatile private var cachedStatus: String = "正在读取运行状态..."
     @Volatile private var cachedVpnStatus: String = "{}"
-    @Volatile private var cachedProxyStatus: String = JSONObject()
-        .put("ok", false)
-        .put("error", "正在读取 VNet 状态...")
-        .toString()
     @Volatile private var cachedLinkStatus: String = JSONObject()
         .put("ok", false)
         .put("error", "正在读取链路配置...")
         .toString()
     private val statusRefreshRunning = AtomicBoolean(false)
-    private val proxyRefreshRunning = AtomicBoolean(false)
     private val linkRefreshRunning = AtomicBoolean(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -73,7 +68,6 @@ class MainActivity : Activity() {
             ProbeNodeVpnService.start(this)
             emitStatus("VPN 权限已授权，正在启动全局 VPN...")
             refreshCachedStatusAsync()
-            refreshCachedProxyStatusAsync()
         }
     }
 
@@ -130,27 +124,10 @@ class MainActivity : Activity() {
                     }
                     if (window.setRuntimeStatus) setRuntimeStatus('运行：' + ${JSONObject.quote(cachedStatus)});
                     if (window.renderVPNDiagnostics && window.parseJSON) renderVPNDiagnostics(parseJSON(${JSONObject.quote(cachedVpnStatus)}));
-                    if (document.body && document.body.dataset.page === 'proxy' && window.renderProxyRuntimeStatus && window.parseJSON) renderProxyRuntimeStatus(parseJSON(${JSONObject.quote(cachedProxyStatus)}), parseJSON(${JSONObject.quote(cachedVpnStatus)}));
                     """.trimIndent(),
                 )
             } finally {
                 statusRefreshRunning.set(false)
-            }
-        }
-    }
-
-    private fun refreshCachedProxyStatusAsync() {
-        if (!proxyRefreshRunning.compareAndSet(false, true)) {
-            return
-        }
-        thread(name = "cloudhelper-android-proxy-status-refresh") {
-            try {
-                cachedProxyStatus = MobileCoreBridge.proxyStatus(this@MainActivity)
-                evaluatePageScript(
-                    "if (document.body && document.body.dataset.page === 'proxy' && window.renderProxyGroups) window.renderProxyGroups(${JSONObject.quote(cachedProxyStatus)}, ${JSONObject.quote(cachedVpnStatus)});",
-                )
-            } finally {
-                proxyRefreshRunning.set(false)
             }
         }
     }
@@ -216,7 +193,7 @@ class MainActivity : Activity() {
         }
 
         @JavascriptInterface
-        fun startProxy(): String {
+        fun startVpn(): String {
             val config = ProbeNodeConfig.load(this@MainActivity)
             if (!config.isReady) {
                 AndroidLogStore.add("vpn", "start rejected: controller URL, node ID, and node secret are required", "warn")
@@ -231,16 +208,14 @@ class MainActivity : Activity() {
             AndroidLogStore.add("vpn", "VPN service start requested")
             ProbeNodeVpnService.start(this@MainActivity)
             refreshCachedStatusAsync()
-            refreshCachedProxyStatusAsync()
             return "全局 VPN 正在启动..."
         }
 
         @JavascriptInterface
-        fun stopProxy(): String {
+        fun stopVpn(): String {
             AndroidLogStore.add("vpn", "VPN stop requested")
             ProbeNodeVpnService.stop(this@MainActivity)
             refreshCachedStatusAsync()
-            refreshCachedProxyStatusAsync()
             return "全局 VPN 正在停止..."
         }
 
@@ -290,12 +265,6 @@ class MainActivity : Activity() {
         }
 
         @JavascriptInterface
-        fun proxyStatus(): String {
-            refreshCachedProxyStatusAsync()
-            return cachedProxyStatus
-        }
-
-        @JavascriptInterface
         fun vpnStatus(): String {
             refreshCachedStatusAsync()
             return ProbeNodeVpnService.mergedStatusJSON(cachedVpnStatus)
@@ -308,21 +277,6 @@ class MainActivity : Activity() {
                 emitVpnStatus(MobileCoreBridge.vpnSelfCheck(this@MainActivity))
             }
             return "VPN 自检已开始"
-        }
-
-        @JavascriptInterface
-        fun proxySetGroup(group: String, action: String, selectedChainId: String): String {
-            AndroidLogStore.add("proxy", "proxy group selection: group=$group action=$action chain=$selectedChainId")
-            thread(name = "cloudhelper-android-proxy-group") {
-                val result = MobileCoreBridge.proxySetGroup(this@MainActivity, group, action, selectedChainId)
-                AndroidLogStore.add("proxy", result, if (result.contains("failed", ignoreCase = true) || result.contains("失败")) "error" else "info")
-                refreshCachedProxyStatusAsync()
-            }
-            return JSONObject()
-                .put("ok", true)
-                .put("status", "saving")
-                .put("message", "线路组保存已提交")
-                .toString()
         }
 
         @JavascriptInterface

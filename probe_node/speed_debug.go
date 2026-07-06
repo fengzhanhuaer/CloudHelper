@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
 	"net"
 	"sort"
@@ -8,7 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"encoding/json"
 )
 
 const probeSpeedDebugMaxRecent = 64
@@ -275,43 +275,43 @@ func runProbeSpeedDebugFetch(cmd probeControlMessage, identity nodeIdentity, str
 	}
 }
 
-type probeLocalProxyLinkSpeedStatus struct {
+type probeLocalRouteLinkSpeedStatus struct {
 	ChainID   string                           `json:"chain_id"`
 	UpdatedAt string                           `json:"updated_at,omitempty"`
 	Results   []probeChainRelaySpeedTestResult `json:"results,omitempty"`
 }
 
-var probeLocalProxyLinkSpeedState = struct {
+var probeLocalRouteLinkSpeedState = struct {
 	mu    sync.Mutex
-	items map[string]probeLocalProxyLinkSpeedStatus
-}{items: map[string]probeLocalProxyLinkSpeedStatus{}}
+	items map[string]probeLocalRouteLinkSpeedStatus
+}{items: map[string]probeLocalRouteLinkSpeedStatus{}}
 
-func recordProbeLocalProxyLinkSpeedStatus(chainID string, results []probeChainRelaySpeedTestResult) {
+func recordprobeLocalRouteLinkSpeedStatus(chainID string, results []probeChainRelaySpeedTestResult) {
 	cleanID := strings.TrimSpace(chainID)
 	if cleanID == "" {
 		return
 	}
 	copied := append([]probeChainRelaySpeedTestResult(nil), results...)
-	probeLocalProxyLinkSpeedState.mu.Lock()
-	if probeLocalProxyLinkSpeedState.items == nil {
-		probeLocalProxyLinkSpeedState.items = map[string]probeLocalProxyLinkSpeedStatus{}
+	probeLocalRouteLinkSpeedState.mu.Lock()
+	if probeLocalRouteLinkSpeedState.items == nil {
+		probeLocalRouteLinkSpeedState.items = map[string]probeLocalRouteLinkSpeedStatus{}
 	}
-	probeLocalProxyLinkSpeedState.items[strings.ToLower(cleanID)] = probeLocalProxyLinkSpeedStatus{
+	probeLocalRouteLinkSpeedState.items[strings.ToLower(cleanID)] = probeLocalRouteLinkSpeedStatus{
 		ChainID:   cleanID,
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 		Results:   copied,
 	}
-	probeLocalProxyLinkSpeedState.mu.Unlock()
+	probeLocalRouteLinkSpeedState.mu.Unlock()
 }
 
-func snapshotProbeLocalProxyLinkSpeedStatus(chainID string) *probeLocalProxyLinkSpeedStatus {
+func snapshotprobeLocalRouteLinkSpeedStatus(chainID string) *probeLocalRouteLinkSpeedStatus {
 	cleanID := strings.ToLower(strings.TrimSpace(chainID))
 	if cleanID == "" {
 		return nil
 	}
-	probeLocalProxyLinkSpeedState.mu.Lock()
-	defer probeLocalProxyLinkSpeedState.mu.Unlock()
-	item, ok := probeLocalProxyLinkSpeedState.items[cleanID]
+	probeLocalRouteLinkSpeedState.mu.Lock()
+	defer probeLocalRouteLinkSpeedState.mu.Unlock()
+	item, ok := probeLocalRouteLinkSpeedState.items[cleanID]
 	if !ok {
 		return nil
 	}

@@ -1510,6 +1510,54 @@ func TestProbeVirtualRouterTUNPacketAllowsVirtualRangeWhenEntryDisabled(t *testi
 	}
 }
 
+func TestProbeVirtualRouterTUNPacketEnsuresDirectBypassForOrdinaryTarget(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeVirtualRouterStateForTest()
+	resetProbeVirtualRouterLocalSettingsForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(resetProbeVirtualRouterLocalSettingsForTest)
+
+	config := probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "16", IP: "198.18.0.18"},
+			{NodeID: "19", IP: "198.18.0.21"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "16", ToNodeID: "19", Enabled: true},
+		},
+	}
+	applyProbeVirtualRouterConfigForNode(config, "16")
+	if _, err := saveProbeVirtualRouterLocalSettings(probeVirtualRouterLocalSettings{VirtualRouterEnabled: true, VirtualDNSEnabled: true}); err != nil {
+		t.Fatalf("save virtual router settings failed: %v", err)
+	}
+
+	oldEnsure := probeVirtualRouterEnsureDirectBypass
+	var targets []string
+	probeVirtualRouterEnsureDirectBypass = func(target string) error {
+		targets = append(targets, target)
+		return nil
+	}
+	t.Cleanup(func() { probeVirtualRouterEnsureDirectBypass = oldEnsure })
+
+	packet := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.18", "203.0.113.99", 49152, 443)
+	if handleProbeVirtualRouterTUNPacket(packet) {
+		t.Fatalf("ordinary system traffic should be released after bypass route ensure")
+	}
+	if len(targets) != 1 || targets[0] != "203.0.113.99:443" {
+		t.Fatalf("direct bypass targets=%v, want [203.0.113.99:443]", targets)
+	}
+
+	fakePacket := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.18", "198.18.1.20", 49153, 443)
+	if handleProbeVirtualRouterTUNPacket(fakePacket) {
+		t.Fatalf("unmapped fake ip should not be treated as ordinary direct bypass")
+	}
+	if len(targets) != 1 {
+		t.Fatalf("fake ip should not add direct bypass target, got %v", targets)
+	}
+}
+
 func TestProbeVirtualRouterICMPEchoReplyWritesBackOnIngressLink(t *testing.T) {
 	config := probeVirtualRouterConfig{
 		Enabled: true,

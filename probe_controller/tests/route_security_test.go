@@ -460,7 +460,7 @@ func (c *testWebSocketNetConn) SetWriteDeadline(t time.Time) error {
 	return c.ws.SetWriteDeadline(t)
 }
 
-func TestHTTPSRequiredViaProxyHeader(t *testing.T) {
+func TestHTTPSRequiredViaForwardedHeader(t *testing.T) {
 	authManager := newTestAuthManager(t)
 	core.SetAuthManagerForTest(authManager)
 	core.SetServerStartTimeForTest(time.Now().Add(-1 * time.Minute))

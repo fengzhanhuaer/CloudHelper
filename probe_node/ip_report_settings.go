@@ -269,7 +269,7 @@ func probeLocalSystemIPReportSettingsHandler(w http.ResponseWriter, r *http.Requ
 		}
 		writeJSON(w, http.StatusOK, probeIPReportSettingsPayload(settings))
 	case http.MethodPost:
-		body := http.MaxBytesReader(w, r.Body, probeLocalProxyReadBodyMaxLen)
+		body := http.MaxBytesReader(w, r.Body, probeLocalRouteReadBodyMaxLen)
 		defer body.Close()
 		decoder := json.NewDecoder(body)
 		decoder.DisallowUnknownFields()

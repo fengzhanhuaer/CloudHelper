@@ -137,37 +137,6 @@ object MobileCoreBridge {
         )
     }
 
-    fun proxyStart(context: Context, controllerURL: String = ""): String {
-        if (controllerURL.isNotBlank()) {
-            setControllerURL(controllerURL)
-        }
-        return recordResult("mobilecore", callString(
-            methodName = "proxyStart",
-            parameterTypes = arrayOf(String::class.java),
-            args = arrayOf(ProbeNodeConfig.configDir(context)),
-        ))
-    }
-
-    fun proxyStop(): String {
-        return recordResult("mobilecore", callString("proxyStop", emptyArray<Class<*>>(), emptyArray()))
-    }
-
-    fun proxyStatus(context: Context): String {
-        return callString(
-            methodName = "proxyStatus",
-            parameterTypes = arrayOf(String::class.java),
-            args = arrayOf(ProbeNodeConfig.configDir(context)),
-        )
-    }
-
-    fun proxySetGroup(context: Context, group: String, action: String, selectedChainID: String): String {
-        return recordResult("mobilecore", callString(
-            methodName = "proxySetGroup",
-            parameterTypes = arrayOf(String::class.java, String::class.java, String::class.java, String::class.java),
-            args = arrayOf(ProbeNodeConfig.configDir(context), group, action, selectedChainID),
-        ))
-    }
-
     private fun recordResult(source: String, result: String): String {
         AndroidLogStore.add(source, result, if (result.contains("failed", ignoreCase = true) || result.contains("失败")) "error" else "info")
         return result

@@ -306,7 +306,7 @@ func runProbeNode(options probeLaunchOptions) error {
 	if _, err := ensureProbeLocalAuthManager(); err != nil {
 		return fmt.Errorf("failed to initialize local console auth: %w", err)
 	}
-	if err := ensureProbeLocalProxyDefaultsInitialized(); err != nil {
+	if err := ensureprobeLocalRouteDefaultsInitialized(); err != nil {
 		return fmt.Errorf("failed to initialize local proxy default files: %w", err)
 	}
 	if err := loadProbeChainAuthBlacklistFromDisk(); err != nil {
@@ -314,7 +314,7 @@ func runProbeNode(options probeLaunchOptions) error {
 	}
 	ensureProbeVirtualRouterDNSRuntime()
 	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(options.ControllerURL), strings.TrimSpace(options.ControllerWS))
-	setProbeLocalProxyRuntimeContext(identity, controllerBaseURL)
+	setprobeLocalRouteRuntimeContext(identity, controllerBaseURL)
 
 	ensureProbeLocalListenConfigDefaults()
 	if options.LocalConsoleEnabled {
@@ -848,7 +848,7 @@ func runProbeLocalConsoleControl(msg probeControlMessage) {
 func runProbeLinkConfigSyncControl(msg probeControlMessage, identity nodeIdentity) {
 	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(msg.ControllerBaseURL), "")
 	if strings.TrimSpace(controllerBaseURL) == "" {
-		runtimeContext := currentProbeLocalProxyRuntimeContext()
+		runtimeContext := currentprobeLocalRouteRuntimeContext()
 		controllerBaseURL = strings.TrimSpace(runtimeContext.ControllerBaseURL)
 	}
 	if strings.TrimSpace(controllerBaseURL) == "" {
@@ -864,7 +864,7 @@ func runProbeLinkConfigSyncControl(msg probeControlMessage, identity nodeIdentit
 func runProbeRouteConfigSyncControl(msg probeControlMessage, identity nodeIdentity) {
 	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(msg.ControllerBaseURL), "")
 	if strings.TrimSpace(controllerBaseURL) == "" {
-		runtimeContext := currentProbeLocalProxyRuntimeContext()
+		runtimeContext := currentprobeLocalRouteRuntimeContext()
 		controllerBaseURL = strings.TrimSpace(runtimeContext.ControllerBaseURL)
 	}
 	if strings.TrimSpace(controllerBaseURL) == "" {

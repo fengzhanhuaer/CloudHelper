@@ -231,9 +231,9 @@ type linkTunnelOpenResponse struct {
 	WriteOffset uint64 `json:"write_offset,omitempty"`
 }
 
-// LinkStatus returns the Android-visible proxy chain endpoint inventory.
+// LinkStatus returns the Android-visible route chain endpoint inventory.
 func LinkStatus(configDir string) string {
-	items, err := loadLinkProxyChains(configDir)
+	items, err := loadLinkChains(configDir)
 	if err != nil {
 		return marshalLinkJSON(map[string]any{
 			"ok":         false,
@@ -400,7 +400,7 @@ func LinkSpeed(configDir string, chainID string, protocol string) string {
 }
 
 func loadLinkEndpointByID(configDir string, chainID string) (linkChainServerItem, linkEndpoint, error) {
-	items, err := loadLinkProxyChains(configDir)
+	items, err := loadLinkChains(configDir)
 	if err != nil {
 		return linkChainServerItem{}, linkEndpoint{}, err
 	}
@@ -415,7 +415,7 @@ func loadLinkEndpointByID(configDir string, chainID string) (linkChainServerItem
 	return item, endpoint, nil
 }
 
-func loadLinkProxyChains(configDir string) ([]linkChainServerItem, error) {
+func loadLinkChains(configDir string) ([]linkChainServerItem, error) {
 	configDir = strings.TrimSpace(configDir)
 	if configDir == "" {
 		return nil, errors.New("config dir is required")

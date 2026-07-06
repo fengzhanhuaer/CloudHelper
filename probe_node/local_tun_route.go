@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-var errProbeLocalLegacyTunnelRouteRemoved = errors.New("legacy probe link tunnel route has been removed")
+var errProbeLocalTunnelRouteUnavailable = errors.New("probe local tunnel route action is unavailable; use virtual router route rules")
 
 type probeLocalTunnelRouteDecision struct {
 	Direct          bool
@@ -35,16 +35,16 @@ func (e *probeLocalRouteRejectError) Error() string {
 	return "route rejected by group: " + group
 }
 
-func isProbeLocalProxyTunnelModeEnabled() bool {
-	status := probeLocalControl.proxyStatus()
-	return status.Enabled && strings.EqualFold(strings.TrimSpace(status.Mode), probeLocalProxyModeLegacyTunnel)
+func isprobeLocalRouteTunnelModeEnabled() bool {
+	return false
 }
 
 func decideProbeLocalRouteForTarget(targetAddr string) (probeLocalTunnelRouteDecision, error) {
-	return decideProbeLocalRouteForTargetWithTunnelPolicy(targetAddr, isProbeLocalProxyTunnelModeEnabled())
+	return decideProbeLocalRouteForTargetWithTunnelPolicy(targetAddr, isprobeLocalRouteTunnelModeEnabled())
 }
 
 func decideProbeLocalRouteForTargetWithTunnelPolicy(targetAddr string, allowTunnel bool) (probeLocalTunnelRouteDecision, error) {
+	_ = allowTunnel
 	host, port, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
 	if err != nil {
 		return probeLocalTunnelRouteDecision{}, err
@@ -67,47 +67,10 @@ func decideProbeLocalRouteForTargetWithTunnelPolicy(targetAddr string, allowTunn
 	if domainForPolicy == "" {
 		domainForPolicy = host
 	}
-	if !allowTunnel {
-		if fakeMatched {
-			applyProbeLocalFakeIPDirectTargetCandidates(&decision, domainForPolicy, port)
-		}
-		return decision, nil
+	if fakeMatched {
+		applyProbeLocalFakeIPDirectTargetCandidates(&decision, domainForPolicy, port)
 	}
-	var routeDecision probeLocalDNSRouteDecision
-	if parsed := net.ParseIP(domainForPolicy); parsed != nil && !fakeMatched {
-		routeDecision = resolveProbeLocalProxyRouteDecisionByIP(parsed.String())
-	} else {
-		routeDecision = resolveProbeLocalProxyRouteDecisionByDomain(domainForPolicy)
-	}
-
-	decision.Group = strings.TrimSpace(routeDecision.Group)
-	switch strings.ToLower(strings.TrimSpace(routeDecision.Action)) {
-	case "reject":
-		decision.Direct = false
-		decision.Reject = true
-		return decision, &probeLocalRouteRejectError{Group: decision.Group}
-	case "tunnel":
-		decision.Direct = false
-		decision.Reject = false
-		decision.SelectedChainID = firstNonEmpty(strings.TrimSpace(routeDecision.SelectedChainID), mustProbeLocalSelectedChainIDFromLegacy(routeDecision.TunnelNodeID))
-		decision.TunnelNodeID = formatProbeLocalLegacyTunnelNodeID(decision.SelectedChainID)
-		if fakeMatched {
-			realIPs := resolveProbeLocalDNSRealIPsForRouteDomain(domainForPolicy, routeDecision)
-			if len(realIPs) > 0 {
-				decision.TargetAddrs = buildProbeLocalTunnelRouteTargetCandidates(realIPs, port)
-				if len(decision.TargetAddrs) > 0 {
-					decision.TargetAddr = decision.TargetAddrs[0]
-				}
-			}
-		}
-		return decision, errProbeLocalLegacyTunnelRouteRemoved
-	default:
-		decision.Direct = true
-		decision.Reject = false
-		decision.SelectedChainID = ""
-		decision.TunnelNodeID = ""
-		return decision, nil
-	}
+	return decision, nil
 }
 
 func buildProbeLocalTunnelRouteTargetCandidates(ips []string, port string) []string {
@@ -197,7 +160,7 @@ func dialProbeLocalRoutedTCP(route probeLocalTunnelRouteDecision) (net.Conn, pro
 		return nil, route, &probeLocalRouteRejectError{Group: route.Group}
 	}
 	if !route.Direct {
-		return nil, route, errProbeLocalLegacyTunnelRouteRemoved
+		return nil, route, errProbeLocalTunnelRouteUnavailable
 	}
 	if err := ensureProbeLocalDirectBypass(route.TargetAddr); err != nil {
 		logProbeWarnf("probe local routed tcp direct bypass failed: target=%s err=%v", route.TargetAddr, err)

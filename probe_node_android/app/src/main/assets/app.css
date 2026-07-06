@@ -383,104 +383,6 @@ input {
   padding: 12px;
   background: #fff;
 }
-.proxy-group-list {
-  display: grid;
-  gap: 10px;
-  margin-top: 12px;
-}
-.proxy-group-item {
-  border: 1px solid #d7d3ca;
-  border-radius: 6px;
-  background: #fff;
-  overflow: hidden;
-}
-.proxy-group-header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-  width: 100%;
-  min-height: 58px;
-  border: 0;
-  padding: 12px;
-  background: #fff;
-  color: #171717;
-  text-align: left;
-}
-.proxy-group-heading {
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-}
-.proxy-group-toggle {
-  min-width: 44px;
-  color: #0f766e;
-  font-size: 13px;
-  font-weight: 750;
-  text-align: right;
-}
-.proxy-group-body {
-  border-top: 1px solid #eeeae3;
-  padding: 0 12px 12px;
-}
-.proxy-option-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 8px;
-  margin-top: 12px;
-}
-.proxy-option {
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
-  gap: 8px;
-  align-items: center;
-  min-height: 46px;
-  border: 1px solid #c9c5bd;
-  border-radius: 6px;
-  padding: 8px 10px;
-  background: #fff;
-  color: #171717;
-  text-align: left;
-}
-.proxy-option.active {
-  border-color: #0f766e;
-  background: #ecfdf5;
-}
-.proxy-radio {
-  width: 16px;
-  height: 16px;
-  border: 2px solid #78716c;
-  border-radius: 999px;
-  position: relative;
-}
-.proxy-option.active .proxy-radio {
-  border-color: #0f766e;
-}
-.proxy-option.active .proxy-radio::after {
-  content: "";
-  position: absolute;
-  inset: 3px;
-  border-radius: 999px;
-  background: #0f766e;
-}
-.proxy-option-text {
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-}
-.proxy-option-main {
-  color: #1c1917;
-  font-size: 14px;
-  font-weight: 750;
-  line-height: 1.25;
-  word-break: break-word;
-}
-.proxy-option-sub {
-  color: #57534e;
-  font-size: 12px;
-  line-height: 1.25;
-  word-break: break-word;
-}
 .link-title {
   display: block;
   color: #1c1917;
@@ -590,8 +492,5 @@ input {
   .key-value {
     grid-template-columns: 1fr;
     gap: 4px;
-  }
-  .proxy-option-grid {
-    grid-template-columns: 1fr;
   }
 }

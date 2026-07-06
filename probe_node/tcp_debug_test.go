@@ -6,7 +6,7 @@ func TestProbeTCPDebugCompletedConnectionKeepsDomain(t *testing.T) {
 	state := newProbeTCPDebugState()
 	relay := state.beginRelayWithOptions(probeTCPDebugRelayOptions{
 		Scope:  "tun",
-		Side:   "socks5",
+		Side:   "local",
 		Target: "example.com:443",
 		Route: probeLocalTunnelRouteDecision{
 			TargetAddr:   "example.com:443",
@@ -74,7 +74,7 @@ func TestProbeTCPDebugAutoCreatesTrackingID(t *testing.T) {
 	state := newProbeTCPDebugState()
 	relay := state.beginRelayWithOptions(probeTCPDebugRelayOptions{
 		Scope:  "tun",
-		Side:   "socks5",
+		Side:   "local",
 		Target: "example.com:443",
 	})
 	if relay == nil {

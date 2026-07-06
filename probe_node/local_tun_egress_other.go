@@ -19,5 +19,6 @@ func probeLocalTUNEgressUpdate(req probeLocalTUNEgressUpdateRequest) (probeLocal
 	return probeLocalTUNEgressStatus{}, &probeLocalHTTPError{Status: 501, Message: "manual egress selection is only supported on windows"}
 }
 
-func applyProbeLocalTUNEgressPersistentState(state probeLocalProxyStateFile) {
+func applyProbeLocalTUNEgressPersistentState(state probeLocalTUNEgressPersistentState) {
+	_ = state
 }

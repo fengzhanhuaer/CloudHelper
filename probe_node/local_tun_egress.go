@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -60,7 +61,7 @@ func probeLocalTUNEgressHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, status)
 	case http.MethodPost:
-		body := http.MaxBytesReader(w, r.Body, probeLocalProxyReadBodyMaxLen)
+		body := http.MaxBytesReader(w, r.Body, probeLocalRouteReadBodyMaxLen)
 		defer body.Close()
 		decoder := json.NewDecoder(body)
 		decoder.DisallowUnknownFields()
@@ -128,38 +129,105 @@ func probeLocalTUNEgressModeValue(manual bool, supported bool) string {
 }
 
 func persistProbeLocalTUNEgressManualState(candidate probeLocalTUNEgressRouteTargetOption) error {
-	state, err := loadProbeLocalProxyStateFile()
-	if err != nil {
-		return err
+	now := time.Now().UTC().Format(time.RFC3339)
+	state := probeLocalTUNEgressStateFile{
+		Version:   1,
+		UpdatedAt: now,
+		TUNEgress: probeLocalTUNEgressPersistentState{
+			Mode:           "manual",
+			CandidateID:    strings.TrimSpace(candidate.CandidateID),
+			InterfaceIndex: candidate.InterfaceIndex,
+			NextHop:        strings.TrimSpace(candidate.NextHop),
+			Label:          probeLocalTUNEgressSelectedLabel(&candidate),
+			UpdatedAt:      now,
+		},
 	}
-	state.TUNEgress = probeLocalTUNEgressPersistentState{
-		Mode:           "manual",
-		CandidateID:    strings.TrimSpace(candidate.CandidateID),
-		InterfaceIndex: candidate.InterfaceIndex,
-		NextHop:        strings.TrimSpace(candidate.NextHop),
-		Label:          probeLocalTUNEgressSelectedLabel(&candidate),
-		UpdatedAt:      time.Now().UTC().Format(time.RFC3339),
-	}
-	return persistProbeLocalProxyStateFile(state)
+	return persistProbeLocalTUNEgressStateFile(state)
 }
 
 func persistProbeLocalTUNEgressAutoState() error {
-	state, err := loadProbeLocalProxyStateFile()
-	if err != nil {
-		return err
+	now := time.Now().UTC().Format(time.RFC3339)
+	state := probeLocalTUNEgressStateFile{
+		Version:   1,
+		UpdatedAt: now,
+		TUNEgress: probeLocalTUNEgressPersistentState{
+			Mode:      "auto",
+			UpdatedAt: now,
+		},
 	}
-	state.TUNEgress = probeLocalTUNEgressPersistentState{
-		Mode:      "auto",
-		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
-	}
-	return persistProbeLocalProxyStateFile(state)
+	return persistProbeLocalTUNEgressStateFile(state)
 }
 
 func currentProbeLocalTUNEgressPersistentStateBestEffort() probeLocalTUNEgressPersistentState {
-	state, err := loadProbeLocalProxyStateFile()
+	state, err := loadProbeLocalTUNEgressStateFile()
 	if err != nil {
 		logProbeWarnf("probe local tun egress persistent state load failed: %v", err)
 		return probeLocalTUNEgressPersistentState{Mode: "auto"}
 	}
 	return state.TUNEgress
+}
+
+func loadProbeLocalTUNEgressStateFile() (probeLocalTUNEgressStateFile, error) {
+	path, err := resolveProbeLocalTUNEgressStatePath()
+	if err != nil {
+		return probeLocalTUNEgressStateFile{}, err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			now := time.Now().UTC().Format(time.RFC3339)
+			return probeLocalTUNEgressStateFile{
+				Version:   1,
+				UpdatedAt: now,
+				TUNEgress: probeLocalTUNEgressPersistentState{
+					Mode:      "auto",
+					UpdatedAt: now,
+				},
+			}, nil
+		}
+		return probeLocalTUNEgressStateFile{}, err
+	}
+	payload := probeLocalTUNEgressStateFile{}
+	if err := decodeProbeLocalJSONStrict(raw, &payload); err != nil {
+		return probeLocalTUNEgressStateFile{}, err
+	}
+	normalizeProbeLocalTUNEgressStateFile(&payload)
+	return payload, nil
+}
+
+func persistProbeLocalTUNEgressStateFile(payload probeLocalTUNEgressStateFile) error {
+	normalizeProbeLocalTUNEgressStateFile(&payload)
+	path, err := resolveProbeLocalTUNEgressStatePath()
+	if err != nil {
+		return err
+	}
+	return persistProbeLocalJSONFile(path, payload)
+}
+
+func normalizeProbeLocalTUNEgressStateFile(payload *probeLocalTUNEgressStateFile) {
+	if payload == nil {
+		return
+	}
+	if payload.Version <= 0 {
+		payload.Version = 1
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if strings.TrimSpace(payload.UpdatedAt) == "" {
+		payload.UpdatedAt = now
+	}
+	mode := strings.ToLower(strings.TrimSpace(payload.TUNEgress.Mode))
+	if mode != "manual" {
+		mode = "auto"
+		payload.TUNEgress.CandidateID = ""
+		payload.TUNEgress.InterfaceIndex = 0
+		payload.TUNEgress.NextHop = ""
+		payload.TUNEgress.Label = ""
+	}
+	payload.TUNEgress.Mode = mode
+	payload.TUNEgress.CandidateID = strings.TrimSpace(payload.TUNEgress.CandidateID)
+	payload.TUNEgress.NextHop = strings.TrimSpace(payload.TUNEgress.NextHop)
+	payload.TUNEgress.Label = strings.TrimSpace(payload.TUNEgress.Label)
+	if strings.TrimSpace(payload.TUNEgress.UpdatedAt) == "" {
+		payload.TUNEgress.UpdatedAt = payload.UpdatedAt
+	}
 }

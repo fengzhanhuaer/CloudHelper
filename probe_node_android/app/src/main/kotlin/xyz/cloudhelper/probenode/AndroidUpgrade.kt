@@ -40,7 +40,7 @@ object AndroidUpgrade {
     )
 
     fun checkDownloadAndInstall(activity: Activity, mode: String, config: ProbeNodeConfig, sink: (String) -> Unit) {
-        val upgradeMode = if (mode == "proxy") "proxy" else "direct"
+        val upgradeMode = if (mode == "controller") "controller" else "direct"
         if (!upgradeRunning.compareAndSet(false, true)) {
             val message = "升级任务已在运行，请等待当前任务完成。"
             AndroidLogStore.add("upgrade", message, "warning")
@@ -51,8 +51,8 @@ object AndroidUpgrade {
             try {
                 AndroidLogStore.add("upgrade", "upgrade flow started: mode=$upgradeMode")
                 updateStatus(state = "running", phase = "prepare", percent = 2, message = "准备 ${upgradeMode} 升级", mode = upgradeMode)
-                if (upgradeMode == "proxy" && !config.isReady) {
-                    error("controller URL, node ID, and node secret are required for proxy upgrade")
+                if (upgrademode == "controller" && !config.isReady) {
+                    error("controller URL, node ID, and node secret are required for controller upgrade")
                 }
                 val currentVersion = currentAppVersion(activity)
                 updateStatus(
@@ -195,7 +195,7 @@ object AndroidUpgrade {
     }
 
     private fun fetchLatestAndroidRelease(mode: String, config: ProbeNodeConfig): ReleaseInfo? {
-        val requestUrl = if (mode == "proxy") {
+        val requestUrl = if (mode == "controller") {
             "${config.controllerUrl.trimEnd('/')}/api/probe/proxy/github/latest?project=${urlEncode(RELEASE_REPO)}"
         } else {
             DEFAULT_RELEASE_API
@@ -230,7 +230,7 @@ object AndroidUpgrade {
         cleanupUpgradeCache(dir)
         val apk = File(dir, ASSET_NAME)
         val part = File(dir, "$ASSET_NAME.part")
-        val requestUrl = if (mode == "proxy") {
+        val requestUrl = if (mode == "controller") {
             "${config.controllerUrl.trimEnd('/')}/api/probe/proxy/download?url=${urlEncode(asset.url)}"
         } else {
             asset.url
@@ -383,7 +383,7 @@ object AndroidUpgrade {
         if (rangeStart > 0) {
             conn.setRequestProperty("Range", "bytes=$rangeStart-")
         }
-        if (mode == "proxy") {
+        if (mode == "controller") {
             applyProbeAuthHeaders(conn, config)
         }
         conn.connectTimeout = 15000

@@ -88,10 +88,6 @@ class ProbeNodeVpnService : VpnService() {
                 updateNotification("正在准备本地网络...")
                 val ipResult = MobileCoreBridge.setNativeIPs(this@ProbeNodeVpnService)
                 AndroidLogStore.add("vpn", ipResult)
-                updateRuntimeState(running = false, starting = true, phase = "start_proxy", message = "正在启动本地代理...")
-                updateNotification("正在启动本地代理...")
-                val proxyResult = MobileCoreBridge.proxyStart(this@ProbeNodeVpnService, config.controllerUrl)
-                AndroidLogStore.add("vpn", "local proxy while VPN starts: $proxyResult")
                 updateRuntimeState(running = false, starting = true, phase = "establish_vpn", message = "正在建立 Android VPN...")
                 updateNotification("正在建立 Android VPN...")
                 val builder = Builder()
@@ -193,9 +189,7 @@ class ProbeNodeVpnService : VpnService() {
         vpnEstablished = false
         dataPlaneRunning = false
         val result = MobileCoreBridge.vpnStop()
-        val proxyResult = MobileCoreBridge.proxyStop()
         AndroidLogStore.add("vpn", "VPN stop result: $result")
-        AndroidLogStore.add("vpn", "local proxy stop result: $proxyResult")
         closePendingDescriptor()
         tun = null
         updateRuntimeState(running = false, starting = false, phase = "stopped", message = result)
