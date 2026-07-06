@@ -51,7 +51,7 @@ object AndroidUpgrade {
             try {
                 AndroidLogStore.add("upgrade", "upgrade flow started: mode=$upgradeMode")
                 updateStatus(state = "running", phase = "prepare", percent = 2, message = "准备 ${upgradeMode} 升级", mode = upgradeMode)
-                if (upgrademode == "controller" && !config.isReady) {
+                if (upgradeMode == "controller" && !config.isReady) {
                     error("controller URL, node ID, and node secret are required for controller upgrade")
                 }
                 val currentVersion = currentAppVersion(activity)
