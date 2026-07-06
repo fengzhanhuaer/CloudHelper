@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -876,6 +877,70 @@ func TestProbeVirtualRouterControlResponseCompletesPendingRequest(t *testing.T) 
 	}
 	if !response.OK || response.LatencyMS != 17 || response.Responder != "4" {
 		t.Fatalf("response=%+v, want ok latency=17 responder=4", response)
+	}
+}
+
+func TestProbeVirtualRouterControlPingDoesNotUseRemoteClockForLatency(t *testing.T) {
+	left, right := net.Pipe()
+	defer right.Close()
+	link := newProbeVirtualRouterFrameLink("test-control-ping-clock", nil, left, nil)
+	link.Start()
+	defer stopProbeVirtualRouterFrameLink(link)
+
+	replyCh := make(chan struct {
+		frame probeVirtualRouterFrame
+		err   error
+	}, 1)
+	go func() {
+		frame, err := readProbeVirtualRouterWireFrame(bufio.NewReader(right))
+		replyCh <- struct {
+			frame probeVirtualRouterFrame
+			err   error
+		}{frame: frame, err: err}
+	}()
+
+	rt := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-1-2", identity: nodeIdentity{NodeID: "2"}}}
+	requestCreatedAt := time.Now().Add(time.Hour).UnixNano()
+	err := handleProbeVirtualRouterControlPing(rt, link, probeVirtualRouterControlProbePayload{
+		RequestID:         "clock-skew-ping",
+		SourceNodeID:      "1",
+		TargetNodeID:      "2",
+		Path:              []string{"1", "2"},
+		CreatedAtUnixNano: requestCreatedAt,
+	})
+	if err != nil {
+		t.Fatalf("handle control ping failed: %v", err)
+	}
+
+	select {
+	case got := <-replyCh:
+		if got.err != nil {
+			t.Fatalf("read pong failed: %v", got.err)
+		}
+		var response probeVirtualRouterControlProbePayload
+		if err := json.Unmarshal(got.frame.Data, &response); err != nil {
+			t.Fatalf("decode pong failed: %v", err)
+		}
+		if !response.OK || response.Responder != "2" {
+			t.Fatalf("response=%+v, want ok responder 2", response)
+		}
+		if response.LatencyMS != 0 {
+			t.Fatalf("response latency=%d, want 0 so requester computes local RTT", response.LatencyMS)
+		}
+		if response.CreatedAtUnixNano == requestCreatedAt || response.CreatedAtUnixNano <= 0 {
+			t.Fatalf("response timestamp=%d should be responder send timestamp, request timestamp=%d", response.CreatedAtUnixNano, requestCreatedAt)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for pong")
+	}
+}
+
+func TestProbeVirtualRouterAdjacentLatencyMillisecondsUsesHalfRTT(t *testing.T) {
+	if got := probeVirtualRouterAdjacentLatencyMilliseconds(558 * time.Millisecond); got != 279 {
+		t.Fatalf("latency=%d, want 279", got)
+	}
+	if got := probeVirtualRouterAdjacentLatencyMilliseconds(time.Millisecond); got != 1 {
+		t.Fatalf("minimum latency=%d, want 1", got)
 	}
 }
 

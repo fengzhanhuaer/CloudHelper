@@ -2996,7 +2996,8 @@ func handleProbeVirtualRouterControlPing(runtime *probeVirtualRouterRuntime, lin
 	response.OK = true
 	response.Error = ""
 	response.Responder = localNodeID
-	response.LatencyMS = probeDurationMilliseconds(time.Since(time.Unix(0, msg.CreatedAtUnixNano)))
+	response.CreatedAtUnixNano = time.Now().UnixNano()
+	response.LatencyMS = 0
 	payload, err := json.Marshal(response)
 	if err != nil {
 		return err
@@ -3327,10 +3328,12 @@ func queryProbeVirtualRouterAdjacentPing(rt *probeVirtualRouterRuntime, directio
 	if err != nil {
 		return probeVirtualRouterControlProbePayload{}, fmt.Errorf("%w: request_id=%s target=%s direction=%s path=%s %s", err, requestID, targetNodeID, normalizeProbeRouteBridgeRole(direction), strings.Join(path, ">"), probeVirtualRouterFrameLinkDebugState(link))
 	}
-	if response.LatencyMS <= 0 {
-		response.LatencyMS = probeDurationMilliseconds(time.Since(startedAt))
-	}
+	response.LatencyMS = probeVirtualRouterAdjacentLatencyMilliseconds(time.Since(startedAt))
 	return response, nil
+}
+
+func probeVirtualRouterAdjacentLatencyMilliseconds(elapsed time.Duration) int64 {
+	return probeDurationMilliseconds(elapsed / 2)
 }
 
 func queryProbeVirtualRouterPathRTTControl(path []string) (probeVirtualRouterPathRTTQueryResponse, error) {
