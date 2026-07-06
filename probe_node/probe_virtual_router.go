@@ -848,6 +848,9 @@ func resolveProbeVirtualRouterFakeIPForDNS(domain string, rule probeVirtualRoute
 	if cleanDomain == "" {
 		return probeVirtualRouterFakeIPEntry{}, errors.New("virtual router dns domain is empty")
 	}
+	if item, exists := currentProbeVirtualRouterFakeIPEntryByDomain(cleanDomain); exists {
+		return item, nil
+	}
 	identity, controllerBaseURL, ok := currentProbeVirtualRouterController()
 	if ok {
 		ctx, cancel := context.WithTimeout(context.Background(), probeLinkChainsSyncFetchTimeout)
@@ -3771,6 +3774,11 @@ func handleProbeVirtualRouterIPFrame(runtime *probeVirtualRouterRuntime, link *p
 	srcIP := probeVirtualRouterIPv4Source(packet)
 	localIP := currentProbeVirtualRouterLocalIPForRuntime(runtime)
 	localMatch := probeVirtualRouterPacketTargetsLocalDelivery(runtime, dstIP, path)
+	if !localMatch && probeVirtualRouterFrameTargetsLocalFakeIP(dstIP, path, currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)) {
+		if refreshProbeVirtualRouterRouteConfigFromController("fake_ip_exit_delivery_miss") {
+			localMatch = probeVirtualRouterPacketTargetsLocalDelivery(runtime, dstIP, path)
+		}
+	}
 	recordProbeVirtualRouterRuntimeFrameDecision(runtime, srcIP, dstIP, localIP, path, localMatch)
 	if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
 		trace = appendProbeVirtualRouterICMPTrace(trace, runtime, "frame_rx", "", "")
@@ -3829,6 +3837,17 @@ func handleProbeVirtualRouterIPFrame(runtime *probeVirtualRouterRuntime, link *p
 		return err
 	}
 	return nil
+}
+
+func probeVirtualRouterFrameTargetsLocalFakeIP(dstIP string, path []string, localNodeID string) bool {
+	if !probeVirtualRouterIPInCurrentFakeCIDR(dstIP) {
+		return false
+	}
+	local := normalizeProbeChainNodeID(localNodeID)
+	if local == "" || len(path) == 0 {
+		return false
+	}
+	return normalizeProbeChainNodeID(path[len(path)-1]) == local
 }
 
 func writeProbeVirtualRouterLocalTUNPacket(packet []byte) error {

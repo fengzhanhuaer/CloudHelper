@@ -235,6 +235,43 @@ func TestResolveProbeLocalProxyRouteDecisionByIPCIDROverridesFallbackDNSHint(t *
 	}
 }
 
+func TestProbeLocalRouteDecisionRewritesVirtualRouterFakeIPForDirectExit(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDNSServiceForTest()
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeLocalDNSServiceForTest)
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	storeProbeLocalDNSCacheRecords("reddit.com", []string{"203.0.113.44"})
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{
+			Version: 1,
+			Items: []probeVirtualRouterFakeIPEntry{{
+				Domain:     "reddit.com",
+				FakeIP:     "198.18.1.20",
+				Action:     "probe_exit",
+				ExitNodeID: "2",
+			}},
+		},
+	}, "2")
+
+	route, err := decideProbeLocalRouteForTargetWithTunnelPolicy("198.18.1.20:443", false)
+	if err != nil {
+		t.Fatalf("decide route failed: %v", err)
+	}
+	if !route.Direct || route.Reject {
+		t.Fatalf("virtual router fake ip should become direct exit route: %+v", route)
+	}
+	if route.TargetAddr != "203.0.113.44:443" {
+		t.Fatalf("target=%q, want resolved real ip target", route.TargetAddr)
+	}
+	if len(route.TargetAddrs) != 1 || route.TargetAddrs[0] != "203.0.113.44:443" {
+		t.Fatalf("target candidates=%v", route.TargetAddrs)
+	}
+}
+
 func TestResolveProbeLocalProxyRouteDecisionByIPUsesCurrentRulesAfterConfigRefresh(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeLocalDNSServiceForTest()

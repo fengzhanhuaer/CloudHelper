@@ -185,6 +185,51 @@ func TestResolveProbeVirtualRouterDNSResponseUsesControllerFakeIPForExitRule(t *
 	}
 }
 
+func TestResolveProbeVirtualRouterFakeIPForDNSPrefersLocalCache(t *testing.T) {
+	restore := setProbeVirtualRouterDNSConfigForTest(t, probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{
+			Version:   9,
+			UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+			Items: []probeVirtualRouterFakeIPEntry{{
+				Domain:     "www.reddit.com",
+				FakeIP:     "198.18.4.9",
+				RuleID:     "rr-reddit",
+				Action:     "probe_exit",
+				ExitNodeID: "9",
+				ExpiresAt:  time.Now().UTC().Add(30 * 24 * time.Hour).Format(time.RFC3339),
+				UpdatedAt:  time.Now().UTC().Format(time.RFC3339),
+			}},
+		},
+	})
+	defer restore()
+
+	oldRequest := probeRequestRouteFakeIP
+	requests := 0
+	probeRequestRouteFakeIP = func(ctx context.Context, controllerBaseURL string, identity nodeIdentity, domain string, rule probeVirtualRouterRouteRule) (probeVirtualRouterFakeIPEntry, probeVirtualRouterFakeIPLibrary, error) {
+		requests++
+		return probeVirtualRouterFakeIPEntry{}, probeVirtualRouterFakeIPLibrary{}, errors.New("controller should not be called for cached fake ip")
+	}
+	rememberProbeVirtualRouterController(nodeIdentity{NodeID: "1", Secret: "secret-1"}, "https://controller.example")
+	t.Cleanup(func() {
+		probeRequestRouteFakeIP = oldRequest
+		rememberProbeVirtualRouterController(nodeIdentity{}, "")
+	})
+
+	item, err := resolveProbeVirtualRouterFakeIPForDNS("www.reddit.com", probeVirtualRouterRouteRule{
+		ID:         "rr-reddit",
+		Action:     "probe_exit",
+		ExitNodeID: "9",
+	})
+	if err != nil {
+		t.Fatalf("resolve cached fake ip failed: %v", err)
+	}
+	if item.FakeIP != "198.18.4.9" || requests != 0 {
+		t.Fatalf("item=%+v controller_requests=%d", item, requests)
+	}
+}
+
 func TestResolveProbeVirtualRouterDNSResponseDirectAndReject(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeLocalDNSServiceForTest()

@@ -127,7 +127,7 @@ func TestEnsureProbeVirtualRouterProbeIPsAllocatesHighNodeIDFromFreePool(t *test
 	}
 }
 
-func TestProbeVirtualRouterFakeIPLibraryAllocatesRenewsAndResetsIndependentStore(t *testing.T) {
+func TestProbeVirtualRouterFakeIPLibraryAllocatesReusesAndResetsIndependentStore(t *testing.T) {
 	oldStore := ProbeRouteConfigStore
 	t.Cleanup(func() { ProbeRouteConfigStore = oldStore })
 	setProbeVirtualRouterTestProbeStore(t, probeConfigData{
@@ -149,9 +149,12 @@ func TestProbeVirtualRouterFakeIPLibraryAllocatesRenewsAndResetsIndependentStore
 	}
 	rule := probeVirtualRouterRouteRule{ID: "rr-1", Action: probeVirtualRouterRouteRuleActionExit, ExitNodeID: "9"}
 
-	first, firstLibrary, err := allocateProbeVirtualRouterFakeIPForDomain("WWW.Reddit.COM.", rule)
+	first, firstLibrary, firstChanged, err := allocateProbeVirtualRouterFakeIPForDomain("WWW.Reddit.COM.", rule)
 	if err != nil {
 		t.Fatalf("allocate fake ip failed: %v", err)
+	}
+	if !firstChanged {
+		t.Fatalf("first allocation did not report library change")
 	}
 	if first.Domain != "www.reddit.com" || first.FakeIP != "198.18.4.1" || first.ExitNodeID != "9" {
 		t.Fatalf("first fake ip entry=%+v", first)
@@ -164,12 +167,15 @@ func TestProbeVirtualRouterFakeIPLibraryAllocatesRenewsAndResetsIndependentStore
 		t.Fatalf("expires_at=%q err=%v", first.ExpiresAt, err)
 	}
 
-	second, secondLibrary, err := allocateProbeVirtualRouterFakeIPForDomain("www.reddit.com", rule)
+	second, secondLibrary, secondChanged, err := allocateProbeVirtualRouterFakeIPForDomain("www.reddit.com", rule)
 	if err != nil {
-		t.Fatalf("renew fake ip failed: %v", err)
+		t.Fatalf("reuse fake ip failed: %v", err)
 	}
-	if second.FakeIP != first.FakeIP || secondLibrary.Version != firstLibrary.Version+1 {
-		t.Fatalf("renew entry=%+v library=%+v first_version=%d", second, secondLibrary, firstLibrary.Version)
+	if secondChanged {
+		t.Fatalf("unchanged fake ip lookup reported library change")
+	}
+	if second.FakeIP != first.FakeIP || secondLibrary.Version != firstLibrary.Version || second.ExpiresAt != first.ExpiresAt {
+		t.Fatalf("reuse entry=%+v library=%+v first=%+v first_library=%+v", second, secondLibrary, first, firstLibrary)
 	}
 
 	resetLibrary, err := resetProbeVirtualRouterFakeIPLibrary()
@@ -178,6 +184,56 @@ func TestProbeVirtualRouterFakeIPLibraryAllocatesRenewsAndResetsIndependentStore
 	}
 	if len(resetLibrary.Items) != 0 || resetLibrary.Version != secondLibrary.Version+1 {
 		t.Fatalf("reset library=%+v second_version=%d", resetLibrary, secondLibrary.Version)
+	}
+}
+
+func TestProbeVirtualRouterFakeIPLibraryRenewsOnTwoDayMaintenance(t *testing.T) {
+	oldStore := ProbeRouteConfigStore
+	t.Cleanup(func() { ProbeRouteConfigStore = oldStore })
+
+	tmpDir := t.TempDir()
+	now := time.Now().UTC()
+	oldUpdatedAt := now.Add(-49 * time.Hour).Format(time.RFC3339)
+	oldExpiresAt := now.Add(2 * time.Hour).Format(time.RFC3339)
+	ProbeRouteConfigStore = &probeRouteConfigStore{
+		path: filepath.Join(tmpDir, "probe_route_config.json"),
+		data: probeRouteConfigStoreData{
+			VirtualRouter: probeVirtualRouterConfig{
+				Enabled:    true,
+				FakeIPCIDR: probeVirtualRouterDefaultCIDR,
+			},
+			VirtualRouterFakeIP: probeVirtualRouterFakeIPLibrary{
+				Version:   7,
+				UpdatedAt: oldUpdatedAt,
+				Items: []probeVirtualRouterFakeIPEntry{{
+					Domain:     "www.reddit.com",
+					FakeIP:     "198.18.4.1",
+					RuleID:     "rr-1",
+					Action:     probeVirtualRouterRouteRuleActionExit,
+					ExitNodeID: "9",
+					ExpiresAt:  oldExpiresAt,
+					UpdatedAt:  oldUpdatedAt,
+				}},
+			},
+		},
+	}
+
+	if !reconcileProbeVirtualRouterFakeIPLibraryBestEffort() {
+		t.Fatalf("expected two-day maintenance to renew fake ip library")
+	}
+	library := ProbeRouteConfigStore.data.VirtualRouterFakeIP
+	if library.Version != 8 || len(library.Items) != 1 {
+		t.Fatalf("renewed library=%+v", library)
+	}
+	renewedExpiresAt, err := time.Parse(time.RFC3339, library.Items[0].ExpiresAt)
+	if err != nil || time.Until(renewedExpiresAt) < 29*24*time.Hour {
+		t.Fatalf("renewed expires_at=%q err=%v", library.Items[0].ExpiresAt, err)
+	}
+	if reconcileProbeVirtualRouterFakeIPLibraryBestEffort() {
+		t.Fatalf("second maintenance inside two-day interval should be unchanged")
+	}
+	if ProbeRouteConfigStore.data.VirtualRouterFakeIP.Version != 8 {
+		t.Fatalf("version after unchanged maintenance=%d", ProbeRouteConfigStore.data.VirtualRouterFakeIP.Version)
 	}
 }
 
@@ -225,6 +281,23 @@ func TestProbeRouteFakeIPResolveHandlerPersistsLibrary(t *testing.T) {
 		t.Fatalf("sync result=%+v", payload.Sync)
 	}
 	assertProbeVirtualRouterRouteConfigSyncCommand(t, commandCh)
+	cleanupSession()
+
+	body = bytes.NewBufferString(`{"domain":"api.reddit.com","rule_id":"rr-1","action":"probe_exit","exit_node_id":"9"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/probe/route/fake_ip/resolve?node_id=1&secret=secret-1", body)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rr = httptest.NewRecorder()
+	ProbeRouteFakeIPResolveHandler(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("second resolve status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode second response failed: %v body=%s", err, rr.Body.String())
+	}
+	if payload.Sync.Total != 0 || payload.Sync.Dispatched != 0 || payload.Sync.Offline != 0 || payload.Sync.Failed != 0 {
+		t.Fatalf("unchanged fake ip resolve should not dispatch sync: %+v", payload.Sync)
+	}
+
 	raw, err := os.ReadFile(filepath.Join(tmpDir, "probe_route_config.json"))
 	if err != nil {
 		t.Fatalf("read persisted route config failed: %v", err)

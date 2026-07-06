@@ -38,7 +38,9 @@ func ProbeRouteConfigHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ensureProbeVirtualRouterStoredAuthFields()
-	reconcileProbeVirtualRouterFakeIPLibraryBestEffort()
+	if reconcileProbeVirtualRouterFakeIPLibraryBestEffort() {
+		dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURLFromRequest(r))
+	}
 	ProbeRouteConfigStore.mu.RLock()
 	virtualRouter := buildProbeVirtualRouterConfigForNodeLocked(nodeID)
 	ProbeRouteConfigStore.mu.RUnlock()
@@ -72,7 +74,7 @@ func ProbeRouteFakeIPResolveHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
 		return
 	}
-	item, library, err := allocateProbeVirtualRouterFakeIPForDomain(req.Domain, probeVirtualRouterRouteRule{
+	item, library, changed, err := allocateProbeVirtualRouterFakeIPForDomain(req.Domain, probeVirtualRouterRouteRule{
 		ID:         strings.TrimSpace(req.RuleID),
 		Name:       strings.TrimSpace(req.RuleID),
 		Action:     strings.TrimSpace(req.Action),
@@ -82,11 +84,14 @@ func ProbeRouteFakeIPResolveHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if err := ProbeRouteConfigStore.Save(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+	var syncResult probeLinkConfigSyncDispatchResult
+	if changed {
+		if err := ProbeRouteConfigStore.Save(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		syncResult = dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURLFromRequest(r))
 	}
-	syncResult := dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURLFromRequest(r))
 	writeJSON(w, http.StatusOK, probeRouteFakeIPResolveResponse{
 		NodeID:        nodeID,
 		Item:          item,

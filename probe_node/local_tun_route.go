@@ -60,16 +60,18 @@ func decideProbeLocalRouteForTargetWithTunnelPolicy(targetAddr string, allowTunn
 		TargetAddr: net.JoinHostPort(host, port),
 		Group:      "fallback",
 	}
-	if !allowTunnel {
-		return decision, nil
-	}
-
 	rewrittenTarget, domainForPolicy, fakeMatched := rewriteProbeLocalRouteTargetForFakeIP(host, port)
 	if rewrittenTarget != "" {
 		decision.TargetAddr = rewrittenTarget
 	}
 	if domainForPolicy == "" {
 		domainForPolicy = host
+	}
+	if !allowTunnel {
+		if fakeMatched {
+			applyProbeLocalFakeIPDirectTargetCandidates(&decision, domainForPolicy, port)
+		}
+		return decision, nil
 	}
 	var routeDecision probeLocalDNSRouteDecision
 	if parsed := net.ParseIP(domainForPolicy); parsed != nil && !fakeMatched {
@@ -149,6 +151,23 @@ func probeLocalTunnelRouteTargetCandidates(route probeLocalTunnelRouteDecision) 
 	return candidates
 }
 
+func applyProbeLocalFakeIPDirectTargetCandidates(decision *probeLocalTunnelRouteDecision, domain string, port string) {
+	if decision == nil {
+		return
+	}
+	routeDecision := probeLocalDNSRouteDecision{Group: firstNonEmpty(strings.TrimSpace(decision.Group), "virtual-router"), Action: "direct"}
+	realIPs := resolveProbeLocalDNSRealIPsForRouteDomain(domain, routeDecision)
+	if len(realIPs) == 0 {
+		return
+	}
+	targets := buildProbeLocalTunnelRouteTargetCandidates(realIPs, port)
+	if len(targets) == 0 {
+		return
+	}
+	decision.TargetAddrs = targets
+	decision.TargetAddr = targets[0]
+}
+
 func rewriteProbeLocalRouteTargetForFakeIP(host string, port string) (rewrittenTarget string, policyDomain string, fakeMatched bool) {
 	cleanHost := strings.TrimSpace(strings.Trim(host, "[]"))
 	cleanPort := strings.TrimSpace(port)
@@ -156,15 +175,19 @@ func rewriteProbeLocalRouteTargetForFakeIP(host string, port string) (rewrittenT
 		return "", "", false
 	}
 	if parsed := net.ParseIP(cleanHost); parsed != nil {
-		entry, ok := lookupProbeLocalDNSFakeIPEntry(parsed.String())
-		if !ok {
-			return net.JoinHostPort(cleanHost, cleanPort), cleanHost, false
+		if entry, ok := lookupProbeLocalDNSFakeIPEntry(parsed.String()); ok {
+			domain := strings.TrimSpace(strings.ToLower(strings.Trim(entry.Domain, ".")))
+			if domain != "" {
+				return net.JoinHostPort(domain, cleanPort), domain, true
+			}
 		}
-		domain := strings.TrimSpace(strings.ToLower(strings.Trim(entry.Domain, ".")))
-		if domain == "" {
-			return net.JoinHostPort(cleanHost, cleanPort), cleanHost, false
+		if entry, ok := currentProbeVirtualRouterFakeIPEntryByIP(parsed.String()); ok {
+			domain := normalizeProbeVirtualRouterDomain(entry.Domain)
+			if domain != "" {
+				return net.JoinHostPort(domain, cleanPort), domain, true
+			}
 		}
-		return net.JoinHostPort(domain, cleanPort), domain, true
+		return net.JoinHostPort(cleanHost, cleanPort), cleanHost, false
 	}
 	return net.JoinHostPort(cleanHost, cleanPort), cleanHost, false
 }
