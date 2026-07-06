@@ -365,7 +365,6 @@ func buildProbeNodeHTTPMux(identity nodeIdentity) *http.ServeMux {
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
 		})
 	})
-	mux.HandleFunc(probeChainRelayAPIPath, handleProbeChainRelayHTTP)
 	return mux
 }
 

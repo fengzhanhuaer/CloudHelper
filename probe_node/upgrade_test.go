@@ -406,7 +406,7 @@ func TestDownloadProbeAssetRetriesUnexpectedEOFAndResumes(t *testing.T) {
 	}
 }
 
-func TestDownloadProbeAssetProxyStreamsThroughController(t *testing.T) {
+func TestDownloadProbeAssetStreamsThroughController(t *testing.T) {
 	partial := []byte("hello ")
 	remaining := []byte("proxy")
 	var gotPath string

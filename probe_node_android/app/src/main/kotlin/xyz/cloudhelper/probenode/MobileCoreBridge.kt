@@ -25,7 +25,7 @@ object MobileCoreBridge {
 
     // Prepares shared native state without opening the controller reporter session.
     // VPN startup uses this path so data-plane startup cannot restart yamux/reporting
-    // or re-apply probe-to-probe chain runtimes.
+    // or re-apply virtual route runtimes.
     fun prepareRuntime(context: Context, config: ProbeNodeConfig): String {
         if (!config.isReady) {
             return "controller URL, node ID, and node secret are required"

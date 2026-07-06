@@ -598,37 +598,6 @@ func TestBuildProbeVirtualRouterRuntimeConfigFixedADialsBRequiresBAddress(t *tes
 	}
 }
 
-func TestCollectProbeLinkChainLegacyRuntimeIDsKeepsVirtualRouterRuntime(t *testing.T) {
-	probeChainRuntimeState.mu.Lock()
-	oldRuntimes := probeChainRuntimeState.runtimes
-	probeChainRuntimeState.runtimes = map[string]*probeChainRuntime{
-		"ordinary": {
-			cfg:                probeChainRuntimeConfig{chainID: "ordinary"},
-			downstreamSessions: make(map[string]*probeChainBridgeSession),
-			upstreamSessions:   make(map[string]*probeChainBridgeSession),
-			stopCh:             make(chan struct{}),
-		},
-		"vrouter-abc": {
-			cfg:                probeChainRuntimeConfig{chainID: "vrouter-abc"},
-			downstreamSessions: make(map[string]*probeChainBridgeSession),
-			upstreamSessions:   make(map[string]*probeChainBridgeSession),
-			stopCh:             make(chan struct{}),
-		},
-	}
-	t.Cleanup(func() {
-		probeChainRuntimeState.mu.Lock()
-		probeChainRuntimeState.runtimes = oldRuntimes
-		probeChainRuntimeState.mu.Unlock()
-	})
-
-	toStop := collectProbeLinkChainLegacyRuntimeIDsLocked()
-	probeChainRuntimeState.mu.Unlock()
-
-	if !reflect.DeepEqual(toStop, []string{"ordinary"}) {
-		t.Fatalf("toStop=%v, want [ordinary]", toStop)
-	}
-}
-
 func TestProbeVirtualRouterControlFrameEnvelope(t *testing.T) {
 	payload := []byte(`{"request_id":"r1"}`)
 	frame, err := buildProbeVirtualRouterBusinessFrame(probeVirtualRouterFrameMainTypePingPong, probeVirtualRouterPingPongSubTypePing, payload, []string{"1", "2"}, nil)
@@ -668,13 +637,11 @@ func TestProbeVirtualRouterNextHopInPath(t *testing.T) {
 	}
 }
 
-func TestProbeVirtualRouterPathFromRequest(t *testing.T) {
-	req := probeChainTunnelOpenRequest{
-		AssociationV2: &probeChainAssociationV2Meta{
-			RouteTarget: "node-1>node-2>node-3",
-		},
+func TestProbeVirtualRouterPathFromAssociation(t *testing.T) {
+	association := &probeChainAssociationV2Meta{
+		RouteTarget: "node-1>node-2>node-3",
 	}
-	if got := probeVirtualRouterPathFromRequest(req); !reflect.DeepEqual(got, []string{"1", "2", "3"}) {
+	if got := probeVirtualRouterPathFromAssociation(association); !reflect.DeepEqual(got, []string{"1", "2", "3"}) {
 		t.Fatalf("path=%v, want [1 2 3]", got)
 	}
 }

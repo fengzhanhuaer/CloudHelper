@@ -856,7 +856,7 @@ func resolveProbeVirtualRouterFakeIPForDNS(domain string, rule probeVirtualRoute
 	}
 	identity, controllerBaseURL, ok := currentProbeVirtualRouterController()
 	if ok {
-		ctx, cancel := context.WithTimeout(context.Background(), probeLinkChainsSyncFetchTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), probeRouteConfigSyncFetchTimeout)
 		item, library, err := probeRequestRouteFakeIP(ctx, controllerBaseURL, identity, cleanDomain, rule)
 		cancel()
 		if err == nil && strings.TrimSpace(item.FakeIP) != "" {
@@ -3918,7 +3918,7 @@ func forwardProbeVirtualRouterPacketAlongPath(packet []byte, dstIP string, path 
 	}
 	rt, direction := probeVirtualRouterRuntimeForAdjacentNode(nextNodeID)
 	if rt == nil {
-		return errors.New("adjacent probe chain runtime is unavailable")
+		return errors.New("adjacent virtual router runtime is unavailable")
 	}
 	if _, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
 		trace = appendProbeVirtualRouterICMPTrace(trace, rt, "forward_tx", direction, nextNodeID)
@@ -4460,23 +4460,6 @@ func recordProbeVirtualRouterRuntimePingError(rt *probeVirtualRouterRuntime, dir
 	detachProbeVirtualRouterStalePhysicalCarrier(rt, failureCount, normalizedErr)
 }
 
-func recordProbeVirtualRouterRuntimeRemoteRTTSuccess(chainID string, result probeChainFrameRTTQueryResult) {
-	chainID = strings.TrimSpace(chainID)
-	if chainID == "" {
-		return
-	}
-	probeVirtualRouterRuntimeStatsState.mu.Lock()
-	item := probeVirtualRouterRuntimeStatsForUpdateLocked(chainID)
-	if item != nil {
-		item.LastRemoteRTTMS = result.RTTMS
-		item.LastRemoteRTTAt = time.Now().UTC().Format(time.RFC3339)
-		item.LastRemoteRTTError = ""
-		item.LastRemoteRTTResponder = strings.TrimSpace(result.Responder)
-		item.LastRemotePongsReceived = result.PongsReceived
-	}
-	probeVirtualRouterRuntimeStatsState.mu.Unlock()
-}
-
 func recordProbeVirtualRouterRuntimeRemoteRTTControlSuccess(chainID string, latencyMS int64, responder string) {
 	chainID = strings.TrimSpace(chainID)
 	if chainID == "" {
@@ -4844,11 +4827,11 @@ func probeVirtualRouterNextHopInPath(path []string, localNodeID string) string {
 	return ""
 }
 
-func probeVirtualRouterPathFromRequest(req probeChainTunnelOpenRequest) []string {
-	if req.AssociationV2 == nil {
+func probeVirtualRouterPathFromAssociation(association *probeChainAssociationV2Meta) []string {
+	if association == nil {
 		return nil
 	}
-	return parseProbeVirtualRouterPathText(req.AssociationV2.RouteTarget)
+	return parseProbeVirtualRouterPathText(association.RouteTarget)
 }
 
 func probeVirtualRouterIPv4Destination(packet []byte) string {

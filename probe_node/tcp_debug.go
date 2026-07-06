@@ -122,23 +122,19 @@ type probeTCPDebugFailureEvent struct {
 }
 
 type probeTCPDebugRelay struct {
-	id          string
-	trackingID  string
-	flowID      string
-	side        string
-	scope       string
-	target      string
-	routeTarget string
-	nodeID      string
-	group       string
-	direct      bool
-	transport   string
-	sessionID   string
-	sessionRole string
-	session     interface {
-		NumStreams() int
-		PingStats() probeChainFramePingStats
-	}
+	id                  string
+	trackingID          string
+	flowID              string
+	side                string
+	scope               string
+	target              string
+	routeTarget         string
+	nodeID              string
+	group               string
+	direct              bool
+	transport           string
+	sessionID           string
+	sessionRole         string
 	sessionStreamsOpen  int
 	sessionStreamsAfter int
 	openedAt            time.Time
@@ -164,20 +160,16 @@ type probeTCPDebugRelay struct {
 }
 
 type probeTCPDebugRelayOptions struct {
-	Scope       string
-	TrackingID  string
-	FlowID      string
-	Side        string
-	Target      string
-	RouteTarget string
-	Route       probeLocalTunnelRouteDecision
-	Transport   string
-	SessionID   string
-	SessionRole string
-	Session     interface {
-		NumStreams() int
-		PingStats() probeChainFramePingStats
-	}
+	Scope               string
+	TrackingID          string
+	FlowID              string
+	Side                string
+	Target              string
+	RouteTarget         string
+	Route               probeLocalTunnelRouteDecision
+	Transport           string
+	SessionID           string
+	SessionRole         string
 	SessionStreamsOpen  int
 	SessionStreamsAfter int
 }
@@ -286,7 +278,6 @@ func (s *probeTCPDebugState) beginRelayWithOptions(opts probeTCPDebugRelayOption
 		transport:           transport,
 		sessionID:           strings.TrimSpace(opts.SessionID),
 		sessionRole:         strings.TrimSpace(opts.SessionRole),
-		session:             opts.Session,
 		sessionStreamsOpen:  opts.SessionStreamsOpen,
 		sessionStreamsAfter: opts.SessionStreamsAfter,
 		openedAt:            now,
@@ -594,20 +585,6 @@ func buildProbeTCPDebugConnectionPayload(relay *probeTCPDebugRelay, now time.Tim
 	}
 	if side, ok := relay.lastCongestionSide.Load().(string); ok {
 		item.LastCongestionSide = strings.TrimSpace(side)
-	}
-	if relay.session != nil {
-		item.SessionStreamsCurrent = relay.session.NumStreams()
-		ping := relay.session.PingStats()
-		item.SessionRTTMS = probeDurationMilliseconds(ping.RTT)
-		item.SessionPingsSent = ping.PingsSent
-		item.SessionPongsReceived = ping.PongsReceived
-		item.SessionPingTimeouts = ping.Timeouts
-		if !ping.LastPingAt.IsZero() {
-			item.SessionLastPingAt = ping.LastPingAt.Format(time.RFC3339)
-		}
-		if !ping.LastPongAt.IsZero() {
-			item.SessionLastPongAt = ping.LastPongAt.Format(time.RFC3339)
-		}
 	}
 	return item
 }

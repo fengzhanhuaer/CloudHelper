@@ -343,7 +343,7 @@ func TestMngLinkVirtualRouterFakeIPResetHandlerDispatchesRouteConfigSync(t *test
 	req := httptest.NewRequest(http.MethodPost, "/mng/api/route/virtual_router/fake_ip/reset", nil)
 	req.Header.Set("X-Forwarded-Proto", "https")
 	rr := httptest.NewRecorder()
-	mngLinkVirtualRouterFakeIPResetHandler(rr, req)
+	mngRouteVirtualRouterFakeIPResetHandler(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("reset status=%d body=%s", rr.Code, rr.Body.String())
 	}

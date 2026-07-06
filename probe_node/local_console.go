@@ -2499,10 +2499,6 @@ func probeLocalShellStreamHandler(w http.ResponseWriter, r *http.Request) {
 func prepareProbeLocalProcessRestart() {
 	logProbeInfof("probe local restart preparing: closing listeners")
 	_ = stopProbeLocalTUNDataPlane()
-	stoppedChains := stopAllProbeChainRuntimes("process restart")
-	if stoppedChains > 0 {
-		logProbeInfof("probe local restart stopped chain runtimes: count=%d", stoppedChains)
-	}
 	stopProbeLocalConsoleServer("process restart")
 	time.Sleep(300 * time.Millisecond)
 }

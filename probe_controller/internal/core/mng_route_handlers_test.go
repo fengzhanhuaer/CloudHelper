@@ -160,7 +160,7 @@ func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T)
 
 	req := httptest.NewRequest(http.MethodGet, "/mng/api/route/virtual_router/status", nil)
 	rr := httptest.NewRecorder()
-	mngLinkVirtualRouterStatusHandler(rr, req)
+	mngRouteVirtualRouterStatusHandler(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
@@ -280,14 +280,14 @@ func TestMngLinkVirtualRouterHandlerSaveAndGet(t *testing.T) {
 }`)
 	saveReq := httptest.NewRequest(http.MethodPost, "/mng/api/route/virtual_router", bytes.NewReader(body))
 	saveRR := httptest.NewRecorder()
-	mngLinkVirtualRouterHandler(saveRR, saveReq)
+	mngRouteVirtualRouterHandler(saveRR, saveReq)
 	if saveRR.Code != http.StatusOK {
 		t.Fatalf("save status=%d body=%s", saveRR.Code, saveRR.Body.String())
 	}
 
 	getReq := httptest.NewRequest(http.MethodGet, "/mng/api/route/virtual_router", nil)
 	getRR := httptest.NewRecorder()
-	mngLinkVirtualRouterHandler(getRR, getReq)
+	mngRouteVirtualRouterHandler(getRR, getReq)
 	if getRR.Code != http.StatusOK {
 		t.Fatalf("get status=%d body=%s", getRR.Code, getRR.Body.String())
 	}
@@ -335,7 +335,7 @@ func TestMngLinkVirtualRouterHandlerRejectsProbeIPOutsideReservedPool(t *testing
 	body := []byte(`{"probe_ips":[{"node_id":"1","ip":"198.18.4.1"}]}`)
 	req := httptest.NewRequest(http.MethodPost, "/mng/api/route/virtual_router", bytes.NewReader(body))
 	rr := httptest.NewRecorder()
-	mngLinkVirtualRouterHandler(rr, req)
+	mngRouteVirtualRouterHandler(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d body=%s, want 400", rr.Code, rr.Body.String())
 	}
@@ -357,7 +357,7 @@ func TestMngLinkVirtualRouterHandlerRejectsInvalidServicePort(t *testing.T) {
 }`)
 	req := httptest.NewRequest(http.MethodPost, "/mng/api/route/virtual_router", bytes.NewReader(body))
 	rr := httptest.NewRecorder()
-	mngLinkVirtualRouterHandler(rr, req)
+	mngRouteVirtualRouterHandler(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d body=%s, want 400", rr.Code, rr.Body.String())
 	}
@@ -413,7 +413,7 @@ func TestMngLinkVirtualRouterRouteRulesHandlerSaveSortsAndTopologySavePreserves(
 }`)
 	saveReq := httptest.NewRequest(http.MethodPost, "/mng/api/route/virtual_router/route_rules", bytes.NewReader(body))
 	saveRR := httptest.NewRecorder()
-	mngLinkVirtualRouterRouteRulesHandler(saveRR, saveReq)
+	mngRouteVirtualRouterRouteRulesHandler(saveRR, saveReq)
 	if saveRR.Code != http.StatusOK {
 		t.Fatalf("save status=%d body=%s", saveRR.Code, saveRR.Body.String())
 	}
@@ -455,14 +455,14 @@ func TestMngLinkVirtualRouterRouteRulesHandlerSaveSortsAndTopologySavePreserves(
 }`)
 	topologyReq := httptest.NewRequest(http.MethodPost, "/mng/api/route/virtual_router", bytes.NewReader(topologyBody))
 	topologyRR := httptest.NewRecorder()
-	mngLinkVirtualRouterHandler(topologyRR, topologyReq)
+	mngRouteVirtualRouterHandler(topologyRR, topologyReq)
 	if topologyRR.Code != http.StatusOK {
 		t.Fatalf("topology save status=%d body=%s", topologyRR.Code, topologyRR.Body.String())
 	}
 
 	getReq := httptest.NewRequest(http.MethodGet, "/mng/api/route/virtual_router/route_rules", nil)
 	getRR := httptest.NewRecorder()
-	mngLinkVirtualRouterRouteRulesHandler(getRR, getReq)
+	mngRouteVirtualRouterRouteRulesHandler(getRR, getReq)
 	if getRR.Code != http.StatusOK {
 		t.Fatalf("get status=%d body=%s", getRR.Code, getRR.Body.String())
 	}

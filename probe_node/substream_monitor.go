@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const probeSubstreamMonitorFrameWindowBytes = probeVirtualRouterFrameMaxDataBytes
+
 type probeSubstreamMonitorPayload struct {
 	Type             string                            `json:"type"`
 	RequestID        string                            `json:"request_id"`
@@ -118,7 +120,7 @@ func snapshotProbeSubstreamMonitorPayload(nodeID string, requestID string, scope
 		Completed:        []probeSubstreamMonitorItem{},
 		Pairs:            []probeSubstreamMonitorPair{},
 		Failures:         tcp.Failures,
-		FrameWindowBytes: probeChainFrameMaxDataBytes * probeChainFrameSessionInboundBuffer,
+		FrameWindowBytes: probeSubstreamMonitorFrameWindowBytes,
 		FetchedAt:        time.Now().UTC().Format(time.RFC3339),
 		Timestamp:        time.Now().UTC().Format(time.RFC3339),
 	}
@@ -147,7 +149,7 @@ func buildProbeSubstreamMonitorItem(item probeTCPDebugConnectionItemPayload) (pr
 	}
 	buffer := probeSubstreamBufferMonitorItem{
 		Status:               "clear",
-		FrameWindowBytes:     probeChainFrameMaxDataBytes * probeChainFrameSessionInboundBuffer,
+		FrameWindowBytes:     probeSubstreamMonitorFrameWindowBytes,
 		BlockedWritesUp:      item.BlockedWritesUp,
 		BlockedWritesDown:    item.BlockedWritesDown,
 		WriteBlockMSUp:       item.WriteBlockMSUp,

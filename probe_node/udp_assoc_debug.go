@@ -138,29 +138,6 @@ func snapshotProbeUDPAssociations() []probeUDPAssociationDebugItemPayload {
 			Refs:                 assoc.refs.Load(),
 			Active:               assoc.conn != nil,
 		}
-		if rawMonitor := assoc.streamMonitor.Load(); rawMonitor != nil {
-			if monitor, ok := rawMonitor.(probeChainFrameStreamMonitor); ok {
-				item.SessionID = strings.TrimSpace(monitor.SessionID)
-				item.SessionRole = strings.TrimSpace(monitor.SessionRole)
-				item.SessionStreamsOpen = monitor.SessionStreamsOpen
-				item.SessionStreamsAfter = monitor.SessionStreamsAfter
-				item.OpenLatencyMS = probeDurationMilliseconds(monitor.OpenLatency)
-				if monitor.Session != nil {
-					item.SessionStreamsCurrent = monitor.Session.NumStreams()
-					ping := monitor.Session.PingStats()
-					item.SessionRTTMS = probeDurationMilliseconds(ping.RTT)
-					item.SessionPingsSent = ping.PingsSent
-					item.SessionPongsReceived = ping.PongsReceived
-					item.SessionPingTimeouts = ping.Timeouts
-					if !ping.LastPingAt.IsZero() {
-						item.SessionLastPingAt = ping.LastPingAt.Format(time.RFC3339)
-					}
-					if !ping.LastPongAt.IsZero() {
-						item.SessionLastPongAt = ping.LastPongAt.Format(time.RFC3339)
-					}
-				}
-			}
-		}
 		if lastActive := assoc.lastActiveUnix.Load(); lastActive > 0 {
 			lastActiveAt := time.Unix(lastActive, 0).UTC()
 			item.LastActive = lastActiveAt.Format(time.RFC3339)

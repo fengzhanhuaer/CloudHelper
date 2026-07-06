@@ -198,21 +198,14 @@ func TestMngPanelProtectionAndSummary(t *testing.T) {
 		t.Fatalf("expected /mng/api/panel/summary without cookie to return 401, got %d body=%s", summaryRRWithoutCookie.Code, summaryRRWithoutCookie.Body.String())
 	}
 
-	linkReqWithoutCookie := httptest.NewRequest(http.MethodGet, "/mng/link", nil)
-	linkRRWithoutCookie := httptest.NewRecorder()
-	mux.ServeHTTP(linkRRWithoutCookie, linkReqWithoutCookie)
-	if linkRRWithoutCookie.Code != http.StatusFound {
-		t.Fatalf("expected /mng/link without cookie to redirect, got %d body=%s", linkRRWithoutCookie.Code, linkRRWithoutCookie.Body.String())
+	routeReqWithoutCookie := httptest.NewRequest(http.MethodGet, "/mng/route", nil)
+	routeRRWithoutCookie := httptest.NewRecorder()
+	mux.ServeHTTP(routeRRWithoutCookie, routeReqWithoutCookie)
+	if routeRRWithoutCookie.Code != http.StatusFound {
+		t.Fatalf("expected /mng/route without cookie to redirect, got %d body=%s", routeRRWithoutCookie.Code, routeRRWithoutCookie.Body.String())
 	}
-	if loc := linkRRWithoutCookie.Header().Get("Location"); loc != "/mng" {
-		t.Fatalf("expected /mng/link redirect location /mng, got %q", loc)
-	}
-
-	linkUsersReqWithoutCookie := httptest.NewRequest(http.MethodGet, "/mng/api/link/users", nil)
-	linkUsersRRWithoutCookie := httptest.NewRecorder()
-	mux.ServeHTTP(linkUsersRRWithoutCookie, linkUsersReqWithoutCookie)
-	if linkUsersRRWithoutCookie.Code != http.StatusUnauthorized {
-		t.Fatalf("expected /mng/api/link/users without cookie to return 401, got %d body=%s", linkUsersRRWithoutCookie.Code, linkUsersRRWithoutCookie.Body.String())
+	if loc := routeRRWithoutCookie.Header().Get("Location"); loc != "/mng" {
+		t.Fatalf("expected /mng/route redirect location /mng, got %q", loc)
 	}
 
 	cloudflareReqWithoutCookie := httptest.NewRequest(http.MethodGet, "/mng/cloudflare", nil)
@@ -301,8 +294,8 @@ func TestMngPanelProtectionAndSummary(t *testing.T) {
 	if !strings.Contains(panelRR.Body.String(), "探针管理") {
 		t.Fatalf("expected /mng/panel html to include probe management tile")
 	}
-	if !strings.Contains(panelRR.Body.String(), "链路管理") {
-		t.Fatalf("expected /mng/panel html to include link management tile")
+	if !strings.Contains(panelRR.Body.String(), "路由管理") {
+		t.Fatalf("expected /mng/panel html to include route management tile")
 	}
 	if !strings.Contains(panelRR.Body.String(), "Cloudflare 管理") {
 		t.Fatalf("expected /mng/panel html to include cloudflare tile")
@@ -342,75 +335,27 @@ func TestMngPanelProtectionAndSummary(t *testing.T) {
 		t.Fatalf("expected /mng/probe html to include probe shell tab")
 	}
 
-	linkReq := httptest.NewRequest(http.MethodGet, "/mng/link", nil)
-	linkReq.AddCookie(cookie)
-	linkRR := httptest.NewRecorder()
-	mux.ServeHTTP(linkRR, linkReq)
-	if linkRR.Code != http.StatusOK {
-		t.Fatalf("expected /mng/link with session to return 200, got %d body=%s", linkRR.Code, linkRR.Body.String())
+	routeReq := httptest.NewRequest(http.MethodGet, "/mng/route", nil)
+	routeReq.AddCookie(cookie)
+	routeRR := httptest.NewRecorder()
+	mux.ServeHTTP(routeRR, routeReq)
+	if routeRR.Code != http.StatusOK {
+		t.Fatalf("expected /mng/route with session to return 200, got %d body=%s", routeRR.Code, routeRR.Body.String())
 	}
-	if !strings.Contains(linkRR.Body.String(), "链路管理") {
-		t.Fatalf("expected /mng/link html to include page title")
+	if !strings.Contains(routeRR.Body.String(), "路由管理") {
+		t.Fatalf("expected /mng/route html to include page title")
 	}
-	if !strings.Contains(linkRR.Body.String(), "链路添加") {
-		t.Fatalf("expected /mng/link html to include add tab")
+	if !strings.Contains(routeRR.Body.String(), "拓扑规则") {
+		t.Fatalf("expected /mng/route html to include topology tab")
 	}
-	if !strings.Contains(linkRR.Body.String(), "链路编辑") {
-		t.Fatalf("expected /mng/link html to include list tab")
+	if !strings.Contains(routeRR.Body.String(), "路由规则") {
+		t.Fatalf("expected /mng/route html to include route rules tab")
 	}
-	if !strings.Contains(linkRR.Body.String(), "端口转发") {
-		t.Fatalf("expected /mng/link html to include port forward tab")
+	if !strings.Contains(routeRR.Body.String(), "Fake IP") {
+		t.Fatalf("expected /mng/route html to include fake ip tab")
 	}
-	if !strings.Contains(linkRR.Body.String(), "链路查看") {
-		t.Fatalf("expected /mng/link html to include relay view tab")
-	}
-
-	linkUsersReq := httptest.NewRequest(http.MethodGet, "/mng/api/link/users", nil)
-	linkUsersReq.AddCookie(cookie)
-	linkUsersRR := httptest.NewRecorder()
-	mux.ServeHTTP(linkUsersRR, linkUsersReq)
-	if linkUsersRR.Code != http.StatusOK {
-		t.Fatalf("expected /mng/api/link/users with session to return 200, got %d body=%s", linkUsersRR.Code, linkUsersRR.Body.String())
-	}
-	linkUsersPayload := decodeJSONMap(t, linkUsersRR)
-	if _, ok := linkUsersPayload["users"]; !ok {
-		t.Fatalf("expected link users payload to include users, got %+v", linkUsersPayload)
-	}
-
-	linkPublicKeyReq := httptest.NewRequest(http.MethodGet, "/mng/api/link/user/public_key", nil)
-	linkPublicKeyReq.AddCookie(cookie)
-	linkPublicKeyRR := httptest.NewRecorder()
-	mux.ServeHTTP(linkPublicKeyRR, linkPublicKeyReq)
-	if linkPublicKeyRR.Code != http.StatusOK {
-		t.Fatalf("expected /mng/api/link/user/public_key with session to return 200, got %d body=%s", linkPublicKeyRR.Code, linkPublicKeyRR.Body.String())
-	}
-	linkPublicKeyPayload := decodeJSONMap(t, linkPublicKeyRR)
-	if _, ok := linkPublicKeyPayload["public_key"]; !ok {
-		t.Fatalf("expected link public key payload to include public_key, got %+v", linkPublicKeyPayload)
-	}
-
-	linkChainsReq := httptest.NewRequest(http.MethodGet, "/mng/api/link/chains", nil)
-	linkChainsReq.AddCookie(cookie)
-	linkChainsRR := httptest.NewRecorder()
-	mux.ServeHTTP(linkChainsRR, linkChainsReq)
-	if linkChainsRR.Code != http.StatusOK {
-		t.Fatalf("expected /mng/api/link/chains with session to return 200, got %d body=%s", linkChainsRR.Code, linkChainsRR.Body.String())
-	}
-	linkChainsPayload := decodeJSONMap(t, linkChainsRR)
-	if _, ok := linkChainsPayload["items"]; !ok {
-		t.Fatalf("expected link chains payload to include items, got %+v", linkChainsPayload)
-	}
-
-	linkRelayStatusReq := httptest.NewRequest(http.MethodGet, "/mng/api/link/relay_status", nil)
-	linkRelayStatusReq.AddCookie(cookie)
-	linkRelayStatusRR := httptest.NewRecorder()
-	mux.ServeHTTP(linkRelayStatusRR, linkRelayStatusReq)
-	if linkRelayStatusRR.Code != http.StatusOK {
-		t.Fatalf("expected /mng/api/link/relay_status with session to return 200, got %d body=%s", linkRelayStatusRR.Code, linkRelayStatusRR.Body.String())
-	}
-	linkRelayStatusPayload := decodeJSONMap(t, linkRelayStatusRR)
-	if _, ok := linkRelayStatusPayload["items"]; !ok {
-		t.Fatalf("expected link relay status payload to include items, got %+v", linkRelayStatusPayload)
+	if !strings.Contains(routeRR.Body.String(), "路由状态") {
+		t.Fatalf("expected /mng/route html to include status tab")
 	}
 
 	cloudflareReq := httptest.NewRequest(http.MethodGet, "/mng/cloudflare", nil)

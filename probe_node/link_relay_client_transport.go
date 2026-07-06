@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -224,7 +223,6 @@ var probeChainRelayListenerStateStore = struct {
 }
 
 var probeChainRelayOpenLayer = openProbeChainRelayNetConnWithLayer
-var probeChainRelayMeasurePingPongLatency = measureProbeChainRelayPingPongLatency
 var probeChainRelayProtocolRefreshStartedForTest func(string)
 var probeChainRelayProtocolRefreshState = struct {
 	mu       sync.Mutex
@@ -530,16 +528,6 @@ func probeChainRelayProtocolProbeAndChoose(chainID string, secret string, relayH
 	var nonSwitchableErr error
 	for len(results) < len(active) {
 		result := <-resultCh
-		if result.Err == nil && result.Conn != nil {
-			latency, pingErr := probeChainRelayMeasurePingPongLatency(result.Conn)
-			if pingErr != nil {
-				_ = result.Conn.Close()
-				result.Conn = nil
-				result.Err = pingErr
-			} else {
-				result.Latency = latency
-			}
-		}
 		results = append(results, result)
 		if result.Err != nil {
 			log.Printf("probe chain relay protocol probe result: chain=%s endpoint=%s protocol=%s ok=false latency_ms=%d err=%v", strings.TrimSpace(chainID), endpointKey, result.Protocol, probeDurationMilliseconds(result.Latency), result.Err)
@@ -597,50 +585,6 @@ func probeChainRelayProtocolProbeAndChoose(chainID string, secret string, relayH
 	}
 	log.Printf("probe chain relay protocol probe failed: chain=%s endpoint=%s errs=%s", strings.TrimSpace(chainID), endpointKey, strings.Join(errs, "; "))
 	return probeChainRelayProtocolDialResult{}, fmt.Errorf("probe relay protocol selection failed: relay=%s %s", endpointKey, strings.Join(errs, "; "))
-}
-
-func scheduleProbeChainRelayProtocolRefreshForReports(configs []probeChainRuntimeConfig) {
-	now := time.Now()
-	targets := make([]probeChainRelayProtocolRefreshTarget, 0, len(configs)*2)
-	for _, cfg := range configs {
-		if strings.EqualFold(strings.TrimSpace(cfg.chainType), "virtual_router") || isProbeVirtualRouterRuntimeChainID(cfg.chainID) {
-			continue
-		}
-		if normalizeProbeChainDialMode(cfg.nextDialMode) == probeChainDialModeForward && cfg.nextPort > 0 && strings.TrimSpace(cfg.nextHost) != "" {
-			if target, ok := makeProbeChainRelayProtocolRefreshTarget(cfg, strings.TrimSpace(cfg.nextHost), cfg.nextPort, normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(cfg.nextLinkLayer), strings.TrimSpace(cfg.linkLayer))), probeChainBridgeRoleToNext, now); ok {
-				targets = append(targets, target)
-			}
-		}
-		if normalizeProbeChainDialMode(cfg.prevDialMode) == probeChainDialModeReverse && cfg.prevPort > 0 && strings.TrimSpace(cfg.prevHost) != "" {
-			if target, ok := makeProbeChainRelayProtocolRefreshTarget(cfg, strings.TrimSpace(cfg.prevHost), cfg.prevPort, normalizeProbeChainLinkLayer(firstNonEmpty(strings.TrimSpace(cfg.prevLinkLayer), strings.TrimSpace(cfg.linkLayer))), probeChainBridgeRoleToPrev, now); ok {
-				targets = append(targets, target)
-			}
-		}
-	}
-	for _, target := range targets {
-		scheduleProbeChainRelayProtocolRefreshTarget(target)
-	}
-}
-
-func makeProbeChainRelayProtocolRefreshTarget(cfg probeChainRuntimeConfig, relayHost string, relayPort int, layer string, bridgeRole string, now time.Time) (probeChainRelayProtocolRefreshTarget, bool) {
-	endpointKey := probeChainRelayProtocolEndpointKey(relayHost, relayPort)
-	if endpointKey == "" {
-		return probeChainRelayProtocolRefreshTarget{}, false
-	}
-	candidates := probeChainRelayProtocolCandidates(layer)
-	if !probeChainRelayProtocolRefreshNeeded(endpointKey, candidates, now) {
-		return probeChainRelayProtocolRefreshTarget{}, false
-	}
-	return probeChainRelayProtocolRefreshTarget{
-		ChainID:    strings.TrimSpace(cfg.chainID),
-		Secret:     strings.TrimSpace(cfg.secret),
-		RelayHost:  strings.TrimSpace(relayHost),
-		RelayPort:  relayPort,
-		Layer:      normalizeProbeChainLinkLayer(layer),
-		BridgeRole: normalizeProbeChainBridgeRole(bridgeRole),
-		Endpoint:   endpointKey,
-		Candidates: candidates,
-	}, true
 }
 
 func probeChainRelayProtocolRefreshNeeded(endpointKey string, candidates []string, now time.Time) bool {
@@ -707,77 +651,6 @@ func scheduleProbeChainRelayProtocolRefreshTarget(target probeChainRelayProtocol
 		}
 		log.Printf("probe chain relay protocol report refresh done: chain=%s endpoint=%s protocol=%s latency_ms=%d", strings.TrimSpace(target.ChainID), endpointKey, normalizeProbeChainLinkLayer(result.Protocol), probeDurationMilliseconds(result.Latency))
 	}()
-}
-
-func measureProbeChainRelayPingPongLatency(conn net.Conn) (time.Duration, error) {
-	const payloadBytes = 64
-	if conn == nil {
-		return 0, errors.New("relay connection is nil")
-	}
-	stream, err := openProbeChainRelayPingPongStream(conn, payloadBytes)
-	if err != nil {
-		return 0, err
-	}
-	defer stream.Close()
-	payload := make([]byte, payloadBytes)
-	for i := range payload {
-		payload[i] = byte((i * 31) % 251)
-	}
-	echo := make([]byte, payloadBytes)
-	startedAt := time.Now()
-	_ = stream.SetDeadline(time.Now().Add(probeChainRelayProtocolProbeTimeout))
-	if _, err := stream.Write(payload); err != nil {
-		_ = stream.SetDeadline(time.Time{})
-		return 0, err
-	}
-	if _, err := io.ReadFull(stream, echo); err != nil {
-		_ = stream.SetDeadline(time.Time{})
-		return 0, err
-	}
-	_ = stream.SetDeadline(time.Time{})
-	if !bytes.Equal(payload, echo) {
-		return 0, errors.New("ping-pong echo mismatch")
-	}
-	elapsed := time.Since(startedAt)
-	if elapsed <= 0 {
-		return time.Millisecond, nil
-	}
-	return elapsed, nil
-}
-
-func openProbeChainRelayPingPongStream(conn net.Conn, payloadBytes int64) (net.Conn, error) {
-	if conn == nil {
-		return nil, errors.New("relay connection is nil")
-	}
-	session, err := newProbeChainFrameClient(conn)
-	if err != nil {
-		return nil, err
-	}
-	req := probeChainTunnelOpenRequest{Type: probeChainRelayModePingPong, PingBytes: payloadBytes, Priority: "realtime"}
-	stream, err := session.OpenWithRequest(req, probeChainPortForwardResponseReadDeadline)
-	if err != nil {
-		_ = session.Close()
-		return nil, err
-	}
-	return &probeChainRelayPingPongStreamConn{Conn: stream, session: session}, nil
-}
-
-type probeChainRelayPingPongStreamConn struct {
-	net.Conn
-	session *probeChainFrameSession
-}
-
-func (c *probeChainRelayPingPongStreamConn) Close() error {
-	var firstErr error
-	if c != nil && c.Conn != nil {
-		firstErr = c.Conn.Close()
-	}
-	if c != nil && c.session != nil {
-		if err := c.session.Close(); firstErr == nil {
-			firstErr = err
-		}
-	}
-	return firstErr
 }
 
 func isProbeChainRelayProtocolSwitchableError(err error) bool {
@@ -1070,83 +943,8 @@ func snapshotProbeChainProtocolState(relayHost string, relayPort int) probeChain
 }
 
 func snapshotProbeChainRelayReports() []probeChainRelayReportItem {
-	type runtimeReportSource struct {
-		cfg probeChainRuntimeConfig
-		rt  *probeChainRuntime
-	}
-	probeChainRuntimeState.mu.Lock()
-	sources := make([]runtimeReportSource, 0, len(probeChainRuntimeState.runtimes))
-	for _, runtime := range probeChainRuntimeState.runtimes {
-		if runtime == nil {
-			continue
-		}
-		sources = append(sources, runtimeReportSource{cfg: runtime.cfg, rt: runtime})
-	}
-	probeChainRuntimeState.mu.Unlock()
-
-	configs := make([]probeChainRuntimeConfig, 0, len(sources))
-	for _, source := range sources {
-		configs = append(configs, source.cfg)
-	}
-	if len(configs) > 0 {
-		scheduleProbeChainRelayProtocolRefreshForReports(configs)
-	}
-	sort.Slice(sources, func(i, j int) bool {
-		return strings.TrimSpace(sources[i].cfg.chainID) < strings.TrimSpace(sources[j].cfg.chainID)
-	})
-
 	now := time.Now().UTC().Format(time.RFC3339)
-	vrouterReports := snapshotProbeVirtualRouterRelayReports(now)
-	out := make([]probeChainRelayReportItem, 0, len(sources)+len(vrouterReports))
-	for _, source := range sources {
-		cfg := source.cfg
-		item := probeChainRelayReportItem{
-			ChainID:       strings.TrimSpace(cfg.chainID),
-			ChainName:     strings.TrimSpace(cfg.name),
-			ChainType:     strings.TrimSpace(cfg.chainType),
-			Role:          normalizeProbeChainRole(cfg.role),
-			ListenHost:    strings.TrimSpace(cfg.listenHost),
-			ListenPort:    cfg.listenPort,
-			LinkLayer:     normalizeProbeChainLinkLayer(cfg.linkLayer),
-			NextHost:      strings.TrimSpace(cfg.nextHost),
-			NextPort:      cfg.nextPort,
-			NextNodeID:    normalizeProbeChainNodeID(cfg.nextNodeID),
-			NextLinkLayer: normalizeProbeChainLinkLayer(cfg.nextLinkLayer),
-			NextDialMode:  normalizeProbeChainDialMode(cfg.nextDialMode),
-			PrevHost:      strings.TrimSpace(cfg.prevHost),
-			PrevPort:      cfg.prevPort,
-			PrevNodeID:    normalizeProbeChainNodeID(cfg.prevNodeID),
-			PrevLinkLayer: normalizeProbeChainLinkLayer(cfg.prevLinkLayer),
-			PrevDialMode:  normalizeProbeChainDialMode(cfg.prevDialMode),
-			UpdatedAt:     now,
-		}
-		if snapshot := snapshotProbeChainProtocolState(cfg.listenHost, cfg.listenPort); probeChainRelaySnapshotHasData(snapshot) {
-			item.ListenState = &snapshot
-		}
-		if cfg.nextPort > 0 && strings.TrimSpace(cfg.nextHost) != "" {
-			if snapshot := snapshotProbeChainProtocolState(cfg.nextHost, cfg.nextPort); probeChainRelaySnapshotHasData(snapshot) {
-				item.NextState = &snapshot
-			}
-		}
-		if cfg.prevPort > 0 && strings.TrimSpace(cfg.prevHost) != "" {
-			if snapshot := snapshotProbeChainProtocolState(cfg.prevHost, cfg.prevPort); probeChainRelaySnapshotHasData(snapshot) {
-				item.PrevState = &snapshot
-			}
-		}
-		if isProbeVirtualRouterRuntimeChainID(cfg.chainID) {
-			if stats := snapshotProbeVirtualRouterRuntimeStats(cfg.chainID); stats != nil {
-				item.VirtualRouter = stats
-			}
-		}
-		if source.rt != nil {
-			bridgeStatus := source.rt.snapshotBridgeStatus()
-			item.BridgeStatus = &bridgeStatus
-			item.BridgeSessions = bridgeStatus.Sessions
-		}
-		out = append(out, item)
-	}
-	out = append(out, vrouterReports...)
-	return out
+	return snapshotProbeVirtualRouterRelayReports(now)
 }
 
 func snapshotProbeVirtualRouterRelayReports(now string) []probeChainRelayReportItem {

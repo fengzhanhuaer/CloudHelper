@@ -11,10 +11,6 @@ import (
 	"time"
 )
 
-func mngLinkPageHandler(w http.ResponseWriter, r *http.Request) {
-	http.NotFound(w, r)
-}
-
 func mngRoutePageHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/mng/route" {
 		http.NotFound(w, r)
@@ -28,11 +24,11 @@ func mngRoutePageHandler(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(mngRoutePageHTML))
 }
 
-func mngLinkVirtualRouterHandler(w http.ResponseWriter, r *http.Request) {
+func mngRouteVirtualRouterHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		result, err := getMngProbeVirtualRouterConfig()
-		writeMngLinkResult(w, result, err)
+		writeMngRouteResult(w, result, err)
 	case http.MethodPost:
 		payload, err := readMngRawJSONPayload(r)
 		if err != nil {
@@ -40,17 +36,17 @@ func mngLinkVirtualRouterHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		result, err := upsertMngProbeVirtualRouterConfig(payload, controllerBaseURLFromRequest(r))
-		writeMngLinkResult(w, result, err)
+		writeMngRouteResult(w, result, err)
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
-func mngLinkVirtualRouterRouteRulesHandler(w http.ResponseWriter, r *http.Request) {
+func mngRouteVirtualRouterRouteRulesHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		result, err := getMngProbeVirtualRouterRouteRules()
-		writeMngLinkResult(w, result, err)
+		writeMngRouteResult(w, result, err)
 	case http.MethodPost:
 		payload, err := readMngRawJSONPayload(r)
 		if err != nil {
@@ -58,13 +54,13 @@ func mngLinkVirtualRouterRouteRulesHandler(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		result, err := upsertMngProbeVirtualRouterRouteRules(payload, controllerBaseURLFromRequest(r))
-		writeMngLinkResult(w, result, err)
+		writeMngRouteResult(w, result, err)
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
-func mngLinkVirtualRouterFakeIPResetHandler(w http.ResponseWriter, r *http.Request) {
+func mngRouteVirtualRouterFakeIPResetHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -74,10 +70,10 @@ func mngLinkVirtualRouterFakeIPResetHandler(w http.ResponseWriter, r *http.Reque
 	if err == nil {
 		result["sync"] = dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURLFromRequest(r))
 	}
-	writeMngLinkResult(w, result, err)
+	writeMngRouteResult(w, result, err)
 }
 
-func mngLinkVirtualRouterStatusHandler(w http.ResponseWriter, r *http.Request) {
+func mngRouteVirtualRouterStatusHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -87,7 +83,7 @@ func mngLinkVirtualRouterStatusHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func mngLinkVirtualRouterLatencyProbeHandler(w http.ResponseWriter, r *http.Request) {
+func mngRouteVirtualRouterLatencyProbeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -96,7 +92,7 @@ func mngLinkVirtualRouterLatencyProbeHandler(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, result)
 }
 
-func mngLinkVirtualRouterSpeedTestHandler(w http.ResponseWriter, r *http.Request) {
+func mngRouteVirtualRouterSpeedTestHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -113,7 +109,7 @@ func mngLinkVirtualRouterSpeedTestHandler(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, result)
 }
 
-type mngLinkRelayStatusView struct {
+type mngRouteRelayStatusView struct {
 	NodeID         string                            `json:"node_id"`
 	Online         bool                              `json:"online"`
 	LastSeen       string                            `json:"last_seen,omitempty"`
@@ -206,7 +202,7 @@ func listMngVirtualRouterRouteStatus() []mngVirtualRouterRouteStatusView {
 
 	runtimes := listProbeRuntimes()
 	runtimeByNode := make(map[string]probeRuntimeStatus, len(runtimes))
-	statusByNodeChain := make(map[string]mngLinkRelayStatusView)
+	statusByNodeChain := make(map[string]mngRouteRelayStatusView)
 	for _, runtime := range runtimes {
 		nodeID := normalizeProbeNodeID(runtime.NodeID)
 		if nodeID == "" {
@@ -218,7 +214,7 @@ func listMngVirtualRouterRouteStatus() []mngVirtualRouterRouteStatusView {
 			if chainID == "" {
 				continue
 			}
-			statusByNodeChain[nodeID+"|"+chainID] = mngLinkRelayStatusView{
+			statusByNodeChain[nodeID+"|"+chainID] = mngRouteRelayStatusView{
 				NodeID:         nodeID,
 				Online:         runtime.Online,
 				LastSeen:       strings.TrimSpace(runtime.LastSeen),
@@ -303,7 +299,7 @@ func listMngVirtualRouterRouteStatus() []mngVirtualRouterRouteStatusView {
 	return items
 }
 
-func buildMngVirtualRouterRouteSideStatus(nodeID string, chainID string, runtimes map[string]probeRuntimeStatus, statuses map[string]mngLinkRelayStatusView) mngVirtualRouterRouteSideStatus {
+func buildMngVirtualRouterRouteSideStatus(nodeID string, chainID string, runtimes map[string]probeRuntimeStatus, statuses map[string]mngRouteRelayStatusView) mngVirtualRouterRouteSideStatus {
 	runtime, onlineKnown := runtimes[nodeID]
 	status, found := statuses[nodeID+"|"+chainID]
 	side := mngVirtualRouterRouteSideStatus{
@@ -604,7 +600,7 @@ func readMngRawJSONPayload(r *http.Request) (json.RawMessage, error) {
 	return json.RawMessage(out), nil
 }
 
-func writeMngLinkError(w http.ResponseWriter, err error) {
+func writeMngRouteError(w http.ResponseWriter, err error) {
 	if err == nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unknown error"})
 		return
@@ -633,9 +629,9 @@ func writeMngLinkError(w http.ResponseWriter, err error) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-func writeMngLinkResult(w http.ResponseWriter, result map[string]interface{}, err error) {
+func writeMngRouteResult(w http.ResponseWriter, result map[string]interface{}, err error) {
 	if err != nil {
-		writeMngLinkError(w, err)
+		writeMngRouteError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)

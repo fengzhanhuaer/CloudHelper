@@ -31,7 +31,7 @@ func snapshotProbePeerStatusSidePayload(nodeID string, requestID string, scope s
 		OK:             true,
 		Scope:          firstNonEmptyProbeTCPDebugString(strings.TrimSpace(scope), "chain_exit"),
 		ProtocolState:  protocolState,
-		BridgeSessions: snapshotProbeChainBridgeSessions(),
+		BridgeSessions: nil,
 		TCP:            globalProbeTCPDebugState.snapshotPayload(strings.TrimSpace(nodeID), cleanRequestID),
 		Speed:          globalProbeSpeedDebugState.snapshotPayload(strings.TrimSpace(nodeID), cleanRequestID),
 		Substreams:     snapshotProbeSubstreamMonitorPayload(strings.TrimSpace(nodeID), cleanRequestID, strings.TrimSpace(scope)),
