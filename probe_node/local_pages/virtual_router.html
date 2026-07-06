@@ -44,6 +44,7 @@
       color: #fff;
     }
     .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, .72fr); gap: 14px; align-items: start; }
+    .grid-wide { grid-column: 1 / -1; }
     .card {
       border: 1px solid var(--border);
       border-radius: 8px;
@@ -159,27 +160,6 @@
         </div>
       </section>
 
-      <aside class="card">
-        <h2>TUN</h2>
-        <div class="kv">
-          <div>平台</div><div id="tunPlatform">-</div>
-          <div>已安装</div><div id="tunInstalled">-</div>
-          <div>已启用</div><div id="tunEnabled">-</div>
-          <div>数据面</div><div id="tunDataPlane">-</div>
-          <div>RX 包</div><div id="tunRX">-</div>
-          <div>TX 包</div><div id="tunTX">-</div>
-          <div>最近错误</div><div id="tunLastError">-</div>
-          <div>安装结果码</div><div id="tunInstallFinalReasonCode">-</div>
-          <div>安装结果说明</div><div id="tunInstallFinalReason">-</div>
-        </div>
-        <div class="actions">
-          <button id="tunInstallBtn">安装/检查 TUN</button>
-          <button id="tunResetBtn" class="secondary">重置 TUN</button>
-          <button id="tunUninstallBtn" class="warn">卸载 TUN</button>
-          <button id="tunRefreshBtn" class="secondary">刷新 TUN</button>
-        </div>
-      </aside>
-
       <section class="card">
         <h2>主网卡出口</h2>
         <div class="kv">
@@ -199,6 +179,27 @@
           <button id="tunEgressApplyBtn">应用手动选择</button>
           <button id="tunEgressAutoBtn" class="secondary">自动选择</button>
           <button id="tunEgressRefreshBtn" class="secondary">刷新候选</button>
+        </div>
+      </section>
+
+      <section class="card grid-wide">
+        <h2>TUN</h2>
+        <div class="kv">
+          <div>平台</div><div id="tunPlatform">-</div>
+          <div>已安装</div><div id="tunInstalled">-</div>
+          <div>已启用</div><div id="tunEnabled">-</div>
+          <div>数据面</div><div id="tunDataPlane">-</div>
+          <div>RX 包</div><div id="tunRX">-</div>
+          <div>TX 包</div><div id="tunTX">-</div>
+          <div>最近错误</div><div id="tunLastError">-</div>
+          <div>安装结果码</div><div id="tunInstallFinalReasonCode">-</div>
+          <div>安装结果说明</div><div id="tunInstallFinalReason">-</div>
+        </div>
+        <div class="actions">
+          <button id="tunInstallBtn">安装/检查 TUN</button>
+          <button id="tunResetBtn" class="secondary">重置 TUN</button>
+          <button id="tunUninstallBtn" class="warn">卸载 TUN</button>
+          <button id="tunRefreshBtn" class="secondary">刷新 TUN</button>
         </div>
       </section>
     </div>
