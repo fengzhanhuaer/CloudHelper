@@ -17,9 +17,10 @@ func probeLocalTUNEgressSnapshot() (probeLocalTUNEgressStatus, error) {
 		TUNEgress: currentProbeLocalTUNEgressPersistentStateBestEffort(),
 	})
 	status := probeLocalTUNEgressStatus{
-		Supported: true,
-		Mode:      "auto",
-		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		APIVersion: probeLocalTUNEgressAPIVersion,
+		Supported:  true,
+		Mode:       "auto",
+		UpdatedAt:  time.Now().UTC().Format(time.RFC3339),
 	}
 
 	excludedIfIndex := 0

@@ -29,6 +29,7 @@
     h1 { margin: 0; color: #fff; font-size: 24px; }
     h2 { margin: 0 0 12px; color: #e6edf3; font-size: 17px; }
     .hint { color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .page-version { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
     .topbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
     .nav { display: flex; gap: 8px; flex-wrap: wrap; }
     .nav a {
@@ -117,6 +118,7 @@
       <div>
         <h1>虚拟路由</h1>
         <p class="hint">本机虚拟路由、虚拟 DNS 与 TUN 数据面状态。</p>
+        <p class="page-version">页面版本：<span id="pageVersionText">-</span> / API：<span id="tunEgressAPIVersion">-</span></p>
       </div>
       <div class="nav">
         <a href="/local/panel">首页</a>
@@ -325,6 +327,7 @@
       const manualSelected = status.manual_selected && typeof status.manual_selected === 'object' ? status.manual_selected : null;
       const supported = !!status.supported;
       setText('tunEgressMode', String(status.mode || (supported ? 'auto' : 'unsupported')).trim() || '-');
+      setText('tunEgressAPIVersion', status.api_version || '-');
       setText('tunEgressSelected', selected ? formatTunEgressOption(selected) : '-');
       setText('tunEgressManualSelected', manualSelected ? formatTunEgressOption(manualSelected) : '-');
       setText('tunEgressCandidateCount', String(candidates.length));
@@ -496,6 +499,7 @@
     });
 
     refreshAll().catch((err) => setMessage('初始化失败：' + err.message, 'error'));
+    setText('pageVersionText', VIRTUAL_ROUTER_PAGE_VERSION);
     startTunPolling();
     window.addEventListener('beforeunload', () => {
       if (tunPollingTimer) clearInterval(tunPollingTimer);

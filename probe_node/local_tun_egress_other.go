@@ -8,9 +8,10 @@ import (
 
 func probeLocalTUNEgressSnapshot() (probeLocalTUNEgressStatus, error) {
 	return probeLocalTUNEgressStatus{
-		Supported: false,
-		Mode:      "unsupported",
-		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		APIVersion: probeLocalTUNEgressAPIVersion,
+		Supported:  false,
+		Mode:       "unsupported",
+		UpdatedAt:  time.Now().UTC().Format(time.RFC3339),
 	}, nil
 }
 

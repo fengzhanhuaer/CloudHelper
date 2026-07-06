@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const probeLocalTUNEgressAPIVersion = "tun-egress-mode-candidate-v2"
+
 type probeLocalTUNEgressRouteTargetOption struct {
 	CandidateID     string `json:"candidate_id"`
 	InterfaceIndex  int    `json:"interface_index"`
@@ -23,6 +25,7 @@ type probeLocalTUNEgressRouteTargetOption struct {
 }
 
 type probeLocalTUNEgressStatus struct {
+	APIVersion     string                                 `json:"api_version,omitempty"`
 	Supported      bool                                   `json:"supported"`
 	Mode           string                                 `json:"mode"`
 	ManualEnabled  bool                                   `json:"manual_enabled"`
@@ -63,11 +66,11 @@ func probeLocalTUNEgressHandler(w http.ResponseWriter, r *http.Request) {
 		decoder.DisallowUnknownFields()
 		var req probeLocalTUNEgressUpdateRequest
 		if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
 			return
 		}
 		if err := decoder.Decode(&struct{}{}); err != io.EOF {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body: multiple json values"})
 			return
 		}
 		status, err := probeLocalTUNEgressUpdate(req)
