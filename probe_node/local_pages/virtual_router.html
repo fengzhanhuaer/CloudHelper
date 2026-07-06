@@ -212,6 +212,7 @@
     const routerEnabledEl = document.getElementById('virtualRouterEnabled');
     const dnsEnabledEl = document.getElementById('virtualDNSEnabled');
     const tunEgressSelectEl = document.getElementById('tunEgressSelect');
+    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260706-mode-candidate';
     const REQUEST_TIMEOUT_DEFAULT_MS = 20000;
     const REQUEST_TIMEOUT_TUN_INSTALL_MS = 90000;
     let tunPollingTimer = null;
@@ -241,7 +242,7 @@
       try {
         res = await fetch(url, {
           credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-CloudHelper-Page-Version': VIRTUAL_ROUTER_PAGE_VERSION },
           ...options,
           signal: controller.signal,
         });
