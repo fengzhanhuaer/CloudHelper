@@ -43,8 +43,7 @@
       background: linear-gradient(135deg, var(--accent), var(--accent-strong));
       color: #fff;
     }
-    .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, .72fr); gap: 14px; align-items: start; }
-    .grid-wide { grid-column: 1 / -1; }
+    .grid { display: grid; grid-template-columns: 1fr; gap: 14px; align-items: start; }
     .card {
       border: 1px solid var(--border);
       border-radius: 8px;
@@ -108,7 +107,6 @@
     @media (max-width: 860px) {
       body { padding: 16px; }
       .topbar { flex-direction: column; }
-      .grid { grid-template-columns: 1fr; }
       .kv { grid-template-columns: 140px minmax(0, 1fr); }
     }
   </style>
@@ -182,7 +180,7 @@
         </div>
       </section>
 
-      <section class="card grid-wide">
+      <section class="card">
         <h2>TUN</h2>
         <div class="kv">
           <div>平台</div><div id="tunPlatform">-</div>
