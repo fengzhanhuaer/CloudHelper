@@ -739,6 +739,10 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 		go runProbeRouteConfigSyncControl(msg, identity)
 		return
 	}
+	if typeName == "report_once" {
+		go runProbeReportOnceControl(identity, stream, encoder, writeMu)
+		return
+	}
 	if typeName == "virtual_router_latency_probe" {
 		go runProbeVirtualRouterLatencyProbeControl(identity, stream, encoder, writeMu)
 		return
@@ -826,6 +830,13 @@ func runProbeRouteConfigSyncControl(msg probeControlMessage, identity nodeIdenti
 	logProbeInfof("probe route config sync requested by controller")
 	if err := syncProbeRouteConfig(identity, controllerBaseURL); err != nil {
 		logProbeWarnf("probe route config sync failed: err=%v", err)
+	}
+}
+
+func runProbeReportOnceControl(identity nodeIdentity, stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex) {
+	logProbeInfof("probe report once requested by controller")
+	if err := sendProbeReport(stream, encoder, identity, &cpuSampler{}, writeMu); err != nil {
+		logProbeWarnf("probe report once failed: err=%v", err)
 	}
 }
 

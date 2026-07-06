@@ -1348,7 +1348,7 @@ func verifyMobileRouteRelayRequestAuth(rt *mobileRouteRuntime, r *http.Request) 
 }
 
 type mobileRouteUserAuthTicketPayload struct {
-	Version       string `json:"v"`
+	Version       string `json:"version"`
 	RouteID       string `json:"route_id"`
 	ClientEntryID string `json:"client_entry_id,omitempty"`
 	UserID        string `json:"user_id"`

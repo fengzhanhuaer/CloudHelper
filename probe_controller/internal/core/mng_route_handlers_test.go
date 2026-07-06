@@ -207,6 +207,51 @@ func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T)
 	}
 }
 
+func TestMngLinkVirtualRouterStatusHandlerPostDispatchesReportOnce(t *testing.T) {
+	oldRouteStore := ProbeRouteConfigStore
+	oldProbeStore := ProbeStore
+	t.Cleanup(func() {
+		ProbeRouteConfigStore = oldRouteStore
+		ProbeStore = oldProbeStore
+	})
+
+	tmpDir := t.TempDir()
+	ProbeRouteConfigStore = &probeRouteConfigStore{
+		path: filepath.Join(tmpDir, "probe_route_config.json"),
+		data: probeRouteConfigStoreData{
+			VirtualRouter: probeVirtualRouterConfig{
+				Enabled:    true,
+				FakeIPCIDR: probeVirtualRouterDefaultCIDR,
+				ProbeIPs:   []probeVirtualRouterProbeIP{{NodeID: "1", IP: "198.18.0.3"}},
+			},
+		},
+	}
+	ProbeStore = &probeConfigStore{
+		data: probeConfigData{
+			ProbeNodes: []probeNodeRecord{{NodeNo: 1, NodeName: "node-1"}},
+		},
+	}
+	commandCh, cleanupSession := attachProbeVirtualRouterTestSession(t, "1")
+	defer cleanupSession()
+
+	req := httptest.NewRequest(http.MethodPost, "/mng/api/route/virtual_router/status", nil)
+	rr := httptest.NewRecorder()
+	mngRouteVirtualRouterStatusHandler(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		Sync probeRouteConfigSyncDispatchResult `json:"sync"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload failed: %v", err)
+	}
+	if payload.Sync.Total != 1 || payload.Sync.Dispatched != 1 || payload.Sync.Failed != 0 {
+		t.Fatalf("sync result=%+v", payload.Sync)
+	}
+	assertProbeVirtualRouterCommandType(t, commandCh, "report_once")
+}
+
 func TestLastMngVirtualRouterRouteLatencyUsesNewestPingReport(t *testing.T) {
 	oldHigh := &probeVirtualRouterRuntimeStats{
 		LastPingLatencyMS: 232,

@@ -14,7 +14,7 @@ const probeVirtualRouterAuthTicketVersion = "route-auth-v1"
 var probeVirtualRouterAuthTicketNow = time.Now
 
 type probeVirtualRouterAuthTicketPayload struct {
-	Version       string `json:"v"`
+	Version       string `json:"version"`
 	RouteID       string `json:"route_id"`
 	ClientEntryID string `json:"client_entry_id,omitempty"`
 	UserID        string `json:"user_id"`

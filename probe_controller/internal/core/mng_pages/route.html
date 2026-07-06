@@ -325,6 +325,20 @@
       if (!silent) setStatus(`路由状态已刷新：${state.virtualRouterStatus.length} 条`, 'ok');
     }
 
+    async function refreshVirtualRouterStatusWithReport() {
+      const payload = await requestJSON('/mng/api/route/virtual_router/status', { method: 'POST' });
+      const sync = payload.sync || {};
+      const total = Number(sync.total || 0);
+      const dispatched = Number(sync.dispatched || 0);
+      const offline = Number(sync.offline || 0);
+      const failed = Number(sync.failed || 0);
+      setStatus(`已召唤状态上报：${dispatched}/${total}，离线 ${offline}，失败 ${failed}`, failed > 0 ? 'warn' : 'ok');
+      await loadVirtualRouterStatus(true);
+      window.setTimeout(() => {
+        loadVirtualRouterStatus(true).catch((err) => setStatus(`刷新路由状态失败：${err.message || err}`, 'err'));
+      }, 900);
+    }
+
     async function loadRouteRules(silent) {
       const payload = await requestJSON('/mng/api/route/virtual_router/route_rules');
       state.routeRules = Array.isArray(payload.items) ? payload.items : [];
@@ -1066,7 +1080,7 @@
         renderFakeIPLibrary();
       });
       document.getElementById('btn-vr-status-refresh').addEventListener('click', () => {
-        loadVirtualRouterStatus(false).catch((err) => setStatus(`刷新路由状态失败：${err.message || err}`, 'err'));
+        refreshVirtualRouterStatusWithReport().catch((err) => setStatus(`刷新路由状态失败：${err.message || err}`, 'err'));
       });
       document.getElementById('btn-vr-latency-probe').addEventListener('click', () => {
         triggerVirtualRouterLatencyProbe().catch((err) => setStatus(`延迟探测下发失败：${err.message || err}`, 'err'));

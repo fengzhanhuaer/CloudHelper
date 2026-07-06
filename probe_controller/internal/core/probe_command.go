@@ -65,6 +65,11 @@ type probeRouteConfigSyncCommand struct {
 	Timestamp         string `json:"timestamp"`
 }
 
+type probeReportOnceCommand struct {
+	Type      string `json:"type"`
+	Timestamp string `json:"timestamp"`
+}
+
 type probeVirtualRouterLatencyProbeCommand struct {
 	Type      string `json:"type"`
 	Timestamp string `json:"timestamp"`
@@ -300,6 +305,10 @@ func dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURL string) probeRou
 	return dispatchProbeRouteConfigSyncToNodes(listProbeVirtualRouterKnownNodeIDs(), controllerBaseURL)
 }
 
+func dispatchProbeReportOnceToKnownNodes() probeRouteConfigSyncDispatchResult {
+	return dispatchProbeReportOnceToNodes(listProbeVirtualRouterKnownNodeIDs())
+}
+
 func dispatchProbeVirtualRouterLatencyProbeToKnownNodes() probeRouteConfigSyncDispatchResult {
 	return dispatchProbeVirtualRouterLatencyProbeToNodes(listProbeVirtualRouterKnownNodeIDs())
 }
@@ -393,6 +402,31 @@ func dispatchProbeRouteConfigSyncToNodes(nodeIDs []string, controllerBaseURL str
 			Type:              "route_config_sync",
 			ControllerBaseURL: strings.TrimSpace(controllerBaseURL),
 			Timestamp:         time.Now().UTC().Format(time.RFC3339),
+		}
+		if err := session.writeJSON(command); err != nil {
+			unregisterProbeSession(nodeID, session)
+			result.Failed++
+			result.Failures = append(result.Failures, fmt.Sprintf("%s: %v", nodeID, err))
+			continue
+		}
+		result.Dispatched++
+	}
+	return result
+}
+
+func dispatchProbeReportOnceToNodes(nodeIDs []string) probeRouteConfigSyncDispatchResult {
+	result := probeRouteConfigSyncDispatchResult{
+		Total: len(nodeIDs),
+	}
+	for _, nodeID := range nodeIDs {
+		session, ok := getProbeSession(nodeID)
+		if !ok {
+			result.Offline++
+			continue
+		}
+		command := probeReportOnceCommand{
+			Type:      "report_once",
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
 		}
 		if err := session.writeJSON(command); err != nil {
 			unregisterProbeSession(nodeID, session)

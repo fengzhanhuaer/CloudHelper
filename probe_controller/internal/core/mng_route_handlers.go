@@ -74,13 +74,18 @@ func mngRouteVirtualRouterFakeIPResetHandler(w http.ResponseWriter, r *http.Requ
 }
 
 func mngRouteVirtualRouterStatusHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{
+			"items": listMngVirtualRouterRouteStatus(),
+		})
+	case http.MethodPost:
+		writeJSON(w, http.StatusOK, map[string]any{
+			"sync": dispatchProbeReportOnceToKnownNodes(),
+		})
+	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"items": listMngVirtualRouterRouteStatus(),
-	})
 }
 
 func mngRouteVirtualRouterLatencyProbeHandler(w http.ResponseWriter, r *http.Request) {

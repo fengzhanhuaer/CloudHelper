@@ -392,13 +392,18 @@ func attachProbeVirtualRouterTestSession(t *testing.T, nodeID string) (<-chan ma
 
 func assertProbeVirtualRouterRouteConfigSyncCommand(t *testing.T, commandCh <-chan map[string]any) {
 	t.Helper()
+	assertProbeVirtualRouterCommandType(t, commandCh, "route_config_sync")
+}
+
+func assertProbeVirtualRouterCommandType(t *testing.T, commandCh <-chan map[string]any, commandType string) {
+	t.Helper()
 	select {
 	case msg := <-commandCh:
-		if msg["type"] != "route_config_sync" {
-			t.Fatalf("sync command=%v", msg)
+		if msg["type"] != commandType {
+			t.Fatalf("command=%v want type=%s", msg, commandType)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatalf("timed out waiting route_config_sync command")
+		t.Fatalf("timed out waiting %s command", commandType)
 	}
 }
 
