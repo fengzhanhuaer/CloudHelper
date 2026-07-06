@@ -431,7 +431,7 @@ func applyProbeRouteAuthTicketHeader(headers http.Header, routeID string) {
 }
 
 type probeRouteUserAuthTicketPayload struct {
-	Version       string `json:"version,omitempty"`
+	Version       string `json:"v,omitempty"`
 	RouteID       string `json:"route_id,omitempty"`
 	UserPublicKey string `json:"user_public_key,omitempty"`
 	IssuedAt      string `json:"issued_at,omitempty"`
