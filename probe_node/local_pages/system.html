@@ -171,19 +171,6 @@
         </div>
       </section>
 
-      <aside class="card">
-        <h2>IP 上送</h2>
-        <div class="kv">
-          <div>已选网卡</div><div id="ipReportSelectedCount">0</div>
-          <div>更新时间</div><div id="ipReportUpdatedAt">-</div>
-        </div>
-        <div id="ipReportInterfaces" class="interface-list"></div>
-        <div class="actions">
-          <button id="ipReportSaveBtn">保存 IP 上送设置</button>
-          <button id="ipReportRefreshBtn" class="secondary">刷新网卡</button>
-        </div>
-      </aside>
-
       <section class="card">
         <h2>链路认证黑名单</h2>
         <p class="hint">每行一个源 IP，保存后写入本地 data/probe_chain_auth_blacklist.json。</p>
@@ -195,6 +182,19 @@
         <div class="actions">
           <button id="chainAuthBlacklistSaveBtn">保存黑名单</button>
           <button id="chainAuthBlacklistRefreshBtn" class="secondary">刷新黑名单</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>IP 上送</h2>
+        <div class="kv">
+          <div>已选网卡</div><div id="ipReportSelectedCount">0</div>
+          <div>更新时间</div><div id="ipReportUpdatedAt">-</div>
+        </div>
+        <div id="ipReportInterfaces" class="interface-list"></div>
+        <div class="actions">
+          <button id="ipReportSaveBtn">保存 IP 上送设置</button>
+          <button id="ipReportRefreshBtn" class="secondary">刷新网卡</button>
         </div>
       </section>
     </div>
