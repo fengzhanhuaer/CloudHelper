@@ -15,6 +15,9 @@ var (
 	//go:embed local_pages/system.html
 	probeLocalSystemPageHTML string
 
+	//go:embed local_pages/virtual_router.html
+	probeLocalVirtualRouterPageHTML string
+
 	//go:embed local_pages/sync.html
 	probeLocalSyncPageHTML string
 

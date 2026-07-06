@@ -2464,6 +2464,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/panel", probeLocalPanelPageHandler)
 	mux.HandleFunc("/local/logs", probeLocalLogsPageHandler)
 	mux.HandleFunc("/local/system", probeLocalSystemPageHandler)
+	mux.HandleFunc("/local/virtual-router", probeLocalVirtualRouterPageHandler)
 	mux.HandleFunc("/local/sync", probeLocalSyncPageHandler)
 	mux.HandleFunc("/local/shell", probeLocalShellPageHandler)
 	mux.HandleFunc("/local/api/auth/bootstrap", probeLocalAuthBootstrapHandler)
@@ -2596,6 +2597,10 @@ func probeLocalMonitorPageHandler(w http.ResponseWriter, r *http.Request) {
 
 func probeLocalSystemPageHandler(w http.ResponseWriter, r *http.Request) {
 	serveProbeLocalHTMLPage(w, r, "/local/system", probeLocalSystemPageHTML)
+}
+
+func probeLocalVirtualRouterPageHandler(w http.ResponseWriter, r *http.Request) {
+	serveProbeLocalHTMLPage(w, r, "/local/virtual-router", probeLocalVirtualRouterPageHTML)
 }
 
 func probeLocalSyncPageHandler(w http.ResponseWriter, r *http.Request) {

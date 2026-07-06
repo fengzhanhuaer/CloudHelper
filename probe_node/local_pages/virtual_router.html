@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>虚拟路由 - Probe Node</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --panel: rgba(22, 27, 34, 0.74);
+      --border: rgba(255, 255, 255, 0.12);
+      --text: #c9d1d9;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --accent-strong: #1f6feb;
+      --ok: #7ee787;
+      --danger: #ff938d;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      box-sizing: border-box;
+      padding: 24px;
+      color: var(--text);
+      background: var(--bg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    }
+    main { width: 100%; margin: 0 auto; }
+    h1 { margin: 0; color: #fff; font-size: 24px; }
+    h2 { margin: 0 0 12px; color: #e6edf3; font-size: 17px; }
+    .hint { color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .topbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
+    .nav { display: flex; gap: 8px; flex-wrap: wrap; }
+    .nav a {
+      padding: 8px 12px;
+      border-radius: 8px;
+      color: #d0d7de;
+      text-decoration: none;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(139, 148, 158, 0.2);
+    }
+    .nav a.active {
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #fff;
+    }
+    .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, .72fr); gap: 14px; align-items: start; }
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+      background: var(--panel);
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.28);
+    }
+    .kv {
+      display: grid;
+      grid-template-columns: 170px minmax(0, 1fr);
+      gap: 8px;
+      margin-top: 8px;
+      font-size: 14px;
+    }
+    .kv > div:nth-child(odd) { color: var(--muted); }
+    .switches { display: grid; gap: 10px; margin-top: 12px; }
+    .check-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(13, 17, 23, 0.36);
+    }
+    .check-row input { width: auto; margin-top: 3px; }
+    .check-title { color: #fff; font-weight: 700; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+    .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin: 10px 0 12px; }
+    .field { display: flex; flex-direction: column; gap: 6px; min-width: 240px; flex: 1 1 240px; }
+    .field label { font-size: 12px; color: var(--muted); }
+    select {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      background: rgba(13, 17, 23, 0.55);
+      color: var(--text);
+    }
+    button {
+      padding: 8px 12px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      cursor: pointer;
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #fff;
+      font-weight: 600;
+    }
+    button.secondary {
+      background: rgba(139, 148, 158, 0.2);
+      border-color: rgba(255, 255, 255, 0.18);
+      color: #d0d7de;
+    }
+    button.warn {
+      background: linear-gradient(135deg, #ff7b72, #d73a49);
+    }
+    .msg { margin-top: 14px; min-height: 20px; font-size: 14px; color: var(--muted); }
+    .msg.error { color: var(--danger); }
+    .msg.success { color: var(--ok); }
+    @media (max-width: 860px) {
+      body { padding: 16px; }
+      .topbar { flex-direction: column; }
+      .grid { grid-template-columns: 1fr; }
+      .kv { grid-template-columns: 140px minmax(0, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <div>
+        <h1>虚拟路由</h1>
+        <p class="hint">本机虚拟路由、虚拟 DNS 与 TUN 数据面状态。</p>
+      </div>
+      <div class="nav">
+        <a href="/local/panel">首页</a>
+        <a href="/local/logs">运行日志</a>
+        <a href="/local/virtual-router" class="active">虚拟路由</a>
+        <a href="/local/system">系统设置</a>
+      </div>
+    </div>
+
+    <div class="grid">
+      <section class="card">
+        <h2>开关</h2>
+        <div class="switches">
+          <label class="check-row">
+            <input id="virtualRouterEnabled" type="checkbox" />
+            <span>
+              <span class="check-title">虚拟路由</span><br />
+              <span class="hint">开启后接管系统流量；关闭时仅保留 Fake IP / 虚拟 IP 网段转发能力。</span>
+            </span>
+          </label>
+          <label class="check-row">
+            <input id="virtualDNSEnabled" type="checkbox" />
+            <span>
+              <span class="check-title">虚拟 DNS</span><br />
+              <span class="hint">开启后把系统 DNS 指向本机虚拟 DNS；关闭时恢复系统 DNS。</span>
+            </span>
+          </label>
+        </div>
+        <div class="actions">
+          <button id="saveSettingsBtn">保存开关</button>
+          <button id="refreshSettingsBtn" class="secondary">刷新状态</button>
+        </div>
+        <div class="kv">
+          <div>更新时间</div><div id="settingsUpdatedAt">-</div>
+          <div>本机节点</div><div id="localNodeID">-</div>
+          <div>本机虚拟 IP</div><div id="localIP">-</div>
+          <div>Fake IP CIDR</div><div id="fakeIPCIDR">-</div>
+          <div>Fake IP 数量</div><div id="fakeIPCount">0</div>
+        </div>
+      </section>
+
+      <aside class="card">
+        <h2>TUN</h2>
+        <div class="kv">
+          <div>平台</div><div id="tunPlatform">-</div>
+          <div>已安装</div><div id="tunInstalled">-</div>
+          <div>已启用</div><div id="tunEnabled">-</div>
+          <div>数据面</div><div id="tunDataPlane">-</div>
+          <div>RX 包</div><div id="tunRX">-</div>
+          <div>TX 包</div><div id="tunTX">-</div>
+          <div>最近错误</div><div id="tunLastError">-</div>
+          <div>安装结果码</div><div id="tunInstallFinalReasonCode">-</div>
+          <div>安装结果说明</div><div id="tunInstallFinalReason">-</div>
+        </div>
+        <div class="actions">
+          <button id="tunInstallBtn">安装/检查 TUN</button>
+          <button id="tunResetBtn" class="secondary">重置 TUN</button>
+          <button id="tunUninstallBtn" class="warn">卸载 TUN</button>
+          <button id="tunRefreshBtn" class="secondary">刷新 TUN</button>
+        </div>
+      </aside>
+
+      <section class="card">
+        <h2>主网卡出口</h2>
+        <div class="kv">
+          <div>选择模式</div><div id="tunEgressMode">-</div>
+          <div>当前目标</div><div id="tunEgressSelected">-</div>
+          <div>手动目标</div><div id="tunEgressManualSelected">-</div>
+          <div>候选数量</div><div id="tunEgressCandidateCount">-</div>
+          <div>状态</div><div id="tunEgressStatus">-</div>
+        </div>
+        <div class="toolbar">
+          <div class="field">
+            <label for="tunEgressSelect">出口网卡</label>
+            <select id="tunEgressSelect"></select>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="tunEgressApplyBtn">应用手动选择</button>
+          <button id="tunEgressAutoBtn" class="secondary">自动选择</button>
+          <button id="tunEgressRefreshBtn" class="secondary">刷新候选</button>
+        </div>
+      </section>
+    </div>
+
+    <p id="message" class="msg"></p>
+  </main>
+
+  <script>
+    const messageEl = document.getElementById('message');
+    const routerEnabledEl = document.getElementById('virtualRouterEnabled');
+    const dnsEnabledEl = document.getElementById('virtualDNSEnabled');
+    const tunEgressSelectEl = document.getElementById('tunEgressSelect');
+    const REQUEST_TIMEOUT_DEFAULT_MS = 20000;
+    const REQUEST_TIMEOUT_TUN_INSTALL_MS = 90000;
+    let tunPollingTimer = null;
+
+    function setMessage(text, type) {
+      messageEl.textContent = text || '';
+      messageEl.className = 'msg' + (type ? ' ' + type : '');
+    }
+
+    function setText(id, value) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.textContent = (value === undefined || value === null || value === '') ? '-' : String(value);
+    }
+
+    function requestTimeoutFor(url, timeoutMs) {
+      if (Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0) return Number(timeoutMs);
+      return String(url || '').trim() === '/local/api/tun/install'
+        ? REQUEST_TIMEOUT_TUN_INSTALL_MS
+        : REQUEST_TIMEOUT_DEFAULT_MS;
+    }
+
+    async function requestJSON(url, options, timeoutMs) {
+      const controller = new AbortController();
+      const timeoutID = setTimeout(() => controller.abort(), requestTimeoutFor(url, timeoutMs));
+      let res;
+      try {
+        res = await fetch(url, {
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          ...options,
+          signal: controller.signal,
+        });
+      } catch (err) {
+        if (err && err.name === 'AbortError') throw new Error('请求超时');
+        throw err;
+      } finally {
+        clearTimeout(timeoutID);
+      }
+      let data = {};
+      try { data = await res.json(); } catch (_) { data = {}; }
+      if (!res.ok) {
+        const error = new Error(data && data.error ? data.error : 'HTTP ' + res.status);
+        error.status = res.status;
+        error.payload = data;
+        throw error;
+      }
+      return data;
+    }
+
+    async function ensureSession() {
+      try {
+        const data = await requestJSON('/local/api/auth/session', { method: 'GET' });
+        if (!data.authenticated) {
+          window.location.href = '/local/login';
+          return false;
+        }
+        return true;
+      } catch (err) {
+        if (err && err.status === 401) {
+          window.location.href = '/local/login';
+          return false;
+        }
+        throw err;
+      }
+    }
+
+    function renderSettings(data) {
+      routerEnabledEl.checked = !!(data && data.virtual_router_enabled);
+      dnsEnabledEl.checked = !!(data && data.virtual_dns_enabled);
+      setText('settingsUpdatedAt', data && data.updated_at);
+      setText('localNodeID', data && data.local_node_id);
+      setText('localIP', data && data.local_ip);
+      setText('fakeIPCIDR', data && data.fake_ip_cidr);
+      setText('fakeIPCount', data && data.fake_ip_count);
+    }
+
+    function renderTunStatus(data) {
+      const lastObs = data && data.last_install_observation && typeof data.last_install_observation === 'object'
+        ? data.last_install_observation
+        : {};
+      const finalObs = lastObs && lastObs.final && typeof lastObs.final === 'object' ? lastObs.final : {};
+      setText('tunPlatform', data && data.platform);
+      setText('tunInstalled', data && data.installed ? '是' : '否');
+      setText('tunEnabled', data && data.enabled ? '是' : '否');
+      setText('tunDataPlane', data && data.data_plane ? '运行中' : '未运行');
+      setText('tunRX', data && data.data_plane_rx);
+      setText('tunTX', data && data.data_plane_tx);
+      setText('tunLastError', data && data.last_error);
+      setText('tunInstallFinalReasonCode', finalObs.reason_code);
+      setText('tunInstallFinalReason', finalObs.reason);
+    }
+
+    function formatTunEgressOption(option) {
+      const item = option || {};
+      const parts = [];
+      const name = String(item.name || '').trim();
+      const desc = String(item.description || '').trim();
+      const hop = String(item.next_hop || '').trim();
+      const ifIndex = Number(item.interface_index || 0);
+      if (name) parts.push(name);
+      if (hop) parts.push(hop);
+      if (ifIndex > 0) parts.push('ifIndex=' + ifIndex);
+      if (desc && desc !== name) parts.push(desc);
+      return parts.length > 0 ? parts.join(' ｜ ') : (String(item.candidate_id || '').trim() || '-');
+    }
+
+    function renderTunEgressStatus(data) {
+      const status = data || {};
+      const candidates = Array.isArray(status.candidates) ? status.candidates : [];
+      const selected = status.selected && typeof status.selected === 'object' ? status.selected : null;
+      const manualSelected = status.manual_selected && typeof status.manual_selected === 'object' ? status.manual_selected : null;
+      const supported = !!status.supported;
+      setText('tunEgressMode', String(status.mode || (supported ? 'auto' : 'unsupported')).trim() || '-');
+      setText('tunEgressSelected', selected ? formatTunEgressOption(selected) : '-');
+      setText('tunEgressManualSelected', manualSelected ? formatTunEgressOption(manualSelected) : '-');
+      setText('tunEgressCandidateCount', String(candidates.length));
+      const egressStatus = status.manual_error
+        ? String(status.manual_error).trim()
+        : (status.manual_valid ? '手动选择已启用' : (supported ? '自动选择中' : '当前平台不支持'));
+      setText('tunEgressStatus', egressStatus || '-');
+      tunEgressSelectEl.innerHTML = '';
+      const autoOption = document.createElement('option');
+      autoOption.value = '';
+      autoOption.textContent = supported ? '自动选择' : '不支持';
+      tunEgressSelectEl.appendChild(autoOption);
+      candidates.forEach((item) => {
+        const opt = document.createElement('option');
+        opt.value = String(item && item.candidate_id || '').trim();
+        opt.textContent = formatTunEgressOption(item);
+        tunEgressSelectEl.appendChild(opt);
+      });
+      const desiredID = status.manual_valid && manualSelected
+        ? String(manualSelected.candidate_id || '').trim()
+        : (selected ? String(selected.candidate_id || '').trim() : '');
+      tunEgressSelectEl.value = desiredID;
+      tunEgressSelectEl.disabled = !supported || candidates.length === 0;
+      document.getElementById('tunEgressApplyBtn').disabled = !supported || candidates.length === 0;
+      document.getElementById('tunEgressAutoBtn').disabled = !supported;
+      document.getElementById('tunEgressRefreshBtn').disabled = !supported;
+    }
+
+    async function loadSettings() {
+      const data = await requestJSON('/local/api/virtual_router/settings', { method: 'GET' });
+      renderSettings(data || {});
+      return data || {};
+    }
+
+    async function loadTunStatus() {
+      const data = await requestJSON('/local/api/tun/status', { method: 'GET' });
+      renderTunStatus(data || {});
+      return data || {};
+    }
+
+    async function loadTunEgress() {
+      try {
+        const data = await requestJSON('/local/api/tun/egress', { method: 'GET' });
+        renderTunEgressStatus(data || {});
+      } catch (_) {
+        renderTunEgressStatus({ supported: false, mode: 'unsupported', candidates: [] });
+      }
+    }
+
+    async function refreshAll() {
+      const ok = await ensureSession();
+      if (!ok) return;
+      await loadSettings();
+      await loadTunStatus();
+      await loadTunEgress();
+    }
+
+    async function saveSettings() {
+      const data = await requestJSON('/local/api/virtual_router/settings', {
+        method: 'POST',
+        body: JSON.stringify({
+          virtual_router_enabled: routerEnabledEl.checked,
+          virtual_dns_enabled: dnsEnabledEl.checked,
+        }),
+      });
+      renderSettings(data || {});
+      setMessage('虚拟路由设置已保存', 'success');
+    }
+
+    function formatTunError(err) {
+      const payload = err && err.payload ? err.payload : {};
+      const extras = [];
+      if (payload.code) extras.push('code=' + payload.code);
+      if (payload.stage) extras.push('stage=' + payload.stage);
+      if (payload.hint) extras.push('hint=' + payload.hint);
+      return err.message + (extras.length > 0 ? '（' + extras.join('，') + '）' : '');
+    }
+
+    async function installTun() {
+      setMessage('执行 TUN 安装/检查...');
+      try {
+        await requestJSON('/local/api/tun/install', { method: 'POST', body: '{}' });
+        await refreshAll();
+        setMessage('TUN 安装/检查完成', 'success');
+      } catch (err) {
+        setMessage('TUN 安装失败：' + formatTunError(err), 'error');
+      }
+    }
+
+    async function resetTun() {
+      setMessage('执行 TUN 重置...');
+      try {
+        await requestJSON('/local/api/tun/reset', { method: 'POST', body: '{}' });
+        await refreshAll();
+        setMessage('TUN 已重置', 'success');
+      } catch (err) {
+        setMessage('TUN 重置失败：' + err.message, 'error');
+      }
+    }
+
+    async function uninstallTun() {
+      if (!window.confirm('确认卸载 TUN？虚拟路由需要 TUN 数据面才能接管系统流量。')) return;
+      setMessage('执行 TUN 卸载...');
+      try {
+        await requestJSON('/local/api/tun/uninstall', { method: 'POST', body: '{}' });
+        await refreshAll();
+        setMessage('TUN 已卸载', 'success');
+      } catch (err) {
+        setMessage('TUN 卸载失败：' + err.message, 'error');
+      }
+    }
+
+    async function applyTunEgress() {
+      const candidateID = String(tunEgressSelectEl && tunEgressSelectEl.value || '').trim();
+      if (!candidateID) {
+        setMessage('请选择出口网卡后再应用', 'error');
+        return;
+      }
+      setMessage('应用手动出口选择...');
+      try {
+        await requestJSON('/local/api/tun/egress', {
+          method: 'POST',
+          body: JSON.stringify({ mode: 'manual', candidate_id: candidateID }),
+        });
+        await loadTunEgress();
+        setMessage('已应用手动出口选择', 'success');
+      } catch (err) {
+        setMessage('应用出口选择失败：' + err.message, 'error');
+      }
+    }
+
+    async function autoTunEgress() {
+      setMessage('恢复自动出口选择...');
+      try {
+        await requestJSON('/local/api/tun/egress', {
+          method: 'POST',
+          body: JSON.stringify({ mode: 'auto' }),
+        });
+        await loadTunEgress();
+        setMessage('已恢复自动出口选择', 'success');
+      } catch (err) {
+        setMessage('恢复自动出口失败：' + err.message, 'error');
+      }
+    }
+
+    function startTunPolling() {
+      if (tunPollingTimer) return;
+      tunPollingTimer = setInterval(() => {
+        loadTunStatus().catch(() => {});
+      }, 3000);
+    }
+
+    document.getElementById('saveSettingsBtn').addEventListener('click', () => {
+      saveSettings().catch((err) => setMessage('保存失败：' + err.message, 'error'));
+    });
+    document.getElementById('refreshSettingsBtn').addEventListener('click', () => {
+      refreshAll().then(() => setMessage('状态已刷新', 'success')).catch((err) => setMessage('刷新失败：' + err.message, 'error'));
+    });
+    document.getElementById('tunInstallBtn').addEventListener('click', installTun);
+    document.getElementById('tunResetBtn').addEventListener('click', resetTun);
+    document.getElementById('tunUninstallBtn').addEventListener('click', uninstallTun);
+    document.getElementById('tunRefreshBtn').addEventListener('click', () => {
+      Promise.all([loadTunStatus(), loadTunEgress()]).then(() => setMessage('TUN 状态已刷新', 'success')).catch((err) => setMessage('读取 TUN 状态失败：' + err.message, 'error'));
+    });
+    document.getElementById('tunEgressApplyBtn').addEventListener('click', applyTunEgress);
+    document.getElementById('tunEgressAutoBtn').addEventListener('click', autoTunEgress);
+    document.getElementById('tunEgressRefreshBtn').addEventListener('click', () => {
+      loadTunEgress().then(() => setMessage('出口候选已刷新', 'success')).catch((err) => setMessage('刷新出口候选失败：' + err.message, 'error'));
+    });
+
+    refreshAll().catch((err) => setMessage('初始化失败：' + err.message, 'error'));
+    startTunPolling();
+    window.addEventListener('beforeunload', () => {
+      if (tunPollingTimer) clearInterval(tunPollingTimer);
+    });
+  </script>
+</body>
+</html>
