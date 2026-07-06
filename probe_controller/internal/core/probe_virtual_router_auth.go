@@ -1,0 +1,62 @@
+package core
+
+import (
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+)
+
+const probeVirtualRouterAuthTicketVersion = "chain-auth-v1"
+
+var probeVirtualRouterAuthTicketNow = time.Now
+
+type probeVirtualRouterAuthTicketPayload struct {
+	Version       string `json:"v"`
+	ChainID       string `json:"chain_id"`
+	ClientEntryID string `json:"client_entry_id,omitempty"`
+	UserID        string `json:"user_id"`
+	UserPublicKey string `json:"user_public_key"`
+	IssuedAt      string `json:"issued_at"`
+}
+
+func buildProbeVirtualRouterAuthTicket(rule probeVirtualRouterTopologyRule, priv ed25519.PrivateKey) (string, error) {
+	chainID := probeVirtualRouterRuntimeChainID(rule)
+	if chainID == "" {
+		return "", fmt.Errorf("chain_id is required")
+	}
+	if len(priv) != ed25519.PrivateKeySize {
+		return "", fmt.Errorf("admin private key is invalid")
+	}
+	userPublicKey := strings.TrimSpace(rule.UserPublicKey)
+	if userPublicKey == "" {
+		return "", fmt.Errorf("user_public_key is required")
+	}
+	clientEntryID := strings.TrimSpace(rule.ID)
+	if clientEntryID == "" {
+		clientEntryID = chainID
+	}
+	payload := probeVirtualRouterAuthTicketPayload{
+		Version:       probeVirtualRouterAuthTicketVersion,
+		ChainID:       chainID,
+		ClientEntryID: clientEntryID,
+		UserID:        strings.TrimSpace(rule.UserID),
+		UserPublicKey: userPublicKey,
+		IssuedAt:      probeVirtualRouterMonthlyAuthTicketIssuedAt(probeVirtualRouterAuthTicketNow()),
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	sig := ed25519.Sign(priv, payloadBytes)
+	enc := base64.RawURLEncoding
+	return enc.EncodeToString(payloadBytes) + "." + enc.EncodeToString(sig), nil
+}
+
+func probeVirtualRouterMonthlyAuthTicketIssuedAt(now time.Time) string {
+	utc := now.UTC()
+	year, month, _ := utc.Date()
+	return time.Date(year, month, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+}

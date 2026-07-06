@@ -14,7 +14,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -296,49 +295,19 @@ func runProbeLocalDNSCachePersistLoop(stopCh <-chan struct{}) {
 }
 
 func ensureProbeLocalDNSServiceStarted() {
-	ensureProbeLocalDNSCacheLoaded()
-	if !probeVirtualRouterLocalDNSEnabled() {
-		stopProbeLocalDNSLoopbackListener()
-		stopProbeLocalDNSTUNListener()
-		return
-	}
-	probeLocalDNSState.mu.Lock()
-	alreadyStarted := probeLocalDNSState.started
-	if !alreadyStarted {
-		probeLocalDNSState.started = true
-	}
-	probeLocalDNSState.mu.Unlock()
-
-	if !alreadyStarted {
-		startProbeLocalDNSLoopbackListener()
-	}
-	reconcileProbeLocalDNSRuntime()
+	stopProbeLocalDNSLoopbackListener()
+	stopProbeLocalDNSTUNListener()
 }
 
 func reconcileProbeLocalDNSRuntime() {
-	reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(probeLocalTUNProxyEnabled())
+	stopProbeLocalDNSLoopbackListener()
+	stopProbeLocalDNSTUNListener()
 }
 
 func reconcileProbeLocalDNSRuntimeForTUNProxyEnabled(tunProxyEnabled bool) {
-	if !probeVirtualRouterLocalDNSEnabled() {
-		stopProbeLocalDNSLoopbackListener()
-		stopProbeLocalDNSTUNListener()
-		return
-	}
-	if runtime.GOOS != "windows" {
-		stopProbeLocalDNSTUNListener()
-		return
-	}
-	if !tunProxyEnabled && !probeLocalTUNDataPlaneRunning() {
-		stopProbeLocalDNSTUNListener()
-		return
-	}
-	host := strings.TrimSpace(currentProbeLocalTUNDNSListenHost())
-	if host == "" {
-		stopProbeLocalDNSTUNListener()
-		return
-	}
-	startProbeLocalDNSTUNListener(host)
+	_ = tunProxyEnabled
+	stopProbeLocalDNSLoopbackListener()
+	stopProbeLocalDNSTUNListener()
 }
 
 func startProbeLocalDNSLoopbackListener() {
@@ -915,7 +884,7 @@ func ensureProbeLocalDNSUpstreamDirectBypass(kind string, address string) {
 	if !ok {
 		return
 	}
-	if err := ensureProbeLocalExplicitDirectBypass(target); err != nil {
+	if err := ensureProbeLocalDirectBypass(target); err != nil {
 		logProbeWarnf("probe local dns upstream direct bypass failed: kind=%s target=%s err=%v", strings.TrimSpace(kind), target, err)
 	}
 }
@@ -990,72 +959,8 @@ func queryProbeLocalDNSViaDoH(endpoint string, packet []byte, decision probeLoca
 }
 
 func queryProbeLocalDNSViaDoHOverProxy(endpoint string, packet []byte, decision probeLocalDNSRouteDecision) ([]byte, error) {
-	transportEndpoint, serverName, err := resolveProbeLocalDoHProxyTransportEndpoint(endpoint)
-	if err != nil {
-		return nil, err
-	}
-	groupRuntime, err := resolveProbeLocalDNSProxyGroupRuntime(decision)
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), probeLocalDNSUpstreamTimeout)
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(packet))
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Set("Content-Type", "application/dns-message")
-	request.Header.Set("Accept", "application/dns-message")
-	transport := &http.Transport{
-		Proxy:             nil,
-		DisableKeepAlives: true,
-		TLSClientConfig: &tls.Config{
-			MinVersion: tls.VersionTLS12,
-			ServerName: serverName,
-		},
-		DialContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
-			if !strings.EqualFold(strings.TrimSpace(addr), strings.TrimSpace(transportEndpoint)) {
-				return nil, fmt.Errorf("unexpected doh proxy dial target: %s", strings.TrimSpace(addr))
-			}
-			conn, _, err := groupRuntime.openStream("tcp", transportEndpoint, nil, "")
-			if err != nil {
-				return nil, err
-			}
-			wrapped := &probeLocalDNSProxyDialConn{Conn: conn, done: make(chan struct{})}
-			deadline := probeLocalDNSNow().Add(probeLocalDNSUpstreamTimeout)
-			if ctxDeadline, ok := ctx.Deadline(); ok {
-				deadline = ctxDeadline
-			}
-			_ = wrapped.SetDeadline(deadline)
-			go func() {
-				select {
-				case <-ctx.Done():
-					_ = wrapped.Close()
-				case <-wrapped.done:
-				}
-			}()
-			return wrapped, nil
-		},
-	}
-	client := &http.Client{Timeout: probeLocalDNSUpstreamTimeout, Transport: transport}
-	response, err := client.Do(request)
-	if err != nil {
-		transport.CloseIdleConnections()
-		return nil, err
-	}
-	defer transport.CloseIdleConnections()
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("doh proxy upstream status=%d", response.StatusCode)
-	}
-	payload, err := io.ReadAll(io.LimitReader(response.Body, probeLocalDNSDoHReadLimit))
-	if err != nil {
-		return nil, err
-	}
-	if len(payload) == 0 {
-		return nil, errors.New("doh proxy upstream returned empty payload")
-	}
-	return payload, nil
+	_, _, _ = endpoint, packet, decision
+	return nil, errProbeLocalLegacyTunnelRouteRemoved
 }
 
 func queryProbeLocalDNSViaDoT(address string, packet []byte) ([]byte, error) {
@@ -1397,18 +1302,6 @@ func resolveProbeLocalDoHProxyTransportEndpoint(endpoint string) (transportEndpo
 		serverName = host
 	}
 	return net.JoinHostPort(host, strconv.Itoa(portNum)), serverName, nil
-}
-
-func resolveProbeLocalDNSProxyGroupRuntime(decision probeLocalDNSRouteDecision) (*probeLocalTUNGroupRuntime, error) {
-	group := strings.TrimSpace(decision.Group)
-	if group == "" || strings.EqualFold(group, "fallback") {
-		return nil, errors.New("proxy dns route group is empty")
-	}
-	chainID := firstNonEmpty(strings.TrimSpace(decision.SelectedChainID), mustProbeLocalSelectedChainIDFromLegacy(decision.TunnelNodeID))
-	if strings.TrimSpace(chainID) == "" {
-		return nil, errors.New("proxy dns route missing selected_chain_id")
-	}
-	return ensureProbeLocalTUNGroupRuntime(group, chainID)
 }
 
 func resolveProbeLocalDNSUpstreamHostIPv4(host string) (string, error) {

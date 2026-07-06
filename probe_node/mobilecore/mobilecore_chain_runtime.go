@@ -25,8 +25,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -78,17 +76,17 @@ const (
 	mobileChainEntrySideEntry = "chain_entry"
 	mobileChainEntrySideExit  = "chain_exit"
 
-	mobileChainOpenTimeout            = 15 * time.Second
-	mobileChainRelayHeaderTimeout     = 5 * time.Second
-	mobileChainBridgeRetryMin         = time.Second
-	mobileChainBridgeRetryMax         = 30 * time.Second
-	mobileChainPortForwardDialTimeout = 12 * time.Second
-	mobileChainResponseTimeout        = 10 * time.Second
-	mobileChainUDPIdleTTL             = 90 * time.Second
-	mobileChainUDPGCInterval          = 15 * time.Second
-	mobileChainCopyBufferBytes        = 1024 * 1024
-	mobileChainFrameMaxPayload        = 64 * 1024
-	mobileChainWSBufferBytes          = 512 * 1024
+	mobileChainOpenTimeout        = 15 * time.Second
+	mobileChainRelayHeaderTimeout = 5 * time.Second
+	mobileChainBridgeRetryMin     = time.Second
+	mobileChainBridgeRetryMax     = 30 * time.Second
+	mobileChainDialTimeout        = 12 * time.Second
+	mobileChainResponseTimeout    = 10 * time.Second
+	mobileChainUDPIdleTTL         = 90 * time.Second
+	mobileChainUDPGCInterval      = 15 * time.Second
+	mobileChainCopyBufferBytes    = 1024 * 1024
+	mobileChainFrameMaxPayload    = 64 * 1024
+	mobileChainWSBufferBytes      = 512 * 1024
 
 	mobileChainQUICInitialStreamWindow = 128 * 1024 * 1024
 	mobileChainQUICMaxStreamWindow     = 512 * 1024 * 1024
@@ -101,18 +99,6 @@ var mobileChainAuthTicketNow = time.Now
 type mobileNodeIdentity struct {
 	NodeID string
 	Secret string
-}
-
-type mobileChainPortForwardConfig struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	EntrySide  string `json:"entry_side"`
-	ListenHost string `json:"listen_host"`
-	ListenPort int    `json:"listen_port"`
-	TargetHost string `json:"target_host"`
-	TargetPort int    `json:"target_port"`
-	Network    string `json:"network"`
-	Enabled    bool   `json:"enabled"`
 }
 
 type mobileChainRuntimeConfig struct {
@@ -139,7 +125,6 @@ type mobileChainRuntimeConfig struct {
 	PrevPreserveRelayDomain bool
 	RequireUserAuth         bool
 	NextAuthMode            string
-	PortForwards            []mobileChainPortForwardConfig
 	Identity                mobileNodeIdentity
 }
 
@@ -150,9 +135,6 @@ type mobileChainRuntime struct {
 	upstreamSessions   map[string]*mobileChainBridgeSession
 	bridgeMu           sync.Mutex
 	bridgeSeq          uint64
-	forwardMu          sync.Mutex
-	tcpForwards        []net.Listener
-	udpForwards        []net.PacketConn
 	stopCh             chan struct{}
 }
 
@@ -276,56 +258,6 @@ var mobileChainCopyBufferPool = sync.Pool{New: func() any { return make([]byte, 
 
 var mobileChainOpenBridgeStreamTimeout = mobileChainOpenTimeout
 
-func runMobileChainLinkControl(cmd chainLinkControlMessage, identity mobileNodeIdentity, stream net.Conn, writeMu *sync.Mutex) {
-	action := normalizeMobileChainAction(cmd.Action)
-	if action == "" {
-		action = "apply"
-	}
-	result := chainLinkControlResult{
-		Type:      "chain_link_control_result",
-		RequestID: strings.TrimSpace(cmd.RequestID),
-		NodeID:    strings.TrimSpace(identity.NodeID),
-		OK:        false,
-		Action:    action,
-		ChainID:   strings.TrimSpace(cmd.ChainID),
-		Role:      strings.TrimSpace(cmd.Role),
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-	}
-	switch action {
-	case "apply", "restart":
-		cfg, err := buildMobileChainRuntimeConfig(cmd)
-		if err != nil {
-			result.Error = err.Error()
-			sendChainLinkControlResult(stream, writeMu, result)
-			return
-		}
-		cfg.Identity = identity
-		mobileChainRuntimeLifecycleMu.Lock()
-		rt, err := startMobileChainRuntime(cfg)
-		mobileChainRuntimeLifecycleMu.Unlock()
-		if err != nil {
-			result.Error = err.Error()
-			sendChainLinkControlResult(stream, writeMu, result)
-			return
-		}
-		result.OK = true
-		result.Role = rt.cfg.Role
-		result.Message = "android chain runtime started: listen=" + net.JoinHostPort(rt.cfg.ListenHost, strconv.Itoa(rt.cfg.ListenPort))
-	case "remove":
-		result.OK = true
-		mobileChainRuntimeLifecycleMu.Lock()
-		if stopMobileChainRuntime(cmd.ChainID, "remote remove command") {
-			result.Message = "android chain runtime removed"
-		} else {
-			result.Message = "android chain runtime not found"
-		}
-		mobileChainRuntimeLifecycleMu.Unlock()
-	default:
-		result.Error = "unsupported action"
-	}
-	sendChainLinkControlResult(stream, writeMu, result)
-}
-
 func buildMobileChainRuntimeConfig(cmd chainLinkControlMessage) (mobileChainRuntimeConfig, error) {
 	chainID := strings.TrimSpace(cmd.ChainID)
 	if chainID == "" {
@@ -366,10 +298,6 @@ func buildMobileChainRuntimeConfig(cmd chainLinkControlMessage) (mobileChainRunt
 	if prevHost == "" || prevPort <= 0 {
 		prevDialMode = mobileChainDialNone
 	}
-	forwards, err := normalizeMobileChainPortForwards(cmd.PortForwards)
-	if err != nil {
-		return mobileChainRuntimeConfig{}, err
-	}
 	preserveDomain := isMobileChainControlCFEntry(cmd)
 	cfg := mobileChainRuntimeConfig{
 		ChainID:                 chainID,
@@ -394,7 +322,6 @@ func buildMobileChainRuntimeConfig(cmd chainLinkControlMessage) (mobileChainRunt
 		PrevPreserveRelayDomain: preserveDomain,
 		RequireUserAuth:         cmd.RequireUserAuth,
 		NextAuthMode:            nextAuthMode,
-		PortForwards:            forwards,
 	}
 	if cfg.RequireUserAuth {
 		pub, err := parseMobileChainUserPublicKey(cfg.RawPublicKey)
@@ -422,7 +349,6 @@ func startMobileChainRuntime(cfg mobileChainRuntimeConfig) (*mobileChainRuntime,
 	mobileChainRuntimeState.runtimes[cfg.ChainID] = rt
 	mobileChainRuntimeState.mu.Unlock()
 	startMobileChainBridgeWorkers(rt)
-	startMobileChainPortForwardWorkers(rt)
 	androidLogStore.add("chain", "normal", "android probe chain server started: chain="+cfg.ChainID+" role="+cfg.Role)
 	return rt, nil
 }
@@ -465,165 +391,9 @@ func stopAllMobileChainRuntimes(reason string) int {
 }
 
 func applyMobileChainRuntimesFromConfigDir(configDir string, identity mobileNodeIdentity) (int, error) {
-	mobileChainRuntimeLifecycleMu.Lock()
-	defer mobileChainRuntimeLifecycleMu.Unlock()
-
-	dir := strings.TrimSpace(configDir)
-	if dir == "" {
-		return 0, errors.New("config dir is required")
-	}
-	items, err := loadMobileChainServerItemsFromConfigDir(dir)
-	if err != nil {
-		return 0, err
-	}
-	applied := 0
-	for _, item := range items {
-		if applyMobileChainServerItem(identity, item) {
-			applied++
-		}
-	}
-	return applied, nil
-}
-
-func loadMobileChainServerItemsFromConfigDir(configDir string) ([]linkChainServerItem, error) {
-	var out []linkChainServerItem
-	appendCache := func(path string) error {
-		items, err := loadMobileChainServerItemsFromCache(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return err
-		}
-		out = append(out, items...)
-		return nil
-	}
-	if err := appendCache(filepath.Join(configDir, "probe_link_chain_config.json")); err != nil {
-		return nil, err
-	}
-	if err := appendCache(filepath.Join(configDir, "probe_link_port_forward_chain_config.json")); err != nil {
-		return nil, err
-	}
-	groupedPath := filepath.Join(configDir, "probe_link_config_grouped.json")
-	raw, err := os.ReadFile(groupedPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return dedupeMobileChainServerItems(out), nil
-		}
-		return nil, err
-	}
-	var grouped struct {
-		SelfChains        []linkChainServerItem `json:"self_chains"`
-		PortForwardChains []linkChainServerItem `json:"port_forward_chains"`
-	}
-	if err := json.Unmarshal(raw, &grouped); err != nil {
-		return nil, err
-	}
-	out = append(out, grouped.SelfChains...)
-	out = append(out, grouped.PortForwardChains...)
-	return dedupeMobileChainServerItems(out), nil
-}
-
-func loadMobileChainServerItemsFromCache(path string) ([]linkChainServerItem, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var cache struct {
-		Items *[]linkChainServerItem `json:"items"`
-	}
-	if err := json.Unmarshal(raw, &cache); err == nil && cache.Items != nil {
-		return *cache.Items, nil
-	}
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &object); err == nil {
-		if _, ok := object["items"]; ok {
-			return []linkChainServerItem{}, nil
-		}
-	}
-	var items []linkChainServerItem
-	if err := json.Unmarshal(raw, &items); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-func dedupeMobileChainServerItems(items []linkChainServerItem) []linkChainServerItem {
-	out := make([]linkChainServerItem, 0, len(items))
-	seen := map[string]struct{}{}
-	for _, item := range items {
-		id := strings.TrimSpace(item.ChainID)
-		if id == "" {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		out = append(out, item)
-	}
-	return out
-}
-
-func applyMobileChainServerItem(identity mobileNodeIdentity, item linkChainServerItem) bool {
-	nodeID := strings.TrimSpace(identity.NodeID)
-	role := resolveMobileChainNodeRole(item, nodeID)
-	if role == "" {
-		return false
-	}
-	hop := findMobileChainHopForNode(item, nodeID)
-	if hop.ListenPort <= 0 {
-		androidLogStore.add("chain", "warn", "android chain restore skipped: chain="+strings.TrimSpace(item.ChainID)+" reason=missing_listen_port")
-		return false
-	}
-	nextHost, nextPort, nextLayer, nextDialMode, nextAuthMode := resolveMobileChainNextHop(item, nodeID, role)
-	prevHost, prevPort, prevLayer, prevDialMode := resolveMobileChainPrevHop(item, nodeID, role)
-	forwards := make([]mobileChainPortForwardConfig, 0, len(item.PortForwards))
-	for _, raw := range item.PortForwards {
-		var cfg mobileChainPortForwardConfig
-		if err := json.Unmarshal(raw, &cfg); err == nil {
-			forwards = append(forwards, cfg)
-		}
-	}
-	cmd := chainLinkControlMessage{
-		ChainID:         strings.TrimSpace(item.ChainID),
-		ChainType:       strings.TrimSpace(item.ChainType),
-		ClientEntryID:   strings.TrimSpace(item.ClientEntryID),
-		ClientEntryType: strings.TrimSpace(item.ClientEntryType),
-		Name:            strings.TrimSpace(item.Name),
-		UserID:          "",
-		UserPublicKey:   "",
-		LinkSecret:      strings.TrimSpace(item.Secret),
-		AuthTicket:      strings.TrimSpace(item.AuthTicket),
-		Role:            role,
-		ListenHost:      normalizeMobileChainListenHost(hop.ListenHost),
-		ListenPort:      hop.ListenPort,
-		LinkLayer:       normalizeMobileChainLinkLayer(firstMobileChainNonEmpty(hop.LinkLayer, item.LinkLayer)),
-		NextLinkLayer:   nextLayer,
-		NextDialMode:    nextDialMode,
-		NextHost:        nextHost,
-		NextPort:        nextPort,
-		PrevHost:        prevHost,
-		PrevPort:        prevPort,
-		PrevLinkLayer:   prevLayer,
-		PrevDialMode:    prevDialMode,
-		PortForwards:    forwards,
-		RequireUserAuth: true,
-		NextAuthMode:    nextAuthMode,
-	}
-	cmd.UserID = strings.TrimSpace(item.UserID)
-	cmd.UserPublicKey = strings.TrimSpace(item.UserPublicKey)
-	cfg, err := buildMobileChainRuntimeConfig(cmd)
-	if err != nil {
-		androidLogStore.add("chain", "warn", "android chain restore build failed: chain="+cmd.ChainID+" err="+err.Error())
-		return false
-	}
-	cfg.Identity = identity
-	if _, err := startMobileChainRuntime(cfg); err != nil {
-		androidLogStore.add("chain", "warn", "android chain restore start failed: chain="+cmd.ChainID+" err="+err.Error())
-		return false
-	}
-	return true
+	_ = configDir
+	_ = identity
+	return 0, nil
 }
 
 func getMobileChainRuntime(chainID string) *mobileChainRuntime {
@@ -648,16 +418,6 @@ func (rt *mobileChainRuntime) close() {
 	rt.upstreamSessions = map[string]*mobileChainBridgeSession{}
 	rt.bridgeMu.Unlock()
 
-	rt.forwardMu.Lock()
-	for _, ln := range rt.tcpForwards {
-		_ = ln.Close()
-	}
-	for _, pc := range rt.udpForwards {
-		_ = pc.Close()
-	}
-	rt.tcpForwards = nil
-	rt.udpForwards = nil
-	rt.forwardMu.Unlock()
 }
 
 func startMobileChainPublicRelayServer(rt *mobileChainRuntime) error {
@@ -1258,7 +1018,7 @@ func handleMobileChainTunnelTCP(stream net.Conn, target string, responder func(m
 	if responder == nil {
 		return errors.New("missing mobile frame open responder")
 	}
-	remote, err := net.DialTimeout("tcp", target, mobileChainPortForwardDialTimeout)
+	remote, err := net.DialTimeout("tcp", target, mobileChainDialTimeout)
 	if err != nil {
 		_ = responder(mobileChainTunnelOpenResponse{OK: false, Error: err.Error()})
 		return err
@@ -1275,7 +1035,7 @@ func handleMobileChainTunnelUDP(stream net.Conn, target string, responder func(m
 	if responder == nil {
 		return errors.New("missing mobile frame open responder")
 	}
-	remote, err := net.DialTimeout("udp", target, mobileChainPortForwardDialTimeout)
+	remote, err := net.DialTimeout("udp", target, mobileChainDialTimeout)
 	if err != nil {
 		_ = responder(mobileChainTunnelOpenResponse{OK: false, Error: err.Error()})
 		return err
@@ -1323,177 +1083,6 @@ func handleMobileChainTunnelUDP(stream net.Conn, target string, responder func(m
 		return nil
 	}
 	return err
-}
-
-func startMobileChainPortForwardWorkers(rt *mobileChainRuntime) {
-	for _, cfg := range rt.cfg.PortForwards {
-		if !cfg.Enabled || !shouldRunMobileChainPortForwardOnRole(rt.cfg.Role, cfg.EntrySide) {
-			continue
-		}
-		listenAddr := net.JoinHostPort(normalizeMobileChainListenHost(cfg.ListenHost), strconv.Itoa(cfg.ListenPort))
-		network := normalizeMobileChainPortForwardNetwork(cfg.Network)
-		if network == mobileChainNetworkTCP || network == mobileChainNetworkBoth {
-			ln, err := net.Listen("tcp", listenAddr)
-			if err == nil {
-				rt.registerTCPForward(ln)
-				go runMobileChainTCPPortForward(rt, cfg, ln)
-			} else {
-				androidLogStore.add("chain", "error", "android tcp port forward listen failed: id="+cfg.ID+" err="+err.Error())
-			}
-		}
-		if network == mobileChainNetworkUDP || network == mobileChainNetworkBoth {
-			pc, err := net.ListenPacket("udp", listenAddr)
-			if err == nil {
-				rt.registerUDPForward(pc)
-				go runMobileChainUDPPortForward(rt, cfg, pc)
-			} else {
-				androidLogStore.add("chain", "error", "android udp port forward listen failed: id="+cfg.ID+" err="+err.Error())
-			}
-		}
-	}
-}
-
-func runMobileChainTCPPortForward(rt *mobileChainRuntime, cfg mobileChainPortForwardConfig, listener net.Listener) {
-	targetAddr := net.JoinHostPort(strings.TrimSpace(cfg.TargetHost), strconv.Itoa(cfg.TargetPort))
-	for {
-		local, err := listener.Accept()
-		if err != nil {
-			return
-		}
-		go func() {
-			defer local.Close()
-			remote, err := openMobileChainPortForwardStream(rt, cfg.EntrySide, mobileChainNetworkTCP, targetAddr, "")
-			if err != nil {
-				return
-			}
-			defer remote.Close()
-			relayMobileChainBidirectional(local, remote)
-		}()
-	}
-}
-
-func runMobileChainUDPPortForward(rt *mobileChainRuntime, cfg mobileChainPortForwardConfig, packetConn net.PacketConn) {
-	targetAddr := net.JoinHostPort(strings.TrimSpace(cfg.TargetHost), strconv.Itoa(cfg.TargetPort))
-	type udpSession struct {
-		addr     net.Addr
-		stream   net.Conn
-		reader   *bufio.Reader
-		lastSeen time.Time
-	}
-	sessions := map[string]*udpSession{}
-	var sessionsMu sync.Mutex
-	closeSession := func(key string, item *udpSession) {
-		sessionsMu.Lock()
-		if sessions[key] == item {
-			delete(sessions, key)
-		}
-		sessionsMu.Unlock()
-		_ = item.stream.Close()
-	}
-	go func() {
-		ticker := time.NewTicker(mobileChainUDPGCInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-rt.stopCh:
-				return
-			case <-ticker.C:
-				now := time.Now()
-				sessionsMu.Lock()
-				for key, item := range sessions {
-					if now.Sub(item.lastSeen) >= mobileChainUDPIdleTTL {
-						delete(sessions, key)
-						_ = item.stream.Close()
-					}
-				}
-				sessionsMu.Unlock()
-			}
-		}
-	}()
-	openSession := func(key string, addr net.Addr) (*udpSession, error) {
-		stream, err := openMobileChainPortForwardStream(rt, cfg.EntrySide, mobileChainNetworkUDP, targetAddr, key)
-		if err != nil {
-			return nil, err
-		}
-		item := &udpSession{addr: addr, stream: stream, reader: bufio.NewReader(stream), lastSeen: time.Now()}
-		go func() {
-			for {
-				payload, err := readMobileChainFramedPacket(item.reader)
-				if err != nil {
-					closeSession(key, item)
-					return
-				}
-				if len(payload) > 0 {
-					_, _ = packetConn.WriteTo(payload, item.addr)
-				}
-			}
-		}()
-		return item, nil
-	}
-	buf := make([]byte, mobileChainFrameMaxPayload)
-	for {
-		n, addr, err := packetConn.ReadFrom(buf)
-		if err != nil {
-			return
-		}
-		if n <= 0 || addr == nil {
-			continue
-		}
-		key := strings.TrimSpace(addr.String())
-		sessionsMu.Lock()
-		item := sessions[key]
-		if item == nil {
-			var openErr error
-			item, openErr = openSession(key, addr)
-			if openErr != nil {
-				sessionsMu.Unlock()
-				continue
-			}
-			sessions[key] = item
-		}
-		item.lastSeen = time.Now()
-		stream := item.stream
-		sessionsMu.Unlock()
-		if err := writeMobileChainFramedPacket(stream, buf[:n]); err != nil {
-			closeSession(key, item)
-		}
-	}
-}
-
-func openMobileChainPortForwardStream(rt *mobileChainRuntime, entrySide string, network string, targetAddr string, flowID string) (net.Conn, error) {
-	req := mobileChainTunnelOpenRequest{
-		Type:             "open",
-		Network:          strings.ToLower(strings.TrimSpace(network)),
-		Address:          strings.TrimSpace(targetAddr),
-		FlowID:           strings.TrimSpace(flowID),
-		AppProtocol:      mobileChainAppProtocolForRequest(strings.ToLower(strings.TrimSpace(network)), targetAddr, nil),
-		ResumePolicy:     mobileChainResumePolicyForRequest(strings.ToLower(strings.TrimSpace(network)), nil),
-		LatencySensitive: mobileChainLatencySensitiveForRequest(strings.ToLower(strings.TrimSpace(network)), targetAddr, nil),
-	}
-	if strings.EqualFold(network, mobileChainNetworkUDP) {
-		req.Priority = "realtime"
-		req.AssociationV2 = &mobileChainAssociationV2Config{
-			Version:         2,
-			Transport:       "udp",
-			RouteTarget:     strings.TrimSpace(targetAddr),
-			NATMode:         "endpoint_independent",
-			TTLProfile:      "default",
-			IdleTimeoutMS:   mobileChainUDPIdleTTL.Milliseconds(),
-			GCIntervalMS:    mobileChainUDPGCInterval.Milliseconds(),
-			CreatedAtUnixMS: time.Now().UnixMilli(),
-			AssocKeyV2:      strings.TrimSpace(flowID),
-			FlowID:          strings.TrimSpace(flowID),
-		}
-		req.AppProtocol = mobileChainAppProtocolForRequest(req.Network, targetAddr, req.AssociationV2)
-		req.ResumePolicy = mobileChainResumePolicyForRequest(req.Network, req.AssociationV2)
-		req.LatencySensitive = mobileChainLatencySensitiveForRequest(req.Network, targetAddr, req.AssociationV2)
-	} else {
-		req.Priority = mobileChainPriorityForRequest(req)
-	}
-	if normalizeMobileChainPortForwardEntrySide(entrySide) == mobileChainEntrySideExit {
-		return openMobileChainUpstreamStream(rt, "", mobileChainOpenBridgeStreamTimeout, req)
-	}
-	return openMobileChainDownstreamStream(rt, "", mobileChainOpenBridgeStreamTimeout, req)
 }
 
 func openMobileChainRelayBridgeConn(cfg mobileChainRuntimeConfig, target mobileChainBridgeDialTarget) (net.Conn, error) {
@@ -1729,18 +1318,6 @@ func (rt *mobileChainRuntime) getSession(items map[string]*mobileChainBridgeSess
 		delete(items, key)
 	}
 	return nil
-}
-
-func (rt *mobileChainRuntime) registerTCPForward(ln net.Listener) {
-	rt.forwardMu.Lock()
-	rt.tcpForwards = append(rt.tcpForwards, ln)
-	rt.forwardMu.Unlock()
-}
-
-func (rt *mobileChainRuntime) registerUDPForward(pc net.PacketConn) {
-	rt.forwardMu.Lock()
-	rt.udpForwards = append(rt.udpForwards, pc)
-	rt.forwardMu.Unlock()
 }
 
 func verifyMobileChainRelayRequestAuth(rt *mobileChainRuntime, r *http.Request) error {
@@ -2056,19 +1633,6 @@ func buildMobileChainRelayURL(scheme string, host string, port int, chainID stri
 	return u.String()
 }
 
-func normalizeMobileChainAction(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "apply", "start":
-		return "apply"
-	case "restart", "reload":
-		return "restart"
-	case "remove", "delete", "stop":
-		return "remove"
-	default:
-		return ""
-	}
-}
-
 func firstMobileChainNonEmpty(values ...string) string {
 	for _, value := range values {
 		if trimmed := strings.TrimSpace(value); trimmed != "" {
@@ -2156,66 +1720,6 @@ func normalizeMobileChainPort(port int) int {
 		return 0
 	}
 	return port
-}
-
-func normalizeMobileChainPortForwardNetwork(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case mobileChainNetworkUDP:
-		return mobileChainNetworkUDP
-	case mobileChainNetworkBoth, "tcp+udp", "udp+tcp":
-		return mobileChainNetworkBoth
-	default:
-		return mobileChainNetworkTCP
-	}
-}
-
-func normalizeMobileChainPortForwardEntrySide(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case mobileChainEntrySideExit, "exit", "egress":
-		return mobileChainEntrySideExit
-	default:
-		return mobileChainEntrySideEntry
-	}
-}
-
-func normalizeMobileChainPortForwards(values []mobileChainPortForwardConfig) ([]mobileChainPortForwardConfig, error) {
-	out := make([]mobileChainPortForwardConfig, 0, len(values))
-	seen := map[string]struct{}{}
-	for _, item := range values {
-		if item.ListenPort <= 0 || item.ListenPort > 65535 {
-			return nil, errors.New("port_forwards listen_port must be between 1 and 65535")
-		}
-		if item.TargetPort <= 0 || item.TargetPort > 65535 {
-			return nil, errors.New("port_forwards target_port must be between 1 and 65535")
-		}
-		if strings.TrimSpace(item.TargetHost) == "" {
-			return nil, errors.New("port_forwards target_host is required")
-		}
-		id := strings.TrimSpace(item.ID)
-		if id == "" {
-			id = "pf-" + strings.ToLower(randomHexToken(6))
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		item.ID = id
-		item.ListenHost = normalizeMobileChainListenHost(item.ListenHost)
-		item.TargetHost = strings.TrimSpace(item.TargetHost)
-		item.Network = normalizeMobileChainPortForwardNetwork(item.Network)
-		item.EntrySide = normalizeMobileChainPortForwardEntrySide(item.EntrySide)
-		out = append(out, item)
-	}
-	return out, nil
-}
-
-func shouldRunMobileChainPortForwardOnRole(role string, entrySide string) bool {
-	switch normalizeMobileChainPortForwardEntrySide(entrySide) {
-	case mobileChainEntrySideExit:
-		return normalizeMobileChainRole(role) == mobileChainRoleExit || normalizeMobileChainRole(role) == mobileChainRoleEntryExit
-	default:
-		return normalizeMobileChainRole(role) == mobileChainRoleEntry || normalizeMobileChainRole(role) == mobileChainRoleEntryExit
-	}
 }
 
 func isMobileChainControlCFEntry(cmd chainLinkControlMessage) bool {

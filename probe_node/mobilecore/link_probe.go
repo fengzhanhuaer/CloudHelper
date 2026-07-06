@@ -14,8 +14,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,7 +26,6 @@ import (
 )
 
 const (
-	linkProxyChainFileName             = "proxy_chain.json"
 	linkRelayAPIPath                   = "/api/node/chain/relay"
 	linkLegacyChainIDHeader            = "X-CH-Chain-ID"
 	linkCodexChainIDHeader             = "X-Codex-Chain-Id"
@@ -74,7 +71,6 @@ type linkChainServerItem struct {
 	CascadeNodeIDs  []string           `json:"cascade_node_ids"`
 	LinkLayer       string             `json:"link_layer"`
 	HopConfigs      []linkChainHopItem `json:"hop_configs"`
-	PortForwards    []json.RawMessage  `json:"port_forwards"`
 	EgressHost      string             `json:"egress_host"`
 	EgressPort      int                `json:"egress_port"`
 }
@@ -235,7 +231,7 @@ type linkTunnelOpenResponse struct {
 	WriteOffset uint64 `json:"write_offset,omitempty"`
 }
 
-// LinkStatus returns the Android-visible proxy chain endpoint inventory from proxy_chain.json.
+// LinkStatus returns the Android-visible proxy chain endpoint inventory.
 func LinkStatus(configDir string) string {
 	items, err := loadLinkProxyChains(configDir)
 	if err != nil {
@@ -424,27 +420,7 @@ func loadLinkProxyChains(configDir string) ([]linkChainServerItem, error) {
 	if configDir == "" {
 		return nil, errors.New("config dir is required")
 	}
-	raw, err := os.ReadFile(filepath.Join(configDir, linkProxyChainFileName))
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", linkProxyChainFileName, err)
-	}
-	var cache struct {
-		Items *[]linkChainServerItem `json:"items"`
-	}
-	if err := json.Unmarshal(raw, &cache); err == nil && cache.Items != nil {
-		return *cache.Items, nil
-	}
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &object); err == nil {
-		if _, ok := object["items"]; ok {
-			return []linkChainServerItem{}, nil
-		}
-	}
-	var items []linkChainServerItem
-	if err := json.Unmarshal(raw, &items); err != nil {
-		return nil, fmt.Errorf("decode %s: %w", linkProxyChainFileName, err)
-	}
-	return items, nil
+	return []linkChainServerItem{}, nil
 }
 
 func findLinkItemByID(chainID string, items []linkChainServerItem) (linkChainServerItem, bool) {

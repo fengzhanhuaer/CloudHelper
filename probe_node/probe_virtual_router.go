@@ -2042,9 +2042,6 @@ func writeProbeVirtualRouterAll(writer io.Writer, payload []byte) error {
 }
 
 func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
-	if !probeVirtualRouterLocalEntryEnabled() {
-		return false
-	}
 	dstIP := probeVirtualRouterIPv4Destination(packet)
 	if dstIP == "" {
 		return false
@@ -2052,7 +2049,13 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 	if probeVirtualRouterShouldDropNonUnicastDestination(dstIP) {
 		return false
 	}
+	if handleProbeVirtualRouterLocalSelfTUNPacket(packet, dstIP) {
+		return true
+	}
 	path := currentProbeVirtualRouterPathForPacket(packet, dstIP)
+	if !probeVirtualRouterLocalEntryEnabled() && !probeVirtualRouterTUNPacketAllowedWhenEntryDisabled(dstIP, path) {
+		return false
+	}
 	if len(path) < 2 && probeVirtualRouterIPInCurrentFakeCIDR(dstIP) {
 		if refreshProbeVirtualRouterRouteConfigFromController("fake_ip_path_miss") {
 			path = currentProbeVirtualRouterPathForPacket(packet, dstIP)
@@ -2080,6 +2083,46 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 	if err := forwardProbeVirtualRouterPacketAlongPath(packet, dstIP, path, trace); err != nil {
 		log.Printf("probe virtual router frame forward failed: dst=%s path=%s err=%v", dstIP, strings.Join(path, ">"), err)
 		return true
+	}
+	return true
+}
+
+func probeVirtualRouterTUNPacketAllowedWhenEntryDisabled(dstIP string, path []string) bool {
+	if probeVirtualRouterIPInCurrentFakeCIDR(dstIP) {
+		return true
+	}
+	if len(path) >= 2 {
+		return true
+	}
+	ip := net.ParseIP(strings.TrimSpace(dstIP)).To4()
+	if ip == nil {
+		return false
+	}
+	probeVirtualRouterState.mu.RLock()
+	_, ok := probeVirtualRouterState.ipToNode[ip.String()]
+	probeVirtualRouterState.mu.RUnlock()
+	return ok
+}
+
+func handleProbeVirtualRouterLocalSelfTUNPacket(packet []byte, dstIP string) bool {
+	localIP := currentProbeVirtualRouterLocalIP()
+	if !probeVirtualRouterIPMatches(dstIP, localIP) {
+		return false
+	}
+	reply, _, ok := buildProbeVirtualRouterICMPEchoReply(packet, localIP)
+	if !ok {
+		return false
+	}
+	writer := probeVirtualRouterLocalTUNPacketWriter
+	if writer == nil {
+		writer = writeProbeVirtualRouterLocalTUNPacket
+	}
+	if err := writer(reply); err != nil {
+		log.Printf("probe virtual router local self icmp reply failed: local_ip=%s err=%v", localIP, err)
+		return true
+	}
+	if info, ok := probeVirtualRouterParseICMPEchoLogInfo(reply); ok {
+		log.Printf("probe virtual router local self icmp reply ok: kind=%s src=%s dst=%s id=%d seq=%d local_ip=%s bytes=%d", info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, localIP, len(reply))
 	}
 	return true
 }
@@ -3802,6 +3845,8 @@ func writeProbeVirtualRouterLocalTUNPacket(packet []byte) error {
 		return nil
 	}
 }
+
+var probeVirtualRouterLocalTUNPacketWriter func([]byte) error
 
 func forwardProbeVirtualRouterPacketAlongPath(packet []byte, dstIP string, path []string, trace []probeVirtualRouterFrameTraceHop) error {
 	localNodeID := currentProbeVirtualRouterLocalNodeID()

@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -48,204 +47,9 @@ type probeLocalTUNPrimaryDNSBackup struct {
 	AppliedDNS     []string `json:"applied_dns,omitempty"`
 }
 
-var probeLocalWindowsTakeoverState = struct {
-	mu                 sync.Mutex
-	enabled            bool
-	routePrintOutput   string
-	tunGateway         string
-	tunInterfaceLUID   uint64
-	tunIfIndex         int
-	bypassGateway      string
-	bypassInterfaceIdx int
-	routeDefs          []probeLocalWindowsRouteDef
-}{}
-
 var (
 	probeLocalWindowsRunCommand = runProbeLocalCommand
 )
-
-func applyProbeLocalProxyTakeover() error {
-	routeTarget, err := resolveProbeLocalWindowsRouteTarget()
-	if err != nil {
-		return err
-	}
-
-	probeLocalWindowsTakeoverState.mu.Lock()
-	if probeLocalWindowsTakeoverState.enabled {
-		probeLocalWindowsTakeoverState.mu.Unlock()
-		return nil
-	}
-	probeLocalWindowsTakeoverState.mu.Unlock()
-
-	if cleaned, cleanupErr := cleanupProbeLocalWindowsStaleTakeoverRoutes(routeTarget); cleanupErr != nil {
-		logProbeWarnf("probe local proxy takeover stale managed route cleanup failed: %v", cleanupErr)
-	} else if cleaned > 0 {
-		logProbeInfof("probe local proxy takeover stale managed route cleanup removed routes=%d", cleaned)
-	}
-
-	out, err := probeLocalSnapshotWindowsIPv4Routes()
-	if err != nil {
-		return fmt.Errorf("inspect windows route table failed: %w", err)
-	}
-
-	routeDefs := probeLocalWindowsTakeoverRouteDefs(routeTarget)
-	createdRoutes := make([]probeLocalWindowsRouteDef, 0, 5)
-	for _, routeDef := range routeDefs {
-		created, routeErr := ensureProbeLocalWindowsRoute(routeDef)
-		if routeErr != nil {
-			var rollbackErr error
-			for i := len(createdRoutes) - 1; i >= 0; i-- {
-				if delErr := deleteProbeLocalWindowsRoute(createdRoutes[i]); delErr != nil {
-					rollbackErr = errors.Join(rollbackErr, delErr)
-				}
-			}
-			if rollbackErr != nil {
-				return fmt.Errorf("apply windows takeover route %s/%s failed: %w (rollback failed: %v)", routeDef.Prefix, routeDef.Mask, routeErr, rollbackErr)
-			}
-			return fmt.Errorf("apply windows takeover route %s/%s failed after rollback: %w", routeDef.Prefix, routeDef.Mask, routeErr)
-		}
-		if created {
-			createdRoutes = append(createdRoutes, routeDef)
-		}
-	}
-	if cleaned, cleanupErr := cleanupProbeLocalWindowsStaleTunnelDirectBypassRoutes(routeTarget); cleanupErr != nil {
-		logProbeWarnf("probe local proxy takeover stale tunnel bypass cleanup failed: %v", cleanupErr)
-	} else if cleaned > 0 {
-		logProbeInfof("probe local proxy takeover stale tunnel bypass cleanup removed routes=%d", cleaned)
-	}
-
-	probeLocalWindowsTakeoverState.mu.Lock()
-	probeLocalWindowsTakeoverState.enabled = true
-	probeLocalWindowsTakeoverState.routePrintOutput = out
-	probeLocalWindowsTakeoverState.tunGateway = routeTarget.Gateway
-	probeLocalWindowsTakeoverState.tunInterfaceLUID = routeTarget.InterfaceLUID
-	probeLocalWindowsTakeoverState.tunIfIndex = routeTarget.InterfaceIndex
-	probeLocalWindowsTakeoverState.bypassGateway = ""
-	probeLocalWindowsTakeoverState.bypassInterfaceIdx = 0
-	probeLocalWindowsTakeoverState.routeDefs = append([]probeLocalWindowsRouteDef(nil), routeDefs...)
-	probeLocalWindowsTakeoverState.mu.Unlock()
-
-	logProbeInfof(
-		"probe local proxy takeover applied on windows global-tun mode: gateway=%s if_luid=%d if_index=%d routes=%d route_snapshot_len=%d",
-		routeTarget.Gateway,
-		routeTarget.InterfaceLUID,
-		routeTarget.InterfaceIndex,
-		len(routeDefs),
-		len(strings.TrimSpace(out)),
-	)
-	return nil
-}
-
-func cleanupProbeLocalWindowsStaleTakeoverRoutes(routeTarget probeLocalWindowsRouteTarget) (int, error) {
-	gateway := strings.TrimSpace(routeTarget.Gateway)
-	if gateway == "" {
-		gateway = probeLocalTUNRouteGatewayIPv4
-	}
-	if strings.TrimSpace(gateway) == "" {
-		return 0, nil
-	}
-	entries, err := probeLocalListWindowsRouteEntries()
-	if err != nil {
-		return 0, err
-	}
-	removed := 0
-	var allErr error
-	for _, entry := range entries {
-		if !isProbeLocalWindowsManagedTakeoverRouteEntry(entry, gateway) {
-			continue
-		}
-		mask, maskErr := probeLocalIPv4MaskFromPrefix(entry.PrefixLength)
-		if maskErr != nil {
-			allErr = errors.Join(allErr, maskErr)
-			continue
-		}
-		routeDef := probeLocalWindowsRouteDef{
-			Prefix:  strings.TrimSpace(entry.Prefix),
-			Mask:    mask,
-			Gateway: strings.TrimSpace(entry.NextHop),
-			IfIndex: entry.IfIndex,
-		}
-		if delErr := deleteProbeLocalWindowsRoute(routeDef); delErr != nil {
-			allErr = errors.Join(allErr, delErr)
-			continue
-		}
-		removed++
-	}
-	return removed, allErr
-}
-
-func isProbeLocalWindowsManagedTakeoverRouteEntry(entry probeLocalWindowsRouteEntry, gateway string) bool {
-	if entry.IfIndex <= 0 || entry.Metric != uint32(probeLocalWindowsRouteMetric) {
-		return false
-	}
-	if !strings.EqualFold(strings.TrimSpace(entry.NextHop), strings.TrimSpace(gateway)) {
-		return false
-	}
-	prefixIP := net.ParseIP(strings.TrimSpace(entry.Prefix)).To4()
-	if prefixIP == nil {
-		return false
-	}
-	if entry.PrefixLength == 1 {
-		return prefixIP.Equal(net.IPv4(0, 0, 0, 0)) || prefixIP.Equal(net.IPv4(128, 0, 0, 0))
-	}
-	if entry.PrefixLength == 32 {
-		return true
-	}
-	for _, network := range parseProbeLocalTunnelIPv4Networks(append([]string{currentProbeLocalDNSFakeIPCIDR()}, probeLocalTunnelCIDRRules()...)) {
-		if network == nil {
-			continue
-		}
-		ones, bits := network.Mask.Size()
-		if bits != 32 || ones != entry.PrefixLength {
-			continue
-		}
-		if network.IP.To4().Equal(prefixIP) {
-			return true
-		}
-	}
-	return false
-}
-
-func restoreProbeLocalProxyDirect() error {
-	probeLocalWindowsTakeoverState.mu.Lock()
-	wasEnabled := probeLocalWindowsTakeoverState.enabled
-	routeTarget := probeLocalWindowsRouteTarget{
-		Gateway:        probeLocalWindowsTakeoverState.tunGateway,
-		InterfaceLUID:  probeLocalWindowsTakeoverState.tunInterfaceLUID,
-		InterfaceIndex: probeLocalWindowsTakeoverState.tunIfIndex,
-	}
-	routeDefs := append([]probeLocalWindowsRouteDef(nil), probeLocalWindowsTakeoverState.routeDefs...)
-	probeLocalWindowsTakeoverState.enabled = false
-	probeLocalWindowsTakeoverState.routePrintOutput = ""
-	probeLocalWindowsTakeoverState.tunGateway = ""
-	probeLocalWindowsTakeoverState.tunInterfaceLUID = 0
-	probeLocalWindowsTakeoverState.tunIfIndex = 0
-	probeLocalWindowsTakeoverState.bypassGateway = ""
-	probeLocalWindowsTakeoverState.bypassInterfaceIdx = 0
-	probeLocalWindowsTakeoverState.routeDefs = nil
-	probeLocalWindowsTakeoverState.mu.Unlock()
-
-	if !wasEnabled {
-		return nil
-	}
-
-	var allErr error
-	if len(routeDefs) == 0 {
-		routeDefs = probeLocalWindowsTakeoverRouteDefs(routeTarget)
-	}
-	for _, routeDef := range routeDefs {
-		if err := deleteProbeLocalWindowsRoute(routeDef); err != nil {
-			allErr = errors.Join(allErr, err)
-		}
-	}
-	if _, err := probeLocalSnapshotWindowsIPv4Routes(); err != nil {
-		logProbeWarnf("probe local proxy restore on windows route inspect failed: %v", err)
-	}
-	if allErr != nil {
-		return fmt.Errorf("restore windows proxy takeover failed: %w", allErr)
-	}
-	return nil
-}
 
 func resolveProbeLocalWindowsRouteTarget() (probeLocalWindowsRouteTarget, error) {
 	gateway := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_GATEWAY"))
@@ -273,114 +77,6 @@ func resolveProbeLocalWindowsRouteTarget() (probeLocalWindowsRouteTarget, error)
 		return probeLocalWindowsRouteTarget{}, fmt.Errorf("resolve interface index from PROBE_LOCAL_TUN_IF_LUID failed: %w", indexErr)
 	}
 	return probeLocalWindowsRouteTarget{Gateway: gateway, InterfaceLUID: interfaceLUID, InterfaceIndex: interfaceIndex}, nil
-}
-
-func probeLocalWindowsTakeoverRouteDefs(routeTarget probeLocalWindowsRouteTarget) []probeLocalWindowsRouteDef {
-	prefix, mask := probeLocalWindowsFakeIPRoutePrefixAndMask(currentProbeLocalDNSFakeIPCIDR())
-	routeDefs := []probeLocalWindowsRouteDef{
-		{Prefix: probeLocalWindowsRouteSplitPrefixA, Mask: probeLocalWindowsRouteSplitMaskA, Gateway: routeTarget.Gateway, InterfaceLUID: routeTarget.InterfaceLUID, IfIndex: routeTarget.InterfaceIndex},
-		{Prefix: probeLocalWindowsRouteSplitPrefixB, Mask: probeLocalWindowsRouteSplitMaskB, Gateway: routeTarget.Gateway, InterfaceLUID: routeTarget.InterfaceLUID, IfIndex: routeTarget.InterfaceIndex},
-		{Prefix: prefix, Mask: mask, Gateway: routeTarget.Gateway, InterfaceLUID: routeTarget.InterfaceLUID, IfIndex: routeTarget.InterfaceIndex},
-	}
-	routeDefs = append(routeDefs, probeLocalWindowsDNSCaptureRouteDefs(routeTarget)...)
-	for _, cidr := range probeLocalTunnelCIDRRules() {
-		cidrPrefix, cidrMask := probeLocalWindowsCIDRRoutePrefixAndMask(cidr)
-		if cidrPrefix == "" || cidrMask == "" {
-			continue
-		}
-		routeDefs = append(routeDefs, probeLocalWindowsRouteDef{
-			Prefix:        cidrPrefix,
-			Mask:          cidrMask,
-			Gateway:       routeTarget.Gateway,
-			InterfaceLUID: routeTarget.InterfaceLUID,
-			IfIndex:       routeTarget.InterfaceIndex,
-		})
-	}
-	return dedupeProbeLocalWindowsRouteDefs(routeDefs)
-}
-
-func probeLocalWindowsDNSCaptureRouteDefs(routeTarget probeLocalWindowsRouteTarget) []probeLocalWindowsRouteDef {
-	if strings.TrimSpace(routeTarget.Gateway) == "" || routeTarget.InterfaceIndex <= 0 {
-		return nil
-	}
-	dnsServers := filterProbeLocalTUNPrimaryDNSServers(probeLocalDNSSystemServers())
-	if len(dnsServers) == 0 {
-		return nil
-	}
-	routeDefs := make([]probeLocalWindowsRouteDef, 0, len(dnsServers))
-	for _, server := range dnsServers {
-		ip4 := net.ParseIP(strings.TrimSpace(server)).To4()
-		if !isProbeLocalWindowsDNSCaptureIP(ip4, routeTarget.Gateway) {
-			continue
-		}
-		routeDefs = append(routeDefs, probeLocalWindowsRouteDef{
-			Prefix:        ip4.String(),
-			Mask:          probeLocalWindowsHostRouteMask,
-			Gateway:       routeTarget.Gateway,
-			InterfaceLUID: routeTarget.InterfaceLUID,
-			IfIndex:       routeTarget.InterfaceIndex,
-		})
-	}
-	return dedupeProbeLocalWindowsRouteDefs(routeDefs)
-}
-
-func isProbeLocalWindowsDNSCaptureIP(ip net.IP, tunGateway string) bool {
-	ip4 := ip.To4()
-	if ip4 == nil || ip4.IsUnspecified() || ip4.IsLoopback() || ip4.IsMulticast() || ip4.Equal(net.IPv4bcast) {
-		return false
-	}
-	if gateway := net.ParseIP(strings.TrimSpace(tunGateway)); gateway != nil && ip4.Equal(gateway.To4()) {
-		return false
-	}
-	return true
-}
-
-func cleanupProbeLocalWindowsStaleTunnelDirectBypassRoutes(routeTarget probeLocalWindowsRouteTarget) (int, error) {
-	tunnelNetworks := parseProbeLocalTunnelIPv4Networks(append([]string{currentProbeLocalDNSFakeIPCIDR()}, probeLocalTunnelCIDRRules()...))
-	if len(tunnelNetworks) == 0 {
-		return 0, nil
-	}
-	bypassTarget, ok := currentProbeLocalWindowsDirectBypassRouteTarget()
-	if !ok {
-		resolved, err := probeLocalResolveWindowsPrimaryEgressRoute(routeTarget.InterfaceIndex)
-		if err != nil {
-			return 0, err
-		}
-		bypassTarget = resolved
-	}
-	if bypassTarget.InterfaceIndex <= 0 || strings.TrimSpace(bypassTarget.NextHop) == "" {
-		return 0, nil
-	}
-	entries, err := probeLocalListWindowsRouteEntries()
-	if err != nil {
-		return 0, err
-	}
-	removed := 0
-	var allErr error
-	for _, entry := range entries {
-		if entry.PrefixLength != 32 || entry.IfIndex != bypassTarget.InterfaceIndex || entry.Metric != uint32(probeLocalWindowsRouteMetric) {
-			continue
-		}
-		if !strings.EqualFold(strings.TrimSpace(entry.NextHop), strings.TrimSpace(bypassTarget.NextHop)) {
-			continue
-		}
-		ip := net.ParseIP(strings.TrimSpace(entry.Prefix)).To4()
-		if ip == nil || !probeLocalIPInAnyNetwork(ip, tunnelNetworks) {
-			continue
-		}
-		routeDef := probeLocalWindowsRouteDef{
-			Prefix:  ip.String(),
-			Mask:    "255.255.255.255",
-			Gateway: bypassTarget.NextHop,
-			IfIndex: bypassTarget.InterfaceIndex,
-		}
-		if delErr := deleteProbeLocalWindowsRoute(routeDef); delErr != nil {
-			allErr = errors.Join(allErr, delErr)
-			continue
-		}
-		removed++
-	}
-	return removed, allErr
 }
 
 func parseProbeLocalTunnelIPv4Networks(cidrs []string) []*net.IPNet {
@@ -421,7 +117,7 @@ func probeLocalWindowsLocalBypassRouteDefs(routeTarget probeLocalWindowsDirectBy
 	}
 }
 
-func ensureProbeLocalExplicitDirectBypass(targetAddr string) error {
+func ensureProbeLocalDirectBypass(targetAddr string) error {
 	host, _, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
 	if err != nil {
 		return err
@@ -444,36 +140,28 @@ func ensureProbeLocalExplicitDirectBypass(targetAddr string) error {
 	if len(ips) == 0 {
 		return fmt.Errorf("bypass target has no ipv4 address: %s", cleanHost)
 	}
-	if isProbeLocalWindowsDNSCaptureTarget(targetAddr) {
-		return nil
-	}
 	if probeLocalWindowsDirectBypassIPsContainProtectedRange(ips) {
 		logProbeWarnf("probe local direct bypass skipped for protected tun target: target=%s ips=%s", strings.TrimSpace(targetAddr), strings.Join(ips, ","))
 		return nil
 	}
+	excludedIfIndex := currentProbeLocalTUNDataPlaneIfIndex()
 	bypassTarget, ok := currentProbeLocalWindowsDirectBypassRouteTarget()
 	if !ok || bypassTarget.InterfaceIndex <= 0 || strings.TrimSpace(bypassTarget.NextHop) == "" {
-		if tunIfIndex, takeoverEnabled := currentProbeLocalWindowsTakeoverIfIndex(); takeoverEnabled {
-			bypassTarget, err = probeLocalResolveWindowsPrimaryEgressRoute(tunIfIndex)
-			if err != nil {
-				logProbeWarnf("probe local direct bypass target recover failed during tun takeover: target=%s ips=%s tun_if_index=%d err=%v", strings.TrimSpace(targetAddr), strings.Join(ips, ","), tunIfIndex, err)
-				return fmt.Errorf("recover direct bypass route target during tun takeover: %w", err)
-			}
-			setProbeLocalWindowsDirectBypassRouteTarget(bypassTarget)
-			logProbeInfof("probe local direct bypass route target recovered during tun takeover: target=%s excluded_if_index=%d if_index=%d next_hop=%s", strings.TrimSpace(targetAddr), tunIfIndex, bypassTarget.InterfaceIndex, strings.TrimSpace(bypassTarget.NextHop))
-		} else {
+		if excludedIfIndex <= 0 {
 			routeTarget, routeErr := resolveProbeLocalWindowsRouteTarget()
 			if routeErr != nil {
 				return routeErr
 			}
-			bypassTarget, err = probeLocalResolveWindowsPrimaryEgressRoute(routeTarget.InterfaceIndex)
-			if err != nil {
-				return err
-			}
-			logProbeInfof("probe local direct bypass route target resolved on demand: excluded_if_index=%d if_index=%d next_hop=%s", routeTarget.InterfaceIndex, bypassTarget.InterfaceIndex, strings.TrimSpace(bypassTarget.NextHop))
+			excludedIfIndex = routeTarget.InterfaceIndex
 		}
+		bypassTarget, err = probeLocalResolveWindowsPrimaryEgressRoute(excludedIfIndex)
+		if err != nil {
+			return err
+		}
+		setProbeLocalWindowsDirectBypassRouteTarget(bypassTarget)
+		logProbeInfof("probe local direct bypass route target resolved on demand: excluded_if_index=%d if_index=%d next_hop=%s", excludedIfIndex, bypassTarget.InterfaceIndex, strings.TrimSpace(bypassTarget.NextHop))
 	}
-	if tunIfIndex, takeoverEnabled := currentProbeLocalWindowsTakeoverIfIndex(); takeoverEnabled && tunIfIndex > 0 && bypassTarget.InterfaceIndex == tunIfIndex {
+	if excludedIfIndex > 0 && bypassTarget.InterfaceIndex == excludedIfIndex {
 		logProbeWarnf("probe local direct bypass target rejected because it points to tun: target=%s ips=%s if_index=%d next_hop=%s", strings.TrimSpace(targetAddr), strings.Join(ips, ","), bypassTarget.InterfaceIndex, strings.TrimSpace(bypassTarget.NextHop))
 		return fmt.Errorf("direct bypass route target points to tun interface: if_index=%d", bypassTarget.InterfaceIndex)
 	}
@@ -514,40 +202,6 @@ func probeLocalWindowsDirectBypassIPsContainProtectedRange(ips []string) bool {
 			continue
 		}
 		if probeLocalIPInAnyNetwork(ip4, networks) {
-			return true
-		}
-	}
-	return false
-}
-
-func currentProbeLocalWindowsTakeoverIfIndex() (int, bool) {
-	probeLocalWindowsTakeoverState.mu.Lock()
-	defer probeLocalWindowsTakeoverState.mu.Unlock()
-	return probeLocalWindowsTakeoverState.tunIfIndex, probeLocalWindowsTakeoverState.enabled
-}
-
-func isProbeLocalWindowsDNSCaptureTarget(targetAddr string) bool {
-	host, port, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
-	if err != nil || strings.TrimSpace(port) != "53" {
-		return false
-	}
-	ip4 := net.ParseIP(strings.TrimSpace(strings.Trim(host, "[]"))).To4()
-	if ip4 == nil {
-		return false
-	}
-	probeLocalWindowsTakeoverState.mu.Lock()
-	defer probeLocalWindowsTakeoverState.mu.Unlock()
-	if !probeLocalWindowsTakeoverState.enabled {
-		return false
-	}
-	for _, routeDef := range probeLocalWindowsTakeoverState.routeDefs {
-		if strings.TrimSpace(routeDef.Mask) != probeLocalWindowsHostRouteMask {
-			continue
-		}
-		if !strings.EqualFold(strings.TrimSpace(routeDef.Gateway), strings.TrimSpace(probeLocalWindowsTakeoverState.tunGateway)) {
-			continue
-		}
-		if routeIP := net.ParseIP(strings.TrimSpace(routeDef.Prefix)).To4(); routeIP != nil && routeIP.Equal(ip4) {
 			return true
 		}
 	}
@@ -663,20 +317,17 @@ func isProbeLocalWindowsRouteMissingErr(err error) bool {
 }
 
 func currentProbeLocalTUNDNSListenHost() string {
-	probeLocalWindowsTakeoverState.mu.Lock()
-	gateway := strings.TrimSpace(probeLocalWindowsTakeoverState.tunGateway)
-	probeLocalWindowsTakeoverState.mu.Unlock()
-	return resolveProbeLocalTUNDNSListenHostForGateway(gateway)
+	return resolveProbeLocalTUNDNSListenHostForGateway(probeLocalTUNRouteGatewayIPv4)
 }
 
 func currentProbeLocalSystemDNSServers() []string {
 	if backup, ok := loadProbeLocalTUNPrimaryDNSBackupBestEffort(); ok {
 		return filterProbeLocalTUNPrimaryDNSServers(backup.DNSServers)
 	}
-	probeLocalWindowsTakeoverState.mu.Lock()
-	tunInterfaceLUID := probeLocalWindowsTakeoverState.tunInterfaceLUID
-	tunIfIndex := probeLocalWindowsTakeoverState.tunIfIndex
-	probeLocalWindowsTakeoverState.mu.Unlock()
+	probeLocalTUNDataPlaneState.mu.Lock()
+	tunInterfaceLUID := probeLocalTUNDataPlaneState.interfaceLUID
+	tunIfIndex := probeLocalTUNDataPlaneState.ifIndex
+	probeLocalTUNDataPlaneState.mu.Unlock()
 	if tunIfIndex <= 0 && tunInterfaceLUID > 0 {
 		if ifIndex, err := interfaceIndexFromLUID(tunInterfaceLUID); err == nil {
 			tunIfIndex = ifIndex
@@ -696,6 +347,22 @@ func currentProbeLocalSystemDNSServers() []string {
 		return nil
 	}
 	return filterProbeLocalTUNPrimaryDNSServers(out)
+}
+
+func currentProbeLocalTUNDataPlaneIfIndex() int {
+	probeLocalTUNDataPlaneState.mu.Lock()
+	tunInterfaceLUID := probeLocalTUNDataPlaneState.interfaceLUID
+	tunIfIndex := probeLocalTUNDataPlaneState.ifIndex
+	probeLocalTUNDataPlaneState.mu.Unlock()
+	if tunIfIndex > 0 {
+		return tunIfIndex
+	}
+	if tunInterfaceLUID > 0 {
+		if ifIndex, err := interfaceIndexFromLUID(tunInterfaceLUID); err == nil {
+			return ifIndex
+		}
+	}
+	return 0
 }
 
 func applyProbeLocalTUNPrimaryDNS() error {

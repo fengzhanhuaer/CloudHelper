@@ -473,7 +473,7 @@ func TestHandleProbeLocalTUNInboundPacketICMPDirectBypassCreatesHostRoute(t *tes
 	probeLocalControl.mu.Lock()
 	oldProxy := probeLocalControl.proxy
 	probeLocalControl.proxy.Enabled = true
-	probeLocalControl.proxy.Mode = probeLocalProxyModeTUN
+	probeLocalControl.proxy.Mode = probeLocalProxyModeLegacyTunnel
 	probeLocalControl.mu.Unlock()
 	t.Cleanup(func() {
 		probeLocalControl.mu.Lock()
@@ -554,7 +554,7 @@ func TestProbeLocalTUNSimplePacketStackWriteTunnelValidatesSelectedChain(t *test
 
 	probeLocalControl.mu.Lock()
 	probeLocalControl.proxy.Enabled = true
-	probeLocalControl.proxy.Mode = probeLocalProxyModeTUN
+	probeLocalControl.proxy.Mode = probeLocalProxyModeLegacyTunnel
 	probeLocalControl.mu.Unlock()
 
 	packet := make([]byte, 40)
@@ -599,7 +599,7 @@ func TestProbeLocalTUNSimplePacketStackWriteTunnelValidatesSelectedChainUDPFakeI
 
 	probeLocalControl.mu.Lock()
 	probeLocalControl.proxy.Enabled = true
-	probeLocalControl.proxy.Mode = probeLocalProxyModeTUN
+	probeLocalControl.proxy.Mode = probeLocalProxyModeLegacyTunnel
 	probeLocalControl.mu.Unlock()
 
 	packet := make([]byte, 40)
@@ -640,7 +640,7 @@ func TestProbeLocalTUNSimplePacketStackWriteRejectRoute(t *testing.T) {
 
 	probeLocalControl.mu.Lock()
 	probeLocalControl.proxy.Enabled = true
-	probeLocalControl.proxy.Mode = probeLocalProxyModeTUN
+	probeLocalControl.proxy.Mode = probeLocalProxyModeLegacyTunnel
 	probeLocalControl.mu.Unlock()
 
 	packet := make([]byte, 40)
@@ -690,7 +690,7 @@ func TestOpenProbeLocalTUNOutboundTCPDirectConnects(t *testing.T) {
 	}
 	probeLocalControl.mu.Lock()
 	probeLocalControl.proxy.Enabled = true
-	probeLocalControl.proxy.Mode = probeLocalProxyModeTUN
+	probeLocalControl.proxy.Mode = probeLocalProxyModeLegacyTunnel
 	probeLocalControl.mu.Unlock()
 	t.Cleanup(func() {
 		probeLocalControl.mu.Lock()
@@ -809,7 +809,7 @@ func TestOpenProbeLocalTUNOutboundUDPDirectConnects(t *testing.T) {
 	}
 	probeLocalControl.mu.Lock()
 	probeLocalControl.proxy.Enabled = true
-	probeLocalControl.proxy.Mode = probeLocalProxyModeTUN
+	probeLocalControl.proxy.Mode = probeLocalProxyModeLegacyTunnel
 	probeLocalControl.mu.Unlock()
 	t.Cleanup(func() {
 		probeLocalControl.mu.Lock()

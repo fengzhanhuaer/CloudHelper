@@ -916,7 +916,7 @@ func openProbeLocalTUNOutboundTCPWithRoute(flowTargetAddr string, route probeLoc
 		if cachedErr := lookupProbeLocalTUNTCPDirectFailure(route.TargetAddr); cachedErr != nil {
 			return nil, route, cachedErr
 		}
-		if err := ensureProbeLocalExplicitDirectBypass(route.TargetAddr); err != nil {
+		if err := ensureProbeLocalDirectBypass(route.TargetAddr); err != nil {
 			logProbeWarnf("probe local tun tcp direct bypass failed: target=%s err=%v", route.TargetAddr, err)
 		}
 		dialer := applyProbeLocalEgressDialer(&net.Dialer{Timeout: probeLocalTUNTCPDialTimeout})
@@ -930,21 +930,8 @@ func openProbeLocalTUNOutboundTCPWithRoute(flowTargetAddr string, route probeLoc
 		clearProbeLocalTUNTCPDirectFailure(route.TargetAddr)
 		return conn, route, nil
 	}
-	var lastErr error
-	flowID := newProbeTCPDebugFlowID("tun", flowTargetAddr)
-	for _, target := range probeLocalTunnelRouteTargetCandidates(route) {
-		conn, openedFlowID, openErr := openProbeLocalTunnelConnWithGroupRuntimeAndFlow("tcp", target, route.GroupRuntime, nil, flowID)
-		if openErr == nil {
-			route.TargetAddr = target
-			route.FlowID = openedFlowID
-			return conn, route, nil
-		}
-		lastErr = openErr
-	}
-	if lastErr != nil {
-		return nil, route, lastErr
-	}
-	return nil, route, errors.New("tunnel route has no target candidates")
+	_ = flowTargetAddr
+	return nil, route, errProbeLocalLegacyTunnelRouteRemoved
 }
 
 func buildProbeLocalTUNIPv4FallbackRoute(route probeLocalTunnelRouteDecision, err error) (probeLocalTunnelRouteDecision, bool) {
@@ -996,11 +983,6 @@ func buildProbeLocalTUNIPv4FallbackRoute(route probeLocalTunnelRouteDecision, er
 				continue
 			}
 			fallback.TunnelNodeID = formatProbeLocalLegacyTunnelNodeID(fallback.SelectedChainID)
-			groupRuntime, runtimeErr := ensureProbeLocalTUNGroupRuntime(fallback.Group, fallback.SelectedChainID)
-			if runtimeErr != nil {
-				continue
-			}
-			fallback.GroupRuntime = groupRuntime
 		default:
 			fallback.Direct = true
 		}
@@ -1244,13 +1226,13 @@ func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr strin
 	}
 
 	srcIP := strings.TrimSpace(id.RemoteAddress.String())
-	sourceKey, sourceRefs, releaseSource := acquireProbeLocalTUNUDPSource(srcIP, uint16(id.RemotePort))
+	_, _, releaseSource := acquireProbeLocalTUNUDPSource(srcIP, uint16(id.RemotePort))
 	if releaseSource == nil {
 		releaseSource = func() {}
 	}
 
 	if route.Direct {
-		if err := ensureProbeLocalExplicitDirectBypass(route.TargetAddr); err != nil {
+		if err := ensureProbeLocalDirectBypass(route.TargetAddr); err != nil {
 			logProbeWarnf("probe local tun udp direct bypass failed: target=%s err=%v", route.TargetAddr, err)
 		}
 		// Direct/bypass UDP must egress through a routable physical path. We rely
@@ -1260,17 +1242,8 @@ func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr strin
 		dialer := applyProbeLocalEgressDialer(&net.Dialer{})
 		conn, dialErr := dialer.Dial(dialNetwork, strings.TrimSpace(route.TargetAddr))
 		if dialErr != nil {
-			if !shouldFallbackProbeLocalUDPBind(dialErr) || route.GroupRuntime == nil {
-				releaseSource()
-				return nil, route, dialErr
-			}
-			association := buildProbeLocalTUNUDPAssociation(id, targetAddr, route, sourceKey, sourceRefs, probeLocalTUNUDPNATModeFallbackEphemeral)
-			stream, openErr := openProbeLocalTunnelConnWithGroupRuntime("udp", route.TargetAddr, route.GroupRuntime, association)
-			if openErr != nil {
-				releaseSource()
-				return nil, route, openErr
-			}
-			return &probeLocalTUNUDPManagedOutbound{ReadWriteCloser: newProbeLocalTUNTunnelUDPConn(stream), releaseSource: releaseSource}, route, nil
+			releaseSource()
+			return nil, route, dialErr
 		}
 		if udpConn, ok := conn.(*net.UDPConn); ok {
 			tuneProbeChainUDPConn(udpConn)
@@ -1278,13 +1251,8 @@ func openProbeLocalTUNOutboundUDP(id stack.TransportEndpointID, targetAddr strin
 		return &probeLocalTUNUDPManagedOutbound{ReadWriteCloser: conn, releaseSource: releaseSource}, route, nil
 	}
 
-	association := buildProbeLocalTUNUDPAssociation(id, targetAddr, route, sourceKey, sourceRefs, probeChainUDPAssociationNATModeDefault)
-	stream, openErr := openProbeLocalTunnelConnWithGroupRuntime("udp", route.TargetAddr, route.GroupRuntime, association)
-	if openErr != nil {
-		releaseSource()
-		return nil, route, openErr
-	}
-	return &probeLocalTUNUDPManagedOutbound{ReadWriteCloser: newProbeLocalTUNTunnelUDPConn(stream), releaseSource: releaseSource}, route, nil
+	releaseSource()
+	return nil, route, errProbeLocalLegacyTunnelRouteRemoved
 }
 
 func buildProbeLocalTUNUDPAssociation(id stack.TransportEndpointID, targetAddr string, route probeLocalTunnelRouteDecision, sourceKey string, sourceRefs int64, natMode string) *probeChainAssociationV2Meta {
@@ -2079,7 +2047,7 @@ func handleProbeLocalTUNICMPDirectBypass(packet []byte) bool {
 	if err != nil || route.Reject || !route.Direct {
 		return false
 	}
-	if err := ensureProbeLocalExplicitDirectBypass(route.TargetAddr); err != nil {
+	if err := ensureProbeLocalDirectBypass(route.TargetAddr); err != nil {
 		logProbeWarnf("probe local tun icmp direct bypass failed: target=%s err=%v", route.TargetAddr, err)
 		return false
 	}

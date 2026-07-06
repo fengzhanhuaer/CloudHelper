@@ -32,17 +32,11 @@ func ensureProbeVirtualRouterPlatformInterfaceIP(ip string) error {
 		if err := probeLocalUpsertWindowsInterfaceIPv4ByLUID(interfaceLUID, ifIndex, cleanIP, probeLocalTUNRouteIPv4PrefixLen); err != nil {
 			return err
 		}
-		if !probeVirtualRouterLocalEntryEnabled() {
-			return cleanupProbeVirtualRouterWindowsFakeIPRoute()
-		}
 		return ensureProbeVirtualRouterWindowsFakeIPRoute(interfaceLUID, ifIndex)
 	}
 	if ifIndex > 0 {
 		if err := probeLocalUpsertWindowsInterfaceIPv4(ifIndex, cleanIP, probeLocalTUNRouteIPv4PrefixLen); err != nil {
 			return err
-		}
-		if !probeVirtualRouterLocalEntryEnabled() {
-			return cleanupProbeVirtualRouterWindowsFakeIPRoute()
 		}
 		return ensureProbeVirtualRouterWindowsFakeIPRoute(0, ifIndex)
 	}
@@ -72,10 +66,8 @@ func ensureProbeVirtualRouterWindowsFakeIPRoute(interfaceLUID uint64, ifIndex in
 	probeVirtualRouterWindowsRouteState.mu.Unlock()
 
 	if needDeleteOld {
-		if _, takeoverEnabled := currentProbeLocalWindowsTakeoverIfIndex(); !takeoverEnabled {
-			if err := deleteProbeVirtualRouterWindowsFakeIPRoute(oldRouteDef); err != nil {
-				return fmt.Errorf("cleanup old windows virtual router fake ip route failed: %w", err)
-			}
+		if err := deleteProbeVirtualRouterWindowsFakeIPRoute(oldRouteDef); err != nil {
+			return fmt.Errorf("cleanup old windows virtual router fake ip route failed: %w", err)
 		}
 	}
 	if _, err := ensureProbeLocalWindowsRoute(routeDef); err != nil {
@@ -90,9 +82,6 @@ func ensureProbeVirtualRouterWindowsFakeIPRoute(interfaceLUID uint64, ifIndex in
 }
 
 func cleanupProbeVirtualRouterWindowsFakeIPRoute() error {
-	if _, enabled := currentProbeLocalWindowsTakeoverIfIndex(); enabled {
-		return nil
-	}
 	probeVirtualRouterWindowsRouteState.mu.Lock()
 	routeDef := probeVirtualRouterWindowsRouteState.routeDef
 	applied := probeVirtualRouterWindowsRouteState.applied

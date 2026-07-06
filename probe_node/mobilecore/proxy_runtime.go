@@ -5,10 +5,8 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -20,8 +18,6 @@ import (
 const (
 	proxyGroupFileName       = "proxy_group.json"
 	proxyStateFileName       = "proxy_state.json"
-	proxyHTTPListenAddr      = "127.0.0.1:8080"
-	proxySOCKS5ListenAddr    = "127.0.0.1:1080"
 	proxyConnectTimeout      = 12 * time.Second
 	proxyResponseReadTimeout = 10 * time.Second
 )
@@ -81,54 +77,10 @@ type proxyRouteDecision struct {
 	SelectedChainID string
 }
 
-type socksRequest struct {
-	Version byte
-	Cmd     byte
-	Address string
-}
-
-// ProxyStart starts Android local HTTP and SOCKS5 proxy listeners.
 func ProxyStart(configDir string) string {
-	if strings.TrimSpace(configDir) == "" {
-		return "proxy start failed: config dir is required"
-	}
-	proxyRuntime.mu.Lock()
-	proxyRuntime.configDir = strings.TrimSpace(configDir)
-	var errs []string
-	if proxyRuntime.httpListener == nil {
-		listener, err := net.Listen("tcp", proxyHTTPListenAddr)
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("http %s: %v", proxyHTTPListenAddr, err))
-		} else {
-			proxyRuntime.httpListener = listener
-			proxyRuntime.httpAddr = listener.Addr().String()
-			go serveAndroidProxy(listener, "http")
-		}
-	}
-	if proxyRuntime.socksListener == nil {
-		listener, err := net.Listen("tcp", proxySOCKS5ListenAddr)
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("socks5 %s: %v", proxySOCKS5ListenAddr, err))
-		} else {
-			proxyRuntime.socksListener = listener
-			proxyRuntime.socksAddr = listener.Addr().String()
-			go serveAndroidProxy(listener, "socks5")
-		}
-	}
-	proxyRuntime.lastError = strings.Join(errs, "; ")
-	proxyRuntime.updatedAt = time.Now().UTC().Format(time.RFC3339)
-	httpAddr := proxyRuntime.httpAddr
-	socksAddr := proxyRuntime.socksAddr
-	lastErr := proxyRuntime.lastError
-	proxyRuntime.mu.Unlock()
-
-	if httpAddr == "" && socksAddr == "" {
-		return "proxy start failed: " + firstNonEmptyString(lastErr, "listener unavailable")
-	}
-	if lastErr != "" {
-		return "proxy partially started: " + lastErr
-	}
-	return fmt.Sprintf("proxy started: http=%s socks5=%s", httpAddr, socksAddr)
+	_ = configDir
+	ProxyStop()
+	return "legacy android local proxy removed"
 }
 
 func ProxyStop() string {
@@ -220,159 +172,6 @@ func ProxySetGroup(configDir string, group string, action string, selectedChainI
 		return marshalLinkJSON(map[string]any{"ok": false, "error": err.Error()})
 	}
 	return marshalLinkJSON(map[string]any{"ok": true, "group": cleanGroup, "action": cleanAction, "selected_chain_id": selectedChainID})
-}
-
-func serveAndroidProxy(listener net.Listener, protocol string) {
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			return
-		}
-		if protocol == "http" {
-			go handleAndroidHTTPProxyConn(conn)
-		} else {
-			go handleAndroidSOCKS5ProxyConn(conn)
-		}
-	}
-}
-
-func handleAndroidSOCKS5ProxyConn(conn net.Conn) {
-	if conn == nil {
-		return
-	}
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(proxyResponseReadTimeout))
-	reader := bufio.NewReader(conn)
-	req, err := readSOCKS5Request(reader, conn)
-	if err != nil {
-		return
-	}
-	if req.Cmd != 0x01 {
-		_ = replySOCKS5(conn, req.Version, 0x07, "0.0.0.0:0")
-		return
-	}
-	flowID := newAndroidProxyFlowID("socks5", req.Address)
-	targetConn, route, err := openAndroidProxyTunnelStreamWithFlow("tcp", req.Address, flowID)
-	if err != nil {
-		globalAndroidProxyConnectionState.recordFailure("open_failed", androidProxyConnectionOptions{
-			Scope:  "socks5",
-			FlowID: flowID,
-			Side:   "local",
-			Target: req.Address,
-			Route:  androidProxyConnectionRouteFromProxy(route),
-		}, err)
-		_ = replySOCKS5(conn, req.Version, 0x05, "0.0.0.0:0")
-		return
-	}
-	defer targetConn.Close()
-	if err := replySOCKS5(conn, req.Version, 0x00, targetConn.LocalAddr().String()); err != nil {
-		return
-	}
-	_ = conn.SetDeadline(time.Time{})
-	_ = targetConn.SetDeadline(time.Time{})
-	relay := globalAndroidProxyConnectionState.begin(androidProxyConnectionOptions{
-		Scope:  "socks5",
-		FlowID: flowID,
-		Side:   "local",
-		Target: req.Address,
-		Route:  androidProxyConnectionRouteFromProxy(route),
-	})
-	relayProxyBidirectional(conn, reader, targetConn, bufio.NewReader(targetConn), relay)
-}
-
-func handleAndroidHTTPProxyConn(conn net.Conn) {
-	if conn == nil {
-		return
-	}
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(proxyResponseReadTimeout))
-	reader := bufio.NewReader(conn)
-	req, err := http.ReadRequest(reader)
-	if err != nil {
-		return
-	}
-	targetAddr := httpProxyTargetAddr(req)
-	if targetAddr == "" {
-		_ = writeHTTPProxyStatus(conn, http.StatusBadRequest, "invalid proxy target")
-		return
-	}
-	flowID := newAndroidProxyFlowID("http", targetAddr)
-	targetConn, route, err := openAndroidProxyTunnelStreamWithFlow("tcp", targetAddr, flowID)
-	if err != nil {
-		globalAndroidProxyConnectionState.recordFailure("open_failed", androidProxyConnectionOptions{
-			Scope:  "http",
-			FlowID: flowID,
-			Side:   "local",
-			Target: targetAddr,
-			Route:  androidProxyConnectionRouteFromProxy(route),
-		}, err)
-		_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, err.Error())
-		return
-	}
-	defer targetConn.Close()
-	if strings.EqualFold(req.Method, http.MethodConnect) {
-		_, _ = io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
-		_ = conn.SetDeadline(time.Time{})
-		_ = targetConn.SetDeadline(time.Time{})
-		relay := globalAndroidProxyConnectionState.begin(androidProxyConnectionOptions{
-			Scope:  "http_connect",
-			FlowID: flowID,
-			Side:   "local",
-			Target: targetAddr,
-			Route:  androidProxyConnectionRouteFromProxy(route),
-		})
-		relayProxyBidirectional(conn, reader, targetConn, bufio.NewReader(targetConn), relay)
-		return
-	}
-	req.RequestURI = ""
-	if req.URL != nil {
-		if strings.TrimSpace(req.URL.Scheme) == "" {
-			req.URL.Scheme = "http"
-		}
-		if strings.TrimSpace(req.URL.Host) == "" {
-			req.URL.Host = req.Host
-		}
-	}
-	req.Header.Del("Proxy-Connection")
-	if err := req.Write(targetConn); err != nil {
-		_ = writeHTTPProxyStatus(conn, http.StatusBadGateway, "forward request failed")
-		return
-	}
-	_ = conn.SetDeadline(time.Time{})
-	_ = targetConn.SetDeadline(time.Time{})
-	relay := globalAndroidProxyConnectionState.begin(androidProxyConnectionOptions{
-		Scope:  "http",
-		FlowID: flowID,
-		Side:   "local",
-		Target: targetAddr,
-		Route:  androidProxyConnectionRouteFromProxy(route),
-	})
-	relayProxyBidirectional(conn, reader, targetConn, bufio.NewReader(targetConn), relay)
-}
-
-func openAndroidProxyTunnelStream(network string, targetAddr string) (net.Conn, error) {
-	conn, _, err := openAndroidProxyTunnelStreamWithFlow(network, targetAddr, newAndroidProxyFlowID("proxy", targetAddr))
-	return conn, err
-}
-
-func openAndroidProxyTunnelStreamWithFlow(network string, targetAddr string, flowID string) (net.Conn, proxyRouteDecision, error) {
-	if err := rejectAndroidProxyLocalTarget(targetAddr); err != nil {
-		return nil, proxyRouteDecision{TargetAddr: strings.TrimSpace(targetAddr)}, err
-	}
-	route, err := decideAndroidProxyRouteForTarget(proxyRuntimeConfigDir(), targetAddr)
-	if err != nil {
-		return nil, route, err
-	}
-	if route.Reject {
-		return nil, route, fmt.Errorf("route rejected by group: %s", route.Group)
-	}
-	if route.Direct {
-		dialer := net.Dialer{Timeout: proxyConnectTimeout}
-		conn, err := dialer.Dial(strings.ToLower(strings.TrimSpace(network)), route.TargetAddr)
-		return conn, route, err
-	}
-	conn, err := openAndroidProxyChainStreamWithFlow(route.SelectedChainID, strings.ToLower(strings.TrimSpace(network)), route.TargetAddr, flowID)
-	return conn, route, err
 }
 
 func openAndroidProxyChainStream(selectedChainID string, network string, targetAddr string) (net.Conn, error) {
@@ -812,120 +611,6 @@ func splitProxyRule(rule string) (string, string, bool) {
 	return key, value, key != "" && value != ""
 }
 
-func readSOCKS5Request(reader *bufio.Reader, conn net.Conn) (socksRequest, error) {
-	header := make([]byte, 2)
-	if _, err := io.ReadFull(reader, header); err != nil {
-		return socksRequest{}, err
-	}
-	if header[0] != 0x05 {
-		return socksRequest{}, errors.New("unsupported socks version")
-	}
-	methods := make([]byte, int(header[1]))
-	if _, err := io.ReadFull(reader, methods); err != nil {
-		return socksRequest{}, err
-	}
-	if _, err := conn.Write([]byte{0x05, 0x00}); err != nil {
-		return socksRequest{}, err
-	}
-	reqHeader := make([]byte, 4)
-	if _, err := io.ReadFull(reader, reqHeader); err != nil {
-		return socksRequest{}, err
-	}
-	if reqHeader[0] != 0x05 {
-		return socksRequest{}, errors.New("unsupported socks request version")
-	}
-	host, err := readSOCKS5Addr(reader, reqHeader[3])
-	if err != nil {
-		return socksRequest{}, err
-	}
-	portBytes := make([]byte, 2)
-	if _, err := io.ReadFull(reader, portBytes); err != nil {
-		return socksRequest{}, err
-	}
-	port := int(portBytes[0])<<8 | int(portBytes[1])
-	return socksRequest{Version: reqHeader[0], Cmd: reqHeader[1], Address: net.JoinHostPort(host, strconv.Itoa(port))}, nil
-}
-
-func readSOCKS5Addr(reader *bufio.Reader, atyp byte) (string, error) {
-	switch atyp {
-	case 0x01:
-		buf := make([]byte, 4)
-		if _, err := io.ReadFull(reader, buf); err != nil {
-			return "", err
-		}
-		return net.IP(buf).String(), nil
-	case 0x03:
-		size, err := reader.ReadByte()
-		if err != nil {
-			return "", err
-		}
-		buf := make([]byte, int(size))
-		if _, err := io.ReadFull(reader, buf); err != nil {
-			return "", err
-		}
-		return string(buf), nil
-	case 0x04:
-		buf := make([]byte, 16)
-		if _, err := io.ReadFull(reader, buf); err != nil {
-			return "", err
-		}
-		return net.IP(buf).String(), nil
-	default:
-		return "", errors.New("unsupported socks address type")
-	}
-}
-
-func replySOCKS5(conn net.Conn, version byte, code byte, bindAddr string) error {
-	host, portText, err := net.SplitHostPort(strings.TrimSpace(bindAddr))
-	if err != nil {
-		host, portText = "0.0.0.0", "0"
-	}
-	port, _ := strconv.Atoi(portText)
-	ip := net.ParseIP(strings.Trim(host, "[]")).To4()
-	if ip == nil {
-		ip = net.IPv4zero
-	}
-	resp := []byte{version, code, 0x00, 0x01, ip[0], ip[1], ip[2], ip[3], byte(port >> 8), byte(port)}
-	_, err = conn.Write(resp)
-	return err
-}
-
-func httpProxyTargetAddr(req *http.Request) string {
-	if req == nil {
-		return ""
-	}
-	host := strings.TrimSpace(req.Host)
-	if req.URL != nil && strings.TrimSpace(req.URL.Host) != "" {
-		host = strings.TrimSpace(req.URL.Host)
-	}
-	if strings.EqualFold(req.Method, http.MethodConnect) {
-		host = strings.TrimSpace(req.Host)
-	}
-	if host == "" {
-		return ""
-	}
-	if _, _, err := net.SplitHostPort(host); err == nil {
-		return host
-	}
-	port := "80"
-	if req.URL != nil && strings.EqualFold(req.URL.Scheme, "https") {
-		port = "443"
-	}
-	if strings.EqualFold(req.Method, http.MethodConnect) {
-		port = "443"
-	}
-	return net.JoinHostPort(strings.Trim(host, "[]"), port)
-}
-
-func writeHTTPProxyStatus(conn net.Conn, status int, message string) error {
-	text := http.StatusText(status)
-	if strings.TrimSpace(message) != "" {
-		text = strings.TrimSpace(message)
-	}
-	_, err := fmt.Fprintf(conn, "HTTP/1.1 %d %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", status, text)
-	return err
-}
-
 func relayProxyBidirectional(left net.Conn, leftReader *bufio.Reader, right net.Conn, rightReader *bufio.Reader, relay *androidProxyConnectionRelay) {
 	done := make(chan struct{}, 2)
 	go func() {
@@ -1036,33 +721,6 @@ func writeProxyFramedPacket(writer io.Writer, payload []byte) error {
 		return io.ErrShortWrite
 	}
 	return nil
-}
-
-func rejectAndroidProxyLocalTarget(targetAddr string) error {
-	host, portText, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
-	if err != nil {
-		return err
-	}
-	host = strings.Trim(host, "[]")
-	if isProxySelfPort(portText) && isProxyLocalHost(host) {
-		return fmt.Errorf("proxy loopback target blocked: %s", targetAddr)
-	}
-	return nil
-}
-
-func isProxySelfPort(portText string) bool {
-	for _, addr := range []string{proxyHTTPListenAddr, proxySOCKS5ListenAddr} {
-		_, port, err := net.SplitHostPort(addr)
-		if err == nil && port == strings.TrimSpace(portText) {
-			return true
-		}
-	}
-	return false
-}
-
-func isProxyLocalHost(host string) bool {
-	clean := strings.ToLower(strings.TrimSpace(strings.Trim(host, "[]")))
-	return clean == "localhost" || clean == "127.0.0.1" || clean == "::1"
 }
 
 func proxyRuntimeConfigDir() string {

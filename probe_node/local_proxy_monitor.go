@@ -306,82 +306,13 @@ func updateProbeLocalProxyMonitorSnapshot(reason string, startedAt time.Time) pr
 }
 
 func snapshotProbeLocalTUNGroupRuntimeMonitorStats() probeLocalTUNGroupRuntimeMonitorStats {
-	stats := probeLocalTUNGroupRuntimeMonitorStats{Statuses: map[string]int{}}
-	probeLocalTUNGroupRuntimeRegistry.mu.RLock()
-	items := make([]*probeLocalTUNGroupRuntime, 0, len(probeLocalTUNGroupRuntimeRegistry.items))
-	for _, rt := range probeLocalTUNGroupRuntimeRegistry.items {
-		if rt != nil {
-			items = append(items, rt)
-		}
-	}
-	probeLocalTUNGroupRuntimeRegistry.mu.RUnlock()
-
-	stats.Total = len(items)
-	for _, rt := range items {
-		snapshot := rt.snapshot()
-		if strings.TrimSpace(snapshot.SelectedChainID) != "" {
-			stats.Selected++
-		}
-		if snapshot.Connected {
-			stats.Connected++
-		}
-		stats.FailureTotal += snapshot.FailureCount
-		status := firstNonEmpty(strings.TrimSpace(snapshot.RuntimeStatus), "unknown")
-		stats.Statuses[status]++
-	}
-	return stats
+	return probeLocalTUNGroupRuntimeMonitorStats{Statuses: map[string]int{}}
 }
 
 func currentProbeLocalPeerStatusMonitorSnapshot() probeLocalPeerStatusMonitorSnapshot {
-	groups := currentProbeLocalProxyViewState().Groups
-	if len(groups) == 0 {
-		return probeLocalPeerStatusMonitorSnapshot{FetchedAt: time.Now().UTC().Format(time.RFC3339), Groups: []probePeerStatusGroupSnapshot{}}
-	}
-	chains := currentProbeLocalProxyViewChains()
-	out := make([]probePeerStatusGroupSnapshot, 0, len(groups))
-	now := time.Now().UTC().Format(time.RFC3339)
-	for _, groupEntry := range groups {
-		group := strings.TrimSpace(groupEntry.Group)
-		if group == "" {
-			continue
-		}
-		rt := currentProbeLocalTUNGroupRuntime(group)
-		if rt == nil {
-			out = append(out, probePeerStatusGroupSnapshot{Group: group, FetchedAt: now, Error: "group runtime is unavailable"})
-			continue
-		}
-		side, err := rt.fetchRemotePeerStatus("peer_status_get", "chain_exit")
-		snapshot := probePeerStatusGroupSnapshot{Group: group, FetchedAt: now}
-		if err != nil {
-			snapshot.Error = strings.TrimSpace(err.Error())
-		} else {
-			snapshot.Entry = side
-			snapshot.Exit = side
-		}
-		if selected := firstNonEmpty(strings.TrimSpace(groupEntry.SelectedChainID), mustProbeLocalSelectedChainIDFromLegacy(groupEntry.TunnelNodeID)); selected != "" {
-			for _, item := range chains {
-				if !matchesProbeLocalProxyChainSelection(item, selected) {
-					continue
-				}
-				if len(item.HopConfigs) == 0 {
-					break
-				}
-				entryHost := strings.TrimSpace(item.HopConfigs[0].RelayHost)
-				entryPort := item.HopConfigs[0].ExternalPort
-				if entryPort <= 0 {
-					entryPort = item.HopConfigs[0].ListenPort
-				}
-				if entryHost != "" && entryPort > 0 {
-					snapshot.Link = snapshotProbeLocalTUNChainRelayProtocolState(entryHost, entryPort)
-				}
-				break
-			}
-		}
-		out = append(out, snapshot)
-	}
 	return probeLocalPeerStatusMonitorSnapshot{
-		FetchedAt: now,
-		Groups:    out,
+		FetchedAt: time.Now().UTC().Format(time.RFC3339),
+		Groups:    []probePeerStatusGroupSnapshot{},
 	}
 }
 

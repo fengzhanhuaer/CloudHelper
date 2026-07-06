@@ -598,7 +598,7 @@ func TestBuildProbeVirtualRouterRuntimeConfigFixedADialsBRequiresBAddress(t *tes
 	}
 }
 
-func TestCollectProbeLinkChainRuntimeIDsToStopKeepsVirtualRouterRuntime(t *testing.T) {
+func TestCollectProbeLinkChainLegacyRuntimeIDsKeepsVirtualRouterRuntime(t *testing.T) {
 	probeChainRuntimeState.mu.Lock()
 	oldRuntimes := probeChainRuntimeState.runtimes
 	probeChainRuntimeState.runtimes = map[string]*probeChainRuntime{
@@ -621,7 +621,7 @@ func TestCollectProbeLinkChainRuntimeIDsToStopKeepsVirtualRouterRuntime(t *testi
 		probeChainRuntimeState.mu.Unlock()
 	})
 
-	toStop := collectProbeLinkChainRuntimeIDsToStopLocked(map[string]struct{}{})
+	toStop := collectProbeLinkChainLegacyRuntimeIDsLocked()
 	probeChainRuntimeState.mu.Unlock()
 
 	if !reflect.DeepEqual(toStop, []string{"ordinary"}) {
@@ -1456,6 +1456,57 @@ func TestBuildProbeVirtualRouterICMPEchoReply(t *testing.T) {
 	}
 	if _, _, ok := buildProbeVirtualRouterICMPEchoReply(request, "198.18.0.22"); ok {
 		t.Fatalf("request for another local ip should not be handled")
+	}
+}
+
+func TestProbeVirtualRouterTUNPacketAllowsVirtualRangeWhenEntryDisabled(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	resetProbeVirtualRouterLocalSettingsForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(resetProbeVirtualRouterLocalSettingsForTest)
+	config := probeVirtualRouterConfig{
+		Enabled: true,
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "16", IP: "198.18.0.18"},
+			{NodeID: "19", IP: "198.18.0.21"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "16", ToNodeID: "19", Enabled: true},
+		},
+	}
+	applyProbeVirtualRouterConfigForNode(config, "16")
+	if probeVirtualRouterLocalEntryEnabled() {
+		t.Fatalf("virtual router entry should default disabled")
+	}
+
+	oldWriter := probeVirtualRouterLocalTUNPacketWriter
+	var written [][]byte
+	probeVirtualRouterLocalTUNPacketWriter = func(packet []byte) error {
+		written = append(written, append([]byte(nil), packet...))
+		return nil
+	}
+	t.Cleanup(func() { probeVirtualRouterLocalTUNPacketWriter = oldWriter })
+
+	request := buildProbeVirtualRouterTestICMPEchoRequest(t, "198.18.0.99", "198.18.0.18")
+	if !handleProbeVirtualRouterTUNPacket(request) {
+		t.Fatalf("local self virtual ip echo should be handled even when entry is disabled")
+	}
+	if len(written) != 1 {
+		t.Fatalf("written packets=%d, want 1", len(written))
+	}
+	info, ok := probeVirtualRouterParseICMPEchoLogInfo(written[0])
+	if !ok || info.Kind != "echo_reply" || info.SourceIP != "198.18.0.18" || info.DestinationIP != "198.18.0.99" {
+		t.Fatalf("reply info=%+v ok=%v", info, ok)
+	}
+
+	peerPacket := buildProbeVirtualRouterTestICMPEchoRequest(t, "198.18.0.18", "198.18.0.21")
+	if !handleProbeVirtualRouterTUNPacket(peerPacket) {
+		t.Fatalf("remote virtual ip forwarding should remain available when entry is disabled")
+	}
+
+	ordinaryPacket := buildProbeVirtualRouterTestICMPEchoRequest(t, "198.18.0.18", "203.0.113.99")
+	if handleProbeVirtualRouterTUNPacket(ordinaryPacket) {
+		t.Fatalf("ordinary system traffic should not be handled when entry is disabled")
 	}
 }
 

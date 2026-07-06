@@ -25,8 +25,8 @@ var probeVirtualRouterLocalSettingsState = struct {
 
 func defaultProbeVirtualRouterLocalSettings() probeVirtualRouterLocalSettings {
 	return probeVirtualRouterLocalSettings{
-		VirtualRouterEnabled: true,
-		VirtualDNSEnabled:    true,
+		VirtualRouterEnabled: false,
+		VirtualDNSEnabled:    false,
 		UpdatedAt:            time.Now().UTC().Format(time.RFC3339),
 	}
 }
@@ -98,8 +98,10 @@ func saveProbeVirtualRouterLocalSettings(settings probeVirtualRouterLocalSetting
 	probeVirtualRouterLocalSettingsState.settings = settings
 	probeVirtualRouterLocalSettingsState.loaded = true
 	probeVirtualRouterLocalSettingsState.mu.Unlock()
-	reconcileProbeLocalDNSRuntime()
+	reconcileProbeVirtualRouterDNSRuntime()
 	if settings.VirtualRouterEnabled {
+		scheduleProbeVirtualRouterLocalInterfaceIPEnsure("local_settings_updated")
+	} else if localIP := currentProbeVirtualRouterLocalIP(); strings.TrimSpace(localIP) != "" {
 		scheduleProbeVirtualRouterLocalInterfaceIPEnsure("local_settings_updated")
 	} else if err := cleanupProbeVirtualRouterPlatformRoutes(); err != nil {
 		logProbeWarnf("cleanup virtual router platform routes after settings update failed: %v", err)

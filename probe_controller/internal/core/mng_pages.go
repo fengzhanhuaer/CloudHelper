@@ -21,9 +21,6 @@ var (
 	//go:embed mng_pages/probe.html
 	mngProbePageHTML string
 
-	//go:embed mng_pages/link.html
-	mngLinkPageHTML string
-
 	//go:embed mng_pages/route.html
 	mngRoutePageHTML string
 

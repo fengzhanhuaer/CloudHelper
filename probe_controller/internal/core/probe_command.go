@@ -130,48 +130,6 @@ type probeLinkTestControlCommand struct {
 	Timestamp         string `json:"timestamp"`
 }
 
-type probeChainPortForwardCommand struct {
-	ID         string `json:"id,omitempty"`
-	Name       string `json:"name,omitempty"`
-	EntrySide  string `json:"entry_side,omitempty"`
-	ListenHost string `json:"listen_host,omitempty"`
-	ListenPort int    `json:"listen_port,omitempty"`
-	TargetHost string `json:"target_host,omitempty"`
-	TargetPort int    `json:"target_port,omitempty"`
-	Network    string `json:"network,omitempty"`
-	Enabled    bool   `json:"enabled,omitempty"`
-}
-
-type probeChainLinkControlCommand struct {
-	Type              string                         `json:"type"`
-	RequestID         string                         `json:"request_id"`
-	Action            string                         `json:"action"`
-	ChainID           string                         `json:"chain_id"`
-	ChainType         string                         `json:"chain_type,omitempty"`
-	Name              string                         `json:"name,omitempty"`
-	UserID            string                         `json:"user_id,omitempty"`
-	UserPublicKey     string                         `json:"user_public_key,omitempty"`
-	LinkSecret        string                         `json:"link_secret,omitempty"`
-	AuthTicket        string                         `json:"auth_ticket,omitempty"`
-	Role              string                         `json:"role,omitempty"`
-	ListenHost        string                         `json:"listen_host,omitempty"`
-	ListenPort        int                            `json:"listen_port,omitempty"`
-	LinkLayer         string                         `json:"link_layer,omitempty"`
-	NextLinkLayer     string                         `json:"next_link_layer,omitempty"`
-	NextDialMode      string                         `json:"next_dial_mode,omitempty"`
-	NextHost          string                         `json:"next_host,omitempty"`
-	NextPort          int                            `json:"next_port,omitempty"`
-	PrevHost          string                         `json:"prev_host,omitempty"`
-	PrevPort          int                            `json:"prev_port,omitempty"`
-	PrevLinkLayer     string                         `json:"prev_link_layer,omitempty"`
-	PrevDialMode      string                         `json:"prev_dial_mode,omitempty"`
-	PortForwards      []probeChainPortForwardCommand `json:"port_forwards,omitempty"`
-	RequireUserAuth   bool                           `json:"require_user_auth,omitempty"`
-	NextAuthMode      string                         `json:"next_auth_mode,omitempty"`
-	ControllerBaseURL string                         `json:"controller_base_url,omitempty"`
-	Timestamp         string                         `json:"timestamp"`
-}
-
 type probeShellExecCommand struct {
 	Type       string `json:"type"`
 	RequestID  string `json:"request_id"`
@@ -248,19 +206,6 @@ type probeNetworkMonitorResultMessage struct {
 	Timestamp  string                            `json:"timestamp,omitempty"`
 }
 
-type probeChainLinkControlResultMessage struct {
-	Type      string `json:"type"`
-	RequestID string `json:"request_id"`
-	NodeID    string `json:"node_id"`
-	OK        bool   `json:"ok"`
-	Action    string `json:"action,omitempty"`
-	ChainID   string `json:"chain_id,omitempty"`
-	Role      string `json:"role,omitempty"`
-	Message   string `json:"message,omitempty"`
-	Error     string `json:"error,omitempty"`
-	Timestamp string `json:"timestamp,omitempty"`
-}
-
 type probeShellExecResultMessage struct {
 	Type       string `json:"type"`
 	RequestID  string `json:"request_id"`
@@ -324,13 +269,6 @@ var probeNetworkMonitorWaiters = struct {
 	mu   sync.Mutex
 	data map[string]chan probeNetworkMonitorResultMessage
 }{data: make(map[string]chan probeNetworkMonitorResultMessage)}
-
-var probeChainRequestSeq atomic.Uint64
-
-var probeChainWaiters = struct {
-	mu   sync.Mutex
-	data map[string]chan probeChainLinkControlResultMessage
-}{data: make(map[string]chan probeChainLinkControlResultMessage)}
 
 var probeShellExecRequestSeq atomic.Uint64
 
@@ -397,7 +335,7 @@ func (s *probeSession) writeJSON(v interface{}) error {
 }
 
 func dispatchProbeLinkConfigSyncToKnownNodes(controllerBaseURL string) probeLinkConfigSyncDispatchResult {
-	return dispatchProbeLinkConfigSyncToNodes(listProbeVirtualRouterKnownNodeIDs(), controllerBaseURL)
+	return dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURL)
 }
 
 func dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURL string) probeLinkConfigSyncDispatchResult {
@@ -484,42 +422,7 @@ func dispatchProbeVirtualRouterLatencyProbeToNodes(nodeIDs []string) probeLinkCo
 }
 
 func dispatchProbeLinkConfigSyncToNodes(nodeIDs []string, controllerBaseURL string) probeLinkConfigSyncDispatchResult {
-	result := probeLinkConfigSyncDispatchResult{
-		Total: len(nodeIDs),
-	}
-	if len(nodeIDs) == 0 {
-		return result
-	}
-	command := probeLinkConfigSyncCommand{
-		Type:              "link_config_sync",
-		ControllerBaseURL: strings.TrimSpace(controllerBaseURL),
-		Timestamp:         time.Now().UTC().Format(time.RFC3339),
-	}
-	seen := map[string]struct{}{}
-	for _, rawNodeID := range nodeIDs {
-		nodeID := normalizeProbeNodeID(rawNodeID)
-		if nodeID == "" {
-			continue
-		}
-		if _, exists := seen[nodeID]; exists {
-			continue
-		}
-		seen[nodeID] = struct{}{}
-		session, ok := getProbeSession(nodeID)
-		if !ok {
-			result.Offline++
-			continue
-		}
-		if err := session.writeJSON(command); err != nil {
-			unregisterProbeSession(nodeID, session)
-			result.Failed++
-			result.Failures = append(result.Failures, fmt.Sprintf("%s: %v", nodeID, err))
-			continue
-		}
-		result.Dispatched++
-	}
-	result.Total = len(seen)
-	return result
+	return dispatchProbeRouteConfigSyncToNodes(nodeIDs, controllerBaseURL)
 }
 
 func dispatchProbeRouteConfigSyncToNodes(nodeIDs []string, controllerBaseURL string) probeLinkConfigSyncDispatchResult {
@@ -1185,87 +1088,6 @@ func dispatchProbeNetworkMonitorTasksForNode(nodeID string) {
 	}
 }
 
-func dispatchProbeChainLinkControl(nodeID string, command probeChainLinkControlCommand) (probeChainLinkControlResultMessage, error) {
-	normalizedID := normalizeProbeNodeID(nodeID)
-	if normalizedID == "" {
-		return probeChainLinkControlResultMessage{}, fmt.Errorf("node_id is required")
-	}
-	action := strings.ToLower(strings.TrimSpace(command.Action))
-	if action != "apply" && action != "remove" {
-		return probeChainLinkControlResultMessage{}, fmt.Errorf("invalid action")
-	}
-	chainID := strings.TrimSpace(command.ChainID)
-	if chainID == "" {
-		return probeChainLinkControlResultMessage{}, fmt.Errorf("chain_id is required")
-	}
-
-	session, ok := getProbeSession(normalizedID)
-	if !ok {
-		return probeChainLinkControlResultMessage{}, fmt.Errorf("probe is offline")
-	}
-
-	requestID := newProbeChainRequestID(normalizedID)
-	waiter := make(chan probeChainLinkControlResultMessage, 1)
-	probeChainWaiters.mu.Lock()
-	probeChainWaiters.data[requestID] = waiter
-	probeChainWaiters.mu.Unlock()
-	defer func() {
-		probeChainWaiters.mu.Lock()
-		delete(probeChainWaiters.data, requestID)
-		probeChainWaiters.mu.Unlock()
-	}()
-
-	cmd := command
-	cmd.Type = "chain_link_control"
-	cmd.RequestID = requestID
-	cmd.Action = action
-	cmd.ChainID = chainID
-	cmd.Timestamp = time.Now().UTC().Format(time.RFC3339)
-	if err := session.writeJSON(cmd); err != nil {
-		unregisterProbeSession(normalizedID, session)
-		return probeChainLinkControlResultMessage{}, err
-	}
-
-	timer := time.NewTimer(30 * time.Second)
-	defer timer.Stop()
-	select {
-	case result := <-waiter:
-		if strings.TrimSpace(result.NodeID) == "" {
-			result.NodeID = normalizedID
-		}
-		if !result.OK {
-			errMsg := strings.TrimSpace(result.Error)
-			if errMsg == "" {
-				errMsg = "probe chain link control failed"
-			}
-			return result, errors.New(errMsg)
-		}
-		return result, nil
-	case <-timer.C:
-		return probeChainLinkControlResultMessage{}, fmt.Errorf("probe chain link control timeout (action=%s)", action)
-	}
-}
-
-func consumeProbeChainLinkControlResult(result probeChainLinkControlResultMessage) {
-	requestID := strings.TrimSpace(result.RequestID)
-	if requestID == "" {
-		return
-	}
-	probeChainWaiters.mu.Lock()
-	waiter, ok := probeChainWaiters.data[requestID]
-	if ok {
-		delete(probeChainWaiters.data, requestID)
-	}
-	probeChainWaiters.mu.Unlock()
-	if !ok {
-		return
-	}
-	select {
-	case waiter <- result:
-	default:
-	}
-}
-
 func dispatchProbeShellExec(nodeID string, command string, timeoutSec int) (probeShellExecResultMessage, error) {
 	normalizedID := normalizeProbeNodeID(nodeID)
 	if normalizedID == "" {
@@ -1487,11 +1309,6 @@ func newProbeLinkTestRequestID(nodeID string) string {
 func newProbeNetworkMonitorRequestID(nodeID string) string {
 	seq := probeNetworkMonitorRequestSeq.Add(1)
 	return fmt.Sprintf("probe-network-monitor-%s-%d-%d", normalizeProbeNodeID(nodeID), time.Now().UnixNano(), seq)
-}
-
-func newProbeChainRequestID(nodeID string) string {
-	seq := probeChainRequestSeq.Add(1)
-	return fmt.Sprintf("probe-chain-%s-%d-%d", normalizeProbeNodeID(nodeID), time.Now().UnixNano(), seq)
 }
 
 func newProbeShellExecRequestID(nodeID string) string {

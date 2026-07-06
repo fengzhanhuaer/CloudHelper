@@ -95,50 +95,35 @@ type proxyGroupBackupResponse struct {
 	Error         string `json:"error"`
 }
 
-type linkChainConfigResponse struct {
-	NodeID                   string            `json:"node_id"`
-	Chains                   []json.RawMessage `json:"chains"`
-	SelfChains               []json.RawMessage `json:"self_chains"`
-	PortForwardChains        []json.RawMessage `json:"port_forward_chains"`
-	ProxyChains              []json.RawMessage `json:"proxy_chains"`
-	GlobalProxyForwardChains []json.RawMessage `json:"global_proxy_forward_chains"`
-}
-
-type chainCacheFile struct {
-	UpdatedAt string            `json:"updated_at"`
-	Items     []json.RawMessage `json:"items"`
-}
-
 type chainLinkControlMessage struct {
-	Type              string                         `json:"type"`
-	RequestID         string                         `json:"request_id"`
-	Action            string                         `json:"action"`
-	ChainID           string                         `json:"chain_id"`
-	ChainType         string                         `json:"chain_type"`
-	ClientEntryID     string                         `json:"client_entry_id,omitempty"`
-	ClientEntryType   string                         `json:"client_entry_type,omitempty"`
-	Name              string                         `json:"name"`
-	UserID            string                         `json:"user_id"`
-	UserPublicKey     string                         `json:"user_public_key"`
-	LinkSecret        string                         `json:"link_secret"`
-	AuthTicket        string                         `json:"auth_ticket"`
-	Role              string                         `json:"role"`
-	ListenHost        string                         `json:"listen_host"`
-	ListenPort        int                            `json:"listen_port"`
-	InternalPort      int                            `json:"internal_port"`
-	LinkLayer         string                         `json:"link_layer"`
-	NextLinkLayer     string                         `json:"next_link_layer"`
-	NextDialMode      string                         `json:"next_dial_mode"`
-	NextHost          string                         `json:"next_host"`
-	NextPort          int                            `json:"next_port"`
-	PrevHost          string                         `json:"prev_host"`
-	PrevPort          int                            `json:"prev_port"`
-	PrevLinkLayer     string                         `json:"prev_link_layer"`
-	PrevDialMode      string                         `json:"prev_dial_mode"`
-	PortForwards      []mobileChainPortForwardConfig `json:"port_forwards"`
-	RequireUserAuth   bool                           `json:"require_user_auth"`
-	NextAuthMode      string                         `json:"next_auth_mode"`
-	ControllerBaseURL string                         `json:"controller_base_url"`
+	Type              string `json:"type"`
+	RequestID         string `json:"request_id"`
+	Action            string `json:"action"`
+	ChainID           string `json:"chain_id"`
+	ChainType         string `json:"chain_type"`
+	ClientEntryID     string `json:"client_entry_id,omitempty"`
+	ClientEntryType   string `json:"client_entry_type,omitempty"`
+	Name              string `json:"name"`
+	UserID            string `json:"user_id"`
+	UserPublicKey     string `json:"user_public_key"`
+	LinkSecret        string `json:"link_secret"`
+	AuthTicket        string `json:"auth_ticket"`
+	Role              string `json:"role"`
+	ListenHost        string `json:"listen_host"`
+	ListenPort        int    `json:"listen_port"`
+	InternalPort      int    `json:"internal_port"`
+	LinkLayer         string `json:"link_layer"`
+	NextLinkLayer     string `json:"next_link_layer"`
+	NextDialMode      string `json:"next_dial_mode"`
+	NextHost          string `json:"next_host"`
+	NextPort          int    `json:"next_port"`
+	PrevHost          string `json:"prev_host"`
+	PrevPort          int    `json:"prev_port"`
+	PrevLinkLayer     string `json:"prev_link_layer"`
+	PrevDialMode      string `json:"prev_dial_mode"`
+	RequireUserAuth   bool   `json:"require_user_auth"`
+	NextAuthMode      string `json:"next_auth_mode"`
+	ControllerBaseURL string `json:"controller_base_url"`
 }
 
 type androidLogEntry struct {
@@ -296,34 +281,6 @@ func refreshConfigFiles(controllerURL string, nodeID string, nodeSecret string, 
 	}
 	summary.ProxyGroupUpdated = proxyGroupUpdated
 
-	config, err := fetchLinkChainConfig(client, baseURL, nodeID, nodeSecret)
-	if err != nil {
-		return summary, err
-	}
-	updatedAt := time.Now().UTC().Format(time.RFC3339)
-	if err := writeJSONFile(filepath.Join(configDir, "probe_link_chain_config.json"), chainCacheFile{
-		UpdatedAt: updatedAt,
-		Items:     append([]json.RawMessage(nil), config.SelfChains...),
-	}); err != nil {
-		return summary, err
-	}
-	if err := writeJSONFile(filepath.Join(configDir, "probe_link_port_forward_chain_config.json"), chainCacheFile{
-		UpdatedAt: updatedAt,
-		Items:     append([]json.RawMessage(nil), config.PortForwardChains...),
-	}); err != nil {
-		return summary, err
-	}
-	if err := writeJSONFile(filepath.Join(configDir, "proxy_chain.json"), chainCacheFile{
-		UpdatedAt: updatedAt,
-		Items:     append([]json.RawMessage(nil), config.GlobalProxyForwardChains...),
-	}); err != nil {
-		return summary, err
-	}
-	if err := writeJSONFile(filepath.Join(configDir, "probe_link_config_grouped.json"), config); err != nil {
-		return summary, err
-	}
-	summary.SelfChains = len(config.SelfChains)
-	summary.ProxyEntries = len(config.GlobalProxyForwardChains)
 	return summary, nil
 }
 
@@ -365,36 +322,6 @@ func refreshProxyGroupFile(client *http.Client, baseURL string, nodeID string, n
 		return false, fmt.Errorf("write proxy_group.json: %w", err)
 	}
 	return true, nil
-}
-
-func fetchLinkChainConfig(client *http.Client, baseURL string, nodeID string, nodeSecret string) (linkChainConfigResponse, error) {
-	u, err := url.Parse(strings.TrimRight(baseURL, "/") + "/api/probe/link/config/grouped")
-	if err != nil {
-		return linkChainConfigResponse{}, err
-	}
-	query := u.Query()
-	query.Set("node_id", strings.TrimSpace(nodeID))
-	query.Set("secret", strings.TrimSpace(nodeSecret))
-	u.RawQuery = query.Encode()
-	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
-	if err != nil {
-		return linkChainConfigResponse{}, err
-	}
-	applyAuthHeaders(req, nodeID, nodeSecret)
-	resp, err := client.Do(req)
-	if err != nil {
-		return linkChainConfigResponse{}, fmt.Errorf("fetch link config: %w", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return linkChainConfigResponse{}, fmt.Errorf("fetch link config status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	var config linkChainConfigResponse
-	if err := json.Unmarshal(body, &config); err != nil {
-		return linkChainConfigResponse{}, fmt.Errorf("decode link config: %w", err)
-	}
-	return config, nil
 }
 
 func writeJSONFile(path string, value any) error {

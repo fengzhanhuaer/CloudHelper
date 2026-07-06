@@ -2,7 +2,7 @@ package main
 
 import "testing"
 
-func TestBuildProbeSubstreamMonitorItemIncludesExplicitProxyTunnel(t *testing.T) {
+func TestBuildProbeSubstreamMonitorItemFiltersLegacyExplicitProxy(t *testing.T) {
 	item := probeTCPDebugConnectionItemPayload{
 		ID:          "probe-tcp-1",
 		Status:      "active",
@@ -17,18 +17,8 @@ func TestBuildProbeSubstreamMonitorItemIncludesExplicitProxyTunnel(t *testing.T)
 		Transport:   "tunnel",
 	}
 
-	sub, ok := buildProbeSubstreamMonitorItem(item)
-	if !ok {
-		t.Fatal("explicit proxy tunnel item was filtered out")
-	}
-	if sub.Kind != "explicit_proxy" {
-		t.Fatalf("kind=%q, want explicit_proxy", sub.Kind)
-	}
-	if sub.FlowID != "explicit-flow" {
-		t.Fatalf("flow_id=%q, want explicit-flow", sub.FlowID)
-	}
-	if sub.TrackingID != "track-explicit-1" {
-		t.Fatalf("tracking_id=%q, want track-explicit-1", sub.TrackingID)
+	if _, ok := buildProbeSubstreamMonitorItem(item); ok {
+		t.Fatal("legacy explicit proxy item should not be rendered as a substream")
 	}
 }
 
@@ -47,15 +37,15 @@ func TestBuildProbeSubstreamMonitorItemFiltersDirectConnections(t *testing.T) {
 	}
 }
 
-func TestMergeProbeSubstreamMonitorPairsCombinesEntryAndExit(t *testing.T) {
+func TestMergeProbeSubstreamMonitorPairsCombinesTUNEntryAndExit(t *testing.T) {
 	local := probeSubstreamMonitorPayload{
 		Active: []probeSubstreamMonitorItem{{
 			ID:         "entry-1",
 			Status:     "active",
 			TrackingID: "track-1",
 			FlowID:     "flow-1",
-			Scope:      "explicit",
-			Side:       "socks5",
+			Scope:      "tun",
+			Side:       "local",
 			Group:      "google",
 			Target:     "mail.google.com:443",
 		}},
@@ -92,79 +82,5 @@ func TestMergeProbeSubstreamMonitorPairsCombinesEntryAndExit(t *testing.T) {
 	}
 	if pairs[0].Exit == nil || pairs[0].Exit.ID != "exit-1" {
 		t.Fatalf("exit=%+v, want exit-1", pairs[0].Exit)
-	}
-}
-
-func TestMergeProbeSubstreamMonitorPairsTreatsPortForwardAsEntryByScope(t *testing.T) {
-	rows := []probeSubstreamMonitorPairRow{
-		{
-			source: "exit",
-			item: probeSubstreamMonitorItem{
-				ID:         "pf-remote-side",
-				Status:     "active",
-				TrackingID: "track-pf-1",
-				FlowID:     "flow-pf-1",
-				Kind:       "port_forward",
-				Scope:      "port_forward",
-				Side:       "remote",
-				Target:     "127.0.0.1:17824",
-			},
-		},
-		{
-			source: "exit",
-			item: probeSubstreamMonitorItem{
-				ID:         "exit-1",
-				Status:     "active",
-				TrackingID: "track-pf-1",
-				FlowID:     "flow-pf-1",
-				Kind:       "peer_exit",
-				Scope:      "chain_exit",
-				Side:       "remote",
-				Target:     "127.0.0.1:3389",
-			},
-		},
-	}
-
-	pairs := buildProbeSubstreamMonitorPairsFromRows(rows)
-	if len(pairs) != 1 {
-		t.Fatalf("pairs=%d, want 1", len(pairs))
-	}
-	if pairs[0].Status != "complete" {
-		t.Fatalf("status=%q, want complete", pairs[0].Status)
-	}
-	if pairs[0].Entry == nil || pairs[0].Entry.ID != "pf-remote-side" {
-		t.Fatalf("entry=%+v, want pf-remote-side", pairs[0].Entry)
-	}
-	if pairs[0].Exit == nil || pairs[0].Exit.ID != "exit-1" {
-		t.Fatalf("exit=%+v, want exit-1", pairs[0].Exit)
-	}
-}
-
-func TestBeginProbeLocalExplicitProxyTCPDebugReusesRouteFlowID(t *testing.T) {
-	state := globalProbeTCPDebugState
-	globalProbeTCPDebugState = newProbeTCPDebugState()
-	t.Cleanup(func() { globalProbeTCPDebugState = state })
-
-	relay := beginProbeLocalExplicitProxyTCPDebug("socks5", "example.com:443", probeLocalTunnelRouteDecision{
-		FlowID:     "explicit-flow-1",
-		TargetAddr: "example.com:443",
-		Group:      "default",
-	})
-	if relay == nil {
-		t.Fatal("relay is nil")
-	}
-	defer relay.releaseSide()
-	defer relay.releaseSide()
-
-	payload := globalProbeTCPDebugState.snapshotPayload("node-1", "req-1")
-	if payload.ActiveCount != 1 {
-		t.Fatalf("active_count=%d, want 1", payload.ActiveCount)
-	}
-	item := payload.Active[0]
-	if item.FlowID != "explicit-flow-1" {
-		t.Fatalf("flow_id=%q, want explicit-flow-1", item.FlowID)
-	}
-	if item.TrackingID != "explicit-flow-1" {
-		t.Fatalf("tracking_id=%q, want explicit-flow-1", item.TrackingID)
 	}
 }

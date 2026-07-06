@@ -356,7 +356,7 @@ func isSameProbeSubstreamEndpoint(left *probeSubstreamMonitorItem, right probeSu
 func resolveProbeSubstreamEndpointRole(item probeSubstreamMonitorItem, source string) string {
 	scope := strings.ToLower(strings.TrimSpace(item.Scope))
 	side := strings.ToLower(strings.TrimSpace(item.Side))
-	if scope == "port_forward" || scope == "tun" || scope == "explicit" || side == "local" {
+	if scope == "tun" || side == "local" {
 		return "entry"
 	}
 	if scope == "chain_exit" || side == "remote" {
@@ -402,10 +402,6 @@ func probeSubstreamKindFromScope(scope string) string {
 	switch strings.ToLower(strings.TrimSpace(scope)) {
 	case "tun":
 		return "tun"
-	case "explicit":
-		return "explicit_proxy"
-	case "port_forward":
-		return "port_forward"
 	case "chain_exit":
 		return "peer_exit"
 	default:

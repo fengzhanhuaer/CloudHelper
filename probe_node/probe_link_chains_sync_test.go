@@ -151,64 +151,6 @@ func TestResolveProbeChainNextPrevHopFromItemWithNonContiguousNodeIDs(t *testing
 	}
 }
 
-func TestFetchProbeLinkChainConfigUsesProbeGroupedEndpoint(t *testing.T) {
-	dataDir := t.TempDir()
-	t.Setenv("PROBE_NODE_DATA_DIR", dataDir)
-
-	var requestedPath string
-	var requestedNodeID string
-	var requestedSecret string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestedPath = r.URL.Path
-		requestedNodeID = r.URL.Query().Get("node_id")
-		requestedSecret = r.URL.Query().Get("secret")
-		if r.URL.Path != probeLinkChainGroupedConfigAPIPath {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(probeLinkChainConfigResponse{
-			SelfChains: []probeLinkChainServerItem{
-				{ChainID: "self-pf", ChainType: "port_forward", Name: "Self Port Forward"},
-				{ChainID: "self-proxy", ChainType: "proxy_chain", Name: "Self Proxy"},
-			},
-			PortForwardChains: []probeLinkChainServerItem{
-				{ChainID: "self-pf", ChainType: "port_forward", Name: "Self Port Forward"},
-			},
-			ProxyChains: []probeLinkChainServerItem{
-				{ChainID: "self-proxy", ChainType: "proxy_chain", Name: "Self Proxy"},
-			},
-			GlobalProxyForwardChains: []probeLinkChainServerItem{
-				{ChainID: "global-proxy", ChainType: "proxy_chain", Name: "Global Proxy"},
-			},
-		})
-	}))
-	defer server.Close()
-
-	config, err := fetchProbeLinkChainConfig(context.Background(), server.URL, nodeIdentity{NodeID: "7", Secret: "secret-7"})
-	if err != nil {
-		t.Fatalf("fetchProbeLinkChainConfig failed: %v", err)
-	}
-	if requestedPath != probeLinkChainGroupedConfigAPIPath {
-		t.Fatalf("requested path=%q, want %q", requestedPath, probeLinkChainGroupedConfigAPIPath)
-	}
-	if requestedNodeID != "7" || requestedSecret != "secret-7" {
-		t.Fatalf("unexpected auth query node_id=%q secret=%q", requestedNodeID, requestedSecret)
-	}
-	if got := len(config.SelfChains); got != 2 {
-		t.Fatalf("self chains len=%d, want 2", got)
-	}
-	if got := len(config.PortForwardChains); got != 1 {
-		t.Fatalf("port forward chains len=%d, want 1", got)
-	}
-	if got := len(config.ProxyChains); got != 1 {
-		t.Fatalf("proxy chains len=%d, want 1", got)
-	}
-	if got := len(config.GlobalProxyForwardChains); got != 1 || config.GlobalProxyForwardChains[0].ChainID != "global-proxy" {
-		t.Fatalf("unexpected global proxy chains: %+v", config.GlobalProxyForwardChains)
-	}
-}
-
 func TestFetchProbeRouteConfigUsesRouteEndpoint(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("PROBE_NODE_DATA_DIR", dataDir)
@@ -264,37 +206,8 @@ func TestFetchProbeRouteConfigUsesRouteEndpoint(t *testing.T) {
 	}
 }
 
-func TestFetchProbeLinkChainsReturnsSelfChainsFromGroupedEndpoint(t *testing.T) {
-	origRequestConfig := probeRequestLinkChainConfig
-	defer func() { probeRequestLinkChainConfig = origRequestConfig }()
-
-	var requestedIdentity nodeIdentity
-	probeRequestLinkChainConfig = func(ctx context.Context, controllerBaseURL string, identity nodeIdentity) (probeLinkChainConfigFetchResult, error) {
-		requestedIdentity = identity
-		return probeLinkChainConfigFetchResult{
-			SelfChains: []probeLinkChainServerItem{{ChainID: "self-chain", ChainType: "port_forward", Name: "Self"}},
-			GlobalProxyForwardChains: []probeLinkChainServerItem{
-				{ChainID: "global-proxy", ChainType: "proxy_chain", Name: "Global"},
-			},
-		}, nil
-	}
-
-	items, err := fetchProbeLinkChains(context.Background(), "http://controller.example.invalid", nodeIdentity{NodeID: "9", Secret: "secret-9"})
-	if err != nil {
-		t.Fatalf("fetchProbeLinkChains failed: %v", err)
-	}
-	if requestedIdentity.NodeID != "9" || requestedIdentity.Secret != "secret-9" {
-		t.Fatalf("unexpected identity: %+v", requestedIdentity)
-	}
-	if len(items) != 1 || items[0].ChainID != "self-chain" {
-		t.Fatalf("unexpected items: %+v", items)
-	}
-}
-
-func TestApplyProbeLinkChainServerItemsSkipsLegacyWhenPaused(t *testing.T) {
-	probeChainLegacyRuntimeFeatureEnabled = func() bool { return false }
+func TestApplyProbeLinkChainServerItemsSkipsLegacy(t *testing.T) {
 	t.Cleanup(func() {
-		probeChainLegacyRuntimeFeatureEnabled = func() bool { return false }
 		stopProbeChainRuntime("vrouter-test", "test cleanup")
 		stopProbeChainRuntime("legacy-chain", "test cleanup")
 	})

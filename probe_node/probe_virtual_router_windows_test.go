@@ -12,11 +12,14 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsAppliesOnlyFakeIPRout
 	resetProbeLocalTUNDataPlaneHooksForTest()
 	resetProbeLocalWindowsTakeoverStateForTest()
 	resetProbeVirtualRouterWindowsRouteStateForTest()
+	resetProbeVirtualRouterLocalSettingsForTest()
+	enableProbeVirtualRouterLocalSettingsForTest(true, false)
 	t.Cleanup(func() {
 		resetProbeLocalTUNInstallWindowsHooksForTest()
 		resetProbeLocalTUNDataPlaneHooksForTest()
 		resetProbeLocalWindowsTakeoverStateForTest()
 		resetProbeVirtualRouterWindowsRouteStateForTest()
+		resetProbeVirtualRouterLocalSettingsForTest()
 	})
 
 	probeLocalTUNDataPlaneState.mu.Lock()
@@ -86,9 +89,6 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsAppliesOnlyFakeIPRout
 	}
 	if strings.TrimSpace(routeDef.Gateway) != probeLocalTUNRouteGatewayIPv4 || routeDef.InterfaceLUID != 77 || routeDef.IfIndex != 40 {
 		t.Fatalf("route target=%+v want gateway=%s luid=77 ifindex=40", routeDef, probeLocalTUNRouteGatewayIPv4)
-	}
-	if _, enabled := currentProbeLocalWindowsTakeoverIfIndex(); enabled {
-		t.Fatalf("virtual router interface IP setup must not enable global takeover")
 	}
 }
 

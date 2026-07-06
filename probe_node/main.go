@@ -106,18 +106,6 @@ type cpuSampler struct {
 	prev    cpuSnapshot
 }
 
-type probeChainPortForwardMessage struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	EntrySide  string `json:"entry_side"`
-	ListenHost string `json:"listen_host"`
-	ListenPort int    `json:"listen_port"`
-	TargetHost string `json:"target_host"`
-	TargetPort int    `json:"target_port"`
-	Network    string `json:"network"`
-	Enabled    bool   `json:"enabled"`
-}
-
 type probeControlMessage struct {
 	Type                string                           `json:"type"`
 	Mode                string                           `json:"mode"`
@@ -145,7 +133,6 @@ type probeControlMessage struct {
 	PrevPort            int                              `json:"prev_port"`
 	PrevLinkLayer       string                           `json:"prev_link_layer"`
 	PrevDialMode        string                           `json:"prev_dial_mode"`
-	PortForwards        []probeChainPortForwardMessage   `json:"port_forwards"`
 	RequireUserAuth     bool                             `json:"require_user_auth"`
 	NextAuthMode        string                           `json:"next_auth_mode"`
 	SessionID           string                           `json:"session_id"`
@@ -325,12 +312,10 @@ func runProbeNode(options probeLaunchOptions) error {
 	if err := loadProbeChainAuthBlacklistFromDisk(); err != nil {
 		logProbeWarnf("probe chain auth blacklist restore failed: %v", err)
 	}
-	ensureProbeLocalDNSServiceStarted()
+	ensureProbeVirtualRouterDNSRuntime()
 	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(options.ControllerURL), strings.TrimSpace(options.ControllerWS))
 	setProbeLocalProxyRuntimeContext(identity, controllerBaseURL)
-	prewarmProbeLocalDNSForControllerAndChains(controllerBaseURL, nil)
 
-	nodeMux := buildProbeNodeHTTPMux(identity)
 	ensureProbeLocalListenConfigDefaults()
 	if options.LocalConsoleEnabled {
 		if err := applyProbeLocalConsoleListenerEnabled(true, strings.TrimSpace(options.LocalListenAddr), "startup"); err != nil {
@@ -345,9 +330,7 @@ func runProbeNode(options probeLaunchOptions) error {
 	} else {
 		logProbeWarnf("probe reporter disabled: set PROBE_CONTROLLER_URL or PROBE_CONTROLLER_WS")
 	}
-	restoreProbeChainRuntimesFromTopologyCache(identity, controllerBaseURL)
-	startProbeLinkChainsSyncLoop(identity, controllerBaseURL)
-	startProbeServiceRuntimeLoop(nodeMux, identity, controllerBaseURL)
+	startProbeRouteConfigSyncLoop(identity, controllerBaseURL)
 	startProbeSyncScheduler(identity)
 
 	logProbeInfof("probe node started: node_id=%s version=%s", identity.NodeID, BuildVersion)
@@ -765,10 +748,6 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 		go runProbeShellSessionControl(msg, identity, stream, encoder, writeMu)
 		return
 	}
-	if typeName == "chain_link_control" {
-		go runProbeChainLinkControl(msg, identity, stream, encoder, writeMu)
-		return
-	}
 	if typeName == "link_config_sync" {
 		go runProbeLinkConfigSyncControl(msg, identity)
 		return
@@ -873,11 +852,13 @@ func runProbeLinkConfigSyncControl(msg probeControlMessage, identity nodeIdentit
 		controllerBaseURL = strings.TrimSpace(runtimeContext.ControllerBaseURL)
 	}
 	if strings.TrimSpace(controllerBaseURL) == "" {
-		logProbeWarnf("probe link config sync skipped: controller base url is empty")
+		logProbeWarnf("probe route config sync skipped: controller base url is empty")
 		return
 	}
-	logProbeInfof("probe link config sync requested by controller")
-	syncProbeChainRuntimes(identity, controllerBaseURL)
+	logProbeInfof("legacy link config sync requested by controller; syncing route config only")
+	if err := syncProbeRouteConfig(identity, controllerBaseURL); err != nil {
+		logProbeWarnf("probe route config sync failed: err=%v", err)
+	}
 }
 
 func runProbeRouteConfigSyncControl(msg probeControlMessage, identity nodeIdentity) {

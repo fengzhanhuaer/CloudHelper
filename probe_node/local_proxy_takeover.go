@@ -7,15 +7,7 @@ import (
 	"runtime"
 )
 
-func applyProbeLocalProxyTakeover() error {
-	return fmt.Errorf("%w: %s", errProbeLocalProxyUnsupported, runtime.GOOS)
-}
-
-func restoreProbeLocalProxyDirect() error {
-	return nil
-}
-
-func ensureProbeLocalExplicitDirectBypass(string) error {
+func ensureProbeLocalDirectBypass(string) error {
 	return nil
 }
 

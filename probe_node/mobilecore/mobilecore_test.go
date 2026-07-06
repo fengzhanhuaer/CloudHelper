@@ -67,92 +67,6 @@ func TestResolveLinkDialHostUsesIPForDirectAndDomainForCF(t *testing.T) {
 	}
 }
 
-func TestMobileChainControlRestartAndStop(t *testing.T) {
-	listenAddr := reserveMobileChainTestAddr(t)
-	host, portText, err := net.SplitHostPort(listenAddr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	port, err := strconv.Atoi(portText)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
-	writeMu := &sync.Mutex{}
-
-	cmd := chainLinkControlMessage{
-		RequestID:    "apply-1",
-		Action:       "start",
-		ChainID:      "android-chain-control",
-		Role:         "entry",
-		ListenHost:   host,
-		ListenPort:   port,
-		LinkSecret:   "secret-control",
-		NextAuthMode: "proxy",
-	}
-	t.Cleanup(func() { stopMobileChainRuntime(cmd.ChainID, "test cleanup") })
-	go runMobileChainLinkControl(cmd, mobileNodeIdentity{NodeID: "android-1", Secret: "node-secret"}, server, writeMu)
-	var result chainLinkControlResult
-	frame, err := readMobileChainFrame(client)
-	if err != nil {
-		t.Fatalf("read start frame: %v", err)
-	}
-	payload := frame.Control
-	if len(payload) == 0 {
-		payload = frame.Data
-	}
-	if err := json.Unmarshal(payload, &result); err != nil {
-		t.Fatalf("decode start result: %v", err)
-	}
-	if !result.OK || result.Action != "apply" {
-		t.Fatalf("start result=%+v", result)
-	}
-	if getMobileChainRuntime(cmd.ChainID) == nil {
-		t.Fatal("runtime was not started")
-	}
-
-	cmd.RequestID = "restart-1"
-	cmd.Action = "restart"
-	go runMobileChainLinkControl(cmd, mobileNodeIdentity{NodeID: "android-1", Secret: "node-secret"}, server, writeMu)
-	frame, err = readMobileChainFrame(client)
-	if err != nil {
-		t.Fatalf("read restart frame: %v", err)
-	}
-	payload = frame.Control
-	if len(payload) == 0 {
-		payload = frame.Data
-	}
-	if err := json.Unmarshal(payload, &result); err != nil {
-		t.Fatalf("decode restart result: %v", err)
-	}
-	if !result.OK || result.Action != "restart" {
-		t.Fatalf("restart result=%+v", result)
-	}
-
-	cmd.RequestID = "stop-1"
-	cmd.Action = "stop"
-	go runMobileChainLinkControl(cmd, mobileNodeIdentity{NodeID: "android-1", Secret: "node-secret"}, server, writeMu)
-	frame, err = readMobileChainFrame(client)
-	if err != nil {
-		t.Fatalf("read stop frame: %v", err)
-	}
-	payload = frame.Control
-	if len(payload) == 0 {
-		payload = frame.Data
-	}
-	if err := json.Unmarshal(payload, &result); err != nil {
-		t.Fatalf("decode stop result: %v", err)
-	}
-	if !result.OK || result.Action != "remove" {
-		t.Fatalf("stop result=%+v", result)
-	}
-	if getMobileChainRuntime(cmd.ChainID) != nil {
-		t.Fatal("runtime was not stopped")
-	}
-}
-
 func TestMobileChainRelayAcceptsMismatchedHostWithValidAuth(t *testing.T) {
 	rt := &mobileChainRuntime{cfg: mobileChainRuntimeConfig{ChainID: "android-chain-host", Secret: "secret-host"}}
 	req := httptest.NewRequest(http.MethodGet, "https://wrong.host.invalid"+mobileChainRelayPath+"?chain_id="+rt.cfg.ChainID, nil)
@@ -218,82 +132,6 @@ func TestMobileChainRelayWebSocketPingPongEndToEnd(t *testing.T) {
 	}
 	if !bytes.Equal(payload, echo) {
 		t.Fatalf("echo=%q want %q", string(echo), string(payload))
-	}
-}
-
-func TestMobileChainPortForwardStreamUsesExistingFrameOnly(t *testing.T) {
-	clientConn, serverConn := net.Pipe()
-	serverSession, err := newMobileChainFrameServer(serverConn)
-	if err != nil {
-		t.Fatalf("server frame: %v", err)
-	}
-	defer serverSession.Close()
-	clientSession, err := newMobileChainFrameClient(clientConn)
-	if err != nil {
-		t.Fatalf("client frame: %v", err)
-	}
-	defer clientSession.Close()
-	if !clientSession.WaitReady(2*time.Second) || !serverSession.WaitReady(2*time.Second) {
-		t.Fatal("frame session negotiation timed out")
-	}
-
-	rt := &mobileChainRuntime{
-		cfg:                mobileChainRuntimeConfig{ChainID: "android-chain-frame", Role: "entry"},
-		downstreamSessions: map[string]*mobileChainBridgeSession{},
-		upstreamSessions:   map[string]*mobileChainBridgeSession{},
-		stopCh:             make(chan struct{}),
-	}
-	rt.setDownstreamSession("s1", clientSession)
-	defer close(rt.stopCh)
-
-	reqCh := make(chan mobileChainTunnelOpenRequest, 1)
-	go func() {
-		stream, acceptErr := serverSession.Accept()
-		if acceptErr != nil {
-			return
-		}
-		defer stream.Close()
-		frameStream, ok := stream.(*mobileChainFrameStream)
-		if !ok {
-			return
-		}
-		req, found := frameStream.MobileOpenRequest()
-		if !found {
-			return
-		}
-		reqCh <- req
-		_ = frameStream.RespondMobileOpen(mobileChainTunnelOpenResponse{OK: true})
-	}()
-
-	stream, err := openMobileChainPortForwardStream(rt, mobileChainEntrySideEntry, mobileChainNetworkTCP, "127.0.0.1:3389", "flow-test")
-	if err != nil {
-		t.Fatalf("open port forward stream: %v", err)
-	}
-	defer stream.Close()
-	select {
-	case req := <-reqCh:
-		if req.Network != mobileChainNetworkTCP || req.Address != "127.0.0.1:3389" || req.FlowID != "flow-test" {
-			t.Fatalf("unexpected request: %+v", req)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("frame stream was not opened")
-	}
-}
-
-func TestMobileChainPortForwardStreamFailsWithoutBridge(t *testing.T) {
-	oldTimeout := mobileChainOpenBridgeStreamTimeout
-	mobileChainOpenBridgeStreamTimeout = 50 * time.Millisecond
-	t.Cleanup(func() { mobileChainOpenBridgeStreamTimeout = oldTimeout })
-	rt := &mobileChainRuntime{
-		cfg:                mobileChainRuntimeConfig{ChainID: "android-chain-no-bridge", Role: "entry"},
-		downstreamSessions: map[string]*mobileChainBridgeSession{},
-		upstreamSessions:   map[string]*mobileChainBridgeSession{},
-		stopCh:             make(chan struct{}),
-	}
-	defer close(rt.stopCh)
-	_, err := openMobileChainPortForwardStream(rt, mobileChainEntrySideEntry, mobileChainNetworkTCP, "127.0.0.1:3389", "")
-	if err == nil || !strings.Contains(err.Error(), "downstream bridge is unavailable") {
-		t.Fatalf("err=%v, want downstream bridge unavailable", err)
 	}
 }
 
@@ -365,65 +203,9 @@ func TestMobileChainUserAuthTicketVerification(t *testing.T) {
 	}
 }
 
-func TestApplyMobileChainRuntimesFromConfigDirRestoresSelfAndPortForwardChains(t *testing.T) {
-	dir := t.TempDir()
-	listenA := reserveMobileChainTestAddr(t)
-	hostA, portAText, _ := net.SplitHostPort(listenA)
-	portA, _ := strconv.Atoi(portAText)
-	listenB := reserveMobileChainTestAddr(t)
-	hostB, portBText, _ := net.SplitHostPort(listenB)
-	portB, _ := strconv.Atoi(portBText)
-	pub, _, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
-	itemA := linkChainServerItem{
-		ChainID:       "android-restore-self",
-		Name:          "restore-self",
-		UserPublicKey: base64.StdEncoding.EncodeToString(pub),
-		Secret:        "secret-restore-self",
-		EntryNodeID:   "7",
-		ExitNodeID:    "7",
-		HopConfigs: []linkChainHopItem{{
-			NodeNo:     7,
-			ListenHost: hostA,
-			ListenPort: portA,
-		}},
-	}
-	itemB := linkChainServerItem{
-		ChainID:       "android-restore-pf",
-		Name:          "restore-pf",
-		UserPublicKey: base64.StdEncoding.EncodeToString(pub),
-		Secret:        "secret-restore-pf",
-		EntryNodeID:   "7",
-		ExitNodeID:    "7",
-		HopConfigs: []linkChainHopItem{{
-			NodeNo:     7,
-			ListenHost: hostB,
-			ListenPort: portB,
-		}},
-		PortForwards: []json.RawMessage{json.RawMessage(`{"id":"pf-1","entry_side":"chain_entry","listen_host":"127.0.0.1","listen_port":1,"target_host":"127.0.0.1","target_port":9,"network":"tcp","enabled":false}`)},
-	}
-	writeTestJSON(t, filepath.Join(dir, "probe_link_chain_config.json"), chainCacheFile{Items: mustMarshalRawItems(t, itemA)})
-	writeTestJSON(t, filepath.Join(dir, "probe_link_port_forward_chain_config.json"), chainCacheFile{Items: mustMarshalRawItems(t, itemB)})
-	t.Cleanup(func() {
-		stopMobileChainRuntime(itemA.ChainID, "test cleanup")
-		stopMobileChainRuntime(itemB.ChainID, "test cleanup")
-	})
-	applied, err := applyMobileChainRuntimesFromConfigDir(dir, mobileNodeIdentity{NodeID: "7", Secret: "node-secret"})
-	if err != nil {
-		t.Fatalf("apply from config: %v", err)
-	}
-	if applied != 2 {
-		t.Fatalf("applied=%d want 2", applied)
-	}
-	if getMobileChainRuntime(itemA.ChainID) == nil || getMobileChainRuntime(itemB.ChainID) == nil {
-		t.Fatal("expected both runtimes to be restored")
-	}
-}
-
 func TestRefreshConfigFilesWritesProxyAndChainCaches(t *testing.T) {
 	proxyGroup := `{"groups":[{"group":"default","rules":[],"fallback":"direct"}]}`
+	linkConfigRequested := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Probe-Node-Id") != "7" {
 			t.Fatalf("missing auth node id for %s", r.URL.Path)
@@ -437,19 +219,8 @@ func TestRefreshConfigFilesWritesProxyAndChainCaches(t *testing.T) {
 				"content_base64": base64.StdEncoding.EncodeToString([]byte(proxyGroup)),
 			})
 		case "/api/probe/link/config/grouped":
-			if r.URL.Query().Get("node_id") != "7" || r.URL.Query().Get("secret") != "secret-7" {
-				t.Fatalf("missing query identity: %s", r.URL.RawQuery)
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"node_id": "7",
-				"self_chains": []map[string]any{
-					{"chain_id": "self-1", "chain_type": "port_forward"},
-				},
-				"global_proxy_forward_chains": []map[string]any{
-					{"chain_id": "proxy-1", "chain_type": "proxy_chain"},
-					{"chain_id": "proxy-2", "chain_type": "proxy_chain"},
-				},
-			})
+			linkConfigRequested = true
+			http.Error(w, "legacy link config endpoint removed", http.StatusGone)
 		default:
 			http.NotFound(w, r)
 		}
@@ -461,17 +232,14 @@ func TestRefreshConfigFilesWritesProxyAndChainCaches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("refreshConfigFiles returned error: %v", err)
 	}
-	if !summary.ProxyGroupUpdated || summary.SelfChains != 1 || summary.ProxyEntries != 2 {
+	if !summary.ProxyGroupUpdated || summary.SelfChains != 0 || summary.ProxyEntries != 0 {
 		t.Fatalf("unexpected summary: %+v", summary)
+	}
+	if linkConfigRequested {
+		t.Fatal("refreshConfigFiles should not request legacy link config")
 	}
 	if got := readTestFile(t, filepath.Join(dir, "proxy_group.json")); !strings.Contains(got, `"groups"`) {
 		t.Fatalf("proxy_group.json not written: %s", got)
-	}
-	if got := readTestFile(t, filepath.Join(dir, "probe_link_chain_config.json")); !strings.Contains(got, `"self-1"`) {
-		t.Fatalf("probe_link_chain_config.json not written: %s", got)
-	}
-	if got := readTestFile(t, filepath.Join(dir, "proxy_chain.json")); !strings.Contains(got, `"proxy-2"`) {
-		t.Fatalf("proxy_chain.json not written: %s", got)
 	}
 }
 
@@ -574,23 +342,6 @@ func TestCollectIPsIncludesInjectedNativeIPs(t *testing.T) {
 	}
 }
 
-func TestLoadMobileChainServerItemsFromCacheAcceptsNullItems(t *testing.T) {
-	dir := t.TempDir()
-	cachePath := filepath.Join(dir, "probe_link_chain_config.json")
-	writeTestJSON(t, cachePath, map[string]any{
-		"updated_at": "2026-06-08T04:00:18Z",
-		"items":      nil,
-	})
-
-	items, err := loadMobileChainServerItemsFromCache(cachePath)
-	if err != nil {
-		t.Fatalf("load cache with null items returned error: %v", err)
-	}
-	if len(items) != 0 {
-		t.Fatalf("items=%v, want empty", items)
-	}
-}
-
 func containsString(items []string, target string) bool {
 	for _, item := range items {
 		if item == target {
@@ -638,24 +389,8 @@ func TestResolveLinkEndpointUsesProjectedRelayChain(t *testing.T) {
 	}
 }
 
-func TestLinkStatusReadsProxyChainCache(t *testing.T) {
+func TestLinkStatusHasNoLinkChainCache(t *testing.T) {
 	dir := t.TempDir()
-	writeTestJSON(t, filepath.Join(dir, "proxy_chain.json"), map[string]any{
-		"items": []map[string]any{
-			{
-				"chain_id":       "client-chain",
-				"relay_chain_id": "relay-chain",
-				"name":           "Android Link",
-				"secret":         "link-secret",
-				"entry_node_id":  "1",
-				"exit_node_id":   "2",
-				"link_layer":     "websocket",
-				"hop_configs": []map[string]any{
-					{"node_no": 1, "relay_host": "127.0.0.1", "external_port": 443},
-				},
-			},
-		},
-	})
 	var payload struct {
 		OK     bool             `json:"ok"`
 		Chains []linkStatusItem `json:"chains"`
@@ -663,111 +398,8 @@ func TestLinkStatusReadsProxyChainCache(t *testing.T) {
 	if err := json.Unmarshal([]byte(LinkStatus(dir)), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if !payload.OK || len(payload.Chains) != 1 {
+	if !payload.OK || len(payload.Chains) != 0 {
 		t.Fatalf("unexpected status payload: %+v", payload)
-	}
-	if payload.Chains[0].Status != "configured" || payload.Chains[0].RelayChainID != "relay-chain" {
-		t.Fatalf("unexpected chain status: %+v", payload.Chains[0])
-	}
-}
-
-func TestLinkLatencyAndSpeedUseRelayProtocol(t *testing.T) {
-	const chainID = "relay-chain"
-	const secret = "link-secret"
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != linkRelayAPIPath {
-			http.NotFound(w, r)
-			return
-		}
-		if r.URL.Query().Get("chain_id") != chainID {
-			t.Fatalf("chain_id query=%q", r.URL.Query().Get("chain_id"))
-		}
-		assertLinkAuth(t, r, chainID, secret)
-		mode := r.Header.Get(linkCodexRelayModeHeader)
-		upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
-		ws, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			t.Fatalf("upgrade failed: %v", err)
-		}
-		conn := newWebSocketNetConn(ws)
-		switch mode {
-		case linkRelayModeBridge:
-			serveTestPingPongRelay(t, conn)
-		case linkRelayModeSpeedTest:
-			byteCount, _ := strconv.ParseInt(r.Header.Get(linkCodexSpeedBytesHeader), 10, 64)
-			if byteCount <= 0 {
-				t.Fatalf("missing speed byte count")
-			}
-			writeTestSpeedBytes(t, conn, byteCount)
-		case linkRelayModeSpeedDebug:
-			payload := linkSpeedDebugResultPayload{
-				Type:      "speed_debug_result",
-				NodeID:    "10",
-				OK:        true,
-				Scope:     "chain_relay",
-				FetchedAt: time.Now().UTC().Format(time.RFC3339),
-				Recent: []linkSpeedDebugItemPayload{{
-					ChainID:   chainID,
-					Transport: "websocket",
-					Status:    "completed",
-					Bytes:     4096,
-					RateBPS:   4096,
-				}},
-			}
-			if err := json.NewEncoder(conn).Encode(payload); err != nil {
-				t.Fatalf("write speed debug failed: %v", err)
-			}
-		default:
-			t.Fatalf("unexpected relay mode %q", mode)
-		}
-	}))
-	defer server.Close()
-
-	host, port := testServerHostPort(t, server)
-	dir := t.TempDir()
-	writeTestJSON(t, filepath.Join(dir, "proxy_chain.json"), map[string]any{
-		"items": []map[string]any{
-			{
-				"chain_id":       "client-chain",
-				"relay_chain_id": chainID,
-				"name":           "Android Link",
-				"secret":         secret,
-				"entry_node_id":  "1",
-				"exit_node_id":   "2",
-				"link_layer":     "websocket",
-				"hop_configs": []map[string]any{
-					{"node_no": 1, "relay_host": host, "external_port": port},
-				},
-			},
-		},
-	})
-
-	var latency struct {
-		OK           bool   `json:"ok"`
-		Status       string `json:"status"`
-		BestProtocol string `json:"best_protocol"`
-	}
-	if err := json.Unmarshal([]byte(LinkLatency(dir, "client-chain")), &latency); err != nil {
-		t.Fatal(err)
-	}
-	if !latency.OK || latency.Status != "reachable" || latency.BestProtocol != "websocket" {
-		t.Fatalf("unexpected latency result: %+v", latency)
-	}
-
-	_, endpoint, err := loadLinkEndpointByID(dir, "client-chain")
-	if err != nil {
-		t.Fatal(err)
-	}
-	speed := linkRelaySpeedTestWithLayer(endpoint, "websocket", 4096, 5*time.Second)
-	if !speed.OK || speed.Bytes != 4096 || speed.RateBPS <= 0 {
-		t.Fatalf("unexpected speed result: %+v", speed)
-	}
-	debug, err := linkRelayFetchSpeedDebugWithLayer(endpoint, "websocket", 5*time.Second)
-	if err != nil {
-		t.Fatalf("speed debug failed: %v", err)
-	}
-	if !debug.OK || debug.NodeID != "10" || !linkSpeedDebugPayloadHasChain(debug, linkChainServerItem{RelayChainID: chainID}) {
-		t.Fatalf("unexpected speed debug result: %+v", debug)
 	}
 }
 
@@ -1103,7 +735,7 @@ func TestProxyRouteForcesControllerDirect(t *testing.T) {
 	}
 }
 
-func TestProxyRouteForcesLinkEntryDirect(t *testing.T) {
+func TestProxyRouteDoesNotReadLinkEntryCache(t *testing.T) {
 	dir := t.TempDir()
 	writeTestJSON(t, filepath.Join(dir, "proxy_state.json"), map[string]any{
 		"version": 1,
@@ -1111,26 +743,13 @@ func TestProxyRouteForcesLinkEntryDirect(t *testing.T) {
 			{"group": "fallback", "action": "tunnel", "selected_chain_id": "chain-1"},
 		},
 	})
-	writeTestJSON(t, filepath.Join(dir, "proxy_chain.json"), map[string]any{
-		"items": []map[string]any{
-			{
-				"chain_id":      "chain-1",
-				"name":          "Link Entry",
-				"entry_node_id": "1",
-				"exit_node_id":  "2",
-				"hop_configs": []map[string]any{
-					{"node_no": 1, "relay_host": "entry.example.com", "external_port": 8443},
-				},
-			},
-		},
-	})
 
 	route, err := decideAndroidProxyRouteForTarget(dir, "entry.example.com:8443")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !route.Direct || route.Group != "link_entry" {
-		t.Fatalf("link entry route should be forced direct: %+v", route)
+	if route.Direct || route.Group != "fallback" || route.SelectedChainID != "chain-1" {
+		t.Fatalf("link entry cache should not be required for route selection: %+v", route)
 	}
 }
 

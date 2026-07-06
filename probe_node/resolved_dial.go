@@ -85,7 +85,7 @@ func newProbeResolvedDialContext(target probeResolvedURLDialTarget, timeout time
 			KeepAlive: 30 * time.Second,
 		})
 		if strings.EqualFold(strings.TrimSpace(addr), strings.TrimSpace(target.OriginalEndpoint)) {
-			if err := ensureProbeLocalExplicitDirectBypass(target.DialEndpoint); err != nil {
+			if err := ensureProbeLocalDirectBypass(target.DialEndpoint); err != nil {
 				logProbeWarnf("probe resolved dial direct bypass failed: target=%s err=%v", target.DialEndpoint, err)
 			}
 			return dialer.DialContext(ctx, probeLocalEgressDialNetwork(network, target.DialEndpoint), target.DialEndpoint)
@@ -135,79 +135,4 @@ func newProbeResolvedWebSocketDialerForURL(rawURL string, timeout time.Duration)
 		}
 	}
 	return dialer, nil
-}
-
-func prewarmProbeLocalDNSForTargets(targets []string) {
-	seenHosts := make(map[string]struct{}, len(targets))
-	for _, rawTarget := range targets {
-		host, _, err := net.SplitHostPort(strings.TrimSpace(rawTarget))
-		if err != nil {
-			continue
-		}
-		cleanHost := strings.TrimSpace(strings.Trim(host, "[]"))
-		if cleanHost == "" {
-			continue
-		}
-		if parsed := net.ParseIP(cleanHost); parsed != nil {
-			continue
-		}
-		if _, ok := seenHosts[cleanHost]; ok {
-			continue
-		}
-		seenHosts[cleanHost] = struct{}{}
-		if _, err := resolveProbeLocalDNSIPv4s(cleanHost); err != nil {
-			logProbeWarnf("probe local dns prewarm failed: host=%s err=%v", cleanHost, err)
-		}
-	}
-}
-
-func prewarmProbeLocalDNSForControllerAndChains(controllerBaseURL string, items []probeLinkChainServerItem) {
-	targets := make([]string, 0, 8)
-	seenTargets := make(map[string]struct{}, 8)
-	appendTarget := func(host string, port int) {
-		target, err := resolveProbeLocalExplicitBypassTarget(host, port)
-		if err != nil {
-			return
-		}
-		if _, ok := seenTargets[target]; ok {
-			return
-		}
-		seenTargets[target] = struct{}{}
-		targets = append(targets, target)
-	}
-
-	if controllerBaseURL = strings.TrimSpace(controllerBaseURL); controllerBaseURL != "" {
-		if parsed, err := url.Parse(controllerBaseURL); err == nil && parsed != nil {
-			port := 0
-			if rawPort := strings.TrimSpace(parsed.Port()); rawPort != "" {
-				if parsedPort, convErr := strconv.Atoi(rawPort); convErr == nil {
-					port = parsedPort
-				}
-			} else if strings.EqualFold(strings.TrimSpace(parsed.Scheme), "http") {
-				port = 80
-			} else if strings.EqualFold(strings.TrimSpace(parsed.Scheme), "https") {
-				port = 443
-			}
-			if port > 0 {
-				appendTarget(parsed.Hostname(), port)
-			}
-		}
-	}
-
-	for _, item := range items {
-		chainTargets, err := resolveProbeLocalExplicitBypassTargetsForChain(item)
-		if err != nil {
-			logProbeWarnf("probe local dns prewarm chain target collection failed: chain=%s err=%v", strings.TrimSpace(item.ChainID), err)
-			continue
-		}
-		for _, target := range chainTargets {
-			if _, ok := seenTargets[target]; ok {
-				continue
-			}
-			seenTargets[target] = struct{}{}
-			targets = append(targets, target)
-		}
-	}
-
-	prewarmProbeLocalDNSForTargets(targets)
 }

@@ -63,19 +63,6 @@ func TestCloudflareCopilotCandidateDomainIsEditOnly(t *testing.T) {
 		t.Fatalf("unexpected copilot candidate: %q", copilotDomain)
 	}
 
-	runtimeDomains := listProbeLinkNodeDomains("7")
-	if containsStringFold(runtimeDomains, copilotDomain) {
-		t.Fatalf("copilot candidate must not be used by runtime relay host fallback: %v", runtimeDomains)
-	}
-
-	editDomains := listProbeLinkNodeEditCandidateDomains("7")
-	if !containsStringFold(editDomains, copilotDomain) {
-		t.Fatalf("copilot candidate missing from edit domains: %v", editDomains)
-	}
-	if len(editDomains) == 0 || !strings.EqualFold(editDomains[len(editDomains)-1], copilotDomain) {
-		t.Fatalf("copilot candidate should be appended after existing domains: %v", editDomains)
-	}
-
 	desired := buildCloudflareDesiredRecords(probeNodeStatusRecord{
 		NodeNo:   7,
 		NodeName: "node-7",

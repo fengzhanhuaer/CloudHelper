@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -153,19 +152,14 @@ func TestProbeChainVirtualRouterRejectsLegacyStreams(t *testing.T) {
 	if _, _, err := openProbeChainUpstreamStream(rt, "", timeout, probeChainTunnelOpenRequest{}); err == nil || !strings.Contains(err.Error(), "virtual router does not use probe chain upstream streams") {
 		t.Fatalf("upstream stream should be rejected for vRouter, err=%v", err)
 	}
-	if _, _, err := openProbeChainPortForwardDataStreamByDialMode(rt, probeChainBridgeRoleToNext, probeChainTunnelOpenRequest{}); err == nil || !strings.Contains(err.Error(), "virtual router does not use probe chain port forward streams") {
-		t.Fatalf("port forward stream should be rejected for vRouter, err=%v", err)
-	}
 	if elapsed := time.Since(startedAt); elapsed > 200*time.Millisecond {
 		t.Fatalf("vRouter legacy stream rejection should be immediate, elapsed=%s", elapsed)
 	}
 }
 
-func TestProbeChainRuntimeRejectsLegacyChainWhenFeaturePaused(t *testing.T) {
-	probeChainLegacyRuntimeFeatureEnabled = func() bool { return false }
+func TestProbeChainRuntimeRejectsLegacyChain(t *testing.T) {
 	t.Cleanup(func() {
 		_ = stopProbeChainRuntime("legacy-paused", "test cleanup")
-		probeChainLegacyRuntimeFeatureEnabled = func() bool { return false }
 	})
 
 	_, err := startProbeChainRuntime(probeChainRuntimeConfig{
@@ -177,40 +171,11 @@ func TestProbeChainRuntimeRejectsLegacyChainWhenFeaturePaused(t *testing.T) {
 		listenPort:   reserveProbeChainTestTCPUDPPort(t),
 		nextAuthMode: "proxy",
 	})
-	if err == nil || !strings.Contains(err.Error(), "legacy probe chain runtime is paused") {
-		t.Fatalf("legacy chain should be rejected while feature paused, err=%v", err)
+	if err == nil || !strings.Contains(err.Error(), "only supports virtual_router") {
+		t.Fatalf("legacy chain should be rejected, err=%v", err)
 	}
 	if rt := getProbeChainRuntime("legacy-paused"); rt != nil {
 		t.Fatalf("legacy paused runtime should not be registered: %+v", rt.cfg)
-	}
-}
-
-func TestProbeChainRuntimeAllowsMultipleBridgeSessionsForNonVirtualRouter(t *testing.T) {
-	downClient, downServer := newProbeChainFrameSessionPairForTest(t)
-	defer downClient.Close()
-	defer downServer.Close()
-	upClient, upServer := newProbeChainFrameSessionPairForTest(t)
-	defer upClient.Close()
-	defer upServer.Close()
-
-	rt := &probeChainRuntime{
-		cfg: probeChainRuntimeConfig{
-			chainID:   "proxy-chain",
-			chainType: "proxy_chain",
-			role:      "relay",
-		},
-		downstreamSessions: make(map[string]*probeChainBridgeSession),
-		upstreamSessions:   make(map[string]*probeChainBridgeSession),
-	}
-
-	rt.setDownstreamSession("downstream", downServer, probeChainBridgeRoleToNext, "198.51.100.1:12040")
-	rt.setUpstreamSession("upstream", upServer, probeChainBridgeRoleToPrev, "198.51.100.2:12040")
-	sessions := rt.snapshotBridgeSessions()
-	if len(sessions) != 2 {
-		t.Fatalf("non virtual router runtime should keep existing multi-session behavior, got %+v", sessions)
-	}
-	if downServer.IsClosed() || upServer.IsClosed() {
-		t.Fatalf("non virtual router sessions should remain open")
 	}
 }
 
@@ -267,6 +232,7 @@ func TestStartProbeChainRuntimeSharesRelayPortAcrossChains(t *testing.T) {
 	listenPort := reserveProbeChainTestTCPUDPPort(t)
 	base := probeChainRuntimeConfig{
 		secret:        "secret-shared",
+		chainType:     "virtual_router",
 		role:          "entry",
 		listenHost:    "127.0.0.1",
 		listenPort:    listenPort,
@@ -387,7 +353,7 @@ func TestIsSameProbeChainRuntimeConfigIgnoresAuthTicketRotation(t *testing.T) {
 	rt := &probeChainRuntime{
 		cfg: probeChainRuntimeConfig{
 			chainID:       "ticket-rotation-chain",
-			chainType:     "proxy_chain",
+			chainType:     "virtual_router",
 			role:          "entry",
 			listenHost:    "127.0.0.1",
 			listenPort:    17030,
@@ -400,16 +366,6 @@ func TestIsSameProbeChainRuntimeConfigIgnoresAuthTicketRotation(t *testing.T) {
 			authTicket:    "ticket-issued-at-1",
 			secret:        "secret-1",
 			rawPublicKey:  "public-key-1",
-			portForwards: []probeChainRuntimePortForward{{
-				ID:         "pf-1",
-				EntrySide:  "chain_entry",
-				ListenHost: "127.0.0.1",
-				ListenPort: 12112,
-				TargetHost: "192.168.50.222",
-				TargetPort: 3389,
-				Network:    "tcp",
-				Enabled:    true,
-			}},
 		},
 		stopCh: make(chan struct{}),
 	}
@@ -538,153 +494,6 @@ func TestProbeChainForwardConnHandlesPingPongLocally(t *testing.T) {
 	}
 	_ = client.Close()
 	<-done
-}
-
-func TestProbeChainPreparedStreamDefersTargetOpenUntilRealRequest(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen target failed: %v", err)
-	}
-	defer ln.Close()
-
-	accepted := make(chan net.Conn, 1)
-	go func() {
-		conn, acceptErr := ln.Accept()
-		if acceptErr == nil {
-			accepted <- conn
-		}
-		close(accepted)
-	}()
-
-	clientSession, serverSession := newProbeChainFrameSessionPairForTest(t)
-	defer clientSession.Close()
-	defer serverSession.Close()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		stream, err := serverSession.Accept()
-		if err != nil {
-			return
-		}
-		handleProbeChainProxyStream(nil, stream)
-	}()
-
-	prepareReq := buildProbeChainTunnelOpenRequest(probeChainRelayModePrepare, probeChainPortForwardNetworkTCP, "", "flow-prepare", nil)
-	client, err := clientSession.OpenWithRequest(prepareReq, probeChainPortForwardResponseReadDeadline)
-	if err != nil {
-		t.Fatalf("open prepared stream failed: %v", err)
-	}
-	defer client.Close()
-	select {
-	case conn := <-accepted:
-		if conn != nil {
-			_ = conn.Close()
-		}
-		t.Fatal("target should not be opened by prepare")
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	if err := finishProbeChainPortForwardOpen(client, probeChainPortForwardNetworkTCP, ln.Addr().String(), "flow-real", nil, "open target failed"); err != nil {
-		t.Fatalf("real open failed: %v", err)
-	}
-	select {
-	case conn := <-accepted:
-		if conn == nil {
-			t.Fatal("target accept channel closed without connection")
-		}
-		_ = conn.Close()
-	case <-time.After(2 * time.Second):
-		t.Fatal("target was not opened after real request")
-	}
-	_ = client.Close()
-	<-done
-}
-
-func TestProbeChainPortForwardRelaySubstreamUsesBridgeFrame(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		entrySide string
-		setup     func(*probeChainRuntime, *probeChainFrameSession)
-	}{
-		{
-			name:      "to_next",
-			entrySide: probeChainPortForwardEntryChainEntry,
-			setup: func(rt *probeChainRuntime, session *probeChainFrameSession) {
-				rt.setDownstreamSession("downstream-test", session, probeChainBridgeRoleToNext, "pipe")
-			},
-		},
-		{
-			name:      "to_prev",
-			entrySide: probeChainPortForwardEntryChainExit,
-			setup: func(rt *probeChainRuntime, session *probeChainFrameSession) {
-				rt.setUpstreamSession("upstream-test", session, probeChainBridgeRoleToPrev, "pipe")
-			},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			clientConn, serverConn := net.Pipe()
-			serverSession, err := newProbeChainFrameServer(serverConn)
-			if err != nil {
-				t.Fatalf("frame server failed: %v", err)
-			}
-			defer serverSession.Close()
-			clientSession, err := newProbeChainFrameClient(clientConn)
-			if err != nil {
-				t.Fatalf("frame client failed: %v", err)
-			}
-			defer clientSession.Close()
-
-			accepted := make(chan net.Conn, 1)
-			acceptErr := make(chan error, 1)
-			go func() {
-				stream, err := serverSession.Accept()
-				if err != nil {
-					acceptErr <- err
-					return
-				}
-				if frameStream, ok := stream.(*probeChainFrameStream); ok {
-					if req, found := frameStream.OpenRequest(); !found || req.FlowID != "flow-a" {
-						acceptErr <- fmt.Errorf("unexpected open request: found=%t req=%+v", found, req)
-						return
-					}
-					if err := frameStream.RespondOpen(probeChainTunnelOpenResponse{OK: true}); err != nil {
-						acceptErr <- err
-						return
-					}
-				}
-				accepted <- stream
-			}()
-
-			rt := &probeChainRuntime{
-				cfg: probeChainRuntimeConfig{
-					chainID:      "chain-a",
-					role:         "relay",
-					nextDialMode: probeChainDialModeForward,
-					prevDialMode: probeChainDialModeReverse,
-					nextHost:     "",
-					prevHost:     "",
-				},
-				stopCh: make(chan struct{}),
-			}
-			tc.setup(rt, clientSession)
-
-			request := buildProbeChainTunnelOpenRequest("open", probeChainPortForwardNetworkTCP, "example.com:443", "flow-a", nil)
-			stream, _, err := openProbeChainPortForwardRelaySubstream(rt, tc.entrySide, request)
-			if err != nil {
-				t.Fatalf("open relay substream failed: %v", err)
-			}
-			_ = stream.Close()
-
-			select {
-			case serverStream := <-accepted:
-				_ = serverStream.Close()
-			case err := <-acceptErr:
-				t.Fatalf("server accept failed: %v", err)
-			case <-time.After(2 * time.Second):
-				t.Fatal("timed out waiting for bridge frame stream")
-			}
-		})
-	}
 }
 
 func TestProbeChainAuthFailureBlacklistAfterFiveAttempts(t *testing.T) {
@@ -1215,21 +1024,6 @@ func TestResolveProbeChainDialIPHostReturnsErrorWhenStaleCacheExpired(t *testing
 	}
 	if !strings.Contains(err.Error(), "resolve relay host failed") {
 		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestNextProbeChainListenRetryBackoff(t *testing.T) {
-	if got := nextProbeChainListenRetryBackoff(0); got != probeChainPortForwardListenRetryInterval*2 {
-		t.Fatalf("unexpected backoff for zero current: %s", got)
-	}
-	if got := nextProbeChainListenRetryBackoff(probeChainPortForwardListenRetryInterval); got != probeChainPortForwardListenRetryInterval*2 {
-		t.Fatalf("unexpected doubled backoff: %s", got)
-	}
-	if got := nextProbeChainListenRetryBackoff(probeChainPortForwardListenRetryMaxBackoff); got != probeChainPortForwardListenRetryMaxBackoff {
-		t.Fatalf("unexpected capped backoff at max: %s", got)
-	}
-	if got := nextProbeChainListenRetryBackoff(probeChainPortForwardListenRetryMaxBackoff * 2); got != probeChainPortForwardListenRetryMaxBackoff {
-		t.Fatalf("unexpected backoff over cap: %s", got)
 	}
 }
 
@@ -1832,7 +1626,6 @@ func writeProbeChainTestCertificate(t *testing.T, dataDir string) {
 
 func resetProbeChainRuntimeStateForTest(t *testing.T) {
 	t.Helper()
-	probeChainLegacyRuntimeFeatureEnabled = func() bool { return true }
 	stopAllProbeChainRuntimes("test reset")
 	probeChainSharedRelayState.mu.Lock()
 	sharedServers := make([]*probeChainSharedRelayServer, 0, len(probeChainSharedRelayState.servers))
@@ -1846,7 +1639,6 @@ func resetProbeChainRuntimeStateForTest(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		stopAllProbeChainRuntimes("test cleanup")
-		probeChainLegacyRuntimeFeatureEnabled = func() bool { return false }
 		probeChainSharedRelayState.mu.Lock()
 		leftovers := make([]*probeChainSharedRelayServer, 0, len(probeChainSharedRelayState.servers))
 		for key, shared := range probeChainSharedRelayState.servers {

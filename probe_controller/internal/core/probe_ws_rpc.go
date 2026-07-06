@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -44,42 +43,12 @@ func handleProbeControllerRPCRequest(nodeID string, req probeControllerRPCReques
 	}
 	action := strings.TrimSpace(strings.ToLower(req.Action))
 	switch action {
-	case "link_config_get":
-		payload, err := buildProbeLinkChainsPayloadForNode(nodeID)
-		if err != nil {
-			resp.Error = err.Error()
-			return resp
-		}
-		raw, err := json.Marshal(payload)
-		if err != nil {
-			resp.Error = err.Error()
-			return resp
-		}
-		resp.OK = true
-		resp.StatusCode = http.StatusOK
-		resp.ContentType = "application/json"
-		resp.PayloadJSON = string(raw)
-		return resp
 	case "proxy_download_chunk":
 		return handleProbeControllerProxyDownloadChunk(resp, req)
 	default:
 		resp.Error = "unsupported controller rpc action"
 		return resp
 	}
-}
-
-func buildProbeLinkChainsPayloadForNode(nodeID string) (map[string]any, error) {
-	if ProbeLinkChainStore == nil {
-		return nil, fmt.Errorf("chain store not initialized")
-	}
-	ProbeLinkChainStore.mu.RLock()
-	all := loadProbeLinkChainsLocked()
-	ProbeLinkChainStore.mu.RUnlock()
-
-	available := filterAvailableProbeLinkChains(all)
-	related := filterProbeLinkChainsByNodeID(available, nodeID)
-	enriched := fillChainRelayHosts(related)
-	return map[string]any{"chains": enriched}, nil
 }
 
 func handleProbeControllerProxyDownloadChunk(resp probeControllerRPCResponse, req probeControllerRPCRequest) probeControllerRPCResponse {

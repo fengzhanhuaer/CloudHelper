@@ -49,11 +49,8 @@ func TestProbeLocalPanelServedAfterLogin(t *testing.T) {
 	if strings.Contains(body, "id=\"tabProxy\"") || strings.Contains(body, "id=\"panelProxy\"") {
 		t.Fatalf("panel tile home should not contain old tab proxy DOM")
 	}
-	if !strings.Contains(body, "id=\"tile-proxy\"") || !strings.Contains(body, "href=\"/local/proxy\"") {
-		t.Fatalf("panel should contain proxy tile")
-	}
-	if !strings.Contains(body, "id=\"tile-dns\"") || !strings.Contains(body, "href=\"/local/dns\"") {
-		t.Fatalf("panel should contain dns tile")
+	if strings.Contains(body, "href=\"/local/proxy\"") || strings.Contains(body, "href=\"/local/dns\"") {
+		t.Fatalf("panel should not contain removed proxy/dns tiles")
 	}
 	if !strings.Contains(body, "id=\"tile-logs\"") || !strings.Contains(body, "href=\"/local/logs\"") {
 		t.Fatalf("panel should contain logs tile")
@@ -61,8 +58,8 @@ func TestProbeLocalPanelServedAfterLogin(t *testing.T) {
 	if !strings.Contains(body, "id=\"tile-system\"") || !strings.Contains(body, "href=\"/local/system\"") {
 		t.Fatalf("panel should contain system tile")
 	}
-	if !strings.Contains(body, "id=\"tile-monitor\"") || !strings.Contains(body, "href=\"/local/monitor\"") {
-		t.Fatalf("panel should contain proxy monitor tile")
+	if strings.Contains(body, "href=\"/local/monitor\"") {
+		t.Fatalf("panel should not contain removed monitor tile")
 	}
 	if !strings.Contains(body, "id=\"tile-sync\"") || !strings.Contains(body, "href=\"/local/sync\"") {
 		t.Fatalf("panel should contain sync tile")
@@ -91,47 +88,6 @@ func TestProbeLocalStandalonePagesServedAfterLogin(t *testing.T) {
 		notExists []string
 	}{
 		{
-			path: "/local/proxy",
-			contains: []string{
-				"<title>Probe Node VNet 状态</title>",
-				"id=\"panelProxy\"",
-				"id=\"panelProxyDiagnostics\"",
-				"id=\"proxyRuleGroups\"",
-				"/local/api/proxy/select",
-				"刷新线路组",
-				"刷新链路",
-				"备份线路规则组",
-				"恢复线路规则组",
-				"/local/api/proxy/groups/backup",
-				"/local/api/proxy/groups/restore",
-				"最近链路 RTT: 不可达",
-				"链路状态",
-				"/local/api/proxy/link/status",
-				"/local/api/proxy/link/latency",
-				"/local/api/proxy/link/speed",
-				"/local/api/proxy/link/cf_ip_optimize",
-				"排错磁贴",
-				"id=\"proxyDiagRefreshBtn\"",
-				"id=\"proxyDiagKeyword\"",
-				"/local/api/proxy/frame_tile",
-				"CF IP优选",
-				"data-copy-cf-ip",
-			},
-			notExists: []string{"id=\"panelDNS\"", "id=\"panelLogs\"", "id=\"panelSystem\""},
-		},
-		{
-			path: "/local/dns",
-			contains: []string{
-				"<title>Probe Node DNS 状态</title>",
-				"id=\"panelDNS\"",
-				"id=\"dnsRefreshBtn\"",
-				"id=\"dnsMapTableBody\"",
-				"fake IP",
-				"5353",
-			},
-			notExists: []string{"id=\"panelProxy\"", "id=\"panelLogs\"", "id=\"panelSystem\""},
-		},
-		{
 			path: "/local/logs",
 			contains: []string{
 				"<title>Probe Node 运行日志</title>",
@@ -141,22 +97,6 @@ func TestProbeLocalStandalonePagesServedAfterLogin(t *testing.T) {
 				"id=\"logsKeyword\"",
 			},
 			notExists: []string{"id=\"panelProxy\"", "id=\"panelDNS\"", "id=\"panelSystem\""},
-		},
-		{
-			path: "/local/monitor",
-			contains: []string{
-				"<title>Probe Node 状态监视</title>",
-				"id=\"panelMonitor\"",
-				"id=\"monitor-panel-details\"",
-				"/local/api/proxy/monitor",
-				"/local/api/proxy/peer_status",
-				"监视数据",
-				"TCP relay 拆分",
-				"TCP relay 明细",
-				"UDP bridge / association",
-				"UDP bridge 明细",
-			},
-			notExists: []string{"id=\"panelProxy\"", "id=\"panelDNS\"", "id=\"panelLogs\"", "id=\"panelSystem\""},
 		},
 		{
 			path: "/local/system",
@@ -231,7 +171,7 @@ func TestProbeLocalStandalonePagesServedAfterLogin(t *testing.T) {
 
 func TestProbeLocalPanelMethodNotAllowed(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
-	paths := []string{"/local/panel", "/local/proxy", "/local/dns", "/local/logs", "/local/monitor", "/local/system", "/local/sync", "/local/shell"}
+	paths := []string{"/local/panel", "/local/logs", "/local/system", "/local/sync", "/local/shell"}
 	for _, path := range paths {
 		t.Run(path, func(t *testing.T) {
 			resp := doProbeLocalRequest(t, mux, http.MethodPost, path, map[string]any{})

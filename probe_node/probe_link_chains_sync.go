@@ -9,8 +9,6 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,47 +18,16 @@ import (
 // probeLinkChainsSyncAPIPath is the controller endpoint that returns all chains
 // where this probe node appears (entry / cascade / exit).
 const (
-	probeLinkChainsSyncAPIPath         = "/api/probe/link/chains"
-	probeLinkChainGroupedConfigAPIPath = "/api/probe/link/config/grouped"
-	probeRouteConfigAPIPath            = "/api/probe/route/config"
-	probeRouteFakeIPResolveAPIPath     = "/api/probe/route/fake_ip/resolve"
-	probeLinkChainsSyncPollInterval    = 60 * time.Minute
-	probeLinkChainsSyncFetchTimeout    = 15 * time.Second
-	probeChainTopologyCacheFileName    = "probe_link_chain_config.json"
-	probeProxyChainsCacheFileName      = "proxy_chain.json"
-	probeRouteConfigCacheFileName      = "probe_route_config.json"
+	probeRouteConfigAPIPath         = "/api/probe/route/config"
+	probeRouteFakeIPResolveAPIPath  = "/api/probe/route/fake_ip/resolve"
+	probeLinkChainsSyncPollInterval = 60 * time.Minute
+	probeLinkChainsSyncFetchTimeout = 15 * time.Second
+	probeRouteConfigCacheFileName   = "probe_route_config.json"
 )
-
-// probeLinkChainsResponse mirrors the JSON returned by ProbeLinkChainsHandler.
-type probeLinkChainsResponse struct {
-	Chains []probeLinkChainServerItem `json:"chains"`
-}
-
-type probeLinkChainConfigResponse struct {
-	NodeID                   string                     `json:"node_id"`
-	Chains                   []probeLinkChainServerItem `json:"chains"`
-	SelfChains               []probeLinkChainServerItem `json:"self_chains"`
-	PortForwardChains        []probeLinkChainServerItem `json:"port_forward_chains"`
-	ProxyChains              []probeLinkChainServerItem `json:"proxy_chains"`
-	GlobalProxyForwardChains []probeLinkChainServerItem `json:"global_proxy_forward_chains"`
-}
 
 type probeRouteConfigResponse struct {
 	NodeID        string                   `json:"node_id"`
 	VirtualRouter probeVirtualRouterConfig `json:"virtual_router,omitempty"`
-}
-
-type probeLinkChainConfigFetchResult struct {
-	SelfChains               []probeLinkChainServerItem
-	PortForwardChains        []probeLinkChainServerItem
-	ProxyChains              []probeLinkChainServerItem
-	GlobalProxyForwardChains []probeLinkChainServerItem
-}
-
-// probeChainTopologyCacheFile stores full chain topology fetched from controller.
-type probeChainTopologyCacheFile struct {
-	UpdatedAt string                     `json:"updated_at"`
-	Items     []probeLinkChainServerItem `json:"items"`
 }
 
 type probeVirtualRouterConfig struct {
@@ -136,32 +103,30 @@ type probeRouteFakeIPResolveResponse struct {
 }
 
 var (
-	probeRequestLinkChainConfig = requestProbeLinkChainConfig
-	probeRequestRouteConfig     = requestProbeRouteConfig
-	probeRequestRouteFakeIP     = requestProbeRouteFakeIP
+	probeRequestRouteConfig = requestProbeRouteConfig
+	probeRequestRouteFakeIP = requestProbeRouteFakeIP
 )
 
 // probeLinkChainServerItem is a single chain record returned by the controller.
 // Fields map 1-to-1 with probeLinkChainRecord / probeChainRuntimeCacheItem.
 type probeLinkChainServerItem struct {
-	ChainID         string                            `json:"chain_id"`
-	RelayChainID    string                            `json:"relay_chain_id"`
-	ClientEntryID   string                            `json:"client_entry_id"`
-	ClientEntryType string                            `json:"client_entry_type"`
-	ChainType       string                            `json:"chain_type"`
-	Name            string                            `json:"name"`
-	UserID          string                            `json:"user_id"`
-	UserPublicKey   string                            `json:"user_public_key"`
-	Secret          string                            `json:"secret"`
-	AuthTicket      string                            `json:"auth_ticket,omitempty"`
-	EntryNodeID     string                            `json:"entry_node_id"`
-	ExitNodeID      string                            `json:"exit_node_id"`
-	CascadeNodeIDs  []string                          `json:"cascade_node_ids"`
-	LinkLayer       string                            `json:"link_layer"`
-	HopConfigs      []probeLinkChainHopServerItem     `json:"hop_configs"`
-	PortForwards    []probeChainPortForwardServerItem `json:"port_forwards"`
-	EgressHost      string                            `json:"egress_host"`
-	EgressPort      int                               `json:"egress_port"`
+	ChainID         string                        `json:"chain_id"`
+	RelayChainID    string                        `json:"relay_chain_id"`
+	ClientEntryID   string                        `json:"client_entry_id"`
+	ClientEntryType string                        `json:"client_entry_type"`
+	ChainType       string                        `json:"chain_type"`
+	Name            string                        `json:"name"`
+	UserID          string                        `json:"user_id"`
+	UserPublicKey   string                        `json:"user_public_key"`
+	Secret          string                        `json:"secret"`
+	AuthTicket      string                        `json:"auth_ticket,omitempty"`
+	EntryNodeID     string                        `json:"entry_node_id"`
+	ExitNodeID      string                        `json:"exit_node_id"`
+	CascadeNodeIDs  []string                      `json:"cascade_node_ids"`
+	LinkLayer       string                        `json:"link_layer"`
+	HopConfigs      []probeLinkChainHopServerItem `json:"hop_configs"`
+	EgressHost      string                        `json:"egress_host"`
+	EgressPort      int                           `json:"egress_port"`
 }
 
 // probeLinkChainHopServerItem maps one entry in hop_configs.
@@ -176,136 +141,29 @@ type probeLinkChainHopServerItem struct {
 	RelayHost    string `json:"relay_host"`
 }
 
-type probeChainPortForwardServerItem struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	EntrySide  string `json:"entry_side"`
-	ListenHost string `json:"listen_host"`
-	ListenPort int    `json:"listen_port"`
-	TargetHost string `json:"target_host"`
-	TargetPort int    `json:"target_port"`
-	Network    string `json:"network"`
-	Enabled    bool   `json:"enabled"`
-}
-
 // startProbeLinkChainsSyncLoop pulls chain configs from the controller and
 // reconciles running runtimes. Falls back to the existing cache if controller
 // is unconfigured or unreachable.
-func startProbeLinkChainsSyncLoop(identity nodeIdentity, controllerBaseURL string) {
+func startProbeRouteConfigSyncLoop(identity nodeIdentity, controllerBaseURL string) {
 	go func() {
-		// If controller is not configured, there is nothing to pull.
-		// Cache restore (restoreProbeChainRuntimesFromTopologyCache) already handles
-		// the offline case, so we simply skip polling.
 		base := strings.TrimSpace(controllerBaseURL)
 		if base == "" {
-			log.Printf("probe chain sync disabled: controller base url not configured")
+			log.Printf("probe route config sync disabled: controller base url not configured")
 			return
 		}
 
-		// Initial sync immediately on startup.
-		syncProbeChainRuntimes(identity, base)
+		if err := syncProbeRouteConfig(identity, base); err != nil {
+			log.Printf("warning: initial probe route config sync failed: %v", err)
+		}
 
 		ticker := time.NewTicker(probeLinkChainsSyncPollInterval)
 		defer ticker.Stop()
 		for range ticker.C {
-			syncProbeChainRuntimes(identity, base)
+			if err := syncProbeRouteConfig(identity, base); err != nil {
+				log.Printf("warning: probe route config sync failed: %v", err)
+			}
 		}
 	}()
-}
-
-// syncProbeChainRuntimes fetches the latest chains from the controller and
-// diffing them against currently running runtimes:
-//   - New / changed chains → apply (start / restart).
-//   - Chains that were removed from the server → stop.
-//
-// On fetch failure the running runtimes are left untouched (best-effort).
-func syncProbeChainRuntimes(identity nodeIdentity, controllerBaseURL string) {
-	ctx, cancel := context.WithTimeout(context.Background(), probeLinkChainsSyncFetchTimeout)
-	config, err := fetchProbeLinkChainConfig(ctx, controllerBaseURL, identity)
-	cancel()
-	if err != nil {
-		log.Printf("warning: probe chain sync fetch failed: %v (using local topology cache when available)", err)
-		if routeErr := syncProbeRouteConfig(identity, controllerBaseURL); routeErr != nil {
-			log.Printf("warning: probe route config sync during chain fallback failed: %v", routeErr)
-		}
-		restoreProbeChainRuntimesFromTopologyCache(identity, controllerBaseURL)
-		return
-	}
-
-	if routeErr := syncProbeRouteConfig(identity, controllerBaseURL); routeErr != nil {
-		log.Printf("warning: probe route config sync failed: %v", routeErr)
-	}
-	prewarmProbeLocalDNSForControllerAndChains(controllerBaseURL, append(append([]probeLinkChainServerItem{}, config.SelfChains...), config.GlobalProxyForwardChains...))
-	if err := persistProbeChainTopologyCache(config.SelfChains); err != nil {
-		log.Printf("warning: persist probe chain topology cache failed: %v", err)
-	}
-	if err := persistProbeProxyChainCache(config.GlobalProxyForwardChains); err != nil {
-		log.Printf("warning: persist probe proxy chain cache failed: %v", err)
-	}
-
-	recoverProbeLocalTUNRuntimeAfterChainConfigSync()
-	preconnectProbeLocalTUNGroupRuntimesFromState("chain_sync")
-
-	applyProbeLinkChainServerItems(identity, controllerBaseURL, config.SelfChains)
-}
-
-func restoreProbeChainRuntimesFromTopologyCache(identity nodeIdentity, controllerBaseURL string) {
-	items, err := loadProbeChainTopologyCacheItems()
-	if err != nil {
-		log.Printf("warning: load probe chain topology cache failed: %v", err)
-		applyProbeLinkChainServerItems(identity, controllerBaseURL, nil)
-		return
-	}
-	prewarmProbeLocalDNSForControllerAndChains(controllerBaseURL, items)
-	if len(items) == 0 {
-		applyProbeLinkChainServerItems(identity, controllerBaseURL, nil)
-		return
-	}
-	applyProbeLinkChainServerItems(identity, controllerBaseURL, items)
-	log.Printf("restored probe chain runtimes from topology cache: count=%d", len(items))
-}
-
-func loadProbeChainTopologyCacheItems() ([]probeLinkChainServerItem, error) {
-	cachePath, err := resolveProbeChainTopologyCachePath()
-	if err != nil {
-		return nil, err
-	}
-	raw, err := os.ReadFile(cachePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []probeLinkChainServerItem{}, nil
-		}
-		return nil, err
-	}
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" {
-		return []probeLinkChainServerItem{}, nil
-	}
-	var payload probeChainTopologyCacheFile
-	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
-		return nil, err
-	}
-	items := sanitizeProbeChainServerItemsForCache(payload.Items)
-	rememberProbeChainAuthTicketsForItems(items)
-	return items, nil
-}
-
-func fetchProbeLinkChainConfig(ctx context.Context, controllerBaseURL string, identity nodeIdentity) (probeLinkChainConfigFetchResult, error) {
-	base := strings.TrimSpace(controllerBaseURL)
-	if base == "" {
-		return probeLinkChainConfigFetchResult{}, errors.New("controller base url is empty")
-	}
-	result, err := probeRequestLinkChainConfig(ctx, base, identity)
-	if err != nil {
-		return probeLinkChainConfigFetchResult{}, err
-	}
-	result.SelfChains = sanitizeProbeChainServerItemsForCache(result.SelfChains)
-	result.PortForwardChains = sanitizeProbeChainServerItemsForCache(result.PortForwardChains)
-	result.ProxyChains = sanitizeProbeChainServerItemsForCache(result.ProxyChains)
-	result.GlobalProxyForwardChains = sanitizeProbeChainServerItemsForCache(result.GlobalProxyForwardChains)
-	rememberProbeChainAuthTicketsForItems(result.SelfChains)
-	rememberProbeChainAuthTicketsForItems(result.GlobalProxyForwardChains)
-	return result, nil
 }
 
 func syncProbeRouteConfig(identity nodeIdentity, controllerBaseURL string) error {
@@ -357,87 +215,6 @@ func fetchProbeRouteConfig(ctx context.Context, controllerBaseURL string, identi
 	config = sanitizeProbeVirtualRouterConfigForCache(config)
 	rememberProbeVirtualRouterAuthTickets(config)
 	return config, nil
-}
-
-// fetchProbeLinkChains returns self chains for compatibility with older callers.
-func fetchProbeLinkChains(ctx context.Context, controllerBaseURL string, identity nodeIdentity) ([]probeLinkChainServerItem, error) {
-	config, err := fetchProbeLinkChainConfig(ctx, controllerBaseURL, identity)
-	if err != nil {
-		return nil, err
-	}
-	return config.SelfChains, nil
-}
-
-func refreshProbeProxyChainCacheFromController(ctx context.Context, identity nodeIdentity, controllerBaseURL string) ([]probeLinkChainServerItem, error) {
-	base := strings.TrimSpace(controllerBaseURL)
-	if base == "" {
-		return nil, errors.New("controller base url is empty")
-	}
-	config, err := fetchProbeLinkChainConfig(ctx, base, identity)
-	if err != nil {
-		return nil, err
-	}
-	if err := persistProbeProxyChainCache(config.GlobalProxyForwardChains); err != nil {
-		return nil, err
-	}
-	items, err := loadProbeLocalProxyChainItems()
-	if err == nil {
-		rememberProbeChainAuthTicketsForItems(items)
-	}
-	return items, err
-}
-
-func requestProbeLinkChainConfig(ctx context.Context, controllerBaseURL string, identity nodeIdentity) (probeLinkChainConfigFetchResult, error) {
-	baseURL := strings.TrimRight(strings.TrimSpace(controllerBaseURL), "/")
-	if baseURL == "" {
-		return probeLinkChainConfigFetchResult{}, errors.New("controller base url is required")
-	}
-	nodeID := strings.TrimSpace(identity.NodeID)
-	secret := strings.TrimSpace(identity.Secret)
-	if nodeID == "" || secret == "" {
-		return probeLinkChainConfigFetchResult{}, errors.New("node identity is missing node id or secret")
-	}
-
-	query := url.Values{}
-	query.Set("node_id", nodeID)
-	query.Set("secret", secret)
-	configURL := baseURL + probeLinkChainGroupedConfigAPIPath + "?" + query.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, configURL, nil)
-	if err != nil {
-		return probeLinkChainConfigFetchResult{}, err
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("X-Forwarded-Proto", "https")
-
-	client, closeClient, err := newProbeResolvedHTTPClientForURL(configURL, probeLinkChainsSyncFetchTimeout)
-	if err != nil {
-		return probeLinkChainConfigFetchResult{}, err
-	}
-	defer closeClient()
-	resp, err := client.Do(req)
-	if err != nil {
-		return probeLinkChainConfigFetchResult{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return probeLinkChainConfigFetchResult{}, fmt.Errorf("request link chain config failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-
-	var payload probeLinkChainConfigResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&payload); err != nil {
-		return probeLinkChainConfigFetchResult{}, err
-	}
-	selfChains := payload.SelfChains
-	if len(selfChains) == 0 && len(payload.Chains) > 0 {
-		selfChains = payload.Chains
-	}
-	return probeLinkChainConfigFetchResult{
-		SelfChains:               selfChains,
-		PortForwardChains:        payload.PortForwardChains,
-		ProxyChains:              payload.ProxyChains,
-		GlobalProxyForwardChains: payload.GlobalProxyForwardChains,
-	}, nil
 }
 
 func requestProbeRouteConfig(ctx context.Context, controllerBaseURL string, identity nodeIdentity) (probeVirtualRouterConfig, error) {
@@ -537,42 +314,16 @@ func requestProbeRouteFakeIP(ctx context.Context, controllerBaseURL string, iden
 
 // applyProbeLinkChainServerItems diffs server items against running runtimes.
 func applyProbeLinkChainServerItems(identity nodeIdentity, controllerBaseURL string, items []probeLinkChainServerItem) {
-	// Build a set of chain IDs from the server response.
-	serverChainIDs := make(map[string]struct{}, len(items))
-	for _, item := range items {
-		id := strings.TrimSpace(item.ChainID)
-		if id != "" {
-			serverChainIDs[id] = struct{}{}
-		}
-	}
-
-	if !probeChainLegacyRuntimeFeatureActive() {
-		probeChainRuntimeState.mu.Lock()
-		toStop := collectProbeLinkChainLegacyRuntimeIDsLocked()
-		probeChainRuntimeState.mu.Unlock()
-		for _, id := range toStop {
-			stopProbeChainRuntime(id, "legacy probe chain runtime paused")
-		}
-		if len(items) > 0 {
-			log.Printf("probe chain sync skipped legacy runtimes: reason=feature_paused count=%d", len(items))
-		}
-		return
-	}
-
-	// Stop ordinary runtimes that are no longer present on the server.
-	// Virtual-router runtimes are generated from the virtual-router topology and
-	// are reconciled separately.
+	_ = identity
+	_ = controllerBaseURL
 	probeChainRuntimeState.mu.Lock()
-	toStop := collectProbeLinkChainRuntimeIDsToStopLocked(serverChainIDs)
+	toStop := collectProbeLinkChainLegacyRuntimeIDsLocked()
 	probeChainRuntimeState.mu.Unlock()
-
 	for _, id := range toStop {
-		stopProbeChainRuntime(id, "chain removed from server")
+		stopProbeChainRuntime(id, "legacy probe chain runtime removed")
 	}
-
-	// Apply / update chains from the server.
-	for _, item := range items {
-		applyProbeLinkChainServerItem(identity, controllerBaseURL, item)
+	if len(items) > 0 {
+		log.Printf("probe chain sync skipped legacy runtimes: reason=feature_removed count=%d", len(items))
 	}
 }
 
@@ -588,20 +339,6 @@ func collectProbeLinkChainLegacyRuntimeIDsLocked() []string {
 	return toStop
 }
 
-func collectProbeLinkChainRuntimeIDsToStopLocked(serverChainIDs map[string]struct{}) []string {
-	toStop := make([]string, 0)
-	for id := range probeChainRuntimeState.runtimes {
-		if isProbeVirtualRouterRuntimeChainID(id) {
-			continue
-		}
-		if _, ok := serverChainIDs[id]; !ok {
-			toStop = append(toStop, id)
-		}
-	}
-	sort.Strings(toStop)
-	return toStop
-}
-
 // applyProbeLinkChainServerItem converts one server chain record into a
 // probeControlMessage and delegates to the existing start logic.
 // It figures out this node's role and hop config from the chain topology.
@@ -610,9 +347,9 @@ func applyProbeLinkChainServerItem(identity nodeIdentity, controllerBaseURL stri
 	if chainID == "" {
 		return
 	}
-	if !probeChainLegacyRuntimeFeatureActive() {
-		stopProbeChainRuntime(chainID, "legacy probe chain runtime paused")
-		log.Printf("probe chain sync skip legacy chain: chain=%s reason=feature_paused", chainID)
+	if !strings.EqualFold(strings.TrimSpace(item.ChainType), "virtual_router") && !isProbeVirtualRouterRuntimeChainID(chainID) {
+		stopProbeChainRuntime(chainID, "legacy probe chain runtime removed")
+		log.Printf("probe chain sync skip legacy chain: chain=%s reason=feature_removed", chainID)
 		return
 	}
 	rememberProbeChainAuthTicket(effectiveProbeLinkRelayChainID(item), item.AuthTicket)
@@ -671,7 +408,6 @@ func applyProbeLinkChainServerItem(identity nodeIdentity, controllerBaseURL stri
 		PrevPort:        prevPort,
 		PrevLinkLayer:   strings.TrimSpace(prevLinkLayer),
 		PrevDialMode:    strings.TrimSpace(prevDialMode),
-		PortForwards:    buildProbeChainPortForwardMessages(item.PortForwards),
 		RequireUserAuth: true,
 		NextAuthMode:    nextAuthMode,
 	}
@@ -979,27 +715,6 @@ func buildChainRoute(item probeLinkChainServerItem) []string {
 	return route
 }
 
-func buildProbeChainPortForwardMessages(values []probeChainPortForwardServerItem) []probeChainPortForwardMessage {
-	if len(values) == 0 {
-		return []probeChainPortForwardMessage{}
-	}
-	out := make([]probeChainPortForwardMessage, 0, len(values))
-	for _, item := range values {
-		out = append(out, probeChainPortForwardMessage{
-			ID:         strings.TrimSpace(item.ID),
-			Name:       strings.TrimSpace(item.Name),
-			EntrySide:  strings.TrimSpace(item.EntrySide),
-			ListenHost: strings.TrimSpace(item.ListenHost),
-			ListenPort: item.ListenPort,
-			TargetHost: strings.TrimSpace(item.TargetHost),
-			TargetPort: item.TargetPort,
-			Network:    strings.TrimSpace(item.Network),
-			Enabled:    item.Enabled,
-		})
-	}
-	return out
-}
-
 // isSameProbeChainRuntimeConfig returns true if the currently running runtime
 // for chainID has the same effective config as cfg (no restart needed).
 func isSameProbeChainRuntimeConfig(chainID string, cfg probeChainRuntimeConfig) bool {
@@ -1026,155 +741,6 @@ func isSameProbeChainRuntimeConfig(chainID string, cfg probeChainRuntimeConfig) 
 		c.prevDialMode == cfg.prevDialMode &&
 		c.prevNodeID == cfg.prevNodeID &&
 		c.nextAuthMode == cfg.nextAuthMode &&
-		isSameProbeChainPortForwards(c.portForwards, cfg.portForwards) &&
 		c.secret == cfg.secret &&
 		c.rawPublicKey == cfg.rawPublicKey
-}
-
-func isSameProbeChainPortForwards(left []probeChainRuntimePortForward, right []probeChainRuntimePortForward) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if strings.TrimSpace(left[i].ID) != strings.TrimSpace(right[i].ID) {
-			return false
-		}
-		if strings.TrimSpace(left[i].Name) != strings.TrimSpace(right[i].Name) {
-			return false
-		}
-		if strings.TrimSpace(left[i].EntrySide) != strings.TrimSpace(right[i].EntrySide) {
-			return false
-		}
-		if strings.TrimSpace(left[i].ListenHost) != strings.TrimSpace(right[i].ListenHost) {
-			return false
-		}
-		if left[i].ListenPort != right[i].ListenPort {
-			return false
-		}
-		if strings.TrimSpace(left[i].TargetHost) != strings.TrimSpace(right[i].TargetHost) {
-			return false
-		}
-		if left[i].TargetPort != right[i].TargetPort {
-			return false
-		}
-		if strings.TrimSpace(left[i].Network) != strings.TrimSpace(right[i].Network) {
-			return false
-		}
-		if left[i].Enabled != right[i].Enabled {
-			return false
-		}
-	}
-	return true
-}
-
-func persistProbeChainTopologyCache(items []probeLinkChainServerItem) error {
-	cachePath, err := resolveProbeChainTopologyCachePath()
-	if err != nil {
-		return err
-	}
-	payload := probeChainTopologyCacheFile{
-		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
-		Items:     sanitizeProbeChainServerItemsForCache(items),
-	}
-	encoded, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(cachePath, append(encoded, '\n'), 0o644)
-}
-
-func resolveProbeChainTopologyCachePath() (string, error) {
-	dataPath, err := resolveDataDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dataPath, probeChainTopologyCacheFileName), nil
-}
-
-func resolveProbeProxyChainsCachePath() (string, error) {
-	dataPath, err := resolveDataDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dataPath, probeProxyChainsCacheFileName), nil
-}
-
-func sanitizeProbeChainServerItemsForCache(items []probeLinkChainServerItem) []probeLinkChainServerItem {
-	if len(items) == 0 {
-		return []probeLinkChainServerItem{}
-	}
-	out := make([]probeLinkChainServerItem, 0, len(items))
-	for _, item := range items {
-		next := item
-		next.ChainID = strings.TrimSpace(item.ChainID)
-		next.RelayChainID = strings.TrimSpace(item.RelayChainID)
-		next.ClientEntryID = strings.TrimSpace(item.ClientEntryID)
-		next.ClientEntryType = strings.TrimSpace(item.ClientEntryType)
-		next.ChainType = strings.TrimSpace(item.ChainType)
-		next.Name = strings.TrimSpace(item.Name)
-		next.UserID = strings.TrimSpace(item.UserID)
-		next.UserPublicKey = strings.TrimSpace(item.UserPublicKey)
-		next.Secret = strings.TrimSpace(item.Secret)
-		next.AuthTicket = strings.TrimSpace(item.AuthTicket)
-		next.EntryNodeID = strings.TrimSpace(item.EntryNodeID)
-		next.ExitNodeID = strings.TrimSpace(item.ExitNodeID)
-		next.LinkLayer = strings.TrimSpace(item.LinkLayer)
-		next.EgressHost = strings.TrimSpace(item.EgressHost)
-		next.CascadeNodeIDs = append([]string{}, item.CascadeNodeIDs...)
-		for i := range next.CascadeNodeIDs {
-			next.CascadeNodeIDs[i] = strings.TrimSpace(next.CascadeNodeIDs[i])
-		}
-		next.HopConfigs = append([]probeLinkChainHopServerItem{}, item.HopConfigs...)
-		for i := range next.HopConfigs {
-			next.HopConfigs[i].ListenHost = strings.TrimSpace(next.HopConfigs[i].ListenHost)
-			next.HopConfigs[i].LinkLayer = strings.TrimSpace(next.HopConfigs[i].LinkLayer)
-			next.HopConfigs[i].DialMode = strings.TrimSpace(next.HopConfigs[i].DialMode)
-			next.HopConfigs[i].RelayHost = strings.TrimSpace(next.HopConfigs[i].RelayHost)
-		}
-		next.PortForwards = append([]probeChainPortForwardServerItem{}, item.PortForwards...)
-		for i := range next.PortForwards {
-			next.PortForwards[i].ID = strings.TrimSpace(next.PortForwards[i].ID)
-			next.PortForwards[i].Name = strings.TrimSpace(next.PortForwards[i].Name)
-			next.PortForwards[i].ListenHost = strings.TrimSpace(next.PortForwards[i].ListenHost)
-			next.PortForwards[i].TargetHost = strings.TrimSpace(next.PortForwards[i].TargetHost)
-			next.PortForwards[i].Network = strings.TrimSpace(next.PortForwards[i].Network)
-		}
-		out = append(out, next)
-	}
-	return out
-}
-
-func persistProbeProxyChainCache(items []probeLinkChainServerItem) error {
-	cachePath, err := resolveProbeProxyChainsCachePath()
-	if err != nil {
-		return err
-	}
-	all := sanitizeProbeChainServerItemsForCache(items)
-	proxyOnly := make([]probeLinkChainServerItem, 0, len(all))
-	for _, item := range all {
-		if !strings.EqualFold(strings.TrimSpace(item.ChainType), "proxy_chain") {
-			continue
-		}
-		next := item
-		next.PortForwards = []probeChainPortForwardServerItem{}
-		proxyOnly = append(proxyOnly, next)
-	}
-	payload := struct {
-		UpdatedAt string                     `json:"updated_at"`
-		Items     []probeLinkChainServerItem `json:"items"`
-	}{
-		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
-		Items:     proxyOnly,
-	}
-	encoded, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(cachePath, append(encoded, '\n'), 0o644)
 }

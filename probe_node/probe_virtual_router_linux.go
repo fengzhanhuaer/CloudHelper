@@ -54,12 +54,6 @@ func cleanupProbeVirtualRouterPlatformRoutes() error {
 	if !applied {
 		return nil
 	}
-	probeLocalLinuxTakeoverState.mu.Lock()
-	takeoverEnabled := probeLocalLinuxTakeoverState.enabled
-	probeLocalLinuxTakeoverState.mu.Unlock()
-	if takeoverEnabled {
-		return nil
-	}
 	dev, err := resolveProbeLocalLinuxTUNDeviceName()
 	if err != nil {
 		return err

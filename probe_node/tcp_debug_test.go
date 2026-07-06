@@ -5,7 +5,7 @@ import "testing"
 func TestProbeTCPDebugCompletedConnectionKeepsDomain(t *testing.T) {
 	state := newProbeTCPDebugState()
 	relay := state.beginRelayWithOptions(probeTCPDebugRelayOptions{
-		Scope:  "explicit",
+		Scope:  "tun",
 		Side:   "socks5",
 		Target: "example.com:443",
 		Route: probeLocalTunnelRouteDecision{
@@ -46,7 +46,7 @@ func TestProbeTCPDebugCompletedConnectionKeepsDomain(t *testing.T) {
 func TestProbeTCPDebugRouteTargetOverride(t *testing.T) {
 	state := newProbeTCPDebugState()
 	relay := state.beginRelayWithOptions(probeTCPDebugRelayOptions{
-		Scope:       "port_forward",
+		Scope:       "tun",
 		Side:        "local",
 		Target:      "127.0.0.1:3389",
 		RouteTarget: "192.168.50.222:3389",
@@ -73,7 +73,7 @@ func TestProbeTCPDebugRouteTargetOverride(t *testing.T) {
 func TestProbeTCPDebugAutoCreatesTrackingID(t *testing.T) {
 	state := newProbeTCPDebugState()
 	relay := state.beginRelayWithOptions(probeTCPDebugRelayOptions{
-		Scope:  "explicit",
+		Scope:  "tun",
 		Side:   "socks5",
 		Target: "example.com:443",
 	})

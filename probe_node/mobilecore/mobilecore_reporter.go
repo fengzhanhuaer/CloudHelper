@@ -167,12 +167,6 @@ func runSession(cancel <-chan struct{}, wsURL string, nodeID string, nodeSecret 
 					continue
 				}
 				sendPeerStatusControlResult(stream, writeMu, buildPeerStatusControlResult(msg, mobileNodeIdentity{NodeID: nodeID, Secret: nodeSecret}))
-			case "chain_link_control":
-				var msg chainLinkControlMessage
-				if err := json.Unmarshal(raw, &msg); err != nil {
-					continue
-				}
-				runMobileChainLinkControl(msg, mobileNodeIdentity{NodeID: nodeID, Secret: nodeSecret}, stream, writeMu)
 			}
 		}
 	}()
@@ -251,12 +245,6 @@ func processControlMessage(raw json.RawMessage, stream net.Conn, writeMu *sync.M
 			return
 		}
 		sendPeerStatusControlResult(stream, writeMu, buildPeerStatusControlResult(msg, identity))
-	case "chain_link_control":
-		var msg chainLinkControlMessage
-		if err := json.Unmarshal(raw, &msg); err != nil {
-			return
-		}
-		runMobileChainLinkControl(msg, identity, stream, writeMu)
 	}
 }
 

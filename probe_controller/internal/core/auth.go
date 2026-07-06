@@ -86,7 +86,7 @@ type LoginRequest struct {
 	Signature string `json:"signature,omitempty"`
 }
 
-type probeLinkUserIdentity struct {
+type probeVirtualRouterUserIdentity struct {
 	Username string `json:"username"`
 	UserRole string `json:"user_role"`
 	CertType string `json:"cert_type"`
@@ -939,13 +939,13 @@ func currentIdentityClaims() (string, string, string) {
 	return username, role, certType
 }
 
-func listProbeLinkUserIdentities() []probeLinkUserIdentity {
+func listProbeVirtualRouterUserIdentities() []probeVirtualRouterUserIdentity {
 	username, role, certType := currentIdentityClaims()
 	username = normalizeUsername(username)
 	if username == "" {
-		return []probeLinkUserIdentity{}
+		return []probeVirtualRouterUserIdentity{}
 	}
-	return []probeLinkUserIdentity{
+	return []probeVirtualRouterUserIdentity{
 		{
 			Username: username,
 			UserRole: normalizeRole(role),
@@ -970,14 +970,14 @@ func currentAdminPublicKeyBase64() (string, error) {
 	return base64.StdEncoding.EncodeToString(der), nil
 }
 
-func resolveProbeLinkUserIdentityAndPublicKey(username string) (probeLinkUserIdentity, string, error) {
-	identities := listProbeLinkUserIdentities()
+func resolveProbeVirtualRouterUserIdentityAndPublicKey(username string) (probeVirtualRouterUserIdentity, string, error) {
+	identities := listProbeVirtualRouterUserIdentities()
 	if len(identities) == 0 {
-		return probeLinkUserIdentity{}, "", errors.New("no identity user available")
+		return probeVirtualRouterUserIdentity{}, "", errors.New("no identity user available")
 	}
 
 	target := normalizeUsername(username)
-	selected := probeLinkUserIdentity{}
+	selected := probeVirtualRouterUserIdentity{}
 	if target == "" {
 		selected = identities[0]
 	} else {
@@ -988,13 +988,13 @@ func resolveProbeLinkUserIdentityAndPublicKey(username string) (probeLinkUserIde
 			}
 		}
 		if strings.TrimSpace(selected.Username) == "" {
-			return probeLinkUserIdentity{}, "", errors.New("user not found")
+			return probeVirtualRouterUserIdentity{}, "", errors.New("user not found")
 		}
 	}
 
 	pubKey, err := currentAdminPublicKeyBase64()
 	if err != nil {
-		return probeLinkUserIdentity{}, "", err
+		return probeVirtualRouterUserIdentity{}, "", err
 	}
 	return selected, pubKey, nil
 }

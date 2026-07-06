@@ -8,7 +8,6 @@ const (
 	mainStoreFile             = "cloudhelper.json"
 	probeConfigStoreFile      = "probe_config.json"
 	probeRouteConfigStoreFile = "probe_route_config.json"
-	probeLinkChainStoreFile   = "probe_link_chains.json"
 	blacklistStoreFile        = "blacklist.json"
 
 	nonceTTL          = 30 * time.Second

@@ -12,16 +12,7 @@ import (
 )
 
 func mngLinkPageHandler(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/mng/link" {
-		http.NotFound(w, r)
-		return
-	}
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(mngLinkPageHTML))
+	http.NotFound(w, r)
 }
 
 func mngRoutePageHandler(w http.ResponseWriter, r *http.Request) {
@@ -35,43 +26,6 @@ func mngRoutePageHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(mngRoutePageHTML))
-}
-
-func mngLinkUsersHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	result, err := getMngProbeLinkUsers()
-	writeMngLinkResult(w, result, err)
-}
-
-func mngLinkUserPublicKeyHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	username := strings.TrimSpace(r.URL.Query().Get("username"))
-	payload := json.RawMessage(`{}`)
-	if username != "" {
-		raw, err := json.Marshal(map[string]string{"username": username})
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to build request payload"})
-			return
-		}
-		payload = raw
-	}
-	result, err := getMngProbeLinkUserPublicKey(payload)
-	writeMngLinkResult(w, result, err)
-}
-
-func mngLinkChainsHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	result, err := listMngProbeLinkChains()
-	writeMngLinkResult(w, result, err)
 }
 
 func mngLinkVirtualRouterHandler(w http.ResponseWriter, r *http.Request) {
@@ -159,56 +113,6 @@ func mngLinkVirtualRouterSpeedTestHandler(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, result)
 }
 
-func mngLinkNodeDomainsHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	nodeID := normalizeProbeNodeID(r.URL.Query().Get("node_id"))
-	if nodeID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node_id is required"})
-		return
-	}
-	domains := listProbeLinkNodeEditCandidateDomains(nodeID)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"node_id": nodeID,
-		"domains": domains,
-	})
-}
-
-func mngLinkRelayStatusHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"items": listMngLinkRelayStatus(),
-	})
-}
-
-func mngLinkEntryProfilesHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	result, err := listMngProbeLinkEntryProfiles(strings.TrimSpace(r.URL.Query().Get("chain_id")))
-	writeMngLinkResult(w, result, err)
-}
-
-func mngLinkEntryProfilesUpsertHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	payload, err := readMngRawJSONPayload(r)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
-		return
-	}
-	result, err := upsertMngProbeLinkEntryProfile(payload)
-	writeMngLinkResult(w, result, err)
-}
-
 type mngLinkRelayStatusView struct {
 	NodeID         string                            `json:"node_id"`
 	Online         bool                              `json:"online"`
@@ -290,58 +194,6 @@ type mngVirtualRouterRouteStatusView struct {
 	From               mngVirtualRouterRouteSideStatus `json:"from"`
 	To                 mngVirtualRouterRouteSideStatus `json:"to"`
 	UpdatedAt          string                          `json:"updated_at,omitempty"`
-}
-
-func listMngLinkRelayStatus() []mngLinkRelayStatusView {
-	runtimes := listProbeRuntimes()
-	items := make([]mngLinkRelayStatusView, 0)
-	for _, runtime := range runtimes {
-		for _, status := range runtime.RelayStatus {
-			chainID := strings.TrimSpace(status.ChainID)
-			if chainID == "" {
-				continue
-			}
-			items = append(items, mngLinkRelayStatusView{
-				NodeID:         strings.TrimSpace(runtime.NodeID),
-				Online:         runtime.Online,
-				LastSeen:       strings.TrimSpace(runtime.LastSeen),
-				ChainID:        chainID,
-				ChainName:      strings.TrimSpace(status.ChainName),
-				ChainType:      strings.TrimSpace(status.ChainType),
-				Role:           strings.TrimSpace(status.Role),
-				ListenHost:     strings.TrimSpace(status.ListenHost),
-				ListenPort:     status.ListenPort,
-				LinkLayer:      strings.TrimSpace(status.LinkLayer),
-				NextHost:       strings.TrimSpace(status.NextHost),
-				NextPort:       status.NextPort,
-				NextNodeID:     strings.TrimSpace(status.NextNodeID),
-				NextLinkLayer:  strings.TrimSpace(status.NextLinkLayer),
-				NextDialMode:   strings.TrimSpace(status.NextDialMode),
-				PrevHost:       strings.TrimSpace(status.PrevHost),
-				PrevPort:       status.PrevPort,
-				PrevNodeID:     strings.TrimSpace(status.PrevNodeID),
-				PrevLinkLayer:  strings.TrimSpace(status.PrevLinkLayer),
-				PrevDialMode:   strings.TrimSpace(status.PrevDialMode),
-				ListenState:    status.ListenState,
-				NextState:      status.NextState,
-				PrevState:      status.PrevState,
-				VirtualRouter:  status.VirtualRouter,
-				BridgeStatus:   status.BridgeStatus,
-				BridgeSessions: status.BridgeSessions,
-				UpdatedAt:      strings.TrimSpace(status.UpdatedAt),
-			})
-		}
-	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].NodeID != items[j].NodeID {
-			return items[i].NodeID < items[j].NodeID
-		}
-		if items[i].ChainID != items[j].ChainID {
-			return items[i].ChainID < items[j].ChainID
-		}
-		return items[i].Role < items[j].Role
-	})
-	return items
 }
 
 func listMngVirtualRouterRouteStatus() []mngVirtualRouterRouteStatusView {
@@ -730,34 +582,6 @@ func maxRFC3339String(left string, right string) string {
 		return right
 	}
 	return left
-}
-
-func mngLinkChainUpsertHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	payload, err := readMngRawJSONPayload(r)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
-		return
-	}
-	result, err := upsertMngProbeLinkChain(payload, controllerBaseURLFromRequest(r))
-	writeMngLinkResult(w, result, err)
-}
-
-func mngLinkChainDeleteHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	payload, err := readMngRawJSONPayload(r)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
-		return
-	}
-	result, err := deleteMngProbeLinkChain(payload)
-	writeMngLinkResult(w, result, err)
 }
 
 func readMngRawJSONPayload(r *http.Request) (json.RawMessage, error) {

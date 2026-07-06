@@ -24,6 +24,7 @@ const (
 	probeVirtualRouterMaxRouteRules         = 2048
 	probeVirtualRouterMaxRouteRuleEntries   = 8192
 	probeVirtualRouterDefaultServicePort    = 12040
+	probeVirtualRouterDefaultSecretLen      = 48
 	probeVirtualRouterDirectionForward      = "forward"
 	probeVirtualRouterRouteRuleActionExit   = "probe_exit"
 	probeVirtualRouterRouteRuleActionDirect = "direct"
@@ -155,7 +156,7 @@ type probeVirtualRouterRuntimeStats struct {
 
 func defaultProbeVirtualRouterConfig() probeVirtualRouterConfig {
 	return probeVirtualRouterConfig{
-		Enabled:       true,
+		Enabled:       false,
 		FakeIPCIDR:    probeVirtualRouterDefaultCIDR,
 		ProbeIPs:      []probeVirtualRouterProbeIP{},
 		TopologyRules: []probeVirtualRouterTopologyRule{},
@@ -409,7 +410,7 @@ func normalizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopology
 			ToServicePort:     toServicePort,
 			UserID:            strings.TrimSpace(item.UserID),
 			UserPublicKey:     strings.TrimSpace(item.UserPublicKey),
-			Secret:            firstNonEmptyProbeVirtualRouter(strings.TrimSpace(item.Secret), randomProbeNodeSecret(defaultProbeLinkChainSecretLen)),
+			Secret:            firstNonEmptyProbeVirtualRouter(strings.TrimSpace(item.Secret), randomProbeNodeSecret(probeVirtualRouterDefaultSecretLen)),
 			AuthTicket:        strings.TrimSpace(item.AuthTicket),
 			Enabled:           item.Enabled,
 			Note:              strings.TrimSpace(item.Note),
@@ -855,11 +856,11 @@ func allocateProbeVirtualRouterRuleID(seen map[string]struct{}, reserved map[str
 }
 
 func ensureProbeVirtualRouterAuthFields(config probeVirtualRouterConfig) probeVirtualRouterConfig {
-	user, publicKey, userErr := resolveProbeLinkUserIdentityAndPublicKey("")
+	user, publicKey, userErr := resolveProbeVirtualRouterUserIdentityAndPublicKey("")
 	for index := range config.TopologyRules {
 		rule := &config.TopologyRules[index]
 		if strings.TrimSpace(rule.Secret) == "" {
-			rule.Secret = randomProbeNodeSecret(defaultProbeLinkChainSecretLen)
+			rule.Secret = randomProbeNodeSecret(probeVirtualRouterDefaultSecretLen)
 		}
 		if userErr == nil {
 			if strings.TrimSpace(rule.UserID) == "" {
@@ -880,28 +881,13 @@ func enrichProbeVirtualRouterAuthTickets(config probeVirtualRouterConfig) probeV
 	}
 	for index := range config.TopologyRules {
 		rule := &config.TopologyRules[index]
-		record := probeVirtualRouterRuleAsLinkChainRecord(*rule)
-		ticket, ticketErr := buildProbeLinkChainAuthTicket(record, priv)
+		ticket, ticketErr := buildProbeVirtualRouterAuthTicket(*rule, priv)
 		if ticketErr != nil {
 			continue
 		}
 		rule.AuthTicket = ticket
 	}
 	return config
-}
-
-func probeVirtualRouterRuleAsLinkChainRecord(rule probeVirtualRouterTopologyRule) probeLinkChainRecord {
-	return probeLinkChainRecord{
-		ChainID:       probeVirtualRouterRuntimeChainID(rule),
-		ClientEntryID: strings.TrimSpace(rule.ID),
-		Name:          strings.TrimSpace(rule.Name),
-		ChainType:     "virtual_router",
-		UserID:        strings.TrimSpace(rule.UserID),
-		UserPublicKey: strings.TrimSpace(rule.UserPublicKey),
-		Secret:        strings.TrimSpace(rule.Secret),
-		EntryNodeID:   normalizeProbeNodeID(rule.FromNodeID),
-		ExitNodeID:    normalizeProbeNodeID(rule.ToNodeID),
-	}
 }
 
 func normalizeProbeVirtualRouterServicePort(port int) int {

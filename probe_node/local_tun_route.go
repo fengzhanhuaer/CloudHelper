@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+var errProbeLocalLegacyTunnelRouteRemoved = errors.New("legacy probe link tunnel route has been removed")
+
 type probeLocalTunnelRouteDecision struct {
 	Direct          bool
 	Reject          bool
@@ -16,7 +18,6 @@ type probeLocalTunnelRouteDecision struct {
 	SelectedChainID string
 	TunnelNodeID    string
 	FlowID          string
-	GroupRuntime    *probeLocalTUNGroupRuntime
 }
 
 type probeLocalRouteRejectError struct {
@@ -36,15 +37,11 @@ func (e *probeLocalRouteRejectError) Error() string {
 
 func isProbeLocalProxyTunnelModeEnabled() bool {
 	status := probeLocalControl.proxyStatus()
-	return status.Enabled && strings.EqualFold(strings.TrimSpace(status.Mode), probeLocalProxyModeTUN)
+	return status.Enabled && strings.EqualFold(strings.TrimSpace(status.Mode), probeLocalProxyModeLegacyTunnel)
 }
 
 func decideProbeLocalRouteForTarget(targetAddr string) (probeLocalTunnelRouteDecision, error) {
 	return decideProbeLocalRouteForTargetWithTunnelPolicy(targetAddr, isProbeLocalProxyTunnelModeEnabled())
-}
-
-func decideProbeLocalExplicitProxyRouteForTarget(targetAddr string) (probeLocalTunnelRouteDecision, error) {
-	return decideProbeLocalRouteForTargetWithTunnelPolicy(targetAddr, true)
 }
 
 func decideProbeLocalRouteForTargetWithTunnelPolicy(targetAddr string, allowTunnel bool) (probeLocalTunnelRouteDecision, error) {
@@ -91,15 +88,7 @@ func decideProbeLocalRouteForTargetWithTunnelPolicy(targetAddr string, allowTunn
 		decision.Direct = false
 		decision.Reject = false
 		decision.SelectedChainID = firstNonEmpty(strings.TrimSpace(routeDecision.SelectedChainID), mustProbeLocalSelectedChainIDFromLegacy(routeDecision.TunnelNodeID))
-		if decision.SelectedChainID == "" {
-			return probeLocalTunnelRouteDecision{}, errors.New("tunnel route missing selected_chain_id")
-		}
 		decision.TunnelNodeID = formatProbeLocalLegacyTunnelNodeID(decision.SelectedChainID)
-		groupRuntime, runtimeErr := ensureProbeLocalTUNGroupRuntime(decision.Group, decision.SelectedChainID)
-		if runtimeErr != nil {
-			return probeLocalTunnelRouteDecision{}, runtimeErr
-		}
-		decision.GroupRuntime = groupRuntime
 		if fakeMatched {
 			realIPs := resolveProbeLocalDNSRealIPsForRouteDomain(domainForPolicy, routeDecision)
 			if len(realIPs) > 0 {
@@ -109,13 +98,12 @@ func decideProbeLocalRouteForTargetWithTunnelPolicy(targetAddr string, allowTunn
 				}
 			}
 		}
-		return decision, nil
+		return decision, errProbeLocalLegacyTunnelRouteRemoved
 	default:
 		decision.Direct = true
 		decision.Reject = false
 		decision.SelectedChainID = ""
 		decision.TunnelNodeID = ""
-		decision.GroupRuntime = nil
 		return decision, nil
 	}
 }
@@ -181,65 +169,21 @@ func rewriteProbeLocalRouteTargetForFakeIP(host string, port string) (rewrittenT
 	return net.JoinHostPort(cleanHost, cleanPort), cleanHost, false
 }
 
-func openProbeLocalTunnelConn(network, targetAddr, selectedChainID string) (net.Conn, error) {
-	return openProbeLocalTunnelConnWithAssociation(network, targetAddr, selectedChainID, nil)
-}
-
-func openProbeLocalTunnelConnWithAssociation(network, targetAddr, selectedChainID string, associationV2 *probeChainAssociationV2Meta) (net.Conn, error) {
-	chainID, err := normalizeProbeLocalSelectedChainID(selectedChainID)
-	if err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(chainID) == "" {
-		return nil, errors.New("empty selected chain id")
-	}
-	groupRuntime, err := ensureProbeLocalTUNGroupRuntime("@selected_chain:"+chainID, chainID)
-	if err != nil {
-		return nil, err
-	}
-	return openProbeLocalTunnelConnWithGroupRuntime(network, targetAddr, groupRuntime, associationV2)
-}
-
-func openProbeLocalTunnelConnWithGroupRuntime(network, targetAddr string, groupRuntime *probeLocalTUNGroupRuntime, associationV2 *probeChainAssociationV2Meta) (net.Conn, error) {
-	conn, _, err := openProbeLocalTunnelConnWithGroupRuntimeAndFlow(network, targetAddr, groupRuntime, associationV2, "")
-	return conn, err
-}
-
-func openProbeLocalTunnelConnWithGroupRuntimeAndFlow(network, targetAddr string, groupRuntime *probeLocalTUNGroupRuntime, associationV2 *probeChainAssociationV2Meta, flowID string) (net.Conn, string, error) {
-	cleanNetwork := strings.ToLower(strings.TrimSpace(network))
-	if cleanNetwork == "" {
-		cleanNetwork = "tcp"
-	}
-	if groupRuntime == nil {
-		return nil, "", errors.New("group runtime is nil")
-	}
-	return groupRuntime.openStream(cleanNetwork, strings.TrimSpace(targetAddr), associationV2, flowID)
-}
-
 func dialProbeLocalRoutedTCP(route probeLocalTunnelRouteDecision) (net.Conn, probeLocalTunnelRouteDecision, error) {
 	if route.Reject {
 		return nil, route, &probeLocalRouteRejectError{Group: route.Group}
 	}
-	if route.Direct {
-		if err := ensureProbeLocalExplicitDirectBypass(route.TargetAddr); err != nil {
-			logProbeWarnf("probe local routed tcp direct bypass failed: target=%s err=%v", route.TargetAddr, err)
-		}
-		dialer := applyProbeLocalEgressDialer(&net.Dialer{Timeout: 10 * time.Second})
-		conn, err := dialer.Dial(probeLocalEgressDialNetwork("tcp", route.TargetAddr), strings.TrimSpace(route.TargetAddr))
-		if err != nil {
-			return nil, route, err
-		}
-		tuneProbeChainNetConn(conn)
-		return conn, route, nil
+	if !route.Direct {
+		return nil, route, errProbeLocalLegacyTunnelRouteRemoved
 	}
-	flowID := strings.TrimSpace(route.FlowID)
-	if flowID == "" {
-		flowID = newProbeTCPDebugFlowID("explicit", route.TargetAddr)
+	if err := ensureProbeLocalDirectBypass(route.TargetAddr); err != nil {
+		logProbeWarnf("probe local routed tcp direct bypass failed: target=%s err=%v", route.TargetAddr, err)
 	}
-	conn, openedFlowID, err := openProbeLocalTunnelConnWithGroupRuntimeAndFlow("tcp", route.TargetAddr, route.GroupRuntime, nil, flowID)
+	dialer := applyProbeLocalEgressDialer(&net.Dialer{Timeout: 10 * time.Second})
+	conn, err := dialer.Dial(probeLocalEgressDialNetwork("tcp", route.TargetAddr), strings.TrimSpace(route.TargetAddr))
 	if err != nil {
 		return nil, route, err
 	}
-	route.FlowID = firstNonEmptyProbeTCPDebugString(strings.TrimSpace(openedFlowID), flowID)
+	tuneProbeChainNetConn(conn)
 	return conn, route, nil
 }

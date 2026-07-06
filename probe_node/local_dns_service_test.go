@@ -101,7 +101,7 @@ func TestClearProbeLocalDNSUnifiedCacheRemovesPersistedCacheFile(t *testing.T) {
 	}
 }
 
-func TestProbeVirtualRouterLocalSettingsMissingFieldKeepsDefaultEnabled(t *testing.T) {
+func TestProbeVirtualRouterLocalSettingsMissingFieldKeepsDefaultDisabled(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeVirtualRouterLocalSettingsForTest()
 	t.Cleanup(resetProbeVirtualRouterLocalSettingsForTest)
@@ -113,8 +113,8 @@ func TestProbeVirtualRouterLocalSettingsMissingFieldKeepsDefaultEnabled(t *testi
 		t.Fatalf("write settings failed: %v", err)
 	}
 	settings := loadProbeVirtualRouterLocalSettings()
-	if settings.VirtualRouterEnabled || !settings.VirtualDNSEnabled {
-		t.Fatalf("settings=%+v, want router=false dns default true", settings)
+	if settings.VirtualRouterEnabled || settings.VirtualDNSEnabled {
+		t.Fatalf("settings=%+v, want router=false dns default false", settings)
 	}
 }
 
@@ -122,6 +122,7 @@ func TestResolveProbeVirtualRouterDNSResponseUsesControllerFakeIPForExitRule(t *
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeLocalDNSServiceForTest()
 	resetProbeVirtualRouterLocalSettingsForTest()
+	enableProbeVirtualRouterLocalSettingsForTest(true, true)
 	restore := setProbeVirtualRouterDNSConfigForTest(t, probeVirtualRouterConfig{
 		Enabled:    true,
 		FakeIPCIDR: "198.18.0.0/15",
@@ -188,6 +189,7 @@ func TestResolveProbeVirtualRouterDNSResponseDirectAndReject(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeLocalDNSServiceForTest()
 	resetProbeVirtualRouterLocalSettingsForTest()
+	enableProbeVirtualRouterLocalSettingsForTest(true, true)
 	restore := setProbeVirtualRouterDNSConfigForTest(t, probeVirtualRouterConfig{
 		Enabled:    true,
 		FakeIPCIDR: "198.18.0.0/15",
@@ -278,6 +280,17 @@ func setProbeVirtualRouterDNSConfigForTest(t *testing.T, config probeVirtualRout
 		probeVirtualRouterState.topologySignature = oldSignature
 		probeVirtualRouterState.mu.Unlock()
 	}
+}
+
+func enableProbeVirtualRouterLocalSettingsForTest(routerEnabled bool, dnsEnabled bool) {
+	probeVirtualRouterLocalSettingsState.mu.Lock()
+	probeVirtualRouterLocalSettingsState.loaded = true
+	probeVirtualRouterLocalSettingsState.settings = probeVirtualRouterLocalSettings{
+		VirtualRouterEnabled: routerEnabled,
+		VirtualDNSEnabled:    dnsEnabled,
+		UpdatedAt:            time.Now().UTC().Format(time.RFC3339),
+	}
+	probeVirtualRouterLocalSettingsState.mu.Unlock()
 }
 
 func dnsResponseRCodeForTest(t *testing.T, packet []byte) dnsmessage.RCode {
