@@ -7,12 +7,15 @@
   <style>
     :root { color-scheme: dark; }
     body { margin:0; font-family:Segoe UI,Roboto,Arial,sans-serif; background:#0d1117; color:#c9d1d9; }
-    .wrap { width:calc(100vw - 32px); margin:4vh auto; padding:20px; box-sizing:border-box; }
+    .wrap { width:calc(100vw - 32px); margin:3vh auto; padding:20px; box-sizing:border-box; }
     .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; }
     h1 { margin:0; font-size:24px; }
     .sub { color:#8b949e; margin:6px 0 0; font-size:13px; }
-    .btn { padding:8px 12px; border-radius:8px; border:1px solid #30363d; background:#21262d; color:#c9d1d9; cursor:pointer; }
+    .btn { padding:8px 12px; border-radius:8px; border:1px solid #30363d; background:#21262d; color:#c9d1d9; cursor:pointer; transition:border-color .16s ease, background .16s ease, transform .16s ease; }
+    .btn:hover { border-color:#58a6ff; background:#262f3a; transform:translateY(-1px); }
     .btn.primary { background:#1f6feb; border-color:#2f81f7; color:#fff; }
+    .btn.danger { background:#2b181b; border-color:#6e2b33; color:#ffb3ad; }
+    .btn.danger:hover { border-color:#ff7b72; background:#3a2024; }
     .btn:disabled { opacity:.6; cursor:not-allowed; }
     .status { margin:8px 0 12px; border-radius:8px; border:1px solid #30363d; background:#161b22; padding:10px; font-size:13px; white-space:pre-wrap; }
     .status.ok { color:#7ee787; }
@@ -21,24 +24,40 @@
     .tabs { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
     .tab { padding:8px 12px; border-radius:999px; border:1px solid #30363d; background:#161b22; color:#c9d1d9; cursor:pointer; }
     .tab.active { border-color:#58a6ff; color:#58a6ff; }
-    .panel { border:1px solid #30363d; border-radius:12px; background:#161b22; padding:14px; }
+    .panel { border:1px solid #30363d; border-radius:12px; background:#161b22; padding:14px; box-shadow:0 18px 48px rgba(0,0,0,.22); }
     .section { display:none; }
     .section.active { display:block; }
     .row { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
     .row label { min-width:92px; color:#8b949e; font-size:13px; }
-    input, select, textarea { background:#0d1117; color:#c9d1d9; border:1px solid #30363d; border-radius:8px; padding:7px 8px; min-width:160px; }
+    input, select, textarea { background:#0d1117; color:#c9d1d9; border:1px solid #30363d; border-radius:8px; padding:7px 8px; min-width:160px; outline:none; transition:border-color .16s ease, box-shadow .16s ease; }
+    input:focus, select:focus, textarea:focus { border-color:#58a6ff; box-shadow:0 0 0 3px rgba(88,166,255,.14); }
     textarea { width:100%; min-height:150px; box-sizing:border-box; resize:vertical; line-height:1.45; }
     input.small, select.small { min-width:110px; }
     input.wide, select.wide { min-width:260px; }
     table { width:100%; border-collapse:collapse; margin-top:8px; }
-    th, td { border-bottom:1px solid #30363d; padding:8px 6px; text-align:left; vertical-align:top; font-size:13px; }
+    th, td { border-bottom:1px solid #30363d; padding:10px 8px; text-align:left; vertical-align:top; font-size:13px; }
     th { color:#8b949e; font-weight:600; }
+    tbody tr:hover td { background:rgba(88,166,255,.035); }
     .mono { font-family:Consolas,monospace; }
     .muted { color:#8b949e; }
     .small { font-size:12px; }
     .stack { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
     @media (max-width: 1080px) { .stack { grid-template-columns:1fr; } }
-    .box { border:1px solid #30363d; border-radius:10px; padding:10px; }
+    .box { border:1px solid #30363d; border-radius:10px; padding:12px; background:#111820; }
+    .toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+    .toolbar-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+    .summary-pill { display:inline-flex; align-items:center; min-height:30px; padding:0 10px; border:1px solid #30363d; border-radius:999px; background:#0d1117; color:#9fb1c1; }
+    .config-grid { display:grid; grid-template-columns:120px minmax(120px, 180px) 120px minmax(240px, 1fr); gap:10px; align-items:center; }
+    .config-grid label { color:#8b949e; font-size:13px; }
+    @media (max-width: 820px) { .toolbar { align-items:flex-start; flex-direction:column; } .config-grid { grid-template-columns:1fr; } }
+    .box-title { display:flex; align-items:center; justify-content:space-between; gap:8px; color:#c9d1d9; font-weight:600; }
+    .box-title::before { content:""; width:8px; height:8px; border-radius:999px; background:#2ea043; box-shadow:0 0 0 4px rgba(46,160,67,.12); }
+    .table-shell { overflow:auto; margin-top:8px; border:1px solid #30363d; border-radius:10px; }
+    .table-shell table { margin-top:0; }
+    .table-shell th { background:#0d1117; position:sticky; top:0; z-index:1; }
+    .table-shell tr:last-child td { border-bottom:0; }
+    .check-cell { text-align:center; vertical-align:middle; width:54px; }
+    .check-cell input { min-width:0; width:18px; height:18px; accent-color:#2ea043; }
     .fake-ip-toolbar { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; margin-top:12px; }
     .fake-ip-scroll { max-height:260px; overflow:auto; }
     .route-state { display:inline-block; font-size:12px; border-radius:999px; padding:2px 8px; border:1px solid #30363d; }
@@ -46,10 +65,11 @@
     .route-state.warn { color:#f2cc60; border-color:#9e6a03; }
     .route-state.err { color:#ff7b72; border-color:#da3633; }
     .route-error { color:#ff7b72; }
-    .endpoint-stack { display:grid; gap:6px; min-width:260px; }
+    .endpoint-stack { display:grid; gap:7px; min-width:260px; }
     .endpoint-row { display:grid; grid-template-columns:58px minmax(0, 1fr); align-items:center; gap:6px; }
     .endpoint-row .label { color:#8b949e; font-size:12px; }
     .endpoint-row input, .endpoint-row select { min-width:0; width:100%; box-sizing:border-box; }
+    .endpoint-hint { padding-left:64px; color:#8b949e; font-size:12px; line-height:1.4; }
     .name-input { min-width:220px; width:100%; box-sizing:border-box; }
     .rule-editor { min-width:360px; }
   </style>
@@ -78,14 +98,16 @@
 
     <div class="panel">
       <section id="section-topology" class="section active">
-        <div class="row">
-          <button id="btn-vr-refresh" class="btn" type="button">刷新拓扑</button>
-          <button id="btn-vr-add-rule" class="btn" type="button">添加规则</button>
-          <button id="btn-vr-save" class="btn primary" type="button">保存拓扑</button>
-          <span id="vr-summary" class="small muted">未加载</span>
+        <div class="toolbar">
+          <div class="toolbar-actions">
+            <button id="btn-vr-refresh" class="btn" type="button">刷新拓扑</button>
+            <button id="btn-vr-add-rule" class="btn" type="button">添加规则</button>
+            <button id="btn-vr-save" class="btn primary" type="button">保存拓扑</button>
+          </div>
+          <span id="vr-summary" class="summary-pill small">未加载</span>
         </div>
         <div class="box" style="margin-bottom:12px;">
-          <div class="row">
+          <div class="config-grid">
             <label for="vr-enabled">启用</label>
             <select id="vr-enabled" class="small">
               <option value="true">启用</option>
@@ -97,31 +119,35 @@
         </div>
         <div class="stack">
           <div class="box">
-            <div class="muted">探针静态 IP</div>
-            <table>
-              <thead>
-                <tr>
-                  <th>探针</th>
-                  <th>静态 IP</th>
-                  <th>端口</th>
-                </tr>
-              </thead>
-              <tbody id="vr-ip-body"></tbody>
-            </table>
+            <div class="box-title"><span>探针静态 IP</span></div>
+            <div class="table-shell">
+              <table>
+                <thead>
+                  <tr>
+                    <th>探针</th>
+                    <th>静态 IP</th>
+                    <th>端口</th>
+                  </tr>
+                </thead>
+                <tbody id="vr-ip-body"></tbody>
+              </table>
+            </div>
           </div>
           <div class="box">
-            <div class="muted">拓扑规则</div>
-            <table>
-              <thead>
-                <tr>
-                  <th>启用</th>
-                  <th>A 端（主动）</th>
-                  <th>B 端（监听）</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody id="vr-rule-body"></tbody>
-            </table>
+            <div class="box-title"><span>拓扑规则</span></div>
+            <div class="table-shell">
+              <table>
+                <thead>
+                  <tr>
+                    <th>启用</th>
+                    <th>A 端（主动）</th>
+                    <th>B 端（监听）</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="vr-rule-body"></tbody>
+              </table>
+            </div>
           </div>
         </div>
       </section>
@@ -492,11 +518,11 @@
       } else {
         ruleBody.innerHTML = rules.map((rule, idx) => `
           <tr>
-            <td><input data-vr-rule-enabled="${idx}" type="checkbox" ${rule.enabled === false ? '' : 'checked'} /></td>
+            <td class="check-cell"><input data-vr-rule-enabled="${idx}" type="checkbox" ${rule.enabled === false ? '' : 'checked'} /></td>
             <td>
               <div class="endpoint-stack">
                 <div class="endpoint-row"><span class="label">入口探针</span><select data-vr-rule-from="${idx}">${virtualRouterNodeOptions(rule.from_node_id)}</select></div>
-                <div class="small muted">主动连接监听探针，不在本端配置监听。</div>
+                <div class="endpoint-hint">主动连接监听探针，不在本端配置监听。</div>
               </div>
             </td>
             <td>
@@ -505,7 +531,7 @@
                 <div class="endpoint-row"><span class="label">监听域名</span>${virtualRouterDomainSelect(rule, idx, 'to')}</div>
               </div>
             </td>
-            <td><button class="btn" data-vr-rule-remove="${idx}" type="button">删除</button></td>
+            <td><button class="btn danger" data-vr-rule-remove="${idx}" type="button">删除</button></td>
           </tr>
         `).join('');
       }
