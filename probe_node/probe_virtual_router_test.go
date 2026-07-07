@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -1733,6 +1734,81 @@ func TestProbeVirtualRouterFakeIPExitTargetsResolveRealIP(t *testing.T) {
 	}
 	if bootstrapCalls != 1 {
 		t.Fatalf("bootstrap calls=%d, want 1 so fake ip exit ignores cached real ips", bootstrapCalls)
+	}
+}
+
+func TestProbeVirtualRouterFakeIPExitTargetsRefreshMissingMappingFromController(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeVirtualRouterStateForTest()
+	resetProbeLocalDNSServiceForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(resetProbeLocalDNSServiceForTest)
+
+	probeLocalDNSBootstrapLookupIPv4 = func(domain string) ([]string, error) {
+		if domain != "api.example.com" {
+			t.Fatalf("unexpected bootstrap domain: %s", domain)
+		}
+		return []string{"203.0.113.10"}, nil
+	}
+	oldRequestConfig := probeRequestRouteConfig
+	requests := 0
+	probeRequestRouteConfig = func(ctx context.Context, controllerBaseURL string, identity nodeIdentity) (probeVirtualRouterConfig, error) {
+		requests++
+		if controllerBaseURL != "https://controller.example.test" || identity.NodeID != "19" || identity.Secret != "secret-19" {
+			t.Fatalf("unexpected controller request: base=%q identity=%+v", controllerBaseURL, identity)
+		}
+		return probeVirtualRouterConfig{
+			Enabled:    true,
+			FakeIPCIDR: "198.18.0.0/15",
+			ProbeIPs: []probeVirtualRouterProbeIP{
+				{NodeID: "19", IP: "198.18.0.21"},
+			},
+			FakeIPLibrary: probeVirtualRouterFakeIPLibrary{
+				Version: 7,
+				Items: []probeVirtualRouterFakeIPEntry{{
+					Domain:     "api.example.com",
+					FakeIP:     "198.18.4.9",
+					Action:     "probe_exit",
+					ExitNodeID: "19",
+				}},
+			},
+		}, nil
+	}
+	t.Cleanup(func() { probeRequestRouteConfig = oldRequestConfig })
+	probeVirtualRouterControllerState.mu.Lock()
+	oldIdentity := probeVirtualRouterControllerState.identity
+	oldControllerBaseURL := probeVirtualRouterControllerState.controllerBaseURL
+	probeVirtualRouterControllerState.identity = nodeIdentity{NodeID: "19", Secret: "secret-19"}
+	probeVirtualRouterControllerState.controllerBaseURL = "https://controller.example.test"
+	probeVirtualRouterControllerState.mu.Unlock()
+	t.Cleanup(func() {
+		probeVirtualRouterControllerState.mu.Lock()
+		probeVirtualRouterControllerState.identity = oldIdentity
+		probeVirtualRouterControllerState.controllerBaseURL = oldControllerBaseURL
+		probeVirtualRouterControllerState.mu.Unlock()
+	})
+
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "19", IP: "198.18.0.21"},
+		},
+		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{Version: 1},
+	}, "19")
+
+	targets, err := probeVirtualRouterFakeIPTargetsFromTransportID(tcpip.AddrFrom4([4]byte{198, 18, 4, 9}), 443)
+	if err != nil {
+		t.Fatalf("resolve fake ip targets after refresh failed: %v", err)
+	}
+	if !reflect.DeepEqual(targets, []string{"203.0.113.10:443"}) {
+		t.Fatalf("targets=%v, want [203.0.113.10:443]", targets)
+	}
+	if requests != 1 {
+		t.Fatalf("controller refresh requests=%d, want 1", requests)
+	}
+	if entry, ok := currentProbeVirtualRouterFakeIPEntryByIP("198.18.4.9"); !ok || entry.Domain != "api.example.com" {
+		t.Fatalf("fake ip library should be refreshed, entry=%+v ok=%v", entry, ok)
 	}
 }
 
