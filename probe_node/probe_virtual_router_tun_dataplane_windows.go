@@ -20,6 +20,8 @@ const (
 	probeLocalTUNSessionRingCapacity    = 0x400000
 	probeLocalTUNReadWaitTimeoutMillis  = 250
 	probeLocalTUNReadLoopSleepOnNoEvent = 50 * time.Millisecond
+	probeLocalTUNInboundQueueFrames     = 2048
+	probeLocalTUNInboundWorkerCount     = 4
 )
 
 var (
@@ -250,6 +252,9 @@ type probeVirtualRouterTUNDataPlaneRunner struct {
 	onPacket func([]byte)
 	logf     func(string, ...any)
 
+	inboundCh chan []byte
+	writeMu   sync.Mutex
+
 	stopCh    chan struct{}
 	doneCh    chan struct{}
 	closeOnce sync.Once
@@ -312,10 +317,14 @@ func newProbeVirtualRouterTUNDataPlaneRunner(libraryPath string, adapterHandle u
 		sendPacketProc:           sendPacketProc,
 		onPacket:                 onPacket,
 		logf:                     logf,
+		inboundCh:                make(chan []byte, probeLocalTUNInboundQueueFrames),
 		stopCh:                   make(chan struct{}),
 		doneCh:                   make(chan struct{}),
 	}
 	runner.running.Store(true)
+	for i := 0; i < probeLocalTUNInboundWorkerCount; i++ {
+		go runner.inboundWorker()
+	}
 	go runner.readLoop()
 
 	if runner.logf != nil {
@@ -376,24 +385,52 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) handleInboundPayload(payload []by
 	if len(payload) == 0 || r.onPacket == nil {
 		return
 	}
-	r.onPacket(payload)
+	packet := append([]byte(nil), payload...)
+	if r.inboundCh == nil {
+		go r.onPacket(packet)
+		return
+	}
+	select {
+	case r.inboundCh <- packet:
+	case <-r.stopCh:
+	default:
+		if r.logf != nil {
+			r.logf("probe local tun inbound packet drop: reason=handler_queue_full depth=%d capacity=%d", len(r.inboundCh), cap(r.inboundCh))
+		}
+	}
+}
+
+func (r *probeVirtualRouterTUNDataPlaneRunner) inboundWorker() {
+	for {
+		select {
+		case <-r.stopCh:
+			return
+		case payload := <-r.inboundCh:
+			if len(payload) == 0 || r.onPacket == nil {
+				continue
+			}
+			r.onPacket(payload)
+		}
+	}
 }
 
 func (r *probeVirtualRouterTUNDataPlaneRunner) Close() error {
 	var closeErr error
 	r.closeOnce.Do(func() {
+		r.running.Store(false)
 		close(r.stopCh)
 		select {
 		case <-r.doneCh:
 		case <-time.After(2 * time.Second):
 		}
+		r.writeMu.Lock()
+		defer r.writeMu.Unlock()
 		if r.endSessionProc != nil && r.sessionHandle != 0 {
 			_, _, callErr := r.endSessionProc.Call(r.sessionHandle)
 			if callErr != nil && !probeLocalTUNIsZeroErrno(callErr) {
 				closeErr = fmt.Errorf("WintunEndSession failed: %w", callErr)
 			}
 		}
-		r.running.Store(false)
 	})
 	return closeErr
 }
@@ -412,6 +449,11 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) WritePacket(packet []byte) error 
 	if len(packet) == 0 {
 		return nil
 	}
+	if !r.running.Load() {
+		return errors.New("probe virtual router tun data plane is not running")
+	}
+	r.writeMu.Lock()
+	defer r.writeMu.Unlock()
 	if !r.running.Load() {
 		return errors.New("probe virtual router tun data plane is not running")
 	}

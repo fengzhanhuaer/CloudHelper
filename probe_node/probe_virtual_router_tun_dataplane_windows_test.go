@@ -4,7 +4,9 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -410,17 +412,22 @@ func TestProbeVirtualRouterTUNDataPlaneWriteWhenStopped(t *testing.T) {
 	}
 }
 
-func TestProbeVirtualRouterTUNDataPlaneRunnerHandleInboundPayloadIsSynchronous(t *testing.T) {
+func TestProbeVirtualRouterTUNDataPlaneRunnerHandleInboundPayloadDoesNotBlock(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	returned := make(chan struct{})
+	var startedOnce sync.Once
 
 	runner := &probeVirtualRouterTUNDataPlaneRunner{
+		inboundCh: make(chan []byte, 1),
+		stopCh:    make(chan struct{}),
 		onPacket: func([]byte) {
-			close(started)
+			startedOnce.Do(func() { close(started) })
 			<-release
 		},
 	}
+	go runner.inboundWorker()
+	defer close(runner.stopCh)
 
 	go func() {
 		runner.handleInboundPayload([]byte{0x45, 0x00})
@@ -435,15 +442,41 @@ func TestProbeVirtualRouterTUNDataPlaneRunnerHandleInboundPayloadIsSynchronous(t
 
 	select {
 	case <-returned:
-		t.Fatal("handleInboundPayload returned before packet handler completed")
 	case <-time.After(150 * time.Millisecond):
+		t.Fatal("handleInboundPayload should return before packet handler completes")
 	}
 
 	close(release)
 
 	select {
-	case <-returned:
-	case <-time.After(2 * time.Second):
-		t.Fatal("handleInboundPayload did not return after packet handler completed")
+	case <-started:
+	default:
+		t.Fatal("packet handler should have started")
+	}
+}
+
+func TestProbeVirtualRouterTUNDataPlaneRunnerDropsInboundWhenQueueFull(t *testing.T) {
+	calls := 0
+	var logs []string
+	runner := &probeVirtualRouterTUNDataPlaneRunner{
+		inboundCh: make(chan []byte, 1),
+		stopCh:    make(chan struct{}),
+		onPacket: func([]byte) {
+			calls++
+		},
+		logf: func(format string, args ...any) {
+			logs = append(logs, fmt.Sprintf(format, args...))
+		},
+	}
+	defer close(runner.stopCh)
+	runner.inboundCh <- []byte{0x45}
+
+	runner.handleInboundPayload([]byte{0x45, 0x00})
+
+	if calls != 0 {
+		t.Fatalf("handler calls=%d, want 0 before worker consumes queue", calls)
+	}
+	if len(logs) != 1 || !strings.Contains(logs[0], "handler_queue_full") {
+		t.Fatalf("logs=%v, want handler_queue_full drop", logs)
 	}
 }
