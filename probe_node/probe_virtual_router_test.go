@@ -1811,6 +1811,79 @@ func TestProbeVirtualRouterTUNPacketEnsuresDirectBypassForOrdinaryTarget(t *test
 	}
 }
 
+func TestProbeVirtualRouterTUNPacketDropsFakeIPWhenExitCarrierUnavailable(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeVirtualRouterStateForTest()
+	resetProbeVirtualRouterLocalSettingsForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(resetProbeVirtualRouterLocalSettingsForTest)
+	t.Cleanup(func() { closeProbeVirtualRouterFrameLinks("test cleanup") })
+
+	config := probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "16", IP: "198.18.0.16"},
+			{NodeID: "19", IP: "198.18.0.19"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{ID: "edge-16-19", FromNodeID: "16", ToNodeID: "19", Enabled: true},
+		},
+		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{
+			Items: []probeVirtualRouterFakeIPEntry{{
+				Domain:     "api.example.com",
+				FakeIP:     "198.18.4.9",
+				Action:     "probe_exit",
+				ExitNodeID: "19",
+			}},
+		},
+	}
+	applyProbeVirtualRouterConfigForNode(config, "16")
+
+	rt := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-16-19", peerNodeID: "19", dialer: true}}
+	probeVirtualRouterRuntimeState.mu.Lock()
+	oldRuntimes := probeVirtualRouterRuntimeState.runtimes
+	probeVirtualRouterRuntimeState.runtimes = map[string]*probeVirtualRouterRuntime{rt.cfg.routeID: rt}
+	probeVirtualRouterRuntimeState.mu.Unlock()
+	t.Cleanup(func() {
+		probeVirtualRouterRuntimeState.mu.Lock()
+		probeVirtualRouterRuntimeState.runtimes = oldRuntimes
+		probeVirtualRouterRuntimeState.mu.Unlock()
+	})
+
+	probeVirtualRouterFrameLinkState.mu.Lock()
+	oldLinks := probeVirtualRouterFrameLinkState.links
+	probeVirtualRouterFrameLinkState.links = make(map[string]*probeVirtualRouterFrameLink)
+	probeVirtualRouterFrameLinkState.mu.Unlock()
+	t.Cleanup(func() {
+		probeVirtualRouterFrameLinkState.mu.Lock()
+		probeVirtualRouterFrameLinkState.links = oldLinks
+		probeVirtualRouterFrameLinkState.mu.Unlock()
+	})
+
+	packet := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.16", "198.18.4.9", 49152, 443)
+	if handleProbeVirtualRouterTUNPacket(packet) {
+		t.Fatalf("fake ip packet should be dropped when exit carrier is unavailable")
+	}
+	items := snapshotProbeVirtualRouterRecentPackets()
+	if len(items) != 1 {
+		t.Fatalf("recent packets=%d, want 1", len(items))
+	}
+	item := items[0]
+	if item.Source != "tun_rx" || item.Action != "drop" || item.FakeIPDomain != "api.example.com" || item.FakeIPExitNode != "19" {
+		t.Fatalf("unexpected recent packet: %+v", item)
+	}
+	if !strings.Contains(item.Error, "fake ip exit unreachable") {
+		t.Fatalf("recent packet error=%q, want fake ip exit unreachable", item.Error)
+	}
+	probeVirtualRouterFrameLinkState.mu.Lock()
+	linkCount := len(probeVirtualRouterFrameLinkState.links)
+	probeVirtualRouterFrameLinkState.mu.Unlock()
+	if linkCount != 0 {
+		t.Fatalf("frame links=%d, want 0 because packet should not be forwarded", linkCount)
+	}
+}
+
 func TestProbeVirtualRouterFakeIPExitPacketUsesNetstack(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeVirtualRouterStateForTest()
@@ -2286,7 +2359,7 @@ func TestProbeVirtualRouterParseTCPUDPLogInfo(t *testing.T) {
 	if !ok {
 		t.Fatalf("tcp packet not parsed")
 	}
-	if info.Protocol != "tcp" || info.SourceIP != "198.18.0.18" || info.DestinationIP != "198.18.0.21" || info.SourcePort != 49152 || info.DestinationPort != 8080 {
+	if info.Protocol != "tcp" || info.SourceIP != "198.18.0.18" || info.DestinationIP != "198.18.0.21" || info.SourcePort != 49152 || info.DestinationPort != 8080 || info.TCPFlags != "SYN" {
 		t.Fatalf("unexpected tcp info: %+v", info)
 	}
 }

@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/url"
+	"os/exec"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -48,6 +51,9 @@ type probeVirtualRouterRouteTestResult struct {
 	Path           []string `json:"path,omitempty"`
 	ResolvedIPs    []string `json:"resolved_ips,omitempty"`
 	CheckedAddress string   `json:"checked_address,omitempty"`
+	CurlURL        string   `json:"curl_url,omitempty"`
+	HTTPStatus     int      `json:"http_status,omitempty"`
+	Output         string   `json:"output,omitempty"`
 	LatencyMS      int64    `json:"latency_ms,omitempty"`
 	Final          bool     `json:"final,omitempty"`
 	UnixNano       int64    `json:"unix_nano,omitempty"`
@@ -85,11 +91,26 @@ var probeVirtualRouterRouteTestRunState = struct {
 	runs map[string]probeVirtualRouterRouteTestRunResult
 }{runs: make(map[string]probeVirtualRouterRouteTestRunResult)}
 
+type probeVirtualRouterRouteTestCurlRunner func(ctx context.Context, curlPath string, args []string) ([]byte, error)
+
+var (
+	probeVirtualRouterRouteTestLookPath       = exec.LookPath
+	probeVirtualRouterRouteTestRunCurlCommand = runProbeVirtualRouterRouteTestCurlCommand
+)
+
 func runProbeVirtualRouterRouteTest(target string, port int, timeout time.Duration) probeVirtualRouterRouteTestRunResult {
-	return runProbeVirtualRouterRouteTestWithProgress(target, port, timeout, "", nil)
+	return runProbeVirtualRouterRouteTestWithProgress(target, port, timeout, "", nil, false)
 }
 
 func startProbeVirtualRouterRouteTest(target string, port int, timeout time.Duration) probeVirtualRouterRouteTestRunResult {
+	return startProbeVirtualRouterRouteTestWithCurl(target, port, timeout, false)
+}
+
+func runProbeVirtualRouterRouteTestWithCurl(target string, port int, timeout time.Duration, withCurl bool) probeVirtualRouterRouteTestRunResult {
+	return runProbeVirtualRouterRouteTestWithProgress(target, port, timeout, "", nil, withCurl)
+}
+
+func startProbeVirtualRouterRouteTestWithCurl(target string, port int, timeout time.Duration, withCurl bool) probeVirtualRouterRouteTestRunResult {
 	requestID := newProbeTCPDebugFlowID("vrouter_route_test", target)
 	if timeout <= 0 || timeout > 60*time.Second {
 		timeout = probeVirtualRouterRouteTestTimeout
@@ -103,11 +124,11 @@ func startProbeVirtualRouterRouteTest(target string, port int, timeout time.Dura
 		StartedAt:    time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	storeProbeVirtualRouterRouteTestRun(initial)
-	go runProbeVirtualRouterRouteTestWithProgress(target, port, timeout, requestID, storeProbeVirtualRouterRouteTestRun)
+	go runProbeVirtualRouterRouteTestWithProgress(target, port, timeout, requestID, storeProbeVirtualRouterRouteTestRun, withCurl)
 	return initial
 }
 
-func runProbeVirtualRouterRouteTestWithProgress(target string, port int, timeout time.Duration, requestID string, onUpdate func(probeVirtualRouterRouteTestRunResult)) probeVirtualRouterRouteTestRunResult {
+func runProbeVirtualRouterRouteTestWithProgress(target string, port int, timeout time.Duration, requestID string, onUpdate func(probeVirtualRouterRouteTestRunResult), withCurl bool) probeVirtualRouterRouteTestRunResult {
 	started := time.Now()
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
@@ -192,6 +213,12 @@ func runProbeVirtualRouterRouteTestWithProgress(target string, port int, timeout
 		}, nil)
 		exit.Final = true
 		add(exit)
+		if withCurl {
+			curl := probeVirtualRouterRouteTestCurlCheck(plan, timeout)
+			curl.Final = true
+			add(curl)
+			return finish(exit.OK && curl.OK, firstProbeVirtualRouterRouteTestError(exit.Error, curl.Error))
+		}
 		return finish(exit.OK, exit.Error)
 	}
 	waiter := registerProbeVirtualRouterRouteTestResponse(requestID)
@@ -234,6 +261,12 @@ func runProbeVirtualRouterRouteTestWithProgress(target string, port int, timeout
 				item.Final = response.Final || item.Final
 				add(item)
 				if response.Final {
+					if withCurl {
+						curl := probeVirtualRouterRouteTestCurlCheck(plan, timeout)
+						curl.Final = true
+						add(curl)
+						return finish(item.OK && curl.OK, firstProbeVirtualRouterRouteTestError(item.Error, curl.Error))
+					}
 					return finish(item.OK, item.Error)
 				}
 			}
@@ -253,6 +286,15 @@ func cloneProbeVirtualRouterRouteTestRunResult(in probeVirtualRouterRouteTestRun
 		out.Results[index].ResolvedIPs = append([]string(nil), in.Results[index].ResolvedIPs...)
 	}
 	return out
+}
+
+func firstProbeVirtualRouterRouteTestError(items ...string) string {
+	for _, item := range items {
+		if text := strings.TrimSpace(item); text != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 func storeProbeVirtualRouterRouteTestRun(result probeVirtualRouterRouteTestRunResult) {
@@ -443,6 +485,156 @@ func normalizeProbeVirtualRouterRouteTestPort(port int) int {
 		return probeVirtualRouterRouteTestDefaultPort
 	}
 	return port
+}
+
+func probeVirtualRouterRouteTestCurlCheck(plan probeVirtualRouterRouteTestPlan, timeout time.Duration) probeVirtualRouterRouteTestResult {
+	started := time.Now()
+	result := probeVirtualRouterRouteTestResult{
+		NodeID:   currentProbeVirtualRouterLocalNodeID(),
+		Stage:    "curl",
+		OK:       false,
+		UnixNano: time.Now().UnixNano(),
+		Path:     append([]string(nil), plan.Path...),
+	}
+	curlURL, err := buildProbeVirtualRouterRouteTestCurlURL(plan)
+	result.CurlURL = curlURL
+	if err != nil {
+		result.Error = err.Error()
+		result.LatencyMS = probeDurationMilliseconds(time.Since(started))
+		return result
+	}
+	curlPath, err := probeVirtualRouterRouteTestLookPath("curl")
+	if err != nil {
+		result.Error = "curl 不可用: " + err.Error()
+		result.LatencyMS = probeDurationMilliseconds(time.Since(started))
+		return result
+	}
+	if timeout <= 0 || timeout > 60*time.Second {
+		timeout = probeVirtualRouterRouteTestTimeout
+	}
+	timeoutSeconds := maxProbeVirtualRouterRouteTestSeconds(1, int(timeout/time.Second))
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	nullTarget := "/dev/null"
+	if runtime.GOOS == "windows" {
+		nullTarget = "NUL"
+	}
+	args := []string{
+		"--silent",
+		"--show-error",
+		"--noproxy", "*",
+		"--connect-timeout", strconv.Itoa(timeoutSeconds),
+		"--max-time", strconv.Itoa(timeoutSeconds),
+		"--output", nullTarget,
+		"--write-out", "\nhttp_code=%{http_code}\nremote_ip=%{remote_ip}\nremote_port=%{remote_port}\ntime_namelookup=%{time_namelookup}\ntime_connect=%{time_connect}\ntime_appconnect=%{time_appconnect}\ntime_starttransfer=%{time_starttransfer}\ntime_total=%{time_total}\n",
+		curlURL,
+	}
+	out, err := probeVirtualRouterRouteTestRunCurlCommand(ctx, curlPath, args)
+	result.LatencyMS = probeDurationMilliseconds(time.Since(started))
+	parsed := parseProbeVirtualRouterRouteTestCurlOutput(string(out))
+	if status := strings.TrimSpace(parsed["http_code"]); status != "" {
+		if code, parseErr := strconv.Atoi(status); parseErr == nil {
+			result.HTTPStatus = code
+		}
+	}
+	if remoteIP := strings.TrimSpace(parsed["remote_ip"]); remoteIP != "" {
+		remotePort := strings.TrimSpace(parsed["remote_port"])
+		if remotePort != "" && remotePort != "0" {
+			result.CheckedAddress = net.JoinHostPort(remoteIP, remotePort)
+		} else {
+			result.CheckedAddress = remoteIP
+		}
+	}
+	result.Output = compactProbeVirtualRouterRouteTestCurlOutput(parsed, string(out))
+	if err != nil {
+		result.Error = trimProbeVirtualRouterRouteTestOutput(err.Error()+" "+string(out), 800)
+		return result
+	}
+	if result.HTTPStatus <= 0 {
+		result.Error = "curl 未返回 HTTP 状态"
+		return result
+	}
+	result.OK = true
+	result.Message = fmt.Sprintf("curl HTTP %d", result.HTTPStatus)
+	return result
+}
+
+func runProbeVirtualRouterRouteTestCurlCommand(ctx context.Context, curlPath string, args []string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, curlPath, args...)
+	hideWindowSysProcAttr(cmd)
+	return cmd.CombinedOutput()
+}
+
+func maxProbeVirtualRouterRouteTestSeconds(minValue int, value int) int {
+	if value < minValue {
+		return minValue
+	}
+	return value
+}
+
+func buildProbeVirtualRouterRouteTestCurlURL(plan probeVirtualRouterRouteTestPlan) (string, error) {
+	host := strings.TrimSpace(plan.Domain)
+	if host == "" {
+		host = strings.TrimSpace(plan.TargetIP)
+	}
+	if host == "" {
+		host = strings.TrimSpace(plan.Target)
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if host == "" {
+		return "", errors.New("curl target is empty")
+	}
+	port := normalizeProbeVirtualRouterRouteTestPort(plan.Port)
+	scheme := "https"
+	if port == 80 {
+		scheme = "http"
+	}
+	hostPort := host
+	if (scheme == "https" && port != 443) || (scheme == "http" && port != 80) {
+		hostPort = net.JoinHostPort(host, strconv.Itoa(port))
+	}
+	return (&url.URL{Scheme: scheme, Host: hostPort, Path: "/"}).String(), nil
+}
+
+func parseProbeVirtualRouterRouteTestCurlOutput(raw string) map[string]string {
+	out := make(map[string]string)
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.Contains(line, "=") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		out[key] = strings.TrimSpace(value)
+	}
+	return out
+}
+
+func compactProbeVirtualRouterRouteTestCurlOutput(values map[string]string, raw string) string {
+	parts := make([]string, 0, 8)
+	for _, key := range []string{"time_namelookup", "time_connect", "time_appconnect", "time_starttransfer", "time_total"} {
+		if value := strings.TrimSpace(values[key]); value != "" {
+			parts = append(parts, key+"="+value)
+		}
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, " ")
+	}
+	return trimProbeVirtualRouterRouteTestOutput(raw, 800)
+}
+
+func trimProbeVirtualRouterRouteTestOutput(raw string, limit int) string {
+	text := strings.TrimSpace(raw)
+	if limit <= 0 || len(text) <= limit {
+		return text
+	}
+	return text[:limit] + "..."
 }
 
 func handleProbeVirtualRouterRouteTestFrame(runtime *probeVirtualRouterRuntime, subType uint16, msg probeVirtualRouterRouteTestPayload) error {

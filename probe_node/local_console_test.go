@@ -198,6 +198,9 @@ func TestProbeLocalVirtualRouterPacketsHandlerReturnsRecentPackets(t *testing.T)
 	if first["source"] != "tun_rx" || first["action"] != "forward" || first["protocol"] != "TCP" {
 		t.Fatalf("unexpected packet item=%+v", first)
 	}
+	if first["tcp_flags"] != "SYN" {
+		t.Fatalf("unexpected packet tcp flags=%+v", first)
+	}
 	if first["source_ip"] != "198.18.0.18" || first["destination_ip"] != "198.18.0.21" {
 		t.Fatalf("unexpected packet tuple=%+v", first)
 	}
@@ -266,6 +269,97 @@ func TestProbeLocalVirtualRouterRouteTestHandlerReturnsExitReachability(t *testi
 	last, ok := items[len(items)-1].(map[string]any)
 	if !ok || last["stage"] != "exit" || last["ok"] != true {
 		t.Fatalf("unexpected final route test result: %+v", last)
+	}
+}
+
+func TestProbeLocalVirtualRouterRouteTestHandlerReturnsCurlResult(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp: %v", err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			_ = conn.Close()
+		}
+	}()
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	probeVirtualRouterState.mu.Lock()
+	probeVirtualRouterState.config = probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "16", IP: "198.18.0.16", ServicePort: 12040},
+		},
+		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{
+			Version: 1,
+			Items: []probeVirtualRouterFakeIPEntry{{
+				Domain:     "localhost",
+				FakeIP:     "198.18.2.1",
+				Action:     "probe_exit",
+				ExitNodeID: "16",
+			}},
+		},
+	}
+	probeVirtualRouterState.localNodeID = "16"
+	probeVirtualRouterState.localIP = "198.18.0.16"
+	probeVirtualRouterState.nodeToIP = map[string]string{"16": "198.18.0.16"}
+	probeVirtualRouterState.ipToNode = map[string]string{"198.18.0.16": "16"}
+	probeVirtualRouterState.mu.Unlock()
+
+	oldLookPath := probeVirtualRouterRouteTestLookPath
+	oldRunCurl := probeVirtualRouterRouteTestRunCurlCommand
+	var capturedArgs []string
+	probeVirtualRouterRouteTestLookPath = func(name string) (string, error) {
+		if name != "curl" {
+			t.Fatalf("unexpected curl binary lookup: %q", name)
+		}
+		return "curl", nil
+	}
+	probeVirtualRouterRouteTestRunCurlCommand = func(ctx context.Context, curlPath string, args []string) ([]byte, error) {
+		if curlPath != "curl" {
+			t.Fatalf("unexpected curl path: %q", curlPath)
+		}
+		capturedArgs = append([]string(nil), args...)
+		return []byte("\nhttp_code=301\nremote_ip=127.0.0.1\nremote_port=443\ntime_total=0.123\n"), nil
+	}
+	t.Cleanup(func() {
+		probeVirtualRouterRouteTestLookPath = oldLookPath
+		probeVirtualRouterRouteTestRunCurlCommand = oldRunCurl
+	})
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/virtual_router/route_test/curl", map[string]any{
+		"target": "198.18.2.1",
+		"port":   port,
+	}, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("route test curl status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	if payload["ok"] != true {
+		t.Fatalf("route test curl not ok: %+v", payload)
+	}
+	items, ok := payload["results"].([]any)
+	if !ok || len(items) < 3 {
+		t.Fatalf("route test curl results=%T %v", payload["results"], payload["results"])
+	}
+	last, ok := items[len(items)-1].(map[string]any)
+	if !ok || last["stage"] != "curl" || last["ok"] != true || last["http_status"] != float64(301) {
+		t.Fatalf("unexpected final curl route test result: %+v", last)
+	}
+	if !strings.Contains(fmt.Sprint(last["curl_url"]), "https://localhost:") {
+		t.Fatalf("unexpected curl url: %+v", last)
+	}
+	argsText := strings.Join(capturedArgs, " ")
+	if !strings.Contains(argsText, "--noproxy *") || !strings.Contains(argsText, "https://localhost:") {
+		t.Fatalf("unexpected curl args: %v", capturedArgs)
 	}
 }
 

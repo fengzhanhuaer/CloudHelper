@@ -1639,6 +1639,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/virtual_router/settings", probeLocalVirtualRouterSettingsHandler)
 	mux.HandleFunc("/local/api/virtual_router/packets", probeLocalVirtualRouterPacketsHandler)
 	mux.HandleFunc("/local/api/virtual_router/route_test", probeLocalVirtualRouterRouteTestHandler)
+	mux.HandleFunc("/local/api/virtual_router/route_test/curl", probeLocalVirtualRouterRouteTestCurlHandler)
 	mux.HandleFunc("/local/api/system/upgrade", probeLocalSystemUpgradeHandler)
 	mux.HandleFunc("/local/api/system/upgrade/check", probeLocalSystemUpgradeCheckHandler)
 	mux.HandleFunc("/local/api/system/upgrade/status", probeLocalSystemUpgradeStatusHandler)
@@ -2093,6 +2094,14 @@ func probeLocalVirtualRouterPacketsHandler(w http.ResponseWriter, r *http.Reques
 }
 
 func probeLocalVirtualRouterRouteTestHandler(w http.ResponseWriter, r *http.Request) {
+	probeLocalVirtualRouterRouteTestHandlerWithCurl(w, r, false)
+}
+
+func probeLocalVirtualRouterRouteTestCurlHandler(w http.ResponseWriter, r *http.Request) {
+	probeLocalVirtualRouterRouteTestHandlerWithCurl(w, r, true)
+}
+
+func probeLocalVirtualRouterRouteTestHandlerWithCurl(w http.ResponseWriter, r *http.Request, withCurl bool) {
 	if _, ok := requireProbeLocalSession(w, r); !ok {
 		return
 	}
@@ -2136,11 +2145,11 @@ func probeLocalVirtualRouterRouteTestHandler(w http.ResponseWriter, r *http.Requ
 		timeout = 60 * time.Second
 	}
 	if req.Async {
-		result := startProbeVirtualRouterRouteTest(req.Target, req.Port, timeout)
+		result := startProbeVirtualRouterRouteTestWithCurl(req.Target, req.Port, timeout, withCurl)
 		writeJSON(w, http.StatusOK, result)
 		return
 	}
-	result := runProbeVirtualRouterRouteTest(req.Target, req.Port, timeout)
+	result := runProbeVirtualRouterRouteTestWithCurl(req.Target, req.Port, timeout, withCurl)
 	writeJSON(w, http.StatusOK, result)
 }
 

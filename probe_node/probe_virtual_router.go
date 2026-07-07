@@ -227,6 +227,7 @@ type probeVirtualRouterRecentPacket struct {
 	DestinationIP   string   `json:"destination_ip,omitempty"`
 	SourcePort      uint16   `json:"source_port,omitempty"`
 	DestinationPort uint16   `json:"destination_port,omitempty"`
+	TCPFlags        string   `json:"tcp_flags,omitempty"`
 	Length          int      `json:"length"`
 	Path            []string `json:"path,omitempty"`
 	PathText        string   `json:"path_text,omitempty"`
@@ -289,6 +290,7 @@ type probeVirtualRouterTransportLogInfo struct {
 	DestinationIP   string
 	SourcePort      uint16
 	DestinationPort uint16
+	TCPFlags        string
 }
 
 // probeVirtualRouterFrame is the vRouter wire frame. Its binary header layout
@@ -1033,6 +1035,7 @@ func buildProbeVirtualRouterRecentPacket(source string, action string, runtime *
 		item.DestinationIP = info.DestinationIP
 		item.SourcePort = info.SourcePort
 		item.DestinationPort = info.DestinationPort
+		item.TCPFlags = info.TCPFlags
 	} else if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
 		item.Protocol = "ICMP"
 		item.SourceIP = info.SourceIP
@@ -2302,6 +2305,16 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 		recordProbeVirtualRouterRecentPacket("tun_rx", "drop", nil, packet, path, false, errors.New("path unavailable"))
 		return false
 	}
+	if err := probeVirtualRouterFakeIPForwardUnavailableError(dstIP, path, currentProbeVirtualRouterLocalNodeID()); err != nil {
+		if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
+			log.Printf("probe virtual router icmp tun drop: kind=%s src=%s dst=%s id=%d seq=%d reason=fake_ip_exit_unreachable local_node=%s path=%s err=%v", info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, currentProbeVirtualRouterLocalNodeID(), strings.Join(path, ">"), err)
+		}
+		if info, ok := probeVirtualRouterParseTCPUDPLogInfo(packet); ok {
+			log.Printf("probe virtual router transport tun drop: proto=%s src=%s:%d dst=%s:%d reason=fake_ip_exit_unreachable local_node=%s path=%s err=%v", info.Protocol, info.SourceIP, info.SourcePort, info.DestinationIP, info.DestinationPort, currentProbeVirtualRouterLocalNodeID(), strings.Join(path, ">"), err)
+		}
+		recordProbeVirtualRouterRecentPacket("tun_rx", "drop", nil, packet, path, false, err)
+		return false
+	}
 	if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok && info.Kind == "echo_request" && probeVirtualRouterIPMatches(info.SourceIP, currentProbeVirtualRouterLocalIP()) {
 		recordProbeVirtualRouterICMPPingStart(info, path)
 	}
@@ -2347,6 +2360,31 @@ func probeVirtualRouterDirectBypassTargetAddr(packet []byte, dstIP string) strin
 		return net.JoinHostPort(strings.TrimSpace(dstIP), strconv.Itoa(int(info.DestinationPort)))
 	}
 	return net.JoinHostPort(strings.TrimSpace(dstIP), "0")
+}
+
+func probeVirtualRouterFakeIPForwardUnavailableError(dstIP string, path []string, localNodeID string) error {
+	if len(path) < 2 {
+		return nil
+	}
+	if _, ok := currentProbeVirtualRouterFakeIPEntryByIP(dstIP); !ok {
+		return nil
+	}
+	localNodeID = normalizeProbeRouteNodeID(localNodeID)
+	if localNodeID == "" {
+		localNodeID = currentProbeVirtualRouterLocalNodeID()
+	}
+	nextNodeID := probeVirtualRouterNextHopInPath(path, localNodeID)
+	if nextNodeID == "" {
+		return fmt.Errorf("fake ip exit unreachable: next hop is unavailable path=%s", strings.Join(path, ">"))
+	}
+	rt, direction := probeVirtualRouterRuntimeForAdjacentNode(nextNodeID)
+	if rt == nil {
+		return fmt.Errorf("fake ip exit unreachable: adjacent runtime is unavailable next=%s path=%s", nextNodeID, strings.Join(path, ">"))
+	}
+	if !probeVirtualRouterRuntimeHasBridgeSession(rt, direction) {
+		return fmt.Errorf("fake ip exit unreachable: physical carrier unavailable route=%s next=%s direction=%s path=%s", probeVirtualRouterRuntimeLogRouteID(rt), nextNodeID, normalizeProbeRouteBridgeRole(direction), strings.Join(path, ">"))
+	}
+	return nil
 }
 
 func probeVirtualRouterTUNPacketAllowedWhenEntryDisabled(dstIP string, path []string) bool {
@@ -4127,6 +4165,16 @@ func handleProbeVirtualRouterIPFrame(runtime *probeVirtualRouterRuntime, link *p
 		recordProbeVirtualRouterRecentPacket("frame_rx", "drop", runtime, packet, path, false, errors.New("path incomplete"))
 		return errors.New("virtual router path is incomplete")
 	}
+	if err := probeVirtualRouterFakeIPForwardUnavailableError(dstIP, path, currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)); err != nil {
+		if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
+			log.Printf("probe virtual router icmp frame drop: route=%s runtime_node=%s kind=%s src=%s dst=%s id=%d seq=%d reason=fake_ip_exit_unreachable local_ip=%s local_match=%v path=%s err=%v", probeVirtualRouterRuntimeLogRouteID(runtime), currentProbeVirtualRouterLocalNodeIDForRuntime(runtime), info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, localIP, localMatch, strings.Join(path, ">"), err)
+		}
+		if info, ok := probeVirtualRouterParseTCPUDPLogInfo(packet); ok {
+			log.Printf("probe virtual router transport frame drop: route=%s runtime_node=%s proto=%s src=%s:%d dst=%s:%d reason=fake_ip_exit_unreachable local_ip=%s local_match=%v path=%s err=%v", probeVirtualRouterRuntimeLogRouteID(runtime), currentProbeVirtualRouterLocalNodeIDForRuntime(runtime), info.Protocol, info.SourceIP, info.SourcePort, info.DestinationIP, info.DestinationPort, localIP, localMatch, strings.Join(path, ">"), err)
+		}
+		recordProbeVirtualRouterRecentPacket("frame_rx", "drop", runtime, packet, path, false, err)
+		return err
+	}
 	if err := forwardProbeVirtualRouterPacketAlongPath(packet, dstIP, path, trace); err != nil {
 		if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
 			log.Printf("probe virtual router icmp frame forward failed: route=%s runtime_node=%s kind=%s src=%s dst=%s id=%d seq=%d path=%s err=%v", probeVirtualRouterRuntimeLogRouteID(runtime), currentProbeVirtualRouterLocalNodeIDForRuntime(runtime), info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, strings.Join(path, ">"), err)
@@ -5193,13 +5241,49 @@ func probeVirtualRouterParseTCPUDPLogInfo(packet []byte) (probeVirtualRouterTran
 		return probeVirtualRouterTransportLogInfo{}, false
 	}
 	transport := packet[ihl:totalLen]
-	return probeVirtualRouterTransportLogInfo{
+	info := probeVirtualRouterTransportLogInfo{
 		Protocol:        protocol,
 		SourceIP:        net.IPv4(packet[12], packet[13], packet[14], packet[15]).String(),
 		DestinationIP:   net.IPv4(packet[16], packet[17], packet[18], packet[19]).String(),
 		SourcePort:      binary.BigEndian.Uint16(transport[0:2]),
 		DestinationPort: binary.BigEndian.Uint16(transport[2:4]),
-	}, true
+	}
+	if protocol == "tcp" && len(transport) >= 14 {
+		info.TCPFlags = formatProbeVirtualRouterTCPFlags(transport[13])
+	}
+	return info, true
+}
+
+func formatProbeVirtualRouterTCPFlags(flags byte) string {
+	if flags == 0 {
+		return ""
+	}
+	names := make([]string, 0, 8)
+	if flags&0x80 != 0 {
+		names = append(names, "CWR")
+	}
+	if flags&0x40 != 0 {
+		names = append(names, "ECE")
+	}
+	if flags&0x20 != 0 {
+		names = append(names, "URG")
+	}
+	if flags&0x10 != 0 {
+		names = append(names, "ACK")
+	}
+	if flags&0x08 != 0 {
+		names = append(names, "PSH")
+	}
+	if flags&0x04 != 0 {
+		names = append(names, "RST")
+	}
+	if flags&0x02 != 0 {
+		names = append(names, "SYN")
+	}
+	if flags&0x01 != 0 {
+		names = append(names, "FIN")
+	}
+	return strings.Join(names, ",")
 }
 
 func buildProbeVirtualRouterICMPEchoReply(packet []byte, localIP string) ([]byte, string, bool) {

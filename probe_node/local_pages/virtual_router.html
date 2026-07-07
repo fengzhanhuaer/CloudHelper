@@ -340,6 +340,7 @@
         </div>
         <div class="actions">
           <button id="routeTestBtn">测试</button>
+          <button id="routeTestCurlBtn" class="secondary">Curl 测试</button>
         </div>
         <div class="kv" style="margin-top:12px;">
           <div>目标</div><div id="routeTestTargetText">-</div>
@@ -376,7 +377,7 @@
     const messageEl = document.getElementById('message');
     const routerEnabledEl = document.getElementById('virtualRouterEnabled');
     const tunEgressSelectEl = document.getElementById('tunEgressSelect');
-    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260707-packet-filter';
+    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260707-route-curl';
     const REQUEST_TIMEOUT_DEFAULT_MS = 20000;
     const REQUEST_TIMEOUT_TUN_INSTALL_MS = 90000;
     let tunPollingTimer = null;
@@ -539,8 +540,8 @@
       const labels = {
         forward: '转发',
         forward_error: '转发失败',
-        deliver: '本地投递',
-        deliver_error: '投递失败',
+        deliver: '写回系统',
+        deliver_error: '写回失败',
         fake_exit: 'Fake IP 出口',
         local_icmp: '本机 ICMP',
         drop: '丢弃',
@@ -585,6 +586,7 @@
         packetActionLabel(item.action),
         item.action,
         item.protocol,
+        item.tcp_flags,
         packetEndpoint(item.source_ip, item.source_port),
         packetEndpoint(item.destination_ip, item.destination_port),
         item.source_ip,
@@ -631,6 +633,7 @@
         if (item.fake_ip_side) fakeParts.push(item.fake_ip_side);
         const fakeText = item.fake_ip ? fakeParts.join(' / ') || '是' : '-';
         const detailParts = [];
+        if (item.tcp_flags) detailParts.push('TCP ' + item.tcp_flags);
         if (item.detail) detailParts.push(item.detail);
         if (item.error) detailParts.push(item.error);
         const actionClass = item.error ? ' class="packet-error"' : '';
@@ -659,6 +662,7 @@
         hop: '沿途节点',
         forward: '转发',
         exit: '出口测试',
+        curl: 'Curl',
         timeout: '超时',
       };
       return labels[value] || value || '-';
@@ -691,8 +695,12 @@
       rows.innerHTML = items.map((item) => {
         const resolved = Array.isArray(item.resolved_ips) && item.resolved_ips.length ? item.resolved_ips.join(', ') : '';
         const addr = String(item.checked_address || '').trim();
+        const curlURL = String(item.curl_url || '').trim();
+        const httpStatus = Number(item.http_status || 0);
         const detailParts = [];
         if (item.message) detailParts.push(item.message);
+        if (httpStatus > 0) detailParts.push('HTTP ' + httpStatus);
+        if (item.output) detailParts.push(item.output);
         if (item.error) detailParts.push(item.error);
         if (Array.isArray(item.path) && item.path.length) detailParts.push(item.path.join(' > '));
         const rowClass = item.ok ? '' : ' class="packet-error"';
@@ -702,7 +710,7 @@
           <td>${escapeHTML(routeTestStageLabel(item.stage))}</td>
           <td>${escapeHTML(item.ok ? 'OK' : '失败')}${item.final ? ' / final' : ''}</td>
           <td class="mono">${escapeHTML(item.runtime_route_id || '-')}</td>
-          <td class="mono">${escapeHTML([resolved, addr].filter(Boolean).join(' / ') || '-')}</td>
+          <td class="mono">${escapeHTML([resolved, addr, curlURL].filter(Boolean).join(' / ') || '-')}</td>
           <td class="mono">${escapeHTML(item.latency_ms ? item.latency_ms + ' ms' : '-')}</td>
           <td>${escapeHTML(detailParts.join(' / ') || '-')}</td>
         </tr>`;
@@ -717,6 +725,8 @@
       routeTestActiveRequestID = '';
       const btn = document.getElementById('routeTestBtn');
       if (btn) btn.disabled = false;
+      const curlBtn = document.getElementById('routeTestCurlBtn');
+      if (curlBtn) curlBtn.disabled = false;
     }
 
     async function pollRouteTestResult(requestID) {
@@ -765,7 +775,7 @@
       return data || {};
     }
 
-    async function runRouteTest() {
+    async function runRouteTest(useCurl) {
       const target = String(document.getElementById('routeTestTarget').value || '').trim();
       const port = Number(document.getElementById('routeTestPort').value || 443);
       if (!target) {
@@ -774,11 +784,13 @@
       }
       stopRouteTestPolling();
       document.getElementById('routeTestBtn').disabled = true;
+      document.getElementById('routeTestCurlBtn').disabled = true;
       renderRouteTest({ target, port, protocol: 'tcp', results: [] });
-      setMessage('路由测试中...');
-      const data = await requestJSON('/local/api/virtual_router/route_test', {
+      setMessage(useCurl ? 'Curl 路由测试中...' : '路由测试中...');
+      const endpoint = useCurl ? '/local/api/virtual_router/route_test/curl' : '/local/api/virtual_router/route_test';
+      const data = await requestJSON(endpoint, {
         method: 'POST',
-        body: JSON.stringify({ target, port, timeout_ms: 15000, async: true }),
+        body: JSON.stringify({ target, port, timeout_ms: useCurl ? 25000 : 15000, async: true }),
       }, 8000);
       renderRouteTest(data || {});
       if (!data || !data.request_id) {
@@ -944,15 +956,21 @@
       renderPackets(packetSnapshot);
     });
     document.getElementById('routeTestBtn').addEventListener('click', () => {
-      runRouteTest().catch((err) => {
+      runRouteTest(false).catch((err) => {
         stopRouteTestPolling();
         setMessage('路由测试失败：' + err.message, 'error');
+      });
+    });
+    document.getElementById('routeTestCurlBtn').addEventListener('click', () => {
+      runRouteTest(true).catch((err) => {
+        stopRouteTestPolling();
+        setMessage('Curl 路由测试失败：' + err.message, 'error');
       });
     });
     document.getElementById('routeTestTarget').addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
         event.preventDefault();
-        runRouteTest().catch((err) => {
+        runRouteTest(false).catch((err) => {
           stopRouteTestPolling();
           setMessage('路由测试失败：' + err.message, 'error');
         });
