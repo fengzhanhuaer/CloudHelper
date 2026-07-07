@@ -328,9 +328,9 @@ func probeVirtualRouterFakeIPTargetsFromTransportID(addr tcpip.Address, port uin
 	if domain == "" {
 		return nil, errors.New("fake ip mapping domain is empty")
 	}
-	ips, err := resolveProbeLocalDNSIPv4s(domain)
+	ips, err := resolveProbeVirtualRouterFakeIPExitRealIPs(domain)
 	if err != nil {
-		return nil, fmt.Errorf("resolve fake ip domain failed: domain=%s err=%w", domain, err)
+		return nil, err
 	}
 	targets := buildProbeLocalTunnelRouteTargetCandidates(ips, strconv.Itoa(int(port)))
 	if len(targets) == 0 {
@@ -344,7 +344,23 @@ func probeVirtualRouterFakeIPRealIPs(domain string) ([]string, error) {
 	if cleanDomain == "" {
 		return nil, errors.New("fake ip mapping domain is empty")
 	}
-	ips, err := resolveProbeLocalDNSIPv4s(cleanDomain)
+	ips, err := resolveProbeVirtualRouterFakeIPExitRealIPs(cleanDomain)
+	if err != nil {
+		return nil, err
+	}
+	ips = filterProbeLocalIPv4StringsFromList(ips)
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("resolve fake ip domain returned no usable ipv4: domain=%s", cleanDomain)
+	}
+	return ips, nil
+}
+
+func resolveProbeVirtualRouterFakeIPExitRealIPs(domain string) ([]string, error) {
+	cleanDomain := normalizeProbeVirtualRouterDomain(domain)
+	if cleanDomain == "" {
+		return nil, errors.New("fake ip mapping domain is empty")
+	}
+	ips, err := probeLocalDNSBootstrapLookupIPv4(cleanDomain)
 	if err != nil {
 		return nil, fmt.Errorf("resolve fake ip domain failed: domain=%s err=%w", cleanDomain, err)
 	}

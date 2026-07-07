@@ -1697,10 +1697,13 @@ func TestProbeVirtualRouterFakeIPExitTargetsResolveRealIP(t *testing.T) {
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 	t.Cleanup(resetProbeLocalDNSServiceForTest)
 
+	storeProbeLocalDNSCacheRecords("api.example.com", []string{"198.51.100.99"})
+	bootstrapCalls := 0
 	probeLocalDNSBootstrapLookupIPv4 = func(domain string) ([]string, error) {
 		if domain != "api.example.com" {
 			t.Fatalf("unexpected bootstrap domain: %s", domain)
 		}
+		bootstrapCalls++
 		return []string{"203.0.113.10"}, nil
 	}
 
@@ -1727,6 +1730,9 @@ func TestProbeVirtualRouterFakeIPExitTargetsResolveRealIP(t *testing.T) {
 	}
 	if !reflect.DeepEqual(targets, []string{"203.0.113.10:443"}) {
 		t.Fatalf("targets=%v, want [203.0.113.10:443]", targets)
+	}
+	if bootstrapCalls != 1 {
+		t.Fatalf("bootstrap calls=%d, want 1 so fake ip exit ignores cached real ips", bootstrapCalls)
 	}
 }
 
