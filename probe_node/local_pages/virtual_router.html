@@ -350,10 +350,12 @@
     const messageEl = document.getElementById('message');
     const routerEnabledEl = document.getElementById('virtualRouterEnabled');
     const tunEgressSelectEl = document.getElementById('tunEgressSelect');
-    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260707-route-test';
+    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260707-route-test-live';
     const REQUEST_TIMEOUT_DEFAULT_MS = 20000;
     const REQUEST_TIMEOUT_TUN_INSTALL_MS = 90000;
     let tunPollingTimer = null;
+    let routeTestPollingTimer = null;
+    let routeTestActiveRequestID = '';
     let activeTab = 'status';
 
     function setMessage(text, type) {
@@ -603,7 +605,10 @@
       if (payload.exit_node_id) ruleParts.push('出口 ' + payload.exit_node_id);
       setText('routeTestRuleText', ruleParts.join(' / '));
       setText('routeTestPathText', Array.isArray(payload.path) && payload.path.length ? payload.path.join(' > ') : '-');
-      setText('routeTestResultText', payload.ok ? '通过' : (payload.error || '失败'));
+      const statusText = payload.final
+        ? (payload.ok ? '通过' : (payload.error || '失败'))
+        : (payload.request_id ? '测试中...' : '-');
+      setText('routeTestResultText', statusText);
       if (!items.length) {
         rows.innerHTML = '<tr><td colspan="8" class="hint">-</td></tr>';
         return;
@@ -627,6 +632,34 @@
           <td>${escapeHTML(detailParts.join(' / ') || '-')}</td>
         </tr>`;
       }).join('');
+    }
+
+    function stopRouteTestPolling() {
+      if (routeTestPollingTimer) {
+        clearTimeout(routeTestPollingTimer);
+        routeTestPollingTimer = null;
+      }
+      routeTestActiveRequestID = '';
+      const btn = document.getElementById('routeTestBtn');
+      if (btn) btn.disabled = false;
+    }
+
+    async function pollRouteTestResult(requestID) {
+      if (!requestID || requestID !== routeTestActiveRequestID) return;
+      const data = await requestJSON('/local/api/virtual_router/route_test?request_id=' + encodeURIComponent(requestID), { method: 'GET' }, 8000);
+      if (requestID !== routeTestActiveRequestID) return;
+      renderRouteTest(data || {});
+      if (data && data.final) {
+        stopRouteTestPolling();
+        setMessage(data.ok ? '路由测试完成' : '路由测试失败', data.ok ? 'success' : 'error');
+        return;
+      }
+      routeTestPollingTimer = setTimeout(() => {
+        pollRouteTestResult(requestID).catch((err) => {
+          stopRouteTestPolling();
+          setMessage('刷新路由测试结果失败：' + err.message, 'error');
+        });
+      }, 600);
     }
 
     async function loadSettings() {
@@ -663,13 +696,22 @@
         setMessage('请输入测试目标', 'error');
         return;
       }
+      stopRouteTestPolling();
+      document.getElementById('routeTestBtn').disabled = true;
+      renderRouteTest({ target, port, protocol: 'tcp', results: [] });
       setMessage('路由测试中...');
       const data = await requestJSON('/local/api/virtual_router/route_test', {
         method: 'POST',
-        body: JSON.stringify({ target, port, timeout_ms: 15000 }),
-      }, 20000);
+        body: JSON.stringify({ target, port, timeout_ms: 15000, async: true }),
+      }, 8000);
       renderRouteTest(data || {});
-      setMessage(data && data.ok ? '路由测试完成' : '路由测试失败', data && data.ok ? 'success' : 'error');
+      if (!data || !data.request_id) {
+        stopRouteTestPolling();
+        setMessage('路由测试启动失败：缺少 request_id', 'error');
+        return;
+      }
+      routeTestActiveRequestID = data.request_id;
+      await pollRouteTestResult(data.request_id);
     }
 
     async function refreshAll() {
@@ -813,12 +855,18 @@
       loadPackets().then(() => setMessage('最近报文已刷新', 'success')).catch((err) => setMessage('读取最近报文失败：' + err.message, 'error'));
     });
     document.getElementById('routeTestBtn').addEventListener('click', () => {
-      runRouteTest().catch((err) => setMessage('路由测试失败：' + err.message, 'error'));
+      runRouteTest().catch((err) => {
+        stopRouteTestPolling();
+        setMessage('路由测试失败：' + err.message, 'error');
+      });
     });
     document.getElementById('routeTestTarget').addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
         event.preventDefault();
-        runRouteTest().catch((err) => setMessage('路由测试失败：' + err.message, 'error'));
+        runRouteTest().catch((err) => {
+          stopRouteTestPolling();
+          setMessage('路由测试失败：' + err.message, 'error');
+        });
       }
     });
     document.querySelectorAll('.subtab').forEach((btn) => {

@@ -2096,6 +2096,20 @@ func probeLocalVirtualRouterRouteTestHandler(w http.ResponseWriter, r *http.Requ
 	if _, ok := requireProbeLocalSession(w, r); !ok {
 		return
 	}
+	if r.Method == http.MethodGet {
+		requestID := strings.TrimSpace(r.URL.Query().Get("request_id"))
+		if requestID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "request_id is required"})
+			return
+		}
+		result, ok := getProbeVirtualRouterRouteTestRun(requestID)
+		if !ok {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "route test not found"})
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -2104,6 +2118,7 @@ func probeLocalVirtualRouterRouteTestHandler(w http.ResponseWriter, r *http.Requ
 		Target    string `json:"target"`
 		Port      int    `json:"port,omitempty"`
 		TimeoutMS int    `json:"timeout_ms,omitempty"`
+		Async     bool   `json:"async,omitempty"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -2119,6 +2134,11 @@ func probeLocalVirtualRouterRouteTestHandler(w http.ResponseWriter, r *http.Requ
 	}
 	if timeout > 60*time.Second {
 		timeout = 60 * time.Second
+	}
+	if req.Async {
+		result := startProbeVirtualRouterRouteTest(req.Target, req.Port, timeout)
+		writeJSON(w, http.StatusOK, result)
+		return
 	}
 	result := runProbeVirtualRouterRouteTest(req.Target, req.Port, timeout)
 	writeJSON(w, http.StatusOK, result)

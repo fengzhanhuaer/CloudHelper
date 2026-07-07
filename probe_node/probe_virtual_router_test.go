@@ -1912,14 +1912,16 @@ func TestProbeVirtualRouterFakeIPExitTargetsResolveRealIP(t *testing.T) {
 	t.Cleanup(resetProbeLocalDNSServiceForTest)
 
 	storeProbeLocalDNSCacheRecords("api.example.com", []string{"198.51.100.99"})
-	bootstrapCalls := 0
-	probeLocalDNSBootstrapLookupIPv4 = func(domain string) ([]string, error) {
+	lookupCalls := 0
+	oldExitLookup := probeVirtualRouterExitLookupIPv4
+	probeVirtualRouterExitLookupIPv4 = func(domain string) ([]string, error) {
 		if domain != "api.example.com" {
-			t.Fatalf("unexpected bootstrap domain: %s", domain)
+			t.Fatalf("unexpected exit lookup domain: %s", domain)
 		}
-		bootstrapCalls++
+		lookupCalls++
 		return []string{"203.0.113.10"}, nil
 	}
+	t.Cleanup(func() { probeVirtualRouterExitLookupIPv4 = oldExitLookup })
 
 	config := probeVirtualRouterConfig{
 		Enabled:    true,
@@ -1945,8 +1947,8 @@ func TestProbeVirtualRouterFakeIPExitTargetsResolveRealIP(t *testing.T) {
 	if !reflect.DeepEqual(targets, []string{"203.0.113.10:443"}) {
 		t.Fatalf("targets=%v, want [203.0.113.10:443]", targets)
 	}
-	if bootstrapCalls != 1 {
-		t.Fatalf("bootstrap calls=%d, want 1 so fake ip exit ignores cached real ips", bootstrapCalls)
+	if lookupCalls != 1 {
+		t.Fatalf("exit lookup calls=%d, want 1 so fake ip exit ignores cached real ips", lookupCalls)
 	}
 }
 
@@ -1957,12 +1959,14 @@ func TestProbeVirtualRouterFakeIPExitTargetsRefreshMissingMappingFromController(
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 	t.Cleanup(resetProbeLocalDNSServiceForTest)
 
-	probeLocalDNSBootstrapLookupIPv4 = func(domain string) ([]string, error) {
+	oldExitLookup := probeVirtualRouterExitLookupIPv4
+	probeVirtualRouterExitLookupIPv4 = func(domain string) ([]string, error) {
 		if domain != "api.example.com" {
-			t.Fatalf("unexpected bootstrap domain: %s", domain)
+			t.Fatalf("unexpected exit lookup domain: %s", domain)
 		}
 		return []string{"203.0.113.10"}, nil
 	}
+	t.Cleanup(func() { probeVirtualRouterExitLookupIPv4 = oldExitLookup })
 	oldRequestConfig := probeRequestRouteConfig
 	requests := 0
 	probeRequestRouteConfig = func(ctx context.Context, controllerBaseURL string, identity nodeIdentity) (probeVirtualRouterConfig, error) {
@@ -2032,12 +2036,14 @@ func TestProbeVirtualRouterFakeIPExitICMPEchoUsesRealTarget(t *testing.T) {
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 	t.Cleanup(resetProbeLocalDNSServiceForTest)
 
-	probeLocalDNSBootstrapLookupIPv4 = func(domain string) ([]string, error) {
+	oldExitLookup := probeVirtualRouterExitLookupIPv4
+	probeVirtualRouterExitLookupIPv4 = func(domain string) ([]string, error) {
 		if domain != "api.example.com" {
-			t.Fatalf("unexpected bootstrap domain: %s", domain)
+			t.Fatalf("unexpected exit lookup domain: %s", domain)
 		}
 		return []string{"203.0.113.10"}, nil
 	}
+	t.Cleanup(func() { probeVirtualRouterExitLookupIPv4 = oldExitLookup })
 
 	oldEnsure := probeVirtualRouterEnsureDirectBypass
 	var bypassTargets []string

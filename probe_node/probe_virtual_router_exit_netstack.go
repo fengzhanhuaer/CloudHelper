@@ -52,6 +52,7 @@ var probeVirtualRouterExitNetstackState = struct {
 }{}
 
 var probeVirtualRouterSendICMPEcho = sendProbeVirtualRouterICMPEcho
+var probeVirtualRouterExitLookupIPv4 = lookupProbeVirtualRouterExitSystemIPv4s
 
 func handleProbeVirtualRouterFakeIPExitPacket(runtime *probeVirtualRouterRuntime, link *probeVirtualRouterFrameLink, packet []byte, path []string) bool {
 	dstIP := probeVirtualRouterIPv4Destination(packet)
@@ -386,7 +387,7 @@ func resolveProbeVirtualRouterFakeIPExitRealIPs(domain string) ([]string, error)
 	if cleanDomain == "" {
 		return nil, errors.New("fake ip mapping domain is empty")
 	}
-	ips, err := probeLocalDNSBootstrapLookupIPv4(cleanDomain)
+	ips, err := probeVirtualRouterExitLookupIPv4(cleanDomain)
 	if err != nil {
 		return nil, fmt.Errorf("resolve fake ip domain failed: domain=%s err=%w", cleanDomain, err)
 	}
@@ -395,6 +396,26 @@ func resolveProbeVirtualRouterFakeIPExitRealIPs(domain string) ([]string, error)
 		return nil, fmt.Errorf("resolve fake ip domain returned no usable ipv4: domain=%s", cleanDomain)
 	}
 	return ips, nil
+}
+
+func lookupProbeVirtualRouterExitSystemIPv4s(domain string) ([]string, error) {
+	cleanDomain := normalizeProbeVirtualRouterDomain(domain)
+	if cleanDomain == "" {
+		return nil, errors.New("fake ip mapping domain is empty")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, cleanDomain)
+	if err != nil {
+		return nil, err
+	}
+	ips := make([]string, 0, len(addrs))
+	for _, addr := range addrs {
+		if ip := addr.IP.To4(); ip != nil {
+			ips = append(ips, ip.String())
+		}
+	}
+	return filterProbeLocalIPv4StringsFromList(ips), nil
 }
 
 func dialProbeVirtualRouterExitTCP(targetAddrs []string) (net.Conn, error) {

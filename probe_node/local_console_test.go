@@ -269,6 +269,83 @@ func TestProbeLocalVirtualRouterRouteTestHandlerReturnsExitReachability(t *testi
 	}
 }
 
+func TestProbeLocalVirtualRouterRouteTestHandlerStreamsAsyncProgress(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp: %v", err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			_ = conn.Close()
+		}
+	}()
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	probeVirtualRouterState.mu.Lock()
+	probeVirtualRouterState.config = probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "16", IP: "198.18.0.16", ServicePort: 12040},
+		},
+		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{
+			Version: 1,
+			Items: []probeVirtualRouterFakeIPEntry{{
+				Domain:     "localhost",
+				FakeIP:     "198.18.2.1",
+				Action:     "probe_exit",
+				ExitNodeID: "16",
+			}},
+		},
+	}
+	probeVirtualRouterState.localNodeID = "16"
+	probeVirtualRouterState.localIP = "198.18.0.16"
+	probeVirtualRouterState.nodeToIP = map[string]string{"16": "198.18.0.16"}
+	probeVirtualRouterState.ipToNode = map[string]string{"198.18.0.16": "16"}
+	probeVirtualRouterState.mu.Unlock()
+
+	startResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/virtual_router/route_test", map[string]any{
+		"target": "198.18.2.1",
+		"port":   port,
+		"async":  true,
+	}, sessionCookie)
+	if startResp.Code != http.StatusOK {
+		t.Fatalf("async route test start status=%d body=%s", startResp.Code, startResp.Body.String())
+	}
+	startPayload := decodeProbeLocalJSON(t, startResp)
+	requestID, _ := startPayload["request_id"].(string)
+	if strings.TrimSpace(requestID) == "" {
+		t.Fatalf("async route test missing request_id: %+v", startPayload)
+	}
+
+	var payload map[string]any
+	for attempt := 0; attempt < 20; attempt++ {
+		getResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/virtual_router/route_test?request_id="+requestID, nil, sessionCookie)
+		if getResp.Code != http.StatusOK {
+			t.Fatalf("async route test get status=%d body=%s", getResp.Code, getResp.Body.String())
+		}
+		payload = decodeProbeLocalJSON(t, getResp)
+		if payload["final"] == true {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if payload["final"] != true || payload["ok"] != true {
+		t.Fatalf("async route test did not finish ok: %+v", payload)
+	}
+	items, ok := payload["results"].([]any)
+	if !ok || len(items) < 2 {
+		t.Fatalf("async route test results=%T %v", payload["results"], payload["results"])
+	}
+}
+
 func TestProbeLocalProtectedRoutesRequireSession(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 

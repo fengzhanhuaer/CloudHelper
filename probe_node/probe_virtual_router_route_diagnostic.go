@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -79,9 +80,39 @@ var probeVirtualRouterRouteTestResponseState = struct {
 	pending map[string]chan probeVirtualRouterRouteTestPayload
 }{pending: make(map[string]chan probeVirtualRouterRouteTestPayload)}
 
+var probeVirtualRouterRouteTestRunState = struct {
+	mu   sync.Mutex
+	runs map[string]probeVirtualRouterRouteTestRunResult
+}{runs: make(map[string]probeVirtualRouterRouteTestRunResult)}
+
 func runProbeVirtualRouterRouteTest(target string, port int, timeout time.Duration) probeVirtualRouterRouteTestRunResult {
-	started := time.Now()
+	return runProbeVirtualRouterRouteTestWithProgress(target, port, timeout, "", nil)
+}
+
+func startProbeVirtualRouterRouteTest(target string, port int, timeout time.Duration) probeVirtualRouterRouteTestRunResult {
 	requestID := newProbeTCPDebugFlowID("vrouter_route_test", target)
+	if timeout <= 0 || timeout > 60*time.Second {
+		timeout = probeVirtualRouterRouteTestTimeout
+	}
+	initial := probeVirtualRouterRouteTestRunResult{
+		RequestID:    requestID,
+		Target:       strings.TrimSpace(target),
+		Port:         normalizeProbeVirtualRouterRouteTestPort(port),
+		Protocol:     "tcp",
+		SourceNodeID: currentProbeVirtualRouterLocalNodeID(),
+		StartedAt:    time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	storeProbeVirtualRouterRouteTestRun(initial)
+	go runProbeVirtualRouterRouteTestWithProgress(target, port, timeout, requestID, storeProbeVirtualRouterRouteTestRun)
+	return initial
+}
+
+func runProbeVirtualRouterRouteTestWithProgress(target string, port int, timeout time.Duration, requestID string, onUpdate func(probeVirtualRouterRouteTestRunResult)) probeVirtualRouterRouteTestRunResult {
+	started := time.Now()
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		requestID = newProbeTCPDebugFlowID("vrouter_route_test", target)
+	}
 	localNodeID := currentProbeVirtualRouterLocalNodeID()
 	result := probeVirtualRouterRouteTestRunResult{
 		RequestID:    requestID,
@@ -100,13 +131,22 @@ func runProbeVirtualRouterRouteTest(target string, port int, timeout time.Durati
 			item.UnixNano = time.Now().UnixNano()
 		}
 		result.Results = append(result.Results, item)
+		if onUpdate != nil {
+			onUpdate(cloneProbeVirtualRouterRouteTestRunResult(result))
+		}
 	}
 	finish := func(ok bool, errText string) probeVirtualRouterRouteTestRunResult {
 		result.OK = ok
 		result.Error = strings.TrimSpace(errText)
 		result.Final = true
 		result.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		if onUpdate != nil {
+			onUpdate(cloneProbeVirtualRouterRouteTestRunResult(result))
+		}
 		return result
+	}
+	if onUpdate != nil {
+		onUpdate(cloneProbeVirtualRouterRouteTestRunResult(result))
 	}
 	if localNodeID == "" {
 		add(probeVirtualRouterRouteTestResult{Stage: "source", OK: false, Error: "本机虚拟路由节点 ID 为空", Final: true})
@@ -202,6 +242,97 @@ func runProbeVirtualRouterRouteTest(target string, port int, timeout time.Durati
 			return finish(false, "virtual router route test timeout")
 		}
 	}
+}
+
+func cloneProbeVirtualRouterRouteTestRunResult(in probeVirtualRouterRouteTestRunResult) probeVirtualRouterRouteTestRunResult {
+	out := in
+	out.Path = append([]string(nil), in.Path...)
+	out.Results = append([]probeVirtualRouterRouteTestResult(nil), in.Results...)
+	for index := range out.Results {
+		out.Results[index].Path = append([]string(nil), in.Results[index].Path...)
+		out.Results[index].ResolvedIPs = append([]string(nil), in.Results[index].ResolvedIPs...)
+	}
+	return out
+}
+
+func storeProbeVirtualRouterRouteTestRun(result probeVirtualRouterRouteTestRunResult) {
+	requestID := strings.TrimSpace(result.RequestID)
+	if requestID == "" {
+		return
+	}
+	result = cloneProbeVirtualRouterRouteTestRunResult(result)
+	probeVirtualRouterRouteTestRunState.mu.Lock()
+	if probeVirtualRouterRouteTestRunState.runs == nil {
+		probeVirtualRouterRouteTestRunState.runs = make(map[string]probeVirtualRouterRouteTestRunResult)
+	}
+	probeVirtualRouterRouteTestRunState.runs[requestID] = result
+	pruneProbeVirtualRouterRouteTestRunsLocked(32, 10*time.Minute)
+	probeVirtualRouterRouteTestRunState.mu.Unlock()
+}
+
+func getProbeVirtualRouterRouteTestRun(requestID string) (probeVirtualRouterRouteTestRunResult, bool) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return probeVirtualRouterRouteTestRunResult{}, false
+	}
+	probeVirtualRouterRouteTestRunState.mu.Lock()
+	result, ok := probeVirtualRouterRouteTestRunState.runs[requestID]
+	probeVirtualRouterRouteTestRunState.mu.Unlock()
+	if !ok {
+		return probeVirtualRouterRouteTestRunResult{}, false
+	}
+	return cloneProbeVirtualRouterRouteTestRunResult(result), true
+}
+
+func pruneProbeVirtualRouterRouteTestRunsLocked(maxRuns int, maxAge time.Duration) {
+	if maxRuns <= 0 || len(probeVirtualRouterRouteTestRunState.runs) <= maxRuns {
+		return
+	}
+	type runRef struct {
+		id string
+		at time.Time
+	}
+	refs := make([]runRef, 0, len(probeVirtualRouterRouteTestRunState.runs))
+	cutoff := time.Now().Add(-maxAge)
+	for id, item := range probeVirtualRouterRouteTestRunState.runs {
+		at := parseProbeVirtualRouterRouteTestRunTime(item.FinishedAt)
+		if at.IsZero() {
+			at = parseProbeVirtualRouterRouteTestRunTime(item.StartedAt)
+		}
+		if !at.IsZero() && at.Before(cutoff) {
+			delete(probeVirtualRouterRouteTestRunState.runs, id)
+			continue
+		}
+		refs = append(refs, runRef{id: id, at: at})
+	}
+	if len(refs) <= maxRuns {
+		return
+	}
+	sort.SliceStable(refs, func(i, j int) bool {
+		if refs[i].at.IsZero() {
+			return true
+		}
+		if refs[j].at.IsZero() {
+			return false
+		}
+		return refs[i].at.Before(refs[j].at)
+	})
+	for len(refs) > maxRuns {
+		delete(probeVirtualRouterRouteTestRunState.runs, refs[0].id)
+		refs = refs[1:]
+	}
+}
+
+func parseProbeVirtualRouterRouteTestRunTime(raw string) time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 type probeVirtualRouterRouteTestPlan struct {
