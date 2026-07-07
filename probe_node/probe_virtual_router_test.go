@@ -2102,6 +2102,140 @@ func TestProbeVirtualRouterFakeIPExitTargetsRefreshMissingMappingFromController(
 	}
 }
 
+func TestProbeVirtualRouterFakeIPExitTCPForwarderDoesNotBlockOnResolve(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeVirtualRouterStateForTest()
+	resetProbeLocalDNSServiceForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(resetProbeLocalDNSServiceForTest)
+
+	releaseLookup := make(chan struct{})
+	lookupStarted := make(chan struct{})
+	var lookupStartedOnce sync.Once
+	oldExitLookup := probeVirtualRouterExitLookupIPv4
+	probeVirtualRouterExitLookupIPv4 = func(domain string) ([]string, error) {
+		if domain != "api.example.com" {
+			t.Errorf("unexpected exit lookup domain: %s", domain)
+		}
+		lookupStartedOnce.Do(func() { close(lookupStarted) })
+		<-releaseLookup
+		return nil, errors.New("test resolver stopped")
+	}
+	t.Cleanup(func() {
+		close(releaseLookup)
+		probeVirtualRouterExitLookupIPv4 = oldExitLookup
+	})
+
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "19", IP: "198.18.0.21"},
+		},
+		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{
+			Items: []probeVirtualRouterFakeIPEntry{{
+				Domain:     "api.example.com",
+				FakeIP:     "198.18.4.9",
+				Action:     "probe_exit",
+				ExitNodeID: "19",
+			}},
+		},
+	}, "19")
+
+	runner, err := newProbeVirtualRouterExitNetstack()
+	if err != nil {
+		t.Fatalf("new netstack failed: %v", err)
+	}
+	t.Cleanup(func() { _ = runner.Close() })
+
+	packet := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.18", "198.18.4.9", 49152, 443)
+	setProbeVirtualRouterTestTCPChecksum(packet)
+	injectDone := make(chan error, 1)
+	go func() {
+		injectDone <- runner.Inject(packet)
+	}()
+
+	select {
+	case err := <-injectDone:
+		if err != nil {
+			t.Fatalf("inject failed: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("tcp forwarder should not block packet injection while fake-ip resolve is pending")
+	}
+	select {
+	case <-lookupStarted:
+	default:
+	}
+}
+
+func TestProbeVirtualRouterFakeIPExitUDPForwarderDoesNotBlockOnResolve(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeVirtualRouterStateForTest()
+	resetProbeLocalDNSServiceForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(resetProbeLocalDNSServiceForTest)
+
+	releaseLookup := make(chan struct{})
+	lookupStarted := make(chan struct{})
+	var lookupStartedOnce sync.Once
+	oldExitLookup := probeVirtualRouterExitLookupIPv4
+	probeVirtualRouterExitLookupIPv4 = func(domain string) ([]string, error) {
+		if domain != "api.example.com" {
+			t.Errorf("unexpected exit lookup domain: %s", domain)
+		}
+		lookupStartedOnce.Do(func() { close(lookupStarted) })
+		<-releaseLookup
+		return nil, errors.New("test resolver stopped")
+	}
+	t.Cleanup(func() {
+		close(releaseLookup)
+		probeVirtualRouterExitLookupIPv4 = oldExitLookup
+	})
+
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "19", IP: "198.18.0.21"},
+		},
+		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{
+			Items: []probeVirtualRouterFakeIPEntry{{
+				Domain:     "api.example.com",
+				FakeIP:     "198.18.4.9",
+				Action:     "probe_exit",
+				ExitNodeID: "19",
+			}},
+		},
+	}, "19")
+
+	runner, err := newProbeVirtualRouterExitNetstack()
+	if err != nil {
+		t.Fatalf("new netstack failed: %v", err)
+	}
+	t.Cleanup(func() { _ = runner.Close() })
+
+	packet := buildProbeVirtualRouterTestUDPPacket(t, "198.18.0.18", "198.18.4.9", 49152, 443)
+	injectDone := make(chan error, 1)
+	go func() {
+		injectDone <- runner.Inject(packet)
+	}()
+
+	select {
+	case err := <-injectDone:
+		if err != nil {
+			t.Fatalf("inject failed: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("udp forwarder should not block packet injection while fake-ip resolve is pending")
+	}
+	select {
+	case <-lookupStarted:
+	case <-time.After(time.Second):
+		t.Fatalf("udp forwarder should start fake-ip resolve asynchronously")
+	}
+}
+
 func TestProbeVirtualRouterFakeIPExitICMPEchoUsesRealTarget(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeVirtualRouterStateForTest()
@@ -2938,6 +3072,81 @@ func TestProbeVirtualRouterCarrierFailureDetachesCarrierButKeepsFrameLink(t *tes
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("carrier should detach after physical failure")
+}
+
+func TestProbeVirtualRouterFrameLinkTXQueueFullReturnsImmediately(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	link := newProbeVirtualRouterFrameLink("queue-full", &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-queue-full"}}, nil, nil)
+	t.Cleanup(func() { stopProbeVirtualRouterFrameLink(link) })
+
+	frame, err := buildProbeVirtualRouterIPFrame(buildProbeVirtualRouterTestIPv4Packet(t, "198.18.0.1", "198.18.0.2"), []string{"1", "2"}, nil)
+	if err != nil {
+		t.Fatalf("build ip frame failed: %v", err)
+	}
+	for i := 0; i < cap(link.tx); i++ {
+		link.tx <- frame
+	}
+
+	startedAt := time.Now()
+	err = link.EnqueueProbeVirtualRouterFrame(frame)
+	elapsed := time.Since(startedAt)
+	if err == nil || !strings.Contains(err.Error(), "tx queue full") {
+		t.Fatalf("enqueue err=%v, want tx queue full", err)
+	}
+	if elapsed > 50*time.Millisecond {
+		t.Fatalf("enqueue should return immediately when tx queue is full, elapsed=%s", elapsed)
+	}
+}
+
+func TestProbeVirtualRouterFrameLinkAttachClearsBufferedFrames(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	left, right := net.Pipe()
+	defer right.Close()
+	link := newProbeVirtualRouterFrameLink("attach-clear-buffers", &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-attach-clear"}}, nil, nil)
+	t.Cleanup(func() { stopProbeVirtualRouterFrameLink(link) })
+	frame, err := buildProbeVirtualRouterIPFrame(buildProbeVirtualRouterTestIPv4Packet(t, "198.18.0.1", "198.18.0.2"), []string{"1", "2"}, nil)
+	if err != nil {
+		t.Fatalf("build ip frame failed: %v", err)
+	}
+	link.tx <- frame
+	link.rx <- frame
+
+	if token := link.AttachCarrier(left, "carrier-attach-clear", "pipe"); token == nil {
+		t.Fatalf("carrier should attach")
+	}
+	if len(link.tx) != 0 || len(link.rx) != 0 {
+		t.Fatalf("attach should clear buffered frames, tx=%d rx=%d", len(link.tx), len(link.rx))
+	}
+}
+
+func TestProbeVirtualRouterFrameLinkDetachClearsBufferedFrames(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	left, right := net.Pipe()
+	defer right.Close()
+	link := newProbeVirtualRouterFrameLink("detach-clear-buffers", &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-detach-clear"}}, nil, nil)
+	t.Cleanup(func() { stopProbeVirtualRouterFrameLink(link) })
+	token := link.AttachCarrier(left, "carrier-detach-clear", "pipe")
+	if token == nil {
+		t.Fatalf("carrier should attach")
+	}
+	frame, err := buildProbeVirtualRouterIPFrame(buildProbeVirtualRouterTestIPv4Packet(t, "198.18.0.1", "198.18.0.2"), []string{"1", "2"}, nil)
+	if err != nil {
+		t.Fatalf("build ip frame failed: %v", err)
+	}
+	link.tx <- frame
+	link.rx <- frame
+
+	link.detachCarrier(token)
+
+	if len(link.tx) != 0 || len(link.rx) != 0 {
+		t.Fatalf("detach should clear buffered frames, tx=%d rx=%d", len(link.tx), len(link.rx))
+	}
 }
 
 func TestProbeVirtualRouterCarrierWriteDeadlineDetachesBlockedCarrier(t *testing.T) {
