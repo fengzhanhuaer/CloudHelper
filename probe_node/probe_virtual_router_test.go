@@ -2364,6 +2364,22 @@ func TestProbeVirtualRouterParseTCPUDPLogInfo(t *testing.T) {
 	}
 }
 
+func TestProbeVirtualRouterRecentPacketIncludesChecksumSummary(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	packet := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.18", "198.18.0.21", 49152, 8080)
+	setProbeVirtualRouterTestTCPChecksum(packet)
+	recordProbeVirtualRouterRecentPacket("frame_rx", "deliver", nil, packet, []string{"19", "16"}, true, nil)
+	items := snapshotProbeVirtualRouterRecentPackets()
+	if len(items) != 1 {
+		t.Fatalf("recent packets=%d, want 1", len(items))
+	}
+	if !strings.Contains(items[0].Detail, "ip_checksum=ok") || !strings.Contains(items[0].Detail, "tcp_checksum=ok") {
+		t.Fatalf("unexpected checksum detail: %+v", items[0])
+	}
+}
+
 func TestProbeVirtualRouterRuntimeForAdjacentNode(t *testing.T) {
 	probeVirtualRouterRuntimeState.mu.Lock()
 	oldRuntimes := probeVirtualRouterRuntimeState.runtimes
@@ -3102,6 +3118,23 @@ func buildProbeVirtualRouterTestTCPPacket(t *testing.T, src string, dst string, 
 	binary.BigEndian.PutUint16(packet[34:36], 65535)
 	binary.BigEndian.PutUint16(packet[10:12], probeVirtualRouterChecksum(packet[:20]))
 	return packet
+}
+
+func setProbeVirtualRouterTestTCPChecksum(packet []byte) {
+	if len(packet) < 40 || packet[0]>>4 != 4 || packet[9] != 6 {
+		return
+	}
+	ihl := int(packet[0]&0x0F) * 4
+	totalLen := int(binary.BigEndian.Uint16(packet[2:4]))
+	if ihl < 20 || totalLen <= ihl || totalLen > len(packet) {
+		return
+	}
+	transport := packet[ihl:totalLen]
+	if len(transport) < 18 {
+		return
+	}
+	transport[16], transport[17] = 0, 0
+	binary.BigEndian.PutUint16(transport[16:18], probeVirtualRouterTransportChecksum(packet, transport))
 }
 
 func buildProbeVirtualRouterTestUDPPacket(t *testing.T, src string, dst string, srcPort uint16, dstPort uint16) []byte {

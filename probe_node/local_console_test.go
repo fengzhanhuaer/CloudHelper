@@ -328,7 +328,7 @@ func TestProbeLocalVirtualRouterRouteTestHandlerReturnsCurlResult(t *testing.T) 
 			t.Fatalf("unexpected curl path: %q", curlPath)
 		}
 		capturedArgs = append([]string(nil), args...)
-		return []byte("\nhttp_code=301\nremote_ip=127.0.0.1\nremote_port=443\ntime_total=0.123\n"), nil
+		return []byte("\nhttp_code=200\nremote_ip=127.0.0.1\nremote_port=443\nurl_effective=https://www.localhost/\nnum_redirects=1\ntime_total=0.123\n"), nil
 	}
 	t.Cleanup(func() {
 		probeVirtualRouterRouteTestLookPath = oldLookPath
@@ -351,14 +351,14 @@ func TestProbeLocalVirtualRouterRouteTestHandlerReturnsCurlResult(t *testing.T) 
 		t.Fatalf("route test curl results=%T %v", payload["results"], payload["results"])
 	}
 	last, ok := items[len(items)-1].(map[string]any)
-	if !ok || last["stage"] != "curl" || last["ok"] != true || last["http_status"] != float64(301) {
+	if !ok || last["stage"] != "curl" || last["ok"] != true || last["http_status"] != float64(200) {
 		t.Fatalf("unexpected final curl route test result: %+v", last)
 	}
 	if !strings.Contains(fmt.Sprint(last["curl_url"]), "https://localhost:") {
 		t.Fatalf("unexpected curl url: %+v", last)
 	}
 	argsText := strings.Join(capturedArgs, " ")
-	if !strings.Contains(argsText, "--noproxy *") || !strings.Contains(argsText, "https://localhost:") {
+	if !strings.Contains(argsText, "--location") || !strings.Contains(argsText, "--noproxy *") || !strings.Contains(argsText, "https://localhost:") {
 		t.Fatalf("unexpected curl args: %v", capturedArgs)
 	}
 }

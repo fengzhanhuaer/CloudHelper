@@ -522,11 +522,13 @@ func probeVirtualRouterRouteTestCurlCheck(plan probeVirtualRouterRouteTestPlan, 
 	args := []string{
 		"--silent",
 		"--show-error",
+		"--location",
+		"--max-redirs", "5",
 		"--noproxy", "*",
 		"--connect-timeout", strconv.Itoa(timeoutSeconds),
 		"--max-time", strconv.Itoa(timeoutSeconds),
 		"--output", nullTarget,
-		"--write-out", "\nhttp_code=%{http_code}\nremote_ip=%{remote_ip}\nremote_port=%{remote_port}\ntime_namelookup=%{time_namelookup}\ntime_connect=%{time_connect}\ntime_appconnect=%{time_appconnect}\ntime_starttransfer=%{time_starttransfer}\ntime_total=%{time_total}\n",
+		"--write-out", "\nhttp_code=%{http_code}\nremote_ip=%{remote_ip}\nremote_port=%{remote_port}\nurl_effective=%{url_effective}\nnum_redirects=%{num_redirects}\ntime_namelookup=%{time_namelookup}\ntime_connect=%{time_connect}\ntime_appconnect=%{time_appconnect}\ntime_starttransfer=%{time_starttransfer}\ntime_total=%{time_total}\n",
 		curlURL,
 	}
 	out, err := probeVirtualRouterRouteTestRunCurlCommand(ctx, curlPath, args)
@@ -618,7 +620,7 @@ func parseProbeVirtualRouterRouteTestCurlOutput(raw string) map[string]string {
 
 func compactProbeVirtualRouterRouteTestCurlOutput(values map[string]string, raw string) string {
 	parts := make([]string, 0, 8)
-	for _, key := range []string{"time_namelookup", "time_connect", "time_appconnect", "time_starttransfer", "time_total"} {
+	for _, key := range []string{"url_effective", "num_redirects", "time_namelookup", "time_connect", "time_appconnect", "time_starttransfer", "time_total"} {
 		if value := strings.TrimSpace(values[key]); value != "" {
 			parts = append(parts, key+"="+value)
 		}

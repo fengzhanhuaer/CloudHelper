@@ -1036,6 +1036,7 @@ func buildProbeVirtualRouterRecentPacket(source string, action string, runtime *
 		item.SourcePort = info.SourcePort
 		item.DestinationPort = info.DestinationPort
 		item.TCPFlags = info.TCPFlags
+		item.Detail = probeVirtualRouterPacketChecksumSummary(packet)
 	} else if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
 		item.Protocol = "ICMP"
 		item.SourceIP = info.SourceIP
@@ -4201,6 +4202,7 @@ func probeVirtualRouterFrameTargetsLocalFakeIP(dstIP string, path []string, loca
 }
 
 func writeProbeVirtualRouterLocalTUNPacket(packet []byte) error {
+	normalizeProbeVirtualRouterLocalTUNPacketChecksums(packet)
 	if err := writeProbeVirtualRouterTUNPacket(packet); err == nil {
 		return nil
 	} else {
@@ -4216,6 +4218,37 @@ func writeProbeVirtualRouterLocalTUNPacket(packet []byte) error {
 }
 
 var probeVirtualRouterLocalTUNPacketWriter func([]byte) error
+
+func normalizeProbeVirtualRouterLocalTUNPacketChecksums(packet []byte) {
+	if len(packet) < 20 || packet[0]>>4 != 4 {
+		return
+	}
+	ihl := int(packet[0]&0x0F) * 4
+	if ihl < 20 || len(packet) < ihl {
+		return
+	}
+	totalLen := int(binary.BigEndian.Uint16(packet[2:4]))
+	if totalLen <= 0 || totalLen > len(packet) || totalLen < ihl {
+		return
+	}
+	packet[10], packet[11] = 0, 0
+	binary.BigEndian.PutUint16(packet[10:12], probeVirtualRouterChecksum(packet[:ihl]))
+	transport := packet[ihl:totalLen]
+	switch packet[9] {
+	case 6:
+		if len(transport) < 20 {
+			return
+		}
+		transport[16], transport[17] = 0, 0
+		binary.BigEndian.PutUint16(transport[16:18], probeVirtualRouterTransportChecksum(packet, transport))
+	case 17:
+		if len(transport) < 8 {
+			return
+		}
+		transport[6], transport[7] = 0, 0
+		binary.BigEndian.PutUint16(transport[6:8], probeVirtualRouterTransportChecksum(packet, transport))
+	}
+}
 
 func forwardProbeVirtualRouterPacketAlongPath(packet []byte, dstIP string, path []string, trace []probeVirtualRouterFrameTraceHop) error {
 	localNodeID := currentProbeVirtualRouterLocalNodeID()
@@ -5284,6 +5317,64 @@ func formatProbeVirtualRouterTCPFlags(flags byte) string {
 		names = append(names, "FIN")
 	}
 	return strings.Join(names, ",")
+}
+
+func probeVirtualRouterPacketChecksumSummary(packet []byte) string {
+	if len(packet) < 20 || packet[0]>>4 != 4 {
+		return ""
+	}
+	ihl := int(packet[0]&0x0F) * 4
+	if ihl < 20 || len(packet) < ihl {
+		return ""
+	}
+	totalLen := int(binary.BigEndian.Uint16(packet[2:4]))
+	if totalLen <= 0 || totalLen > len(packet) || totalLen < ihl {
+		return ""
+	}
+	parts := make([]string, 0, 2)
+	ipChecksum := "bad"
+	if probeVirtualRouterChecksum(packet[:ihl]) == 0 {
+		ipChecksum = "ok"
+	}
+	parts = append(parts, "ip_checksum="+ipChecksum)
+	transport := packet[ihl:totalLen]
+	switch packet[9] {
+	case 6:
+		if len(transport) < 20 {
+			parts = append(parts, "tcp_checksum=short")
+			break
+		}
+		checksum := binary.BigEndian.Uint16(transport[16:18])
+		tcpChecksum := "bad"
+		if checksum == 0 {
+			tcpChecksum = "zero"
+		} else if probeVirtualRouterTransportChecksum(packet, transport) == 0 {
+			tcpChecksum = "ok"
+		}
+		parts = append(parts, "tcp_checksum="+tcpChecksum)
+	case 17:
+		if len(transport) < 8 {
+			parts = append(parts, "udp_checksum=short")
+			break
+		}
+		checksum := binary.BigEndian.Uint16(transport[6:8])
+		udpChecksum := "ok"
+		if checksum != 0 && probeVirtualRouterTransportChecksum(packet, transport) != 0 {
+			udpChecksum = "bad"
+		}
+		parts = append(parts, "udp_checksum="+udpChecksum)
+	}
+	return strings.Join(parts, " ")
+}
+
+func probeVirtualRouterTransportChecksum(packet []byte, transport []byte) uint16 {
+	pseudo := make([]byte, 12+len(transport))
+	copy(pseudo[0:4], packet[12:16])
+	copy(pseudo[4:8], packet[16:20])
+	pseudo[9] = packet[9]
+	binary.BigEndian.PutUint16(pseudo[10:12], uint16(len(transport)))
+	copy(pseudo[12:], transport)
+	return probeVirtualRouterChecksum(pseudo)
 }
 
 func buildProbeVirtualRouterICMPEchoReply(packet []byte, localIP string) ([]byte, string, bool) {
