@@ -14,6 +14,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -199,6 +200,10 @@ func resetProbeVirtualRouterStateForTest() {
 	probeVirtualRouterPathRTTState.mu.Lock()
 	probeVirtualRouterPathRTTState.items = make(map[string]probeVirtualRouterPathRTTRecord)
 	probeVirtualRouterPathRTTState.mu.Unlock()
+	probeVirtualRouterRecentPacketState.mu.Lock()
+	probeVirtualRouterRecentPacketState.nextID = 0
+	probeVirtualRouterRecentPacketState.items = nil
+	probeVirtualRouterRecentPacketState.mu.Unlock()
 }
 
 func TestBuildProbeVirtualRouterRuntimeConfigRequiresLinkAuthFields(t *testing.T) {
@@ -1641,6 +1646,50 @@ func TestProbeVirtualRouterFakeIPExitPacketUsesNetstack(t *testing.T) {
 	}
 }
 
+func TestProbeVirtualRouterRecentPacketRecordsFakeIPSummary(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	config := probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "16", IP: "198.18.0.18"},
+			{NodeID: "19", IP: "198.18.0.21"},
+		},
+		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{
+			Items: []probeVirtualRouterFakeIPEntry{{
+				Domain:     "api.example.com",
+				FakeIP:     "198.18.4.9",
+				Action:     "probe_exit",
+				ExitNodeID: "19",
+			}},
+		},
+	}
+	applyProbeVirtualRouterConfigForNode(config, "19")
+	packet := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.18", "198.18.4.9", 49152, 443)
+	rt := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-16-19", identity: nodeIdentity{NodeID: "19"}, peerNodeID: "16"}}
+
+	recordProbeVirtualRouterRecentPacket("frame_rx", "fake_exit", rt, packet, []string{"16", "19"}, true, nil)
+	items := snapshotProbeVirtualRouterRecentPackets()
+	if len(items) != 1 {
+		t.Fatalf("recent packets=%d, want 1", len(items))
+	}
+	item := items[0]
+	if item.ID != 1 || item.Source != "frame_rx" || item.Action != "fake_exit" || item.RouteID != "vrouter-16-19" {
+		t.Fatalf("unexpected recent packet identity: %+v", item)
+	}
+	if item.Protocol != "TCP" || item.SourceIP != "198.18.0.18" || item.DestinationIP != "198.18.4.9" || item.SourcePort != 49152 || item.DestinationPort != 443 {
+		t.Fatalf("unexpected packet tuple: %+v", item)
+	}
+	if !item.FakeIP || item.FakeIPSide != "dst" || item.FakeIPDomain != "api.example.com" || item.FakeIPExitNode != "19" {
+		t.Fatalf("unexpected fake ip metadata: %+v", item)
+	}
+	if !reflect.DeepEqual(item.Path, []string{"16", "19"}) || item.PathText != "16>19" || !item.LocalMatch {
+		t.Fatalf("unexpected path/local match: %+v", item)
+	}
+}
+
 func TestProbeVirtualRouterFakeIPExitTargetsResolveRealIP(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeVirtualRouterStateForTest()
@@ -2443,6 +2492,111 @@ func TestProbeVirtualRouterCarrierFailureDetachesCarrierButKeepsFrameLink(t *tes
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("carrier should detach after physical failure")
+}
+
+func TestProbeVirtualRouterCarrierWriteDeadlineDetachesBlockedCarrier(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	conn := newProbeVirtualRouterDeadlineFailConn()
+	key := "carrier-write-deadline"
+	link := newProbeVirtualRouterFrameLink(key, &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-carrier-write-deadline"}}, nil, nil)
+	link.Start()
+	token := link.AttachCarrier(conn, "vrouter-carrier-deadline", "deadline")
+	if token == nil {
+		t.Fatalf("carrier should attach")
+	}
+	t.Cleanup(func() { stopProbeVirtualRouterFrameLink(link) })
+
+	frame, err := buildProbeVirtualRouterIPFrame(buildProbeVirtualRouterTestIPv4Packet(t, "198.18.0.1", "198.18.0.2"), []string{"1", "2"}, nil)
+	if err != nil {
+		t.Fatalf("build ip frame failed: %v", err)
+	}
+	if err := link.EnqueueProbeVirtualRouterFrame(frame); err != nil {
+		t.Fatalf("enqueue should not fail before carrier write timeout: %v", err)
+	}
+
+	select {
+	case <-conn.writeDeadlineSet:
+	case <-time.After(time.Second):
+		t.Fatalf("carrier write should set a write deadline")
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if isProbeVirtualRouterFrameLinkClosed(link) {
+			t.Fatalf("carrier write timeout should not close frame link")
+		}
+		link.mu.Lock()
+		carrier := link.carrier
+		link.mu.Unlock()
+		if carrier == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("carrier should detach after write deadline failure")
+}
+
+var errProbeVirtualRouterTestWriteDeadline = errors.New("test write deadline reached")
+
+type probeVirtualRouterDeadlineFailConn struct {
+	writeDeadlineSet chan struct{}
+	closeCh          chan struct{}
+	deadlineOnce     sync.Once
+	closeOnce        sync.Once
+}
+
+func newProbeVirtualRouterDeadlineFailConn() *probeVirtualRouterDeadlineFailConn {
+	return &probeVirtualRouterDeadlineFailConn{
+		writeDeadlineSet: make(chan struct{}),
+		closeCh:          make(chan struct{}),
+	}
+}
+
+func (c *probeVirtualRouterDeadlineFailConn) Read([]byte) (int, error) {
+	<-c.closeCh
+	return 0, net.ErrClosed
+}
+
+func (c *probeVirtualRouterDeadlineFailConn) Write([]byte) (int, error) {
+	select {
+	case <-c.writeDeadlineSet:
+		return 0, errProbeVirtualRouterTestWriteDeadline
+	case <-c.closeCh:
+		return 0, net.ErrClosed
+	}
+}
+
+func (c *probeVirtualRouterDeadlineFailConn) Close() error {
+	c.closeOnce.Do(func() {
+		close(c.closeCh)
+	})
+	return nil
+}
+
+func (c *probeVirtualRouterDeadlineFailConn) LocalAddr() net.Addr {
+	return &net.TCPAddr{}
+}
+
+func (c *probeVirtualRouterDeadlineFailConn) RemoteAddr() net.Addr {
+	return &net.TCPAddr{}
+}
+
+func (c *probeVirtualRouterDeadlineFailConn) SetDeadline(time.Time) error {
+	return nil
+}
+
+func (c *probeVirtualRouterDeadlineFailConn) SetReadDeadline(time.Time) error {
+	return nil
+}
+
+func (c *probeVirtualRouterDeadlineFailConn) SetWriteDeadline(t time.Time) error {
+	if !t.IsZero() {
+		c.deadlineOnce.Do(func() {
+			close(c.writeDeadlineSet)
+		})
+	}
+	return nil
 }
 
 func containsProbeVirtualRouterTestString(items []string, target string) bool {

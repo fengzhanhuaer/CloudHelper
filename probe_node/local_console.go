@@ -1637,6 +1637,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/tun/uninstall", probeLocalTUNUninstallHandler)
 	mux.HandleFunc("/local/api/logs", probeLocalLogsHandler)
 	mux.HandleFunc("/local/api/virtual_router/settings", probeLocalVirtualRouterSettingsHandler)
+	mux.HandleFunc("/local/api/virtual_router/packets", probeLocalVirtualRouterPacketsHandler)
 	mux.HandleFunc("/local/api/system/upgrade", probeLocalSystemUpgradeHandler)
 	mux.HandleFunc("/local/api/system/upgrade/check", probeLocalSystemUpgradeCheckHandler)
 	mux.HandleFunc("/local/api/system/upgrade/status", probeLocalSystemUpgradeStatusHandler)
@@ -2072,6 +2073,22 @@ func probeLocalVirtualRouterSettingsPayload(settings probeVirtualRouterLocalSett
 		"fake_ip_library":        library,
 		"fake_ip_count":          len(library.Items),
 	}
+}
+
+func probeLocalVirtualRouterPacketsHandler(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	items := snapshotProbeVirtualRouterRecentPackets()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":    items,
+		"count":    len(items),
+		"capacity": probeVirtualRouterRecentPacketLimit,
+	})
 }
 
 func probeLocalSystemUpgradeHandler(w http.ResponseWriter, r *http.Request) {

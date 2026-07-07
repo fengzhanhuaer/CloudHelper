@@ -173,6 +173,36 @@ func TestProbeLocalAuthFlowRegisterOnceAndSession(t *testing.T) {
 	}
 }
 
+func TestProbeLocalVirtualRouterPacketsHandlerReturnsRecentPackets(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	packet := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.18", "198.18.0.21", 49152, 443)
+	recordProbeVirtualRouterRecentPacket("tun_rx", "forward", nil, packet, []string{"16", "19"}, false, nil)
+
+	resp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/virtual_router/packets", nil, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("packets status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	items, ok := payload["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("items=%T %v", payload["items"], payload["items"])
+	}
+	first, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("first item=%T %v", items[0], items[0])
+	}
+	if first["source"] != "tun_rx" || first["action"] != "forward" || first["protocol"] != "TCP" {
+		t.Fatalf("unexpected packet item=%+v", first)
+	}
+	if first["source_ip"] != "198.18.0.18" || first["destination_ip"] != "198.18.0.21" {
+		t.Fatalf("unexpected packet tuple=%+v", first)
+	}
+}
+
 func TestProbeLocalProtectedRoutesRequireSession(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 

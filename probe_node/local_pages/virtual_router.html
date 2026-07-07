@@ -105,6 +105,69 @@
     .msg { margin-top: 14px; min-height: 20px; font-size: 14px; color: var(--muted); }
     .msg.error { color: var(--danger); }
     .msg.success { color: var(--ok); }
+    .subtabs {
+      display: flex;
+      gap: 6px;
+      margin: 0 0 14px;
+      border-bottom: 1px solid var(--border);
+      overflow-x: auto;
+    }
+    .subtab {
+      border: 0;
+      border-bottom: 2px solid transparent;
+      border-radius: 0;
+      background: transparent;
+      color: var(--muted);
+      padding: 10px 12px;
+      white-space: nowrap;
+      box-shadow: none;
+    }
+    .subtab.active {
+      color: #fff;
+      border-bottom-color: var(--accent);
+      background: rgba(88, 166, 255, 0.12);
+    }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    .table-wrap {
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(13, 17, 23, 0.3);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 980px;
+      font-size: 12px;
+    }
+    th, td {
+      padding: 8px 10px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      text-align: left;
+      vertical-align: top;
+      white-space: nowrap;
+    }
+    th {
+      color: #e6edf3;
+      background: rgba(13, 17, 23, 0.72);
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+    tr.packet-error td { color: var(--danger); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace; }
+    .packet-badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 20px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      border: 1px solid rgba(88, 166, 255, 0.28);
+      color: #79c0ff;
+      background: rgba(88, 166, 255, 0.1);
+      font-size: 11px;
+    }
     @media (max-width: 860px) {
       body { padding: 16px; }
       .topbar { flex-direction: column; }
@@ -128,6 +191,12 @@
       </div>
     </div>
 
+    <div class="subtabs" role="tablist">
+      <button class="subtab active" data-tab="status" type="button" role="tab" aria-selected="true">状态</button>
+      <button class="subtab" data-tab="packets" type="button" role="tab" aria-selected="false">最近报文</button>
+    </div>
+
+    <div id="statusTab" class="tab-panel active">
     <div class="grid">
       <section class="card">
         <h2>开关</h2>
@@ -196,6 +265,38 @@
         </div>
       </section>
     </div>
+    </div>
+
+    <div id="packetsTab" class="tab-panel">
+      <section class="card">
+        <h2>最近报文</h2>
+        <div class="actions">
+          <button id="packetRefreshBtn" class="secondary">刷新</button>
+        </div>
+        <div class="table-wrap" style="margin-top:12px;">
+          <table>
+            <thead>
+              <tr>
+                <th>No.</th>
+                <th>时间</th>
+                <th>来源</th>
+                <th>动作</th>
+                <th>协议</th>
+                <th>源</th>
+                <th>目的</th>
+                <th>长度</th>
+                <th>路径</th>
+                <th>Fake IP</th>
+                <th>详情</th>
+              </tr>
+            </thead>
+            <tbody id="packetRows">
+              <tr><td colspan="11" class="hint">-</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
 
     <p id="message" class="msg"></p>
   </main>
@@ -208,6 +309,7 @@
     const REQUEST_TIMEOUT_DEFAULT_MS = 20000;
     const REQUEST_TIMEOUT_TUN_INSTALL_MS = 90000;
     let tunPollingTimer = null;
+    let activeTab = 'status';
 
     function setMessage(text, type) {
       messageEl.textContent = text || '';
@@ -218,6 +320,15 @@
       const el = document.getElementById(id);
       if (!el) return;
       el.textContent = (value === undefined || value === null || value === '') ? '-' : String(value);
+    }
+
+    function escapeHTML(value) {
+      return String(value === undefined || value === null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
     }
 
     function requestTimeoutFor(url, timeoutMs) {
@@ -347,6 +458,76 @@
       document.getElementById('tunEgressRefreshBtn').disabled = !supported;
     }
 
+    function packetActionLabel(action) {
+      const value = String(action || '').trim();
+      const labels = {
+        forward: '转发',
+        forward_error: '转发失败',
+        deliver: '本地投递',
+        deliver_error: '投递失败',
+        fake_exit: 'Fake IP 出口',
+        local_icmp: '本机 ICMP',
+        drop: '丢弃',
+        bypass: '旁路',
+      };
+      return labels[value] || value || '-';
+    }
+
+    function packetSourceLabel(source) {
+      const value = String(source || '').trim();
+      if (value === 'tun_rx') return 'TUN';
+      if (value === 'frame_rx') return 'vRouter';
+      return value || '-';
+    }
+
+    function packetEndpoint(ip, port) {
+      const cleanIP = String(ip || '').trim();
+      const cleanPort = Number(port || 0);
+      if (!cleanIP) return '-';
+      return cleanPort > 0 ? `${cleanIP}:${cleanPort}` : cleanIP;
+    }
+
+    function packetTime(value) {
+      const text = String(value || '').trim();
+      if (!text) return '-';
+      const date = new Date(text);
+      if (Number.isNaN(date.getTime())) return text;
+      return date.toLocaleTimeString([], { hour12: false }) + '.' + String(date.getMilliseconds()).padStart(3, '0');
+    }
+
+    function renderPackets(data) {
+      const rows = document.getElementById('packetRows');
+      const items = Array.isArray(data && data.items) ? data.items : [];
+      if (!items.length) {
+        rows.innerHTML = '<tr><td colspan="11" class="hint">-</td></tr>';
+        return;
+      }
+      rows.innerHTML = items.map((item) => {
+        const fakeParts = [];
+        if (item.fake_ip_domain) fakeParts.push(item.fake_ip_domain);
+        if (item.fake_ip_exit_node) fakeParts.push('出口 ' + item.fake_ip_exit_node);
+        if (item.fake_ip_side) fakeParts.push(item.fake_ip_side);
+        const fakeText = item.fake_ip ? fakeParts.join(' / ') || '是' : '-';
+        const detailParts = [];
+        if (item.detail) detailParts.push(item.detail);
+        if (item.error) detailParts.push(item.error);
+        const actionClass = item.error ? ' class="packet-error"' : '';
+        return `<tr${actionClass}>
+          <td class="mono">${escapeHTML(item.id || '')}</td>
+          <td class="mono">${escapeHTML(packetTime(item.captured_at))}</td>
+          <td>${escapeHTML(packetSourceLabel(item.source))}</td>
+          <td><span class="packet-badge">${escapeHTML(packetActionLabel(item.action))}</span></td>
+          <td class="mono">${escapeHTML(item.protocol || '-')}</td>
+          <td class="mono">${escapeHTML(packetEndpoint(item.source_ip, item.source_port))}</td>
+          <td class="mono">${escapeHTML(packetEndpoint(item.destination_ip, item.destination_port))}</td>
+          <td class="mono">${escapeHTML(item.length || 0)}</td>
+          <td class="mono">${escapeHTML(item.path_text || '-')}</td>
+          <td>${escapeHTML(fakeText)}</td>
+          <td>${escapeHTML(detailParts.join(' / ') || '-')}</td>
+        </tr>`;
+      }).join('');
+    }
+
     async function loadSettings() {
       const data = await requestJSON('/local/api/virtual_router/settings', { method: 'GET' });
       renderSettings(data || {});
@@ -368,12 +549,19 @@
       }
     }
 
+    async function loadPackets() {
+      const data = await requestJSON('/local/api/virtual_router/packets', { method: 'GET' });
+      renderPackets(data || {});
+      return data || {};
+    }
+
     async function refreshAll() {
       const ok = await ensureSession();
       if (!ok) return;
       await loadSettings();
       await loadTunStatus();
       await loadTunEgress();
+      if (activeTab === 'packets') await loadPackets();
     }
 
     async function saveSettings() {
@@ -468,7 +656,22 @@
       if (tunPollingTimer) return;
       tunPollingTimer = setInterval(() => {
         loadTunStatus().catch(() => {});
+        if (activeTab === 'packets') loadPackets().catch(() => {});
       }, 3000);
+    }
+
+    function switchTab(tab) {
+      activeTab = tab === 'packets' ? 'packets' : 'status';
+      document.querySelectorAll('.subtab').forEach((btn) => {
+        const active = btn.dataset.tab === activeTab;
+        btn.classList.toggle('active', active);
+        btn.setAttribute('aria-selected', active ? 'true' : 'false');
+      });
+      document.getElementById('statusTab').classList.toggle('active', activeTab === 'status');
+      document.getElementById('packetsTab').classList.toggle('active', activeTab === 'packets');
+      if (activeTab === 'packets') {
+        loadPackets().catch((err) => setMessage('读取最近报文失败：' + err.message, 'error'));
+      }
     }
 
     document.getElementById('saveSettingsBtn').addEventListener('click', () => {
@@ -487,6 +690,12 @@
     document.getElementById('tunEgressAutoBtn').addEventListener('click', autoTunEgress);
     document.getElementById('tunEgressRefreshBtn').addEventListener('click', () => {
       loadTunEgress().then(() => setMessage('出口候选已刷新', 'success')).catch((err) => setMessage('刷新出口候选失败：' + err.message, 'error'));
+    });
+    document.getElementById('packetRefreshBtn').addEventListener('click', () => {
+      loadPackets().then(() => setMessage('最近报文已刷新', 'success')).catch((err) => setMessage('读取最近报文失败：' + err.message, 'error'));
+    });
+    document.querySelectorAll('.subtab').forEach((btn) => {
+      btn.addEventListener('click', () => switchTab(btn.dataset.tab));
     });
 
     refreshAll().catch((err) => setMessage('初始化失败：' + err.message, 'error'));
