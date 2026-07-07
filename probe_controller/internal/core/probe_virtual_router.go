@@ -62,9 +62,10 @@ type probeVirtualRouterFakeIPEntry struct {
 }
 
 type probeVirtualRouterProbeIP struct {
-	NodeID string `json:"node_id"`
-	IP     string `json:"ip"`
-	Note   string `json:"note,omitempty"`
+	NodeID      string `json:"node_id"`
+	IP          string `json:"ip"`
+	ServicePort int    `json:"service_port,omitempty"`
+	Note        string `json:"note,omitempty"`
 }
 
 type probeVirtualRouterTopologyRule struct {
@@ -254,6 +255,9 @@ func validateAndNormalizeProbeVirtualRouterConfig(input probeVirtualRouterConfig
 		if !isProbeVirtualRouterProbeIPInPool(cidr, ip) {
 			return probeVirtualRouterConfig{}, fmt.Errorf("probe_ips[%d].ip must be in first %d fake ip addresses", index, probeVirtualRouterProbeIPPoolSize)
 		}
+		if item.ServicePort < 0 || item.ServicePort > 65535 {
+			return probeVirtualRouterConfig{}, fmt.Errorf("probe_ips[%d].service_port must be empty(default %d) or between 1 and 65535", index, probeVirtualRouterDefaultServicePort)
+		}
 		if _, exists := seenNode[nodeID]; exists {
 			return probeVirtualRouterConfig{}, fmt.Errorf("probe_ips[%d].node_id is duplicated", index)
 		}
@@ -283,9 +287,6 @@ func validateAndNormalizeProbeVirtualRouterConfig(input probeVirtualRouterConfig
 		}
 		if fromNodeID == toNodeID {
 			return probeVirtualRouterConfig{}, fmt.Errorf("topology_rules[%d] endpoints must be different", index)
-		}
-		if item.ToServicePort < 0 || item.ToServicePort > 65535 {
-			return probeVirtualRouterConfig{}, fmt.Errorf("topology_rules[%d].to_service_port must be empty(default %d) or between 1 and 65535", index, probeVirtualRouterDefaultServicePort)
 		}
 	}
 	for index, item := range input.RouteRules {
@@ -344,9 +345,10 @@ func normalizeProbeVirtualRouterProbeIPs(cidr string, items []probeVirtualRouter
 		seenNode[nodeID] = struct{}{}
 		seenIP[ip] = struct{}{}
 		out = append(out, probeVirtualRouterProbeIP{
-			NodeID: nodeID,
-			IP:     ip,
-			Note:   strings.TrimSpace(item.Note),
+			NodeID:      nodeID,
+			IP:          ip,
+			ServicePort: normalizeProbeVirtualRouterServicePort(item.ServicePort),
+			Note:        strings.TrimSpace(item.Note),
 		})
 		if len(out) >= probeVirtualRouterMaxProbeIPCount {
 			break
@@ -382,14 +384,14 @@ func normalizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopology
 		fromServiceDomain := ""
 		fromServicePort := 0
 		toServiceDomain := strings.TrimSpace(item.ToServiceDomain)
-		toServicePort := normalizeProbeVirtualRouterServicePort(item.ToServicePort)
+		toServicePort := 0
 		ruleID := strings.TrimSpace(item.ID)
 		if ruleID == "" {
 			ruleID, nextRuleSeq = allocateProbeVirtualRouterRuleID(seen, reserved, nextRuleSeq)
 		}
 		key := ruleID
 		if key == "" {
-			key = fmt.Sprintf("%s|%s|%s|%d|%s|%d", fromNodeID, toNodeID, fromServiceDomain, fromServicePort, toServiceDomain, toServicePort)
+			key = fmt.Sprintf("%s|%s|%s", fromNodeID, toNodeID, strings.ToLower(toServiceDomain))
 		}
 		if _, exists := seen[key]; exists {
 			continue
@@ -500,7 +502,6 @@ func probeVirtualRouterTopologyRuleIdentityKey(item probeVirtualRouterTopologyRu
 		fromNodeID,
 		toNodeID,
 		strings.ToLower(strings.TrimSpace(item.ToServiceDomain)),
-		strconv.Itoa(normalizeProbeVirtualRouterServicePort(item.ToServicePort)),
 	}, "|")
 }
 
@@ -1271,9 +1272,10 @@ func ensureProbeVirtualRouterProbeIPsForKnownNodes(config probeVirtualRouterConf
 		existingNode[nodeID] = struct{}{}
 		usedIP[ip] = struct{}{}
 		probeIPs = append(probeIPs, probeVirtualRouterProbeIP{
-			NodeID: nodeID,
-			IP:     ip,
-			Note:   strings.TrimSpace(item.Note),
+			NodeID:      nodeID,
+			IP:          ip,
+			ServicePort: normalizeProbeVirtualRouterServicePort(item.ServicePort),
+			Note:        strings.TrimSpace(item.Note),
 		})
 	}
 	for _, nodeID := range known {
@@ -1289,7 +1291,7 @@ func ensureProbeVirtualRouterProbeIPsForKnownNodes(config probeVirtualRouterConf
 		}
 		existingNode[nodeID] = struct{}{}
 		usedIP[ip] = struct{}{}
-		probeIPs = append(probeIPs, probeVirtualRouterProbeIP{NodeID: nodeID, IP: ip})
+		probeIPs = append(probeIPs, probeVirtualRouterProbeIP{NodeID: nodeID, IP: ip, ServicePort: probeVirtualRouterDefaultServicePort})
 	}
 	config.ProbeIPs = normalizeProbeVirtualRouterProbeIPs(config.FakeIPCIDR, probeIPs)
 	return config

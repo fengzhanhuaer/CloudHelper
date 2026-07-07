@@ -103,6 +103,7 @@
                 <tr>
                   <th>探针</th>
                   <th>静态 IP</th>
+                  <th>端口</th>
                 </tr>
               </thead>
               <tbody id="vr-ip-body"></tbody>
@@ -458,12 +459,13 @@
       const ips = Array.isArray(cfg.probe_ips) ? cfg.probe_ips : [];
       const ipBody = document.getElementById('vr-ip-body');
       if (!ips.length) {
-        ipBody.innerHTML = '<tr><td colspan="2" class="muted">暂无探针静态 IP，刷新后会按已知探针自动生成。</td></tr>';
+        ipBody.innerHTML = '<tr><td colspan="3" class="muted">暂无探针静态 IP，刷新后会按已知探针自动生成。</td></tr>';
       } else {
         ipBody.innerHTML = ips.map((item, idx) => `
           <tr>
             <td>${escapeHTML(nodeLabel(item.node_id))}<div class="small muted mono">${escapeHTML(item.node_id || '')}</div></td>
             <td><input data-vr-ip="${idx}" class="mono" value="${escapeHTML(item.ip || '')}" /></td>
+            <td><input data-vr-ip-port="${idx}" class="mono" type="number" min="1" max="65535" value="${escapeHTML(item.service_port || DEFAULTS.virtualRouterServicePort)}" /></td>
           </tr>
         `).join('');
       }
@@ -486,7 +488,6 @@
               <div class="endpoint-stack">
                 <div class="endpoint-row"><span class="label">监听探针</span><select data-vr-rule-to="${idx}">${virtualRouterNodeOptions(rule.to_node_id)}</select></div>
                 <div class="endpoint-row"><span class="label">监听域名</span>${virtualRouterDomainSelect(rule, idx, 'to')}</div>
-                <div class="endpoint-row"><span class="label">监听端口</span><input data-vr-rule-to-port="${idx}" class="mono" type="number" min="1" max="65535" value="${escapeHTML(rule.to_service_port || DEFAULTS.virtualRouterServicePort)}" /></div>
               </div>
             </td>
             <td><button class="btn" data-vr-rule-remove="${idx}" type="button">删除</button></td>
@@ -504,6 +505,13 @@
           const idx = Number.parseInt(el.getAttribute('data-vr-ip') || '-1', 10);
           const ips = state.virtualRouter.probe_ips || [];
           if (idx >= 0 && idx < ips.length) ips[idx].ip = String(el.value || '').trim();
+        });
+      });
+      document.querySelectorAll('[data-vr-ip-port]').forEach((el) => {
+        el.addEventListener('input', () => {
+          const idx = Number.parseInt(el.getAttribute('data-vr-ip-port') || '-1', 10);
+          const ips = state.virtualRouter.probe_ips || [];
+          if (idx >= 0 && idx < ips.length) ips[idx].service_port = normalizePort(el.value, DEFAULTS.virtualRouterServicePort);
         });
       });
       document.querySelectorAll('[data-vr-rule-enabled]').forEach((el) => {
@@ -532,14 +540,6 @@
           rules[idx].to_node_id = normalizeNodeID(el.value);
           reconcileVirtualRouterDomainForNode(rules[idx], 'to');
           renderVirtualRouter();
-        });
-      });
-      document.querySelectorAll('[data-vr-rule-to-port]').forEach((el) => {
-        el.addEventListener('input', () => {
-          const idx = Number.parseInt(el.getAttribute('data-vr-rule-to-port') || '-1', 10);
-          const rules = state.virtualRouter.topology_rules || [];
-          if (idx < 0 || idx >= rules.length) return;
-          rules[idx].to_service_port = normalizePort(el.value, DEFAULTS.virtualRouterServicePort);
         });
       });
       document.querySelectorAll('[data-vr-rule-remove]').forEach((el) => {
@@ -581,7 +581,7 @@
         from_service_domain: '',
         from_service_port: 0,
         to_service_domain: '',
-        to_service_port: DEFAULTS.virtualRouterServicePort,
+        to_service_port: 0,
         enabled: true,
       });
       renderVirtualRouter();
@@ -590,9 +590,13 @@
     async function saveVirtualRouter() {
       state.virtualRouter.enabled = document.getElementById('vr-enabled').value !== 'false';
       state.virtualRouter.fake_ip_cidr = String(document.getElementById('vr-cidr').value || '').trim() || '198.18.0.0/15';
+      (state.virtualRouter.probe_ips || []).forEach((item) => {
+        item.service_port = normalizePort(item.service_port, DEFAULTS.virtualRouterServicePort);
+      });
       (state.virtualRouter.topology_rules || []).forEach((rule) => {
         rule.from_service_domain = '';
         rule.from_service_port = 0;
+        rule.to_service_port = 0;
       });
       const result = await requestJSON('/mng/api/route/virtual_router', {
         method: 'POST',

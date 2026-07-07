@@ -54,9 +54,10 @@ type probeVirtualRouterFakeIPEntry struct {
 }
 
 type probeVirtualRouterProbeIP struct {
-	NodeID string `json:"node_id"`
-	IP     string `json:"ip"`
-	Note   string `json:"note,omitempty"`
+	NodeID      string `json:"node_id"`
+	IP          string `json:"ip"`
+	ServicePort int    `json:"service_port,omitempty"`
+	Note        string `json:"note,omitempty"`
 }
 
 type probeVirtualRouterTopologyRule struct {

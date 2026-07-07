@@ -5,15 +5,22 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -101,7 +108,7 @@ func TestProbeVirtualRouterCacheRoundTrip(t *testing.T) {
 		Enabled:    true,
 		FakeIPCIDR: "198.18.0.0/15",
 		ProbeIPs: []probeVirtualRouterProbeIP{
-			{NodeID: "node-1", IP: "198.18.0.1"},
+			{NodeID: "node-1", IP: "198.18.0.1", ServicePort: 12443},
 		},
 		TopologyRules: []probeVirtualRouterTopologyRule{
 			{
@@ -155,6 +162,9 @@ func TestProbeVirtualRouterCacheRoundTrip(t *testing.T) {
 	if len(loaded.ProbeIPs) != 1 || loaded.ProbeIPs[0].NodeID != "1" {
 		t.Fatalf("loaded probe ips=%+v", loaded.ProbeIPs)
 	}
+	if loaded.ProbeIPs[0].ServicePort != 12443 {
+		t.Fatalf("loaded probe service port=%d, want 12443", loaded.ProbeIPs[0].ServicePort)
+	}
 	if len(loaded.TopologyRules) != 3 || loaded.TopologyRules[0].Direction != probeVirtualRouterDirectionForward {
 		t.Fatalf("loaded topology=%+v", loaded.TopologyRules)
 	}
@@ -164,8 +174,8 @@ func TestProbeVirtualRouterCacheRoundTrip(t *testing.T) {
 	if loaded.TopologyRules[1].FromServicePort != 0 || loaded.TopologyRules[1].ToServicePort != 443 {
 		t.Fatalf("service port reuse should be preserved: %+v", loaded.TopologyRules)
 	}
-	if loaded.TopologyRules[2].FromServicePort != 0 || loaded.TopologyRules[2].ToServicePort != probeVirtualRouterDefaultServicePort {
-		t.Fatalf("default service ports=%d/%d, want from=0 to=%d", loaded.TopologyRules[2].FromServicePort, loaded.TopologyRules[2].ToServicePort, probeVirtualRouterDefaultServicePort)
+	if loaded.TopologyRules[2].FromServicePort != 0 || loaded.TopologyRules[2].ToServicePort != 0 {
+		t.Fatalf("empty topology service ports=%d/%d, want zero", loaded.TopologyRules[2].FromServicePort, loaded.TopologyRules[2].ToServicePort)
 	}
 }
 
@@ -184,6 +194,16 @@ func withProbeVirtualRouterRuleAuthForTest(t *testing.T, rule probeVirtualRouter
 }
 
 func resetProbeVirtualRouterStateForTest() {
+	probeVirtualRouterRelayServerState.mu.Lock()
+	relays := make([]*probeVirtualRouterRelayServer, 0, len(probeVirtualRouterRelayServerState.servers))
+	for _, relay := range probeVirtualRouterRelayServerState.servers {
+		relays = append(relays, relay)
+	}
+	probeVirtualRouterRelayServerState.servers = make(map[string]*probeVirtualRouterRelayServer)
+	probeVirtualRouterRelayServerState.mu.Unlock()
+	for _, relay := range relays {
+		closeProbeVirtualRouterRelayServer(relay)
+	}
 	probeVirtualRouterState.mu.Lock()
 	probeVirtualRouterState.config = probeVirtualRouterConfig{}
 	probeVirtualRouterState.localNodeID = ""
@@ -218,12 +238,14 @@ func TestBuildProbeVirtualRouterRuntimeConfigRequiresLinkAuthFields(t *testing.T
 		FromServicePort: 12040,
 		Enabled:         true,
 	}
-	if _, ok := buildProbeVirtualRouterRuntimeConfigForRule(rule, nodeIdentity{NodeID: "1"}, ""); ok {
+	config := probeVirtualRouterConfig{Enabled: true, TopologyRules: []probeVirtualRouterTopologyRule{rule}}
+	if _, ok := buildProbeVirtualRouterRuntimeConfigForRule(config, rule, nodeIdentity{NodeID: "1"}, ""); ok {
 		t.Fatalf("runtime config should require link auth fields")
 	}
 
 	rule = withProbeVirtualRouterRuleAuthForTest(t, rule)
-	cfg, ok := buildProbeVirtualRouterRuntimeConfigForRule(rule, nodeIdentity{NodeID: "1"}, "")
+	config.TopologyRules = []probeVirtualRouterTopologyRule{rule}
+	cfg, ok := buildProbeVirtualRouterRuntimeConfigForRule(config, rule, nodeIdentity{NodeID: "1"}, "")
 	if !ok {
 		t.Fatalf("runtime config should be built with link auth fields")
 	}
@@ -410,6 +432,10 @@ func TestProbeVirtualRouterCurrentLocalPathToIP(t *testing.T) {
 func TestBuildProbeVirtualRouterRuntimeConfigsForNode(t *testing.T) {
 	config := probeVirtualRouterConfig{
 		Enabled: true,
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "1", IP: "198.18.0.11", ServicePort: 12040},
+			{NodeID: "2", IP: "198.18.0.12", ServicePort: 12440},
+		},
 		TopologyRules: []probeVirtualRouterTopologyRule{
 			withProbeVirtualRouterRuleAuthForTest(t, probeVirtualRouterTopologyRule{
 				ID:                "edge-a-b",
@@ -419,7 +445,7 @@ func TestBuildProbeVirtualRouterRuntimeConfigsForNode(t *testing.T) {
 				FromServiceDomain: "a.internal",
 				FromServicePort:   12040,
 				ToServiceDomain:   "b.internal",
-				ToServicePort:     12040,
+				ToServicePort:     13040,
 				Enabled:           true,
 			}),
 		},
@@ -432,13 +458,13 @@ func TestBuildProbeVirtualRouterRuntimeConfigsForNode(t *testing.T) {
 	if left[0].routeID != right[0].routeID || !isProbeVirtualRouterRuntimeRouteID(left[0].routeID) {
 		t.Fatalf("unexpected route ids left=%q right=%q", left[0].routeID, right[0].routeID)
 	}
-	if left[0].peerNodeID != "2" || left[0].peerHost != "b.internal" || left[0].peerPort != 12040 || !left[0].dialer {
+	if left[0].peerNodeID != "2" || left[0].peerHost != "b.internal" || left[0].peerPort != 12440 || !left[0].dialer {
 		t.Fatalf("left runtime should dial node 2: %+v", left[0])
 	}
 	if right[0].peerNodeID != "1" || right[0].dialer || right[0].peerHost != "" || right[0].peerPort != 0 {
 		t.Fatalf("right runtime should wait for node 1: %+v", right[0])
 	}
-	if left[0].listenPort != 0 || right[0].listenPort != 12040 {
+	if left[0].listenPort != 0 || right[0].listenPort != 12440 {
 		t.Fatalf("listen ports left=%d right=%d", left[0].listenPort, right[0].listenPort)
 	}
 }
@@ -446,6 +472,11 @@ func TestBuildProbeVirtualRouterRuntimeConfigsForNode(t *testing.T) {
 func TestBuildProbeVirtualRouterRuntimeConfigsAllowSharedPortAcrossRules(t *testing.T) {
 	config := probeVirtualRouterConfig{
 		Enabled: true,
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "1", IP: "198.18.0.11", ServicePort: 12040},
+			{NodeID: "2", IP: "198.18.0.12", ServicePort: 12441},
+			{NodeID: "3", IP: "198.18.0.13", ServicePort: 12042},
+		},
 		TopologyRules: []probeVirtualRouterTopologyRule{
 			withProbeVirtualRouterRuleAuthForTest(t, probeVirtualRouterTopologyRule{
 				ID:              "edge-a-b",
@@ -453,7 +484,7 @@ func TestBuildProbeVirtualRouterRuntimeConfigsAllowSharedPortAcrossRules(t *test
 				ToNodeID:        "2",
 				FromServicePort: 12040,
 				ToServiceDomain: "b.internal",
-				ToServicePort:   12040,
+				ToServicePort:   13040,
 				Enabled:         true,
 			}),
 			withProbeVirtualRouterRuleAuthForTest(t, probeVirtualRouterTopologyRule{
@@ -462,7 +493,7 @@ func TestBuildProbeVirtualRouterRuntimeConfigsAllowSharedPortAcrossRules(t *test
 				ToNodeID:        "2",
 				FromServicePort: 12040,
 				ToServiceDomain: "b.internal",
-				ToServicePort:   12040,
+				ToServicePort:   13041,
 				Enabled:         true,
 			}),
 		},
@@ -477,10 +508,10 @@ func TestBuildProbeVirtualRouterRuntimeConfigsAllowSharedPortAcrossRules(t *test
 	if left[0].listenPort != 0 || right[0].listenPort != 0 {
 		t.Fatalf("dialer listen ports left=%d right=%d", left[0].listenPort, right[0].listenPort)
 	}
-	if left[0].peerHost != "b.internal" || left[0].peerPort != 12040 || right[0].peerHost != "b.internal" || right[0].peerPort != 12040 {
+	if left[0].peerHost != "b.internal" || left[0].peerPort != 12441 || right[0].peerHost != "b.internal" || right[0].peerPort != 12441 {
 		t.Fatalf("dialers should target same B service port: left=%+v right=%+v", left[0], right[0])
 	}
-	if middle[0].listenPort != 12040 || middle[1].listenPort != 12040 {
+	if middle[0].listenPort != 12441 || middle[1].listenPort != 12441 {
 		t.Fatalf("listener ports middle=%d/%d", middle[0].listenPort, middle[1].listenPort)
 	}
 	if middle[0].routeID == middle[1].routeID {
@@ -1028,6 +1059,122 @@ func TestStartProbeVirtualRouterRuntimeCreatesFrameLinkWorkers(t *testing.T) {
 	case <-link.done:
 		t.Fatalf("frame link should stay open while runtime is running")
 	default:
+	}
+}
+
+func TestStartProbeVirtualRouterRuntimeReusesRelayForSharedListenPort(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(func() { closeProbeVirtualRouterFrameLinks("test cleanup") })
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	writeProbeVirtualRouterTestTLSCertificate(t)
+
+	blocker, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	port := blocker.Addr().(*net.TCPAddr).Port
+	_ = blocker.Close()
+
+	base := probeVirtualRouterRuntimeConfig{
+		secret:     "shared-secret",
+		authTicket: "ticket",
+		listenHost: "127.0.0.1",
+		listenPort: port,
+		identity:   nodeIdentity{NodeID: "2"},
+	}
+	first := base
+	first.routeID = "vrouter-shared-listen-1"
+	first.peerNodeID = "1"
+	rt1, err := startProbeVirtualRouterRuntime(first)
+	if err != nil {
+		t.Fatalf("start first runtime failed: %v", err)
+	}
+	t.Cleanup(func() { stopProbeVirtualRouterRuntime(first.routeID, "test cleanup") })
+
+	second := base
+	second.routeID = "vrouter-shared-listen-2"
+	second.peerNodeID = "3"
+	rt2, err := startProbeVirtualRouterRuntime(second)
+	if err != nil {
+		t.Fatalf("start second runtime on shared port failed: %v", err)
+	}
+	t.Cleanup(func() { stopProbeVirtualRouterRuntime(second.routeID, "test cleanup") })
+
+	if rt1.relay == nil || rt1.relay != rt2.relay {
+		t.Fatalf("runtimes should share one relay: left=%p right=%p", rt1.relay, rt2.relay)
+	}
+	listenAddr := net.JoinHostPort(base.listenHost, strconv.Itoa(port))
+	probeVirtualRouterRelayServerState.mu.Lock()
+	relay := probeVirtualRouterRelayServerState.servers[listenAddr]
+	routeCount := 0
+	if relay != nil {
+		routeCount = len(relay.routeIDs)
+	}
+	probeVirtualRouterRelayServerState.mu.Unlock()
+	if relay != rt1.relay || routeCount != 2 {
+		t.Fatalf("shared relay state relay=%p route_count=%d want relay=%p count=2", relay, routeCount, rt1.relay)
+	}
+
+	stopProbeVirtualRouterRuntime(first.routeID, "test stop first")
+	probeVirtualRouterRelayServerState.mu.Lock()
+	relay = probeVirtualRouterRelayServerState.servers[listenAddr]
+	routeCount = 0
+	if relay != nil {
+		routeCount = len(relay.routeIDs)
+	}
+	probeVirtualRouterRelayServerState.mu.Unlock()
+	if relay != rt2.relay || routeCount != 1 {
+		t.Fatalf("shared relay should stay alive after one route stops: relay=%p route_count=%d", relay, routeCount)
+	}
+
+	stopProbeVirtualRouterRuntime(second.routeID, "test stop second")
+	probeVirtualRouterRelayServerState.mu.Lock()
+	relay = probeVirtualRouterRelayServerState.servers[listenAddr]
+	probeVirtualRouterRelayServerState.mu.Unlock()
+	if relay != nil {
+		t.Fatalf("shared relay should close after last route stops: %p", relay)
+	}
+}
+
+func writeProbeVirtualRouterTestTLSCertificate(t *testing.T) {
+	t.Helper()
+	dataDir, err := resolveDataDir()
+	if err != nil {
+		t.Fatalf("resolve data dir: %v", err)
+	}
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("create data dir: %v", err)
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate tls key: %v", err)
+	}
+	now := time.Now().Add(-time.Minute)
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject: pkix.Name{
+			CommonName: "127.0.0.1",
+		},
+		NotBefore:             now,
+		NotAfter:              now.Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
+		DNSNames:              []string{"localhost"},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create tls certificate: %v", err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	if err := os.WriteFile(filepath.Join(dataDir, probeTLSCertFile), certPEM, 0o600); err != nil {
+		t.Fatalf("write tls cert: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, probeTLSKeyFile), keyPEM, 0o600); err != nil {
+		t.Fatalf("write tls key: %v", err)
 	}
 }
 

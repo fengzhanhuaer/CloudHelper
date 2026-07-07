@@ -53,8 +53,11 @@ func TestBuildProbeVirtualRouterConfigForNodeReturnsFullVirtualTopology(t *testi
 	if len(config.TopologyRules) != 3 {
 		t.Fatalf("topology rules=%+v, want full virtual topology", config.TopologyRules)
 	}
-	if config.TopologyRules[0].FromServicePort != 0 || config.TopologyRules[0].ToServicePort != probeVirtualRouterDefaultServicePort {
-		t.Fatalf("default service ports=%d/%d, want from=0 to=%d", config.TopologyRules[0].FromServicePort, config.TopologyRules[0].ToServicePort, probeVirtualRouterDefaultServicePort)
+	if config.ProbeIPs[0].ServicePort != probeVirtualRouterDefaultServicePort {
+		t.Fatalf("default probe service port=%d, want %d", config.ProbeIPs[0].ServicePort, probeVirtualRouterDefaultServicePort)
+	}
+	if config.TopologyRules[0].FromServicePort != 0 || config.TopologyRules[0].ToServicePort != 0 {
+		t.Fatalf("topology service ports=%d/%d, want zero", config.TopologyRules[0].FromServicePort, config.TopologyRules[0].ToServicePort)
 	}
 }
 

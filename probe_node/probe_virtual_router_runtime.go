@@ -68,6 +68,7 @@ type probeVirtualRouterRuntime struct {
 type probeVirtualRouterRelayServer struct {
 	listenAddr  string
 	httpsServer *http.Server
+	routeIDs    map[string]struct{}
 	closeOnce   sync.Once
 }
 
@@ -125,6 +126,11 @@ var probeVirtualRouterRuntimeState = struct {
 	mu       sync.RWMutex
 	runtimes map[string]*probeVirtualRouterRuntime
 }{runtimes: make(map[string]*probeVirtualRouterRuntime)}
+
+var probeVirtualRouterRelayServerState = struct {
+	mu      sync.Mutex
+	servers map[string]*probeVirtualRouterRelayServer
+}{servers: make(map[string]*probeVirtualRouterRelayServer)}
 
 var probeVirtualRouterFrameLinkState = struct {
 	mu    sync.Mutex
@@ -312,7 +318,7 @@ func (rt *probeVirtualRouterRuntime) closeRuntimeResources() {
 		return
 	}
 	if rt.relay != nil {
-		closeProbeVirtualRouterRelayServer(rt.relay)
+		releaseProbeVirtualRouterRelayServer(rt)
 		rt.relay = nil
 	}
 }
@@ -338,24 +344,57 @@ func startProbeVirtualRouterRelayServer(rt *probeVirtualRouterRuntime) error {
 	}
 	cfg := rt.cfg
 	listenAddr := net.JoinHostPort(cfg.listenHost, strconv.Itoa(cfg.listenPort))
+	routeID := strings.TrimSpace(cfg.routeID)
+	if routeID == "" {
+		return errors.New("virtual router route_id is required")
+	}
+	probeVirtualRouterRelayServerState.mu.Lock()
+	if existing := probeVirtualRouterRelayServerState.servers[listenAddr]; existing != nil {
+		if existing.routeIDs == nil {
+			existing.routeIDs = make(map[string]struct{})
+		}
+		existing.routeIDs[routeID] = struct{}{}
+		rt.relayListenAddr = listenAddr
+		rt.relay = existing
+		probeVirtualRouterRelayServerState.mu.Unlock()
+		log.Printf("probe virtual router relay reused: route=%s listen=%s routes=%d", cfg.routeID, listenAddr, len(existing.routeIDs))
+		return nil
+	}
+	probeVirtualRouterRelayServerState.mu.Unlock()
 	handler := buildProbeVirtualRouterRelayHandler()
 	cert, err := prepareProbeServerCertificate(cfg.identity, strings.TrimSpace(cfg.controllerURL))
 	if err != nil {
 		return fmt.Errorf("prepare virtual router relay certificate failed: %w", err)
 	}
+	probeVirtualRouterRelayServerState.mu.Lock()
+	if existing := probeVirtualRouterRelayServerState.servers[listenAddr]; existing != nil {
+		if existing.routeIDs == nil {
+			existing.routeIDs = make(map[string]struct{})
+		}
+		existing.routeIDs[routeID] = struct{}{}
+		rt.relayListenAddr = listenAddr
+		rt.relay = existing
+		probeVirtualRouterRelayServerState.mu.Unlock()
+		log.Printf("probe virtual router relay reused: route=%s listen=%s routes=%d", cfg.routeID, listenAddr, len(existing.routeIDs))
+		return nil
+	}
 	listenConfig := net.ListenConfig{KeepAlive: probeRouteRelayTCPKeepAlivePeriod}
 	tcpListener, err := listenConfig.Listen(context.Background(), "tcp", listenAddr)
 	if err != nil {
+		probeVirtualRouterRelayServerState.mu.Unlock()
 		return fmt.Errorf("listen virtual router relay tcp failed: %w", err)
 	}
 	relay := &probeVirtualRouterRelayServer{
 		listenAddr: listenAddr,
+		routeIDs:   map[string]struct{}{routeID: {}},
 	}
 	relay.httpsServer = &http.Server{
 		Addr:              listenAddr,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	probeVirtualRouterRelayServerState.servers[listenAddr] = relay
+	probeVirtualRouterRelayServerState.mu.Unlock()
 	go func() {
 		if serveErr := relay.httpsServer.ServeTLS(tcpListener, cert.CertPath, cert.KeyPath); serveErr != nil && serveErr != http.ErrServerClosed {
 			log.Printf("probe virtual router relay exited: layer=websocket listen=%s err=%v", listenAddr, serveErr)
@@ -365,6 +404,32 @@ func startProbeVirtualRouterRelayServer(rt *probeVirtualRouterRuntime) error {
 	rt.relay = relay
 	log.Printf("probe virtual router relay started: route=%s listen=%s", cfg.routeID, listenAddr)
 	return nil
+}
+
+func releaseProbeVirtualRouterRelayServer(rt *probeVirtualRouterRuntime) {
+	if rt == nil || rt.relay == nil {
+		return
+	}
+	relay := rt.relay
+	listenAddr := strings.TrimSpace(relay.listenAddr)
+	routeID := strings.TrimSpace(rt.cfg.routeID)
+	shouldClose := false
+	probeVirtualRouterRelayServerState.mu.Lock()
+	if current := probeVirtualRouterRelayServerState.servers[listenAddr]; current == relay {
+		if relay.routeIDs != nil && routeID != "" {
+			delete(relay.routeIDs, routeID)
+		}
+		if len(relay.routeIDs) == 0 {
+			delete(probeVirtualRouterRelayServerState.servers, listenAddr)
+			shouldClose = true
+		}
+	} else {
+		shouldClose = true
+	}
+	probeVirtualRouterRelayServerState.mu.Unlock()
+	if shouldClose {
+		closeProbeVirtualRouterRelayServer(relay)
+	}
 }
 
 func closeProbeVirtualRouterRelayServer(relay *probeVirtualRouterRelayServer) {
@@ -811,7 +876,7 @@ func buildProbeVirtualRouterRuntimeConfigsForNode(config probeVirtualRouterConfi
 		if localNodeID != fromNodeID && localNodeID != toNodeID {
 			continue
 		}
-		cfg, ok := buildProbeVirtualRouterRuntimeConfigForRule(rule, identity, controllerBaseURL)
+		cfg, ok := buildProbeVirtualRouterRuntimeConfigForRule(config, rule, identity, controllerBaseURL)
 		if !ok {
 			continue
 		}
@@ -827,7 +892,7 @@ func buildProbeVirtualRouterRuntimeConfigsForNode(config probeVirtualRouterConfi
 	return out
 }
 
-func buildProbeVirtualRouterRuntimeConfigForRule(rule probeVirtualRouterTopologyRule, identity nodeIdentity, controllerBaseURL string) (probeVirtualRouterRuntimeConfig, bool) {
+func buildProbeVirtualRouterRuntimeConfigForRule(config probeVirtualRouterConfig, rule probeVirtualRouterTopologyRule, identity nodeIdentity, controllerBaseURL string) (probeVirtualRouterRuntimeConfig, bool) {
 	localNodeID := normalizeProbeRouteNodeID(identity.NodeID)
 	fromNodeID := normalizeProbeRouteNodeID(rule.FromNodeID)
 	toNodeID := normalizeProbeRouteNodeID(rule.ToNodeID)
@@ -841,11 +906,12 @@ func buildProbeVirtualRouterRuntimeConfigForRule(rule probeVirtualRouterTopology
 	}
 	peerNodeID := toNodeID
 	peerDomain := strings.TrimSpace(rule.ToServiceDomain)
-	peerPort := normalizeProbeVirtualRouterServicePort(rule.ToServicePort)
+	listenerPort := probeVirtualRouterServicePortForNode(config, toNodeID, rule.ToServicePort)
+	peerPort := listenerPort
 	localPort := 0
 	if localIsTo {
 		peerNodeID = fromNodeID
-		localPort = normalizeProbeVirtualRouterServicePort(rule.ToServicePort)
+		localPort = listenerPort
 	}
 
 	routeID := probeVirtualRouterRuntimeRouteID(rule)

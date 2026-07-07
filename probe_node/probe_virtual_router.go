@@ -460,9 +460,10 @@ func sanitizeProbeVirtualRouterProbeIPs(items []probeVirtualRouterProbeIP) []pro
 		seenNode[nodeID] = struct{}{}
 		seenIP[ipText] = struct{}{}
 		out = append(out, probeVirtualRouterProbeIP{
-			NodeID: nodeID,
-			IP:     ipText,
-			Note:   strings.TrimSpace(item.Note),
+			NodeID:      nodeID,
+			IP:          ipText,
+			ServicePort: normalizeProbeVirtualRouterServicePort(item.ServicePort),
+			Note:        strings.TrimSpace(item.Note),
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -489,14 +490,14 @@ func sanitizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopologyR
 		fromServiceDomain := ""
 		fromServicePort := 0
 		toServiceDomain := strings.TrimSpace(item.ToServiceDomain)
-		toServicePort := normalizeProbeVirtualRouterServicePort(item.ToServicePort)
+		toServicePort := sanitizeProbeVirtualRouterOptionalServicePort(item.ToServicePort)
 		ruleID := strings.TrimSpace(item.ID)
 		if ruleID == "" {
 			ruleID, nextRuleSeq = allocateProbeVirtualRouterRuleID(seen, reserved, nextRuleSeq)
 		}
 		key := ruleID
 		if key == "" {
-			key = fmt.Sprintf("%s|%s|%s|%d|%s|%d", fromNodeID, toNodeID, fromServiceDomain, fromServicePort, toServiceDomain, toServicePort)
+			key = fmt.Sprintf("%s|%s|%s", fromNodeID, toNodeID, strings.ToLower(toServiceDomain))
 		}
 		if _, exists := seen[key]; exists {
 			continue
@@ -627,6 +628,13 @@ func allocateProbeVirtualRouterRuleID(seen map[string]struct{}, reserved map[str
 func normalizeProbeVirtualRouterServicePort(port int) int {
 	if port <= 0 || port > 65535 {
 		return probeVirtualRouterDefaultServicePort
+	}
+	return port
+}
+
+func sanitizeProbeVirtualRouterOptionalServicePort(port int) int {
+	if port < 0 || port > 65535 {
+		return 0
 	}
 	return port
 }
@@ -771,7 +779,7 @@ func probeVirtualRouterTopologySignature(config probeVirtualRouterConfig, index 
 	}
 	sort.Strings(nodeIDs)
 	for _, nodeID := range nodeIDs {
-		fmt.Fprintf(&b, "ip|%s|%s\n", nodeID, strings.TrimSpace(index.nodeToIP[nodeID]))
+		fmt.Fprintf(&b, "ip|%s|%s|%d\n", nodeID, strings.TrimSpace(index.nodeToIP[nodeID]), probeVirtualRouterServicePortForNode(config, nodeID, probeVirtualRouterDefaultServicePort))
 	}
 	neighborIDs := make([]string, 0, len(index.neighbors))
 	for nodeID := range index.neighbors {
@@ -799,9 +807,9 @@ func probeVirtualRouterTopologySignature(config probeVirtualRouterConfig, index 
 			normalizeProbeRouteNodeID(rule.ToNodeID),
 			normalizeProbeVirtualRouterDirection(rule.Direction),
 			strings.TrimSpace(rule.FromServiceDomain),
-			normalizeProbeVirtualRouterServicePort(rule.FromServicePort),
+			sanitizeProbeVirtualRouterOptionalServicePort(rule.FromServicePort),
 			strings.TrimSpace(rule.ToServiceDomain),
-			normalizeProbeVirtualRouterServicePort(rule.ToServicePort),
+			sanitizeProbeVirtualRouterOptionalServicePort(rule.ToServicePort),
 		)
 	}
 	for _, rule := range config.RouteRules {
@@ -822,6 +830,18 @@ func currentProbeVirtualRouterConfig() probeVirtualRouterConfig {
 	probeVirtualRouterState.mu.RLock()
 	defer probeVirtualRouterState.mu.RUnlock()
 	return sanitizeProbeVirtualRouterConfigForCache(probeVirtualRouterState.config)
+}
+
+func probeVirtualRouterServicePortForNode(config probeVirtualRouterConfig, nodeID string, fallback int) int {
+	nodeID = normalizeProbeRouteNodeID(nodeID)
+	if nodeID != "" {
+		for _, item := range config.ProbeIPs {
+			if normalizeProbeRouteNodeID(item.NodeID) == nodeID {
+				return normalizeProbeVirtualRouterServicePort(item.ServicePort)
+			}
+		}
+	}
+	return normalizeProbeVirtualRouterServicePort(fallback)
 }
 
 func currentProbeVirtualRouterFakeIPCIDR() string {

@@ -297,7 +297,7 @@ func TestMngLinkVirtualRouterHandlerSaveAndGet(t *testing.T) {
   "fake_ip_cidr": "198.18.0.0/15",
   "probe_ips": [
     {"node_id":"1","ip":"198.18.0.3"},
-    {"node_id":"2","ip":"198.18.0.4"}
+    {"node_id":"2","ip":"198.18.0.4","service_port":12443}
   ],
   "topology_rules": [
     {
@@ -346,18 +346,21 @@ func TestMngLinkVirtualRouterHandlerSaveAndGet(t *testing.T) {
 	if len(payload.Item.ProbeIPs) != 2 {
 		t.Fatalf("probe ips=%+v, want 2", payload.Item.ProbeIPs)
 	}
+	if payload.Item.ProbeIPs[0].ServicePort != probeVirtualRouterDefaultServicePort || payload.Item.ProbeIPs[1].ServicePort != 12443 {
+		t.Fatalf("probe service ports=%+v", payload.Item.ProbeIPs)
+	}
 	if len(payload.Item.TopologyRules) != 2 || payload.Item.TopologyRules[0].Direction != probeVirtualRouterDirectionForward {
 		t.Fatalf("topology rules=%+v", payload.Item.TopologyRules)
 	}
 	first := payload.Item.TopologyRules[0]
-	if first.FromServiceDomain != "" || first.FromServicePort != 0 || first.ToServiceDomain != "edge-b.internal.lan" || first.ToServicePort != 443 {
+	if first.FromServiceDomain != "" || first.FromServicePort != 0 || first.ToServiceDomain != "edge-b.internal.lan" || first.ToServicePort != 0 {
 		t.Fatalf("service config not persisted: %+v", first)
 	}
 	if strings.TrimSpace(first.Secret) == "" {
 		t.Fatalf("virtual router rule secret should be generated")
 	}
-	if payload.Item.TopologyRules[1].FromServicePort != 0 || payload.Item.TopologyRules[1].ToServicePort != 443 {
-		t.Fatalf("service port reuse should be allowed: %+v", payload.Item.TopologyRules)
+	if payload.Item.TopologyRules[1].FromServicePort != 0 || payload.Item.TopologyRules[1].ToServicePort != 0 {
+		t.Fatalf("topology rule ports should be omitted: %+v", payload.Item.TopologyRules)
 	}
 
 	raw, err := os.ReadFile(filepath.Join(tmpDir, "probe_route_config.json"))
@@ -387,7 +390,7 @@ func TestMngLinkVirtualRouterHandlerRejectsProbeIPOutsideReservedPool(t *testing
 	}
 }
 
-func TestMngLinkVirtualRouterHandlerRejectsInvalidServicePort(t *testing.T) {
+func TestMngLinkVirtualRouterHandlerRejectsInvalidProbeServicePort(t *testing.T) {
 	oldStore := ProbeRouteConfigStore
 	t.Cleanup(func() { ProbeRouteConfigStore = oldStore })
 	ProbeRouteConfigStore = &probeRouteConfigStore{path: filepath.Join(t.TempDir(), "probe_route_config.json")}
@@ -395,10 +398,7 @@ func TestMngLinkVirtualRouterHandlerRejectsInvalidServicePort(t *testing.T) {
 	body := []byte(`{
   "probe_ips":[
     {"node_id":"1","ip":"198.18.0.3"},
-    {"node_id":"2","ip":"198.18.0.4"}
-  ],
-  "topology_rules":[
-    {"from_node_id":"1","to_node_id":"2","direction":"bidirectional","to_service_port":65536,"enabled":true}
+    {"node_id":"2","ip":"198.18.0.4","service_port":65536}
   ]
 }`)
 	req := httptest.NewRequest(http.MethodPost, "/mng/api/route/virtual_router", bytes.NewReader(body))
@@ -453,8 +453,8 @@ func TestMngLinkVirtualRouterHandlerPreservesExistingTopologyRuleIDWhenPayloadOm
 	body := []byte(`{
   "enabled": true,
   "topology_rules": [
-    {"from_node_id":"1","to_node_id":"2","to_service_domain":"edge-b.example.test","to_service_port":12040,"enabled":true},
-    {"from_node_id":"2","to_node_id":"3","to_service_domain":"edge-c.example.test","to_service_port":12041,"enabled":true}
+    {"from_node_id":"1","to_node_id":"2","to_service_domain":"edge-b.example.test","enabled":true},
+    {"from_node_id":"2","to_node_id":"3","to_service_domain":"edge-c.example.test","enabled":true}
   ]
 }`)
 	req := httptest.NewRequest(http.MethodPost, "/mng/api/route/virtual_router", bytes.NewReader(body))
