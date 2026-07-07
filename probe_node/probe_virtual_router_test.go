@@ -1061,7 +1061,7 @@ func TestProbeVirtualRouterKeepAliveDialerWakesConnectWithoutCarrier(t *testing.
 	}
 }
 
-func TestProbeVirtualRouterKeepAliveServerSkipsPingWithoutCarrier(t *testing.T) {
+func TestProbeVirtualRouterKeepAliveServerSkipsActivePingWithCarrier(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 	t.Cleanup(func() { closeProbeVirtualRouterFrameLinks("test cleanup") })
@@ -1074,8 +1074,11 @@ func TestProbeVirtualRouterKeepAliveServerSkipsPingWithoutCarrier(t *testing.T) 
 		stopCh:       make(chan struct{}),
 		bridgeWakeCh: make(chan struct{}, 1),
 	}
+	left, right := net.Pipe()
+	defer right.Close()
 	key := probeVirtualRouterFrameLinkKey(rt, "", "", nil)
 	link := newProbeVirtualRouterFrameLink(key, rt, nil, nil)
+	link.AttachCarrier(left, "vrouter-carrier-server", "198.51.100.16:12040")
 	probeVirtualRouterFrameLinkState.mu.Lock()
 	probeVirtualRouterFrameLinkState.links = map[string]*probeVirtualRouterFrameLink{key: link}
 	probeVirtualRouterFrameLinkState.mu.Unlock()
@@ -1086,7 +1089,40 @@ func TestProbeVirtualRouterKeepAliveServerSkipsPingWithoutCarrier(t *testing.T) 
 		t.Fatalf("server should not wake dialer, wake queue=%d", got)
 	}
 	if got := len(link.tx); got != 0 {
-		t.Fatalf("server keepalive should not enqueue ping without carrier, tx=%d", got)
+		t.Fatalf("server keepalive should not enqueue active ping even with carrier, tx=%d", got)
+	}
+}
+
+func TestProbeVirtualRouterAdjacentRTTServerSkipsActivePing(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(func() { closeProbeVirtualRouterFrameLinks("test cleanup") })
+
+	rt := &probeVirtualRouterRuntime{
+		cfg: probeVirtualRouterRuntimeConfig{
+			routeID:    "vrouter-rtt-server",
+			peerNodeID: "16",
+		},
+		stopCh:       make(chan struct{}),
+		bridgeWakeCh: make(chan struct{}, 1),
+	}
+	left, right := net.Pipe()
+	defer right.Close()
+	key := probeVirtualRouterFrameLinkKey(rt, "", "", nil)
+	link := newProbeVirtualRouterFrameLink(key, rt, nil, nil)
+	link.AttachCarrier(left, "vrouter-carrier-rtt-server", "198.51.100.16:12040")
+	probeVirtualRouterFrameLinkState.mu.Lock()
+	probeVirtualRouterFrameLinkState.links = map[string]*probeVirtualRouterFrameLink{key: link}
+	probeVirtualRouterFrameLinkState.mu.Unlock()
+
+	probeVirtualRouterQueryAdjacentRTTRuntime(rt)
+
+	if got := len(link.tx); got != 0 {
+		t.Fatalf("server adjacent rtt should not enqueue active ping, tx=%d", got)
+	}
+	stats := snapshotProbeVirtualRouterRuntimeStats(rt.cfg.routeID)
+	if stats == nil || strings.TrimSpace(stats.LastRemoteRTTError) == "" {
+		t.Fatalf("server adjacent rtt should record unavailable instead of pinging, stats=%+v", stats)
 	}
 }
 

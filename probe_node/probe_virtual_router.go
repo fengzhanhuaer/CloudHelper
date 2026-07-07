@@ -2437,11 +2437,11 @@ func probeVirtualRouterKeepAliveRuntime(rt *probeVirtualRouterRuntime) {
 		clearProbeVirtualRouterRuntimePingError(rt.cfg.routeID)
 		return
 	}
-	if rt.cfg.dialer {
-		probeVirtualRouterPingPongDirection(rt, probeRouteBridgeRoleToNext)
+	if !rt.cfg.dialer {
+		clearProbeVirtualRouterRuntimePingError(rt.cfg.routeID)
 		return
 	}
-	probeVirtualRouterPingPongDirection(rt, probeRouteBridgeRoleToPrev)
+	probeVirtualRouterPingPongDirection(rt, probeRouteBridgeRoleToNext)
 }
 
 func probeVirtualRouterPingPongAllRuntimes() int {
@@ -2477,9 +2477,6 @@ func probeVirtualRouterQueryAdjacentRTTRuntime(rt *probeVirtualRouterRuntime) {
 	if normalizeProbeRouteNodeID(rt.cfg.peerNodeID) != "" && rt.cfg.dialer {
 		targetNodeID = normalizeProbeRouteNodeID(rt.cfg.peerNodeID)
 		direction = probeRouteBridgeRoleToNext
-	} else if normalizeProbeRouteNodeID(rt.cfg.peerNodeID) != "" && shouldProbeVirtualRouterPrevDirection(rt) {
-		targetNodeID = normalizeProbeRouteNodeID(rt.cfg.peerNodeID)
-		direction = probeRouteBridgeRoleToPrev
 	}
 	if targetNodeID == "" {
 		recordProbeVirtualRouterRuntimeRemoteRTTError(rt.cfg.routeID, errors.New("adjacent virtual router node is unavailable"))
@@ -2569,13 +2566,6 @@ func probeVirtualRouterQueryAllPathRTTs() int {
 	}
 	wg.Wait()
 	return len(paths)
-}
-
-func shouldProbeVirtualRouterPrevDirection(rt *probeVirtualRouterRuntime) bool {
-	if rt == nil {
-		return false
-	}
-	return probeVirtualRouterRuntimeHasPhysicalBridgeSession(rt)
 }
 
 func probeVirtualRouterPingPongDirection(rt *probeVirtualRouterRuntime, direction string) {
