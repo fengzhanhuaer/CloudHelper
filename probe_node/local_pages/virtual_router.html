@@ -194,6 +194,7 @@
     <div class="subtabs" role="tablist">
       <button class="subtab active" data-tab="status" type="button" role="tab" aria-selected="true">状态</button>
       <button class="subtab" data-tab="packets" type="button" role="tab" aria-selected="false">最近报文</button>
+      <button class="subtab" data-tab="routeTest" type="button" role="tab" aria-selected="false">路由测试</button>
     </div>
 
     <div id="statusTab" class="tab-panel active">
@@ -298,6 +299,50 @@
       </section>
     </div>
 
+    <div id="routeTestTab" class="tab-panel">
+      <section class="card">
+        <h2>路由测试</h2>
+        <div class="toolbar">
+          <div class="field">
+            <label for="routeTestTarget">目标</label>
+            <input id="routeTestTarget" class="mono" placeholder="google.com 或 198.18.x.x" />
+          </div>
+          <div class="field">
+            <label for="routeTestPort">端口</label>
+            <input id="routeTestPort" class="mono" type="number" min="1" max="65535" value="443" />
+          </div>
+        </div>
+        <div class="actions">
+          <button id="routeTestBtn">测试</button>
+        </div>
+        <div class="kv" style="margin-top:12px;">
+          <div>目标</div><div id="routeTestTargetText">-</div>
+          <div>规则</div><div id="routeTestRuleText">-</div>
+          <div>路径</div><div id="routeTestPathText">-</div>
+          <div>结果</div><div id="routeTestResultText">-</div>
+        </div>
+        <div class="table-wrap" style="margin-top:12px;">
+          <table>
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>节点</th>
+                <th>阶段</th>
+                <th>状态</th>
+                <th>运行时</th>
+                <th>解析 / 地址</th>
+                <th>耗时</th>
+                <th>详情</th>
+              </tr>
+            </thead>
+            <tbody id="routeTestRows">
+              <tr><td colspan="8" class="hint">-</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
     <p id="message" class="msg"></p>
   </main>
 
@@ -305,7 +350,7 @@
     const messageEl = document.getElementById('message');
     const routerEnabledEl = document.getElementById('virtualRouterEnabled');
     const tunEgressSelectEl = document.getElementById('tunEgressSelect');
-    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260706-merged-switch';
+    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260707-route-test';
     const REQUEST_TIMEOUT_DEFAULT_MS = 20000;
     const REQUEST_TIMEOUT_TUN_INSTALL_MS = 90000;
     let tunPollingTimer = null;
@@ -528,6 +573,62 @@
       }).join('');
     }
 
+    function routeTestStageLabel(stage) {
+      const value = String(stage || '').trim();
+      const labels = {
+        source: '源节点',
+        plan: '规划',
+        source_forward: '源节点发送',
+        hop: '沿途节点',
+        forward: '转发',
+        exit: '出口测试',
+        timeout: '超时',
+      };
+      return labels[value] || value || '-';
+    }
+
+    function renderRouteTest(data) {
+      const payload = data || {};
+      const rows = document.getElementById('routeTestRows');
+      const items = Array.isArray(payload.results) ? payload.results : [];
+      const targetParts = [];
+      if (payload.domain) targetParts.push(payload.domain);
+      if (payload.target_ip) targetParts.push(payload.target_ip);
+      if (payload.fake_ip) targetParts.push('Fake IP ' + payload.fake_ip);
+      setText('routeTestTargetText', targetParts.length ? targetParts.join(' / ') : payload.target);
+      const ruleParts = [];
+      if (payload.route_rule_name) ruleParts.push(payload.route_rule_name);
+      if (payload.route_rule_id) ruleParts.push(payload.route_rule_id);
+      if (payload.route_rule_action) ruleParts.push(payload.route_rule_action);
+      if (payload.exit_node_id) ruleParts.push('出口 ' + payload.exit_node_id);
+      setText('routeTestRuleText', ruleParts.join(' / '));
+      setText('routeTestPathText', Array.isArray(payload.path) && payload.path.length ? payload.path.join(' > ') : '-');
+      setText('routeTestResultText', payload.ok ? '通过' : (payload.error || '失败'));
+      if (!items.length) {
+        rows.innerHTML = '<tr><td colspan="8" class="hint">-</td></tr>';
+        return;
+      }
+      rows.innerHTML = items.map((item) => {
+        const resolved = Array.isArray(item.resolved_ips) && item.resolved_ips.length ? item.resolved_ips.join(', ') : '';
+        const addr = String(item.checked_address || '').trim();
+        const detailParts = [];
+        if (item.message) detailParts.push(item.message);
+        if (item.error) detailParts.push(item.error);
+        if (Array.isArray(item.path) && item.path.length) detailParts.push(item.path.join(' > '));
+        const rowClass = item.ok ? '' : ' class="packet-error"';
+        return `<tr${rowClass}>
+          <td class="mono">${escapeHTML(packetTime(item.unix_nano ? new Date(Number(item.unix_nano) / 1000000).toISOString() : ''))}</td>
+          <td class="mono">${escapeHTML(item.node_id || '-')}</td>
+          <td>${escapeHTML(routeTestStageLabel(item.stage))}</td>
+          <td>${escapeHTML(item.ok ? 'OK' : '失败')}${item.final ? ' / final' : ''}</td>
+          <td class="mono">${escapeHTML(item.runtime_route_id || '-')}</td>
+          <td class="mono">${escapeHTML([resolved, addr].filter(Boolean).join(' / ') || '-')}</td>
+          <td class="mono">${escapeHTML(item.latency_ms ? item.latency_ms + ' ms' : '-')}</td>
+          <td>${escapeHTML(detailParts.join(' / ') || '-')}</td>
+        </tr>`;
+      }).join('');
+    }
+
     async function loadSettings() {
       const data = await requestJSON('/local/api/virtual_router/settings', { method: 'GET' });
       renderSettings(data || {});
@@ -553,6 +654,22 @@
       const data = await requestJSON('/local/api/virtual_router/packets', { method: 'GET' });
       renderPackets(data || {});
       return data || {};
+    }
+
+    async function runRouteTest() {
+      const target = String(document.getElementById('routeTestTarget').value || '').trim();
+      const port = Number(document.getElementById('routeTestPort').value || 443);
+      if (!target) {
+        setMessage('请输入测试目标', 'error');
+        return;
+      }
+      setMessage('路由测试中...');
+      const data = await requestJSON('/local/api/virtual_router/route_test', {
+        method: 'POST',
+        body: JSON.stringify({ target, port, timeout_ms: 15000 }),
+      }, 20000);
+      renderRouteTest(data || {});
+      setMessage(data && data.ok ? '路由测试完成' : '路由测试失败', data && data.ok ? 'success' : 'error');
     }
 
     async function refreshAll() {
@@ -661,7 +778,7 @@
     }
 
     function switchTab(tab) {
-      activeTab = tab === 'packets' ? 'packets' : 'status';
+      activeTab = tab === 'packets' || tab === 'routeTest' ? tab : 'status';
       document.querySelectorAll('.subtab').forEach((btn) => {
         const active = btn.dataset.tab === activeTab;
         btn.classList.toggle('active', active);
@@ -669,6 +786,7 @@
       });
       document.getElementById('statusTab').classList.toggle('active', activeTab === 'status');
       document.getElementById('packetsTab').classList.toggle('active', activeTab === 'packets');
+      document.getElementById('routeTestTab').classList.toggle('active', activeTab === 'routeTest');
       if (activeTab === 'packets') {
         loadPackets().catch((err) => setMessage('读取最近报文失败：' + err.message, 'error'));
       }
@@ -693,6 +811,15 @@
     });
     document.getElementById('packetRefreshBtn').addEventListener('click', () => {
       loadPackets().then(() => setMessage('最近报文已刷新', 'success')).catch((err) => setMessage('读取最近报文失败：' + err.message, 'error'));
+    });
+    document.getElementById('routeTestBtn').addEventListener('click', () => {
+      runRouteTest().catch((err) => setMessage('路由测试失败：' + err.message, 'error'));
+    });
+    document.getElementById('routeTestTarget').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        runRouteTest().catch((err) => setMessage('路由测试失败：' + err.message, 'error'));
+      }
     });
     document.querySelectorAll('.subtab').forEach((btn) => {
       btn.addEventListener('click', () => switchTab(btn.dataset.tab));

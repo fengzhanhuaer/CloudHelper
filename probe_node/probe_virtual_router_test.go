@@ -469,6 +469,36 @@ func TestBuildProbeVirtualRouterRuntimeConfigsForNode(t *testing.T) {
 	}
 }
 
+func TestBuildProbeVirtualRouterRuntimeConfigsUseCloudflareCopilotPortForDial(t *testing.T) {
+	config := probeVirtualRouterConfig{
+		Enabled: true,
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "1", IP: "198.18.0.11", ServicePort: 12040},
+			{NodeID: "2", IP: "198.18.0.12", ServicePort: 12440},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			withProbeVirtualRouterRuleAuthForTest(t, probeVirtualRouterTopologyRule{
+				ID:              "edge-a-b",
+				FromNodeID:      "1",
+				ToNodeID:        "2",
+				ToServiceDomain: "api_copilot_nw.example.com",
+				Enabled:         true,
+			}),
+		},
+	}
+	left := buildProbeVirtualRouterRuntimeConfigsForNode(config, nodeIdentity{NodeID: "1", Secret: "node-1"}, "")
+	right := buildProbeVirtualRouterRuntimeConfigsForNode(config, nodeIdentity{NodeID: "2", Secret: "node-2"}, "")
+	if len(left) != 1 || len(right) != 1 {
+		t.Fatalf("runtime configs left=%d right=%d", len(left), len(right))
+	}
+	if left[0].peerHost != "api_copilot_nw.example.com" || left[0].peerPort != 443 || !left[0].dialer {
+		t.Fatalf("dialer should connect to cloudflare copilot 443: %+v", left[0])
+	}
+	if right[0].listenPort != 12440 || right[0].peerPort != 0 || right[0].dialer {
+		t.Fatalf("listener should keep static service port: %+v", right[0])
+	}
+}
+
 func TestBuildProbeVirtualRouterRuntimeConfigsAllowSharedPortAcrossRules(t *testing.T) {
 	config := probeVirtualRouterConfig{
 		Enabled: true,

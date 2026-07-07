@@ -1638,6 +1638,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/logs", probeLocalLogsHandler)
 	mux.HandleFunc("/local/api/virtual_router/settings", probeLocalVirtualRouterSettingsHandler)
 	mux.HandleFunc("/local/api/virtual_router/packets", probeLocalVirtualRouterPacketsHandler)
+	mux.HandleFunc("/local/api/virtual_router/route_test", probeLocalVirtualRouterRouteTestHandler)
 	mux.HandleFunc("/local/api/system/upgrade", probeLocalSystemUpgradeHandler)
 	mux.HandleFunc("/local/api/system/upgrade/check", probeLocalSystemUpgradeCheckHandler)
 	mux.HandleFunc("/local/api/system/upgrade/status", probeLocalSystemUpgradeStatusHandler)
@@ -2089,6 +2090,38 @@ func probeLocalVirtualRouterPacketsHandler(w http.ResponseWriter, r *http.Reques
 		"count":    len(items),
 		"capacity": probeVirtualRouterRecentPacketLimit,
 	})
+}
+
+func probeLocalVirtualRouterRouteTestHandler(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Target    string `json:"target"`
+		Port      int    `json:"port,omitempty"`
+		TimeoutMS int    `json:"timeout_ms,omitempty"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if strings.TrimSpace(req.Target) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "target is required"})
+		return
+	}
+	timeout := time.Duration(req.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = probeVirtualRouterRouteTestTimeout
+	}
+	if timeout > 60*time.Second {
+		timeout = 60 * time.Second
+	}
+	result := runProbeVirtualRouterRouteTest(req.Target, req.Port, timeout)
+	writeJSON(w, http.StatusOK, result)
 }
 
 func probeLocalSystemUpgradeHandler(w http.ResponseWriter, r *http.Request) {

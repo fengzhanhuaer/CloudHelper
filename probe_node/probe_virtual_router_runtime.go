@@ -908,6 +908,9 @@ func buildProbeVirtualRouterRuntimeConfigForRule(config probeVirtualRouterConfig
 	peerDomain := strings.TrimSpace(rule.ToServiceDomain)
 	listenerPort := probeVirtualRouterServicePortForNode(config, toNodeID, rule.ToServicePort)
 	peerPort := listenerPort
+	if isProbeVirtualRouterCloudflareCopilotDomain(peerDomain) {
+		peerPort = 443
+	}
 	localPort := 0
 	if localIsTo {
 		peerNodeID = fromNodeID
@@ -976,4 +979,8 @@ func probeVirtualRouterRuleDialerNodeID(rule probeVirtualRouterTopologyRule) str
 		return ""
 	}
 	return fromNodeID
+}
+
+func isProbeVirtualRouterCloudflareCopilotDomain(domain string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(domain)), "api_copilot_")
 }

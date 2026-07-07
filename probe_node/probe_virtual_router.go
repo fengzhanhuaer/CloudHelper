@@ -38,6 +38,7 @@ const (
 	probeVirtualRouterFrameMainTypePingPong    uint16 = 2
 	probeVirtualRouterFrameMainTypePathRTT     uint16 = 3
 	probeVirtualRouterFrameMainTypeSpeed       uint16 = 4
+	probeVirtualRouterFrameMainTypeRouteTest   uint16 = 5
 	probeVirtualRouterFrameSubTypeUnknown      uint16 = 0
 	probeVirtualRouterIPSubTypeIPv4            uint16 = 1
 	probeVirtualRouterPingPongSubTypePing      uint16 = 1
@@ -49,6 +50,8 @@ const (
 	probeVirtualRouterSpeedSubTypeFinish       uint16 = 3
 	probeVirtualRouterSpeedSubTypeResult       uint16 = 4
 	probeVirtualRouterSpeedSubTypeSend         uint16 = 5
+	probeVirtualRouterRouteTestSubTypeProbe    uint16 = 1
+	probeVirtualRouterRouteTestSubTypeReport   uint16 = 2
 	probeVirtualRouterFrameLinkIdleTTL                = 45 * time.Second
 	probeVirtualRouterPingPongInterval                = 30 * time.Second
 	probeVirtualRouterPingPongTimeout                 = 5 * time.Second
@@ -2873,6 +2876,8 @@ func shouldHandleProbeVirtualRouterFrameInRXWorker(runtime *probeVirtualRouterRu
 		return shouldHandleProbeVirtualRouterPathRTTFrameInRXWorker(frame.SubType, frame.Data, localNodeID)
 	case probeVirtualRouterFrameMainTypeSpeed:
 		return shouldHandleProbeVirtualRouterSpeedFrameInRXWorker(frame.SubType, frame.Data, control.Path, localNodeID)
+	case probeVirtualRouterFrameMainTypeRouteTest:
+		return shouldHandleProbeVirtualRouterRouteTestFrameInRXWorker(frame.SubType, frame.Data, control.Path, localNodeID)
 	default:
 		return false
 	}
@@ -2954,6 +2959,34 @@ func shouldHandleProbeVirtualRouterSpeedFrameInRXWorker(subType uint16, payload 
 		return len(msg.Path) >= 2 && localNodeID != msg.Path[len(msg.Path)-1] && probeVirtualRouterNextHopInPath(msg.Path, localNodeID) != ""
 	case probeVirtualRouterSpeedSubTypeResult:
 		if normalizeProbeRouteNodeID(msg.ResultNodeID) == localNodeID {
+			return true
+		}
+		return probeVirtualRouterNextHopInPath(msg.Path, localNodeID) != ""
+	default:
+		return false
+	}
+}
+
+func shouldHandleProbeVirtualRouterRouteTestFrameInRXWorker(subType uint16, payload []byte, framePath []string, localNodeID string) bool {
+	msg := probeVirtualRouterRouteTestPayload{}
+	if err := json.Unmarshal(payload, &msg); err != nil {
+		return false
+	}
+	if len(msg.Path) == 0 {
+		msg.Path = append([]string(nil), framePath...)
+	}
+	msg.Path = cleanProbeVirtualRouterPath(msg.Path)
+	switch subType {
+	case probeVirtualRouterRouteTestSubTypeProbe:
+		if len(msg.Path) < 1 {
+			return false
+		}
+		if normalizeProbeRouteNodeID(msg.ExitNodeID) == localNodeID || localNodeID == msg.Path[len(msg.Path)-1] {
+			return true
+		}
+		return probeVirtualRouterNextHopInPath(msg.Path, localNodeID) != ""
+	case probeVirtualRouterRouteTestSubTypeReport:
+		if normalizeProbeRouteNodeID(msg.SourceNodeID) == localNodeID {
 			return true
 		}
 		return probeVirtualRouterNextHopInPath(msg.Path, localNodeID) != ""
@@ -3154,7 +3187,7 @@ func handleProbeVirtualRouterFrame(runtime *probeVirtualRouterRuntime, link *pro
 			return fmt.Errorf("unsupported virtual router ip subtype=%d", frame.SubType)
 		}
 		return handleProbeVirtualRouterIPFrame(runtime, link, frame.Data, control.Path, control.Trace)
-	case probeVirtualRouterFrameMainTypePingPong, probeVirtualRouterFrameMainTypePathRTT, probeVirtualRouterFrameMainTypeSpeed:
+	case probeVirtualRouterFrameMainTypePingPong, probeVirtualRouterFrameMainTypePathRTT, probeVirtualRouterFrameMainTypeSpeed, probeVirtualRouterFrameMainTypeRouteTest:
 		return handleProbeVirtualRouterBusinessFrame(runtime, link, frame.MainType, frame.SubType, frame.Data, control.Path)
 	default:
 		return fmt.Errorf("unsupported virtual router business type=%d subtype=%d", frame.MainType, frame.SubType)
@@ -3191,6 +3224,15 @@ func handleProbeVirtualRouterBusinessFrame(runtime *probeVirtualRouterRuntime, l
 			speedMsg.Path = append([]string(nil), framePath...)
 		}
 		return handleProbeVirtualRouterSpeedFrame(runtime, subType, speedMsg)
+	case mainType == probeVirtualRouterFrameMainTypeRouteTest:
+		routeTestMsg := probeVirtualRouterRouteTestPayload{}
+		if err := json.Unmarshal(payload, &routeTestMsg); err != nil {
+			return err
+		}
+		if len(routeTestMsg.Path) == 0 {
+			routeTestMsg.Path = append([]string(nil), framePath...)
+		}
+		return handleProbeVirtualRouterRouteTestFrame(runtime, subType, routeTestMsg)
 	default:
 		return fmt.Errorf("unsupported virtual router business type=%d subtype=%d", mainType, subType)
 	}

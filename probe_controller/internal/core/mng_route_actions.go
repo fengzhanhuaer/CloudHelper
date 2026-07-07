@@ -3,9 +3,17 @@ package core
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
+
+type mngProbeVirtualRouterCFDomain struct {
+	NodeID      string `json:"node_id"`
+	Domain      string `json:"domain"`
+	Source      string `json:"source,omitempty"`
+	ServicePort int    `json:"service_port,omitempty"`
+}
 
 func getMngProbeVirtualRouterConfig() (map[string]interface{}, error) {
 	if ProbeRouteConfigStore == nil {
@@ -17,10 +25,12 @@ func getMngProbeVirtualRouterConfig() (map[string]interface{}, error) {
 	config.FakeIPLibrary = normalizeProbeVirtualRouterFakeIPLibrary(ProbeRouteConfigStore.data.VirtualRouterFakeIP)
 	ProbeRouteConfigStore.mu.RUnlock()
 	config = enrichProbeVirtualRouterAuthTickets(ensureProbeVirtualRouterAuthFields(ensureProbeVirtualRouterProbeIPsForKnownNodes(config)))
+	cfDomains := listMngProbeVirtualRouterCFDomains()
 	return map[string]interface{}{
-		"item":      config,
-		"node_ids":  listProbeVirtualRouterKnownNodeIDs(),
-		"pool_size": probeVirtualRouterProbeIPPoolSize,
+		"item":       config,
+		"node_ids":   listProbeVirtualRouterKnownNodeIDs(),
+		"pool_size":  probeVirtualRouterProbeIPPoolSize,
+		"cf_domains": cfDomains,
 	}, nil
 }
 
@@ -42,6 +52,7 @@ func upsertMngProbeVirtualRouterConfig(payload json.RawMessage, controllerBaseUR
 		return nil, err
 	}
 	config.RouteRules = current.RouteRules
+	cfDomains := listMngProbeVirtualRouterCFDomains()
 	config = enrichProbeVirtualRouterAuthTickets(ensureProbeVirtualRouterAuthFields(config))
 	ProbeRouteConfigStore.mu.Lock()
 	ProbeRouteConfigStore.data.VirtualRouter = config
@@ -51,10 +62,42 @@ func upsertMngProbeVirtualRouterConfig(payload json.RawMessage, controllerBaseUR
 	}
 	syncResult := dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURL)
 	return map[string]interface{}{
-		"ok":   true,
-		"item": config,
-		"sync": syncResult,
+		"ok":         true,
+		"item":       config,
+		"sync":       syncResult,
+		"cf_domains": cfDomains,
 	}, nil
+}
+
+func listMngProbeVirtualRouterCFDomains() []mngProbeVirtualRouterCFDomain {
+	zoneName := normalizeCloudflareZoneName(getCloudflareZone().ZoneName)
+	if zoneName == "" {
+		return []mngProbeVirtualRouterCFDomain{}
+	}
+	out := make([]mngProbeVirtualRouterCFDomain, 0)
+	for _, nodeID := range listProbeVirtualRouterKnownNodeIDs() {
+		node, ok := getProbeNodeByID(nodeID)
+		if !ok || node.NodeNo <= 0 {
+			continue
+		}
+		domain := strings.TrimSpace(strings.ToLower(buildCloudflareCopilotCandidateDomain(node.NodeNo, zoneName)))
+		if domain == "" {
+			continue
+		}
+		out = append(out, mngProbeVirtualRouterCFDomain{
+			NodeID:      normalizeProbeNodeID(nodeID),
+			Domain:      domain,
+			Source:      "cloudflare",
+			ServicePort: 443,
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].NodeID != out[j].NodeID {
+			return out[i].NodeID < out[j].NodeID
+		}
+		return out[i].Domain < out[j].Domain
+	})
+	return out
 }
 
 func getMngProbeVirtualRouterRouteRules() (map[string]interface{}, error) {

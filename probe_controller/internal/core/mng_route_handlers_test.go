@@ -376,6 +376,79 @@ func TestMngLinkVirtualRouterHandlerSaveAndGet(t *testing.T) {
 	}
 }
 
+func TestMngLinkVirtualRouterHandlerReturnsCloudflareCopilotDomainsWithoutChangingProbePort(t *testing.T) {
+	oldStore := ProbeRouteConfigStore
+	oldProbeStore := ProbeStore
+	oldCloudflareStore := CloudflareStore
+	t.Cleanup(func() {
+		ProbeRouteConfigStore = oldStore
+		ProbeStore = oldProbeStore
+		CloudflareStore = oldCloudflareStore
+	})
+
+	tmpDir := t.TempDir()
+	ProbeRouteConfigStore = &probeRouteConfigStore{
+		path: filepath.Join(tmpDir, "probe_route_config.json"),
+		data: probeRouteConfigStoreData{
+			VirtualRouter: defaultProbeVirtualRouterConfig(),
+		},
+	}
+	ProbeStore = &probeConfigStore{
+		data: probeConfigData{
+			ProbeNodes: []probeNodeRecord{
+				{NodeNo: 1, NodeName: "node-1"},
+				{NodeNo: 2, NodeName: "node-2"},
+			},
+			ProbeSecrets: map[string]string{},
+		},
+	}
+	CloudflareStore = &cloudflareStore{
+		data: cloudflareStoreData{ZoneName: "example.com"},
+	}
+	cfDomain := buildCloudflareCopilotCandidateDomain(2, "example.com")
+
+	body := []byte(`{
+  "enabled": true,
+  "fake_ip_cidr": "198.18.0.0/15",
+  "probe_ips": [
+    {"node_id":"1","ip":"198.18.0.3","service_port":12040},
+    {"node_id":"2","ip":"198.18.0.4","service_port":12443}
+  ],
+  "topology_rules": [
+    {"id":"rule-a","from_node_id":"1","to_node_id":"2","to_service_domain":"` + cfDomain + `","enabled":true}
+  ]
+}`)
+	saveReq := httptest.NewRequest(http.MethodPost, "/mng/api/route/virtual_router", bytes.NewReader(body))
+	saveRR := httptest.NewRecorder()
+	mngRouteVirtualRouterHandler(saveRR, saveReq)
+	if saveRR.Code != http.StatusOK {
+		t.Fatalf("save status=%d body=%s", saveRR.Code, saveRR.Body.String())
+	}
+	var savePayload struct {
+		Item      probeVirtualRouterConfig        `json:"item"`
+		CFDomains []mngProbeVirtualRouterCFDomain `json:"cf_domains"`
+	}
+	if err := json.Unmarshal(saveRR.Body.Bytes(), &savePayload); err != nil {
+		t.Fatalf("decode save payload failed: %v", err)
+	}
+	if len(savePayload.Item.ProbeIPs) != 2 || savePayload.Item.ProbeIPs[1].ServicePort != 12443 {
+		t.Fatalf("probe service port should not be rewritten for cf domain: %+v", savePayload.Item.ProbeIPs)
+	}
+	if len(savePayload.Item.TopologyRules) != 1 || savePayload.Item.TopologyRules[0].ToServiceDomain != cfDomain || savePayload.Item.TopologyRules[0].ToServicePort != 0 {
+		t.Fatalf("topology rule should keep cf domain and omit port: %+v", savePayload.Item.TopologyRules)
+	}
+	found := false
+	for _, item := range savePayload.CFDomains {
+		if item.NodeID == "2" && item.Domain == cfDomain {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("cf domains=%+v, want node 2 domain %q", savePayload.CFDomains, cfDomain)
+	}
+}
+
 func TestMngLinkVirtualRouterHandlerRejectsProbeIPOutsideReservedPool(t *testing.T) {
 	oldStore := ProbeRouteConfigStore
 	t.Cleanup(func() { ProbeRouteConfigStore = oldStore })

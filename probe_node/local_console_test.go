@@ -203,6 +203,72 @@ func TestProbeLocalVirtualRouterPacketsHandlerReturnsRecentPackets(t *testing.T)
 	}
 }
 
+func TestProbeLocalVirtualRouterRouteTestHandlerReturnsExitReachability(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp: %v", err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr == nil {
+			_ = conn.Close()
+		}
+	}()
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	probeVirtualRouterState.mu.Lock()
+	probeVirtualRouterState.config = probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "16", IP: "198.18.0.16", ServicePort: 12040},
+		},
+		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{
+			Version: 1,
+			Items: []probeVirtualRouterFakeIPEntry{{
+				Domain:     "localhost",
+				FakeIP:     "198.18.2.1",
+				Action:     "probe_exit",
+				ExitNodeID: "16",
+			}},
+		},
+	}
+	probeVirtualRouterState.localNodeID = "16"
+	probeVirtualRouterState.localIP = "198.18.0.16"
+	probeVirtualRouterState.nodeToIP = map[string]string{"16": "198.18.0.16"}
+	probeVirtualRouterState.ipToNode = map[string]string{"198.18.0.16": "16"}
+	probeVirtualRouterState.mu.Unlock()
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/virtual_router/route_test", map[string]any{
+		"target": "198.18.2.1",
+		"port":   port,
+	}, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("route test status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	if payload["ok"] != true {
+		t.Fatalf("route test not ok: %+v", payload)
+	}
+	if payload["exit_node_id"] != "16" || payload["fake_ip"] != "198.18.2.1" {
+		t.Fatalf("unexpected route test identity: %+v", payload)
+	}
+	items, ok := payload["results"].([]any)
+	if !ok || len(items) < 2 {
+		t.Fatalf("route test results=%T %v", payload["results"], payload["results"])
+	}
+	last, ok := items[len(items)-1].(map[string]any)
+	if !ok || last["stage"] != "exit" || last["ok"] != true {
+		t.Fatalf("unexpected final route test result: %+v", last)
+	}
+}
+
 func TestProbeLocalProtectedRoutesRequireSession(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 

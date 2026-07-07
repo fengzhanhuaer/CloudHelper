@@ -223,6 +223,7 @@
       },
       virtualRouterNodeIDs: [],
       cloudflareDDNSRecords: [],
+      virtualRouterCFDomains: [],
     };
 
     function setStatus(message, level) {
@@ -314,6 +315,7 @@
       };
       state.routeRules = Array.isArray(state.virtualRouter.route_rules) ? state.virtualRouter.route_rules : state.routeRules;
       state.virtualRouterNodeIDs = Array.isArray(payload.node_ids) ? payload.node_ids.map((v) => String(v || '').trim()).filter(Boolean) : [];
+      state.virtualRouterCFDomains = Array.isArray(payload.cf_domains) ? payload.cf_domains : [];
       renderVirtualRouter();
       renderFakeIPLibrary();
       if (!silent) setStatus('拓扑规则已刷新', 'ok');
@@ -359,6 +361,19 @@
       const normalized = normalizeNodeID(nodeID);
       const seen = new Set();
       const rows = [];
+      (Array.isArray(state.virtualRouterCFDomains) ? state.virtualRouterCFDomains : []).forEach((item) => {
+        const name = String(item && item.domain || '').trim();
+        if (!name || seen.has(name)) return;
+        const itemNodeID = normalizeNodeID(item && (item.node_id || item.node_no));
+        if (normalized && itemNodeID !== normalized) return;
+        seen.add(name);
+        rows.push({
+          name,
+          source: 'cloudflare',
+          source_label: 'CF',
+          content_ip: '',
+        });
+      });
       (Array.isArray(state.cloudflareDDNSRecords) ? state.cloudflareDDNSRecords : []).forEach((item) => {
         const name = String(item && item.record_name || '').trim();
         if (!name || seen.has(name)) return;
@@ -367,6 +382,8 @@
         seen.add(name);
         rows.push({
           name,
+          source: 'ddns',
+          source_label: 'DDNS',
           content_ip: String(item && item.content_ip || '').trim(),
         });
       });
@@ -383,9 +400,7 @@
       const rows = [`<option value="" ${value ? '' : 'selected'}>不使用域名</option>`];
       if (value && !hasCurrent) rows.push(`<option value="${escapeHTML(value)}" selected>${escapeHTML(value)} (当前)</option>`);
       options.forEach((item) => {
-        const ip = String(item.content_ip || '').trim();
-        const label = ip ? `${item.name} (${ip})` : `${item.name} (-)`;
-        rows.push(`<option value="${escapeHTML(item.name)}" ${item.name === value ? 'selected' : ''}>${escapeHTML(label)}</option>`);
+        rows.push(`<option value="${escapeHTML(item.name)}" ${item.name === value ? 'selected' : ''}>${escapeHTML(item.name)}</option>`);
       });
       return `<select data-vr-domain-select="${idx}" data-vr-domain-side="${escapeHTML(side)}">${rows.join('')}</select>`;
     }
