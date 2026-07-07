@@ -1722,6 +1722,57 @@ func clearProbeVirtualRouterRouteCache(reason string) {
 	}
 }
 
+func clearProbeVirtualRouterRouteCacheForRuntime(rt *probeVirtualRouterRuntime, reason string) {
+	if rt == nil {
+		clearProbeVirtualRouterRouteCache(reason)
+		return
+	}
+	fromNodeID := normalizeProbeRouteNodeID(rt.cfg.fromNodeID)
+	toNodeID := normalizeProbeRouteNodeID(rt.cfg.toNodeID)
+	if fromNodeID == "" || toNodeID == "" || fromNodeID == toNodeID {
+		clearProbeVirtualRouterRouteCache(reason)
+		return
+	}
+	clearProbeVirtualRouterRouteCacheForEdge(fromNodeID, toNodeID, reason)
+}
+
+func clearProbeVirtualRouterRouteCacheForEdge(fromNodeID string, toNodeID string, reason string) {
+	from := normalizeProbeRouteNodeID(fromNodeID)
+	to := normalizeProbeRouteNodeID(toNodeID)
+	if from == "" || to == "" || from == to {
+		clearProbeVirtualRouterRouteCache(reason)
+		return
+	}
+	removed := 0
+	probeVirtualRouterRouteCacheState.mu.Lock()
+	for key, path := range probeVirtualRouterRouteCacheState.routes {
+		if probeVirtualRouterPathContainsAdjacentEdge(path, from, to) {
+			delete(probeVirtualRouterRouteCacheState.routes, key)
+			removed++
+		}
+	}
+	probeVirtualRouterRouteCacheState.mu.Unlock()
+	if removed > 0 && strings.TrimSpace(reason) != "" {
+		log.Printf("probe virtual router route cache entries cleared: reason=%s edge=%s>%s count=%d", strings.TrimSpace(reason), from, to, removed)
+	}
+}
+
+func probeVirtualRouterPathContainsAdjacentEdge(path []string, fromNodeID string, toNodeID string) bool {
+	from := normalizeProbeRouteNodeID(fromNodeID)
+	to := normalizeProbeRouteNodeID(toNodeID)
+	if from == "" || to == "" || from == to || len(path) < 2 {
+		return false
+	}
+	for index := 0; index+1 < len(path); index++ {
+		left := normalizeProbeRouteNodeID(path[index])
+		right := normalizeProbeRouteNodeID(path[index+1])
+		if (left == from && right == to) || (left == to && right == from) {
+			return true
+		}
+	}
+	return false
+}
+
 func currentProbeVirtualRouterPathToIP(ip string) []string {
 	targetIP := net.ParseIP(strings.TrimSpace(ip)).To4()
 	if targetIP == nil {
@@ -4592,7 +4643,7 @@ func recordProbeVirtualRouterRuntimePingSuccess(rt *probeVirtualRouterRuntime, d
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
 	if shouldClearRouteCache {
-		clearProbeVirtualRouterRouteCache("bridge ping recovered")
+		clearProbeVirtualRouterRouteCacheForRuntime(rt, "bridge ping recovered")
 	}
 }
 
@@ -4610,13 +4661,13 @@ func recordProbeVirtualRouterRuntimePingError(rt *probeVirtualRouterRuntime, dir
 		item.LastPingError = normalizedErr
 		item.LastPingFailureCount++
 		failureCount = item.LastPingFailureCount
-		shouldClearRouteCache = failureCount >= probeVirtualRouterCarrierStalePingFailures
+		shouldClearRouteCache = failureCount == probeVirtualRouterCarrierStalePingFailures
 		item.LastPingAt = time.Now().UTC().Format(time.RFC3339)
 		applyProbeVirtualRouterPingContext(item, direction, bridgeStatus, bridgeSession)
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
 	if shouldClearRouteCache {
-		clearProbeVirtualRouterRouteCache("bridge ping error threshold")
+		clearProbeVirtualRouterRouteCacheForRuntime(rt, "bridge ping error threshold")
 	}
 	log.Printf("probe virtual router bridge ping error retained carrier: route=%s direction=%s failures=%d err=%s", routeID, normalizeProbeRouteBridgeRole(direction), failureCount, normalizedErr)
 	detachProbeVirtualRouterStalePhysicalCarrier(rt, failureCount, normalizedErr)

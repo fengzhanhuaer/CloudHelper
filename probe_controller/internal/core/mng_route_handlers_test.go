@@ -409,6 +409,84 @@ func TestMngLinkVirtualRouterHandlerRejectsInvalidServicePort(t *testing.T) {
 	}
 }
 
+func TestMngLinkVirtualRouterHandlerPreservesExistingTopologyRuleIDWhenPayloadOmitsIt(t *testing.T) {
+	oldStore := ProbeRouteConfigStore
+	oldProbeStore := ProbeStore
+	t.Cleanup(func() {
+		ProbeRouteConfigStore = oldStore
+		ProbeStore = oldProbeStore
+	})
+
+	existingRule := probeVirtualRouterTopologyRule{
+		ID:              "rule-stable",
+		FromNodeID:      "1",
+		ToNodeID:        "2",
+		ToServiceDomain: "edge-b.example.test",
+		ToServicePort:   12040,
+		UserID:          "admin",
+		UserPublicKey:   "public-key",
+		Secret:          "existing-secret",
+		AuthTicket:      "existing-ticket",
+		Enabled:         true,
+	}
+	originalRouteID := probeVirtualRouterRuntimeRouteID(existingRule)
+	ProbeRouteConfigStore = &probeRouteConfigStore{
+		path: filepath.Join(t.TempDir(), "probe_route_config.json"),
+		data: probeRouteConfigStoreData{
+			VirtualRouter: probeVirtualRouterConfig{
+				Enabled: true,
+				TopologyRules: []probeVirtualRouterTopologyRule{
+					existingRule,
+				},
+			},
+		},
+	}
+	ProbeStore = &probeConfigStore{data: probeConfigData{
+		ProbeNodes: []probeNodeRecord{
+			{NodeNo: 1, NodeName: "node-1"},
+			{NodeNo: 2, NodeName: "node-2"},
+			{NodeNo: 3, NodeName: "node-3"},
+		},
+		ProbeSecrets: map[string]string{},
+	}}
+
+	body := []byte(`{
+  "enabled": true,
+  "topology_rules": [
+    {"from_node_id":"1","to_node_id":"2","to_service_domain":"edge-b.example.test","to_service_port":12040,"enabled":true},
+    {"from_node_id":"2","to_node_id":"3","to_service_domain":"edge-c.example.test","to_service_port":12041,"enabled":true}
+  ]
+}`)
+	req := httptest.NewRequest(http.MethodPost, "/mng/api/route/virtual_router", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	mngRouteVirtualRouterHandler(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		Item probeVirtualRouterConfig `json:"item"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload failed: %v", err)
+	}
+	if len(payload.Item.TopologyRules) != 2 {
+		t.Fatalf("topology rules=%+v, want 2", payload.Item.TopologyRules)
+	}
+	kept := payload.Item.TopologyRules[0]
+	if kept.ID != existingRule.ID {
+		t.Fatalf("existing rule id=%q, want %q", kept.ID, existingRule.ID)
+	}
+	if probeVirtualRouterRuntimeRouteID(kept) != originalRouteID {
+		t.Fatalf("route id changed: got %s want %s", probeVirtualRouterRuntimeRouteID(kept), originalRouteID)
+	}
+	if kept.Secret != existingRule.Secret || kept.UserID != existingRule.UserID || kept.UserPublicKey != existingRule.UserPublicKey {
+		t.Fatalf("existing auth identity should be preserved when payload omits it: %+v", kept)
+	}
+	if payload.Item.TopologyRules[1].ID == "" || payload.Item.TopologyRules[1].ID == existingRule.ID {
+		t.Fatalf("new rule id should be newly allocated: %+v", payload.Item.TopologyRules[1])
+	}
+}
+
 func TestMngLinkVirtualRouterRouteRulesHandlerSaveSortsAndTopologySavePreserves(t *testing.T) {
 	oldStore := ProbeRouteConfigStore
 	oldProbeStore := ProbeStore

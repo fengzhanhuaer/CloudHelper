@@ -33,13 +33,14 @@ func upsertMngProbeVirtualRouterConfig(payload json.RawMessage, controllerBaseUR
 		return nil, fmt.Errorf("invalid payload")
 	}
 	req.RouteRules = nil
+	ProbeRouteConfigStore.mu.RLock()
+	current := normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter)
+	ProbeRouteConfigStore.mu.RUnlock()
+	req.TopologyRules = preserveProbeVirtualRouterTopologyRuleIdentity(req.TopologyRules, current.TopologyRules)
 	config, err := validateAndNormalizeProbeVirtualRouterConfig(req)
 	if err != nil {
 		return nil, err
 	}
-	ProbeRouteConfigStore.mu.RLock()
-	current := normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter)
-	ProbeRouteConfigStore.mu.RUnlock()
 	config.RouteRules = current.RouteRules
 	config = enrichProbeVirtualRouterAuthTickets(ensureProbeVirtualRouterAuthFields(config))
 	ProbeRouteConfigStore.mu.Lock()

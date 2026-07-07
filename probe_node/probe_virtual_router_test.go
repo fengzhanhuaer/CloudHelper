@@ -2438,6 +2438,62 @@ func TestProbeVirtualRouterRepeatedPingErrorDetachesStaleCarrier(t *testing.T) {
 	}
 }
 
+func TestProbeVirtualRouterRepeatedPingErrorClearsOnlyAffectedRouteCache(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	rt := &probeVirtualRouterRuntime{
+		cfg: probeVirtualRouterRuntimeConfig{
+			routeID:    "vrouter-cache-edge",
+			fromNodeID: "1",
+			toNodeID:   "2",
+			peerNodeID: "2",
+			dialer:     true,
+		},
+	}
+	storeProbeVirtualRouterRoutePath("1", "3", []string{"1", "2", "3"})
+	storeProbeVirtualRouterRoutePath("4", "5", []string{"4", "5"})
+
+	for i := 0; i < probeVirtualRouterCarrierStalePingFailures; i++ {
+		recordProbeVirtualRouterRuntimePingError(rt, probeRouteBridgeRoleToNext, errors.New("virtual router control response timeout"))
+	}
+
+	if got := cachedProbeVirtualRouterRoutePath("1", "3"); len(got) != 0 {
+		t.Fatalf("route cache using failed edge should be cleared, got=%v", got)
+	}
+	if got := cachedProbeVirtualRouterRoutePath("4", "5"); !reflect.DeepEqual(got, []string{"4", "5"}) {
+		t.Fatalf("unrelated route cache should survive failed edge, got=%v", got)
+	}
+}
+
+func TestProbeVirtualRouterPersistentPingErrorClearsRouteCacheOnlyAtThreshold(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	rt := &probeVirtualRouterRuntime{
+		cfg: probeVirtualRouterRuntimeConfig{
+			routeID:    "vrouter-cache-threshold",
+			fromNodeID: "1",
+			toNodeID:   "2",
+			peerNodeID: "2",
+			dialer:     true,
+		},
+	}
+	storeProbeVirtualRouterRoutePath("1", "3", []string{"1", "2", "3"})
+	for i := 0; i < probeVirtualRouterCarrierStalePingFailures; i++ {
+		recordProbeVirtualRouterRuntimePingError(rt, probeRouteBridgeRoleToNext, errors.New("virtual router control response timeout"))
+	}
+	if got := cachedProbeVirtualRouterRoutePath("1", "3"); len(got) != 0 {
+		t.Fatalf("route cache should be cleared when failure reaches threshold, got=%v", got)
+	}
+
+	storeProbeVirtualRouterRoutePath("1", "3", []string{"1", "2", "3"})
+	recordProbeVirtualRouterRuntimePingError(rt, probeRouteBridgeRoleToNext, errors.New("virtual router control response timeout"))
+	if got := cachedProbeVirtualRouterRoutePath("1", "3"); !reflect.DeepEqual(got, []string{"1", "2", "3"}) {
+		t.Fatalf("route cache should not be repeatedly cleared after threshold, got=%v", got)
+	}
+}
+
 func TestProbeVirtualRouterDispatchErrorKeepsFrameLinkAlive(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)

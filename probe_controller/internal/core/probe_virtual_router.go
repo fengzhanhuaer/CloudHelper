@@ -424,6 +424,86 @@ func normalizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopology
 	return out
 }
 
+func preserveProbeVirtualRouterTopologyRuleIdentity(items []probeVirtualRouterTopologyRule, existing []probeVirtualRouterTopologyRule) []probeVirtualRouterTopologyRule {
+	if len(items) == 0 || len(existing) == 0 {
+		return items
+	}
+	type existingIdentity struct {
+		rule      probeVirtualRouterTopologyRule
+		ambiguous bool
+	}
+	existingByKey := make(map[string]existingIdentity, len(existing))
+	for _, item := range existing {
+		if strings.TrimSpace(item.ID) == "" {
+			continue
+		}
+		key := probeVirtualRouterTopologyRuleIdentityKey(item)
+		if key == "" {
+			continue
+		}
+		current, exists := existingByKey[key]
+		if exists {
+			current.ambiguous = true
+			existingByKey[key] = current
+			continue
+		}
+		existingByKey[key] = existingIdentity{rule: item}
+	}
+	out := make([]probeVirtualRouterTopologyRule, len(items))
+	copy(out, items)
+	used := make(map[string]struct{}, len(items))
+	for index := range out {
+		if ruleID := strings.TrimSpace(out[index].ID); ruleID != "" {
+			used[ruleID] = struct{}{}
+			continue
+		}
+		key := probeVirtualRouterTopologyRuleIdentityKey(out[index])
+		if key == "" {
+			continue
+		}
+		match, ok := existingByKey[key]
+		if !ok || match.ambiguous {
+			continue
+		}
+		ruleID := strings.TrimSpace(match.rule.ID)
+		if ruleID == "" {
+			continue
+		}
+		if _, exists := used[ruleID]; exists {
+			continue
+		}
+		out[index].ID = ruleID
+		if strings.TrimSpace(out[index].Secret) == "" {
+			out[index].Secret = strings.TrimSpace(match.rule.Secret)
+		}
+		if strings.TrimSpace(out[index].UserID) == "" {
+			out[index].UserID = strings.TrimSpace(match.rule.UserID)
+		}
+		if strings.TrimSpace(out[index].UserPublicKey) == "" {
+			out[index].UserPublicKey = strings.TrimSpace(match.rule.UserPublicKey)
+		}
+		if strings.TrimSpace(out[index].AuthTicket) == "" {
+			out[index].AuthTicket = strings.TrimSpace(match.rule.AuthTicket)
+		}
+		used[ruleID] = struct{}{}
+	}
+	return out
+}
+
+func probeVirtualRouterTopologyRuleIdentityKey(item probeVirtualRouterTopologyRule) string {
+	fromNodeID := normalizeProbeNodeID(item.FromNodeID)
+	toNodeID := normalizeProbeNodeID(item.ToNodeID)
+	if fromNodeID == "" || toNodeID == "" || fromNodeID == toNodeID {
+		return ""
+	}
+	return strings.Join([]string{
+		fromNodeID,
+		toNodeID,
+		strings.ToLower(strings.TrimSpace(item.ToServiceDomain)),
+		strconv.Itoa(normalizeProbeVirtualRouterServicePort(item.ToServicePort)),
+	}, "|")
+}
+
 func normalizeProbeVirtualRouterRouteRules(items []probeVirtualRouterRouteRule) []probeVirtualRouterRouteRule {
 	if len(items) == 0 {
 		return []probeVirtualRouterRouteRule{}
