@@ -109,11 +109,13 @@ func upsertMngProbeVirtualRouterRouteRules(payload json.RawMessage, controllerBa
 		return nil, fmt.Errorf("route_rules exceeded limit (%d)", probeVirtualRouterMaxRouteRules)
 	}
 	rules := normalizeProbeVirtualRouterRouteRules(req.Items)
+	now := time.Now().UTC()
 	ProbeRouteConfigStore.mu.Lock()
 	config := normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter)
 	config.RouteRules = rules
-	config.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	config.UpdatedAt = now.Format(time.RFC3339)
 	ProbeRouteConfigStore.data.VirtualRouter = config
+	reconcileProbeVirtualRouterFakeIPLibraryWithRouteRulesLocked(rules, now)
 	ProbeRouteConfigStore.mu.Unlock()
 	if err := ProbeRouteConfigStore.Save(); err != nil {
 		return nil, err

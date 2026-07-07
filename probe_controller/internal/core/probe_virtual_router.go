@@ -575,6 +575,100 @@ func pruneProbeVirtualRouterFakeIPLibraryLocked(now time.Time) bool {
 	return false
 }
 
+func reconcileProbeVirtualRouterFakeIPLibraryWithRouteRulesLocked(rules []probeVirtualRouterRouteRule, now time.Time) bool {
+	if ProbeRouteConfigStore == nil {
+		return false
+	}
+	library := normalizeProbeVirtualRouterFakeIPLibrary(ProbeRouteConfigStore.data.VirtualRouterFakeIP)
+	if len(library.Items) == 0 {
+		ProbeRouteConfigStore.data.VirtualRouterFakeIP = library
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	expiresAt := now.Add(probeVirtualRouterFakeIPDefaultTTL).Format(time.RFC3339)
+	updatedAt := now.Format(time.RFC3339)
+	kept := library.Items[:0]
+	changed := false
+	for _, item := range library.Items {
+		domain := normalizeProbeVirtualRouterFakeIPDomain(item.Domain)
+		rule, ok := probeVirtualRouterRouteRuleForFakeIPDomain(rules, domain)
+		if !ok || normalizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) != probeVirtualRouterRouteRuleActionExit {
+			changed = true
+			continue
+		}
+		exitNodeID := normalizeProbeNodeID(rule.ExitNodeID)
+		if exitNodeID == "" {
+			changed = true
+			continue
+		}
+		next := item
+		next.Domain = domain
+		next.RuleID = strings.TrimSpace(rule.ID)
+		next.Action = probeVirtualRouterRouteRuleActionExit
+		next.ExitNodeID = exitNodeID
+		if next.RuleID != strings.TrimSpace(item.RuleID) ||
+			normalizeProbeVirtualRouterRouteRuleAction(item.Action, item.ExitNodeID) != next.Action ||
+			normalizeProbeNodeID(item.ExitNodeID) != next.ExitNodeID ||
+			next.Domain != item.Domain {
+			next.ExpiresAt = expiresAt
+			next.UpdatedAt = updatedAt
+			changed = true
+		}
+		kept = append(kept, next)
+	}
+	library.Items = kept
+	if changed {
+		bumpProbeVirtualRouterFakeIPLibraryVersion(&library, now)
+	}
+	ProbeRouteConfigStore.data.VirtualRouterFakeIP = library
+	return changed
+}
+
+func probeVirtualRouterRouteRuleForFakeIPDomain(rules []probeVirtualRouterRouteRule, domain string) (probeVirtualRouterRouteRule, bool) {
+	cleanDomain := normalizeProbeVirtualRouterFakeIPDomain(domain)
+	if cleanDomain == "" {
+		return probeVirtualRouterRouteRule{}, false
+	}
+	for _, rule := range rules {
+		action := normalizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID)
+		if action == "" {
+			continue
+		}
+		for _, entry := range rule.Entries {
+			if probeVirtualRouterRouteRuleEntryMatchesFakeIPDomain(cleanDomain, entry) {
+				rule.Action = action
+				rule.ExitNodeID = normalizeProbeNodeID(rule.ExitNodeID)
+				return rule, true
+			}
+		}
+	}
+	return probeVirtualRouterRouteRule{}, false
+}
+
+func probeVirtualRouterRouteRuleEntryMatchesFakeIPDomain(domain string, entry string) bool {
+	key, value, ok := strings.Cut(strings.TrimSpace(entry), ":")
+	if !ok {
+		return false
+	}
+	key = strings.ToLower(strings.TrimSpace(key))
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return false
+	}
+	switch key {
+	case "domain_suffix":
+		return domain == value || strings.HasSuffix(domain, "."+value)
+	case "domain_prefix":
+		return strings.HasPrefix(domain, value)
+	case "domain_keyword":
+		return strings.Contains(domain, value)
+	default:
+		return false
+	}
+}
+
 func bumpProbeVirtualRouterFakeIPLibraryVersion(library *probeVirtualRouterFakeIPLibrary, now time.Time) {
 	if library.Version <= 0 {
 		library.Version = 1
@@ -808,14 +902,42 @@ func normalizeProbeVirtualRouterRouteRuleEntries(items []string) []string {
 }
 
 func normalizeProbeVirtualRouterRouteRuleEntry(raw string) (string, bool) {
-	trimmed := strings.TrimSpace(raw)
+	trimmed := trimProbeVirtualRouterRouteRuleEntrySyntax(raw)
 	if trimmed == "" {
 		return "", false
+	}
+	if entry, ok := normalizeProbeVirtualRouterCommaRouteRuleEntry(trimmed); ok {
+		return entry, true
 	}
 	key, value, ok := strings.Cut(trimmed, ":")
 	if !ok {
 		return "", false
 	}
+	return normalizeProbeVirtualRouterColonRouteRuleEntry(key, value)
+}
+
+func normalizeProbeVirtualRouterCommaRouteRuleEntry(raw string) (string, bool) {
+	parts := strings.Split(strings.TrimSpace(raw), ",")
+	if len(parts) < 2 {
+		return "", false
+	}
+	key := strings.ToUpper(strings.TrimSpace(parts[0]))
+	value := strings.TrimSpace(parts[1])
+	switch key {
+	case "DOMAIN-SUFFIX":
+		return normalizeProbeVirtualRouterColonRouteRuleEntry("domain_suffix", value)
+	case "DOMAIN-PREFIX":
+		return normalizeProbeVirtualRouterColonRouteRuleEntry("domain_prefix", value)
+	case "DOMAIN-KEYWORD":
+		return normalizeProbeVirtualRouterColonRouteRuleEntry("domain_keyword", value)
+	case "IP-CIDR", "IP-CIDR6":
+		return normalizeProbeVirtualRouterColonRouteRuleEntry("cidr", value)
+	default:
+		return "", false
+	}
+}
+
+func normalizeProbeVirtualRouterColonRouteRuleEntry(key string, value string) (string, bool) {
 	key = strings.ToLower(strings.TrimSpace(key))
 	value = strings.TrimSpace(value)
 	if key == "" || value == "" {
@@ -836,6 +958,22 @@ func normalizeProbeVirtualRouterRouteRuleEntry(raw string) (string, bool) {
 		return key + ":" + prefix.Masked().String(), true
 	default:
 		return "", false
+	}
+}
+
+func trimProbeVirtualRouterRouteRuleEntrySyntax(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	for {
+		next := strings.TrimSpace(trimmed)
+		if strings.HasPrefix(next, "-") {
+			next = strings.TrimSpace(strings.TrimPrefix(next, "-"))
+		}
+		next = strings.TrimSpace(strings.TrimSuffix(next, ","))
+		next = strings.TrimSpace(strings.Trim(next, "\"'`“”"))
+		if next == trimmed {
+			return next
+		}
+		trimmed = next
 	}
 }
 

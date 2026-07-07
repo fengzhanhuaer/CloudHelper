@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMngVirtualRouterSideStatsErrorIgnoresStaleErrorAfterBridgeReconnect(t *testing.T) {
@@ -443,16 +444,19 @@ func TestMngLinkVirtualRouterRouteRulesHandlerSaveSortsAndTopologySavePreserves(
       "action": "probe_exit",
       "exit_node_id": "2",
       "entries": [
-        "domain_suffix:.Reddit.COM",
-        "cidr:91.108.4.9/22",
-        "domain_keyword:API.AAAA",
-        "domain_suffix:reddit.com"
+        "\"domain_suffix:.Reddit.COM\",",
+        "\"cidr:91.108.4.9/22\",",
+        "domain_keyword:API.AAAA,",
+        "\"domain_suffix:reddit.com\"",
+        "- DOMAIN-SUFFIX,githubusercontent.com,Github",
+        "- 'DOMAIN-SUFFIX,cdn-telegram.org,Telegram'",
+        "- 'IP-CIDR,91.108.8.0/22,Telegram'"
       ]
     },
     {
       "name": "alpha",
       "action": "reject",
-      "entries": ["domain_prefix:API.AAAA"]
+      "entries": ["- 'DOMAIN-PREFIX,API.AAAA,Test'"]
     }
   ]
 }`)
@@ -480,7 +484,10 @@ func TestMngLinkVirtualRouterRouteRulesHandlerSaveSortsAndTopologySavePreserves(
 	}
 	wantEntries := []string{
 		"cidr:91.108.4.0/22",
+		"cidr:91.108.8.0/22",
 		"domain_keyword:api.aaaa",
+		"domain_suffix:cdn-telegram.org",
+		"domain_suffix:githubusercontent.com",
 		"domain_suffix:reddit.com",
 	}
 	if strings.Join(media.Entries, "\n") != strings.Join(wantEntries, "\n") {
@@ -522,5 +529,100 @@ func TestMngLinkVirtualRouterRouteRulesHandlerSaveSortsAndTopologySavePreserves(
 	}
 	if getPayload.Items[0].Action != probeVirtualRouterRouteRuleActionReject || getPayload.Items[1].Action != probeVirtualRouterRouteRuleActionExit || getPayload.Items[1].ExitNodeID != "2" {
 		t.Fatalf("route rule actions should survive topology save: %+v", getPayload.Items)
+	}
+}
+
+func TestMngLinkVirtualRouterRouteRulesHandlerUpdatesFakeIPExit(t *testing.T) {
+	oldStore := ProbeRouteConfigStore
+	oldProbeStore := ProbeStore
+	t.Cleanup(func() {
+		ProbeRouteConfigStore = oldStore
+		ProbeStore = oldProbeStore
+	})
+
+	tmpDir := t.TempDir()
+	ProbeRouteConfigStore = &probeRouteConfigStore{
+		path: filepath.Join(tmpDir, "probe_route_config.json"),
+		data: probeRouteConfigStoreData{
+			VirtualRouter: probeVirtualRouterConfig{
+				Enabled:    true,
+				FakeIPCIDR: probeVirtualRouterDefaultCIDR,
+				RouteRules: []probeVirtualRouterRouteRule{{
+					ID:         "rr-media",
+					Name:       "media",
+					Action:     probeVirtualRouterRouteRuleActionExit,
+					ExitNodeID: "2",
+					Entries:    []string{"domain_suffix:reddit.com"},
+				}},
+			},
+			VirtualRouterFakeIP: probeVirtualRouterFakeIPLibrary{
+				Version:   7,
+				UpdatedAt: "2026-07-07T00:00:00Z",
+				Items: []probeVirtualRouterFakeIPEntry{{
+					Domain:     "www.reddit.com",
+					FakeIP:     "198.18.4.9",
+					RuleID:     "rr-media",
+					Action:     probeVirtualRouterRouteRuleActionExit,
+					ExitNodeID: "2",
+					ExpiresAt:  time.Now().UTC().Add(30 * 24 * time.Hour).Format(time.RFC3339),
+					UpdatedAt:  "2026-07-07T00:00:00Z",
+				}},
+			},
+		},
+	}
+	ProbeStore = &probeConfigStore{
+		data: probeConfigData{
+			ProbeNodes: []probeNodeRecord{
+				{NodeNo: 1, NodeName: "node-1"},
+				{NodeNo: 2, NodeName: "node-2"},
+				{NodeNo: 3, NodeName: "node-3"},
+			},
+			ProbeSecrets: map[string]string{},
+		},
+	}
+
+	body := []byte(`{
+  "items": [
+    {
+      "id": "rr-media",
+      "name": "media",
+      "action": "probe_exit",
+      "exit_node_id": "3",
+      "entries": ["domain_suffix:reddit.com"]
+    }
+  ]
+}`)
+	saveReq := httptest.NewRequest(http.MethodPost, "/mng/api/route/virtual_router/route_rules", bytes.NewReader(body))
+	saveRR := httptest.NewRecorder()
+	mngRouteVirtualRouterRouteRulesHandler(saveRR, saveReq)
+	if saveRR.Code != http.StatusOK {
+		t.Fatalf("save status=%d body=%s", saveRR.Code, saveRR.Body.String())
+	}
+
+	ProbeRouteConfigStore.mu.RLock()
+	library := normalizeProbeVirtualRouterFakeIPLibrary(ProbeRouteConfigStore.data.VirtualRouterFakeIP)
+	ProbeRouteConfigStore.mu.RUnlock()
+	if library.Version != 8 || len(library.Items) != 1 {
+		t.Fatalf("fake ip library=%+v", library)
+	}
+	item := library.Items[0]
+	if item.Domain != "www.reddit.com" || item.FakeIP != "198.18.4.9" || item.RuleID != "rr-media" || item.ExitNodeID != "3" {
+		t.Fatalf("fake ip entry did not follow route exit update: %+v", item)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/mng/api/route/virtual_router", nil)
+	getRR := httptest.NewRecorder()
+	mngRouteVirtualRouterHandler(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("get virtual router status=%d body=%s", getRR.Code, getRR.Body.String())
+	}
+	var getPayload struct {
+		Item probeVirtualRouterConfig `json:"item"`
+	}
+	if err := json.Unmarshal(getRR.Body.Bytes(), &getPayload); err != nil {
+		t.Fatalf("decode virtual router payload failed: %v", err)
+	}
+	if len(getPayload.Item.FakeIPLibrary.Items) != 1 || getPayload.Item.FakeIPLibrary.Items[0].ExitNodeID != "3" {
+		t.Fatalf("visible fake ip library did not update: %+v", getPayload.Item.FakeIPLibrary)
 	}
 }
