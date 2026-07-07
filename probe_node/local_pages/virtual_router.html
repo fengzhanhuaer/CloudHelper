@@ -76,6 +76,7 @@
     .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin: 10px 0 12px; }
     .field { display: flex; flex-direction: column; gap: 6px; min-width: 240px; flex: 1 1 240px; }
     .field label { font-size: 12px; color: var(--muted); }
+    input,
     select {
       width: 100%;
       box-sizing: border-box;
@@ -85,6 +86,7 @@
       background: rgba(13, 17, 23, 0.55);
       color: var(--text);
     }
+    input::placeholder { color: rgba(139, 148, 158, 0.78); }
     button {
       padding: 8px 12px;
       border: 1px solid transparent;
@@ -168,6 +170,22 @@
       background: rgba(88, 166, 255, 0.1);
       font-size: 11px;
     }
+    .packet-controls {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin: 10px 0 12px;
+    }
+    .packet-controls .field { max-width: 520px; }
+    .packet-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .packet-summary { color: var(--muted); font-size: 12px; }
     @media (max-width: 860px) {
       body { padding: 16px; }
       .topbar { flex-direction: column; }
@@ -271,8 +289,16 @@
     <div id="packetsTab" class="tab-panel">
       <section class="card">
         <h2>最近报文</h2>
-        <div class="actions">
-          <button id="packetRefreshBtn" class="secondary">刷新</button>
+        <div class="packet-controls">
+          <div class="field">
+            <label for="packetFilterInput">过滤</label>
+            <input id="packetFilterInput" class="mono" placeholder="域名 / IP / 端口 / 协议 / 路径 / 动作" />
+          </div>
+          <div class="packet-actions">
+            <button id="packetRefreshBtn" class="secondary">刷新</button>
+            <button id="packetAutoRefreshBtn" class="secondary">暂停刷新</button>
+            <span id="packetSummary" class="packet-summary">-</span>
+          </div>
         </div>
         <div class="table-wrap" style="margin-top:12px;">
           <table>
@@ -350,12 +376,15 @@
     const messageEl = document.getElementById('message');
     const routerEnabledEl = document.getElementById('virtualRouterEnabled');
     const tunEgressSelectEl = document.getElementById('tunEgressSelect');
-    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260707-route-test-live';
+    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260707-packet-filter';
     const REQUEST_TIMEOUT_DEFAULT_MS = 20000;
     const REQUEST_TIMEOUT_TUN_INSTALL_MS = 90000;
     let tunPollingTimer = null;
     let routeTestPollingTimer = null;
     let routeTestActiveRequestID = '';
+    let packetAutoRefreshPaused = false;
+    let packetFilterText = '';
+    let packetSnapshot = { items: [] };
     let activeTab = 'status';
 
     function setMessage(text, type) {
@@ -542,11 +571,57 @@
       return date.toLocaleTimeString([], { hour12: false }) + '.' + String(date.getMilliseconds()).padStart(3, '0');
     }
 
+    function packetSearchText(item) {
+      const fakeParts = [];
+      if (item.fake_ip_domain) fakeParts.push(item.fake_ip_domain);
+      if (item.fake_ip_exit_node) fakeParts.push('出口 ' + item.fake_ip_exit_node);
+      if (item.fake_ip_side) fakeParts.push(item.fake_ip_side);
+      return [
+        item.id,
+        packetTime(item.captured_at),
+        item.captured_at,
+        packetSourceLabel(item.source),
+        item.source,
+        packetActionLabel(item.action),
+        item.action,
+        item.protocol,
+        packetEndpoint(item.source_ip, item.source_port),
+        packetEndpoint(item.destination_ip, item.destination_port),
+        item.source_ip,
+        item.source_port,
+        item.destination_ip,
+        item.destination_port,
+        item.length,
+        item.path_text,
+        item.fake_ip_domain,
+        item.fake_ip_exit_node,
+        item.fake_ip_side,
+        fakeParts.join(' / '),
+        item.detail,
+        item.error,
+      ].map((value) => String(value === undefined || value === null ? '' : value).toLowerCase()).join(' ');
+    }
+
+    function filterPackets(items) {
+      const terms = String(packetFilterText || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+      if (!terms.length) return items;
+      return items.filter((item) => {
+        const haystack = packetSearchText(item || {});
+        return terms.every((term) => haystack.includes(term));
+      });
+    }
+
     function renderPackets(data) {
       const rows = document.getElementById('packetRows');
-      const items = Array.isArray(data && data.items) ? data.items : [];
+      const allItems = Array.isArray(data && data.items) ? data.items : [];
+      const items = filterPackets(allItems);
+      const summary = document.getElementById('packetSummary');
+      if (summary) {
+        const autoText = packetAutoRefreshPaused ? '自动刷新已停止' : '自动刷新中';
+        summary.textContent = packetFilterText ? `显示 ${items.length}/${allItems.length} 条，${autoText}` : `${allItems.length} 条，${autoText}`;
+      }
       if (!items.length) {
-        rows.innerHTML = '<tr><td colspan="11" class="hint">-</td></tr>';
+        rows.innerHTML = `<tr><td colspan="11" class="hint">${allItems.length ? '没有匹配的报文' : '-'}</td></tr>`;
         return;
       }
       rows.innerHTML = items.map((item) => {
@@ -685,6 +760,7 @@
 
     async function loadPackets() {
       const data = await requestJSON('/local/api/virtual_router/packets', { method: 'GET' });
+      packetSnapshot = data || { items: [] };
       renderPackets(data || {});
       return data || {};
     }
@@ -815,7 +891,7 @@
       if (tunPollingTimer) return;
       tunPollingTimer = setInterval(() => {
         loadTunStatus().catch(() => {});
-        if (activeTab === 'packets') loadPackets().catch(() => {});
+        if (activeTab === 'packets' && !packetAutoRefreshPaused) loadPackets().catch(() => {});
       }, 3000);
     }
 
@@ -853,6 +929,19 @@
     });
     document.getElementById('packetRefreshBtn').addEventListener('click', () => {
       loadPackets().then(() => setMessage('最近报文已刷新', 'success')).catch((err) => setMessage('读取最近报文失败：' + err.message, 'error'));
+    });
+    document.getElementById('packetAutoRefreshBtn').addEventListener('click', () => {
+      packetAutoRefreshPaused = !packetAutoRefreshPaused;
+      document.getElementById('packetAutoRefreshBtn').textContent = packetAutoRefreshPaused ? '继续刷新' : '暂停刷新';
+      renderPackets(packetSnapshot);
+      setMessage(packetAutoRefreshPaused ? '最近报文自动刷新已停止' : '最近报文自动刷新已恢复', 'success');
+      if (!packetAutoRefreshPaused && activeTab === 'packets') {
+        loadPackets().catch((err) => setMessage('读取最近报文失败：' + err.message, 'error'));
+      }
+    });
+    document.getElementById('packetFilterInput').addEventListener('input', (event) => {
+      packetFilterText = String(event.target.value || '').trim();
+      renderPackets(packetSnapshot);
     });
     document.getElementById('routeTestBtn').addEventListener('click', () => {
       runRouteTest().catch((err) => {
