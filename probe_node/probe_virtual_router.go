@@ -39,7 +39,7 @@ const (
 	probeVirtualRouterFrameMainTypePathRTT                 uint16 = 3
 	probeVirtualRouterFrameMainTypeSpeed                   uint16 = 4
 	probeVirtualRouterFrameMainTypeRouteTest               uint16 = 5
-	probeVirtualRouterFrameMainTypeFakeIPSync              uint16 = 6
+	probeVirtualRouterFrameMainTypeFakeIPVerify            uint16 = 6
 	probeVirtualRouterFrameSubTypeUnknown                  uint16 = 0
 	probeVirtualRouterIPSubTypeIPv4                        uint16 = 1
 	probeVirtualRouterPingPongSubTypePing                  uint16 = 1
@@ -53,8 +53,8 @@ const (
 	probeVirtualRouterSpeedSubTypeSend                     uint16 = 5
 	probeVirtualRouterRouteTestSubTypeProbe                uint16 = 1
 	probeVirtualRouterRouteTestSubTypeReport               uint16 = 2
-	probeVirtualRouterFakeIPSyncSubTypeQuery               uint16 = 1
-	probeVirtualRouterFakeIPSyncSubTypeResponse            uint16 = 2
+	probeVirtualRouterFakeIPVerifySubTypeQuery             uint16 = 1
+	probeVirtualRouterFakeIPVerifySubTypeResponse          uint16 = 2
 	probeVirtualRouterFrameLinkIdleTTL                            = 45 * time.Second
 	probeVirtualRouterPingPongInterval                            = 30 * time.Second
 	probeVirtualRouterPingPongTimeout                             = 5 * time.Second
@@ -2366,6 +2366,7 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 	if len(path) < 2 && probeVirtualRouterIPInCurrentFakeCIDR(dstIP) {
 		scheduleProbeVirtualRouterFakeIPItemRefreshByIP(dstIP)
 	}
+	maybeScheduleProbeVirtualRouterFakeIPVerifyForTCPRetransmit(packet, path)
 	if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
 		log.Printf("probe virtual router icmp tun rx: trace_code=icmp-trace-v2 kind=%s src=%s dst=%s id=%d seq=%d local_node=%s path=%s bytes=%d", info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, currentProbeVirtualRouterLocalNodeID(), strings.Join(path, ">"), len(packet))
 	}
@@ -2391,6 +2392,7 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 			log.Printf("probe virtual router transport tun drop: proto=%s src=%s:%d dst=%s:%d reason=fake_ip_exit_unreachable local_node=%s path=%s err=%v", info.Protocol, info.SourceIP, info.SourcePort, info.DestinationIP, info.DestinationPort, currentProbeVirtualRouterLocalNodeID(), strings.Join(path, ">"), err)
 		}
 		recordProbeVirtualRouterRecentPacket("tun_rx", "drop", nil, packet, path, false, err)
+		scheduleProbeVirtualRouterFakeIPVerifyForPacket(packet, path, "exit_unreachable")
 		return false
 	}
 	if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok && info.Kind == "echo_request" && probeVirtualRouterIPMatches(info.SourceIP, currentProbeVirtualRouterLocalIP()) {
@@ -2403,6 +2405,7 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 	if err := forwardProbeVirtualRouterPacketAlongPath(packet, dstIP, path, trace); err != nil {
 		log.Printf("probe virtual router frame forward failed: dst=%s path=%s err=%v", dstIP, strings.Join(path, ">"), err)
 		recordProbeVirtualRouterRecentPacket("tun_rx", "forward_error", nil, packet, path, false, err)
+		scheduleProbeVirtualRouterFakeIPVerifyForPacket(packet, path, "forward_error")
 		return true
 	}
 	recordProbeVirtualRouterRecentPacket("tun_rx", "forward", nil, packet, path, false, nil)
@@ -3778,7 +3781,7 @@ func handleProbeVirtualRouterFrame(runtime *probeVirtualRouterRuntime, link *pro
 			return fmt.Errorf("unsupported virtual router ip subtype=%d", frame.SubType)
 		}
 		return handleProbeVirtualRouterIPFrame(runtime, link, frame.Data, control.Path, control.Trace)
-	case probeVirtualRouterFrameMainTypePingPong, probeVirtualRouterFrameMainTypePathRTT, probeVirtualRouterFrameMainTypeSpeed, probeVirtualRouterFrameMainTypeRouteTest, probeVirtualRouterFrameMainTypeFakeIPSync:
+	case probeVirtualRouterFrameMainTypePingPong, probeVirtualRouterFrameMainTypePathRTT, probeVirtualRouterFrameMainTypeSpeed, probeVirtualRouterFrameMainTypeRouteTest, probeVirtualRouterFrameMainTypeFakeIPVerify:
 		return handleProbeVirtualRouterBusinessFrame(runtime, link, frame.MainType, frame.SubType, frame.Data, control.Path)
 	default:
 		return fmt.Errorf("unsupported virtual router business type=%d subtype=%d", frame.MainType, frame.SubType)
@@ -3824,15 +3827,15 @@ func handleProbeVirtualRouterBusinessFrame(runtime *probeVirtualRouterRuntime, l
 			routeTestMsg.Path = append([]string(nil), framePath...)
 		}
 		return handleProbeVirtualRouterRouteTestFrame(runtime, subType, routeTestMsg)
-	case mainType == probeVirtualRouterFrameMainTypeFakeIPSync:
-		syncMsg := probeVirtualRouterFakeIPSyncPayload{}
-		if err := json.Unmarshal(payload, &syncMsg); err != nil {
+	case mainType == probeVirtualRouterFrameMainTypeFakeIPVerify:
+		verifyMsg := probeVirtualRouterFakeIPVerifyPayload{}
+		if err := json.Unmarshal(payload, &verifyMsg); err != nil {
 			return err
 		}
-		if len(syncMsg.Path) == 0 {
-			syncMsg.Path = append([]string(nil), framePath...)
+		if len(verifyMsg.Path) == 0 {
+			verifyMsg.Path = append([]string(nil), framePath...)
 		}
-		return handleProbeVirtualRouterFakeIPSyncFrame(runtime, link, subType, syncMsg)
+		return handleProbeVirtualRouterFakeIPVerifyFrame(runtime, subType, verifyMsg)
 	default:
 		return fmt.Errorf("unsupported virtual router business type=%d subtype=%d", mainType, subType)
 	}
@@ -4726,10 +4729,9 @@ func handleProbeVirtualRouterIPFrame(runtime *probeVirtualRouterRuntime, link *p
 	if !localMatch && probeVirtualRouterFrameTargetsLocalFakeIP(dstIP, path, currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)) {
 		err := fmt.Errorf("fake ip final-hop mapping unavailable: fake_ip=%s path=%s", dstIP, strings.Join(cleanProbeVirtualRouterPath(path), ">"))
 		scheduleProbeVirtualRouterFakeIPItemRefreshByIP(dstIP)
-		scheduleProbeVirtualRouterFakeIPNegotiationForPacket(runtime, dstIP, path, "final_hop_mapping_unavailable")
 		recordProbeVirtualRouterRuntimeDeliveryError(runtime, err)
-		recordProbeVirtualRouterRecentPacket("frame_rx", "fake_sync_pending", runtime, packet, path, false, err)
-		log.Printf("probe virtual router fake ip final-hop drop and negotiate: route=%s runtime_node=%s dst=%s path=%s err=%v", probeVirtualRouterRuntimeLogRouteID(runtime), currentProbeVirtualRouterLocalNodeIDForRuntime(runtime), dstIP, strings.Join(cleanProbeVirtualRouterPath(path), ">"), err)
+		recordProbeVirtualRouterRecentPacket("frame_rx", "drop", runtime, packet, path, false, err)
+		log.Printf("probe virtual router fake ip final-hop drop: route=%s runtime_node=%s dst=%s path=%s err=%v", probeVirtualRouterRuntimeLogRouteID(runtime), currentProbeVirtualRouterLocalNodeIDForRuntime(runtime), dstIP, strings.Join(cleanProbeVirtualRouterPath(path), ">"), err)
 		return nil
 	}
 	recordProbeVirtualRouterRuntimeFrameDecision(runtime, srcIP, dstIP, localIP, path, localMatch)

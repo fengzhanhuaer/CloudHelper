@@ -228,11 +228,12 @@ func resetProbeVirtualRouterStateForTest() {
 	probeVirtualRouterFakeIPHitRenewState.lastAt = make(map[string]time.Time)
 	probeVirtualRouterFakeIPHitRenewState.pending = make(map[string]struct{})
 	probeVirtualRouterFakeIPHitRenewState.mu.Unlock()
-	probeVirtualRouterFakeIPSyncState.mu.Lock()
-	probeVirtualRouterFakeIPSyncState.pending = make(map[string]chan probeVirtualRouterFakeIPSyncPayload)
-	probeVirtualRouterFakeIPSyncState.running = make(map[string]bool)
-	probeVirtualRouterFakeIPSyncState.lastAt = make(map[string]time.Time)
-	probeVirtualRouterFakeIPSyncState.mu.Unlock()
+	probeVirtualRouterFakeIPVerifyState.mu.Lock()
+	probeVirtualRouterFakeIPVerifyState.pending = make(map[string]chan probeVirtualRouterFakeIPVerifyPayload)
+	probeVirtualRouterFakeIPVerifyState.running = make(map[string]bool)
+	probeVirtualRouterFakeIPVerifyState.lastAt = make(map[string]time.Time)
+	probeVirtualRouterFakeIPVerifyState.synFlows = make(map[string]probeVirtualRouterFakeIPVerifySYNFlow)
+	probeVirtualRouterFakeIPVerifyState.mu.Unlock()
 	probeVirtualRouterLocalInterfaceEnsureState.mu.Lock()
 	probeVirtualRouterLocalInterfaceEnsureState.running = false
 	probeVirtualRouterLocalInterfaceEnsureState.mu.Unlock()
@@ -2052,70 +2053,11 @@ func TestProbeVirtualRouterRecentPacketRecordsFakeIPSummary(t *testing.T) {
 	}
 }
 
-func TestProbeVirtualRouterFakeIPSyncQueryRespondsWithLocalMapping(t *testing.T) {
+func TestProbeVirtualRouterFakeIPVerifyAtExitChecksDomainReachability(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
+	resetProbeLocalDNSServiceForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
-
-	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
-		Enabled:    true,
-		FakeIPCIDR: "198.18.0.0/15",
-		ProbeIPs: []probeVirtualRouterProbeIP{
-			{NodeID: "16", IP: "198.18.0.18"},
-			{NodeID: "19", IP: "198.18.0.21"},
-		},
-		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{
-			Items: []probeVirtualRouterFakeIPEntry{{
-				Domain:     "api.example.com",
-				FakeIP:     "198.18.4.9",
-				RuleID:     "rule-api",
-				Action:     "probe_exit",
-				ExitNodeID: "19",
-				ExpiresAt:  time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
-			}},
-		},
-	}, "16")
-
-	rt := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-16-19", identity: nodeIdentity{NodeID: "16"}, peerNodeID: "19"}}
-	link := newProbeVirtualRouterFrameLink("fake-ip-sync-query", rt, nil, nil)
-	msg := probeVirtualRouterFakeIPSyncPayload{
-		RequestID:    "sync-1",
-		SourceNodeID: "19",
-		TargetNodeID: "16",
-		Path:         []string{"19", "16"},
-		FakeIP:       "198.18.4.9",
-		ExitNodeID:   "19",
-		Reason:       "test",
-	}
-	if err := handleProbeVirtualRouterFakeIPSyncFrame(rt, link, probeVirtualRouterFakeIPSyncSubTypeQuery, msg); err != nil {
-		t.Fatalf("handle fake ip sync query failed: %v", err)
-	}
-	select {
-	case frame := <-link.tx:
-		if frame.MainType != probeVirtualRouterFrameMainTypeFakeIPSync || frame.SubType != probeVirtualRouterFakeIPSyncSubTypeResponse {
-			t.Fatalf("unexpected response frame type: %+v", frame)
-		}
-		control, err := probeVirtualRouterFrameControl(frame, nil)
-		if err != nil {
-			t.Fatalf("response control failed: %v", err)
-		}
-		if !reflect.DeepEqual(control.Path, []string{"16", "19"}) {
-			t.Fatalf("response path=%v, want [16 19]", control.Path)
-		}
-		response := probeVirtualRouterFakeIPSyncPayload{}
-		if err := json.Unmarshal(frame.Data, &response); err != nil {
-			t.Fatalf("unmarshal response failed: %v", err)
-		}
-		if !response.OK || response.Entry.Domain != "api.example.com" || response.Entry.FakeIP != "198.18.4.9" || response.Entry.ExitNodeID != "19" {
-			t.Fatalf("unexpected sync response: %+v", response)
-		}
-	case <-time.After(time.Second):
-		t.Fatalf("fake ip sync response was not enqueued")
-	}
-}
-
-func TestProbeVirtualRouterFakeIPSyncResponseAppliesNegotiatedMapping(t *testing.T) {
-	resetProbeVirtualRouterStateForTest()
-	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(resetProbeLocalDNSServiceForTest)
 
 	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
 		Enabled:    true,
@@ -2126,35 +2068,139 @@ func TestProbeVirtualRouterFakeIPSyncResponseAppliesNegotiatedMapping(t *testing
 		},
 	}, "19")
 
-	response := probeVirtualRouterFakeIPSyncPayload{
-		RequestID:    "sync-2",
-		SourceNodeID: "19",
-		TargetNodeID: "16",
-		Path:         []string{"16", "19"},
-		OK:           true,
-		Responder:    "16",
-		Entry: probeVirtualRouterFakeIPEntry{
-			Domain:     "api.example.com",
-			FakeIP:     "198.18.4.9",
-			RuleID:     "rule-api",
-			Action:     "probe_exit",
-			ExitNodeID: "19",
-			ExpiresAt:  time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
-		},
-	}
-	entry, err := applyProbeVirtualRouterFakeIPSyncResponse(response, "198.18.4.9", "19")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("apply sync response failed: %v", err)
+		t.Fatalf("listen test tcp target: %v", err)
 	}
-	if entry.Domain != "api.example.com" || entry.FakeIP != "198.18.4.9" || entry.ExitNodeID != "19" {
-		t.Fatalf("unexpected applied entry: %+v", entry)
+	defer listener.Close()
+	accepted := make(chan struct{}, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err == nil {
+			accepted <- struct{}{}
+			_ = conn.Close()
+		}
+	}()
+	port := listener.Addr().(*net.TCPAddr).Port
+	oldExitLookup := probeVirtualRouterExitLookupIPv4
+	probeVirtualRouterExitLookupIPv4 = func(domain string) ([]string, error) {
+		if domain != "api.example.com" {
+			t.Fatalf("unexpected verify lookup domain: %s", domain)
+		}
+		return []string{"127.0.0.1"}, nil
 	}
-	if got, ok := currentProbeVirtualRouterFakeIPEntryByIP("198.18.4.9"); !ok || got.Domain != "api.example.com" || got.ExitNodeID != "19" {
-		t.Fatalf("mapping was not applied: %+v ok=%v", got, ok)
+	t.Cleanup(func() { probeVirtualRouterExitLookupIPv4 = oldExitLookup })
+
+	msg := probeVirtualRouterFakeIPVerifyPayload{
+		RequestID:    "verify-1",
+		SourceNodeID: "16",
+		ExitNodeID:   "19",
+		Path:         []string{"16", "19"},
+		Domain:       "api.example.com",
+		FakeIP:       "198.18.4.9",
+		Port:         port,
+		Protocol:     "tcp",
+		Reason:       "test",
+	}
+	response := runProbeVirtualRouterFakeIPVerifyAtExit(msg, &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{identity: nodeIdentity{NodeID: "19"}}})
+	if !response.OK || response.Error != "" {
+		t.Fatalf("verify response failed: %+v", response)
+	}
+	if !reflect.DeepEqual(response.ResolvedIPs, []string{"127.0.0.1"}) || response.CheckedAddress == "" || response.LatencyMS < 0 {
+		t.Fatalf("unexpected verify response detail: %+v", response)
+	}
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Fatalf("exit verify did not dial test target")
 	}
 }
 
-func TestProbeVirtualRouterFinalHopFakeIPMissDropsAndSchedulesSync(t *testing.T) {
+func TestProbeVirtualRouterFakeIPVerifyResponseCompletesAtSource(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "16", IP: "198.18.0.18"},
+			{NodeID: "19", IP: "198.18.0.21"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "16", ToNodeID: "19", Enabled: true},
+		},
+	}, "19")
+
+	requestID := "verify-2"
+	waiter := registerProbeVirtualRouterFakeIPVerifyResponse(requestID)
+	defer unregisterProbeVirtualRouterFakeIPVerifyResponse(requestID)
+	response := probeVirtualRouterFakeIPVerifyPayload{
+		RequestID:      requestID,
+		SourceNodeID:   "19",
+		ExitNodeID:     "16",
+		Path:           []string{"16", "19"},
+		Domain:         "api.example.com",
+		FakeIP:         "198.18.4.9",
+		Port:           443,
+		Protocol:       "tcp",
+		OK:             true,
+		Responder:      "16",
+		ResolvedIPs:    []string{"203.0.113.10"},
+		CheckedAddress: "203.0.113.10:443",
+		LatencyMS:      12,
+	}
+	if err := handleProbeVirtualRouterFakeIPVerifyFrame(&probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{identity: nodeIdentity{NodeID: "19"}}}, probeVirtualRouterFakeIPVerifySubTypeResponse, response); err != nil {
+		t.Fatalf("handle verify response failed: %v", err)
+	}
+	got, err := waitProbeVirtualRouterFakeIPVerifyResponse(waiter, time.Second)
+	if err != nil {
+		t.Fatalf("wait verify response failed: %v", err)
+	}
+	if !got.OK || got.Responder != "16" || got.CheckedAddress != "203.0.113.10:443" {
+		t.Fatalf("unexpected verify response: %+v", got)
+	}
+}
+
+func TestProbeVirtualRouterFakeIPVerifySYNRetransmitSchedulesSourceVerify(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "16", IP: "198.18.0.18"},
+			{NodeID: "19", IP: "198.18.0.21"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "16", ToNodeID: "19", Enabled: true},
+		},
+		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{
+			Items: []probeVirtualRouterFakeIPEntry{{
+				Domain:     "api.example.com",
+				FakeIP:     "198.18.4.9",
+				Action:     "probe_exit",
+				ExitNodeID: "19",
+			}},
+		},
+	}, "16")
+
+	packet := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.18", "198.18.4.9", 49152, 443)
+	if maybeScheduleProbeVirtualRouterFakeIPVerifyForTCPRetransmit(packet, []string{"16", "19"}) {
+		t.Fatalf("first SYN should not trigger verify")
+	}
+	if !maybeScheduleProbeVirtualRouterFakeIPVerifyForTCPRetransmit(packet, []string{"16", "19"}) {
+		t.Fatalf("second SYN should trigger verify")
+	}
+	probeVirtualRouterFakeIPVerifyState.mu.Lock()
+	defer probeVirtualRouterFakeIPVerifyState.mu.Unlock()
+	if len(probeVirtualRouterFakeIPVerifyState.lastAt) != 1 {
+		t.Fatalf("verify lastAt state=%+v", probeVirtualRouterFakeIPVerifyState.lastAt)
+	}
+}
+
+func TestProbeVirtualRouterFinalHopFakeIPMissDropsWithoutSourceSync(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 
@@ -2187,8 +2233,8 @@ func TestProbeVirtualRouterFinalHopFakeIPMissDropsAndSchedulesSync(t *testing.T)
 		t.Fatalf("final-hop fake ip miss must not be written to local TUN, writes=%d", tunWrites)
 	}
 	items := snapshotProbeVirtualRouterRecentPackets()
-	if len(items) != 1 || items[0].Action != "fake_sync_pending" {
-		t.Fatalf("missing fake ip packet should record sync pending, items=%+v", items)
+	if len(items) != 1 || items[0].Action != "drop" {
+		t.Fatalf("missing fake ip packet should be dropped, items=%+v", items)
 	}
 }
 
