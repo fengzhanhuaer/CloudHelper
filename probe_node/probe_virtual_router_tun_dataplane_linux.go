@@ -17,12 +17,12 @@ import (
 )
 
 const (
-	probeLocalLinuxTUNPacketBufferSize   = 65535
-	probeLocalLinuxTUNInboundQueueFrames = 2048
-	probeLocalLinuxTUNInboundWorkerCount = 4
-	probeLocalLinuxTUNWriteTimeout       = 500 * time.Millisecond
-	probeLocalLinuxTUNWritePollTimeoutMS = 50
-	probeLocalLinuxTUNCloseWaitTimeout   = 2 * time.Second
+	probeLocalLinuxTUNPacketBufferSize      = 65535
+	probeLocalLinuxTUNInboundQueueFrames    = 2048
+	probeLocalLinuxTUNInboundDispatchShards = 8
+	probeLocalLinuxTUNWriteTimeout          = 500 * time.Millisecond
+	probeLocalLinuxTUNWritePollTimeoutMS    = 50
+	probeLocalLinuxTUNCloseWaitTimeout      = 2 * time.Second
 )
 
 var probeLocalLinuxTUNDataPlaneState = struct {
@@ -40,14 +40,15 @@ type probeVirtualRouterLinuxTUNDataPlaneRunner struct {
 	writeMu sync.Mutex
 	closed  atomic.Bool
 
-	inboundCh chan []byte
-	stopCh    chan struct{}
-	rxPackets atomic.Uint64
-	rxBytes   atomic.Uint64
-	txPackets atomic.Uint64
-	txBytes   atomic.Uint64
-	doneCh    chan struct{}
-	closeOnce sync.Once
+	inboundCh       chan []byte
+	inboundDispatch []chan []byte
+	stopCh          chan struct{}
+	rxPackets       atomic.Uint64
+	rxBytes         atomic.Uint64
+	txPackets       atomic.Uint64
+	txBytes         atomic.Uint64
+	doneCh          chan struct{}
+	closeOnce       sync.Once
 }
 
 func startProbeVirtualRouterTUNDataPlane() error {
@@ -150,15 +151,17 @@ func newProbeLocalLinuxTUNDataPlaneRunner(dev string) (*probeVirtualRouterLinuxT
 		return nil, err
 	}
 	runner := &probeVirtualRouterLinuxTUNDataPlaneRunner{
-		file:      file,
-		dev:       dev,
-		inboundCh: make(chan []byte, probeLocalLinuxTUNInboundQueueFrames),
-		stopCh:    make(chan struct{}),
-		doneCh:    make(chan struct{}),
+		file:            file,
+		dev:             dev,
+		inboundCh:       make(chan []byte, probeLocalLinuxTUNInboundQueueFrames),
+		inboundDispatch: makeProbeVirtualRouterTUNInboundDispatchShards(probeLocalLinuxTUNInboundDispatchShards, probeLocalLinuxTUNInboundQueueFrames),
+		stopCh:          make(chan struct{}),
+		doneCh:          make(chan struct{}),
 	}
-	for i := 0; i < probeLocalLinuxTUNInboundWorkerCount; i++ {
-		go runner.inboundWorker()
+	for shardID, shard := range runner.inboundDispatch {
+		go runner.inboundShardWorker(shardID, shard)
 	}
+	go runner.inboundDispatchWorker()
 	go runner.readLoop()
 	return runner, nil
 }
@@ -261,12 +264,38 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) handleInboundPayload(payload
 	}
 }
 
-func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) inboundWorker() {
+func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) inboundDispatchWorker() {
 	for {
 		select {
 		case <-r.stopCh:
 			return
 		case packet := <-r.inboundCh:
+			if len(packet) == 0 {
+				continue
+			}
+			if len(r.inboundDispatch) == 0 {
+				handleProbeVirtualRouterTUNInboundPacket(packet)
+				continue
+			}
+			shardID := probeVirtualRouterPacketDispatchShard(packet, len(r.inboundDispatch))
+			shard := r.inboundDispatch[shardID]
+			select {
+			case shard <- packet:
+			case <-r.stopCh:
+				return
+			default:
+				logProbeWarnf("probe local linux tun inbound packet drop: dev=%s reason=dispatch_queue_full shard=%d depth=%d capacity=%d", r.dev, shardID, len(shard), cap(shard))
+			}
+		}
+	}
+}
+
+func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) inboundShardWorker(shardID int, shard chan []byte) {
+	for {
+		select {
+		case <-r.stopCh:
+			return
+		case packet := <-shard:
 			if len(packet) == 0 {
 				continue
 			}
@@ -299,19 +328,20 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) Stats() probeVirtualRouterTU
 	if r == nil {
 		return probeVirtualRouterTUNDataPlaneStats{}
 	}
-	inboundDepth, inboundCapacity := 0, 0
-	if r.inboundCh != nil {
-		inboundDepth = len(r.inboundCh)
-		inboundCapacity = cap(r.inboundCh)
-	}
+	entryDepth, entryCapacity, dispatchDepth, dispatchCapacity, dispatchWorkers := snapshotProbeVirtualRouterTUNInboundQueues(r.inboundCh, r.inboundDispatch)
 	return probeVirtualRouterTUNDataPlaneStats{
-		Running:              !r.closed.Load(),
-		RXPackets:            r.rxPackets.Load(),
-		RXBytes:              r.rxBytes.Load(),
-		TXPackets:            r.txPackets.Load(),
-		TXBytes:              r.txBytes.Load(),
-		InboundQueueDepth:    inboundDepth,
-		InboundQueueCapacity: inboundCapacity,
+		Running:                      !r.closed.Load(),
+		RXPackets:                    r.rxPackets.Load(),
+		RXBytes:                      r.rxBytes.Load(),
+		TXPackets:                    r.txPackets.Load(),
+		TXBytes:                      r.txBytes.Load(),
+		InboundQueueDepth:            entryDepth + dispatchDepth,
+		InboundQueueCapacity:         entryCapacity + dispatchCapacity,
+		InboundEntryQueueDepth:       entryDepth,
+		InboundEntryQueueCapacity:    entryCapacity,
+		InboundDispatchQueueDepth:    dispatchDepth,
+		InboundDispatchQueueCapacity: dispatchCapacity,
+		InboundDispatchWorkers:       dispatchWorkers,
 	}
 }
 

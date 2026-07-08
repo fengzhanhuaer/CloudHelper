@@ -786,7 +786,7 @@
       setText('routeStatusRuntimeCount', formatNumber(summary.runtime_count));
       setText('routeStatusCarrierCount', formatNumber(summary.carrier_count) + ' / ' + formatNumber(summary.frame_link_count));
       setText('routeStatusQueueDepth', formatNumber(summary.tx_queue_depth) + ' / ' + formatNumber(summary.rx_queue_depth));
-      setText('routeStatusTun', (tun.running ? '运行中' : '未运行') + ' / Q ' + formatNumber(tun.inbound_queue_depth) + '/' + formatNumber(tun.inbound_queue_capacity));
+      setText('routeStatusTun', (tun.running ? '运行中' : '未运行') + ' / Q ' + formatNumber(tun.inbound_queue_depth) + '/' + formatNumber(tun.inbound_queue_capacity) + ' / E ' + formatNumber(tun.inbound_entry_queue_depth) + ' / D ' + formatNumber(tun.inbound_dispatch_queue_depth));
       setText('routeStatusRecentErrors', formatNumber(summary.recent_error_count) + ' / drop ' + formatNumber(summary.recent_drop_count));
       setText('routeStatusUpdatedAt', formatDateTime(payload.updated_at));
       setText('routeStatusLocalNode', payload.local_node_id);

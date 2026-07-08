@@ -3129,6 +3129,32 @@ func probeVirtualRouterFrameRXDispatchHash(frame probeVirtualRouterFrame) uint32
 		h = hashByte(h, byte(value>>8))
 		return hashByte(h, byte(value))
 	}
+	h := fnvOffset
+	h = hashUint16(h, frame.MainType)
+	h = hashUint16(h, frame.SubType)
+	if frame.MainType != probeVirtualRouterFrameMainTypeIP {
+		return h
+	}
+	return probeVirtualRouterPacketFlowHash(frame.Data, h)
+}
+
+func probeVirtualRouterPacketDispatchShard(packet []byte, shardCount int) int {
+	if shardCount <= 1 {
+		return 0
+	}
+	return int(probeVirtualRouterPacketFlowHash(packet, 2166136261) % uint32(shardCount))
+}
+
+func probeVirtualRouterPacketFlowHash(packet []byte, seed uint32) uint32 {
+	const fnvPrime uint32 = 16777619
+	hashByte := func(h uint32, value byte) uint32 {
+		h ^= uint32(value)
+		return h * fnvPrime
+	}
+	hashUint16 := func(h uint32, value uint16) uint32 {
+		h = hashByte(h, byte(value>>8))
+		return hashByte(h, byte(value))
+	}
 	hashUint32 := func(h uint32, value uint32) uint32 {
 		h = hashByte(h, byte(value>>24))
 		h = hashByte(h, byte(value>>16))
@@ -3136,13 +3162,7 @@ func probeVirtualRouterFrameRXDispatchHash(frame probeVirtualRouterFrame) uint32
 		return hashByte(h, byte(value))
 	}
 
-	h := fnvOffset
-	h = hashUint16(h, frame.MainType)
-	h = hashUint16(h, frame.SubType)
-	if frame.MainType != probeVirtualRouterFrameMainTypeIP {
-		return h
-	}
-	packet := frame.Data
+	h := seed
 	if len(packet) < 20 || packet[0]>>4 != 4 {
 		return h
 	}

@@ -21,7 +21,7 @@ const (
 	probeLocalTUNReadWaitTimeoutMillis  = 250
 	probeLocalTUNReadLoopSleepOnNoEvent = 50 * time.Millisecond
 	probeLocalTUNInboundQueueFrames     = 2048
-	probeLocalTUNInboundWorkerCount     = 4
+	probeLocalTUNInboundDispatchShards  = 8
 )
 
 var (
@@ -252,8 +252,9 @@ type probeVirtualRouterTUNDataPlaneRunner struct {
 	onPacket func([]byte)
 	logf     func(string, ...any)
 
-	inboundCh chan []byte
-	writeMu   sync.Mutex
+	inboundCh       chan []byte
+	inboundDispatch []chan []byte
+	writeMu         sync.Mutex
 
 	stopCh    chan struct{}
 	doneCh    chan struct{}
@@ -318,13 +319,15 @@ func newProbeVirtualRouterTUNDataPlaneRunner(libraryPath string, adapterHandle u
 		onPacket:                 onPacket,
 		logf:                     logf,
 		inboundCh:                make(chan []byte, probeLocalTUNInboundQueueFrames),
+		inboundDispatch:          makeProbeVirtualRouterTUNInboundDispatchShards(probeLocalTUNInboundDispatchShards, probeLocalTUNInboundQueueFrames),
 		stopCh:                   make(chan struct{}),
 		doneCh:                   make(chan struct{}),
 	}
 	runner.running.Store(true)
-	for i := 0; i < probeLocalTUNInboundWorkerCount; i++ {
-		go runner.inboundWorker()
+	for shardID, shard := range runner.inboundDispatch {
+		go runner.inboundShardWorker(shardID, shard)
 	}
+	go runner.inboundDispatchWorker()
 	go runner.readLoop()
 
 	if runner.logf != nil {
@@ -400,12 +403,40 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) handleInboundPayload(payload []by
 	}
 }
 
-func (r *probeVirtualRouterTUNDataPlaneRunner) inboundWorker() {
+func (r *probeVirtualRouterTUNDataPlaneRunner) inboundDispatchWorker() {
 	for {
 		select {
 		case <-r.stopCh:
 			return
 		case payload := <-r.inboundCh:
+			if len(payload) == 0 || r.onPacket == nil {
+				continue
+			}
+			if len(r.inboundDispatch) == 0 {
+				r.onPacket(payload)
+				continue
+			}
+			shardID := probeVirtualRouterPacketDispatchShard(payload, len(r.inboundDispatch))
+			shard := r.inboundDispatch[shardID]
+			select {
+			case shard <- payload:
+			case <-r.stopCh:
+				return
+			default:
+				if r.logf != nil {
+					r.logf("probe local tun inbound packet drop: reason=dispatch_queue_full shard=%d depth=%d capacity=%d", shardID, len(shard), cap(shard))
+				}
+			}
+		}
+	}
+}
+
+func (r *probeVirtualRouterTUNDataPlaneRunner) inboundShardWorker(shardID int, shard chan []byte) {
+	for {
+		select {
+		case <-r.stopCh:
+			return
+		case payload := <-shard:
 			if len(payload) == 0 || r.onPacket == nil {
 				continue
 			}
@@ -436,19 +467,20 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) Close() error {
 }
 
 func (r *probeVirtualRouterTUNDataPlaneRunner) Stats() probeVirtualRouterTUNDataPlaneStats {
-	inboundDepth, inboundCapacity := 0, 0
-	if r.inboundCh != nil {
-		inboundDepth = len(r.inboundCh)
-		inboundCapacity = cap(r.inboundCh)
-	}
+	entryDepth, entryCapacity, dispatchDepth, dispatchCapacity, dispatchWorkers := snapshotProbeVirtualRouterTUNInboundQueues(r.inboundCh, r.inboundDispatch)
 	return probeVirtualRouterTUNDataPlaneStats{
-		Running:              r.running.Load(),
-		RXPackets:            r.rxPackets.Load(),
-		RXBytes:              r.rxBytes.Load(),
-		TXPackets:            r.txPackets.Load(),
-		TXBytes:              r.txBytes.Load(),
-		InboundQueueDepth:    inboundDepth,
-		InboundQueueCapacity: inboundCapacity,
+		Running:                      r.running.Load(),
+		RXPackets:                    r.rxPackets.Load(),
+		RXBytes:                      r.rxBytes.Load(),
+		TXPackets:                    r.txPackets.Load(),
+		TXBytes:                      r.txBytes.Load(),
+		InboundQueueDepth:            entryDepth + dispatchDepth,
+		InboundQueueCapacity:         entryCapacity + dispatchCapacity,
+		InboundEntryQueueDepth:       entryDepth,
+		InboundEntryQueueCapacity:    entryCapacity,
+		InboundDispatchQueueDepth:    dispatchDepth,
+		InboundDispatchQueueCapacity: dispatchCapacity,
+		InboundDispatchWorkers:       dispatchWorkers,
 	}
 }
 

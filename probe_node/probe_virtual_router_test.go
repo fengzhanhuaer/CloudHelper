@@ -3190,6 +3190,14 @@ func TestProbeVirtualRouterFrameRXDispatchShardKeepsTCPFlowTogether(t *testing.T
 	}
 }
 
+func TestProbeVirtualRouterPacketDispatchShardKeepsTCPFlowTogether(t *testing.T) {
+	forward := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.7", "198.18.4.52", 60592, 443)
+	reverse := buildProbeVirtualRouterTestTCPPacket(t, "198.18.4.52", "198.18.0.7", 443, 60592)
+	if got, want := probeVirtualRouterPacketDispatchShard(reverse, 8), probeVirtualRouterPacketDispatchShard(forward, 8); got != want {
+		t.Fatalf("bidirectional tcp packets should use same tun dispatch shard, reverse=%d forward=%d", got, want)
+	}
+}
+
 func TestProbeVirtualRouterFrameLinkAttachClearsBufferedFrames(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)

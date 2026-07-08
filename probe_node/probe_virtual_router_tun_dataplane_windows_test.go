@@ -426,7 +426,7 @@ func TestProbeVirtualRouterTUNDataPlaneRunnerHandleInboundPayloadDoesNotBlock(t 
 			<-release
 		},
 	}
-	go runner.inboundWorker()
+	go runner.inboundDispatchWorker()
 	defer close(runner.stopCh)
 
 	go func() {
