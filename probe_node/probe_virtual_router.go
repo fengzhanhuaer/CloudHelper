@@ -62,7 +62,7 @@ const (
 	probeVirtualRouterSpeedTestChunkBytes                         = 48 * 1024
 	probeVirtualRouterCarrierStalePingFailures                    = 4
 	probeVirtualRouterCarrierStaleRXGrace                         = 2 * probeVirtualRouterPingPongInterval
-	probeVirtualRouterRouteConfigRefreshHotPathMinInterval        = 10 * time.Second
+	probeVirtualRouterRouteConfigRefreshHotPathMinInterval        = 60 * time.Second
 )
 
 var probeVirtualRouterEnsureDirectBypass = ensureProbeRouteDirectBypass
@@ -4433,9 +4433,7 @@ func handleProbeVirtualRouterIPFrame(runtime *probeVirtualRouterRuntime, link *p
 	localIP := currentProbeVirtualRouterLocalIPForRuntime(runtime)
 	localMatch := probeVirtualRouterPacketTargetsLocalDelivery(runtime, dstIP, path)
 	if !localMatch && probeVirtualRouterFrameTargetsLocalFakeIP(dstIP, path, currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)) {
-		if refreshProbeVirtualRouterRouteConfigFromController("fake_ip_exit_delivery_miss") {
-			localMatch = probeVirtualRouterPacketTargetsLocalDelivery(runtime, dstIP, path)
-		}
+		scheduleProbeVirtualRouterRouteConfigRefreshFromController("fake_ip_exit_delivery_miss", probeVirtualRouterRouteConfigRefreshHotPathMinInterval)
 	}
 	recordProbeVirtualRouterRuntimeFrameDecision(runtime, srcIP, dstIP, localIP, path, localMatch)
 	if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {

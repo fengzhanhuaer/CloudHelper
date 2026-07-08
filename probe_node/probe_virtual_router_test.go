@@ -230,6 +230,10 @@ func resetProbeVirtualRouterStateForTest() {
 	probeVirtualRouterRecentPacketState.nextID = 0
 	probeVirtualRouterRecentPacketState.items = nil
 	probeVirtualRouterRecentPacketState.mu.Unlock()
+	probeVirtualRouterControllerState.mu.Lock()
+	probeVirtualRouterControllerState.identity = nodeIdentity{}
+	probeVirtualRouterControllerState.controllerBaseURL = ""
+	probeVirtualRouterControllerState.mu.Unlock()
 }
 
 func TestBuildProbeVirtualRouterRuntimeConfigRequiresLinkAuthFields(t *testing.T) {
@@ -2224,6 +2228,56 @@ func TestProbeVirtualRouterFakeIPExitTCPForwarderDoesNotBlockOnResolve(t *testin
 	case <-lookupStarted:
 	default:
 	}
+}
+
+func TestProbeVirtualRouterFakeIPMappingMissDoesNotBlockOnControllerRefresh(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	releaseRequest := make(chan struct{})
+	requestStarted := make(chan struct{})
+	var releaseOnce sync.Once
+	var requestStartedOnce sync.Once
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestStartedOnce.Do(func() { close(requestStarted) })
+		<-releaseRequest
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"virtual_router":{"enabled":true,"fake_ip_cidr":"198.18.0.0/15"}}`)
+	}))
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(releaseRequest) })
+		server.Close()
+	})
+	rememberProbeVirtualRouterController(nodeIdentity{NodeID: "19", Secret: "secret"}, server.URL)
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "19", IP: "198.18.0.21"},
+		},
+	}, "19")
+
+	done := make(chan bool, 1)
+	go func() {
+		_, ok := currentProbeVirtualRouterFakeIPEntryByIPWithAsyncRefresh("198.18.4.9")
+		done <- ok
+	}()
+
+	select {
+	case ok := <-done:
+		if ok {
+			t.Fatalf("missing fake-ip mapping should not resolve synchronously")
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatalf("fake-ip mapping miss blocked on controller refresh")
+	}
+	select {
+	case <-requestStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("fake-ip mapping miss should schedule a controller refresh")
+	}
+	releaseOnce.Do(func() { close(releaseRequest) })
 }
 
 func TestProbeVirtualRouterFakeIPExitUDPForwarderDoesNotBlockOnResolve(t *testing.T) {

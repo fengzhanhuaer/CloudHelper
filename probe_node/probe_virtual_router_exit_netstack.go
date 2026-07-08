@@ -92,7 +92,7 @@ var probeVirtualRouterExitDialUDP = dialProbeVirtualRouterExitUDP
 
 func handleProbeVirtualRouterFakeIPExitPacket(runtime *probeVirtualRouterRuntime, link *probeVirtualRouterFrameLink, packet []byte, path []string) bool {
 	dstIP := probeVirtualRouterIPv4Destination(packet)
-	entry, ok := currentProbeVirtualRouterFakeIPEntryByIPWithControllerRefresh(dstIP)
+	entry, ok := currentProbeVirtualRouterFakeIPEntryByIPWithAsyncRefresh(dstIP)
 	if !ok || normalizeProbeRouteNodeID(entry.ExitNodeID) != currentProbeVirtualRouterLocalNodeIDForRuntime(runtime) {
 		return false
 	}
@@ -520,7 +520,7 @@ func probeVirtualRouterFakeIPTargetsFromTransportID(addr tcpip.Address, port uin
 		return nil, errors.New("transport target port is empty")
 	}
 	host := strings.TrimSpace(addr.String())
-	entry, ok := currentProbeVirtualRouterFakeIPEntryByIPWithControllerRefresh(host)
+	entry, ok := currentProbeVirtualRouterFakeIPEntryByIPWithAsyncRefresh(host)
 	if !ok {
 		return nil, errors.New("fake ip mapping is unavailable")
 	}
@@ -537,6 +537,14 @@ func probeVirtualRouterFakeIPTargetsFromTransportID(addr tcpip.Address, port uin
 		return nil, fmt.Errorf("resolve fake ip domain returned no usable ipv4: domain=%s", domain)
 	}
 	return targets, nil
+}
+
+func currentProbeVirtualRouterFakeIPEntryByIPWithAsyncRefresh(ip string) (probeVirtualRouterFakeIPEntry, bool) {
+	if entry, ok := currentProbeVirtualRouterFakeIPEntryByIP(ip); ok {
+		return entry, true
+	}
+	scheduleProbeVirtualRouterRouteConfigRefreshFromController("fake_ip_mapping_miss", probeVirtualRouterRouteConfigRefreshHotPathMinInterval)
+	return probeVirtualRouterFakeIPEntry{}, false
 }
 
 func currentProbeVirtualRouterFakeIPEntryByIPWithControllerRefresh(ip string) (probeVirtualRouterFakeIPEntry, bool) {
