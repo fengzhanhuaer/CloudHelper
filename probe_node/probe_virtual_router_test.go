@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -3693,6 +3694,33 @@ func TestProbeVirtualRouterCarrierWriteDeadlineDetachesBlockedCarrier(t *testing
 	t.Fatalf("carrier should detach after write deadline failure")
 }
 
+func TestProbeVirtualRouterWireFrameWriteDeadlineRefreshesAfterProgress(t *testing.T) {
+	conn := &probeVirtualRouterPartialWriteDeadlineConn{chunkSize: 7}
+	frame, err := buildProbeVirtualRouterIPFrame(buildProbeVirtualRouterTestIPv4Packet(t, "198.18.0.1", "198.18.0.2"), []string{"1", "2"}, nil)
+	if err != nil {
+		t.Fatalf("build ip frame failed: %v", err)
+	}
+	payload, err := encodeProbeVirtualRouterFrame(frame)
+	if err != nil {
+		t.Fatalf("encode frame failed: %v", err)
+	}
+	if err := writeProbeVirtualRouterWireFrameRaw(conn, frame); err != nil {
+		t.Fatalf("write frame failed: %v", err)
+	}
+	if !bytes.Equal(conn.buf.Bytes(), payload) {
+		t.Fatalf("written payload mismatch: got=%d want=%d", conn.buf.Len(), len(payload))
+	}
+	if conn.writeCalls < 2 {
+		t.Fatalf("partial writer should be called multiple times, calls=%d", conn.writeCalls)
+	}
+	if got, wantMin := conn.deadlineSetCalls, conn.writeCalls+1; got < wantMin {
+		t.Fatalf("write deadline should refresh for each progress write and clear at end, got=%d want>=%d", got, wantMin)
+	}
+	if !conn.cleared {
+		t.Fatalf("write deadline should be cleared after frame write")
+	}
+}
+
 var errProbeVirtualRouterTestWriteDeadline = errors.New("test write deadline reached")
 
 type probeVirtualRouterDeadlineFailConn struct {
@@ -3751,6 +3779,30 @@ func (c *probeVirtualRouterDeadlineFailConn) SetWriteDeadline(t time.Time) error
 		c.deadlineOnce.Do(func() {
 			close(c.writeDeadlineSet)
 		})
+	}
+	return nil
+}
+
+type probeVirtualRouterPartialWriteDeadlineConn struct {
+	buf              bytes.Buffer
+	chunkSize        int
+	writeCalls       int
+	deadlineSetCalls int
+	cleared          bool
+}
+
+func (c *probeVirtualRouterPartialWriteDeadlineConn) Write(p []byte) (int, error) {
+	c.writeCalls++
+	if c.chunkSize <= 0 || c.chunkSize > len(p) {
+		c.chunkSize = len(p)
+	}
+	return c.buf.Write(p[:c.chunkSize])
+}
+
+func (c *probeVirtualRouterPartialWriteDeadlineConn) SetWriteDeadline(t time.Time) error {
+	c.deadlineSetCalls++
+	if t.IsZero() {
+		c.cleared = true
 	}
 	return nil
 }

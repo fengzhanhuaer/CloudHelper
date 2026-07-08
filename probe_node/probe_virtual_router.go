@@ -2303,12 +2303,10 @@ func writeProbeVirtualRouterWireFrameRaw(writer io.Writer, frame probeVirtualRou
 		return err
 	}
 	if deadlineWriter, ok := writer.(interface{ SetWriteDeadline(time.Time) error }); ok && probeVirtualRouterFrameWriteTimeout > 0 {
-		if err := deadlineWriter.SetWriteDeadline(time.Now().Add(probeVirtualRouterFrameWriteTimeout)); err != nil {
-			return err
-		}
 		defer func() {
 			_ = deadlineWriter.SetWriteDeadline(time.Time{})
 		}()
+		return writeProbeVirtualRouterAllWithWriteIdleTimeout(writer, deadlineWriter, payload, probeVirtualRouterFrameWriteTimeout)
 	}
 	return writeProbeVirtualRouterAll(writer, payload)
 }
@@ -2339,6 +2337,28 @@ func readProbeVirtualRouterWireFrame(reader *bufio.Reader) (probeVirtualRouterFr
 func writeProbeVirtualRouterAll(writer io.Writer, payload []byte) error {
 	written := 0
 	for written < len(payload) {
+		n, err := writer.Write(payload[written:])
+		if n > 0 {
+			written += n
+		}
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+	}
+	return nil
+}
+
+func writeProbeVirtualRouterAllWithWriteIdleTimeout(writer io.Writer, deadlineWriter interface{ SetWriteDeadline(time.Time) error }, payload []byte, idleTimeout time.Duration) error {
+	written := 0
+	for written < len(payload) {
+		if idleTimeout > 0 {
+			if err := deadlineWriter.SetWriteDeadline(time.Now().Add(idleTimeout)); err != nil {
+				return err
+			}
+		}
 		n, err := writer.Write(payload[written:])
 		if n > 0 {
 			written += n
