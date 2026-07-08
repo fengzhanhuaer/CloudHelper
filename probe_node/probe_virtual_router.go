@@ -39,6 +39,7 @@ const (
 	probeVirtualRouterFrameMainTypePathRTT                 uint16 = 3
 	probeVirtualRouterFrameMainTypeSpeed                   uint16 = 4
 	probeVirtualRouterFrameMainTypeRouteTest               uint16 = 5
+	probeVirtualRouterFrameMainTypeFakeIPSync              uint16 = 6
 	probeVirtualRouterFrameSubTypeUnknown                  uint16 = 0
 	probeVirtualRouterIPSubTypeIPv4                        uint16 = 1
 	probeVirtualRouterPingPongSubTypePing                  uint16 = 1
@@ -52,6 +53,8 @@ const (
 	probeVirtualRouterSpeedSubTypeSend                     uint16 = 5
 	probeVirtualRouterRouteTestSubTypeProbe                uint16 = 1
 	probeVirtualRouterRouteTestSubTypeReport               uint16 = 2
+	probeVirtualRouterFakeIPSyncSubTypeQuery               uint16 = 1
+	probeVirtualRouterFakeIPSyncSubTypeResponse            uint16 = 2
 	probeVirtualRouterFrameLinkIdleTTL                            = 45 * time.Second
 	probeVirtualRouterPingPongInterval                            = 30 * time.Second
 	probeVirtualRouterPingPongTimeout                             = 5 * time.Second
@@ -3775,7 +3778,7 @@ func handleProbeVirtualRouterFrame(runtime *probeVirtualRouterRuntime, link *pro
 			return fmt.Errorf("unsupported virtual router ip subtype=%d", frame.SubType)
 		}
 		return handleProbeVirtualRouterIPFrame(runtime, link, frame.Data, control.Path, control.Trace)
-	case probeVirtualRouterFrameMainTypePingPong, probeVirtualRouterFrameMainTypePathRTT, probeVirtualRouterFrameMainTypeSpeed, probeVirtualRouterFrameMainTypeRouteTest:
+	case probeVirtualRouterFrameMainTypePingPong, probeVirtualRouterFrameMainTypePathRTT, probeVirtualRouterFrameMainTypeSpeed, probeVirtualRouterFrameMainTypeRouteTest, probeVirtualRouterFrameMainTypeFakeIPSync:
 		return handleProbeVirtualRouterBusinessFrame(runtime, link, frame.MainType, frame.SubType, frame.Data, control.Path)
 	default:
 		return fmt.Errorf("unsupported virtual router business type=%d subtype=%d", frame.MainType, frame.SubType)
@@ -3821,6 +3824,15 @@ func handleProbeVirtualRouterBusinessFrame(runtime *probeVirtualRouterRuntime, l
 			routeTestMsg.Path = append([]string(nil), framePath...)
 		}
 		return handleProbeVirtualRouterRouteTestFrame(runtime, subType, routeTestMsg)
+	case mainType == probeVirtualRouterFrameMainTypeFakeIPSync:
+		syncMsg := probeVirtualRouterFakeIPSyncPayload{}
+		if err := json.Unmarshal(payload, &syncMsg); err != nil {
+			return err
+		}
+		if len(syncMsg.Path) == 0 {
+			syncMsg.Path = append([]string(nil), framePath...)
+		}
+		return handleProbeVirtualRouterFakeIPSyncFrame(runtime, link, subType, syncMsg)
 	default:
 		return fmt.Errorf("unsupported virtual router business type=%d subtype=%d", mainType, subType)
 	}
@@ -4712,7 +4724,13 @@ func handleProbeVirtualRouterIPFrame(runtime *probeVirtualRouterRuntime, link *p
 	localIP := currentProbeVirtualRouterLocalIPForRuntime(runtime)
 	localMatch := probeVirtualRouterPacketTargetsLocalDelivery(runtime, dstIP, path)
 	if !localMatch && probeVirtualRouterFrameTargetsLocalFakeIP(dstIP, path, currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)) {
+		err := fmt.Errorf("fake ip final-hop mapping unavailable: fake_ip=%s path=%s", dstIP, strings.Join(cleanProbeVirtualRouterPath(path), ">"))
 		scheduleProbeVirtualRouterFakeIPItemRefreshByIP(dstIP)
+		scheduleProbeVirtualRouterFakeIPNegotiationForPacket(runtime, dstIP, path, "final_hop_mapping_unavailable")
+		recordProbeVirtualRouterRuntimeDeliveryError(runtime, err)
+		recordProbeVirtualRouterRecentPacket("frame_rx", "fake_sync_pending", runtime, packet, path, false, err)
+		log.Printf("probe virtual router fake ip final-hop drop and negotiate: route=%s runtime_node=%s dst=%s path=%s err=%v", probeVirtualRouterRuntimeLogRouteID(runtime), currentProbeVirtualRouterLocalNodeIDForRuntime(runtime), dstIP, strings.Join(cleanProbeVirtualRouterPath(path), ">"), err)
+		return nil
 	}
 	recordProbeVirtualRouterRuntimeFrameDecision(runtime, srcIP, dstIP, localIP, path, localMatch)
 	if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
