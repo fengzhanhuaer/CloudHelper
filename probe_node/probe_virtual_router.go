@@ -40,6 +40,7 @@ const (
 	probeVirtualRouterFrameMainTypeSpeed                   uint16 = 4
 	probeVirtualRouterFrameMainTypeRouteTest               uint16 = 5
 	probeVirtualRouterFrameMainTypeFakeIPVerify            uint16 = 6
+	probeVirtualRouterFrameMainTypeDebugLog                uint16 = 7
 	probeVirtualRouterFrameSubTypeUnknown                  uint16 = 0
 	probeVirtualRouterIPSubTypeIPv4                        uint16 = 1
 	probeVirtualRouterPingPongSubTypePing                  uint16 = 1
@@ -55,6 +56,8 @@ const (
 	probeVirtualRouterRouteTestSubTypeReport               uint16 = 2
 	probeVirtualRouterFakeIPVerifySubTypeQuery             uint16 = 1
 	probeVirtualRouterFakeIPVerifySubTypeResponse          uint16 = 2
+	probeVirtualRouterDebugLogSubTypeQuery                 uint16 = 1
+	probeVirtualRouterDebugLogSubTypeResponse              uint16 = 2
 	probeVirtualRouterFrameLinkIdleTTL                            = 45 * time.Second
 	probeVirtualRouterPingPongInterval                            = 30 * time.Second
 	probeVirtualRouterPingPongTimeout                             = 5 * time.Second
@@ -3781,7 +3784,7 @@ func handleProbeVirtualRouterFrame(runtime *probeVirtualRouterRuntime, link *pro
 			return fmt.Errorf("unsupported virtual router ip subtype=%d", frame.SubType)
 		}
 		return handleProbeVirtualRouterIPFrame(runtime, link, frame.Data, control.Path, control.Trace)
-	case probeVirtualRouterFrameMainTypePingPong, probeVirtualRouterFrameMainTypePathRTT, probeVirtualRouterFrameMainTypeSpeed, probeVirtualRouterFrameMainTypeRouteTest, probeVirtualRouterFrameMainTypeFakeIPVerify:
+	case probeVirtualRouterFrameMainTypePingPong, probeVirtualRouterFrameMainTypePathRTT, probeVirtualRouterFrameMainTypeSpeed, probeVirtualRouterFrameMainTypeRouteTest, probeVirtualRouterFrameMainTypeFakeIPVerify, probeVirtualRouterFrameMainTypeDebugLog:
 		return handleProbeVirtualRouterBusinessFrame(runtime, link, frame.MainType, frame.SubType, frame.Data, control.Path)
 	default:
 		return fmt.Errorf("unsupported virtual router business type=%d subtype=%d", frame.MainType, frame.SubType)
@@ -3836,6 +3839,15 @@ func handleProbeVirtualRouterBusinessFrame(runtime *probeVirtualRouterRuntime, l
 			verifyMsg.Path = append([]string(nil), framePath...)
 		}
 		return handleProbeVirtualRouterFakeIPVerifyFrame(runtime, subType, verifyMsg)
+	case mainType == probeVirtualRouterFrameMainTypeDebugLog:
+		debugLogMsg := probeVirtualRouterDebugLogPayload{}
+		if err := json.Unmarshal(payload, &debugLogMsg); err != nil {
+			return err
+		}
+		if len(debugLogMsg.Path) == 0 {
+			debugLogMsg.Path = append([]string(nil), framePath...)
+		}
+		return handleProbeVirtualRouterDebugLogFrame(runtime, subType, debugLogMsg)
 	default:
 		return fmt.Errorf("unsupported virtual router business type=%d subtype=%d", mainType, subType)
 	}

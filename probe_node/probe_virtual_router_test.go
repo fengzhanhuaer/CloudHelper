@@ -2162,6 +2162,54 @@ func TestProbeVirtualRouterFakeIPVerifyResponseCompletesAtSource(t *testing.T) {
 	}
 }
 
+func TestProbeVirtualRouterDebugLogResponseCompletesAtSource(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "9", IP: "198.18.0.7"},
+			{NodeID: "17", IP: "198.18.0.11"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "9", ToNodeID: "17", Enabled: true},
+		},
+	}, "9")
+
+	requestID := "debug-log-1"
+	waiter := registerProbeVirtualRouterDebugLogResponse(requestID)
+	defer unregisterProbeVirtualRouterDebugLogResponse(requestID)
+	response := probeVirtualRouterDebugLogPayload{
+		RequestID:    requestID,
+		SourceNodeID: "9",
+		TargetNodeID: "17",
+		Path:         []string{"17", "9"},
+		Lines:        50,
+		Keyword:      "carrier",
+		OK:           true,
+		Responder:    "17",
+		Content:      "carrier closed",
+		Entries: []probeLogViewEntry{{
+			Level:   probeLogLevelNormal,
+			Message: "carrier closed",
+			Line:    "carrier closed",
+		}},
+		Count: 1,
+	}
+	if err := handleProbeVirtualRouterDebugLogFrame(&probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{identity: nodeIdentity{NodeID: "9"}}}, probeVirtualRouterDebugLogSubTypeResponse, response); err != nil {
+		t.Fatalf("handle debug log response failed: %v", err)
+	}
+	got, err := waitProbeVirtualRouterDebugLogResponse(waiter, time.Second)
+	if err != nil {
+		t.Fatalf("wait debug log response failed: %v", err)
+	}
+	if !got.OK || got.Responder != "17" || got.Count != 1 || !strings.Contains(got.Content, "carrier closed") {
+		t.Fatalf("unexpected debug log response: %+v", got)
+	}
+}
+
 func TestProbeVirtualRouterFakeIPVerifySYNRetransmitSchedulesSourceVerify(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)

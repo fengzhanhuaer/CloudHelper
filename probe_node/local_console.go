@@ -1642,6 +1642,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/virtual_router/status", probeLocalVirtualRouterStatusHandler)
 	mux.HandleFunc("/local/api/virtual_router/packets", probeLocalVirtualRouterPacketsHandler)
 	mux.HandleFunc("/local/api/virtual_router/debug", probeLocalVirtualRouterDebugHandler)
+	mux.HandleFunc("/local/api/virtual_router/debug/logs", probeLocalVirtualRouterDebugLogsHandler)
 	mux.HandleFunc("/local/api/virtual_router/route_test", probeLocalVirtualRouterRouteTestHandler)
 	mux.HandleFunc("/local/api/virtual_router/route_test/curl", probeLocalVirtualRouterRouteTestCurlHandler)
 	mux.HandleFunc("/local/api/virtual_router/route_test/speed", probeLocalVirtualRouterRouteTestSpeedHandler)
@@ -1709,6 +1710,15 @@ type probeLocalSyncGoogleAuthPollRequest struct {
 type probeLocalShellExecRequest struct {
 	Command    string `json:"command"`
 	TimeoutSec int    `json:"timeout_sec"`
+}
+
+type probeLocalVirtualRouterDebugLogsRequest struct {
+	TargetNodeID string `json:"target_node_id"`
+	Lines        int    `json:"lines,omitempty"`
+	SinceMinutes int    `json:"since_minutes,omitempty"`
+	MinLevel     string `json:"min_level,omitempty"`
+	Keyword      string `json:"keyword,omitempty"`
+	TimeoutMS    int    `json:"timeout_ms,omitempty"`
 }
 
 func probeLocalRootHandler(w http.ResponseWriter, r *http.Request) {
@@ -1987,16 +1997,16 @@ func probeLocalLogsHandler(w http.ResponseWriter, r *http.Request) {
 
 	minLevel := strings.TrimSpace(r.URL.Query().Get("min_level"))
 	keyword := strings.TrimSpace(r.URL.Query().Get("keyword"))
-	content, entries := probeLogStore.Tail(lines, sinceMinutes, minLevel)
-	if keyword != "" {
-		entries = filterProbeLocalLogEntriesByKeyword(entries, keyword)
-		content = buildProbeLocalLogContent(entries)
+	source, filePath, content, entries, err := collectProbeLocalLogsForView(lines, sinceMinutes, minLevel, keyword)
+	if err != nil {
+		writeProbeLocalError(w, err)
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":            true,
-		"source":        probeLogSourceName,
-		"file_path":     probeLogSourcePath,
+		"source":        source,
+		"file_path":     filePath,
 		"lines":         lines,
 		"since_minutes": sinceMinutes,
 		"min_level":     minLevel,
@@ -2113,6 +2123,36 @@ func probeLocalVirtualRouterDebugHandler(w http.ResponseWriter, r *http.Request)
 		payload["goroutines"] = buf.String()
 	}
 	writeJSON(w, http.StatusOK, payload)
+}
+
+func probeLocalVirtualRouterDebugLogsHandler(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req probeLocalVirtualRouterDebugLogsRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	targetNodeID := normalizeProbeRouteNodeID(req.TargetNodeID)
+	if targetNodeID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "target_node_id is required"})
+		return
+	}
+	timeout := time.Duration(req.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = probeVirtualRouterDebugLogTimeout
+	}
+	result, err := runProbeVirtualRouterDebugLogFetch(targetNodeID, req.Lines, req.SinceMinutes, req.MinLevel, req.Keyword, timeout)
+	if err != nil {
+		writeProbeLocalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func probeLocalVirtualRouterStatusPayload() map[string]any {

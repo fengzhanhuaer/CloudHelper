@@ -65,7 +65,16 @@ func runProbeLogFetch(cmd probeControlMessage, identity nodeIdentity, stream net
 }
 
 func collectProbeLogs(lines int, sinceMinutes int, minLevel string) (source string, filePath string, content string, entries []probeLogViewEntry, err error) {
+	return collectProbeLocalLogsForView(lines, sinceMinutes, minLevel, "")
+}
+
+func collectProbeLocalLogsForView(lines int, sinceMinutes int, minLevel string, keyword string) (source string, filePath string, content string, entries []probeLogViewEntry, err error) {
 	content, entries = probeLogStore.Tail(lines, sinceMinutes, minLevel)
+	keyword = strings.TrimSpace(keyword)
+	if keyword != "" {
+		entries = filterProbeLocalLogEntriesByKeyword(entries, keyword)
+		content = buildProbeLocalLogContent(entries)
+	}
 	return probeLogSourceName, probeLogSourcePath, content, entries, nil
 }
 

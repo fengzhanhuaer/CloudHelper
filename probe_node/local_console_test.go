@@ -623,6 +623,47 @@ func TestProbeLocalVirtualRouterRouteSpeedHandlerDownloadsFromTargetNode(t *test
 	}
 }
 
+func TestProbeLocalVirtualRouterDebugLogsHandlerFetchesLocalNodeLogs(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "debuglogadmin", "debuglogpass")
+
+	oldStore := probeLogStore
+	probeLogStore = newProbeInMemoryLogStore(probeLogMaxBytes)
+	t.Cleanup(func() { probeLogStore = oldStore })
+	_, _ = probeLogStore.Write([]byte("2026/07/08 20:30:45.000001 probe virtual router debug-log smoke route=vr-1\n"))
+	_, _ = probeLogStore.Write([]byte("2026/07/08 20:30:46.000001 unrelated line\n"))
+
+	probeVirtualRouterState.mu.Lock()
+	probeVirtualRouterState.localNodeID = "9"
+	probeVirtualRouterState.localIP = "198.18.0.7"
+	probeVirtualRouterState.mu.Unlock()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/virtual_router/debug/logs", map[string]any{
+		"target_node_id": "9",
+		"lines":          50,
+		"min_level":      "realtime",
+		"keyword":        "debug-log smoke",
+	}, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("debug logs status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	if payload["ok"] != true {
+		t.Fatalf("debug logs not ok: %+v", payload)
+	}
+	if payload["responder"] != "9" || payload["target_node_id"] != "9" {
+		t.Fatalf("unexpected responder/target: %+v", payload)
+	}
+	if count := int(payload["count"].(float64)); count != 1 {
+		t.Fatalf("count=%d payload=%+v", count, payload)
+	}
+	content, _ := payload["content"].(string)
+	if !strings.Contains(content, "debug-log smoke") || strings.Contains(content, "unrelated line") {
+		t.Fatalf("unexpected content=%q", content)
+	}
+}
+
 func TestProbeLocalProtectedRoutesRequireSession(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 

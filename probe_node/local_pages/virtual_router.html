@@ -607,6 +607,47 @@
           </table>
         </div>
       </section>
+
+      <section class="card" style="margin-top:14px;">
+        <h2>对端日志</h2>
+        <div class="toolbar">
+          <div class="field">
+            <label for="debugLogTargetNode">目标节点</label>
+            <select id="debugLogTargetNode" class="mono"></select>
+          </div>
+          <div class="field">
+            <label for="debugLogLines">行数</label>
+            <input id="debugLogLines" class="mono" type="number" min="20" max="500" value="200" />
+          </div>
+          <div class="field">
+            <label for="debugLogSinceMinutes">最近分钟</label>
+            <input id="debugLogSinceMinutes" class="mono" type="number" min="0" max="2000" value="30" />
+          </div>
+          <div class="field">
+            <label for="debugLogMinLevel">等级</label>
+            <select id="debugLogMinLevel" class="mono">
+              <option value="realtime">realtime</option>
+              <option value="">normal</option>
+              <option value="warning">warning</option>
+              <option value="error">error</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="debugLogKeyword">关键字</label>
+            <input id="debugLogKeyword" class="mono" placeholder="route id / carrier / error" />
+          </div>
+        </div>
+        <div class="actions">
+          <button id="debugLogBtn" class="secondary">拉取日志</button>
+        </div>
+        <div class="kv" style="margin-top:12px;">
+          <div>节点</div><div id="debugLogNodeText" class="mono">-</div>
+          <div>路径</div><div id="debugLogPathText" class="mono">-</div>
+          <div>结果</div><div id="debugLogResultText">-</div>
+          <div>来源</div><div id="debugLogSourceText" class="mono">-</div>
+        </div>
+        <pre id="debugLogContent" class="mono" style="margin-top:12px;max-height:360px;overflow:auto;white-space:pre-wrap;background:#0f172a;color:#e5e7eb;border-radius:8px;padding:12px;">-</pre>
+      </section>
     </div>
 
     <p id="message" class="msg"></p>
@@ -616,7 +657,7 @@
     const messageEl = document.getElementById('message');
     const routerEnabledEl = document.getElementById('virtualRouterEnabled');
     const tunEgressSelectEl = document.getElementById('tunEgressSelect');
-    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260708-route-speed';
+    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260708-debug-log';
     const REQUEST_TIMEOUT_DEFAULT_MS = 20000;
     const REQUEST_TIMEOUT_TUN_INSTALL_MS = 90000;
     let tunPollingTimer = null;
@@ -861,9 +902,6 @@
     }
 
     function renderRouteSpeedTargetOptions(data) {
-      const select = document.getElementById('routeSpeedTargetNode');
-      if (!select) return;
-      const currentValue = String(select.value || '').trim();
       const localNodeID = String(data && data.local_node_id || '').trim();
       const runtimes = Array.isArray(data && data.runtimes) ? data.runtimes : [];
       const nodes = new Map();
@@ -875,6 +913,14 @@
         const status = item && item.last_error ? '异常' : '可达';
         nodes.set(nodeID, [nodeID, ip, route, status].filter(Boolean).join(' / '));
       });
+      populateVirtualRouterNodeSelect('routeSpeedTargetNode', nodes);
+      populateVirtualRouterNodeSelect('debugLogTargetNode', nodes);
+    }
+
+    function populateVirtualRouterNodeSelect(selectID, nodes) {
+      const select = document.getElementById(selectID);
+      if (!select) return;
+      const currentValue = String(select.value || '').trim();
       select.innerHTML = '';
       const empty = document.createElement('option');
       empty.value = '';
@@ -1250,6 +1296,24 @@
       renderRouteSpeedQueues(payload);
     }
 
+    function renderDebugLog(data) {
+      const payload = data || {};
+      const ok = !!payload.ok;
+      const path = Array.isArray(payload.path) && payload.path.length ? payload.path.join(' > ') : '-';
+      const count = Number(payload.count || 0);
+      const resultParts = [];
+      if (payload.error) resultParts.push(payload.error);
+      if (count > 0) resultParts.push(formatNumber(count) + ' 行');
+      if (payload.truncated) resultParts.push('已截断');
+      setText('debugLogNodeText', [payload.responder || payload.target_node_id, payload.target_node_id && payload.responder && payload.target_node_id !== payload.responder ? '目标 ' + payload.target_node_id : ''].filter(Boolean).join(' / '));
+      setText('debugLogPathText', path);
+      setText('debugLogResultText', ok ? (resultParts.join(' / ') || 'OK') : (resultParts.join(' / ') || '失败'));
+      setText('debugLogSourceText', [payload.source, payload.file_path].filter(Boolean).join(' / '));
+      const content = String(payload.content || '').trim();
+      const el = document.getElementById('debugLogContent');
+      if (el) el.textContent = content || '-';
+    }
+
     function stopRouteTestPolling() {
       if (routeTestPollingTimer) {
         clearTimeout(routeTestPollingTimer);
@@ -1405,6 +1469,39 @@
       }
       routeSpeedActiveRequestID = data.request_id;
       await pollRouteSpeedResult(data.request_id);
+    }
+
+    async function runDebugLogFetch() {
+      const targetNodeID = String(document.getElementById('debugLogTargetNode').value || '').trim();
+      const lines = Number(document.getElementById('debugLogLines').value || 200);
+      const sinceMinutes = Number(document.getElementById('debugLogSinceMinutes').value || 0);
+      const minLevel = String(document.getElementById('debugLogMinLevel').value || '').trim();
+      const keyword = String(document.getElementById('debugLogKeyword').value || '').trim();
+      if (!targetNodeID) {
+        setMessage('请选择日志目标节点', 'error');
+        return;
+      }
+      const btn = document.getElementById('debugLogBtn');
+      if (btn) btn.disabled = true;
+      renderDebugLog({ target_node_id: targetNodeID, path: [], ok: true, content: '拉取中...' });
+      setMessage('正在拉取对端日志...');
+      try {
+        const data = await requestJSON('/local/api/virtual_router/debug/logs', {
+          method: 'POST',
+          body: JSON.stringify({
+            target_node_id: targetNodeID,
+            lines: Math.max(20, Math.min(500, lines)),
+            since_minutes: Math.max(0, Math.min(2000, sinceMinutes)),
+            min_level: minLevel,
+            keyword,
+            timeout_ms: 12000,
+          }),
+        }, 15000);
+        renderDebugLog(data || {});
+        setMessage(data && data.ok ? '对端日志已拉取' : '对端日志拉取失败', data && data.ok ? 'success' : 'error');
+      } finally {
+        if (btn) btn.disabled = false;
+      }
     }
 
     async function refreshAll() {
@@ -1590,6 +1687,9 @@
         setMessage('下载测速失败：' + err.message, 'error');
       });
     });
+    document.getElementById('debugLogBtn').addEventListener('click', () => {
+      runDebugLogFetch().catch((err) => setMessage('拉取对端日志失败：' + err.message, 'error'));
+    });
     document.getElementById('routeTestTarget').addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
         event.preventDefault();
@@ -1597,6 +1697,12 @@
           stopRouteTestPolling();
           setMessage('路由测试失败：' + err.message, 'error');
         });
+      }
+    });
+    document.getElementById('debugLogKeyword').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        runDebugLogFetch().catch((err) => setMessage('拉取对端日志失败：' + err.message, 'error'));
       }
     });
     document.querySelectorAll('.subtab').forEach((btn) => {
