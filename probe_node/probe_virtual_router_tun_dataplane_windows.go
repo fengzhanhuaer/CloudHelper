@@ -22,6 +22,8 @@ const (
 	probeLocalTUNReadLoopSleepOnNoEvent = 50 * time.Millisecond
 	probeLocalTUNInboundQueueFrames     = 2048
 	probeLocalTUNInboundDispatchShards  = 8
+	probeLocalTUNOutboundQueueFrames    = 4096
+	probeLocalTUNSlowWriteThreshold     = 10 * time.Millisecond
 )
 
 var (
@@ -254,17 +256,24 @@ type probeVirtualRouterTUNDataPlaneRunner struct {
 
 	inboundCh       chan []byte
 	inboundDispatch []chan []byte
+	outboundCh      chan []byte
 	writeMu         sync.Mutex
 
-	stopCh    chan struct{}
-	doneCh    chan struct{}
-	closeOnce sync.Once
+	stopCh      chan struct{}
+	doneCh      chan struct{}
+	writeDoneCh chan struct{}
+	closeOnce   sync.Once
 
-	running   atomic.Bool
-	rxPackets atomic.Uint64
-	rxBytes   atomic.Uint64
-	txPackets atomic.Uint64
-	txBytes   atomic.Uint64
+	running       atomic.Bool
+	rxPackets     atomic.Uint64
+	rxBytes       atomic.Uint64
+	txPackets     atomic.Uint64
+	txBytes       atomic.Uint64
+	txDropped     atomic.Uint64
+	txErrors      atomic.Uint64
+	txSlowWrites  atomic.Uint64
+	txLastWriteMs atomic.Uint64
+	txMaxWriteMs  atomic.Uint64
 }
 
 func newProbeVirtualRouterTUNDataPlaneRunner(libraryPath string, adapterHandle uintptr, onPacket func([]byte), logf func(string, ...any)) (probeVirtualRouterTUNDataPlane, error) {
@@ -320,14 +329,17 @@ func newProbeVirtualRouterTUNDataPlaneRunner(libraryPath string, adapterHandle u
 		logf:                     logf,
 		inboundCh:                make(chan []byte, probeLocalTUNInboundQueueFrames),
 		inboundDispatch:          makeProbeVirtualRouterTUNInboundDispatchShards(probeLocalTUNInboundDispatchShards, probeLocalTUNInboundQueueFrames),
+		outboundCh:               make(chan []byte, probeLocalTUNOutboundQueueFrames),
 		stopCh:                   make(chan struct{}),
 		doneCh:                   make(chan struct{}),
+		writeDoneCh:              make(chan struct{}),
 	}
 	runner.running.Store(true)
 	for shardID, shard := range runner.inboundDispatch {
 		go runner.inboundShardWorker(shardID, shard)
 	}
 	go runner.inboundDispatchWorker()
+	go runner.writeLoop()
 	go runner.readLoop()
 
 	if runner.logf != nil {
@@ -445,6 +457,48 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) inboundShardWorker(shardID int, s
 	}
 }
 
+func (r *probeVirtualRouterTUNDataPlaneRunner) writeLoop() {
+	defer close(r.writeDoneCh)
+	for {
+		select {
+		case <-r.stopCh:
+			return
+		default:
+		}
+		select {
+		case <-r.stopCh:
+			return
+		case packet := <-r.outboundCh:
+			if len(packet) == 0 {
+				continue
+			}
+			startedAt := time.Now()
+			if err := r.writePacketDirect(packet); err != nil {
+				r.txErrors.Add(1)
+				if r.logf != nil {
+					r.logf("probe local tun outbound packet write failed: err=%v", err)
+				}
+				continue
+			}
+			elapsed := time.Since(startedAt)
+			elapsedMs := uint64(probeDurationMilliseconds(elapsed))
+			r.txLastWriteMs.Store(elapsedMs)
+			for {
+				old := r.txMaxWriteMs.Load()
+				if elapsedMs <= old || r.txMaxWriteMs.CompareAndSwap(old, elapsedMs) {
+					break
+				}
+			}
+			if elapsed >= probeLocalTUNSlowWriteThreshold {
+				r.txSlowWrites.Add(1)
+				if r.logf != nil {
+					r.logf("probe local tun outbound packet slow write: write_ms=%d bytes=%d queue=%d/%d", elapsedMs, len(packet), len(r.outboundCh), cap(r.outboundCh))
+				}
+			}
+		}
+	}
+}
+
 func (r *probeVirtualRouterTUNDataPlaneRunner) Close() error {
 	var closeErr error
 	r.closeOnce.Do(func() {
@@ -453,6 +507,16 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) Close() error {
 		select {
 		case <-r.doneCh:
 		case <-time.After(2 * time.Second):
+			if r.logf != nil {
+				r.logf("probe local tun data plane close wait timeout")
+			}
+		}
+		select {
+		case <-r.writeDoneCh:
+		case <-time.After(2 * time.Second):
+			if r.logf != nil {
+				r.logf("probe local tun data plane write close wait timeout")
+			}
 		}
 		r.writeMu.Lock()
 		defer r.writeMu.Unlock()
@@ -468,6 +532,7 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) Close() error {
 
 func (r *probeVirtualRouterTUNDataPlaneRunner) Stats() probeVirtualRouterTUNDataPlaneStats {
 	entryDepth, entryCapacity, dispatchDepth, dispatchCapacity, dispatchWorkers := snapshotProbeVirtualRouterTUNInboundQueues(r.inboundCh, r.inboundDispatch)
+	outDepth, outCapacity, outWorkers := snapshotProbeVirtualRouterTUNOutboundQueue(r.outboundCh)
 	return probeVirtualRouterTUNDataPlaneStats{
 		Running:                      r.running.Load(),
 		RXPackets:                    r.rxPackets.Load(),
@@ -481,10 +546,40 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) Stats() probeVirtualRouterTUNData
 		InboundDispatchQueueDepth:    dispatchDepth,
 		InboundDispatchQueueCapacity: dispatchCapacity,
 		InboundDispatchWorkers:       dispatchWorkers,
+		OutboundQueueDepth:           outDepth,
+		OutboundQueueCapacity:        outCapacity,
+		OutboundWorkers:              outWorkers,
+		TXDropped:                    r.txDropped.Load(),
+		TXErrors:                     r.txErrors.Load(),
+		TXSlowWrites:                 r.txSlowWrites.Load(),
+		TXLastWriteMs:                r.txLastWriteMs.Load(),
+		TXMaxWriteMs:                 r.txMaxWriteMs.Load(),
 	}
 }
 
 func (r *probeVirtualRouterTUNDataPlaneRunner) WritePacket(packet []byte) error {
+	if len(packet) == 0 {
+		return nil
+	}
+	if !r.running.Load() {
+		return errors.New("probe virtual router tun data plane is not running")
+	}
+	if r.outboundCh == nil {
+		return r.writePacketDirect(packet)
+	}
+	payload := append([]byte(nil), packet...)
+	select {
+	case r.outboundCh <- payload:
+		return nil
+	case <-r.stopCh:
+		return errors.New("probe virtual router tun data plane is not running")
+	default:
+		r.txDropped.Add(1)
+		return fmt.Errorf("probe virtual router tun outbound queue full: depth=%d capacity=%d", len(r.outboundCh), cap(r.outboundCh))
+	}
+}
+
+func (r *probeVirtualRouterTUNDataPlaneRunner) writePacketDirect(packet []byte) error {
 	if len(packet) == 0 {
 		return nil
 	}

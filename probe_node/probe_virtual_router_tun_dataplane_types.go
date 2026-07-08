@@ -13,6 +13,14 @@ type probeVirtualRouterTUNDataPlaneStats struct {
 	InboundDispatchQueueDepth    int
 	InboundDispatchQueueCapacity int
 	InboundDispatchWorkers       int
+	OutboundQueueDepth           int
+	OutboundQueueCapacity        int
+	OutboundWorkers              int
+	TXDropped                    uint64
+	TXErrors                     uint64
+	TXSlowWrites                 uint64
+	TXLastWriteMs                uint64
+	TXMaxWriteMs                 uint64
 }
 
 type probeVirtualRouterTUNDataPlane interface {
@@ -51,4 +59,11 @@ func snapshotProbeVirtualRouterTUNInboundQueues(entry chan []byte, shards []chan
 		dispatchCapacity += cap(shard)
 	}
 	return entryDepth, entryCapacity, dispatchDepth, dispatchCapacity, len(shards)
+}
+
+func snapshotProbeVirtualRouterTUNOutboundQueue(queue chan []byte) (int, int, int) {
+	if queue == nil {
+		return 0, 0, 0
+	}
+	return len(queue), cap(queue), 1
 }

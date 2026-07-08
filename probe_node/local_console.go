@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	runtimepprof "runtime/pprof"
 	"sort"
 	"strconv"
 	"strings"
@@ -1640,6 +1641,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/virtual_router/settings", probeLocalVirtualRouterSettingsHandler)
 	mux.HandleFunc("/local/api/virtual_router/status", probeLocalVirtualRouterStatusHandler)
 	mux.HandleFunc("/local/api/virtual_router/packets", probeLocalVirtualRouterPacketsHandler)
+	mux.HandleFunc("/local/api/virtual_router/debug", probeLocalVirtualRouterDebugHandler)
 	mux.HandleFunc("/local/api/virtual_router/route_test", probeLocalVirtualRouterRouteTestHandler)
 	mux.HandleFunc("/local/api/virtual_router/route_test/curl", probeLocalVirtualRouterRouteTestCurlHandler)
 	mux.HandleFunc("/local/api/system/upgrade", probeLocalSystemUpgradeHandler)
@@ -2090,6 +2092,28 @@ func probeLocalVirtualRouterStatusHandler(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, probeLocalVirtualRouterStatusPayload())
 }
 
+func probeLocalVirtualRouterDebugHandler(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	payload := map[string]any{
+		"updated_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"status":     probeLocalVirtualRouterStatusPayload(),
+	}
+	if r.URL.Query().Get("goroutines") == "1" {
+		var buf bytes.Buffer
+		if profile := runtimepprof.Lookup("goroutine"); profile != nil {
+			_ = profile.WriteTo(&buf, 2)
+		}
+		payload["goroutines"] = buf.String()
+	}
+	writeJSON(w, http.StatusOK, payload)
+}
+
 func probeLocalVirtualRouterStatusPayload() map[string]any {
 	settings := loadProbeVirtualRouterLocalSettings()
 	library := currentProbeVirtualRouterFakeIPLibrary()
@@ -2162,6 +2186,14 @@ func probeLocalVirtualRouterStatusPayload() map[string]any {
 			"inbound_dispatch_queue_depth":    tunStats.InboundDispatchQueueDepth,
 			"inbound_dispatch_queue_capacity": tunStats.InboundDispatchQueueCapacity,
 			"inbound_dispatch_workers":        tunStats.InboundDispatchWorkers,
+			"outbound_queue_depth":            tunStats.OutboundQueueDepth,
+			"outbound_queue_capacity":         tunStats.OutboundQueueCapacity,
+			"outbound_workers":                tunStats.OutboundWorkers,
+			"tx_dropped":                      tunStats.TXDropped,
+			"tx_errors":                       tunStats.TXErrors,
+			"tx_slow_writes":                  tunStats.TXSlowWrites,
+			"tx_last_write_ms":                tunStats.TXLastWriteMs,
+			"tx_max_write_ms":                 tunStats.TXMaxWriteMs,
 		},
 		"exit_netstack": map[string]any{
 			"running":               exitNetstack.Running,
