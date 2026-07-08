@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -166,6 +167,7 @@ const (
 	probeRouteRelayWebSocketBufferBytes        = 512 * 1024
 	probeRouteRelayWebSocketWriteBatchBytes    = 1024 * 1024
 	probeRouteRelayWebSocketWriteQueueDepth    = 64
+	probeRouteRelayWebSocketSlowWriteTrace     = 200 * time.Millisecond
 	probeRouteRelayTCPSocketBufferBytes        = 8 * 1024 * 1024
 	probeRouteRelayUDPSocketBufferBytes        = 64 * 1024 * 1024
 	probeRouteRelayTCPKeepAlivePeriod          = 30 * time.Second
@@ -338,13 +340,31 @@ func (l *probeRouteTunedTCPListener) Accept() (net.Conn, error) {
 }
 
 func applyProbeRouteTCPConnTuning(conn *net.TCPConn) {
+	applyProbeRouteTCPConnTuningWithContext(conn, "listener_accept")
+}
+
+func applyProbeRouteTCPConnTuningWithContext(conn *net.TCPConn, context string) {
 	if conn == nil {
 		return
 	}
 	_ = conn.SetKeepAlive(true)
 	_ = conn.SetKeepAlivePeriod(probeRouteRelayTCPKeepAlivePeriod)
-	_ = conn.SetReadBuffer(probeRouteRelayTCPSocketBufferBytes)
-	_ = conn.SetWriteBuffer(probeRouteRelayTCPSocketBufferBytes)
+	readErr := conn.SetReadBuffer(probeRouteRelayTCPSocketBufferBytes)
+	writeErr := conn.SetWriteBuffer(probeRouteRelayTCPSocketBufferBytes)
+	actualRead, actualWrite, snapshotErr := probeRouteTCPConnSocketBufferSnapshot(conn)
+	log.Printf(
+		"probe route tcp socket buffer tuned: context=%s local=%s remote=%s requested_read=%d requested_write=%d actual_read=%d actual_write=%d set_read_err=%v set_write_err=%v snapshot_err=%v",
+		strings.TrimSpace(context),
+		conn.LocalAddr(),
+		conn.RemoteAddr(),
+		probeRouteRelayTCPSocketBufferBytes,
+		probeRouteRelayTCPSocketBufferBytes,
+		actualRead,
+		actualWrite,
+		readErr,
+		writeErr,
+		snapshotErr,
+	)
 }
 
 func newProbeRouteQUICConfig(maxIncomingStreams int64) *quic.Config {

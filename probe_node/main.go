@@ -965,10 +965,7 @@ func tuneProbeRouteNetConn(conn net.Conn) {
 		return
 	}
 	_ = tcpConn.SetNoDelay(true)
-	_ = tcpConn.SetKeepAlive(true)
-	_ = tcpConn.SetKeepAlivePeriod(probeRouteRelayTCPKeepAlivePeriod)
-	_ = tcpConn.SetReadBuffer(probeRouteRelayTCPSocketBufferBytes)
-	_ = tcpConn.SetWriteBuffer(probeRouteRelayTCPSocketBufferBytes)
+	applyProbeRouteTCPConnTuningWithContext(tcpConn, "client_dial")
 }
 
 func tuneProbeRouteUDPConn(conn *net.UDPConn) {
@@ -1053,6 +1050,11 @@ func (c *webSocketNetConn) runWriteLoop() {
 }
 
 func (c *webSocketNetConn) writeBatch(first *webSocketWriteRequest) error {
+	startedAt := time.Now()
+	queueDepthAtStart := 0
+	if c != nil && c.writeCh != nil {
+		queueDepthAtStart = len(c.writeCh)
+	}
 	batch := []*webSocketWriteRequest{first}
 	total := len(first.payload)
 	if total < probeRouteRelayWebSocketWriteBatchBytes {
@@ -1075,28 +1077,43 @@ func (c *webSocketNetConn) writeBatch(first *webSocketWriteRequest) error {
 			}
 		}
 	}
+	queueDepthAfterCollect := 0
+	if c != nil && c.writeCh != nil {
+		queueDepthAfterCollect = len(c.writeCh)
+	}
 
+	nextWriterStartedAt := time.Now()
 	writer, err := c.ws.NextWriter(websocket.BinaryMessage)
+	nextWriterDuration := time.Since(nextWriterStartedAt)
 	if err != nil {
 		for _, req := range batch {
 			req.done <- webSocketWriteResult{err: err}
 		}
+		c.logWriteBatchTrace(batch, total, 0, -1, queueDepthAtStart, queueDepthAfterCollect, nextWriterDuration, 0, 0, time.Since(startedAt), err)
 		return err
 	}
 	results := make([]webSocketWriteResult, len(batch))
 	var writeErr error
+	bodyWriteStartedAt := time.Now()
+	bodyWritten := 0
+	firstWriteErrIndex := -1
 	for i, req := range batch {
 		n, err := writer.Write(req.payload)
+		bodyWritten += n
 		results[i] = webSocketWriteResult{n: n, err: err}
 		if err != nil {
 			writeErr = err
+			firstWriteErrIndex = i
 			for j := i + 1; j < len(batch); j++ {
 				results[j] = webSocketWriteResult{err: err}
 			}
 			break
 		}
 	}
+	bodyWriteDuration := time.Since(bodyWriteStartedAt)
+	closeStartedAt := time.Now()
 	closeErr := writer.Close()
+	closeDuration := time.Since(closeStartedAt)
 	resultErr := writeErr
 	if resultErr == nil {
 		resultErr = closeErr
@@ -1108,7 +1125,36 @@ func (c *webSocketNetConn) writeBatch(first *webSocketWriteRequest) error {
 		}
 		req.done <- result
 	}
+	c.logWriteBatchTrace(batch, total, bodyWritten, firstWriteErrIndex, queueDepthAtStart, queueDepthAfterCollect, nextWriterDuration, bodyWriteDuration, closeDuration, time.Since(startedAt), resultErr)
 	return resultErr
+}
+
+func (c *webSocketNetConn) logWriteBatchTrace(batch []*webSocketWriteRequest, total int, bodyWritten int, firstWriteErrIndex int, queueDepthAtStart int, queueDepthAfterCollect int, nextWriterDuration time.Duration, bodyWriteDuration time.Duration, closeDuration time.Duration, totalDuration time.Duration, err error) {
+	if err == nil && totalDuration < probeRouteRelayWebSocketSlowWriteTrace {
+		return
+	}
+	localAddr := ""
+	remoteAddr := ""
+	if c != nil && c.ws != nil && c.ws.UnderlyingConn() != nil {
+		localAddr = c.ws.UnderlyingConn().LocalAddr().String()
+		remoteAddr = c.ws.UnderlyingConn().RemoteAddr().String()
+	}
+	log.Printf(
+		"probe route websocket write batch trace: local=%s remote=%s frames=%d bytes=%d body_written=%d first_write_error_index=%d queue_start=%d queue_after_collect=%d next_writer_ms=%d body_write_ms=%d close_flush_ms=%d total_ms=%d err=%v",
+		localAddr,
+		remoteAddr,
+		len(batch),
+		total,
+		bodyWritten,
+		firstWriteErrIndex,
+		queueDepthAtStart,
+		queueDepthAfterCollect,
+		probeDurationMilliseconds(nextWriterDuration),
+		probeDurationMilliseconds(bodyWriteDuration),
+		probeDurationMilliseconds(closeDuration),
+		probeDurationMilliseconds(totalDuration),
+		err,
+	)
 }
 
 func (c *webSocketNetConn) failPendingWrites(err error) {
