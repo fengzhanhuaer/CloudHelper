@@ -3089,6 +3089,13 @@ func TestProbeVirtualRouterPingErrorKeepsRecentlyActiveCarrier(t *testing.T) {
 	if carrier == nil {
 		t.Fatalf("recently active carrier should be retained")
 	}
+	stats := snapshotProbeVirtualRouterRuntimeStats(rt.cfg.routeID)
+	if stats == nil {
+		t.Fatalf("missing runtime stats")
+	}
+	if stats.LastPingError != "" || stats.LastPingFailureCount != 0 {
+		t.Fatalf("active carrier ping timeout should not be recorded as failure, error=%q failures=%d", stats.LastPingError, stats.LastPingFailureCount)
+	}
 }
 
 func TestProbeVirtualRouterRepeatedPingErrorDetachesStaleCarrier(t *testing.T) {

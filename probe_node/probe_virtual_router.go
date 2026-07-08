@@ -5112,6 +5112,19 @@ func recordProbeVirtualRouterRuntimePingError(rt *probeVirtualRouterRuntime, dir
 	}
 	routeID, bridgeStatus, bridgeSession := snapshotProbeVirtualRouterPingContext(rt, direction)
 	normalizedErr := normalizeProbeVirtualRouterBridgeError(err.Error())
+	if probeVirtualRouterRuntimeCarrierRecentlyReceived(rt, probeVirtualRouterPingPongInterval) {
+		probeVirtualRouterRuntimeStatsState.mu.Lock()
+		item := probeVirtualRouterRuntimeStatsForUpdateLocked(routeID)
+		if item != nil {
+			item.LastPingError = ""
+			item.LastPingFailureCount = 0
+			item.LastPingAt = time.Now().UTC().Format(time.RFC3339)
+			applyProbeVirtualRouterPingContext(item, direction, bridgeStatus, bridgeSession)
+		}
+		probeVirtualRouterRuntimeStatsState.mu.Unlock()
+		log.Printf("probe virtual router bridge ping error ignored while carrier is receiving: route=%s direction=%s err=%s", routeID, normalizeProbeRouteBridgeRole(direction), normalizedErr)
+		return
+	}
 	failureCount := 0
 	shouldClearRouteCache := false
 	probeVirtualRouterRuntimeStatsState.mu.Lock()
@@ -5130,6 +5143,33 @@ func recordProbeVirtualRouterRuntimePingError(rt *probeVirtualRouterRuntime, dir
 	}
 	log.Printf("probe virtual router bridge ping error retained carrier: route=%s direction=%s failures=%d err=%s", routeID, normalizeProbeRouteBridgeRole(direction), failureCount, normalizedErr)
 	detachProbeVirtualRouterStalePhysicalCarrier(rt, failureCount, normalizedErr)
+}
+
+func probeVirtualRouterRuntimeCarrierRecentlyReceived(rt *probeVirtualRouterRuntime, maxIdle time.Duration) bool {
+	if rt == nil {
+		return false
+	}
+	if maxIdle <= 0 {
+		maxIdle = probeVirtualRouterPingPongInterval
+	}
+	key := probeVirtualRouterFrameLinkKey(rt, "", "", nil)
+	if key == "" {
+		return false
+	}
+	probeVirtualRouterFrameLinkState.mu.Lock()
+	link := probeVirtualRouterFrameLinkState.links[key]
+	probeVirtualRouterFrameLinkState.mu.Unlock()
+	if link == nil || isProbeVirtualRouterFrameLinkClosed(link) {
+		return false
+	}
+	link.mu.Lock()
+	token := link.carrier
+	link.mu.Unlock()
+	if token == nil {
+		return false
+	}
+	lastReadAt := token.lastRead()
+	return !lastReadAt.IsZero() && time.Since(lastReadAt) < maxIdle
 }
 
 func recordProbeVirtualRouterRuntimeRemoteRTTControlSuccess(routeID string, latencyMS int64, responder string) {
