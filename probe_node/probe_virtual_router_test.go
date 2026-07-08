@@ -504,6 +504,58 @@ func TestBuildProbeVirtualRouterRuntimeConfigsUseCloudflareCopilotPortForDial(t 
 	}
 }
 
+func TestProbeVirtualRouterBridgePreserveDomainForCloudflareCopilot(t *testing.T) {
+	resetProbeRouteRelayResolveCacheForTest()
+	oldLookup := probeRouteRelayLookupIP
+	lookupCalled := false
+	probeRouteRelayLookupIP = func(context.Context, string, string) ([]net.IP, error) {
+		lookupCalled = true
+		return []net.IP{net.ParseIP("203.0.113.9")}, nil
+	}
+	t.Cleanup(func() {
+		probeRouteRelayLookupIP = oldLookup
+		resetProbeRouteRelayResolveCacheForTest()
+	})
+
+	host := "api_copilot_nw.example.com"
+	dialHost, hostHeader, err := resolveProbeRouteDialIPHostWithPolicy(host, isProbeVirtualRouterCloudflareCopilotDomain(host))
+	if err != nil {
+		t.Fatalf("resolve cf copilot host failed: %v", err)
+	}
+	if lookupCalled {
+		t.Fatalf("cf copilot host should preserve domain without resolving")
+	}
+	if dialHost != host || hostHeader != host {
+		t.Fatalf("cf copilot host should preserve domain, dial=%q host=%q", dialHost, hostHeader)
+	}
+	if got := resolveProbeRouteClientTLSServerName("websocket", dialHost, hostHeader); got != host {
+		t.Fatalf("cf copilot SNI=%q, want %q", got, host)
+	}
+}
+
+func TestProbeVirtualRouterBridgeResolvesOrdinaryDomainToIP(t *testing.T) {
+	resetProbeRouteRelayResolveCacheForTest()
+	oldLookup := probeRouteRelayLookupIP
+	probeRouteRelayLookupIP = func(_ context.Context, _ string, host string) ([]net.IP, error) {
+		if host != "ordinary.example.com" {
+			t.Fatalf("lookup host=%q", host)
+		}
+		return []net.IP{net.ParseIP("203.0.113.9")}, nil
+	}
+	t.Cleanup(func() {
+		probeRouteRelayLookupIP = oldLookup
+		resetProbeRouteRelayResolveCacheForTest()
+	})
+
+	dialHost, hostHeader, err := resolveProbeRouteDialIPHostWithPolicy("ordinary.example.com", false)
+	if err != nil {
+		t.Fatalf("resolve ordinary host failed: %v", err)
+	}
+	if dialHost != "203.0.113.9" || hostHeader != "203.0.113.9" {
+		t.Fatalf("ordinary host should resolve to ip, dial=%q host=%q", dialHost, hostHeader)
+	}
+}
+
 func TestBuildProbeVirtualRouterRuntimeConfigsAllowSharedPortAcrossRules(t *testing.T) {
 	config := probeVirtualRouterConfig{
 		Enabled: true,

@@ -728,7 +728,7 @@ func runProbeVirtualRouterBridgeDialer(rt *probeVirtualRouterRuntime) {
 			rt.cfg.routeLayer,
 			probeRouteBridgeRoleToNext,
 			probeRouteRelayDialTimeout+probeRouteRelayResponseReadDeadline,
-			true,
+			isProbeVirtualRouterCloudflareCopilotDomain(rt.cfg.peerHost),
 		)
 		if err != nil {
 			log.Printf("probe virtual router bridge dial failed: route=%s peer=%s:%d err=%v", rt.cfg.routeID, rt.cfg.peerHost, rt.cfg.peerPort, err)

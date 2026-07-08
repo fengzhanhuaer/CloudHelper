@@ -325,7 +325,7 @@ func openProbeVirtualRouterBridgeRelayNetConn(routeID string, secret string, rel
 }
 
 func openProbeVirtualRouterBridgeRelayNetConnWithDomainPolicy(routeID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration, preserveDomain bool) (net.Conn, error) {
-	relayDialHost, relayHostHeader, err := resolveProbeVirtualRouterBridgeDialIPHost(relayHost)
+	relayDialHost, relayHostHeader, err := resolveProbeRouteDialIPHostWithPolicy(relayHost, preserveDomain)
 	if err != nil {
 		return nil, err
 	}
