@@ -114,7 +114,6 @@ func handleProbeVirtualRouterFakeIPExitPacket(runtime *probeVirtualRouterRuntime
 		log.Printf("probe virtual router fake ip exit inject failed: route=%s proto=%s src=%s:%d dst=%s:%d domain=%s err=%v", probeVirtualRouterRuntimeLogRouteID(runtime), info.Protocol, info.SourceIP, info.SourcePort, info.DestinationIP, info.DestinationPort, strings.TrimSpace(entry.Domain), err)
 		return false
 	}
-	log.Printf("probe virtual router fake ip exit inject ok: route=%s proto=%s src=%s:%d dst=%s:%d domain=%s path=%s", probeVirtualRouterRuntimeLogRouteID(runtime), info.Protocol, info.SourceIP, info.SourcePort, info.DestinationIP, info.DestinationPort, strings.TrimSpace(entry.Domain), strings.Join(path, ">"))
 	return true
 }
 

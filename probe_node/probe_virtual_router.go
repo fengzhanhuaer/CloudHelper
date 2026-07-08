@@ -65,7 +65,7 @@ const (
 	probeVirtualRouterPingPongBytes                               = 64
 	probeVirtualRouterSpeedTestMaxBytes                           = 128 * 1024 * 1024
 	probeVirtualRouterSpeedTestMaxDuration                        = 10 * time.Second
-	probeVirtualRouterSpeedTestChunkBytes                         = 48 * 1024
+	probeVirtualRouterSpeedTestChunkBytes                         = 1024
 	probeVirtualRouterSpeedTestTXHighWatermarkPercent             = 75
 	probeVirtualRouterSpeedTestTXLowWatermarkPercent              = 50
 	probeVirtualRouterCarrierStalePingFailures                    = 4
