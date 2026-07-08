@@ -12,10 +12,13 @@ type probeRouteConfigResponse struct {
 }
 
 type probeRouteFakeIPResolveResponse struct {
-	NodeID        string                             `json:"node_id"`
-	Item          probeVirtualRouterFakeIPEntry      `json:"item"`
-	FakeIPLibrary probeVirtualRouterFakeIPLibrary    `json:"fake_ip_library"`
-	Sync          probeRouteConfigSyncDispatchResult `json:"sync"`
+	NodeID string                        `json:"node_id"`
+	Item   probeVirtualRouterFakeIPEntry `json:"item"`
+}
+
+type probeRouteFakeIPRenewResponse struct {
+	NodeID string                          `json:"node_id"`
+	Items  []probeVirtualRouterFakeIPEntry `json:"items"`
 }
 
 func ProbeRouteConfigHandler(w http.ResponseWriter, r *http.Request) {
@@ -38,9 +41,7 @@ func ProbeRouteConfigHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ensureProbeVirtualRouterStoredAuthFields()
-	if reconcileProbeVirtualRouterFakeIPLibraryBestEffort() {
-		dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURLFromRequest(r))
-	}
+	reconcileProbeVirtualRouterFakeIPLibraryBestEffort()
 	ProbeRouteConfigStore.mu.RLock()
 	virtualRouter := buildProbeVirtualRouterConfigForNodeLocked(nodeID)
 	ProbeRouteConfigStore.mu.RUnlock()
@@ -66,6 +67,7 @@ func ProbeRouteFakeIPResolveHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Domain     string `json:"domain"`
+		FakeIP     string `json:"fake_ip,omitempty"`
 		RuleID     string `json:"rule_id,omitempty"`
 		Action     string `json:"action,omitempty"`
 		ExitNodeID string `json:"exit_node_id,omitempty"`
@@ -74,7 +76,19 @@ func ProbeRouteFakeIPResolveHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
 		return
 	}
-	item, library, changed, err := allocateProbeVirtualRouterFakeIPForDomain(req.Domain, probeVirtualRouterRouteRule{
+	if strings.TrimSpace(req.FakeIP) != "" {
+		item, _, ok := lookupProbeVirtualRouterFakeIPByIP(req.FakeIP)
+		if !ok {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "fake ip mapping not found"})
+			return
+		}
+		writeJSON(w, http.StatusOK, probeRouteFakeIPResolveResponse{
+			NodeID: nodeID,
+			Item:   item,
+		})
+		return
+	}
+	item, _, changed, err := allocateProbeVirtualRouterFakeIPForDomain(req.Domain, probeVirtualRouterRouteRule{
 		ID:         strings.TrimSpace(req.RuleID),
 		Name:       strings.TrimSpace(req.RuleID),
 		Action:     strings.TrimSpace(req.Action),
@@ -84,18 +98,52 @@ func ProbeRouteFakeIPResolveHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	var syncResult probeRouteConfigSyncDispatchResult
 	if changed {
 		if err := ProbeRouteConfigStore.Save(); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
-		syncResult = dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURLFromRequest(r))
 	}
 	writeJSON(w, http.StatusOK, probeRouteFakeIPResolveResponse{
-		NodeID:        nodeID,
-		Item:          item,
-		FakeIPLibrary: library,
-		Sync:          syncResult,
+		NodeID: nodeID,
+		Item:   item,
+	})
+}
+
+func ProbeRouteFakeIPRenewHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !isHTTPSRequest(r) {
+		writeJSON(w, http.StatusUpgradeRequired, map[string]string{"error": "https is required"})
+		return
+	}
+	nodeID, err := authenticateProbeRequestOrQuerySecret(r)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+		return
+	}
+	var req struct {
+		Domains []string `json:"domains"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+	items, _, changed, err := renewProbeVirtualRouterFakeIPDomains(req.Domains)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if changed {
+		if err := ProbeRouteConfigStore.Save(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, probeRouteFakeIPRenewResponse{
+		NodeID: nodeID,
+		Items:  items,
 	})
 }

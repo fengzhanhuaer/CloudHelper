@@ -371,6 +371,57 @@
           <button id="tunRefreshBtn" class="secondary">刷新 TUN</button>
         </div>
       </section>
+      <section class="card" style="margin-top:14px;">
+        <h2>下载测速</h2>
+        <div class="toolbar">
+          <div class="field">
+            <label for="routeSpeedTargetNode">目标节点</label>
+            <select id="routeSpeedTargetNode" class="mono"></select>
+          </div>
+          <div class="field">
+            <label for="routeSpeedMaxMB">大小 MB</label>
+            <input id="routeSpeedMaxMB" class="mono" type="number" min="1" max="128" value="16" />
+          </div>
+          <div class="field">
+            <label for="routeSpeedMaxSeconds">时长秒</label>
+            <input id="routeSpeedMaxSeconds" class="mono" type="number" min="1" max="10" value="8" />
+          </div>
+        </div>
+        <div class="actions">
+          <button id="routeSpeedBtn">下载测速</button>
+        </div>
+        <div class="status-cards">
+          <div class="status-card"><span>源节点</span><strong id="routeSpeedSourceNode" class="compact">-</strong></div>
+          <div class="status-card"><span>目标节点</span><strong id="routeSpeedTargetNodeText" class="compact">-</strong></div>
+          <div class="status-card"><span>下载</span><strong id="routeSpeedBytes" class="compact">-</strong></div>
+          <div class="status-card"><span>速度</span><strong id="routeSpeedMbps" class="compact">-</strong></div>
+          <div class="status-card"><span>耗时</span><strong id="routeSpeedDuration" class="compact">-</strong></div>
+          <div class="status-card"><span>状态</span><strong id="routeSpeedResult" class="compact">-</strong></div>
+        </div>
+        <div class="kv" style="margin-top:12px;">
+          <div>路径</div><div id="routeSpeedPathText" class="mono">-</div>
+          <div>帧数</div><div id="routeSpeedFrames" class="mono">-</div>
+          <div>错误</div><div id="routeSpeedError">-</div>
+        </div>
+        <div class="table-wrap" style="margin-top:12px;">
+          <table>
+            <thead>
+              <tr>
+                <th>时间点</th>
+                <th>TUN 入队</th>
+                <th>TUN 出队</th>
+                <th>发送队列</th>
+                <th>RX 入口</th>
+                <th>RX 处理</th>
+                <th>出口队列</th>
+              </tr>
+            </thead>
+            <tbody id="routeSpeedQueueRows">
+              <tr><td colspan="7" class="hint">-</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
     </div>
     </div>
 
@@ -565,12 +616,14 @@
     const messageEl = document.getElementById('message');
     const routerEnabledEl = document.getElementById('virtualRouterEnabled');
     const tunEgressSelectEl = document.getElementById('tunEgressSelect');
-    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260708-route-status';
+    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260708-route-speed';
     const REQUEST_TIMEOUT_DEFAULT_MS = 20000;
     const REQUEST_TIMEOUT_TUN_INSTALL_MS = 90000;
     let tunPollingTimer = null;
     let routeTestPollingTimer = null;
+    let routeSpeedPollingTimer = null;
     let routeTestActiveRequestID = '';
+    let routeSpeedActiveRequestID = '';
     let packetAutoRefreshPaused = false;
     let packetFilterText = '';
     let packetSnapshot = { items: [] };
@@ -804,6 +857,38 @@
       renderRouteStatusRuntimes(Array.isArray(payload.runtimes) ? payload.runtimes : []);
       renderRouteStatusLinks(Array.isArray(payload.frame_links) ? payload.frame_links : []);
       renderRouteStatusLatestError(payload.recent_summary || {});
+      renderRouteSpeedTargetOptions(payload);
+    }
+
+    function renderRouteSpeedTargetOptions(data) {
+      const select = document.getElementById('routeSpeedTargetNode');
+      if (!select) return;
+      const currentValue = String(select.value || '').trim();
+      const localNodeID = String(data && data.local_node_id || '').trim();
+      const runtimes = Array.isArray(data && data.runtimes) ? data.runtimes : [];
+      const nodes = new Map();
+      runtimes.forEach((item) => {
+        const nodeID = String(item && item.peer_node_id || '').trim();
+        if (!nodeID || nodeID === localNodeID) return;
+        const ip = String(item && item.peer_ip || '').trim();
+        const route = String(item && item.route_id || '').trim();
+        const status = item && item.last_error ? '异常' : '可达';
+        nodes.set(nodeID, [nodeID, ip, route, status].filter(Boolean).join(' / '));
+      });
+      select.innerHTML = '';
+      const empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = nodes.size ? '选择节点' : '暂无可达节点';
+      select.appendChild(empty);
+      Array.from(nodes.keys()).sort((a, b) => Number(a) - Number(b) || a.localeCompare(b)).forEach((nodeID) => {
+        const option = document.createElement('option');
+        option.value = nodeID;
+        option.textContent = nodes.get(nodeID);
+        select.appendChild(option);
+      });
+      if (currentValue && nodes.has(currentValue)) {
+        select.value = currentValue;
+      }
     }
 
     function renderRouteStatusRules(items) {
@@ -1090,6 +1175,81 @@
       }).join('');
     }
 
+    function summarizeSpeedQueues(snapshot) {
+      const data = snapshot && typeof snapshot === 'object' ? snapshot : {};
+      const tun = data.tun && typeof data.tun === 'object' ? data.tun : {};
+      const exitNetstack = data.exit_netstack && typeof data.exit_netstack === 'object' ? data.exit_netstack : {};
+      const links = Array.isArray(data.frame_links) ? data.frame_links : [];
+      const sum = {
+        updated_at: data.updated_at || '',
+        tun_in: Number(tun.inbound_queue_depth || 0),
+        tun_in_cap: Number(tun.inbound_queue_capacity || 0),
+        tun_out: Number(tun.outbound_queue_depth || 0),
+        tun_out_cap: Number(tun.outbound_queue_capacity || 0),
+        tx: 0,
+        tx_cap: 0,
+        rx_entry: 0,
+        rx_entry_cap: 0,
+        rx_dispatch: 0,
+        rx_dispatch_cap: 0,
+        exit_out: Number(exitNetstack.output_queue_depth || 0),
+        exit_out_cap: Number(exitNetstack.output_queue_capacity || 0),
+      };
+      links.forEach((item) => {
+        sum.tx += Number(item && item.tx_queue || 0);
+        sum.tx_cap += Number(item && item.tx_capacity || 0);
+        sum.rx_entry += Number(item && item.rx_entry_queue || 0);
+        sum.rx_entry_cap += Number(item && item.rx_entry_capacity || 0);
+        sum.rx_dispatch += Number(item && item.rx_dispatch_queue || 0);
+        sum.rx_dispatch_cap += Number(item && item.rx_dispatch_capacity || 0);
+      });
+      return sum;
+    }
+
+    function queueSummaryCell(depth, capacity) {
+      return queueCellHTML(depth, capacity);
+    }
+
+    function renderRouteSpeedQueues(payload) {
+      const rows = document.getElementById('routeSpeedQueueRows');
+      if (!rows) return;
+      const items = [];
+      if (payload && payload.queues_before) items.push(['测试前', summarizeSpeedQueues(payload.queues_before)]);
+      if (payload && payload.queues_after) items.push(['测试后', summarizeSpeedQueues(payload.queues_after)]);
+      if (!items.length) {
+        rows.innerHTML = '<tr><td colspan="7" class="hint">-</td></tr>';
+        return;
+      }
+      rows.innerHTML = items.map(([label, item]) => `<tr>
+        <td>${escapeHTML(label)}<div class="queue-meta">${escapeHTML(formatDateTime(item.updated_at))}</div></td>
+        <td>${queueSummaryCell(item.tun_in, item.tun_in_cap)}</td>
+        <td>${queueSummaryCell(item.tun_out, item.tun_out_cap)}</td>
+        <td>${queueSummaryCell(item.tx, item.tx_cap)}</td>
+        <td>${queueSummaryCell(item.rx_entry, item.rx_entry_cap)}</td>
+        <td>${queueSummaryCell(item.rx_dispatch, item.rx_dispatch_cap)}</td>
+        <td>${queueSummaryCell(item.exit_out, item.exit_out_cap)}</td>
+      </tr>`).join('');
+    }
+
+    function renderRouteSpeed(data) {
+      const payload = data || {};
+      const download = payload.download && typeof payload.download === 'object' ? payload.download : {};
+      setText('routeSpeedSourceNode', payload.source_node_id);
+      setText('routeSpeedTargetNodeText', payload.target_node_id);
+      setText('routeSpeedPathText', Array.isArray(payload.path) && payload.path.length ? payload.path.join(' > ') : '-');
+      setText('routeSpeedBytes', download.bytes ? formatBytes(download.bytes) : '-');
+      setText('routeSpeedFrames', download.frames ? formatNumber(download.frames) : '-');
+      setText('routeSpeedDuration', download.duration_ms ? formatDurationMS(download.duration_ms) : '-');
+      setText('routeSpeedMbps', download.mbps ? Number(download.mbps).toFixed(2) + ' Mbps' : '-');
+      const error = payload.error || download.error || '';
+      setText('routeSpeedError', error || '-');
+      const statusText = payload.final
+        ? (payload.ok ? '完成' : (error || '失败'))
+        : (payload.request_id ? '测速中...' : '-');
+      setText('routeSpeedResult', statusText);
+      renderRouteSpeedQueues(payload);
+    }
+
     function stopRouteTestPolling() {
       if (routeTestPollingTimer) {
         clearTimeout(routeTestPollingTimer);
@@ -1100,6 +1260,16 @@
       if (btn) btn.disabled = false;
       const curlBtn = document.getElementById('routeTestCurlBtn');
       if (curlBtn) curlBtn.disabled = false;
+    }
+
+    function stopRouteSpeedPolling() {
+      if (routeSpeedPollingTimer) {
+        clearTimeout(routeSpeedPollingTimer);
+        routeSpeedPollingTimer = null;
+      }
+      routeSpeedActiveRequestID = '';
+      const btn = document.getElementById('routeSpeedBtn');
+      if (btn) btn.disabled = false;
     }
 
     async function pollRouteTestResult(requestID) {
@@ -1118,6 +1288,25 @@
           setMessage('刷新路由测试结果失败：' + err.message, 'error');
         });
       }, 600);
+    }
+
+    async function pollRouteSpeedResult(requestID) {
+      if (!requestID || requestID !== routeSpeedActiveRequestID) return;
+      const data = await requestJSON('/local/api/virtual_router/route_test/speed?request_id=' + encodeURIComponent(requestID), { method: 'GET' }, 8000);
+      if (requestID !== routeSpeedActiveRequestID) return;
+      renderRouteSpeed(data || {});
+      if (data && data.final) {
+        stopRouteSpeedPolling();
+        await loadRouteStatus().catch(() => {});
+        setMessage(data.ok ? '下载测速完成' : '下载测速失败', data.ok ? 'success' : 'error');
+        return;
+      }
+      routeSpeedPollingTimer = setTimeout(() => {
+        pollRouteSpeedResult(requestID).catch((err) => {
+          stopRouteSpeedPolling();
+          setMessage('刷新下载测速结果失败：' + err.message, 'error');
+        });
+      }, 500);
     }
 
     async function loadSettings() {
@@ -1180,6 +1369,42 @@
       }
       routeTestActiveRequestID = data.request_id;
       await pollRouteTestResult(data.request_id);
+    }
+
+    async function runRouteSpeedTest() {
+      const targetNodeID = String(document.getElementById('routeSpeedTargetNode').value || '').trim();
+      const maxMB = Number(document.getElementById('routeSpeedMaxMB').value || 16);
+      const maxSeconds = Number(document.getElementById('routeSpeedMaxSeconds').value || 8);
+      if (!targetNodeID) {
+        setMessage('请选择测速目标节点', 'error');
+        return;
+      }
+      stopRouteSpeedPolling();
+      document.getElementById('routeSpeedBtn').disabled = true;
+      renderRouteSpeed({
+        source_node_id: routeStatusSnapshot && routeStatusSnapshot.local_node_id,
+        target_node_id: targetNodeID,
+        max_bytes: Math.max(1, maxMB) * 1024 * 1024,
+        max_seconds: maxSeconds,
+      });
+      setMessage('下载测速中...');
+      const data = await requestJSON('/local/api/virtual_router/route_test/speed', {
+        method: 'POST',
+        body: JSON.stringify({
+          target_node_id: targetNodeID,
+          max_bytes: Math.max(1, Math.min(128, maxMB)) * 1024 * 1024,
+          max_seconds: Math.max(1, Math.min(10, maxSeconds)),
+          async: true,
+        }),
+      }, 8000);
+      renderRouteSpeed(data || {});
+      if (!data || !data.request_id) {
+        stopRouteSpeedPolling();
+        setMessage('下载测速启动失败：缺少 request_id', 'error');
+        return;
+      }
+      routeSpeedActiveRequestID = data.request_id;
+      await pollRouteSpeedResult(data.request_id);
     }
 
     async function refreshAll() {
@@ -1306,6 +1531,9 @@
       if (activeTab === 'packets') {
         loadPackets().catch((err) => setMessage('读取最近报文失败：' + err.message, 'error'));
       }
+      if (activeTab === 'routeTest') {
+        loadRouteStatus().catch((err) => setMessage('读取路由状态失败：' + err.message, 'error'));
+      }
     }
 
     document.getElementById('saveSettingsBtn').addEventListener('click', () => {
@@ -1356,6 +1584,12 @@
         setMessage('Curl 路由测试失败：' + err.message, 'error');
       });
     });
+    document.getElementById('routeSpeedBtn').addEventListener('click', () => {
+      runRouteSpeedTest().catch((err) => {
+        stopRouteSpeedPolling();
+        setMessage('下载测速失败：' + err.message, 'error');
+      });
+    });
     document.getElementById('routeTestTarget').addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
         event.preventDefault();
@@ -1374,6 +1608,8 @@
     startTunPolling();
     window.addEventListener('beforeunload', () => {
       if (tunPollingTimer) clearInterval(tunPollingTimer);
+      if (routeTestPollingTimer) clearTimeout(routeTestPollingTimer);
+      if (routeSpeedPollingTimer) clearTimeout(routeSpeedPollingTimer);
     });
   </script>
 </body>

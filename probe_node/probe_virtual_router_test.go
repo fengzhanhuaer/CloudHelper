@@ -219,6 +219,15 @@ func resetProbeVirtualRouterStateForTest() {
 	probeVirtualRouterRouteConfigRefreshState.running = make(map[string]bool)
 	probeVirtualRouterRouteConfigRefreshState.lastAt = make(map[string]time.Time)
 	probeVirtualRouterRouteConfigRefreshState.mu.Unlock()
+	probeVirtualRouterFakeIPItemRefreshState.mu.Lock()
+	probeVirtualRouterFakeIPItemRefreshState.running = make(map[string]bool)
+	probeVirtualRouterFakeIPItemRefreshState.lastAt = make(map[string]time.Time)
+	probeVirtualRouterFakeIPItemRefreshState.mu.Unlock()
+	probeVirtualRouterFakeIPHitRenewState.mu.Lock()
+	probeVirtualRouterFakeIPHitRenewState.running = false
+	probeVirtualRouterFakeIPHitRenewState.lastAt = make(map[string]time.Time)
+	probeVirtualRouterFakeIPHitRenewState.pending = make(map[string]struct{})
+	probeVirtualRouterFakeIPHitRenewState.mu.Unlock()
 	probeVirtualRouterLocalInterfaceEnsureState.mu.Lock()
 	probeVirtualRouterLocalInterfaceEnsureState.running = false
 	probeVirtualRouterLocalInterfaceEnsureState.mu.Unlock()
@@ -2074,7 +2083,7 @@ func TestProbeVirtualRouterFakeIPExitTargetsResolveRealIP(t *testing.T) {
 	}
 	applyProbeVirtualRouterConfigForNode(config, "19")
 
-	targets, err := probeVirtualRouterFakeIPTargetsFromTransportID(tcpip.AddrFrom4([4]byte{198, 18, 4, 9}), 443)
+	targets, _, err := probeVirtualRouterFakeIPTargetsFromTransportID(tcpip.AddrFrom4([4]byte{198, 18, 4, 9}), 443)
 	if err != nil {
 		t.Fatalf("resolve fake ip targets failed: %v", err)
 	}
@@ -2086,7 +2095,7 @@ func TestProbeVirtualRouterFakeIPExitTargetsResolveRealIP(t *testing.T) {
 	}
 }
 
-func TestProbeVirtualRouterFakeIPExitTargetsRefreshMissingMappingFromController(t *testing.T) {
+func TestProbeVirtualRouterFakeIPExitTargetsRefreshMissingMappingItemFromController(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeVirtualRouterStateForTest()
 	resetProbeLocalDNSServiceForTest()
@@ -2101,31 +2110,25 @@ func TestProbeVirtualRouterFakeIPExitTargetsRefreshMissingMappingFromController(
 		return []string{"203.0.113.10"}, nil
 	}
 	t.Cleanup(func() { probeVirtualRouterExitLookupIPv4 = oldExitLookup })
-	oldRequestConfig := probeRequestRouteConfig
-	requests := 0
-	probeRequestRouteConfig = func(ctx context.Context, controllerBaseURL string, identity nodeIdentity) (probeVirtualRouterConfig, error) {
-		requests++
-		if controllerBaseURL != "https://controller.example.test" || identity.NodeID != "19" || identity.Secret != "secret-19" {
-			t.Fatalf("unexpected controller request: base=%q identity=%+v", controllerBaseURL, identity)
+	oldRequestByIP := probeRequestRouteFakeIPByIP
+	requestCh := make(chan struct{}, 1)
+	probeRequestRouteFakeIPByIP = func(ctx context.Context, controllerBaseURL string, identity nodeIdentity, fakeIP string) (probeVirtualRouterFakeIPEntry, error) {
+		select {
+		case requestCh <- struct{}{}:
+		default:
 		}
-		return probeVirtualRouterConfig{
-			Enabled:    true,
-			FakeIPCIDR: "198.18.0.0/15",
-			ProbeIPs: []probeVirtualRouterProbeIP{
-				{NodeID: "19", IP: "198.18.0.21"},
-			},
-			FakeIPLibrary: probeVirtualRouterFakeIPLibrary{
-				Version: 7,
-				Items: []probeVirtualRouterFakeIPEntry{{
-					Domain:     "api.example.com",
-					FakeIP:     "198.18.4.9",
-					Action:     "probe_exit",
-					ExitNodeID: "19",
-				}},
-			},
+		if controllerBaseURL != "https://controller.example.test" || identity.NodeID != "19" || identity.Secret != "secret-19" || fakeIP != "198.18.4.9" {
+			t.Fatalf("unexpected controller request: base=%q identity=%+v fake_ip=%q", controllerBaseURL, identity, fakeIP)
+		}
+		return probeVirtualRouterFakeIPEntry{
+			Domain:     "api.example.com",
+			FakeIP:     "198.18.4.9",
+			Action:     "probe_exit",
+			ExitNodeID: "19",
+			ExpiresAt:  time.Now().UTC().Add(30 * 24 * time.Hour).Format(time.RFC3339),
 		}, nil
 	}
-	t.Cleanup(func() { probeRequestRouteConfig = oldRequestConfig })
+	t.Cleanup(func() { probeRequestRouteFakeIPByIP = oldRequestByIP })
 	probeVirtualRouterControllerState.mu.Lock()
 	oldIdentity := probeVirtualRouterControllerState.identity
 	oldControllerBaseURL := probeVirtualRouterControllerState.controllerBaseURL
@@ -2148,18 +2151,23 @@ func TestProbeVirtualRouterFakeIPExitTargetsRefreshMissingMappingFromController(
 		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{Version: 1},
 	}, "19")
 
-	targets, err := probeVirtualRouterFakeIPTargetsFromTransportID(tcpip.AddrFrom4([4]byte{198, 18, 4, 9}), 443)
+	if _, _, err := probeVirtualRouterFakeIPTargetsFromTransportID(tcpip.AddrFrom4([4]byte{198, 18, 4, 9}), 443); err == nil {
+		t.Fatalf("first resolve should miss while single-item refresh runs in background")
+	}
+	select {
+	case <-requestCh:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("controller item refresh was not requested")
+	}
+	targets, _, err := probeVirtualRouterFakeIPTargetsFromTransportID(tcpip.AddrFrom4([4]byte{198, 18, 4, 9}), 443)
 	if err != nil {
-		t.Fatalf("resolve fake ip targets after refresh failed: %v", err)
+		t.Fatalf("resolve fake ip targets after item refresh failed: %v", err)
 	}
 	if !reflect.DeepEqual(targets, []string{"203.0.113.10:443"}) {
 		t.Fatalf("targets=%v, want [203.0.113.10:443]", targets)
 	}
-	if requests != 1 {
-		t.Fatalf("controller refresh requests=%d, want 1", requests)
-	}
 	if entry, ok := currentProbeVirtualRouterFakeIPEntryByIP("198.18.4.9"); !ok || entry.Domain != "api.example.com" {
-		t.Fatalf("fake ip library should be refreshed, entry=%+v ok=%v", entry, ok)
+		t.Fatalf("fake ip item should be refreshed, entry=%+v ok=%v", entry, ok)
 	}
 }
 
@@ -2230,7 +2238,7 @@ func TestProbeVirtualRouterFakeIPExitTCPForwarderDoesNotBlockOnResolve(t *testin
 	}
 }
 
-func TestProbeVirtualRouterFakeIPMappingMissDoesNotBlockOnControllerRefresh(t *testing.T) {
+func TestProbeVirtualRouterFakeIPMappingMissDoesNotBlockOnItemRefresh(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeVirtualRouterStateForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
@@ -2243,7 +2251,7 @@ func TestProbeVirtualRouterFakeIPMappingMissDoesNotBlockOnControllerRefresh(t *t
 		requestStartedOnce.Do(func() { close(requestStarted) })
 		<-releaseRequest
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"virtual_router":{"enabled":true,"fake_ip_cidr":"198.18.0.0/15"}}`)
+		_, _ = io.WriteString(w, `{"item":{"domain":"api.example.com","fake_ip":"198.18.4.9","action":"probe_exit","exit_node_id":"19","expires_at":"2099-01-01T00:00:00Z"}}`)
 	}))
 	t.Cleanup(func() {
 		releaseOnce.Do(func() { close(releaseRequest) })

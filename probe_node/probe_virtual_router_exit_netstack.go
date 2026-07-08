@@ -187,6 +187,7 @@ func handleProbeVirtualRouterFakeIPExitICMPEchoRequest(runtime *probeVirtualRout
 		if replyInfo, ok := probeVirtualRouterParseICMPEchoLogInfo(reply); ok {
 			log.Printf("probe virtual router fake ip icmp exit ok: route=%s fake_ip=%s target=%s src=%s dst=%s id=%d seq=%d path=%s", probeVirtualRouterRuntimeLogRouteID(runtime), info.DestinationIP, targetIP, replyInfo.SourceIP, replyInfo.DestinationIP, replyInfo.ID, replyInfo.Sequence, strings.Join(replyPath, ">"))
 		}
+		recordProbeVirtualRouterFakeIPExitHit(entry.Domain)
 	}()
 	log.Printf("probe virtual router fake ip icmp exit start: route=%s src=%s fake_ip=%s domain=%s targets=%s id=%d seq=%d path=%s", probeVirtualRouterRuntimeLogRouteID(runtime), info.SourceIP, info.DestinationIP, strings.TrimSpace(entry.Domain), strings.Join(targetIPs, ","), info.ID, info.Sequence, strings.Join(path, ">"))
 	return true
@@ -455,7 +456,7 @@ func (n *probeVirtualRouterExitNetstack) handleTCPForwarder(req *tcp.ForwarderRe
 }
 
 func relayProbeVirtualRouterExitTCP(inbound net.Conn, localAddress tcpip.Address, localPort uint16) {
-	targetAddrs, err := probeVirtualRouterFakeIPTargetsFromTransportID(localAddress, localPort)
+	targetAddrs, entry, err := probeVirtualRouterFakeIPTargetsFromTransportID(localAddress, localPort)
 	if err != nil {
 		log.Printf("probe virtual router fake ip tcp exit resolve failed: fake_ip=%s port=%d err=%v", strings.TrimSpace(localAddress.String()), localPort, err)
 		_ = inbound.Close()
@@ -470,6 +471,7 @@ func relayProbeVirtualRouterExitTCP(inbound net.Conn, localAddress tcpip.Address
 	tuneProbeVirtualRouterExitTCPConn(inbound)
 	tuneProbeVirtualRouterExitTCPConn(outbound)
 	log.Printf("probe virtual router fake ip tcp exit open ok: targets=%s remote=%s", strings.Join(targetAddrs, ","), outbound.RemoteAddr())
+	recordProbeVirtualRouterFakeIPExitHit(entry.Domain)
 	go relayProbeVirtualRouterExitTCPConns(inbound, outbound)
 }
 
@@ -499,7 +501,7 @@ func (n *probeVirtualRouterExitNetstack) handleUDPForwarder(req *udp.ForwarderRe
 }
 
 func relayProbeVirtualRouterExitUDP(inbound *gonet.UDPConn, localAddress tcpip.Address, localPort uint16) {
-	targetAddrs, err := probeVirtualRouterFakeIPTargetsFromTransportID(localAddress, localPort)
+	targetAddrs, entry, err := probeVirtualRouterFakeIPTargetsFromTransportID(localAddress, localPort)
 	if err != nil {
 		log.Printf("probe virtual router fake ip udp exit resolve failed: fake_ip=%s port=%d err=%v", strings.TrimSpace(localAddress.String()), localPort, err)
 		_ = inbound.Close()
@@ -512,38 +514,39 @@ func relayProbeVirtualRouterExitUDP(inbound *gonet.UDPConn, localAddress tcpip.A
 		return
 	}
 	log.Printf("probe virtual router fake ip udp exit open ok: targets=%s remote=%s", strings.Join(targetAddrs, ","), outbound.RemoteAddr())
+	recordProbeVirtualRouterFakeIPExitHit(entry.Domain)
 	relayProbeVirtualRouterExitUDPConns(inbound, outbound)
 }
 
-func probeVirtualRouterFakeIPTargetsFromTransportID(addr tcpip.Address, port uint16) ([]string, error) {
+func probeVirtualRouterFakeIPTargetsFromTransportID(addr tcpip.Address, port uint16) ([]string, probeVirtualRouterFakeIPEntry, error) {
 	if port == 0 {
-		return nil, errors.New("transport target port is empty")
+		return nil, probeVirtualRouterFakeIPEntry{}, errors.New("transport target port is empty")
 	}
 	host := strings.TrimSpace(addr.String())
 	entry, ok := currentProbeVirtualRouterFakeIPEntryByIPWithAsyncRefresh(host)
 	if !ok {
-		return nil, errors.New("fake ip mapping is unavailable")
+		return nil, probeVirtualRouterFakeIPEntry{}, errors.New("fake ip mapping is unavailable")
 	}
 	domain := normalizeProbeVirtualRouterDomain(entry.Domain)
 	if domain == "" {
-		return nil, errors.New("fake ip mapping domain is empty")
+		return nil, probeVirtualRouterFakeIPEntry{}, errors.New("fake ip mapping domain is empty")
 	}
 	ips, err := resolveProbeVirtualRouterFakeIPExitRealIPs(domain)
 	if err != nil {
-		return nil, err
+		return nil, probeVirtualRouterFakeIPEntry{}, err
 	}
 	targets := buildProbeLocalTunnelRouteTargetCandidates(ips, strconv.Itoa(int(port)))
 	if len(targets) == 0 {
-		return nil, fmt.Errorf("resolve fake ip domain returned no usable ipv4: domain=%s", domain)
+		return nil, probeVirtualRouterFakeIPEntry{}, fmt.Errorf("resolve fake ip domain returned no usable ipv4: domain=%s", domain)
 	}
-	return targets, nil
+	return targets, entry, nil
 }
 
 func currentProbeVirtualRouterFakeIPEntryByIPWithAsyncRefresh(ip string) (probeVirtualRouterFakeIPEntry, bool) {
 	if entry, ok := currentProbeVirtualRouterFakeIPEntryByIP(ip); ok {
 		return entry, true
 	}
-	scheduleProbeVirtualRouterRouteConfigRefreshFromController("fake_ip_mapping_miss", probeVirtualRouterRouteConfigRefreshHotPathMinInterval)
+	scheduleProbeVirtualRouterFakeIPItemRefreshByIP(ip)
 	return probeVirtualRouterFakeIPEntry{}, false
 }
 
@@ -551,26 +554,21 @@ func currentProbeVirtualRouterFakeIPEntryByIPWithControllerRefresh(ip string) (p
 	if entry, ok := currentProbeVirtualRouterFakeIPEntryByIP(ip); ok {
 		return entry, true
 	}
-	if err := refreshProbeVirtualRouterFakeIPLibraryFromController(); err != nil {
-		logProbeWarnf("probe virtual router fake ip library refresh failed: fake_ip=%s err=%v", strings.TrimSpace(ip), err)
-		return probeVirtualRouterFakeIPEntry{}, false
-	}
-	return currentProbeVirtualRouterFakeIPEntryByIP(ip)
-}
-
-func refreshProbeVirtualRouterFakeIPLibraryFromController() error {
 	identity, controllerBaseURL, ok := currentProbeVirtualRouterController()
 	if !ok {
-		return errors.New("virtual router controller is unavailable")
+		return probeVirtualRouterFakeIPEntry{}, false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), probeRouteConfigSyncFetchTimeout)
-	config, err := fetchProbeRouteConfig(ctx, controllerBaseURL, identity)
+	item, err := probeRequestRouteFakeIPByIP(ctx, controllerBaseURL, identity, ip)
 	cancel()
 	if err != nil {
-		return err
+		logProbeWarnf("probe virtual router fake ip item refresh failed: fake_ip=%s err=%v", strings.TrimSpace(ip), err)
+		return probeVirtualRouterFakeIPEntry{}, false
 	}
-	applyProbeVirtualRouterFakeIPLibrary(config.FakeIPLibrary)
-	return nil
+	if !applyProbeVirtualRouterFakeIPEntry(item) {
+		return probeVirtualRouterFakeIPEntry{}, false
+	}
+	return item, true
 }
 
 func probeVirtualRouterFakeIPRealIPs(domain string) ([]string, error) {

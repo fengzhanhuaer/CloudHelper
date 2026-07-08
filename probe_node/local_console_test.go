@@ -552,6 +552,77 @@ func TestProbeLocalVirtualRouterRouteTestHandlerStreamsAsyncProgress(t *testing.
 	}
 }
 
+func TestProbeLocalVirtualRouterRouteSpeedHandlerDownloadsFromTargetNode(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	probeVirtualRouterState.mu.Lock()
+	probeVirtualRouterState.localNodeID = "9"
+	probeVirtualRouterState.localIP = "198.18.0.7"
+	probeVirtualRouterState.neighbors = map[string]map[string]struct{}{
+		"9":  {"18": {}},
+		"18": {"9": {}},
+	}
+	probeVirtualRouterState.mu.Unlock()
+
+	oldRunner := probeVirtualRouterRouteSpeedDownloadRun
+	probeVirtualRouterRouteSpeedDownloadRun = func(path []string, sourceNodeID string, targetNodeID string, maxBytes int64, maxDuration time.Duration) (probeVirtualRouterSpeedTestResult, error) {
+		if got := strings.Join(path, ">"); got != "9>18" {
+			t.Fatalf("path=%q, want 9>18", got)
+		}
+		if sourceNodeID != "9" || targetNodeID != "18" {
+			t.Fatalf("source=%q target=%q", sourceNodeID, targetNodeID)
+		}
+		if maxBytes != 4*1024*1024 {
+			t.Fatalf("maxBytes=%d", maxBytes)
+		}
+		if maxDuration != 3*time.Second {
+			t.Fatalf("maxDuration=%s", maxDuration)
+		}
+		return probeVirtualRouterSpeedTestResult{
+			OK:         true,
+			Bytes:      4 * 1024 * 1024,
+			Frames:     86,
+			DurationMS: 1000,
+			Mbps:       33.55,
+		}, nil
+	}
+	t.Cleanup(func() {
+		probeVirtualRouterRouteSpeedDownloadRun = oldRunner
+	})
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/virtual_router/route_test/speed", map[string]any{
+		"target_node_id": "18",
+		"max_bytes":      4 * 1024 * 1024,
+		"max_seconds":    3,
+	}, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("route speed status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	if payload["ok"] != true || payload["final"] != true {
+		t.Fatalf("route speed not final ok: %+v", payload)
+	}
+	if payload["source_node_id"] != "9" || payload["target_node_id"] != "18" {
+		t.Fatalf("unexpected source/target: %+v", payload)
+	}
+	if got := fmt.Sprint(payload["path"]); !strings.Contains(got, "9") || !strings.Contains(got, "18") {
+		t.Fatalf("unexpected path: %+v", payload["path"])
+	}
+	download, ok := payload["download"].(map[string]any)
+	if !ok || download["bytes"] != float64(4*1024*1024) || download["mbps"] != 33.55 {
+		t.Fatalf("unexpected download result: %+v", payload["download"])
+	}
+	if _, ok := payload["queues_before"].(map[string]any); !ok {
+		t.Fatalf("missing queues_before: %+v", payload)
+	}
+	if _, ok := payload["queues_after"].(map[string]any); !ok {
+		t.Fatalf("missing queues_after: %+v", payload)
+	}
+}
+
 func TestProbeLocalProtectedRoutesRequireSession(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 

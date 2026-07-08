@@ -67,9 +67,6 @@ func mngRouteVirtualRouterFakeIPResetHandler(w http.ResponseWriter, r *http.Requ
 	}
 	library, err := resetProbeVirtualRouterFakeIPLibrary()
 	result := map[string]any{"fake_ip_library": library}
-	if err == nil {
-		result["sync"] = dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURLFromRequest(r))
-	}
 	writeMngRouteResult(w, result, err)
 }
 
