@@ -3183,7 +3183,7 @@ func (s *probeVirtualRouterFrameLink) EnqueueProbeVirtualRouterFrame(input probe
 		}
 		frame = appendProbeVirtualRouterWireFrameICMPTrace(frame, s.runtime, s.requestPath, "carrier_tx")
 		if err := writeProbeVirtualRouterWireFrameRaw(token.conn, frame); err != nil {
-			s.detachCarrier(token)
+			s.detachCarrierWithReason(token, "immediate_write_error", err)
 			return err
 		}
 		token.markWrite()
@@ -3225,10 +3225,8 @@ func (s *probeVirtualRouterFrameLink) runTXWorker() {
 				s.touch()
 				continue
 			}
-			if !errors.Is(err, os.ErrDeadlineExceeded) {
-				log.Printf("probe virtual router frame tx carrier failed: route=%s key=%s frame=%s err=%v %s", probeVirtualRouterRuntimeLogRouteID(s.runtime), s.key, probeVirtualRouterFrameDebugLabel(frame, s.requestPath), err, probeVirtualRouterFrameLinkCarrierStateString(s, token))
-			}
-			s.detachCarrier(token)
+			log.Printf("probe virtual router frame tx carrier failed: route=%s key=%s frame=%s err=%v %s", probeVirtualRouterRuntimeLogRouteID(s.runtime), s.key, probeVirtualRouterFrameDebugLabel(frame, s.requestPath), err, probeVirtualRouterFrameLinkCarrierStateString(s, token))
+			s.detachCarrierWithReason(token, "tx_write_error", err)
 		case <-s.done:
 			return
 		}
@@ -3247,7 +3245,7 @@ func (s *probeVirtualRouterFrameLink) runRXWorker() {
 			if err != nil {
 				closedLike := errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || isProbeVirtualRouterClosedLinkError(err)
 				log.Printf("probe virtual router frame rx carrier ended: route=%s key=%s closed_like=%v err=%v %s", probeVirtualRouterRuntimeLogRouteID(s.runtime), s.key, closedLike, err, probeVirtualRouterFrameLinkCarrierStateString(s, token))
-				s.detachCarrier(token)
+				s.detachCarrierWithReason(token, "rx_read_error", err)
 				break
 			}
 			frame = appendProbeVirtualRouterWireFrameICMPTrace(frame, s.runtime, s.requestPath, "carrier_rx")
@@ -3764,9 +3762,18 @@ func probeVirtualRouterFrameDebugLabel(frame probeVirtualRouterFrame, fallbackPa
 }
 
 func (s *probeVirtualRouterFrameLink) detachCarrier(token *probeVirtualRouterPhysicalCarrier) {
+	s.detachCarrierWithReason(token, "unspecified", nil)
+}
+
+func (s *probeVirtualRouterFrameLink) detachCarrierWithReason(token *probeVirtualRouterPhysicalCarrier, reason string, err error) {
 	if s == nil || token == nil {
 		return
 	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "unspecified"
+	}
+	state := probeVirtualRouterFrameLinkCarrierStateString(s, token)
 	detached := false
 	droppedTX := 0
 	droppedRX := 0
@@ -3779,8 +3786,15 @@ func (s *probeVirtualRouterFrameLink) detachCarrier(token *probeVirtualRouterPhy
 	}
 	s.mu.Unlock()
 	token.close()
+	if detached {
+		if err != nil {
+			log.Printf("probe virtual router physical carrier detached: reason=%s route=%s key=%s err=%v tx_dropped=%d rx_dropped=%d %s", reason, probeVirtualRouterRuntimeLogRouteID(s.runtime), strings.TrimSpace(s.key), err, droppedTX, droppedRX, state)
+		} else {
+			log.Printf("probe virtual router physical carrier detached: reason=%s route=%s key=%s tx_dropped=%d rx_dropped=%d %s", reason, probeVirtualRouterRuntimeLogRouteID(s.runtime), strings.TrimSpace(s.key), droppedTX, droppedRX, state)
+		}
+	}
 	if detached && (droppedTX > 0 || droppedRX > 0) {
-		log.Printf("probe virtual router frame buffers cleared: reason=carrier_detached route=%s key=%s tx=%d rx=%d session_id=%s remote=%s", probeVirtualRouterRuntimeLogRouteID(s.runtime), strings.TrimSpace(s.key), droppedTX, droppedRX, strings.TrimSpace(token.sessionID), strings.TrimSpace(token.remoteAddr))
+		log.Printf("probe virtual router frame buffers cleared: reason=carrier_detached_%s route=%s key=%s tx=%d rx=%d session_id=%s remote=%s", reason, probeVirtualRouterRuntimeLogRouteID(s.runtime), strings.TrimSpace(s.key), droppedTX, droppedRX, strings.TrimSpace(token.sessionID), strings.TrimSpace(token.remoteAddr))
 	}
 	if detached && s.runtime != nil {
 		clearProbeVirtualRouterRuntimePingError(s.runtime.cfg.routeID)
@@ -4528,12 +4542,20 @@ func runProbeVirtualRouterOneWaySpeedSender(path []string, msg probeVirtualRoute
 	lastLogAt := time.Now()
 	var lastLogBytes int64
 	for sentBytes < msg.MaxBytes && time.Now().Before(deadline) {
+		if err := probeVirtualRouterSpeedCarrierAvailable(link); err != nil {
+			log.Printf("probe virtual router speed sender carrier unavailable: request_id=%s direction=%s route=%s bytes=%d frames=%d path=%s err=%v %s", strings.TrimSpace(msg.RequestID), strings.TrimSpace(msg.Direction), probeVirtualRouterRuntimeLogRouteID(rt), sentBytes, frames, strings.Join(cleanPath, ">"), err, probeVirtualRouterFrameLinkDebugState(link))
+			return err
+		}
 		if err := waitProbeVirtualRouterSpeedTXBackpressure(link, deadline); err != nil {
 			if errors.Is(err, os.ErrDeadlineExceeded) {
 				log.Printf("probe virtual router speed sender deadline while waiting tx: request_id=%s direction=%s route=%s bytes=%d frames=%d path=%s %s", strings.TrimSpace(msg.RequestID), strings.TrimSpace(msg.Direction), probeVirtualRouterRuntimeLogRouteID(rt), sentBytes, frames, strings.Join(cleanPath, ">"), probeVirtualRouterFrameLinkDebugState(link))
 				break
 			}
 			log.Printf("probe virtual router speed sender tx wait failed: request_id=%s direction=%s route=%s bytes=%d frames=%d path=%s err=%v %s", strings.TrimSpace(msg.RequestID), strings.TrimSpace(msg.Direction), probeVirtualRouterRuntimeLogRouteID(rt), sentBytes, frames, strings.Join(cleanPath, ">"), err, probeVirtualRouterFrameLinkDebugState(link))
+			return err
+		}
+		if err := probeVirtualRouterSpeedCarrierAvailable(link); err != nil {
+			log.Printf("probe virtual router speed sender carrier unavailable after wait: request_id=%s direction=%s route=%s bytes=%d frames=%d path=%s err=%v %s", strings.TrimSpace(msg.RequestID), strings.TrimSpace(msg.Direction), probeVirtualRouterRuntimeLogRouteID(rt), sentBytes, frames, strings.Join(cleanPath, ">"), err, probeVirtualRouterFrameLinkDebugState(link))
 			return err
 		}
 		size := int64(probeVirtualRouterSpeedTestChunkBytes)
@@ -4563,6 +4585,10 @@ func runProbeVirtualRouterOneWaySpeedSender(path []string, msg probeVirtualRoute
 	if err != nil {
 		return err
 	}
+	if err := probeVirtualRouterSpeedCarrierAvailable(link); err != nil {
+		log.Printf("probe virtual router speed sender carrier unavailable before finish: request_id=%s direction=%s route=%s bytes=%d frames=%d path=%s err=%v %s", strings.TrimSpace(msg.RequestID), strings.TrimSpace(msg.Direction), probeVirtualRouterRuntimeLogRouteID(rt), sentBytes, frames, strings.Join(cleanPath, ">"), err, probeVirtualRouterFrameLinkDebugState(link))
+		return err
+	}
 	err = enqueueProbeVirtualRouterBusinessFrameUntil(link, probeVirtualRouterFrameMainTypeSpeed, probeVirtualRouterSpeedSubTypeFinish, finishPayload, cleanPath, time.Now().Add(2*time.Second))
 	if err != nil {
 		log.Printf("probe virtual router speed sender finish frame failed: request_id=%s direction=%s route=%s bytes=%d frames=%d path=%s err=%v %s", strings.TrimSpace(msg.RequestID), strings.TrimSpace(msg.Direction), probeVirtualRouterRuntimeLogRouteID(rt), sentBytes, frames, strings.Join(cleanPath, ">"), err, probeVirtualRouterFrameLinkDebugState(link))
@@ -4570,6 +4596,14 @@ func runProbeVirtualRouterOneWaySpeedSender(path []string, msg probeVirtualRoute
 	}
 	log.Printf("probe virtual router speed sender finish: request_id=%s direction=%s route=%s bytes=%d frames=%d path=%s %s", strings.TrimSpace(msg.RequestID), strings.TrimSpace(msg.Direction), probeVirtualRouterRuntimeLogRouteID(rt), sentBytes, frames, strings.Join(cleanPath, ">"), probeVirtualRouterFrameLinkDebugState(link))
 	return nil
+}
+
+func probeVirtualRouterSpeedCarrierAvailable(link *probeVirtualRouterFrameLink) error {
+	if link == nil {
+		return errors.New("virtual router speed carrier link is nil")
+	}
+	_, err := link.currentCarrier()
+	return err
 }
 
 func waitProbeVirtualRouterSpeedTXBackpressure(link *probeVirtualRouterFrameLink, deadline time.Time) error {
@@ -5967,7 +6001,7 @@ func detachProbeVirtualRouterStalePhysicalCarrier(rt *probeVirtualRouterRuntime,
 		return
 	}
 	log.Printf("probe virtual router physical carrier stale, detach for reconnect: route=%s role=%s session_id=%s remote=%s failures=%d rx_idle_ms=%d reason=%s", strings.TrimSpace(rt.cfg.routeID), probeVirtualRouterRuntimeRole, strings.TrimSpace(token.sessionID), strings.TrimSpace(token.remoteAddr), failureCount, probeDurationMilliseconds(idleFor), strings.TrimSpace(reason))
-	item.detachCarrier(token)
+	item.detachCarrierWithReason(token, "stale_ping", errors.New(strings.TrimSpace(reason)))
 }
 
 func probeVirtualRouterNextHopInPath(path []string, localNodeID string) string {
