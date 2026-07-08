@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -2234,6 +2235,77 @@ func TestProbeVirtualRouterFakeIPExitUDPForwarderDoesNotBlockOnResolve(t *testin
 	case <-time.After(time.Second):
 		t.Fatalf("udp forwarder should start fake-ip resolve asynchronously")
 	}
+}
+
+func TestProbeVirtualRouterFakeIPExitPipeUsesHalfClose(t *testing.T) {
+	src := &probeVirtualRouterHalfCloseTestConn{readErr: io.EOF}
+	dst := &probeVirtualRouterHalfCloseTestConn{}
+
+	if err := pipeProbeVirtualRouterExitConnHalf(dst, src); err != nil {
+		t.Fatalf("pipe half returned error: %v", err)
+	}
+	if dst.closeWriteCalls != 1 {
+		t.Fatalf("dst CloseWrite calls=%d, want 1", dst.closeWriteCalls)
+	}
+	if src.closeReadCalls != 1 {
+		t.Fatalf("src CloseRead calls=%d, want 1", src.closeReadCalls)
+	}
+	if dst.closeCalls != 0 || src.closeCalls != 0 {
+		t.Fatalf("half-close should not hard close conns, dst=%d src=%d", dst.closeCalls, src.closeCalls)
+	}
+}
+
+type probeVirtualRouterHalfCloseTestConn struct {
+	readErr         error
+	closeCalls      int
+	closeReadCalls  int
+	closeWriteCalls int
+}
+
+func (c *probeVirtualRouterHalfCloseTestConn) Read([]byte) (int, error) {
+	if c.readErr != nil {
+		return 0, c.readErr
+	}
+	return 0, io.EOF
+}
+
+func (c *probeVirtualRouterHalfCloseTestConn) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+func (c *probeVirtualRouterHalfCloseTestConn) Close() error {
+	c.closeCalls++
+	return nil
+}
+
+func (c *probeVirtualRouterHalfCloseTestConn) LocalAddr() net.Addr {
+	return &net.TCPAddr{}
+}
+
+func (c *probeVirtualRouterHalfCloseTestConn) RemoteAddr() net.Addr {
+	return &net.TCPAddr{}
+}
+
+func (c *probeVirtualRouterHalfCloseTestConn) SetDeadline(time.Time) error {
+	return nil
+}
+
+func (c *probeVirtualRouterHalfCloseTestConn) SetReadDeadline(time.Time) error {
+	return nil
+}
+
+func (c *probeVirtualRouterHalfCloseTestConn) SetWriteDeadline(time.Time) error {
+	return nil
+}
+
+func (c *probeVirtualRouterHalfCloseTestConn) CloseRead() error {
+	c.closeReadCalls++
+	return nil
+}
+
+func (c *probeVirtualRouterHalfCloseTestConn) CloseWrite() error {
+	c.closeWriteCalls++
+	return nil
 }
 
 func TestProbeVirtualRouterFakeIPExitICMPEchoUsesRealTarget(t *testing.T) {

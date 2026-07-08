@@ -298,8 +298,7 @@ func relayProbeVirtualRouterExitTCP(inbound net.Conn, localAddress tcpip.Address
 		return
 	}
 	log.Printf("probe virtual router fake ip tcp exit open ok: targets=%s remote=%s", strings.Join(targetAddrs, ","), outbound.RemoteAddr())
-	go pipeProbeVirtualRouterExitConn(outbound, inbound)
-	go pipeProbeVirtualRouterExitConn(inbound, outbound)
+	go relayProbeVirtualRouterExitTCPConns(inbound, outbound)
 }
 
 func (n *probeVirtualRouterExitNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
@@ -653,10 +652,56 @@ func probeVirtualRouterExitIPCandidates(ips []string) []string {
 	return out
 }
 
-func pipeProbeVirtualRouterExitConn(dst net.Conn, src net.Conn) {
-	_, _ = io.Copy(dst, src)
-	_ = dst.Close()
-	_ = src.Close()
+func relayProbeVirtualRouterExitTCPConns(inbound net.Conn, outbound net.Conn) {
+	done := make(chan error, 2)
+	go func() {
+		done <- pipeProbeVirtualRouterExitConnHalf(outbound, inbound)
+	}()
+	go func() {
+		done <- pipeProbeVirtualRouterExitConnHalf(inbound, outbound)
+	}()
+	firstErr := <-done
+	if firstErr != nil && !isProbeVirtualRouterClosedLinkError(firstErr) {
+		_ = inbound.Close()
+		_ = outbound.Close()
+		return
+	}
+	secondErr := <-done
+	if secondErr != nil && !isProbeVirtualRouterClosedLinkError(secondErr) {
+		log.Printf("probe virtual router fake ip tcp relay closed with error: err=%v", secondErr)
+	}
+	_ = inbound.Close()
+	_ = outbound.Close()
+}
+
+func pipeProbeVirtualRouterExitConnHalf(dst net.Conn, src net.Conn) error {
+	_, err := io.Copy(dst, src)
+	if err != nil {
+		return err
+	}
+	shutdownProbeVirtualRouterExitConnWrite(dst)
+	shutdownProbeVirtualRouterExitConnRead(src)
+	return nil
+}
+
+func shutdownProbeVirtualRouterExitConnWrite(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	if closer, ok := conn.(interface{ CloseWrite() error }); ok {
+		_ = closer.CloseWrite()
+		return
+	}
+	_ = conn.Close()
+}
+
+func shutdownProbeVirtualRouterExitConnRead(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	if closer, ok := conn.(interface{ CloseRead() error }); ok {
+		_ = closer.CloseRead()
+	}
 }
 
 func relayProbeVirtualRouterExitUDPConns(inbound *gonet.UDPConn, outbound *net.UDPConn) {
