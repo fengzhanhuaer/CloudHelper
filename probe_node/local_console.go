@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1637,6 +1638,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/tun/uninstall", probeLocalTUNUninstallHandler)
 	mux.HandleFunc("/local/api/logs", probeLocalLogsHandler)
 	mux.HandleFunc("/local/api/virtual_router/settings", probeLocalVirtualRouterSettingsHandler)
+	mux.HandleFunc("/local/api/virtual_router/status", probeLocalVirtualRouterStatusHandler)
 	mux.HandleFunc("/local/api/virtual_router/packets", probeLocalVirtualRouterPacketsHandler)
 	mux.HandleFunc("/local/api/virtual_router/route_test", probeLocalVirtualRouterRouteTestHandler)
 	mux.HandleFunc("/local/api/virtual_router/route_test/curl", probeLocalVirtualRouterRouteTestCurlHandler)
@@ -2075,6 +2077,341 @@ func probeLocalVirtualRouterSettingsPayload(settings probeVirtualRouterLocalSett
 		"fake_ip_library":        library,
 		"fake_ip_count":          len(library.Items),
 	}
+}
+
+func probeLocalVirtualRouterStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusOK, probeLocalVirtualRouterStatusPayload())
+}
+
+func probeLocalVirtualRouterStatusPayload() map[string]any {
+	settings := loadProbeVirtualRouterLocalSettings()
+	library := currentProbeVirtualRouterFakeIPLibrary()
+	tunStats := probeVirtualRouterTUNDataPlaneStatsSnapshot()
+	runtimes := probeLocalVirtualRouterRuntimeStatusPayloads()
+	frameLinks := probeLocalVirtualRouterFrameLinkStatusPayloads()
+	rules := probeLocalVirtualRouterRuleRuntimeStatusPayloads()
+	recentPackets := snapshotProbeVirtualRouterRecentPackets()
+	recentSummary := probeLocalVirtualRouterRecentPacketSummaryPayload(recentPackets)
+
+	hasCarrier := false
+	txQueued := 0
+	rxQueued := 0
+	for _, item := range frameLinks {
+		if carrier, _ := item["carrier"].(bool); carrier {
+			hasCarrier = true
+		}
+		if value, ok := item["tx_queue"].(int); ok {
+			txQueued += value
+		}
+		if value, ok := item["rx_queue"].(int); ok {
+			rxQueued += value
+		}
+	}
+	reasons := make([]string, 0, 6)
+	if !settings.VirtualRouterEnabled && !settings.VirtualDNSEnabled {
+		reasons = append(reasons, "虚拟路由未开启")
+	}
+	if strings.TrimSpace(currentProbeVirtualRouterLocalNodeID()) == "" {
+		reasons = append(reasons, "本机节点 ID 为空")
+	}
+	if strings.TrimSpace(currentProbeVirtualRouterLocalIP()) == "" {
+		reasons = append(reasons, "本机虚拟 IP 为空")
+	}
+	if !tunStats.Running {
+		reasons = append(reasons, "TUN 数据面未运行")
+	}
+	if len(runtimes) == 0 {
+		reasons = append(reasons, "本机没有匹配的路由运行时")
+	}
+	if len(runtimes) > 0 && !hasCarrier {
+		reasons = append(reasons, "没有已连接的物理承载")
+	}
+	status := "ok"
+	if len(reasons) > 0 {
+		status = "warning"
+	}
+
+	return map[string]any{
+		"updated_at":             time.Now().UTC().Format(time.RFC3339Nano),
+		"status":                 status,
+		"reasons":                reasons,
+		"virtual_router_enabled": settings.VirtualRouterEnabled,
+		"virtual_dns_enabled":    settings.VirtualDNSEnabled,
+		"local_node_id":          currentProbeVirtualRouterLocalNodeID(),
+		"local_ip":               currentProbeVirtualRouterLocalIP(),
+		"fake_ip_cidr":           currentProbeVirtualRouterFakeIPCIDR(),
+		"fake_ip_count":          len(library.Items),
+		"tun": map[string]any{
+			"running":                tunStats.Running,
+			"rx_packets":             tunStats.RXPackets,
+			"rx_bytes":               tunStats.RXBytes,
+			"tx_packets":             tunStats.TXPackets,
+			"tx_bytes":               tunStats.TXBytes,
+			"inbound_queue_depth":    tunStats.InboundQueueDepth,
+			"inbound_queue_capacity": tunStats.InboundQueueCapacity,
+		},
+		"summary": map[string]any{
+			"runtime_count":      len(runtimes),
+			"rule_count":         len(rules),
+			"frame_link_count":   len(frameLinks),
+			"carrier_count":      probeLocalVirtualRouterCarrierCount(frameLinks),
+			"tx_queue_depth":     txQueued,
+			"rx_queue_depth":     rxQueued,
+			"recent_count":       recentSummary["count"],
+			"recent_error_count": recentSummary["error_count"],
+			"recent_drop_count":  recentSummary["drop_count"],
+		},
+		"rules":          rules,
+		"runtimes":       runtimes,
+		"frame_links":    frameLinks,
+		"recent_summary": recentSummary,
+	}
+}
+
+func probeLocalVirtualRouterRuntimeStatusPayloads() []map[string]any {
+	probeVirtualRouterRuntimeState.mu.RLock()
+	runtimes := make([]*probeVirtualRouterRuntime, 0, len(probeVirtualRouterRuntimeState.runtimes))
+	for _, rt := range probeVirtualRouterRuntimeState.runtimes {
+		if rt != nil {
+			runtimes = append(runtimes, rt)
+		}
+	}
+	probeVirtualRouterRuntimeState.mu.RUnlock()
+	sort.Slice(runtimes, func(i, j int) bool {
+		return strings.TrimSpace(runtimes[i].cfg.routeID) < strings.TrimSpace(runtimes[j].cfg.routeID)
+	})
+
+	out := make([]map[string]any, 0, len(runtimes))
+	for _, rt := range runtimes {
+		cfg := rt.cfg
+		item := map[string]any{
+			"route_id":       strings.TrimSpace(cfg.routeID),
+			"name":           strings.TrimSpace(cfg.name),
+			"local_node_id":  normalizeProbeRouteNodeID(cfg.localNodeID),
+			"peer_node_id":   normalizeProbeRouteNodeID(cfg.peerNodeID),
+			"from_node_id":   normalizeProbeRouteNodeID(cfg.fromNodeID),
+			"to_node_id":     normalizeProbeRouteNodeID(cfg.toNodeID),
+			"local_ip":       strings.TrimSpace(cfg.localIP),
+			"peer_ip":        strings.TrimSpace(cfg.peerIP),
+			"peer_host":      strings.TrimSpace(cfg.peerHost),
+			"peer_port":      cfg.peerPort,
+			"listen_host":    strings.TrimSpace(cfg.listenHost),
+			"listen_port":    cfg.listenPort,
+			"route_layer":    strings.TrimSpace(cfg.routeLayer),
+			"dialer":         cfg.dialer,
+			"bridge_role":    probeLocalVirtualRouterRuntimeBridgeRole(cfg),
+			"frame_link_key": probeVirtualRouterFrameLinkKey(rt, "", "", nil),
+		}
+		if stats := snapshotProbeVirtualRouterRuntimeStats(cfg.routeID); stats != nil {
+			item["stats"] = stats
+			item["last_error"] = firstNonEmpty(stats.LastPingError, stats.LastOpenError, stats.LastDeliveryError, stats.LastRemoteRTTError, stats.LastSpeedTestError)
+			item["last_packet_at"] = stats.LastPacketAt
+			item["last_frame_at"] = stats.LastFrameAt
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func probeLocalVirtualRouterRuntimeBridgeRole(cfg probeVirtualRouterRuntimeConfig) string {
+	if cfg.dialer {
+		return probeRouteBridgeRoleToNext
+	}
+	return probeRouteBridgeRoleToPrev
+}
+
+func probeLocalVirtualRouterFrameLinkStatusPayloads() []map[string]any {
+	probeVirtualRouterFrameLinkState.mu.Lock()
+	links := make([]*probeVirtualRouterFrameLink, 0, len(probeVirtualRouterFrameLinkState.links))
+	for _, link := range probeVirtualRouterFrameLinkState.links {
+		if link != nil {
+			links = append(links, link)
+		}
+	}
+	probeVirtualRouterFrameLinkState.mu.Unlock()
+	sort.Slice(links, func(i, j int) bool {
+		return strings.TrimSpace(links[i].key) < strings.TrimSpace(links[j].key)
+	})
+	out := make([]map[string]any, 0, len(links))
+	for _, link := range links {
+		out = append(out, probeLocalVirtualRouterFrameLinkStatusPayload(link))
+	}
+	return out
+}
+
+func probeLocalVirtualRouterFrameLinkStatusPayload(link *probeVirtualRouterFrameLink) map[string]any {
+	if link == nil {
+		return map[string]any{}
+	}
+	now := time.Now()
+	txDepth, txCap := 0, 0
+	if link.tx != nil {
+		txDepth = len(link.tx)
+		txCap = cap(link.tx)
+	}
+	rxDepth, rxCap := 0, 0
+	if link.rx != nil {
+		rxDepth = len(link.rx)
+		rxCap = cap(link.rx)
+	}
+	link.mu.Lock()
+	key := strings.TrimSpace(link.key)
+	requestPath := append([]string(nil), link.requestPath...)
+	openedAt := link.openedAt
+	lastUsed := link.lastUsed
+	token := link.carrier
+	rt := link.runtime
+	closed := isProbeVirtualRouterFrameLinkClosed(link)
+	link.mu.Unlock()
+
+	item := map[string]any{
+		"key":          key,
+		"route_id":     probeVirtualRouterRuntimeLogRouteID(rt),
+		"path":         cleanProbeVirtualRouterPath(requestPath),
+		"path_text":    strings.Join(cleanProbeVirtualRouterPath(requestPath), ">"),
+		"opened_at":    probeLocalVirtualRouterTimeString(openedAt),
+		"last_used_at": probeLocalVirtualRouterTimeString(lastUsed),
+		"last_used_ms": probeDurationMilliseconds(now.Sub(lastUsed)),
+		"closed":       closed,
+		"carrier":      false,
+		"tx_queue":     txDepth,
+		"tx_capacity":  txCap,
+		"rx_queue":     rxDepth,
+		"rx_capacity":  rxCap,
+	}
+	if rt != nil {
+		item["peer_node_id"] = normalizeProbeRouteNodeID(rt.cfg.peerNodeID)
+		item["bridge_role"] = probeLocalVirtualRouterRuntimeBridgeRole(rt.cfg)
+	}
+	if token == nil {
+		return item
+	}
+	token.mu.Lock()
+	sessionID := strings.TrimSpace(token.sessionID)
+	remoteAddr := strings.TrimSpace(token.remoteAddr)
+	connectedAt := token.connectedAt
+	lastReadAt := token.lastReadAt
+	lastWriteAt := token.lastWriteAt
+	carrierClosed := false
+	if token.done != nil {
+		select {
+		case <-token.done:
+			carrierClosed = true
+		default:
+		}
+	}
+	token.mu.Unlock()
+	item["carrier"] = !carrierClosed
+	item["carrier_closed"] = carrierClosed
+	item["carrier_session_id"] = sessionID
+	item["remote_addr"] = remoteAddr
+	item["connected_at"] = probeLocalVirtualRouterTimeString(connectedAt)
+	item["connected_ms"] = probeDurationMilliseconds(now.Sub(connectedAt))
+	item["rx_idle_ms"] = probeDurationMilliseconds(now.Sub(lastReadAt))
+	item["tx_idle_ms"] = probeDurationMilliseconds(now.Sub(lastWriteAt))
+	return item
+}
+
+func probeLocalVirtualRouterRuleRuntimeStatusPayloads() []map[string]any {
+	probeVirtualRouterRuleRuntimeState.mu.RLock()
+	items := make([]*probeVirtualRouterRuleRuntime, 0, len(probeVirtualRouterRuleRuntimeState.items))
+	for _, item := range probeVirtualRouterRuleRuntimeState.items {
+		if item != nil {
+			cp := *item
+			items = append(items, &cp)
+		}
+	}
+	probeVirtualRouterRuleRuntimeState.mu.RUnlock()
+	sort.Slice(items, func(i, j int) bool {
+		return strings.TrimSpace(items[i].RouteID) < strings.TrimSpace(items[j].RouteID)
+	})
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, map[string]any{
+			"rule_id":             strings.TrimSpace(item.RuleID),
+			"rule_name":           strings.TrimSpace(item.RuleName),
+			"route_id":            strings.TrimSpace(item.RouteID),
+			"from_node_id":        normalizeProbeRouteNodeID(item.FromNodeID),
+			"to_node_id":          normalizeProbeRouteNodeID(item.ToNodeID),
+			"local_node_id":       normalizeProbeRouteNodeID(item.LocalNodeID),
+			"peer_node_id":        normalizeProbeRouteNodeID(item.PeerNodeID),
+			"local_ip":            strings.TrimSpace(item.LocalIP),
+			"peer_ip":             strings.TrimSpace(item.PeerIP),
+			"local_service_port":  item.LocalServicePort,
+			"peer_service_domain": strings.TrimSpace(item.PeerServiceDomain),
+			"peer_service_port":   item.PeerServicePort,
+			"dialer":              item.Dialer,
+			"listen_host":         strings.TrimSpace(item.ListenHost),
+			"listen_port":         item.ListenPort,
+			"peer_host":           strings.TrimSpace(item.PeerHost),
+			"peer_port":           item.PeerPort,
+			"status":              strings.TrimSpace(item.Status),
+			"updated_at":          probeLocalVirtualRouterTimeString(item.UpdatedAt),
+		})
+	}
+	return out
+}
+
+func probeLocalVirtualRouterCarrierCount(items []map[string]any) int {
+	count := 0
+	for _, item := range items {
+		if carrier, _ := item["carrier"].(bool); carrier {
+			count++
+		}
+	}
+	return count
+}
+
+func probeLocalVirtualRouterRecentPacketSummaryPayload(items []probeVirtualRouterRecentPacket) map[string]any {
+	errorCount := 0
+	dropCount := 0
+	forwardCount := 0
+	deliverCount := 0
+	var latestError probeVirtualRouterRecentPacket
+	for _, item := range items {
+		action := strings.TrimSpace(item.Action)
+		if strings.TrimSpace(item.Error) != "" || strings.Contains(action, "error") {
+			errorCount++
+			if latestError.ID == 0 {
+				latestError = item
+			}
+		}
+		if action == "drop" {
+			dropCount++
+		}
+		if action == "forward" {
+			forwardCount++
+		}
+		if action == "deliver" || action == "fake_exit" || action == "local_icmp" {
+			deliverCount++
+		}
+	}
+	payload := map[string]any{
+		"count":         len(items),
+		"capacity":      probeVirtualRouterRecentPacketLimit,
+		"error_count":   errorCount,
+		"drop_count":    dropCount,
+		"forward_count": forwardCount,
+		"deliver_count": deliverCount,
+	}
+	if latestError.ID != 0 {
+		payload["latest_error"] = latestError
+	}
+	return payload
+}
+
+func probeLocalVirtualRouterTimeString(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 func probeLocalVirtualRouterPacketsHandler(w http.ResponseWriter, r *http.Request) {

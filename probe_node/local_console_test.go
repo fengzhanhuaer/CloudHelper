@@ -206,6 +206,118 @@ func TestProbeLocalVirtualRouterPacketsHandlerReturnsRecentPackets(t *testing.T)
 	}
 }
 
+func TestProbeLocalVirtualRouterStatusHandlerReturnsRuntimeDebugState(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	resetProbeVirtualRouterLocalSettingsForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(resetProbeVirtualRouterLocalSettingsForTest)
+	t.Cleanup(func() { closeProbeVirtualRouterFrameLinks("test cleanup") })
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	probeVirtualRouterState.mu.Lock()
+	probeVirtualRouterState.config = probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "16", IP: "198.18.0.16"},
+			{NodeID: "19", IP: "198.18.0.19"},
+		},
+		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{
+			Items: []probeVirtualRouterFakeIPEntry{{
+				Domain:     "api.example.com",
+				FakeIP:     "198.18.4.9",
+				Action:     "probe_exit",
+				ExitNodeID: "19",
+			}},
+		},
+	}
+	probeVirtualRouterState.localNodeID = "16"
+	probeVirtualRouterState.localIP = "198.18.0.16"
+	probeVirtualRouterState.nodeToIP = map[string]string{"16": "198.18.0.16", "19": "198.18.0.19"}
+	probeVirtualRouterState.ipToNode = map[string]string{"198.18.0.16": "16", "198.18.0.19": "19"}
+	probeVirtualRouterState.mu.Unlock()
+	if _, err := saveProbeVirtualRouterLocalSettings(probeVirtualRouterLocalSettings{VirtualRouterEnabled: true, VirtualDNSEnabled: true}); err != nil {
+		t.Fatalf("save virtual router settings failed: %v", err)
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	oldStats := probeVirtualRouterRuntimeStatsState.items
+	probeVirtualRouterRuntimeStatsState.items = make(map[string]*probeVirtualRouterRuntimeStats)
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	t.Cleanup(func() {
+		probeVirtualRouterRuntimeStatsState.mu.Lock()
+		probeVirtualRouterRuntimeStatsState.items = oldStats
+		probeVirtualRouterRuntimeStatsState.mu.Unlock()
+	})
+
+	rt := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{
+		routeID:     "vrouter-16-19",
+		name:        "edge",
+		localNodeID: "16",
+		peerNodeID:  "19",
+		fromNodeID:  "16",
+		toNodeID:    "19",
+		localIP:     "198.18.0.16",
+		peerIP:      "198.18.0.19",
+		peerHost:    "edge.example.com",
+		peerPort:    12040,
+		dialer:      true,
+	}}
+	left, right := net.Pipe()
+	defer right.Close()
+	defer left.Close()
+	link := newProbeVirtualRouterFrameLink(probeVirtualRouterFrameLinkKey(rt, "", "", nil), rt, nil, []string{"16", "19"})
+	link.AttachCarrier(left, "status-carrier", "198.51.100.19:12040")
+	probeVirtualRouterRuntimeState.mu.Lock()
+	oldRuntimes := probeVirtualRouterRuntimeState.runtimes
+	probeVirtualRouterRuntimeState.runtimes = map[string]*probeVirtualRouterRuntime{rt.cfg.routeID: rt}
+	probeVirtualRouterRuntimeState.mu.Unlock()
+	probeVirtualRouterFrameLinkState.mu.Lock()
+	oldLinks := probeVirtualRouterFrameLinkState.links
+	probeVirtualRouterFrameLinkState.links = map[string]*probeVirtualRouterFrameLink{link.key: link}
+	probeVirtualRouterFrameLinkState.mu.Unlock()
+	t.Cleanup(func() {
+		probeVirtualRouterRuntimeState.mu.Lock()
+		probeVirtualRouterRuntimeState.runtimes = oldRuntimes
+		probeVirtualRouterRuntimeState.mu.Unlock()
+		probeVirtualRouterFrameLinkState.mu.Lock()
+		probeVirtualRouterFrameLinkState.links = oldLinks
+		probeVirtualRouterFrameLinkState.mu.Unlock()
+	})
+	recordProbeVirtualRouterRuntimeFrameSent(rt, 128)
+	recordProbeVirtualRouterRuntimePacketForwarded(rt, 128)
+	packet := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.16", "198.18.4.9", 49152, 443)
+	recordProbeVirtualRouterRecentPacket("tun_rx", "forward", rt, packet, []string{"16", "19"}, false, nil)
+
+	resp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/virtual_router/status", nil, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	if payload["local_node_id"] != "16" || payload["local_ip"] != "198.18.0.16" {
+		t.Fatalf("unexpected status identity: %+v", payload)
+	}
+	summary, ok := payload["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("summary=%T %v", payload["summary"], payload["summary"])
+	}
+	if summary["runtime_count"] != float64(1) || summary["carrier_count"] != float64(1) {
+		t.Fatalf("unexpected summary: %+v", summary)
+	}
+	runtimes, ok := payload["runtimes"].([]any)
+	if !ok || len(runtimes) != 1 {
+		t.Fatalf("runtimes=%T %v", payload["runtimes"], payload["runtimes"])
+	}
+	links, ok := payload["frame_links"].([]any)
+	if !ok || len(links) != 1 {
+		t.Fatalf("frame_links=%T %v", payload["frame_links"], payload["frame_links"])
+	}
+	firstLink, ok := links[0].(map[string]any)
+	if !ok || firstLink["carrier"] != true || firstLink["carrier_session_id"] != "status-carrier" {
+		t.Fatalf("unexpected frame link: %+v", firstLink)
+	}
+}
+
 func TestProbeLocalVirtualRouterRouteTestHandlerReturnsExitReachability(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)

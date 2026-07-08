@@ -186,6 +186,88 @@
       flex-wrap: wrap;
     }
     .packet-summary { color: var(--muted); font-size: 12px; }
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    .section-head h2 { margin-bottom: 0; }
+    .status-cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 10px;
+      margin: 10px 0 12px;
+    }
+    .status-card {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(13, 17, 23, 0.38);
+      padding: 10px;
+      min-width: 0;
+    }
+    .status-card span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+    .status-card strong {
+      display: block;
+      color: #fff;
+      font-size: 18px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 20px;
+      padding: 1px 7px;
+      border-radius: 999px;
+      border: 1px solid rgba(139, 148, 158, 0.34);
+      color: #d0d7de;
+      background: rgba(139, 148, 158, 0.16);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .status-pill.ok {
+      color: var(--ok);
+      border-color: rgba(126, 231, 135, 0.34);
+      background: rgba(46, 160, 67, 0.14);
+    }
+    .status-pill.warn {
+      color: #f2cc60;
+      border-color: rgba(242, 204, 96, 0.34);
+      background: rgba(187, 128, 9, 0.14);
+    }
+    .status-pill.bad {
+      color: var(--danger);
+      border-color: rgba(255, 147, 141, 0.34);
+      background: rgba(248, 81, 73, 0.14);
+    }
+    .status-reasons {
+      color: #f2cc60;
+      font-size: 13px;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+    .queue-cell { min-width: 110px; }
+    .queue-bar {
+      height: 4px;
+      margin-top: 4px;
+      border-radius: 999px;
+      background: rgba(139, 148, 158, 0.22);
+      overflow: hidden;
+    }
+    .queue-bar span {
+      display: block;
+      height: 100%;
+      width: 0;
+      background: var(--accent);
+    }
     @media (max-width: 860px) {
       body { padding: 16px; }
       .topbar { flex-direction: column; }
@@ -210,7 +292,8 @@
     </div>
 
     <div class="subtabs" role="tablist">
-      <button class="subtab active" data-tab="status" type="button" role="tab" aria-selected="true">状态</button>
+      <button class="subtab active" data-tab="status" type="button" role="tab" aria-selected="true">路由设置</button>
+      <button class="subtab" data-tab="routeStatus" type="button" role="tab" aria-selected="false">路由状态</button>
       <button class="subtab" data-tab="packets" type="button" role="tab" aria-selected="false">最近报文</button>
       <button class="subtab" data-tab="routeTest" type="button" role="tab" aria-selected="false">路由测试</button>
     </div>
@@ -284,6 +367,104 @@
         </div>
       </section>
     </div>
+    </div>
+
+    <div id="routeStatusTab" class="tab-panel">
+      <section class="card">
+        <div class="section-head">
+          <h2>路由状态</h2>
+          <button id="routeStatusRefreshBtn" class="secondary" type="button">刷新</button>
+        </div>
+        <div class="status-cards">
+          <div class="status-card"><span>整体</span><strong id="routeStatusOverall">-</strong></div>
+          <div class="status-card"><span>运行时</span><strong id="routeStatusRuntimeCount">0</strong></div>
+          <div class="status-card"><span>物理承载</span><strong id="routeStatusCarrierCount">0</strong></div>
+          <div class="status-card"><span>队列</span><strong id="routeStatusQueueDepth">0 / 0</strong></div>
+          <div class="status-card"><span>TUN</span><strong id="routeStatusTun">-</strong></div>
+          <div class="status-card"><span>最近异常</span><strong id="routeStatusRecentErrors">0</strong></div>
+        </div>
+        <div class="kv">
+          <div>更新时间</div><div id="routeStatusUpdatedAt">-</div>
+          <div>本机节点</div><div id="routeStatusLocalNode">-</div>
+          <div>本机虚拟 IP</div><div id="routeStatusLocalIP">-</div>
+          <div>Fake IP</div><div id="routeStatusFakeIP">-</div>
+          <div>观察结论</div><div id="routeStatusReasons" class="status-reasons">-</div>
+        </div>
+      </section>
+
+      <section class="card" style="margin-top:14px;">
+        <h2>规则运行时</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>规则</th>
+                <th>Route</th>
+                <th>方向</th>
+                <th>本机</th>
+                <th>对端</th>
+                <th>监听 / 连接</th>
+                <th>状态</th>
+                <th>更新时间</th>
+              </tr>
+            </thead>
+            <tbody id="routeStatusRuleRows">
+              <tr><td colspan="8" class="hint">-</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card" style="margin-top:14px;">
+        <h2>链路运行时</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Route</th>
+                <th>对端</th>
+                <th>角色</th>
+                <th>帧</th>
+                <th>包</th>
+                <th>Ping</th>
+                <th>最近错误</th>
+                <th>最近活动</th>
+              </tr>
+            </thead>
+            <tbody id="routeStatusRuntimeRows">
+              <tr><td colspan="8" class="hint">-</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card" style="margin-top:14px;">
+        <h2>物理承载 / 队列</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Link</th>
+                <th>Route</th>
+                <th>承载</th>
+                <th>远端</th>
+                <th>连接时长</th>
+                <th>空闲</th>
+                <th>TX</th>
+                <th>RX</th>
+              </tr>
+            </thead>
+            <tbody id="routeStatusLinkRows">
+              <tr><td colspan="8" class="hint">-</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card" style="margin-top:14px;">
+        <h2>最近异常</h2>
+        <div id="routeStatusLatestError" class="hint">-</div>
+      </section>
     </div>
 
     <div id="packetsTab" class="tab-panel">
@@ -377,7 +558,7 @@
     const messageEl = document.getElementById('message');
     const routerEnabledEl = document.getElementById('virtualRouterEnabled');
     const tunEgressSelectEl = document.getElementById('tunEgressSelect');
-    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260707-route-curl';
+    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260708-route-status';
     const REQUEST_TIMEOUT_DEFAULT_MS = 20000;
     const REQUEST_TIMEOUT_TUN_INSTALL_MS = 90000;
     let tunPollingTimer = null;
@@ -386,6 +567,7 @@
     let packetAutoRefreshPaused = false;
     let packetFilterText = '';
     let packetSnapshot = { items: [] };
+    let routeStatusSnapshot = {};
     let activeTab = 'status';
 
     function setMessage(text, type) {
@@ -397,6 +579,12 @@
       const el = document.getElementById(id);
       if (!el) return;
       el.textContent = (value === undefined || value === null || value === '') ? '-' : String(value);
+    }
+
+    function setHTML(id, value) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.innerHTML = value || '-';
     }
 
     function escapeHTML(value) {
@@ -533,6 +721,180 @@
       document.getElementById('tunEgressApplyBtn').disabled = !supported || candidates.length === 0;
       document.getElementById('tunEgressAutoBtn').disabled = !supported;
       document.getElementById('tunEgressRefreshBtn').disabled = !supported;
+    }
+
+    function formatNumber(value) {
+      const n = Number(value || 0);
+      if (!Number.isFinite(n)) return '0';
+      return n.toLocaleString();
+    }
+
+    function formatBytes(value) {
+      const n = Number(value || 0);
+      if (!Number.isFinite(n) || n <= 0) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB'];
+      let size = n;
+      let idx = 0;
+      while (size >= 1024 && idx < units.length - 1) {
+        size /= 1024;
+        idx++;
+      }
+      return (idx === 0 ? String(size) : size.toFixed(size >= 10 ? 1 : 2)) + ' ' + units[idx];
+    }
+
+    function formatDurationMS(value) {
+      const ms = Number(value || 0);
+      if (!Number.isFinite(ms) || ms <= 0) return '-';
+      if (ms < 1000) return Math.round(ms) + ' ms';
+      const seconds = ms / 1000;
+      if (seconds < 60) return seconds.toFixed(seconds >= 10 ? 1 : 2) + ' s';
+      const minutes = seconds / 60;
+      if (minutes < 60) return minutes.toFixed(minutes >= 10 ? 1 : 2) + ' min';
+      return (minutes / 60).toFixed(1) + ' h';
+    }
+
+    function formatDateTime(value) {
+      const text = String(value || '').trim();
+      if (!text) return '-';
+      const date = new Date(text);
+      if (Number.isNaN(date.getTime())) return text;
+      return date.toLocaleString([], { hour12: false });
+    }
+
+    function statusPillHTML(kind, text) {
+      const cleanKind = String(kind || '').trim();
+      const cls = cleanKind === 'ok' ? 'ok' : (cleanKind === 'bad' || cleanKind === 'error' ? 'bad' : (cleanKind === 'warn' || cleanKind === 'warning' ? 'warn' : ''));
+      return `<span class="status-pill ${cls}">${escapeHTML(text || '-')}</span>`;
+    }
+
+    function queueCellHTML(depth, capacity) {
+      const d = Number(depth || 0);
+      const c = Number(capacity || 0);
+      const pct = c > 0 ? Math.max(0, Math.min(100, (d / c) * 100)) : 0;
+      return `<div class="queue-cell"><span class="mono">${escapeHTML(formatNumber(d) + ' / ' + formatNumber(c))}</span><div class="queue-bar"><span style="width:${pct.toFixed(1)}%"></span></div></div>`;
+    }
+
+    function renderRouteStatus(data) {
+      const payload = data || {};
+      const summary = payload.summary && typeof payload.summary === 'object' ? payload.summary : {};
+      const tun = payload.tun && typeof payload.tun === 'object' ? payload.tun : {};
+      const reasons = Array.isArray(payload.reasons) ? payload.reasons : [];
+      const status = String(payload.status || '').trim();
+      setHTML('routeStatusOverall', statusPillHTML(status === 'ok' ? 'ok' : 'warn', status === 'ok' ? '可传输' : '需观察'));
+      setText('routeStatusRuntimeCount', formatNumber(summary.runtime_count));
+      setText('routeStatusCarrierCount', formatNumber(summary.carrier_count) + ' / ' + formatNumber(summary.frame_link_count));
+      setText('routeStatusQueueDepth', formatNumber(summary.tx_queue_depth) + ' / ' + formatNumber(summary.rx_queue_depth));
+      setText('routeStatusTun', (tun.running ? '运行中' : '未运行') + ' / Q ' + formatNumber(tun.inbound_queue_depth) + '/' + formatNumber(tun.inbound_queue_capacity));
+      setText('routeStatusRecentErrors', formatNumber(summary.recent_error_count) + ' / drop ' + formatNumber(summary.recent_drop_count));
+      setText('routeStatusUpdatedAt', formatDateTime(payload.updated_at));
+      setText('routeStatusLocalNode', payload.local_node_id);
+      setText('routeStatusLocalIP', payload.local_ip);
+      setText('routeStatusFakeIP', [payload.fake_ip_cidr, '数量 ' + formatNumber(payload.fake_ip_count)].filter(Boolean).join(' / '));
+      setText('routeStatusReasons', reasons.length ? reasons.join('；') : '当前观察项未发现阻断');
+      renderRouteStatusRules(Array.isArray(payload.rules) ? payload.rules : []);
+      renderRouteStatusRuntimes(Array.isArray(payload.runtimes) ? payload.runtimes : []);
+      renderRouteStatusLinks(Array.isArray(payload.frame_links) ? payload.frame_links : []);
+      renderRouteStatusLatestError(payload.recent_summary || {});
+    }
+
+    function renderRouteStatusRules(items) {
+      const rows = document.getElementById('routeStatusRuleRows');
+      if (!rows) return;
+      if (!items.length) {
+        rows.innerHTML = '<tr><td colspan="8" class="hint">-</td></tr>';
+        return;
+      }
+      rows.innerHTML = items.map((item) => {
+        const connect = item.dialer
+          ? packetEndpoint(item.peer_host, item.peer_port)
+          : packetEndpoint(item.listen_host || '0.0.0.0', item.listen_port);
+        const role = item.dialer ? '拨出' : '监听';
+        return `<tr>
+          <td>${escapeHTML(item.rule_name || item.rule_id || '-')}</td>
+          <td class="mono">${escapeHTML(item.route_id || '-')}</td>
+          <td>${escapeHTML(role)}</td>
+          <td class="mono">${escapeHTML([item.local_node_id, item.local_ip].filter(Boolean).join(' / ') || '-')}</td>
+          <td class="mono">${escapeHTML([item.peer_node_id, item.peer_ip].filter(Boolean).join(' / ') || '-')}</td>
+          <td class="mono">${escapeHTML(connect)}</td>
+          <td>${statusPillHTML(item.status === 'running' ? 'ok' : 'warn', item.status || '-')}</td>
+          <td class="mono">${escapeHTML(formatDateTime(item.updated_at))}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function renderRouteStatusRuntimes(items) {
+      const rows = document.getElementById('routeStatusRuntimeRows');
+      if (!rows) return;
+      if (!items.length) {
+        rows.innerHTML = '<tr><td colspan="8" class="hint">-</td></tr>';
+        return;
+      }
+      rows.innerHTML = items.map((item) => {
+        const stats = item.stats && typeof item.stats === 'object' ? item.stats : {};
+        const frames = 'TX ' + formatNumber(stats.frames_sent) + ' / RX ' + formatNumber(stats.frames_received);
+        const packets = 'FWD ' + formatNumber(stats.packets_forwarded) + ' / RX ' + formatNumber(stats.packets_received) + ' / OUT ' + formatNumber(stats.packets_delivered);
+        const pingParts = [];
+        if (stats.last_ping_latency_ms) pingParts.push(formatDurationMS(stats.last_ping_latency_ms));
+        if (stats.last_ping_failure_count) pingParts.push('失败 ' + stats.last_ping_failure_count);
+        if (stats.last_remote_rtt_ms) pingParts.push('RTT ' + formatDurationMS(stats.last_remote_rtt_ms));
+        const lastActivity = [stats.last_packet_at, stats.last_frame_at].filter(Boolean).map(formatDateTime).join(' / ') || '-';
+        return `<tr${item.last_error ? ' class="packet-error"' : ''}>
+          <td class="mono">${escapeHTML(item.route_id || '-')}</td>
+          <td class="mono">${escapeHTML([item.peer_node_id, item.peer_ip].filter(Boolean).join(' / ') || '-')}</td>
+          <td>${escapeHTML(item.dialer ? '拨出' : '监听')}</td>
+          <td class="mono">${escapeHTML(frames)}</td>
+          <td class="mono">${escapeHTML(packets)}</td>
+          <td class="mono">${escapeHTML(pingParts.join(' / ') || '-')}</td>
+          <td>${escapeHTML(item.last_error || '-')}</td>
+          <td class="mono">${escapeHTML(lastActivity)}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function renderRouteStatusLinks(items) {
+      const rows = document.getElementById('routeStatusLinkRows');
+      if (!rows) return;
+      if (!items.length) {
+        rows.innerHTML = '<tr><td colspan="8" class="hint">-</td></tr>';
+        return;
+      }
+      rows.innerHTML = items.map((item) => {
+        const carrierText = item.carrier ? (item.carrier_session_id || 'connected') : (item.closed ? 'closed' : 'none');
+        const carrierKind = item.carrier ? 'ok' : 'warn';
+        const idle = 'RX ' + formatDurationMS(item.rx_idle_ms) + ' / TX ' + formatDurationMS(item.tx_idle_ms);
+        return `<tr${item.carrier ? '' : ' class="packet-error"'}>
+          <td class="mono">${escapeHTML(item.key || '-')}</td>
+          <td class="mono">${escapeHTML(item.route_id || '-')}</td>
+          <td>${statusPillHTML(carrierKind, carrierText)}</td>
+          <td class="mono">${escapeHTML(item.remote_addr || '-')}</td>
+          <td class="mono">${escapeHTML(formatDurationMS(item.connected_ms))}</td>
+          <td class="mono">${escapeHTML(idle)}</td>
+          <td>${queueCellHTML(item.tx_queue, item.tx_capacity)}</td>
+          <td>${queueCellHTML(item.rx_queue, item.rx_capacity)}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function renderRouteStatusLatestError(summary) {
+      const target = document.getElementById('routeStatusLatestError');
+      if (!target) return;
+      const item = summary && summary.latest_error && typeof summary.latest_error === 'object' ? summary.latest_error : null;
+      if (!item) {
+        target.textContent = '最近报文中没有错误项';
+        return;
+      }
+      const parts = [
+        '#' + item.id,
+        packetTime(item.captured_at),
+        packetSourceLabel(item.source),
+        packetActionLabel(item.action),
+        item.protocol,
+        packetEndpoint(item.source_ip, item.source_port) + ' -> ' + packetEndpoint(item.destination_ip, item.destination_port),
+        item.path_text,
+        item.fake_ip_domain ? 'Fake IP ' + item.fake_ip_domain : '',
+        item.error,
+      ].filter(Boolean);
+      target.textContent = parts.join(' / ');
     }
 
     function packetActionLabel(action) {
@@ -775,6 +1137,13 @@
       return data || {};
     }
 
+    async function loadRouteStatus() {
+      const data = await requestJSON('/local/api/virtual_router/status', { method: 'GET' });
+      routeStatusSnapshot = data || {};
+      renderRouteStatus(routeStatusSnapshot);
+      return routeStatusSnapshot;
+    }
+
     async function runRouteTest(useCurl) {
       const target = String(document.getElementById('routeTestTarget').value || '').trim();
       const port = Number(document.getElementById('routeTestPort').value || 443);
@@ -808,6 +1177,7 @@
       await loadSettings();
       await loadTunStatus();
       await loadTunEgress();
+      if (activeTab === 'routeStatus') await loadRouteStatus();
       if (activeTab === 'packets') await loadPackets();
     }
 
@@ -903,20 +1273,25 @@
       if (tunPollingTimer) return;
       tunPollingTimer = setInterval(() => {
         loadTunStatus().catch(() => {});
+        if (activeTab === 'routeStatus') loadRouteStatus().catch(() => {});
         if (activeTab === 'packets' && !packetAutoRefreshPaused) loadPackets().catch(() => {});
       }, 3000);
     }
 
     function switchTab(tab) {
-      activeTab = tab === 'packets' || tab === 'routeTest' ? tab : 'status';
+      activeTab = tab === 'routeStatus' || tab === 'packets' || tab === 'routeTest' ? tab : 'status';
       document.querySelectorAll('.subtab').forEach((btn) => {
         const active = btn.dataset.tab === activeTab;
         btn.classList.toggle('active', active);
         btn.setAttribute('aria-selected', active ? 'true' : 'false');
       });
       document.getElementById('statusTab').classList.toggle('active', activeTab === 'status');
+      document.getElementById('routeStatusTab').classList.toggle('active', activeTab === 'routeStatus');
       document.getElementById('packetsTab').classList.toggle('active', activeTab === 'packets');
       document.getElementById('routeTestTab').classList.toggle('active', activeTab === 'routeTest');
+      if (activeTab === 'routeStatus') {
+        loadRouteStatus().catch((err) => setMessage('读取路由状态失败：' + err.message, 'error'));
+      }
       if (activeTab === 'packets') {
         loadPackets().catch((err) => setMessage('读取最近报文失败：' + err.message, 'error'));
       }
@@ -938,6 +1313,9 @@
     document.getElementById('tunEgressAutoBtn').addEventListener('click', autoTunEgress);
     document.getElementById('tunEgressRefreshBtn').addEventListener('click', () => {
       loadTunEgress().then(() => setMessage('出口候选已刷新', 'success')).catch((err) => setMessage('刷新出口候选失败：' + err.message, 'error'));
+    });
+    document.getElementById('routeStatusRefreshBtn').addEventListener('click', () => {
+      loadRouteStatus().then(() => setMessage('路由状态已刷新', 'success')).catch((err) => setMessage('读取路由状态失败：' + err.message, 'error'));
     });
     document.getElementById('packetRefreshBtn').addEventListener('click', () => {
       loadPackets().then(() => setMessage('最近报文已刷新', 'success')).catch((err) => setMessage('读取最近报文失败：' + err.message, 'error'));

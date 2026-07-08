@@ -16,7 +16,14 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const probeLocalLinuxTUNPacketBufferSize = 65535
+const (
+	probeLocalLinuxTUNPacketBufferSize   = 65535
+	probeLocalLinuxTUNInboundQueueFrames = 2048
+	probeLocalLinuxTUNInboundWorkerCount = 4
+	probeLocalLinuxTUNWriteTimeout       = 500 * time.Millisecond
+	probeLocalLinuxTUNWritePollTimeoutMS = 50
+	probeLocalLinuxTUNCloseWaitTimeout   = 2 * time.Second
+)
 
 var probeLocalLinuxTUNDataPlaneState = struct {
 	mu     sync.Mutex
@@ -33,11 +40,14 @@ type probeVirtualRouterLinuxTUNDataPlaneRunner struct {
 	writeMu sync.Mutex
 	closed  atomic.Bool
 
+	inboundCh chan []byte
+	stopCh    chan struct{}
 	rxPackets atomic.Uint64
 	rxBytes   atomic.Uint64
 	txPackets atomic.Uint64
 	txBytes   atomic.Uint64
 	doneCh    chan struct{}
+	closeOnce sync.Once
 }
 
 func startProbeVirtualRouterTUNDataPlane() error {
@@ -140,9 +150,14 @@ func newProbeLocalLinuxTUNDataPlaneRunner(dev string) (*probeVirtualRouterLinuxT
 		return nil, err
 	}
 	runner := &probeVirtualRouterLinuxTUNDataPlaneRunner{
-		file:   file,
-		dev:    dev,
-		doneCh: make(chan struct{}),
+		file:      file,
+		dev:       dev,
+		inboundCh: make(chan []byte, probeLocalLinuxTUNInboundQueueFrames),
+		stopCh:    make(chan struct{}),
+		doneCh:    make(chan struct{}),
+	}
+	for i := 0; i < probeLocalLinuxTUNInboundWorkerCount; i++ {
+		go runner.inboundWorker()
 	}
 	go runner.readLoop()
 	return runner, nil
@@ -225,7 +240,38 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) readLoop() {
 		packet := append([]byte(nil), buf[:n]...)
 		r.rxPackets.Add(1)
 		r.rxBytes.Add(uint64(n))
-		handleProbeVirtualRouterTUNInboundPacket(packet)
+		r.handleInboundPayload(packet)
+	}
+}
+
+func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) handleInboundPayload(payload []byte) {
+	if len(payload) == 0 {
+		return
+	}
+	packet := append([]byte(nil), payload...)
+	if r.inboundCh == nil {
+		go handleProbeVirtualRouterTUNInboundPacket(packet)
+		return
+	}
+	select {
+	case r.inboundCh <- packet:
+	case <-r.stopCh:
+	default:
+		logProbeWarnf("probe local linux tun inbound packet drop: dev=%s reason=handler_queue_full depth=%d capacity=%d", r.dev, len(r.inboundCh), cap(r.inboundCh))
+	}
+}
+
+func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) inboundWorker() {
+	for {
+		select {
+		case <-r.stopCh:
+			return
+		case packet := <-r.inboundCh:
+			if len(packet) == 0 {
+				continue
+			}
+			handleProbeVirtualRouterTUNInboundPacket(packet)
+		}
 	}
 }
 
@@ -233,24 +279,39 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) Close() error {
 	if r == nil {
 		return nil
 	}
-	if r.closed.CompareAndSwap(false, true) {
-		err := r.file.Close()
-		<-r.doneCh
-		return err
-	}
-	return nil
+	var closeErr error
+	r.closeOnce.Do(func() {
+		r.closed.Store(true)
+		if r.stopCh != nil {
+			close(r.stopCh)
+		}
+		closeErr = r.file.Close()
+		select {
+		case <-r.doneCh:
+		case <-time.After(probeLocalLinuxTUNCloseWaitTimeout):
+			logProbeWarnf("probe local linux tun data plane close wait timeout: dev=%s", r.dev)
+		}
+	})
+	return closeErr
 }
 
 func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) Stats() probeVirtualRouterTUNDataPlaneStats {
 	if r == nil {
 		return probeVirtualRouterTUNDataPlaneStats{}
 	}
+	inboundDepth, inboundCapacity := 0, 0
+	if r.inboundCh != nil {
+		inboundDepth = len(r.inboundCh)
+		inboundCapacity = cap(r.inboundCh)
+	}
 	return probeVirtualRouterTUNDataPlaneStats{
-		Running:   !r.closed.Load(),
-		RXPackets: r.rxPackets.Load(),
-		RXBytes:   r.rxBytes.Load(),
-		TXPackets: r.txPackets.Load(),
-		TXBytes:   r.txBytes.Load(),
+		Running:              !r.closed.Load(),
+		RXPackets:            r.rxPackets.Load(),
+		RXBytes:              r.rxBytes.Load(),
+		TXPackets:            r.txPackets.Load(),
+		TXBytes:              r.txBytes.Load(),
+		InboundQueueDepth:    inboundDepth,
+		InboundQueueCapacity: inboundCapacity,
 	}
 }
 
@@ -266,12 +327,19 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) WritePacket(packet []byte) e
 	originalLen := len(packet)
 	fd := int(r.file.Fd())
 	pollFDs := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLOUT}}
+	deadline := time.Now().Add(probeLocalLinuxTUNWriteTimeout)
 	for len(packet) > 0 {
+		if r.closed.Load() {
+			return io.ErrClosedPipe
+		}
+		if probeLocalLinuxTUNWriteTimeout > 0 && time.Now().After(deadline) {
+			return os.ErrDeadlineExceeded
+		}
 		n, err := unix.Write(fd, packet)
 		if err != nil {
 			if errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EINTR) {
 				pollFDs[0].Revents = 0
-				_, _ = unix.Poll(pollFDs, 250)
+				_, _ = unix.Poll(pollFDs, probeLocalLinuxTUNWritePollTimeoutMS)
 				continue
 			}
 			return err

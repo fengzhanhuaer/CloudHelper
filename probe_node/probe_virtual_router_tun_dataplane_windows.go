@@ -436,12 +436,19 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) Close() error {
 }
 
 func (r *probeVirtualRouterTUNDataPlaneRunner) Stats() probeVirtualRouterTUNDataPlaneStats {
+	inboundDepth, inboundCapacity := 0, 0
+	if r.inboundCh != nil {
+		inboundDepth = len(r.inboundCh)
+		inboundCapacity = cap(r.inboundCh)
+	}
 	return probeVirtualRouterTUNDataPlaneStats{
-		Running:   r.running.Load(),
-		RXPackets: r.rxPackets.Load(),
-		RXBytes:   r.rxBytes.Load(),
-		TXPackets: r.txPackets.Load(),
-		TXBytes:   r.txBytes.Load(),
+		Running:              r.running.Load(),
+		RXPackets:            r.rxPackets.Load(),
+		RXBytes:              r.rxBytes.Load(),
+		TXPackets:            r.txPackets.Load(),
+		TXBytes:              r.txBytes.Load(),
+		InboundQueueDepth:    inboundDepth,
+		InboundQueueCapacity: inboundCapacity,
 	}
 }
 
