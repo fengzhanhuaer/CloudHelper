@@ -3172,6 +3172,20 @@ func TestProbeVirtualRouterFrameLinkTXQueueFullReturnsImmediately(t *testing.T) 
 	}
 }
 
+func TestProbeVirtualRouterFrameRXDispatchShardKeepsTCPFlowTogether(t *testing.T) {
+	forward := probeVirtualRouterFrame{
+		MainType: probeVirtualRouterFrameMainTypeIP,
+		Data:     buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.7", "198.18.4.52", 57113, 443),
+	}
+	reverse := probeVirtualRouterFrame{
+		MainType: probeVirtualRouterFrameMainTypeIP,
+		Data:     buildProbeVirtualRouterTestTCPPacket(t, "198.18.4.52", "198.18.0.7", 443, 57113),
+	}
+	if got, want := probeVirtualRouterFrameRXDispatchShard(reverse, probeVirtualRouterFrameLinkRXDispatchShards), probeVirtualRouterFrameRXDispatchShard(forward, probeVirtualRouterFrameLinkRXDispatchShards); got != want {
+		t.Fatalf("bidirectional tcp flow should use same rx dispatch shard, reverse=%d forward=%d", got, want)
+	}
+}
+
 func TestProbeVirtualRouterFrameLinkAttachClearsBufferedFrames(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
@@ -3186,12 +3200,13 @@ func TestProbeVirtualRouterFrameLinkAttachClearsBufferedFrames(t *testing.T) {
 	}
 	link.tx <- frame
 	link.rx <- frame
+	link.rxDispatchShards[0] <- frame
 
 	if token := link.AttachCarrier(left, "carrier-attach-clear", "pipe"); token == nil {
 		t.Fatalf("carrier should attach")
 	}
-	if len(link.tx) != 0 || len(link.rx) != 0 {
-		t.Fatalf("attach should clear buffered frames, tx=%d rx=%d", len(link.tx), len(link.rx))
+	if len(link.tx) != 0 || len(link.rx) != 0 || len(link.rxDispatchShards[0]) != 0 {
+		t.Fatalf("attach should clear buffered frames, tx=%d rx=%d rx_dispatch=%d", len(link.tx), len(link.rx), len(link.rxDispatchShards[0]))
 	}
 }
 
@@ -3213,11 +3228,12 @@ func TestProbeVirtualRouterFrameLinkDetachClearsBufferedFrames(t *testing.T) {
 	}
 	link.tx <- frame
 	link.rx <- frame
+	link.rxDispatchShards[0] <- frame
 
 	link.detachCarrier(token)
 
-	if len(link.tx) != 0 || len(link.rx) != 0 {
-		t.Fatalf("detach should clear buffered frames, tx=%d rx=%d", len(link.tx), len(link.rx))
+	if len(link.tx) != 0 || len(link.rx) != 0 || len(link.rxDispatchShards[0]) != 0 {
+		t.Fatalf("detach should clear buffered frames, tx=%d rx=%d rx_dispatch=%d", len(link.tx), len(link.rx), len(link.rxDispatchShards[0]))
 	}
 }
 

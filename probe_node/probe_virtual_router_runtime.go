@@ -23,11 +23,13 @@ import (
 )
 
 const (
-	probeVirtualRouterRuntimeRouteIDPrefix    = "vrouter-"
-	probeVirtualRouterRuntimeRouteLayer       = "websocket"
-	probeVirtualRouterRuntimeRole             = "virtual_router"
-	probeVirtualRouterFrameLinkTXBufferFrames = 1024
-	probeVirtualRouterFrameLinkRXBufferFrames = 1024
+	probeVirtualRouterRuntimeRouteIDPrefix                 = "vrouter-"
+	probeVirtualRouterRuntimeRouteLayer                    = "websocket"
+	probeVirtualRouterRuntimeRole                          = "virtual_router"
+	probeVirtualRouterFrameLinkTXBufferFrames              = 1024
+	probeVirtualRouterFrameLinkRXBufferFrames              = 1024
+	probeVirtualRouterFrameLinkRXDispatchShards            = 8
+	probeVirtualRouterFrameLinkRXDispatchShardBufferFrames = probeVirtualRouterFrameLinkRXBufferFrames / probeVirtualRouterFrameLinkRXDispatchShards
 )
 
 type probeVirtualRouterRuntimeConfig struct {
@@ -73,19 +75,20 @@ type probeVirtualRouterRelayServer struct {
 }
 
 type probeVirtualRouterFrameLink struct {
-	key           string
-	runtime       *probeVirtualRouterRuntime
-	carrier       *probeVirtualRouterPhysicalCarrier
-	requestPath   []string
-	openedAt      time.Time
-	lastUsed      time.Time
-	tx            chan probeVirtualRouterFrame
-	rx            chan probeVirtualRouterFrame
-	done          chan struct{}
-	carrierNotify chan struct{}
-	startOnce     sync.Once
-	closeOnce     sync.Once
-	mu            sync.Mutex
+	key              string
+	runtime          *probeVirtualRouterRuntime
+	carrier          *probeVirtualRouterPhysicalCarrier
+	requestPath      []string
+	openedAt         time.Time
+	lastUsed         time.Time
+	tx               chan probeVirtualRouterFrame
+	rx               chan probeVirtualRouterFrame
+	rxDispatchShards []chan probeVirtualRouterFrame
+	done             chan struct{}
+	carrierNotify    chan struct{}
+	startOnce        sync.Once
+	closeOnce        sync.Once
+	mu               sync.Mutex
 }
 
 type probeVirtualRouterPhysicalCarrier struct {

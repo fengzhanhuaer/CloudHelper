@@ -2257,10 +2257,9 @@ func probeLocalVirtualRouterFrameLinkStatusPayload(link *probeVirtualRouterFrame
 		txCap = cap(link.tx)
 	}
 	rxDepth, rxCap := 0, 0
-	if link.rx != nil {
-		rxDepth = len(link.rx)
-		rxCap = cap(link.rx)
-	}
+	rxEntryDepth, rxEntryCap, rxDispatchDepth, rxDispatchCap, rxDispatchWorkers := link.rxQueueSnapshot()
+	rxDepth = rxEntryDepth + rxDispatchDepth
+	rxCap = rxEntryCap + rxDispatchCap
 	link.mu.Lock()
 	key := strings.TrimSpace(link.key)
 	requestPath := append([]string(nil), link.requestPath...)
@@ -2272,19 +2271,24 @@ func probeLocalVirtualRouterFrameLinkStatusPayload(link *probeVirtualRouterFrame
 	link.mu.Unlock()
 
 	item := map[string]any{
-		"key":          key,
-		"route_id":     probeVirtualRouterRuntimeLogRouteID(rt),
-		"path":         cleanProbeVirtualRouterPath(requestPath),
-		"path_text":    strings.Join(cleanProbeVirtualRouterPath(requestPath), ">"),
-		"opened_at":    probeLocalVirtualRouterTimeString(openedAt),
-		"last_used_at": probeLocalVirtualRouterTimeString(lastUsed),
-		"last_used_ms": probeDurationMilliseconds(now.Sub(lastUsed)),
-		"closed":       closed,
-		"carrier":      false,
-		"tx_queue":     txDepth,
-		"tx_capacity":  txCap,
-		"rx_queue":     rxDepth,
-		"rx_capacity":  rxCap,
+		"key":                  key,
+		"route_id":             probeVirtualRouterRuntimeLogRouteID(rt),
+		"path":                 cleanProbeVirtualRouterPath(requestPath),
+		"path_text":            strings.Join(cleanProbeVirtualRouterPath(requestPath), ">"),
+		"opened_at":            probeLocalVirtualRouterTimeString(openedAt),
+		"last_used_at":         probeLocalVirtualRouterTimeString(lastUsed),
+		"last_used_ms":         probeDurationMilliseconds(now.Sub(lastUsed)),
+		"closed":               closed,
+		"carrier":              false,
+		"tx_queue":             txDepth,
+		"tx_capacity":          txCap,
+		"rx_queue":             rxDepth,
+		"rx_capacity":          rxCap,
+		"rx_entry_queue":       rxEntryDepth,
+		"rx_entry_capacity":    rxEntryCap,
+		"rx_dispatch_queue":    rxDispatchDepth,
+		"rx_dispatch_capacity": rxDispatchCap,
+		"rx_dispatch_workers":  rxDispatchWorkers,
 	}
 	if rt != nil {
 		item["peer_node_id"] = normalizeProbeRouteNodeID(rt.cfg.peerNodeID)
