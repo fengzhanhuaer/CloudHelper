@@ -61,7 +61,7 @@ const (
 	probeVirtualRouterFrameLinkIdleTTL                            = 45 * time.Second
 	probeVirtualRouterPingPongInterval                            = 30 * time.Second
 	probeVirtualRouterPingPongTimeout                             = 5 * time.Second
-	probeVirtualRouterFrameWriteTimeout                           = 500 * time.Millisecond
+	probeVirtualRouterFrameWriteTimeout                           = 5000 * time.Millisecond
 	probeVirtualRouterPingPongBytes                               = 64
 	probeVirtualRouterSpeedTestMaxBytes                           = 128 * 1024 * 1024
 	probeVirtualRouterSpeedTestMaxDuration                        = 10 * time.Second
