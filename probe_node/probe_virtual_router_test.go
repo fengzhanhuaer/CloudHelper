@@ -3198,6 +3198,37 @@ func TestProbeVirtualRouterPacketDispatchShardKeepsTCPFlowTogether(t *testing.T)
 	}
 }
 
+func TestSnapshotProbeVirtualRouterExitNetstackAggregatesOutputQueues(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	shards := makeProbeVirtualRouterExitNetstackOutputDispatchShards()
+	shards[0] <- probeVirtualRouterExitNetstackOutputPacket{payload: []byte{0x45}}
+	shards[1] <- probeVirtualRouterExitNetstackOutputPacket{payload: []byte{0x45}}
+	runner := &probeVirtualRouterExitNetstack{outputDispatch: shards}
+	runner.outputEnqueued.Store(3)
+	runner.outputForwarded.Store(2)
+	runner.outputDropped.Store(1)
+	runner.outputQueueFull.Store(1)
+	probeVirtualRouterExitNetstackState.mu.Lock()
+	probeVirtualRouterExitNetstackState.runner = runner
+	probeVirtualRouterExitNetstackState.mu.Unlock()
+
+	snapshot := snapshotProbeVirtualRouterExitNetstack()
+	if !snapshot.Running {
+		t.Fatalf("snapshot should report runner as running")
+	}
+	if snapshot.MTU != probeVirtualRouterExitNetstackMTU {
+		t.Fatalf("snapshot mtu=%d, want %d", snapshot.MTU, probeVirtualRouterExitNetstackMTU)
+	}
+	if snapshot.OutputShards != len(shards) || snapshot.OutputQueueDepth != 2 || snapshot.OutputQueueCapacity != len(shards)*probeVirtualRouterExitNetstackOutputShardQueuePackets {
+		t.Fatalf("unexpected output queue snapshot: %+v", snapshot)
+	}
+	if snapshot.OutputEnqueued != 3 || snapshot.OutputForwarded != 2 || snapshot.OutputDropped != 1 || snapshot.OutputQueueFull != 1 {
+		t.Fatalf("unexpected output counters: %+v", snapshot)
+	}
+}
+
 func TestProbeVirtualRouterFrameLinkAttachClearsBufferedFrames(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)

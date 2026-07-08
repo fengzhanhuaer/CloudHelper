@@ -221,6 +221,10 @@
       line-height: 1.25;
       overflow-wrap: anywhere;
     }
+    .status-card strong.compact {
+      font-size: 13px;
+      line-height: 1.4;
+    }
     .status-pill {
       display: inline-flex;
       align-items: center;
@@ -382,6 +386,7 @@
           <div class="status-card"><span>物理承载</span><strong id="routeStatusCarrierCount">0</strong></div>
           <div class="status-card"><span>队列</span><strong id="routeStatusQueueDepth">0 / 0</strong></div>
           <div class="status-card"><span>TUN</span><strong id="routeStatusTun">-</strong></div>
+          <div class="status-card"><span>出口回包</span><strong id="routeStatusExitNetstack" class="compact">-</strong></div>
           <div class="status-card"><span>最近异常</span><strong id="routeStatusRecentErrors">0</strong></div>
         </div>
         <div class="kv">
@@ -780,6 +785,7 @@
       const payload = data || {};
       const summary = payload.summary && typeof payload.summary === 'object' ? payload.summary : {};
       const tun = payload.tun && typeof payload.tun === 'object' ? payload.tun : {};
+      const exitNetstack = payload.exit_netstack && typeof payload.exit_netstack === 'object' ? payload.exit_netstack : {};
       const reasons = Array.isArray(payload.reasons) ? payload.reasons : [];
       const status = String(payload.status || '').trim();
       setHTML('routeStatusOverall', statusPillHTML(status === 'ok' ? 'ok' : 'warn', status === 'ok' ? '可传输' : '需观察'));
@@ -787,6 +793,7 @@
       setText('routeStatusCarrierCount', formatNumber(summary.carrier_count) + ' / ' + formatNumber(summary.frame_link_count));
       setText('routeStatusQueueDepth', formatNumber(summary.tx_queue_depth) + ' / ' + formatNumber(summary.rx_queue_depth));
       setText('routeStatusTun', (tun.running ? '运行中' : '未运行') + ' / Q ' + formatNumber(tun.inbound_queue_depth) + '/' + formatNumber(tun.inbound_queue_capacity) + ' / E ' + formatNumber(tun.inbound_entry_queue_depth) + ' / D ' + formatNumber(tun.inbound_dispatch_queue_depth));
+      setText('routeStatusExitNetstack', (exitNetstack.running ? '运行中' : '未启动') + ' / MTU ' + formatNumber(exitNetstack.mtu) + ' / S ' + formatNumber(exitNetstack.output_shards) + ' / Q ' + formatNumber(exitNetstack.output_queue_depth) + '/' + formatNumber(exitNetstack.output_queue_capacity) + ' / F ' + formatNumber(exitNetstack.output_forwarded) + ' / D ' + formatNumber(exitNetstack.output_dropped) + ' / Full ' + formatNumber(exitNetstack.output_queue_full));
       setText('routeStatusRecentErrors', formatNumber(summary.recent_error_count) + ' / drop ' + formatNumber(summary.recent_drop_count));
       setText('routeStatusUpdatedAt', formatDateTime(payload.updated_at));
       setText('routeStatusLocalNode', payload.local_node_id);

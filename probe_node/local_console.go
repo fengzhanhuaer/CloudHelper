@@ -2094,6 +2094,7 @@ func probeLocalVirtualRouterStatusPayload() map[string]any {
 	settings := loadProbeVirtualRouterLocalSettings()
 	library := currentProbeVirtualRouterFakeIPLibrary()
 	tunStats := probeVirtualRouterTUNDataPlaneStatsSnapshot()
+	exitNetstack := snapshotProbeVirtualRouterExitNetstack()
 	runtimes := probeLocalVirtualRouterRuntimeStatusPayloads()
 	frameLinks := probeLocalVirtualRouterFrameLinkStatusPayloads()
 	rules := probeLocalVirtualRouterRuleRuntimeStatusPayloads()
@@ -2161,6 +2162,17 @@ func probeLocalVirtualRouterStatusPayload() map[string]any {
 			"inbound_dispatch_queue_depth":    tunStats.InboundDispatchQueueDepth,
 			"inbound_dispatch_queue_capacity": tunStats.InboundDispatchQueueCapacity,
 			"inbound_dispatch_workers":        tunStats.InboundDispatchWorkers,
+		},
+		"exit_netstack": map[string]any{
+			"running":               exitNetstack.Running,
+			"mtu":                   exitNetstack.MTU,
+			"output_shards":         exitNetstack.OutputShards,
+			"output_queue_depth":    exitNetstack.OutputQueueDepth,
+			"output_queue_capacity": exitNetstack.OutputQueueCapacity,
+			"output_enqueued":       exitNetstack.OutputEnqueued,
+			"output_forwarded":      exitNetstack.OutputForwarded,
+			"output_dropped":        exitNetstack.OutputDropped,
+			"output_queue_full":     exitNetstack.OutputQueueFull,
 		},
 		"summary": map[string]any{
 			"runtime_count":      len(runtimes),

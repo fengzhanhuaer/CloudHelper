@@ -27,29 +27,56 @@ import (
 )
 
 const (
-	probeVirtualRouterExitNetstackNICID       = tcpip.NICID(1)
-	probeVirtualRouterExitNetstackQueueSize   = 1024
-	probeVirtualRouterExitNetstackMTU         = 65535
-	probeVirtualRouterExitNetstackTCPWindow   = 1 << 20
-	probeVirtualRouterExitNetstackTCPInflight = 512
-	probeVirtualRouterExitDialTimeout         = 12 * time.Second
-	probeVirtualRouterExitUDPIdleTimeout      = 90 * time.Second
-	probeVirtualRouterExitICMPTimeout         = 5 * time.Second
+	probeVirtualRouterExitNetstackNICID                   = tcpip.NICID(1)
+	probeVirtualRouterExitNetstackQueueSize               = 1024
+	probeVirtualRouterExitNetstackMTU                     = 1500
+	probeVirtualRouterExitNetstackTCPWindow               = 1 << 20
+	probeVirtualRouterExitNetstackTCPInflight             = 512
+	probeVirtualRouterExitNetstackOutputShards            = 8
+	probeVirtualRouterExitNetstackOutputShardQueuePackets = 256
+	probeVirtualRouterExitDialTimeout                     = 12 * time.Second
+	probeVirtualRouterExitUDPIdleTimeout                  = 90 * time.Second
+	probeVirtualRouterExitICMPTimeout                     = 5 * time.Second
 )
 
 type probeVirtualRouterExitNetstack struct {
-	stack     *stack.Stack
-	linkEP    *channel.Endpoint
-	cancel    context.CancelFunc
-	doneCh    chan struct{}
-	closeOnce sync.Once
-	closed    atomic.Bool
+	stack           *stack.Stack
+	linkEP          *channel.Endpoint
+	outputDispatch  []chan probeVirtualRouterExitNetstackOutputPacket
+	cancel          context.CancelFunc
+	doneCh          chan struct{}
+	closeOnce       sync.Once
+	closed          atomic.Bool
+	outputEnqueued  atomic.Uint64
+	outputForwarded atomic.Uint64
+	outputDropped   atomic.Uint64
+	outputQueueFull atomic.Uint64
+}
+
+type probeVirtualRouterExitNetstackOutputPacket struct {
+	payload []byte
+	dstIP   string
+	path    []string
+}
+
+type probeVirtualRouterExitNetstackSnapshot struct {
+	Running             bool
+	MTU                 int
+	OutputShards        int
+	OutputQueueDepth    int
+	OutputQueueCapacity int
+	OutputEnqueued      uint64
+	OutputForwarded     uint64
+	OutputDropped       uint64
+	OutputQueueFull     uint64
 }
 
 var probeVirtualRouterExitNetstackState = struct {
 	mu     sync.Mutex
 	runner *probeVirtualRouterExitNetstack
 }{}
+
+var errProbeVirtualRouterExitNetstackOutputQueueFull = errors.New("exit response dispatch queue full")
 
 var probeVirtualRouterSendICMPEcho = sendProbeVirtualRouterICMPEcho
 var probeVirtualRouterExitLookupIPv4 = lookupProbeVirtualRouterExitSystemIPv4s
@@ -180,17 +207,55 @@ func newProbeVirtualRouterExitNetstack() (*probeVirtualRouterExitNetstack, error
 
 	ctx, cancel := context.WithCancel(context.Background())
 	runner := &probeVirtualRouterExitNetstack{
-		stack:  gStack,
-		linkEP: linkEP,
-		cancel: cancel,
-		doneCh: make(chan struct{}),
+		stack:          gStack,
+		linkEP:         linkEP,
+		outputDispatch: makeProbeVirtualRouterExitNetstackOutputDispatchShards(),
+		cancel:         cancel,
+		doneCh:         make(chan struct{}),
 	}
 	tcpForwarder := tcp.NewForwarder(gStack, probeVirtualRouterExitNetstackTCPWindow, probeVirtualRouterExitNetstackTCPInflight, runner.handleTCPForwarder)
 	udpForwarder := udp.NewForwarder(gStack, runner.handleUDPForwarder)
 	gStack.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
 	gStack.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
+	for shardID, shard := range runner.outputDispatch {
+		go runner.outputForwardWorker(ctx, shardID, shard)
+	}
 	go runner.outputLoop(ctx)
 	return runner, nil
+}
+
+func makeProbeVirtualRouterExitNetstackOutputDispatchShards() []chan probeVirtualRouterExitNetstackOutputPacket {
+	shards := make([]chan probeVirtualRouterExitNetstackOutputPacket, 0, probeVirtualRouterExitNetstackOutputShards)
+	for i := 0; i < probeVirtualRouterExitNetstackOutputShards; i++ {
+		shards = append(shards, make(chan probeVirtualRouterExitNetstackOutputPacket, probeVirtualRouterExitNetstackOutputShardQueuePackets))
+	}
+	return shards
+}
+
+func snapshotProbeVirtualRouterExitNetstack() probeVirtualRouterExitNetstackSnapshot {
+	probeVirtualRouterExitNetstackState.mu.Lock()
+	runner := probeVirtualRouterExitNetstackState.runner
+	probeVirtualRouterExitNetstackState.mu.Unlock()
+	snapshot := probeVirtualRouterExitNetstackSnapshot{
+		MTU: probeVirtualRouterExitNetstackMTU,
+	}
+	if runner == nil {
+		return snapshot
+	}
+	snapshot.Running = !runner.closed.Load()
+	snapshot.OutputShards = len(runner.outputDispatch)
+	for _, shard := range runner.outputDispatch {
+		if shard == nil {
+			continue
+		}
+		snapshot.OutputQueueDepth += len(shard)
+		snapshot.OutputQueueCapacity += cap(shard)
+	}
+	snapshot.OutputEnqueued = runner.outputEnqueued.Load()
+	snapshot.OutputForwarded = runner.outputForwarded.Load()
+	snapshot.OutputDropped = runner.outputDropped.Load()
+	snapshot.OutputQueueFull = runner.outputQueueFull.Load()
+	return snapshot
 }
 
 func (n *probeVirtualRouterExitNetstack) Inject(packet []byte) error {
@@ -232,17 +297,73 @@ func (n *probeVirtualRouterExitNetstack) outputLoop(ctx context.Context) {
 		dstIP := probeVirtualRouterIPv4Destination(payload)
 		path := currentProbeVirtualRouterPathForPacket(payload, dstIP)
 		if len(path) < 2 {
+			n.outputDropped.Add(1)
 			log.Printf("probe virtual router fake ip exit response drop: dst=%s reason=path_unavailable", dstIP)
 			continue
 		}
-		go forwardProbeVirtualRouterExitNetstackPacket(payload, dstIP, path)
+		if err := n.enqueueOutputPacket(ctx, payload, dstIP, path); err != nil {
+			n.outputDropped.Add(1)
+			if errors.Is(err, errProbeVirtualRouterExitNetstackOutputQueueFull) {
+				n.outputQueueFull.Add(1)
+			}
+			log.Printf("probe virtual router fake ip exit response drop: dst=%s path=%s err=%v", dstIP, strings.Join(path, ">"), err)
+		}
 	}
 }
 
-func forwardProbeVirtualRouterExitNetstackPacket(payload []byte, dstIP string, path []string) {
+func (n *probeVirtualRouterExitNetstack) enqueueOutputPacket(ctx context.Context, payload []byte, dstIP string, path []string) error {
+	if n == nil || n.closed.Load() {
+		return io.ErrClosedPipe
+	}
+	if len(n.outputDispatch) == 0 {
+		if err := forwardProbeVirtualRouterExitNetstackPacket(payload, dstIP, path); err != nil {
+			return err
+		}
+		n.outputForwarded.Add(1)
+		return nil
+	}
+	shardID := probeVirtualRouterPacketDispatchShard(payload, len(n.outputDispatch))
+	shard := n.outputDispatch[shardID]
+	item := probeVirtualRouterExitNetstackOutputPacket{
+		payload: append([]byte(nil), payload...),
+		dstIP:   strings.TrimSpace(dstIP),
+		path:    append([]string(nil), path...),
+	}
+	select {
+	case shard <- item:
+		n.outputEnqueued.Add(1)
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return fmt.Errorf("%w: shard=%d depth=%d capacity=%d", errProbeVirtualRouterExitNetstackOutputQueueFull, shardID, len(shard), cap(shard))
+	}
+}
+
+func (n *probeVirtualRouterExitNetstack) outputForwardWorker(ctx context.Context, shardID int, shard chan probeVirtualRouterExitNetstackOutputPacket) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case item := <-shard:
+			if len(item.payload) == 0 {
+				continue
+			}
+			if err := forwardProbeVirtualRouterExitNetstackPacket(item.payload, item.dstIP, item.path); err != nil {
+				n.outputDropped.Add(1)
+				continue
+			}
+			n.outputForwarded.Add(1)
+		}
+	}
+}
+
+func forwardProbeVirtualRouterExitNetstackPacket(payload []byte, dstIP string, path []string) error {
 	if err := forwardProbeVirtualRouterPacketAlongPath(payload, dstIP, path, nil); err != nil {
 		log.Printf("probe virtual router fake ip exit response forward failed: dst=%s path=%s err=%v", dstIP, strings.Join(path, ">"), err)
+		return err
 	}
+	return nil
 }
 
 func (n *probeVirtualRouterExitNetstack) Close() error {
