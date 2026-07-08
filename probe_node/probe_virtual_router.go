@@ -28,40 +28,41 @@ const (
 	// magic 2 bytes, maintype 2 bytes, subtype 2 bytes,
 	// control_len 2 bytes, data_len 2 bytes, checksum 2 bytes.
 	// 未经用户明确许可，不得修改此帧定义、字段顺序、字段宽度或 checksum 范围。
-	probeVirtualRouterFrameEnvelopeMagic       uint16 = 0x5652
-	probeVirtualRouterFrameEnvelopeHeaderSize         = 12
-	probeVirtualRouterFrameMaxControlBytes            = 8096
-	probeVirtualRouterFrameMaxDataBytes               = 65535
-	probeVirtualRouterFrameMaxBytes                   = probeVirtualRouterFrameEnvelopeHeaderSize + probeVirtualRouterFrameMaxControlBytes + probeVirtualRouterFrameMaxDataBytes
-	probeVirtualRouterFrameReadBufferBytes            = 256 * 1024
-	probeVirtualRouterFrameMainTypeIP          uint16 = 1
-	probeVirtualRouterFrameMainTypePingPong    uint16 = 2
-	probeVirtualRouterFrameMainTypePathRTT     uint16 = 3
-	probeVirtualRouterFrameMainTypeSpeed       uint16 = 4
-	probeVirtualRouterFrameMainTypeRouteTest   uint16 = 5
-	probeVirtualRouterFrameSubTypeUnknown      uint16 = 0
-	probeVirtualRouterIPSubTypeIPv4            uint16 = 1
-	probeVirtualRouterPingPongSubTypePing      uint16 = 1
-	probeVirtualRouterPingPongSubTypePong      uint16 = 2
-	probeVirtualRouterPathRTTSubTypeQuery      uint16 = 1
-	probeVirtualRouterPathRTTSubTypeResp       uint16 = 2
-	probeVirtualRouterSpeedSubTypeStart        uint16 = 1
-	probeVirtualRouterSpeedSubTypeChunk        uint16 = 2
-	probeVirtualRouterSpeedSubTypeFinish       uint16 = 3
-	probeVirtualRouterSpeedSubTypeResult       uint16 = 4
-	probeVirtualRouterSpeedSubTypeSend         uint16 = 5
-	probeVirtualRouterRouteTestSubTypeProbe    uint16 = 1
-	probeVirtualRouterRouteTestSubTypeReport   uint16 = 2
-	probeVirtualRouterFrameLinkIdleTTL                = 45 * time.Second
-	probeVirtualRouterPingPongInterval                = 30 * time.Second
-	probeVirtualRouterPingPongTimeout                 = 5 * time.Second
-	probeVirtualRouterFrameWriteTimeout               = 500 * time.Millisecond
-	probeVirtualRouterPingPongBytes                   = 64
-	probeVirtualRouterSpeedTestMaxBytes               = 128 * 1024 * 1024
-	probeVirtualRouterSpeedTestMaxDuration            = 10 * time.Second
-	probeVirtualRouterSpeedTestChunkBytes             = 48 * 1024
-	probeVirtualRouterCarrierStalePingFailures        = 4
-	probeVirtualRouterCarrierStaleRXGrace             = 2 * probeVirtualRouterPingPongInterval
+	probeVirtualRouterFrameEnvelopeMagic                   uint16 = 0x5652
+	probeVirtualRouterFrameEnvelopeHeaderSize                     = 12
+	probeVirtualRouterFrameMaxControlBytes                        = 8096
+	probeVirtualRouterFrameMaxDataBytes                           = 65535
+	probeVirtualRouterFrameMaxBytes                               = probeVirtualRouterFrameEnvelopeHeaderSize + probeVirtualRouterFrameMaxControlBytes + probeVirtualRouterFrameMaxDataBytes
+	probeVirtualRouterFrameReadBufferBytes                        = 256 * 1024
+	probeVirtualRouterFrameMainTypeIP                      uint16 = 1
+	probeVirtualRouterFrameMainTypePingPong                uint16 = 2
+	probeVirtualRouterFrameMainTypePathRTT                 uint16 = 3
+	probeVirtualRouterFrameMainTypeSpeed                   uint16 = 4
+	probeVirtualRouterFrameMainTypeRouteTest               uint16 = 5
+	probeVirtualRouterFrameSubTypeUnknown                  uint16 = 0
+	probeVirtualRouterIPSubTypeIPv4                        uint16 = 1
+	probeVirtualRouterPingPongSubTypePing                  uint16 = 1
+	probeVirtualRouterPingPongSubTypePong                  uint16 = 2
+	probeVirtualRouterPathRTTSubTypeQuery                  uint16 = 1
+	probeVirtualRouterPathRTTSubTypeResp                   uint16 = 2
+	probeVirtualRouterSpeedSubTypeStart                    uint16 = 1
+	probeVirtualRouterSpeedSubTypeChunk                    uint16 = 2
+	probeVirtualRouterSpeedSubTypeFinish                   uint16 = 3
+	probeVirtualRouterSpeedSubTypeResult                   uint16 = 4
+	probeVirtualRouterSpeedSubTypeSend                     uint16 = 5
+	probeVirtualRouterRouteTestSubTypeProbe                uint16 = 1
+	probeVirtualRouterRouteTestSubTypeReport               uint16 = 2
+	probeVirtualRouterFrameLinkIdleTTL                            = 45 * time.Second
+	probeVirtualRouterPingPongInterval                            = 30 * time.Second
+	probeVirtualRouterPingPongTimeout                             = 5 * time.Second
+	probeVirtualRouterFrameWriteTimeout                           = 500 * time.Millisecond
+	probeVirtualRouterPingPongBytes                               = 64
+	probeVirtualRouterSpeedTestMaxBytes                           = 128 * 1024 * 1024
+	probeVirtualRouterSpeedTestMaxDuration                        = 10 * time.Second
+	probeVirtualRouterSpeedTestChunkBytes                         = 48 * 1024
+	probeVirtualRouterCarrierStalePingFailures                    = 4
+	probeVirtualRouterCarrierStaleRXGrace                         = 2 * probeVirtualRouterPingPongInterval
+	probeVirtualRouterRouteConfigRefreshHotPathMinInterval        = 10 * time.Second
 )
 
 var probeVirtualRouterEnsureDirectBypass = ensureProbeRouteDirectBypass
@@ -83,6 +84,15 @@ var probeVirtualRouterControllerState = struct {
 	identity          nodeIdentity
 	controllerBaseURL string
 }{}
+
+var probeVirtualRouterRouteConfigRefreshState = struct {
+	mu      sync.Mutex
+	running map[string]bool
+	lastAt  map[string]time.Time
+}{
+	running: make(map[string]bool),
+	lastAt:  make(map[string]time.Time),
+}
 
 type probeVirtualRouterTopologyIndex struct {
 	nodeToIP  map[string]string
@@ -2285,9 +2295,7 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 		return false
 	}
 	if len(path) < 2 && probeVirtualRouterIPInCurrentFakeCIDR(dstIP) {
-		if refreshProbeVirtualRouterRouteConfigFromController("fake_ip_path_miss") {
-			path = currentProbeVirtualRouterPathForPacket(packet, dstIP)
-		}
+		scheduleProbeVirtualRouterRouteConfigRefreshFromController("fake_ip_path_miss", probeVirtualRouterRouteConfigRefreshHotPathMinInterval)
 	}
 	if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
 		log.Printf("probe virtual router icmp tun rx: trace_code=icmp-trace-v2 kind=%s src=%s dst=%s id=%d seq=%d local_node=%s path=%s bytes=%d", info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, currentProbeVirtualRouterLocalNodeID(), strings.Join(path, ">"), len(packet))
@@ -2449,6 +2457,39 @@ func refreshProbeVirtualRouterRouteConfigFromController(reason string) bool {
 		log.Printf("probe virtual router route config sync failed: reason=%s err=%v", strings.TrimSpace(reason), err)
 		return false
 	}
+	return true
+}
+
+func scheduleProbeVirtualRouterRouteConfigRefreshFromController(reason string, minInterval time.Duration) bool {
+	cleanReason := strings.TrimSpace(reason)
+	if cleanReason == "" {
+		cleanReason = "scheduled"
+	}
+	if minInterval <= 0 {
+		minInterval = probeVirtualRouterRouteConfigRefreshHotPathMinInterval
+	}
+	now := time.Now()
+	probeVirtualRouterRouteConfigRefreshState.mu.Lock()
+	if probeVirtualRouterRouteConfigRefreshState.running[cleanReason] {
+		probeVirtualRouterRouteConfigRefreshState.mu.Unlock()
+		return false
+	}
+	if lastAt := probeVirtualRouterRouteConfigRefreshState.lastAt[cleanReason]; !lastAt.IsZero() && now.Sub(lastAt) < minInterval {
+		probeVirtualRouterRouteConfigRefreshState.mu.Unlock()
+		return false
+	}
+	probeVirtualRouterRouteConfigRefreshState.running[cleanReason] = true
+	probeVirtualRouterRouteConfigRefreshState.lastAt[cleanReason] = now
+	probeVirtualRouterRouteConfigRefreshState.mu.Unlock()
+
+	go func() {
+		defer func() {
+			probeVirtualRouterRouteConfigRefreshState.mu.Lock()
+			delete(probeVirtualRouterRouteConfigRefreshState.running, cleanReason)
+			probeVirtualRouterRouteConfigRefreshState.mu.Unlock()
+		}()
+		refreshProbeVirtualRouterRouteConfigFromController(cleanReason)
+	}()
 	return true
 }
 

@@ -215,6 +215,10 @@ func resetProbeVirtualRouterStateForTest() {
 	probeVirtualRouterState.rulesByID = nil
 	probeVirtualRouterState.topologySignature = ""
 	probeVirtualRouterState.mu.Unlock()
+	probeVirtualRouterRouteConfigRefreshState.mu.Lock()
+	probeVirtualRouterRouteConfigRefreshState.running = make(map[string]bool)
+	probeVirtualRouterRouteConfigRefreshState.lastAt = make(map[string]time.Time)
+	probeVirtualRouterRouteConfigRefreshState.mu.Unlock()
 	probeVirtualRouterLocalInterfaceEnsureState.mu.Lock()
 	probeVirtualRouterLocalInterfaceEnsureState.running = false
 	probeVirtualRouterLocalInterfaceEnsureState.mu.Unlock()
