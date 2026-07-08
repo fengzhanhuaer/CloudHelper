@@ -2173,6 +2173,9 @@ func probeLocalVirtualRouterStatusPayload() map[string]any {
 			"output_forwarded":      exitNetstack.OutputForwarded,
 			"output_dropped":        exitNetstack.OutputDropped,
 			"output_queue_full":     exitNetstack.OutputQueueFull,
+			"tcp_no_delay":          exitNetstack.TCPNoDelay,
+			"tcp_buffer_default":    exitNetstack.TCPBufferDefault,
+			"tcp_buffer_max":        exitNetstack.TCPBufferMax,
 		},
 		"summary": map[string]any{
 			"runtime_count":      len(runtimes),

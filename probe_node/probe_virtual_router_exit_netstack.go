@@ -34,6 +34,10 @@ const (
 	probeVirtualRouterExitNetstackTCPInflight             = 512
 	probeVirtualRouterExitNetstackOutputShards            = 8
 	probeVirtualRouterExitNetstackOutputShardQueuePackets = 256
+	probeVirtualRouterExitNetstackTCPBufferMin            = 64 << 10
+	probeVirtualRouterExitNetstackTCPBufferDefault        = 4 << 20
+	probeVirtualRouterExitNetstackTCPBufferMax            = 16 << 20
+	probeVirtualRouterExitTCPRelayCopyBufferBytes         = 64 << 10
 	probeVirtualRouterExitDialTimeout                     = 12 * time.Second
 	probeVirtualRouterExitUDPIdleTimeout                  = 90 * time.Second
 	probeVirtualRouterExitICMPTimeout                     = 5 * time.Second
@@ -69,6 +73,9 @@ type probeVirtualRouterExitNetstackSnapshot struct {
 	OutputForwarded     uint64
 	OutputDropped       uint64
 	OutputQueueFull     uint64
+	TCPNoDelay          bool
+	TCPBufferDefault    int
+	TCPBufferMax        int
 }
 
 var probeVirtualRouterExitNetstackState = struct {
@@ -188,8 +195,12 @@ func handleProbeVirtualRouterFakeIPExitICMPEchoRequest(runtime *probeVirtualRout
 func newProbeVirtualRouterExitNetstack() (*probeVirtualRouterExitNetstack, error) {
 	gStack := stack.New(stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol},
-		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol},
+		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocolCUBIC, udp.NewProtocol},
 	})
+	if err := configureProbeVirtualRouterExitNetstackTCP(gStack); err != nil {
+		gStack.Destroy()
+		return nil, err
+	}
 	linkEP := channel.New(probeVirtualRouterExitNetstackQueueSize, probeVirtualRouterExitNetstackMTU, "")
 	if err := tcpipErrorToError(gStack.CreateNIC(probeVirtualRouterExitNetstackNICID, linkEP)); err != nil {
 		gStack.Destroy()
@@ -224,6 +235,41 @@ func newProbeVirtualRouterExitNetstack() (*probeVirtualRouterExitNetstack, error
 	return runner, nil
 }
 
+func configureProbeVirtualRouterExitNetstackTCP(gStack *stack.Stack) error {
+	if gStack == nil {
+		return errors.New("exit netstack is nil")
+	}
+	noDelay := tcpip.TCPDelayEnabled(false)
+	if err := tcpipErrorToError(gStack.SetTransportProtocolOption(tcp.ProtocolNumber, &noDelay)); err != nil {
+		return fmt.Errorf("set tcp no delay: %w", err)
+	}
+	sack := tcpip.TCPSACKEnabled(true)
+	if err := tcpipErrorToError(gStack.SetTransportProtocolOption(tcp.ProtocolNumber, &sack)); err != nil {
+		return fmt.Errorf("set tcp sack: %w", err)
+	}
+	moderateReceive := tcpip.TCPModerateReceiveBufferOption(true)
+	if err := tcpipErrorToError(gStack.SetTransportProtocolOption(tcp.ProtocolNumber, &moderateReceive)); err != nil {
+		return fmt.Errorf("set tcp receive moderation: %w", err)
+	}
+	sendBuffer := tcpip.TCPSendBufferSizeRangeOption{
+		Min:     probeVirtualRouterExitNetstackTCPBufferMin,
+		Default: probeVirtualRouterExitNetstackTCPBufferDefault,
+		Max:     probeVirtualRouterExitNetstackTCPBufferMax,
+	}
+	if err := tcpipErrorToError(gStack.SetTransportProtocolOption(tcp.ProtocolNumber, &sendBuffer)); err != nil {
+		return fmt.Errorf("set tcp send buffer: %w", err)
+	}
+	receiveBuffer := tcpip.TCPReceiveBufferSizeRangeOption{
+		Min:     probeVirtualRouterExitNetstackTCPBufferMin,
+		Default: probeVirtualRouterExitNetstackTCPBufferDefault,
+		Max:     probeVirtualRouterExitNetstackTCPBufferMax,
+	}
+	if err := tcpipErrorToError(gStack.SetTransportProtocolOption(tcp.ProtocolNumber, &receiveBuffer)); err != nil {
+		return fmt.Errorf("set tcp receive buffer: %w", err)
+	}
+	return nil
+}
+
 func makeProbeVirtualRouterExitNetstackOutputDispatchShards() []chan probeVirtualRouterExitNetstackOutputPacket {
 	shards := make([]chan probeVirtualRouterExitNetstackOutputPacket, 0, probeVirtualRouterExitNetstackOutputShards)
 	for i := 0; i < probeVirtualRouterExitNetstackOutputShards; i++ {
@@ -237,7 +283,10 @@ func snapshotProbeVirtualRouterExitNetstack() probeVirtualRouterExitNetstackSnap
 	runner := probeVirtualRouterExitNetstackState.runner
 	probeVirtualRouterExitNetstackState.mu.Unlock()
 	snapshot := probeVirtualRouterExitNetstackSnapshot{
-		MTU: probeVirtualRouterExitNetstackMTU,
+		MTU:              probeVirtualRouterExitNetstackMTU,
+		TCPNoDelay:       true,
+		TCPBufferDefault: probeVirtualRouterExitNetstackTCPBufferDefault,
+		TCPBufferMax:     probeVirtualRouterExitNetstackTCPBufferMax,
 	}
 	if runner == nil {
 		return snapshot
@@ -418,8 +467,21 @@ func relayProbeVirtualRouterExitTCP(inbound net.Conn, localAddress tcpip.Address
 		_ = inbound.Close()
 		return
 	}
+	tuneProbeVirtualRouterExitTCPConn(inbound)
+	tuneProbeVirtualRouterExitTCPConn(outbound)
 	log.Printf("probe virtual router fake ip tcp exit open ok: targets=%s remote=%s", strings.Join(targetAddrs, ","), outbound.RemoteAddr())
 	go relayProbeVirtualRouterExitTCPConns(inbound, outbound)
+}
+
+func tuneProbeVirtualRouterExitTCPConn(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		_ = tcpConn.SetNoDelay(true)
+		_ = tcpConn.SetReadBuffer(probeVirtualRouterExitNetstackTCPBufferDefault)
+		_ = tcpConn.SetWriteBuffer(probeVirtualRouterExitNetstackTCPBufferDefault)
+	}
 }
 
 func (n *probeVirtualRouterExitNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {
@@ -796,7 +858,8 @@ func relayProbeVirtualRouterExitTCPConns(inbound net.Conn, outbound net.Conn) {
 }
 
 func pipeProbeVirtualRouterExitConnHalf(dst net.Conn, src net.Conn) error {
-	_, err := io.Copy(dst, src)
+	buf := make([]byte, probeVirtualRouterExitTCPRelayCopyBufferBytes)
+	_, err := io.CopyBuffer(dst, src, buf)
 	if err != nil {
 		return err
 	}
