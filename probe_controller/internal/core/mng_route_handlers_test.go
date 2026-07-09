@@ -89,20 +89,29 @@ func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T)
 	routeID := probeVirtualRouterRuntimeRouteID(rule)
 	updateProbeRuntimeReportWithRelay("1", nil, nil, probeSystemMetrics{}, "v1", []probeRelayStatusItem{
 		{
-			RouteID:    routeID,
-			RouteType:  "virtual_router",
-			Role:       "relay",
-			ListenHost: "0.0.0.0",
-			ListenPort: 12040,
-			NextHost:   "node-2.local",
-			NextPort:   12040,
+			RouteID:        routeID,
+			RouteType:      "virtual_router",
+			Role:           "relay",
+			ListenHost:     "0.0.0.0",
+			ListenPort:     12040,
+			RouteLayer:     "auto",
+			NextHost:       "node-2.local",
+			NextPort:       12040,
+			NextRouteLayer: "auto",
 			ListenState: &probeRelayProtocolStateSnapshot{
 				Endpoint: "0.0.0.0:12040",
 				ListenerStatuses: []probeRelayListenerStatus{
 					{Protocol: "websocket", Status: "listening", Listen: "0.0.0.0:12040"},
 				},
 			},
-			NextState: &probeRelayProtocolStateSnapshot{Endpoint: "node-2.local:12040", SelectedProtocol: "websocket"},
+			NextState: &probeRelayProtocolStateSnapshot{
+				Endpoint:         "node-2.local:12040",
+				SelectedProtocol: "websocket",
+				ProtocolQualities: []probeRelayProtocolQuality{
+					{Protocol: "websocket-h3", Available: false, LastError: "http3 udp socket unavailable"},
+					{Protocol: "websocket", Available: true, LatencyMS: 12},
+				},
+			},
 			BridgeSessions: []probeRouteBridgeSessionSnapshot{
 				{
 					Direction:           "upstream",
@@ -192,6 +201,9 @@ func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T)
 	}
 	if item.From.Status != "connected" || item.To.Status != "listening" {
 		t.Fatalf("unexpected side status: from=%+v to=%+v", item.From, item.To)
+	}
+	if item.From.RouteLayer != "auto" || item.From.NextRouteLayer != "auto" || item.From.NextState == nil || item.From.NextState.SelectedProtocol != "websocket" {
+		t.Fatalf("unexpected side protocol state: from=%+v", item.From)
 	}
 	if item.From.VirtualRouter == nil || !item.From.VirtualRouter.TUNDataPlane || item.From.VirtualRouter.TUNRXPackets != 11 || item.From.VirtualRouter.TUNRXBytes != 1100 || item.From.VirtualRouter.TUNTXPackets != 5 || item.From.VirtualRouter.TUNTXBytes != 500 {
 		t.Fatalf("unexpected tun data plane stats: %+v", item.From.VirtualRouter)

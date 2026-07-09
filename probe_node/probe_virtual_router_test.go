@@ -498,16 +498,25 @@ func TestProbeVirtualRouterCurrentLocalPathToIP(t *testing.T) {
 	config := probeVirtualRouterConfig{
 		Enabled: true,
 		ProbeIPs: []probeVirtualRouterProbeIP{
-			{NodeID: "node-1", IP: "198.18.0.1"},
-			{NodeID: "node-2", IP: "198.18.0.2"},
-			{NodeID: "node-3", IP: "198.18.0.3"},
+			{NodeID: "1", IP: "198.18.0.1"},
+			{NodeID: "2", IP: "198.18.0.2"},
+			{NodeID: "3", IP: "198.18.0.3"},
 		},
 		TopologyRules: []probeVirtualRouterTopologyRule{
 			{FromNodeID: "1", ToNodeID: "2", Direction: "bidirectional", Enabled: true},
 			{FromNodeID: "2", ToNodeID: "3", Direction: "bidirectional", Enabled: true},
 		},
+		RouteRules: []probeVirtualRouterRouteRule{
+			{
+				ID:         "telegram",
+				Name:       "Telegram",
+				Action:     "probe_exit",
+				ExitNodeID: "3",
+				Entries:    []string{"cidr:149.154.160.0/20"},
+			},
+		},
 	}
-	applyProbeVirtualRouterConfigForNode(config, "node-1")
+	applyProbeVirtualRouterConfigForNode(config, "1")
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 
 	if got := currentProbeVirtualRouterLocalNodeID(); got != "1" {
@@ -533,6 +542,20 @@ func TestProbeVirtualRouterCurrentLocalPathToIP(t *testing.T) {
 	}
 	if got := currentProbeVirtualRouterPathToIP("198.18.0.3"); !reflect.DeepEqual(got, []string{"1", "2", "3"}) {
 		t.Fatalf("path to ip=%v, want [1 2 3]", got)
+	}
+	if got := currentProbeVirtualRouterPathToIP("149.154.166.110"); !reflect.DeepEqual(got, []string{"1", "2", "3"}) {
+		t.Fatalf("path to cidr route ip=%v, want [1 2 3]", got)
+	}
+	packet := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.1", "149.154.166.110", 49152, 443)
+	if got := currentProbeVirtualRouterPathForPacket(packet, "149.154.166.110"); !reflect.DeepEqual(got, []string{"1", "2", "3"}) {
+		t.Fatalf("packet path to cidr route ip=%v, want [1 2 3]", got)
+	}
+	plan, err := buildProbeVirtualRouterRouteTestPlan("149.154.166.110", 443)
+	if err != nil {
+		t.Fatalf("build cidr route test plan failed: %v", err)
+	}
+	if plan.RouteRuleName != "Telegram" || plan.ExitNodeID != "3" || !reflect.DeepEqual(plan.Path, []string{"1", "2", "3"}) {
+		t.Fatalf("cidr route test plan=%+v", plan)
 	}
 }
 

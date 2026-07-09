@@ -753,8 +753,13 @@ func buildProbeVirtualRouterRouteTestPlan(rawTarget string, port int) (probeVirt
 		} else if nodeID := currentProbeVirtualRouterNodeIDForIP(plan.TargetIP); nodeID != "" {
 			plan.ExitNodeID = nodeID
 			plan.RouteRuleAction = "virtual_ip"
+		} else if rule, ok := currentProbeVirtualRouterRouteRuleForIP(plan.TargetIP); ok {
+			plan.RouteRuleID = strings.TrimSpace(rule.ID)
+			plan.RouteRuleName = strings.TrimSpace(rule.Name)
+			plan.RouteRuleAction = sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID)
+			plan.ExitNodeID = normalizeProbeRouteNodeID(rule.ExitNodeID)
 		} else {
-			return probeVirtualRouterRouteTestPlan{}, fmt.Errorf("ip %s 没有 Fake IP 映射，也不是已知虚拟节点 IP", plan.TargetIP)
+			return probeVirtualRouterRouteTestPlan{}, fmt.Errorf("ip %s 未命中虚拟路由规则，也不是 Fake IP 或已知虚拟节点 IP", plan.TargetIP)
 		}
 	} else {
 		domain := normalizeProbeVirtualRouterDomain(target)

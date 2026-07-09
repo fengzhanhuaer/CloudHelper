@@ -481,6 +481,7 @@
                 <th>Route</th>
                 <th>对端</th>
                 <th>角色</th>
+                <th>协议</th>
                 <th>帧</th>
                 <th>包</th>
                 <th>Ping</th>
@@ -489,7 +490,7 @@
               </tr>
             </thead>
             <tbody id="routeStatusRuntimeRows">
-              <tr><td colspan="8" class="hint">-</td></tr>
+              <tr><td colspan="9" class="hint">-</td></tr>
             </tbody>
           </table>
         </div>
@@ -875,6 +876,21 @@
       return `<div class="queue-cell"><span class="mono">${escapeHTML(formatNumber(d) + ' / ' + formatNumber(c))}</span><div class="queue-bar"><span style="width:${pct.toFixed(1)}%"></span></div></div>`;
     }
 
+    function routeProtocolLabel(value) {
+      const text = String(value || '').trim().toLowerCase();
+      if (!text || text === 'default') return 'auto';
+      if (text === 'websocket' || text === 'ws' || text === 'wss' || text === 'http2' || text === 'h2') return 'http2';
+      if (text === 'websocket-h3' || text === 'ws-h3' || text === 'http3' || text === 'h3' || text === 'quic') return 'http3';
+      return text;
+    }
+
+    function runtimeProtocolText(item) {
+      const configured = routeProtocolLabel(item && item.route_layer);
+      const selected = String(item && item.selected_protocol || '').trim() ? routeProtocolLabel(item.selected_protocol) : '';
+      if (!selected || configured === selected) return configured;
+      return configured + ' -> ' + selected;
+    }
+
     function renderRouteStatus(data) {
       const payload = data || {};
       const summary = payload.summary && typeof payload.summary === 'object' ? payload.summary : {};
@@ -966,7 +982,7 @@
       const rows = document.getElementById('routeStatusRuntimeRows');
       if (!rows) return;
       if (!items.length) {
-        rows.innerHTML = '<tr><td colspan="8" class="hint">-</td></tr>';
+        rows.innerHTML = '<tr><td colspan="9" class="hint">-</td></tr>';
         return;
       }
       rows.innerHTML = items.map((item) => {
@@ -982,6 +998,7 @@
           <td class="mono">${escapeHTML(item.route_id || '-')}</td>
           <td class="mono">${escapeHTML([item.peer_node_id, item.peer_ip].filter(Boolean).join(' / ') || '-')}</td>
           <td>${escapeHTML(item.dialer ? '拨出' : '监听')}</td>
+          <td><div class="mono">${escapeHTML(runtimeProtocolText(item))}</div>${item.selected_protocol_endpoint ? `<div class="queue-meta mono">${escapeHTML(item.selected_protocol_endpoint)}</div>` : ''}</td>
           <td class="mono">${escapeHTML(frames)}</td>
           <td class="mono">${escapeHTML(packets)}</td>
           <td class="mono">${escapeHTML(pingParts.join(' / ') || '-')}</td>

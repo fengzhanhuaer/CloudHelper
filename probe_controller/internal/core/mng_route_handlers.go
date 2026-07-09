@@ -150,8 +150,11 @@ type mngVirtualRouterRouteSideStatus struct {
 	Listen         string                            `json:"listen,omitempty"`
 	Next           string                            `json:"next,omitempty"`
 	Prev           string                            `json:"prev,omitempty"`
+	RouteLayer     string                            `json:"route_layer,omitempty"`
 	NextNodeID     string                            `json:"next_node_id,omitempty"`
 	PrevNodeID     string                            `json:"prev_node_id,omitempty"`
+	NextRouteLayer string                            `json:"next_route_layer,omitempty"`
+	PrevRouteLayer string                            `json:"prev_route_layer,omitempty"`
 	NextDialMode   string                            `json:"next_dial_mode,omitempty"`
 	PrevDialMode   string                            `json:"prev_dial_mode,omitempty"`
 	ListenState    *probeRelayProtocolStateSnapshot  `json:"listen_state,omitempty"`
@@ -323,8 +326,11 @@ func buildMngVirtualRouterRouteSideStatus(nodeID string, routeID string, runtime
 	side.Listen = formatMngVirtualRouterEndpoint(status.ListenHost, status.ListenPort)
 	side.Next = formatMngVirtualRouterEndpoint(status.NextHost, status.NextPort)
 	side.Prev = formatMngVirtualRouterEndpoint(status.PrevHost, status.PrevPort)
+	side.RouteLayer = strings.TrimSpace(status.RouteLayer)
 	side.NextNodeID = strings.TrimSpace(status.NextNodeID)
 	side.PrevNodeID = strings.TrimSpace(status.PrevNodeID)
+	side.NextRouteLayer = strings.TrimSpace(status.NextRouteLayer)
+	side.PrevRouteLayer = strings.TrimSpace(status.PrevRouteLayer)
 	side.NextDialMode = strings.TrimSpace(status.NextDialMode)
 	side.PrevDialMode = strings.TrimSpace(status.PrevDialMode)
 	side.ListenState = status.ListenState
@@ -336,12 +342,14 @@ func buildMngVirtualRouterRouteSideStatus(nodeID string, routeID string, runtime
 	side.Status = "configured"
 	if !side.Online {
 		side.Status = "offline"
-	} else if mngRelayStateHasFailure(status.ListenState) || mngRelayStateHasFailure(status.NextState) || mngRelayStateHasFailure(status.PrevState) || mngVirtualRouterSideStatsError(side) != "" {
-		side.Status = "failed"
-	} else if mngRelayStateHasSelectedProtocol(status.NextState) || mngRelayStateHasSelectedProtocol(status.PrevState) {
+	} else if mngVirtualRouterSideHasActiveBridgeSession(side) || mngVirtualRouterSideHasSelectedProtocol(side) {
 		side.Status = "connected"
+	} else if statsErr := mngVirtualRouterSideStatsError(side); statsErr != "" {
+		side.Status = "failed"
 	} else if mngRelayStateHasListening(status.ListenState) {
 		side.Status = "listening"
+	} else if mngRelayStateHasFailure(status.ListenState) || mngRelayStateHasFailure(status.NextState) || mngRelayStateHasFailure(status.PrevState) {
+		side.Status = "failed"
 	}
 	return side
 }
@@ -394,6 +402,12 @@ func mngRelayStateHasFailure(snapshot *probeRelayProtocolStateSnapshot) bool {
 
 func mngRelayStateHasSelectedProtocol(snapshot *probeRelayProtocolStateSnapshot) bool {
 	return snapshot != nil && strings.TrimSpace(snapshot.SelectedProtocol) != ""
+}
+
+func mngVirtualRouterSideHasSelectedProtocol(side mngVirtualRouterRouteSideStatus) bool {
+	return mngRelayStateHasSelectedProtocol(side.ListenState) ||
+		mngRelayStateHasSelectedProtocol(side.NextState) ||
+		mngRelayStateHasSelectedProtocol(side.PrevState)
 }
 
 func mngRelayStateHasListening(snapshot *probeRelayProtocolStateSnapshot) bool {
@@ -532,6 +546,15 @@ func isMngVirtualRouterSideErrorStale(side mngVirtualRouterRouteSideStatus, erro
 		}
 		connectedTime, err := time.Parse(time.RFC3339, connectedAt)
 		if err == nil && connectedTime.After(errTime) {
+			return true
+		}
+	}
+	return false
+}
+
+func mngVirtualRouterSideHasActiveBridgeSession(side mngVirtualRouterRouteSideStatus) bool {
+	for _, session := range mngVirtualRouterSideBridgeSessions(side) {
+		if !session.Closed {
 			return true
 		}
 	}

@@ -740,6 +740,36 @@
       return `<div class="small muted">桥接物理连接 ${active} 条${escapeHTML(updatedAt)}</div>${details.map((line) => `<div class="small muted">${escapeHTML(line)}</div>`).join('')}`;
     }
 
+    function routeProtocolLabel(value) {
+      const text = String(value || '').trim().toLowerCase();
+      if (!text || text === 'default') return 'auto';
+      if (text === 'websocket' || text === 'ws' || text === 'wss' || text === 'http2' || text === 'h2') return 'http2';
+      if (text === 'websocket-h3' || text === 'ws-h3' || text === 'http3' || text === 'h3' || text === 'quic') return 'http3';
+      return text;
+    }
+
+    function routeSideSelectedProtocol(side) {
+      const candidates = [side && side.next_state, side && side.prev_state, side && side.listen_state];
+      for (const state of candidates) {
+        const selected = String(state && state.selected_protocol || '').trim();
+        if (selected) return selected;
+      }
+      return '';
+    }
+
+    function routeSideConfiguredProtocol(side) {
+      const raw = String((side && (side.next_route_layer || side.prev_route_layer || side.route_layer)) || '').trim();
+      return routeProtocolLabel(raw);
+    }
+
+    function routeSideProtocolText(side) {
+      const configured = routeSideConfiguredProtocol(side);
+      const selectedRaw = routeSideSelectedProtocol(side);
+      const selected = selectedRaw ? routeProtocolLabel(selectedRaw) : '';
+      if (!selected || selected === configured) return `协议 ${configured}`;
+      return `协议 ${configured} -> ${selected}`;
+    }
+
     function renderLastVirtualPingContext(stats) {
       const item = stats || {};
       const parts = [];
@@ -785,6 +815,7 @@
       return `
         <div><span class="${routeStatusClass(item.status)}">${escapeHTML(routeStatusLabel(item.status))}</span></div>
         <div class="small muted">${escapeHTML(endpoints.join(' / ') || '-')}</div>
+        <div class="small muted">${escapeHTML(routeSideProtocolText(item))}</div>
         ${errors}
         ${renderBridgeSessions(item)}
         ${renderLastVirtualPingContext(stats)}

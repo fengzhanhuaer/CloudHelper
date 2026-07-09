@@ -261,8 +261,25 @@ func TestProbeLocalVirtualRouterStatusHandlerReturnsRuntimeDebugState(t *testing
 		peerIP:      "198.18.0.19",
 		peerHost:    "edge.example.com",
 		peerPort:    12040,
+		routeLayer:  "auto",
 		dialer:      true,
 	}}
+	probeRouteRelayProtocolStateStore.mu.Lock()
+	oldProtocolItems := probeRouteRelayProtocolStateStore.items
+	probeRouteRelayProtocolStateStore.items = map[string]*probeRouteRelayProtocolState{
+		probeRouteRelayProtocolEndpointKey("edge.example.com", 12040): &probeRouteRelayProtocolState{
+			SelectedProtocol: "websocket",
+			SelectionReason:  "test",
+			UpdatedAt:        time.Now(),
+			Qualities:        map[string]probeRouteRelayProtocolQuality{},
+		},
+	}
+	probeRouteRelayProtocolStateStore.mu.Unlock()
+	t.Cleanup(func() {
+		probeRouteRelayProtocolStateStore.mu.Lock()
+		probeRouteRelayProtocolStateStore.items = oldProtocolItems
+		probeRouteRelayProtocolStateStore.mu.Unlock()
+	})
 	left, right := net.Pipe()
 	defer right.Close()
 	defer left.Close()
@@ -307,6 +324,10 @@ func TestProbeLocalVirtualRouterStatusHandlerReturnsRuntimeDebugState(t *testing
 	runtimes, ok := payload["runtimes"].([]any)
 	if !ok || len(runtimes) != 1 {
 		t.Fatalf("runtimes=%T %v", payload["runtimes"], payload["runtimes"])
+	}
+	firstRuntime, ok := runtimes[0].(map[string]any)
+	if !ok || firstRuntime["route_layer"] != "auto" || firstRuntime["selected_protocol"] != "websocket" || firstRuntime["protocol_text"] != "auto -> websocket" {
+		t.Fatalf("unexpected runtime protocol state: %+v", firstRuntime)
 	}
 	links, ok := payload["frame_links"].([]any)
 	if !ok || len(links) != 1 {

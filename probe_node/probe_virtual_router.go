@@ -949,6 +949,28 @@ func currentProbeVirtualRouterRouteRuleForDomain(domain string) (probeVirtualRou
 	return probeVirtualRouterRouteRule{}, false
 }
 
+func currentProbeVirtualRouterRouteRuleForIP(ipText string) (probeVirtualRouterRouteRule, bool) {
+	target := net.ParseIP(strings.TrimSpace(ipText)).To4()
+	if target == nil {
+		return probeVirtualRouterRouteRule{}, false
+	}
+	config := currentProbeVirtualRouterConfig()
+	for _, rule := range config.RouteRules {
+		action := sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID)
+		if action == "" {
+			continue
+		}
+		for _, entry := range rule.Entries {
+			if probeVirtualRouterRouteRuleEntryMatchesIP(target, entry) {
+				rule.Action = action
+				rule.ExitNodeID = normalizeProbeRouteNodeID(rule.ExitNodeID)
+				return rule, true
+			}
+		}
+	}
+	return probeVirtualRouterRouteRule{}, false
+}
+
 func resolveProbeVirtualRouterFakeIPForDNS(domain string, rule probeVirtualRouterRouteRule) (probeVirtualRouterFakeIPEntry, error) {
 	cleanDomain := normalizeProbeVirtualRouterDomain(domain)
 	if cleanDomain == "" {
@@ -987,6 +1009,31 @@ func probeVirtualRouterRouteRuleEntryMatchesDomain(domain string, entry string) 
 		return strings.HasPrefix(domain, value)
 	case "domain_keyword":
 		return strings.Contains(domain, value)
+	default:
+		return false
+	}
+}
+
+func probeVirtualRouterRouteRuleEntryMatchesIP(ip net.IP, entry string) bool {
+	target := ip.To4()
+	if target == nil {
+		return false
+	}
+	key, value, ok := strings.Cut(strings.TrimSpace(entry), ":")
+	if !ok {
+		return false
+	}
+	key = strings.ToLower(strings.TrimSpace(key))
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	switch key {
+	case "cidr", "ip_cidr", "ip-cidr":
+		_, network, err := net.ParseCIDR(value)
+		return err == nil && network != nil && network.Contains(target)
+	case "ip":
+		return target.Equal(net.ParseIP(value).To4())
 	default:
 		return false
 	}
@@ -1901,6 +1948,11 @@ func currentProbeVirtualRouterPathToIP(ip string) []string {
 		}
 	}
 	probeVirtualRouterState.mu.RUnlock()
+	if targetNodeID == "" {
+		if rule, ok := currentProbeVirtualRouterRouteRuleForIP(targetIP.String()); ok && sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) == "probe_exit" {
+			targetNodeID = normalizeProbeRouteNodeID(rule.ExitNodeID)
+		}
+	}
 	return currentProbeVirtualRouterPathBetweenNodes(nodeID, targetNodeID)
 }
 
@@ -1920,6 +1972,11 @@ func currentProbeVirtualRouterPathForPacket(packet []byte, dstIP string) []strin
 		}
 	}
 	probeVirtualRouterState.mu.RUnlock()
+	if targetNodeID == "" {
+		if rule, ok := currentProbeVirtualRouterRouteRuleForIP(targetIP.String()); ok && sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) == "probe_exit" {
+			targetNodeID = normalizeProbeRouteNodeID(rule.ExitNodeID)
+		}
+	}
 	if nodeID == "" {
 		nodeID = sourceNodeID
 	}

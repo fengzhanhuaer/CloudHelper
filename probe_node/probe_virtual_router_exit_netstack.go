@@ -92,11 +92,11 @@ var probeVirtualRouterExitDialUDP = dialProbeVirtualRouterExitUDP
 
 func handleProbeVirtualRouterFakeIPExitPacket(runtime *probeVirtualRouterRuntime, link *probeVirtualRouterFrameLink, packet []byte, path []string) bool {
 	dstIP := probeVirtualRouterIPv4Destination(packet)
-	entry, ok := currentProbeVirtualRouterFakeIPEntryByIPWithAsyncRefresh(dstIP)
-	if !ok || normalizeProbeRouteNodeID(entry.ExitNodeID) != currentProbeVirtualRouterLocalNodeIDForRuntime(runtime) {
+	entry, fakeIP, ok := currentProbeVirtualRouterExitEntryForDestinationIP(dstIP, runtime)
+	if !ok {
 		return false
 	}
-	if handleProbeVirtualRouterFakeIPExitICMPEchoRequest(runtime, link, packet, path, entry) {
+	if fakeIP && handleProbeVirtualRouterFakeIPExitICMPEchoRequest(runtime, link, packet, path, entry) {
 		return true
 	}
 	info, ok := probeVirtualRouterParseTCPUDPLogInfo(packet)
@@ -115,6 +115,26 @@ func handleProbeVirtualRouterFakeIPExitPacket(runtime *probeVirtualRouterRuntime
 		return false
 	}
 	return true
+}
+
+func currentProbeVirtualRouterExitEntryForDestinationIP(dstIP string, runtime *probeVirtualRouterRuntime) (probeVirtualRouterFakeIPEntry, bool, bool) {
+	localNodeID := currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)
+	if probeVirtualRouterIPInCurrentFakeCIDR(dstIP) {
+		if entry, ok := currentProbeVirtualRouterFakeIPEntryByIPWithAsyncRefresh(dstIP); ok {
+			return entry, true, normalizeProbeRouteNodeID(entry.ExitNodeID) == localNodeID
+		}
+	}
+	rule, ok := currentProbeVirtualRouterRouteRuleForIP(dstIP)
+	if !ok || sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) != "probe_exit" || normalizeProbeRouteNodeID(rule.ExitNodeID) != localNodeID {
+		return probeVirtualRouterFakeIPEntry{}, false, false
+	}
+	return probeVirtualRouterFakeIPEntry{
+		Domain:     strings.TrimSpace(dstIP),
+		FakeIP:     strings.TrimSpace(dstIP),
+		Action:     "probe_exit",
+		ExitNodeID: localNodeID,
+		RuleID:     strings.TrimSpace(rule.ID),
+	}, false, true
 }
 
 func currentProbeVirtualRouterExitNetstack() (*probeVirtualRouterExitNetstack, error) {
@@ -522,9 +542,27 @@ func probeVirtualRouterFakeIPTargetsFromTransportID(addr tcpip.Address, port uin
 		return nil, probeVirtualRouterFakeIPEntry{}, errors.New("transport target port is empty")
 	}
 	host := strings.TrimSpace(addr.String())
-	entry, ok := currentProbeVirtualRouterFakeIPEntryByIPWithAsyncRefresh(host)
+	var entry probeVirtualRouterFakeIPEntry
+	ok := false
+	if probeVirtualRouterIPInCurrentFakeCIDR(host) {
+		entry, ok = currentProbeVirtualRouterFakeIPEntryByIPWithAsyncRefresh(host)
+	}
 	if !ok {
-		return nil, probeVirtualRouterFakeIPEntry{}, errors.New("fake ip mapping is unavailable")
+		rule, ruleOK := currentProbeVirtualRouterRouteRuleForIP(host)
+		if !ruleOK || sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) != "probe_exit" || normalizeProbeRouteNodeID(rule.ExitNodeID) != currentProbeVirtualRouterLocalNodeID() {
+			return nil, probeVirtualRouterFakeIPEntry{}, errors.New("fake ip mapping is unavailable")
+		}
+		targets := buildProbeLocalTunnelRouteTargetCandidates([]string{host}, strconv.Itoa(int(port)))
+		if len(targets) == 0 {
+			return nil, probeVirtualRouterFakeIPEntry{}, fmt.Errorf("cidr route target is invalid: ip=%s", host)
+		}
+		return targets, probeVirtualRouterFakeIPEntry{
+			Domain:     host,
+			FakeIP:     host,
+			Action:     "probe_exit",
+			ExitNodeID: normalizeProbeRouteNodeID(rule.ExitNodeID),
+			RuleID:     strings.TrimSpace(rule.ID),
+		}, nil
 	}
 	domain := normalizeProbeVirtualRouterDomain(entry.Domain)
 	if domain == "" {

@@ -2284,23 +2284,28 @@ func probeLocalVirtualRouterRuntimeStatusPayloads() []map[string]any {
 	out := make([]map[string]any, 0, len(runtimes))
 	for _, rt := range runtimes {
 		cfg := rt.cfg
+		selectedProtocol, selectedProtocolEndpoint := probeLocalVirtualRouterRuntimeSelectedProtocol(cfg)
+		routeLayer := normalizeProbeRouteRouteLayer(cfg.routeLayer)
 		item := map[string]any{
-			"route_id":       strings.TrimSpace(cfg.routeID),
-			"name":           strings.TrimSpace(cfg.name),
-			"local_node_id":  normalizeProbeRouteNodeID(cfg.localNodeID),
-			"peer_node_id":   normalizeProbeRouteNodeID(cfg.peerNodeID),
-			"from_node_id":   normalizeProbeRouteNodeID(cfg.fromNodeID),
-			"to_node_id":     normalizeProbeRouteNodeID(cfg.toNodeID),
-			"local_ip":       strings.TrimSpace(cfg.localIP),
-			"peer_ip":        strings.TrimSpace(cfg.peerIP),
-			"peer_host":      strings.TrimSpace(cfg.peerHost),
-			"peer_port":      cfg.peerPort,
-			"listen_host":    strings.TrimSpace(cfg.listenHost),
-			"listen_port":    cfg.listenPort,
-			"route_layer":    strings.TrimSpace(cfg.routeLayer),
-			"dialer":         cfg.dialer,
-			"bridge_role":    probeLocalVirtualRouterRuntimeBridgeRole(cfg),
-			"frame_link_key": probeVirtualRouterFrameLinkKey(rt, "", "", nil),
+			"route_id":                   strings.TrimSpace(cfg.routeID),
+			"name":                       strings.TrimSpace(cfg.name),
+			"local_node_id":              normalizeProbeRouteNodeID(cfg.localNodeID),
+			"peer_node_id":               normalizeProbeRouteNodeID(cfg.peerNodeID),
+			"from_node_id":               normalizeProbeRouteNodeID(cfg.fromNodeID),
+			"to_node_id":                 normalizeProbeRouteNodeID(cfg.toNodeID),
+			"local_ip":                   strings.TrimSpace(cfg.localIP),
+			"peer_ip":                    strings.TrimSpace(cfg.peerIP),
+			"peer_host":                  strings.TrimSpace(cfg.peerHost),
+			"peer_port":                  cfg.peerPort,
+			"listen_host":                strings.TrimSpace(cfg.listenHost),
+			"listen_port":                cfg.listenPort,
+			"route_layer":                routeLayer,
+			"selected_protocol":          selectedProtocol,
+			"selected_protocol_endpoint": selectedProtocolEndpoint,
+			"protocol_text":              probeLocalVirtualRouterRuntimeProtocolText(routeLayer, selectedProtocol),
+			"dialer":                     cfg.dialer,
+			"bridge_role":                probeLocalVirtualRouterRuntimeBridgeRole(cfg),
+			"frame_link_key":             probeVirtualRouterFrameLinkKey(rt, "", "", nil),
 		}
 		if stats := snapshotProbeVirtualRouterRuntimeStats(cfg.routeID); stats != nil {
 			item["stats"] = stats
@@ -2311,6 +2316,43 @@ func probeLocalVirtualRouterRuntimeStatusPayloads() []map[string]any {
 		out = append(out, item)
 	}
 	return out
+}
+
+func probeLocalVirtualRouterRuntimeSelectedProtocol(cfg probeVirtualRouterRuntimeConfig) (string, string) {
+	host := strings.TrimSpace(cfg.listenHost)
+	port := cfg.listenPort
+	if cfg.dialer {
+		host = strings.TrimSpace(cfg.peerHost)
+		port = cfg.peerPort
+	}
+	if host == "" || port <= 0 {
+		return "", ""
+	}
+	snapshot := snapshotProbeRouteProtocolState(host, port)
+	rawSelected := strings.TrimSpace(snapshot.SelectedProtocol)
+	if rawSelected == "" {
+		return "", strings.TrimSpace(snapshot.Endpoint)
+	}
+	selected := normalizeProbeRouteRouteLayer(rawSelected)
+	return selected, strings.TrimSpace(snapshot.Endpoint)
+}
+
+func probeLocalVirtualRouterRuntimeProtocolText(routeLayer string, selectedProtocol string) string {
+	configured := normalizeProbeRouteRouteLayer(routeLayer)
+	selected := ""
+	if rawSelected := strings.TrimSpace(selectedProtocol); rawSelected != "" {
+		selected = normalizeProbeRouteRouteLayer(rawSelected)
+	}
+	if configured == "" {
+		configured = "auto"
+	}
+	if selected == "" {
+		return configured
+	}
+	if configured == selected {
+		return selected
+	}
+	return configured + " -> " + selected
 }
 
 func probeLocalVirtualRouterRuntimeBridgeRole(cfg probeVirtualRouterRuntimeConfig) string {
