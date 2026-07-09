@@ -22,6 +22,7 @@
       <section class="page">
         <div class="sub-tabs" role="tablist" aria-label="状态页">
           <button id="statusOverviewTab" class="sub-tab-button active" type="button" role="tab" aria-selected="true" aria-controls="statusOverviewPanel" data-status-tab="overview">概览</button>
+          <button id="statusVRouteTab" class="sub-tab-button" type="button" role="tab" aria-selected="false" aria-controls="statusVRoutePanel" data-status-tab="vroute">虚拟路由</button>
           <button id="statusConnectionsTab" class="sub-tab-button" type="button" role="tab" aria-selected="false" aria-controls="statusConnectionsPanel" data-status-tab="connections">连接</button>
           <button id="statusLogsTab" class="sub-tab-button" type="button" role="tab" aria-selected="false" aria-controls="statusLogsPanel" data-status-tab="logs">日志</button>
         </div>
@@ -50,6 +51,16 @@
             <button id="vpnSelfCheckButton" class="command secondary" type="button">VPN 自检</button>
           </div>
           <div id="status" class="status-box"></div>
+        </div>
+        <div id="statusVRoutePanel" class="tab-panel" role="tabpanel" aria-labelledby="statusVRouteTab" hidden>
+          <div class="actions compact">
+            <button id="refreshVRouteButton" class="command secondary" type="button">刷新</button>
+          </div>
+          <div id="vrouteStatus" class="inline-feedback"></div>
+          <div id="vrouteSummary" class="vroute-summary-grid"></div>
+          <div id="vrouteCarriers" class="vroute-list"></div>
+          <div id="vrouteRules" class="vroute-list"></div>
+          <div id="vrouteCapabilities" class="vroute-capabilities"></div>
         </div>
         <div id="statusConnectionsPanel" class="tab-panel" role="tabpanel" aria-labelledby="statusConnectionsTab" hidden>
           <div class="actions compact">

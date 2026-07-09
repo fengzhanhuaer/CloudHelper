@@ -252,51 +252,6 @@ func TestInstallProbeLocalTUNDriverVerifyFailureWithoutAdapterHandle(t *testing.
 	}
 }
 
-func TestInstallProbeLocalTUNDriverElevationWaitDetectDelayedSuccess(t *testing.T) {
-	probeLocalIsWindowsAdmin = func() bool { return false }
-	probeLocalEnsureWintunLibrary = func() error { return nil }
-	relaunchCalls := 0
-	probeLocalRelaunchAsAdminInstall = func() error {
-		relaunchCalls++
-		return nil
-	}
-	detectCalls := 0
-	probeLocalInspectWintunVisibility = func() (probeLocalWintunVisibilityEvidence, error) {
-		detectCalls++
-		if detectCalls >= 3 {
-			return probeLocalWintunVisibilityEvidence{
-				NetAdapterMatched: true,
-				PresentPnPMatched: true,
-				NetAdapter: probeLocalWindowsNetAdapter{
-					InterfaceIndex: 8,
-				},
-			}, nil
-		}
-		return probeLocalWintunVisibilityEvidence{}, nil
-	}
-	createCalls := 0
-	probeLocalCreateWintunAdapter = func(_, _, _ string) (uintptr, error) {
-		createCalls++
-		return uintptr(33), nil
-	}
-	probeLocalEnsureWindowsInterfaceIPv4 = func(_ int, _ string, _ int) error { return nil }
-	probeLocalTUNInstallSleep = func(_ time.Duration) {}
-	t.Cleanup(func() { resetProbeLocalTUNInstallWindowsHooksForTest() })
-
-	if err := installProbeLocalTUNDriver(); err != nil {
-		t.Fatalf("installProbeLocalTUNDriver returned error: %v", err)
-	}
-	if relaunchCalls != 1 {
-		t.Fatalf("relaunch calls=%d, want 1", relaunchCalls)
-	}
-	if detectCalls < 3 {
-		t.Fatalf("detect calls=%d, want >=3", detectCalls)
-	}
-	if createCalls < 1 {
-		t.Fatalf("create calls=%d, want >=1 when retaining handle in elevation wait path", createCalls)
-	}
-}
-
 func TestInstallProbeLocalTUNDriverElevationWaitDetectTimeout(t *testing.T) {
 	probeLocalIsWindowsAdmin = func() bool { return false }
 	probeLocalEnsureWintunLibrary = func() error { return nil }

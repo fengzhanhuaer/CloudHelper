@@ -1,7 +1,6 @@
 package mobilecore
 
 import (
-	"bufio"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -43,6 +42,7 @@ const (
 	vpnDNSPersistDelay  = 10 * time.Second
 	vpnDNSReadTimeout   = 20 * time.Second
 	vpnDNSLookupTimeout = 5 * time.Second
+	vpnTunWriteTimeout  = 5 * time.Second
 	vpnDNSCacheFileName = "android_vpn_dns_cache.json"
 )
 
@@ -73,13 +73,14 @@ type androidVPNRuntime struct {
 }
 
 type androidVPNDataPlane struct {
-	stack     *stack.Stack
-	linkEP    *channel.Endpoint
-	tun       *os.File
-	cancel    context.CancelFunc
-	doneCh    chan struct{}
-	closeOnce sync.Once
-	closed    atomic.Bool
+	stack      *stack.Stack
+	linkEP     *channel.Endpoint
+	tun        *os.File
+	cancel     context.CancelFunc
+	doneCh     chan struct{}
+	tunWriteMu sync.Mutex
+	closeOnce  sync.Once
+	closed     atomic.Bool
 }
 
 type vpnRouteDecision struct {
@@ -145,15 +146,6 @@ type androidVPNDNSPersistRouteEntry struct {
 	IPv6      []string  `json:"ipv6,omitempty"`
 	Group     string    `json:"group,omitempty"`
 	ExpiresAt time.Time `json:"expires_at"`
-}
-
-type vpnTunnelUDPConn struct {
-	stream net.Conn
-	reader *bufio.Reader
-
-	readMu    sync.Mutex
-	writeMu   sync.Mutex
-	closeOnce sync.Once
 }
 
 func currentAndroidVPNConfigDir() string {
@@ -427,6 +419,7 @@ func VpnStop() string {
 	if dataPlane != nil {
 		_ = dataPlane.Close()
 	}
+	closeMobileVRouteCarriers()
 	if tun != nil {
 		_ = tun.Close()
 	}
@@ -443,6 +436,7 @@ func VpnStatus() string {
 	updatedAt := vpnRuntime.updatedAt
 	vpnRuntime.mu.Unlock()
 	dnsStatus := snapshotAndroidVPNDNSStatus()
+	configDir := currentAndroidVPNConfigDir()
 	return marshalRouteJSON(map[string]any{
 		"ok":         true,
 		"running":    running,
@@ -450,6 +444,7 @@ func VpnStatus() string {
 		"last_error": lastError,
 		"updated_at": updatedAt,
 		"dns":        dnsStatus,
+		"vroute":     mobileVRouteRuntimeStatusPayload(configDir),
 		"self_check": selfCheck,
 	})
 }
@@ -493,6 +488,7 @@ func runAndroidVPNSelfCheck(configDir string) map[string]any {
 	vpnRuntime.configDir = strings.TrimSpace(configDir)
 	vpnRuntime.mu.Unlock()
 	setMobileRouteConfigDir(configDir)
+	result["vroute"] = mobileVRouteRuntimeStatusPayload(configDir)
 	query, err := buildAndroidVPNDNSQuery("www.google.com", dnsmessage.TypeA)
 	if err != nil {
 		result["status"] = "dns_query_build_failed"
@@ -547,41 +543,8 @@ func runAndroidVPNSelfCheck(configDir string) map[string]any {
 		result["updated_at"] = time.Now().UTC().Format(time.RFC3339)
 		return result
 	}
-	conn, err := openMobileRoutePathStream(route.SelectedRouteID, "tcp", route.TargetAddr)
-	if err != nil {
-		result["status"] = "route_open_failed"
-		result["error"] = err.Error()
-		result["updated_at"] = time.Now().UTC().Format(time.RFC3339)
-		return result
-	}
-	_ = conn.Close()
-	rawIPv4s, rawErr := resolveAndroidVPNDomainIPv4s("www.google.com")
-	if rawErr == nil && len(rawIPv4s) > 0 {
-		rawTarget := net.JoinHostPort(rawIPv4s[0], "443")
-		rawRoute, routeErr := decideVPNRouteForTarget(rawTarget)
-		if routeErr == nil {
-			result["ip_route"] = map[string]any{
-				"group":             rawRoute.Group,
-				"direct":            rawRoute.Direct,
-				"reject":            rawRoute.Reject,
-				"target":            rawRoute.TargetAddr,
-				"selected_route_id": rawRoute.SelectedRouteID,
-			}
-			if !rawRoute.Direct && !rawRoute.Reject && strings.TrimSpace(rawRoute.SelectedRouteID) != "" {
-				ipConn, ipErr := openMobileRoutePathStream(rawRoute.SelectedRouteID, "tcp", rawRoute.TargetAddr)
-				if ipErr != nil {
-					result["status"] = "ip_route_open_failed"
-					result["error"] = ipErr.Error()
-					result["updated_at"] = time.Now().UTC().Format(time.RFC3339)
-					result["duration_ms"] = time.Since(startedAt).Milliseconds()
-					return result
-				}
-				_ = ipConn.Close()
-			}
-		}
-	}
 	result["ok"] = true
-	result["status"] = "tunnel_ready"
+	result["status"] = "vroute_packet_ready"
 	result["updated_at"] = time.Now().UTC().Format(time.RFC3339)
 	result["duration_ms"] = time.Since(startedAt).Milliseconds()
 	return result
@@ -692,7 +655,20 @@ func (n *androidVPNDataPlane) inputLoop(ctx context.Context) {
 		if readN <= 0 {
 			continue
 		}
-		_, _ = n.Write(buf[:readN])
+		packet := append([]byte(nil), buf[:readN]...)
+		handled, routeErr := mobileVRouteHandleVPNPacket(currentAndroidVPNConfigDir(), packet, func(reply []byte) error {
+			if len(reply) == 0 {
+				return nil
+			}
+			return n.writeTunPacket(reply)
+		})
+		if routeErr != nil {
+			recordVPNRuntimeError("vroute_packet", routeErr)
+		}
+		if handled {
+			continue
+		}
+		_, _ = n.Write(packet)
 	}
 }
 
@@ -712,13 +688,36 @@ func (n *androidVPNDataPlane) outputLoop(ctx context.Context) {
 		if len(payload) == 0 {
 			continue
 		}
-		if _, err := n.tun.Write(payload); err != nil {
+		if err := n.writeTunPacket(payload); err != nil {
 			if ctx.Err() != nil || errors.Is(err, os.ErrClosed) {
 				return
 			}
 			recordVPNRuntimeError("tun_write", err)
 		}
 	}
+}
+
+func (n *androidVPNDataPlane) writeTunPacket(packet []byte) error {
+	if len(packet) == 0 {
+		return nil
+	}
+	if n == nil || n.tun == nil || n.closed.Load() {
+		return io.ErrClosedPipe
+	}
+	n.tunWriteMu.Lock()
+	defer n.tunWriteMu.Unlock()
+	if vpnTunWriteTimeout > 0 {
+		_ = n.tun.SetWriteDeadline(time.Now().Add(vpnTunWriteTimeout))
+		defer n.tun.SetWriteDeadline(time.Time{})
+	}
+	nn, err := n.tun.Write(packet)
+	if err != nil {
+		return err
+	}
+	if nn != len(packet) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 func (n *androidVPNDataPlane) Write(packet []byte) (int, error) {
@@ -783,7 +782,7 @@ func (n *androidVPNDataPlane) handleTCPForwarder(req *tcp.ForwarderRequest) {
 	inbound := gonet.NewTCPConn(&wq, ep)
 	preface, dialTarget, sni := prepareVPNTCPDialTarget(inbound, targetAddr)
 	flowID := newAndroidRouteFlowID("vpn_tcp", dialTarget)
-	outbound, route, err := openVPNOutboundTCPWithFlow(dialTarget, flowID)
+	outbound, route, err := openVPNDirectTCPForTarget(dialTarget, flowID)
 	if err != nil {
 		stage := "tcp_open " + targetAddr
 		if dialTarget != targetAddr {
@@ -844,7 +843,7 @@ func (n *androidVPNDataPlane) handleUDPForwarder(req *udp.ForwarderRequest) {
 		return
 	}
 	inbound := gonet.NewUDPConn(&wq, ep)
-	outbound, route, flowID, err := openVPNOutboundUDPStream(id, targetAddr)
+	outbound, route, flowID, err := openVPNDirectUDPConn(id, targetAddr)
 	if err != nil {
 		globalandroidRouteConnectionState.recordFailure("open_failed", androidRouteConnectionOptions{
 			Scope:     "vpn_udp",
@@ -880,12 +879,7 @@ func (n *androidVPNDataPlane) handleDNSForwarder(req *udp.ForwarderRequest, targ
 	go serveAndroidVPNDNS(inbound, targetAddr)
 }
 
-func openVPNOutboundTCP(targetAddr string) (net.Conn, error) {
-	conn, _, err := openVPNOutboundTCPWithFlow(targetAddr, newAndroidRouteFlowID("vpn_tcp", targetAddr))
-	return conn, err
-}
-
-func openVPNOutboundTCPWithFlow(targetAddr string, flowID string) (net.Conn, vpnRouteDecision, error) {
+func openVPNDirectTCPForTarget(targetAddr string, flowID string) (net.Conn, vpnRouteDecision, error) {
 	route, err := decideVPNRouteForTarget(targetAddr)
 	if err != nil {
 		return nil, route, err
@@ -893,13 +887,13 @@ func openVPNOutboundTCPWithFlow(targetAddr string, flowID string) (net.Conn, vpn
 	if route.Reject {
 		return nil, route, errors.New("route rejected")
 	}
-	conn, err := dialVPNRouteTCPWithFlow(route, flowID)
+	conn, err := dialVPNDirectTCPWithFlow(route, flowID)
 	if err == nil {
 		return conn, route, nil
 	}
 	if fallbackRoute, ok := buildAndroidVPNIPv4FallbackRoute(route, err); ok {
 		androidLogStore.add("vpn", "warn", "tcp ipv6 fallback "+route.TargetAddr+" -> "+fallbackRoute.TargetAddr+" group="+fallbackRoute.Group)
-		if fallbackConn, fallbackErr := dialVPNRouteTCPWithFlow(fallbackRoute, flowID); fallbackErr == nil {
+		if fallbackConn, fallbackErr := dialVPNDirectTCPWithFlow(fallbackRoute, flowID); fallbackErr == nil {
 			return fallbackConn, fallbackRoute, nil
 		} else {
 			return nil, fallbackRoute, fmt.Errorf("%w; ipv4 fallback %s failed: %v", err, fallbackRoute.TargetAddr, fallbackErr)
@@ -1087,37 +1081,15 @@ func isValidVPNTLSSNIHost(host string) bool {
 	return true
 }
 
-func dialVPNRouteTCP(route vpnRouteDecision) (net.Conn, error) {
-	return dialVPNRouteTCPWithFlow(route, newAndroidRouteFlowID("vpn_tcp", route.TargetAddr))
-}
-
-func dialVPNRouteTCPWithFlow(route vpnRouteDecision, flowID string) (net.Conn, error) {
-	if route.Direct {
-		dialer := net.Dialer{Timeout: mobileRouteConnectTimeout}
-		return dialer.Dial("tcp", route.TargetAddr)
-	}
-	return openMobileRoutePathStreamWithFlow(route.SelectedRouteID, "tcp", route.TargetAddr, flowID)
-}
-
-func openVPNOutboundUDP(targetAddr string) (*net.UDPConn, error) {
-	route, err := decideVPNRouteForTarget(targetAddr)
-	if err != nil {
-		return nil, err
-	}
-	if route.Reject {
-		return nil, errors.New("route rejected")
-	}
+func dialVPNDirectTCPWithFlow(route vpnRouteDecision, flowID string) (net.Conn, error) {
 	if !route.Direct {
-		return nil, errors.New("tunnel udp requires stream bridge")
+		return nil, errors.New("non-direct tcp packet should be handled by vroute ip data plane")
 	}
-	udpAddr, err := net.ResolveUDPAddr("udp", targetAddr)
-	if err != nil {
-		return nil, err
-	}
-	return net.DialUDP("udp", nil, udpAddr)
+	dialer := net.Dialer{Timeout: mobileRouteConnectTimeout}
+	return dialer.Dial("tcp", route.TargetAddr)
 }
 
-func openVPNOutboundUDPStream(id stack.TransportEndpointID, targetAddr string) (io.ReadWriteCloser, vpnRouteDecision, string, error) {
+func openVPNDirectUDPConn(id stack.TransportEndpointID, targetAddr string) (io.ReadWriteCloser, vpnRouteDecision, string, error) {
 	route, err := decideVPNRouteForTarget(targetAddr)
 	if err != nil {
 		return nil, route, "", err
@@ -1126,47 +1098,15 @@ func openVPNOutboundUDPStream(id stack.TransportEndpointID, targetAddr string) (
 	if route.Reject {
 		return nil, route, flowID, errors.New("route rejected")
 	}
-	if route.Direct {
-		conn, err := openVPNOutboundUDP(route.TargetAddr)
-		return conn, route, flowID, err
+	if !route.Direct {
+		return nil, route, flowID, errors.New("non-direct udp packet should be handled by vroute ip data plane")
 	}
-	srcIP := strings.TrimSpace(id.RemoteAddress.String())
-	dstIP := strings.TrimSpace(id.LocalAddress.String())
-	assocKey := strings.ToLower(strings.TrimSpace(route.TargetAddr)) + "|" + srcIP + ":" + strconv.Itoa(int(id.RemotePort)) + "->" + dstIP + ":" + strconv.Itoa(int(id.LocalPort))
-	flowID = assocKey
-	association := &routeAssociationV2Meta{
-		Version:          2,
-		Transport:        "udp",
-		RouteGroup:       strings.TrimSpace(route.Group),
-		RouteNodeID:      strings.TrimSpace(route.SelectedRouteID),
-		RouteTarget:      strings.TrimSpace(route.TargetAddr),
-		RouteFingerprint: strings.ToLower(strings.TrimSpace(route.TargetAddr)),
-		NATMode:          "default",
-		TTLProfile:       "default",
-		IdleTimeoutMS:    vpnUDPRelayTimeout.Milliseconds(),
-		GCIntervalMS:     (vpnUDPRelayTimeout / 2).Milliseconds(),
-		CreatedAtUnixMS:  time.Now().UnixMilli(),
-		AssocKeyV2:       assocKey,
-		FlowID:           assocKey,
-		SrcIP:            srcIP,
-		SrcPort:          uint16(id.RemotePort),
-		DstIP:            dstIP,
-		DstPort:          uint16(id.LocalPort),
-		SourceKey:        srcIP + ":" + strconv.Itoa(int(id.RemotePort)),
-		SourceRefs:       1,
-	}
-	if ip := net.ParseIP(srcIP); ip != nil {
-		if ip.To4() != nil {
-			association.IPFamily = 4
-		} else {
-			association.IPFamily = 6
-		}
-	}
-	stream, err := openMobileRoutePathPacketStream(route.SelectedRouteID, "udp", route.TargetAddr, association)
+	udpAddr, err := net.ResolveUDPAddr("udp", route.TargetAddr)
 	if err != nil {
 		return nil, route, flowID, err
 	}
-	return newVPNTunnelUDPConn(stream), route, flowID, nil
+	conn, err := net.DialUDP("udp", nil, udpAddr)
+	return conn, route, flowID, err
 }
 
 func decideVPNRouteForTarget(targetAddr string) (vpnRouteDecision, error) {
@@ -1214,6 +1154,17 @@ func decideAndroidRouteForTarget(targetAddr string) (androidRouteDecision, error
 	host = strings.TrimSpace(strings.Trim(host, "[]"))
 	if host == "" || strings.TrimSpace(port) == "" {
 		return androidRouteDecision{}, errors.New("invalid target address")
+	}
+	if decision, ok, err := decideMobileVRouteForTarget(currentAndroidVPNConfigDir(), net.JoinHostPort(host, port)); err != nil {
+		return androidRouteDecision{}, err
+	} else if ok {
+		return androidRouteDecision{
+			Direct:          decision.Direct,
+			Reject:          decision.Reject,
+			TargetAddr:      decision.TargetAddr,
+			Group:           firstNonEmptyString(strings.TrimSpace(decision.Group), "vroute"),
+			SelectedRouteID: mobileVRouteRouteIDForDecision(decision),
+		}, nil
 	}
 	return androidRouteDecision{
 		Direct:     true,
@@ -2045,47 +1996,6 @@ func parseRFC3339Time(value string) (time.Time, bool) {
 	return parsed, err == nil
 }
 
-func newVPNTunnelUDPConn(stream net.Conn) *vpnTunnelUDPConn {
-	return &vpnTunnelUDPConn{stream: stream, reader: bufio.NewReader(stream)}
-}
-
-func (c *vpnTunnelUDPConn) Read(payload []byte) (int, error) {
-	if c == nil || c.stream == nil {
-		return 0, io.ErrClosedPipe
-	}
-	c.readMu.Lock()
-	defer c.readMu.Unlock()
-	return readMobileVPNRouteFramedPacketInto(c.reader, payload)
-}
-
-func (c *vpnTunnelUDPConn) Write(payload []byte) (int, error) {
-	if c == nil || c.stream == nil {
-		return 0, io.ErrClosedPipe
-	}
-	if len(payload) == 0 {
-		return 0, nil
-	}
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	if err := writeMobileVPNRouteFramedPacket(c.stream, payload); err != nil {
-		return 0, err
-	}
-	return len(payload), nil
-}
-
-func (c *vpnTunnelUDPConn) Close() error {
-	if c == nil {
-		return nil
-	}
-	var err error
-	c.closeOnce.Do(func() {
-		if c.stream != nil {
-			err = c.stream.Close()
-		}
-	})
-	return err
-}
-
 func vpnTransportIDToTarget(addr tcpip.Address, port uint16) (string, error) {
 	if port == 0 {
 		return "", errors.New("transport target port is empty")
@@ -2095,45 +2005,6 @@ func vpnTransportIDToTarget(addr tcpip.Address, port uint16) (string, error) {
 		return "", errors.New("transport target address is empty")
 	}
 	return net.JoinHostPort(host, strconv.Itoa(int(port))), nil
-}
-
-func readMobileVPNRouteFramedPacketInto(reader *bufio.Reader, payload []byte) (int, error) {
-	var lengthBytes [2]byte
-	if _, err := io.ReadFull(reader, lengthBytes[:]); err != nil {
-		return 0, err
-	}
-	length := int(binary.BigEndian.Uint16(lengthBytes[:]))
-	if length <= 0 {
-		return 0, errors.New("invalid framed packet length")
-	}
-	if length > len(payload) {
-		if _, err := io.CopyN(io.Discard, reader, int64(length)); err != nil {
-			return 0, err
-		}
-		return 0, errors.New("framed packet payload exceeds read buffer")
-	}
-	if _, err := io.ReadFull(reader, payload[:length]); err != nil {
-		return 0, err
-	}
-	return length, nil
-}
-
-func writeMobileVPNRouteFramedPacket(writer io.Writer, payload []byte) error {
-	size := len(payload)
-	if size <= 0 || size > 65535 {
-		return errors.New("invalid framed packet payload")
-	}
-	frame := make([]byte, 2+size)
-	binary.BigEndian.PutUint16(frame[:2], uint16(size))
-	copy(frame[2:], payload)
-	n, err := writer.Write(frame)
-	if err != nil {
-		return err
-	}
-	if n != len(frame) {
-		return io.ErrShortWrite
-	}
-	return nil
 }
 
 func vpnProtocolFromPacket(packet []byte) (tcpip.NetworkProtocolNumber, error) {

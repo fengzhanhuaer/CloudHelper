@@ -13,6 +13,7 @@ window.CloudHelperUI = {
   setStatus(message) {
     setStatus(message || "");
     setUpgradeStatus(message || "");
+    refreshVRouteIfVisible();
     refreshConnectionsIfVisible();
     refreshLogsIfVisible();
   },
@@ -28,6 +29,7 @@ window.CloudHelperUI = {
       button.disabled = false;
       button.textContent = "VPN 自检";
     }
+    refreshVRouteIfVisible();
     refreshConnectionsIfVisible();
     refreshLogsIfVisible();
   }
@@ -558,6 +560,10 @@ function setupStatusTabs() {
   if (refreshConnectionsButton) {
     refreshConnectionsButton.onclick = refreshConnections;
   }
+  const refreshVRouteButton = byId("refreshVRouteButton");
+  if (refreshVRouteButton) {
+    refreshVRouteButton.onclick = refreshVRoute;
+  }
   const selfCheck = byId("vpnSelfCheckButton");
   if (selfCheck) {
     selfCheck.onclick = runVPNSelfCheck;
@@ -567,17 +573,21 @@ function setupStatusTabs() {
 }
 
 function activateStatusTab(tab) {
-  const clean = ["logs", "connections"].includes(tab) ? tab : "overview";
+  const clean = ["logs", "connections", "vroute"].includes(tab) ? tab : "overview";
   document.querySelectorAll("[data-status-tab]").forEach((button) => {
     const active = button.dataset.statusTab === clean;
     button.classList.toggle("active", active);
     button.setAttribute("aria-selected", active ? "true" : "false");
   });
   const overview = byId("statusOverviewPanel");
+  const vroute = byId("statusVRoutePanel");
   const connections = byId("statusConnectionsPanel");
   const logs = byId("statusLogsPanel");
   if (overview) {
     overview.hidden = clean !== "overview";
+  }
+  if (vroute) {
+    vroute.hidden = clean !== "vroute";
   }
   if (connections) {
     connections.hidden = clean !== "connections";
@@ -585,11 +595,21 @@ function activateStatusTab(tab) {
   if (logs) {
     logs.hidden = clean !== "logs";
   }
+  if (clean === "vroute") {
+    refreshVRoute();
+  }
   if (clean === "connections") {
     refreshConnections();
   }
   if (clean === "logs") {
     refreshLogs();
+  }
+}
+
+function refreshVRouteIfVisible() {
+  const panel = byId("statusVRoutePanel");
+  if (panel && !panel.hidden) {
+    refreshVRoute();
   }
 }
 
@@ -605,6 +625,213 @@ function refreshLogsIfVisible() {
   if (logs && !logs.hidden) {
     refreshLogs();
   }
+}
+
+function refreshVRoute() {
+  if (!byId("vrouteStatus")) {
+    return;
+  }
+  try {
+    const vpnData = parseJSON(window.CloudHelper.vpnStatus ? window.CloudHelper.vpnStatus() : "{}");
+    renderVRouteStatus(vpnData);
+  } catch (error) {
+    setText("vrouteStatus", `读取虚拟路由失败：${error && error.message ? error.message : error}`);
+  }
+}
+
+function renderVRouteStatus(vpnData) {
+  const vroute = (vpnData && vpnData.vroute) || {};
+  const config = vroute.config || {};
+  const carriers = vroute.carriers || {};
+  const capabilities = vroute.capabilities || {};
+  const carrierItems = Array.isArray(carriers.items) ? carriers.items : [];
+  const routeRules = Array.isArray(config.route_rule_items) ? config.route_rule_items : [];
+  const enabled = !!config.enabled;
+  const error = String(config.error || carriers.last_error || "").trim();
+  setText("vrouteStatus", [
+    enabled ? "虚拟路由已启用" : "虚拟路由未启用",
+    `拓扑 ${Number(config.topology_rules || 0)}`,
+    `规则 ${Number(config.route_rules || 0)}`,
+    `Carrier ${Number(carriers.active || carrierItems.length || 0)}`,
+    error ? `错误：${error}` : ""
+  ].filter(Boolean).join("；"));
+  renderVRouteSummary(config, carriers);
+  renderVRouteCarriers(carrierItems);
+  renderVRouteRules(routeRules);
+  renderVRouteCapabilities(capabilities);
+}
+
+function renderVRouteSummary(config, carriers) {
+  const target = byId("vrouteSummary");
+  if (!target) {
+    return;
+  }
+  target.innerHTML = "";
+  appendVRouteMetric(target, "本机节点", config.local_node_id || "-");
+  appendVRouteMetric(target, "虚拟 IP", config.local_ip || "-");
+  const exitNodes = Array.isArray(config.exit_nodes) ? config.exit_nodes : [];
+  appendVRouteMetric(target, "Fake IP", [config.fake_ip_cidr || "-", `出口 ${exitNodes.length}`].join(" / "));
+  appendVRouteMetric(target, "更新时间", formatCompactTime(config.updated_at) || "-");
+  appendVRouteMetric(target, "Carrier", `${Number(carriers.active || 0)} 活动`);
+  appendVRouteMetric(target, "最近错误", carriers.last_error || config.error || "-");
+}
+
+function appendVRouteMetric(parent, label, value) {
+  const item = document.createElement("div");
+  item.className = "vroute-metric";
+  const key = document.createElement("span");
+  key.textContent = label;
+  const val = document.createElement("strong");
+  val.textContent = value || "-";
+  item.append(key, val);
+  parent.appendChild(item);
+}
+
+function renderVRouteCarriers(items) {
+  const target = byId("vrouteCarriers");
+  if (!target) {
+    return;
+  }
+  target.innerHTML = "";
+  appendVRouteSectionTitle(target, `承载连接 (${items.length})`);
+  if (!items.length) {
+    appendVRouteEmpty(target, "暂无活动虚拟路由承载。命中远端出口规则后会建立连接。");
+    return;
+  }
+  items.forEach((item) => {
+    const card = document.createElement("article");
+    card.className = "vroute-card";
+    if (item.last_error) {
+      card.classList.add("error");
+    }
+    const title = document.createElement("div");
+    title.className = "vroute-card-title";
+    title.textContent = item.route_id || "vroute";
+    const meta = document.createElement("div");
+    meta.className = "vroute-card-meta";
+    meta.textContent = [
+      item.layer ? `协议 ${vrouteProtocolLabel(item.layer)}` : "",
+      item.relay ? `连接 ${item.relay}` : "",
+      item.next_node ? `下一跳 ${item.next_node}` : "",
+      item.exit_node ? `出口 ${item.exit_node}` : ""
+    ].filter(Boolean).join(" · ");
+    const stats = document.createElement("div");
+    stats.className = "vroute-card-grid";
+    appendVRouteMetric(stats, "TX", `${Number(item.tx_frames || 0)} / ${formatBytes(item.tx_bytes || 0)}`);
+    appendVRouteMetric(stats, "RX", `${Number(item.rx_frames || 0)} / ${formatBytes(item.rx_bytes || 0)}`);
+    appendVRouteMetric(stats, "路径", Array.isArray(item.path) ? item.path.join(" > ") : "-");
+    appendVRouteMetric(stats, "活动", formatCompactTime(item.last_activity_at) || "-");
+    if (item.last_error) {
+      appendVRouteMetric(stats, "错误", item.last_error);
+    }
+    card.append(title, meta, stats);
+    target.appendChild(card);
+  });
+}
+
+function renderVRouteRules(items) {
+  const target = byId("vrouteRules");
+  if (!target) {
+    return;
+  }
+  target.innerHTML = "";
+  appendVRouteSectionTitle(target, `路由规则 (${items.length})`);
+  if (!items.length) {
+    appendVRouteEmpty(target, "暂无已下发的虚拟路由规则。");
+    return;
+  }
+  items.forEach((item) => {
+    const card = document.createElement("article");
+    card.className = "vroute-card";
+    const title = document.createElement("div");
+    title.className = "vroute-card-title";
+    title.textContent = item.name || item.id || "未命名规则";
+    const meta = document.createElement("div");
+    meta.className = "vroute-card-meta";
+    meta.textContent = [
+      item.action || "-",
+      item.exit_node_id ? `出口 ${item.exit_node_id}` : "",
+      item.id ? `ID ${item.id}` : ""
+    ].filter(Boolean).join(" · ");
+    const entries = document.createElement("div");
+    entries.className = "vroute-entry-list";
+    const cidrs = [];
+    const domains = [];
+    (Array.isArray(item.entries) ? item.entries : []).forEach((entry) => {
+      const text = String(entry || "").trim();
+      if (!text) return;
+      if (/^(cidr|ip_cidr|ip-cidr):/i.test(text)) {
+        cidrs.push(text);
+      } else {
+        domains.push(text);
+      }
+    });
+    appendVRouteEntryGroup(entries, "CIDR", cidrs);
+    appendVRouteEntryGroup(entries, "域名", domains);
+    card.append(title, meta, entries);
+    target.appendChild(card);
+  });
+}
+
+function appendVRouteEntryGroup(parent, label, items) {
+  const row = document.createElement("div");
+  row.className = "vroute-entry-group";
+  const title = document.createElement("span");
+  title.textContent = label;
+  const value = document.createElement("strong");
+  value.textContent = items.length ? items.slice(0, 6).join("，") + (items.length > 6 ? `，等 ${items.length} 条` : "") : "-";
+  row.append(title, value);
+  parent.appendChild(row);
+}
+
+function renderVRouteCapabilities(capabilities) {
+  const target = byId("vrouteCapabilities");
+  if (!target) {
+    return;
+  }
+  target.innerHTML = "";
+  appendVRouteSectionTitle(target, "移动端能力边界");
+  const items = [
+    ["IP帧", capabilities.ip_frame],
+    ["IPv4", capabilities.ipv4],
+    ["WebSocket", capabilities.websocket_carrier],
+    ["HTTP/3", capabilities.websocket_h3],
+    ["主动拨出", capabilities.outbound_dialer],
+    ["入站监听", capabilities.inbound_listener],
+    ["TUN回写", capabilities.vpn_tun_writeback],
+    ["热刷新", capabilities.config_hot_refresh]
+  ];
+  const grid = document.createElement("div");
+  grid.className = "vroute-capability-grid";
+  items.forEach(([label, ok]) => {
+    const chip = document.createElement("span");
+    chip.className = ok ? "vroute-chip ok" : "vroute-chip off";
+    chip.textContent = `${label} ${ok ? "on" : "off"}`;
+    grid.appendChild(chip);
+  });
+  target.appendChild(grid);
+}
+
+function appendVRouteSectionTitle(parent, title) {
+  const heading = document.createElement("div");
+  heading.className = "vroute-section-title";
+  heading.textContent = title;
+  parent.appendChild(heading);
+}
+
+function appendVRouteEmpty(parent, text) {
+  const empty = document.createElement("div");
+  empty.className = "vroute-empty";
+  empty.textContent = text;
+  parent.appendChild(empty);
+}
+
+function vrouteProtocolLabel(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text || text === "default" || text === "auto") return "auto";
+  if (["websocket", "ws", "wss", "http", "https", "http2", "h2"].includes(text)) return "http2";
+  if (["websocket-h3", "ws-h3", "h3-websocket", "h3-ws", "h3", "http3", "quic"].includes(text)) return "http3";
+  return text;
 }
 
 function refreshConnections() {

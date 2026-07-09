@@ -161,18 +161,9 @@ func RefreshConfig(controllerURL string, nodeID string, nodeSecret string, confi
 	setControllerDirectTarget(controllerURL)
 	summary, err := refreshConfigFiles(controllerURL, nodeID, nodeSecret, configDir)
 	if err != nil {
-		if applied, restoreErr := applyMobileRouteRuntimesFromConfigDir(configDir, mobileNodeIdentity{NodeID: nodeID, Secret: nodeSecret}); restoreErr == nil && applied > 0 {
-			androidLogStore.add("route", "normal", fmt.Sprintf("restored android route runtimes from cache: count=%d", applied))
-			return fmt.Sprintf("配置刷新失败：%s；已从缓存恢复本机路由=%d", err.Error(), applied)
-		}
 		return "配置刷新失败：" + err.Error()
 	}
-	if applied, err := applyMobileRouteRuntimesFromConfigDir(configDir, mobileNodeIdentity{NodeID: nodeID, Secret: nodeSecret}); err != nil {
-		androidLogStore.add("route", "warn", "apply android route runtimes failed: "+err.Error())
-	} else if applied > 0 {
-		androidLogStore.add("route", "normal", fmt.Sprintf("applied android route runtimes from config: count=%d", applied))
-	}
-	return fmt.Sprintf("配置刷新完成：本机路由=%d，路由入口=%d", summary.SelfRoutes, summary.RouteEntries)
+	return fmt.Sprintf("VRoute配置刷新完成：拓扑=%d，规则=%d", summary.SelfRoutes, summary.RouteEntries)
 }
 
 func Stop() string {
@@ -182,7 +173,6 @@ func Stop() string {
 		close(manager.cancel)
 		manager.cancel = nil
 	}
-	stopAllMobileRouteRuntimes("mobilecore stop")
 	manager.status = "stopped"
 	return manager.status
 }
@@ -255,7 +245,17 @@ func refreshConfigFiles(controllerURL string, nodeID string, nodeSecret string, 
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		return configRefreshSummary{}, fmt.Errorf("create config dir: %w", err)
 	}
-	return configRefreshSummary{ConfigDir: configDir}, nil
+	vrouteConfig, err := refreshMobileVRouteConfig(controllerURL, nodeID, nodeSecret, configDir)
+	if err != nil {
+		return configRefreshSummary{}, err
+	}
+	closeMobileVRouteCarriers()
+	androidLogStore.add("route", "normal", "refreshed android vroute config: "+mobileVRouteSummary(vrouteConfig))
+	return configRefreshSummary{
+		ConfigDir:    configDir,
+		SelfRoutes:   mobileVRouteConfigTopologyCount(vrouteConfig),
+		RouteEntries: mobileVRouteConfigRuleCount(vrouteConfig),
+	}, nil
 }
 
 func writeJSONFile(path string, value any) error {
@@ -602,34 +602,6 @@ func percentFromUsed(used uint64, total uint64) float64 {
 		return 0
 	}
 	return (float64(used) / float64(total)) * 100
-}
-
-func writeMobileStreamJSON(stream net.Conn, writeMu *sync.Mutex, payload any) error {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	frameKind := mobileRouteFrameKindControl
-	frame := mobileRouteFrame{Kind: frameKind}
-	if len(data) > mobileRouteFrameMaxControlBytes {
-		frameKind = mobileRouteFrameKindData
-		frame.Kind = frameKind
-		frame.Data = data
-		return writeMobileStreamFrame(stream, writeMu, frame)
-	}
-	frame.Control = data
-	return writeMobileStreamFrame(stream, writeMu, frame)
-}
-
-func writeMobileStreamFrame(stream net.Conn, writeMu *sync.Mutex, frame mobileRouteFrame) error {
-	if writeMu != nil {
-		writeMu.Lock()
-		defer writeMu.Unlock()
-	}
-	_ = stream.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	err := writeMobileRouteFrame(stream, frame)
-	_ = stream.SetWriteDeadline(time.Time{})
-	return err
 }
 
 func (b *androidLogBuffer) add(source string, level string, message string) {
