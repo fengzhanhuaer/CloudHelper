@@ -142,7 +142,6 @@
                     <th>启用</th>
                     <th>A 端（主动）</th>
                     <th>B 端（监听）</th>
-                    <th>协议</th>
                     <th>操作</th>
                   </tr>
                 </thead>
@@ -462,8 +461,7 @@
         <option value="auto" ${value === 'auto' ? 'selected' : ''}>auto</option>
         <option value="http2" ${value === 'http2' ? 'selected' : ''}>http2</option>
         <option value="http3" ${value === 'http3' ? 'selected' : ''}>http3</option>
-      </select>
-      <div class="small muted">auto 优先 http3，失败回退 http2</div>`;
+      </select>`;
     }
 
     function virtualRouterSpeedNodeIDs() {
@@ -532,7 +530,7 @@
       const rules = Array.isArray(cfg.topology_rules) ? cfg.topology_rules : [];
       const ruleBody = document.getElementById('vr-rule-body');
       if (!rules.length) {
-        ruleBody.innerHTML = '<tr><td colspan="5" class="muted">暂无拓扑规则。</td></tr>';
+        ruleBody.innerHTML = '<tr><td colspan="4" class="muted">暂无拓扑规则。</td></tr>';
       } else {
         ruleBody.innerHTML = rules.map((rule, idx) => `
           <tr>
@@ -540,6 +538,7 @@
             <td>
               <div class="endpoint-stack">
                 <div class="endpoint-row"><span class="label">入口探针</span><select data-vr-rule-from="${idx}">${virtualRouterNodeOptions(rule.from_node_id)}</select></div>
+                <div class="endpoint-row"><span class="label">协议</span>${virtualRouterRouteLayerSelect(rule, idx)}</div>
                 <div class="endpoint-hint">主动连接监听探针，不在本端配置监听。</div>
               </div>
             </td>
@@ -549,7 +548,6 @@
                 <div class="endpoint-row"><span class="label">监听域名</span>${virtualRouterDomainSelect(rule, idx, 'to')}</div>
               </div>
             </td>
-            <td>${virtualRouterRouteLayerSelect(rule, idx)}</td>
             <td><button class="btn danger" data-vr-rule-remove="${idx}" type="button">删除</button></td>
           </tr>
         `).join('');
