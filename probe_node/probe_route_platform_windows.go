@@ -167,6 +167,64 @@ func ensureProbeRouteDirectBypass(targetAddr string) error {
 	return allErr
 }
 
+func cleanupProbeRouteDirectBypassForVirtualRouterRules(config probeVirtualRouterConfig) {
+	bypassTarget, ok := currentProbeRouteWindowsDirectRouteTarget()
+	if !ok || bypassTarget.InterfaceIndex <= 0 || strings.TrimSpace(bypassTarget.NextHop) == "" {
+		return
+	}
+	entries, err := probeLocalListWindowsRouteEntries()
+	if err != nil {
+		logProbeWarnf("probe route direct bypass cleanup list routes failed: err=%v", err)
+		return
+	}
+	excludedIfIndex := currentProbeVirtualRouterTUNDataPlaneIfIndex()
+	for _, entry := range entries {
+		if entry.PrefixLength != 32 || entry.IfIndex <= 0 {
+			continue
+		}
+		if excludedIfIndex > 0 && entry.IfIndex == excludedIfIndex {
+			continue
+		}
+		if entry.IfIndex != bypassTarget.InterfaceIndex || !strings.EqualFold(strings.TrimSpace(entry.NextHop), strings.TrimSpace(bypassTarget.NextHop)) {
+			continue
+		}
+		ip := net.ParseIP(strings.TrimSpace(entry.Prefix)).To4()
+		if ip == nil || !probeVirtualRouterConfigRoutesIPViaProbeExit(config, ip) {
+			continue
+		}
+		routeDef := probeRouteWindowsRouteDef{
+			Prefix:  ip.String(),
+			Mask:    probeRouteWindowsHostRouteMask,
+			Gateway: strings.TrimSpace(entry.NextHop),
+			IfIndex: entry.IfIndex,
+		}
+		if err := deleteProbeRouteWindowsRoute(routeDef); err != nil {
+			logProbeWarnf("probe route direct bypass cleanup failed: ip=%s gateway=%s if_index=%d err=%v", routeDef.Prefix, routeDef.Gateway, routeDef.IfIndex, err)
+			continue
+		}
+		logProbeInfof("probe route direct bypass cleanup removed virtual-router target route: ip=%s gateway=%s if_index=%d", routeDef.Prefix, routeDef.Gateway, routeDef.IfIndex)
+	}
+}
+
+func probeVirtualRouterConfigRoutesIPViaProbeExit(config probeVirtualRouterConfig, ip net.IP) bool {
+	target := ip.To4()
+	if target == nil {
+		return false
+	}
+	config = sanitizeProbeVirtualRouterConfigForCache(config)
+	for _, rule := range config.RouteRules {
+		if sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) != "probe_exit" || normalizeProbeRouteNodeID(rule.ExitNodeID) == "" {
+			continue
+		}
+		for _, entry := range rule.Entries {
+			if probeVirtualRouterRouteRuleEntryMatchesIP(target, entry) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func probeRouteWindowsDirectBypassIPsContainProtectedRange(ips []string) bool {
 	if len(ips) == 0 {
 		return false

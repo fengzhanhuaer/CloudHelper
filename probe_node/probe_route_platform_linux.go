@@ -20,6 +20,9 @@ func ensureProbeRouteDirectBypass(string) error {
 	return nil
 }
 
+func cleanupProbeRouteDirectBypassForVirtualRouterRules(probeVirtualRouterConfig) {
+}
+
 func deleteProbeRouteLinuxSplitRoute(prefix, dev, gateway string) error {
 	if strings.TrimSpace(dev) == "" {
 		return nil

@@ -11,6 +11,9 @@ func ensureProbeRouteDirectBypass(string) error {
 	return nil
 }
 
+func cleanupProbeRouteDirectBypassForVirtualRouterRules(probeVirtualRouterConfig) {
+}
+
 func currentProbeLocalSystemDNSServers() []string {
 	return nil
 }

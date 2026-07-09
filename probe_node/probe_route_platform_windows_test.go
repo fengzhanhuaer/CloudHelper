@@ -196,6 +196,45 @@ func TestEnsureProbeRouteDirectBypassSkipsFakeIPTarget(t *testing.T) {
 	}
 }
 
+func TestCleanupProbeRouteDirectBypassForVirtualRouterRulesRemovesMatchedHostRoute(t *testing.T) {
+	resetProbeRouteDirectBypassStateForTest()
+	t.Cleanup(func() {
+		resetProbeRouteDirectBypassStateForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
+	})
+
+	probeRouteDirectRouteTargetState.mu.Lock()
+	probeRouteDirectRouteTargetState.routeTarget = probeRouteWindowsDirectRouteTarget{InterfaceIndex: 13, NextHop: "192.168.51.1"}
+	probeRouteDirectRouteTargetState.ready = true
+	probeRouteDirectRouteTargetState.mu.Unlock()
+
+	probeLocalListWindowsRouteEntries = func() ([]probeLocalWindowsRouteEntry, error) {
+		return []probeLocalWindowsRouteEntry{
+			{Prefix: "149.154.167.51", PrefixLength: 32, NextHop: "192.168.51.1", IfIndex: 13},
+			{Prefix: "203.0.113.7", PrefixLength: 32, NextHop: "192.168.51.1", IfIndex: 13},
+			{Prefix: "149.154.167.52", PrefixLength: 32, NextHop: "192.168.99.1", IfIndex: 99},
+		}, nil
+	}
+	var deleted []probeRouteWindowsRouteDef
+	probeLocalDeleteWindowsRouteEntry = func(routeDef probeRouteWindowsRouteDef) error {
+		deleted = append(deleted, routeDef)
+		return nil
+	}
+
+	cleanupProbeRouteDirectBypassForVirtualRouterRules(probeVirtualRouterConfig{
+		RouteRules: []probeVirtualRouterRouteRule{{
+			ID:         "telegram",
+			Name:       "Telegram",
+			Action:     "probe_exit",
+			ExitNodeID: "18",
+			Entries:    []string{"cidr:149.154.160.0/20"},
+		}},
+	})
+	if len(deleted) != 1 || deleted[0].Prefix != "149.154.167.51" || deleted[0].Mask != probeRouteWindowsHostRouteMask || deleted[0].Gateway != "192.168.51.1" || deleted[0].IfIndex != 13 {
+		t.Fatalf("deleted=%+v, want only matching telegram host route", deleted)
+	}
+}
+
 func TestEnsureProbeRouteDirectBypassRejectsTUNInterfaceTarget(t *testing.T) {
 	resetProbeRouteDirectBypassStateForTest()
 	t.Cleanup(func() {

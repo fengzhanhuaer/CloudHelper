@@ -67,7 +67,11 @@ func ensureProbeVirtualRouterWindowsRoutes(interfaceLUID uint64, ifIndex int) er
 	if !probeVirtualRouterLocalEntryEnabled() {
 		return cleanupProbeVirtualRouterWindowsTakeoverRoutes()
 	}
-	return ensureProbeVirtualRouterWindowsTakeoverRoutes(interfaceLUID, ifIndex)
+	if err := ensureProbeVirtualRouterWindowsTakeoverRoutes(interfaceLUID, ifIndex); err != nil {
+		return err
+	}
+	cleanupProbeRouteDirectBypassForVirtualRouterRules(currentProbeVirtualRouterConfig())
+	return nil
 }
 
 func ensureProbeVirtualRouterWindowsFakeIPRoute(interfaceLUID uint64, ifIndex int) error {

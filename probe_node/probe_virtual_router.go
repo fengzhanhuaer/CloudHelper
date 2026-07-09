@@ -771,6 +771,9 @@ func applyProbeVirtualRouterConfigForNode(config probeVirtualRouterConfig, nodeI
 	if topologyChanged {
 		clearProbeVirtualRouterRouteCache("config updated")
 	}
+	if sanitized.Enabled {
+		cleanupProbeRouteDirectBypassForVirtualRouterRules(sanitized)
+	}
 	if ensureLocalInterface {
 		scheduleProbeVirtualRouterLocalInterfaceIPEnsure("config_updated")
 	} else if err := cleanupProbeVirtualRouterPlatformRoutes(); err != nil {
@@ -2509,6 +2512,9 @@ func probeVirtualRouterEnsureDirectBypassForOrdinaryTarget(packet []byte, dstIP 
 	_, isVirtualNodeIP := probeVirtualRouterState.ipToNode[targetIP.String()]
 	probeVirtualRouterState.mu.RUnlock()
 	if isVirtualNodeIP {
+		return false
+	}
+	if rule, ok := currentProbeVirtualRouterRouteRuleForIP(targetIP.String()); ok && sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) == "probe_exit" {
 		return false
 	}
 	targetAddr := probeVirtualRouterDirectBypassTargetAddr(packet, targetIP.String())

@@ -1991,6 +1991,22 @@ func TestProbeVirtualRouterTUNPacketEnsuresDirectBypassForOrdinaryTarget(t *test
 	if len(targets) != 1 {
 		t.Fatalf("fake ip should not add direct bypass target, got %v", targets)
 	}
+
+	config.RouteRules = []probeVirtualRouterRouteRule{{
+		ID:         "telegram",
+		Name:       "Telegram",
+		Action:     "probe_exit",
+		ExitNodeID: "19",
+		Entries:    []string{"cidr:149.154.160.0/20"},
+	}}
+	applyProbeVirtualRouterConfigForNode(config, "16")
+	tgPacket := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.18", "149.154.167.51", 49154, 443)
+	if probeVirtualRouterEnsureDirectBypassForOrdinaryTarget(tgPacket, "149.154.167.51") {
+		t.Fatalf("virtual-router route rule target should not be released to direct bypass")
+	}
+	if len(targets) != 1 {
+		t.Fatalf("route rule target should not add direct bypass target, got %v", targets)
+	}
 }
 
 func TestProbeVirtualRouterTUNPacketDropsFakeIPWhenExitCarrierUnavailable(t *testing.T) {
