@@ -2189,6 +2189,62 @@ func TestProbeVirtualRouterFakeIPExitPacketUsesNetstack(t *testing.T) {
 	}
 }
 
+func TestProbeVirtualRouterCIDRExitPacketUsesNetstackAtFinalHop(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeVirtualRouterStateForTest()
+	resetProbeVirtualRouterExitNetstackForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(resetProbeVirtualRouterExitNetstackForTest)
+
+	config := probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "16", IP: "198.18.0.18"},
+			{NodeID: "19", IP: "198.18.0.21"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "16", ToNodeID: "19", Enabled: true},
+		},
+		RouteRules: []probeVirtualRouterRouteRule{{
+			ID:         "rr-cidr",
+			Name:       "CIDR",
+			Action:     "probe_exit",
+			ExitNodeID: "19",
+			Entries:    []string{"cidr:203.0.113.0/24"},
+		}},
+	}
+	applyProbeVirtualRouterConfigForNode(config, "19")
+
+	oldWriter := probeVirtualRouterLocalTUNPacketWriter
+	var tunWrites int
+	probeVirtualRouterLocalTUNPacketWriter = func(packet []byte) error {
+		tunWrites++
+		return nil
+	}
+	t.Cleanup(func() { probeVirtualRouterLocalTUNPacketWriter = oldWriter })
+
+	rt := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-16-19", identity: nodeIdentity{NodeID: "19"}}}
+	rule, ok := currentProbeVirtualRouterRouteRuleForIP("203.0.113.9")
+	if !ok || rule.ExitNodeID != "19" || rule.Action != "probe_exit" {
+		t.Fatalf("cidr route rule not matched: rule=%+v ok=%t", rule, ok)
+	}
+	packet := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.18", "203.0.113.9", 49152, 443)
+	if err := handleProbeVirtualRouterIPFrame(rt, nil, packet, []string{"16", "19"}, nil); err != nil {
+		t.Fatalf("handle cidr exit packet failed: %v", err)
+	}
+	if tunWrites != 0 {
+		t.Fatalf("cidr exit packet should be consumed by netstack, local tun writes=%d", tunWrites)
+	}
+	if probeVirtualRouterExitNetstackState.runner == nil {
+		t.Fatalf("cidr exit packet should start exit netstack")
+	}
+	items := snapshotProbeVirtualRouterRecentPackets()
+	if len(items) == 0 || items[0].Action != "exit" || items[0].DestinationIP != "203.0.113.9" {
+		t.Fatalf("unexpected recent packet: %+v", items)
+	}
+}
+
 func TestProbeVirtualRouterRecentPacketRecordsFakeIPSummary(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)

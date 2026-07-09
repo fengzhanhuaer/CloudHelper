@@ -5055,6 +5055,13 @@ func handleProbeVirtualRouterIPFrame(runtime *probeVirtualRouterRuntime, link *p
 		trace = appendProbeVirtualRouterICMPTrace(trace, runtime, "frame_rx", "", "")
 		log.Printf("probe virtual router icmp frame rx: trace_code=icmp-trace-v2 route=%s runtime_node=%s kind=%s src=%s dst=%s id=%d seq=%d local_ip=%s local_match=%v path=%s bytes=%d trace_hops=%d", probeVirtualRouterRuntimeLogRouteID(runtime), currentProbeVirtualRouterLocalNodeIDForRuntime(runtime), info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, localIP, localMatch, strings.Join(path, ">"), len(packet), len(trace))
 	}
+	if !localMatch && probeVirtualRouterFrameTargetsLocalPathEnd(path, currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)) {
+		if handleProbeVirtualRouterFakeIPExitPacket(runtime, link, packet, path) {
+			recordProbeVirtualRouterRuntimePacketDelivered(runtime, len(packet))
+			recordProbeVirtualRouterRecentPacket("frame_rx", "exit", runtime, packet, path, true, nil)
+			return nil
+		}
+	}
 	if localMatch {
 		if handleProbeVirtualRouterLocalICMPEchoRequest(runtime, link, packet, path, trace) {
 			recordProbeVirtualRouterRuntimePacketDelivered(runtime, len(packet))
@@ -5129,6 +5136,12 @@ func handleProbeVirtualRouterIPFrame(runtime *probeVirtualRouterRuntime, link *p
 	}
 	recordProbeVirtualRouterRecentPacket("frame_rx", "forward", runtime, packet, path, false, nil)
 	return nil
+}
+
+func probeVirtualRouterFrameTargetsLocalPathEnd(path []string, localNodeID string) bool {
+	local := normalizeProbeRouteNodeID(localNodeID)
+	cleanPath := cleanProbeVirtualRouterPath(path)
+	return local != "" && len(cleanPath) > 0 && normalizeProbeRouteNodeID(cleanPath[len(cleanPath)-1]) == local
 }
 
 func probeVirtualRouterFrameTargetsLocalFakeIP(dstIP string, path []string, localNodeID string) bool {
