@@ -730,6 +730,60 @@ func TestProbeVirtualRouterApplyConfigRemovesLocalFakeIPWhenRouteNoLongerUsesExi
 	}
 }
 
+func TestProbeVirtualRouterPacketPathUsesCurrentRuleExitForStaleFakeIPEntry(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	expiresAt := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "1", IP: "198.18.0.1"},
+			{NodeID: "9", IP: "198.18.0.9"},
+			{NodeID: "18", IP: "198.18.0.18"},
+			{NodeID: "19", IP: "198.18.0.19"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{ID: "vr-9-18", FromNodeID: "9", ToNodeID: "18", Direction: "bidirectional", Enabled: true},
+			{ID: "vr-9-19", FromNodeID: "9", ToNodeID: "19", Direction: "bidirectional", Enabled: true},
+			{ID: "vr-19-1", FromNodeID: "19", ToNodeID: "1", Direction: "bidirectional", Enabled: true},
+		},
+		RouteRules: []probeVirtualRouterRouteRule{{
+			ID:         "rr-6",
+			Name:       "AI",
+			Action:     "probe_exit",
+			ExitNodeID: "1",
+			Entries:    []string{"domain_suffix:chatgpt.com"},
+		}},
+		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{
+			Version: 1,
+			Items: []probeVirtualRouterFakeIPEntry{{
+				Domain:     "chatgpt.com",
+				FakeIP:     "198.18.4.68",
+				RuleID:     "rr-old",
+				Action:     "probe_exit",
+				ExitNodeID: "18",
+				ExpiresAt:  expiresAt,
+			}},
+		},
+	}, "9")
+
+	packet := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.9", "198.18.4.68", 59681, 443)
+	if got := currentProbeVirtualRouterPathForPacket(packet, "198.18.4.68"); !reflect.DeepEqual(got, []string{"9", "19", "1"}) {
+		t.Fatalf("packet path=%v, want [9 19 1]", got)
+	}
+	item := buildProbeVirtualRouterRecentPacket("tun_rx", "forward", nil, packet, []string{"9", "19", "1"}, false, nil)
+	if !item.FakeIP || item.FakeIPDomain != "chatgpt.com" || item.FakeIPExitNode != "1" {
+		t.Fatalf("recent packet fake ip metadata should use current rule exit: %+v", item)
+	}
+	entry, ok := currentProbeVirtualRouterFakeIPEntryByIP("198.18.4.68")
+	if !ok || entry.RuleID != "rr-6" || entry.ExitNodeID != "1" {
+		t.Fatalf("effective fake ip entry=%+v ok=%v, want rr-6 exit 1", entry, ok)
+	}
+}
+
 func TestBuildProbeVirtualRouterRuntimeConfigsForNode(t *testing.T) {
 	config := probeVirtualRouterConfig{
 		Enabled: true,

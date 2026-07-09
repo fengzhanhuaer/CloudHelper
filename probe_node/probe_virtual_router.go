@@ -1123,6 +1123,14 @@ func probeVirtualRouterRouteRuleEntryMatchesIP(ip net.IP, entry string) bool {
 }
 
 func currentProbeVirtualRouterFakeIPEntryByIP(ip string) (probeVirtualRouterFakeIPEntry, bool) {
+	item, ok := currentProbeVirtualRouterStoredFakeIPEntryByIP(ip)
+	if !ok {
+		return probeVirtualRouterFakeIPEntry{}, false
+	}
+	return effectiveProbeVirtualRouterFakeIPEntryForCurrentRules(item)
+}
+
+func currentProbeVirtualRouterStoredFakeIPEntryByIP(ip string) (probeVirtualRouterFakeIPEntry, bool) {
 	target := net.ParseIP(strings.TrimSpace(ip)).To4()
 	if target == nil {
 		return probeVirtualRouterFakeIPEntry{}, false
@@ -1149,6 +1157,29 @@ func probeVirtualRouterFakeIPEntryByIPLocked(ip string, now time.Time) (probeVir
 		return item, true
 	}
 	return probeVirtualRouterFakeIPEntry{}, false
+}
+
+func effectiveProbeVirtualRouterFakeIPEntryForCurrentRules(item probeVirtualRouterFakeIPEntry) (probeVirtualRouterFakeIPEntry, bool) {
+	item = sanitizeProbeVirtualRouterFakeIPEntry(item)
+	if strings.TrimSpace(item.Domain) == "" || strings.TrimSpace(item.FakeIP) == "" {
+		return probeVirtualRouterFakeIPEntry{}, false
+	}
+	rule, ok := currentProbeVirtualRouterRouteRuleForDomain(item.Domain)
+	if !ok {
+		return item, true
+	}
+	action := sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID)
+	if action != "probe_exit" {
+		return probeVirtualRouterFakeIPEntry{}, false
+	}
+	exitNodeID := normalizeProbeRouteNodeID(rule.ExitNodeID)
+	if exitNodeID == "" {
+		return probeVirtualRouterFakeIPEntry{}, false
+	}
+	item.RuleID = strings.TrimSpace(rule.ID)
+	item.Action = "probe_exit"
+	item.ExitNodeID = exitNodeID
+	return item, true
 }
 
 func probeVirtualRouterFakeIPEntryExpired(item probeVirtualRouterFakeIPEntry, now time.Time) bool {
@@ -2025,12 +2056,12 @@ func currentProbeVirtualRouterPathToIP(ip string) []string {
 	probeVirtualRouterState.mu.RLock()
 	nodeID := strings.TrimSpace(probeVirtualRouterState.localNodeID)
 	targetNodeID := probeVirtualRouterState.ipToNode[targetIP.String()]
+	probeVirtualRouterState.mu.RUnlock()
 	if targetNodeID == "" {
-		if entry, ok := probeVirtualRouterFakeIPEntryByIPLocked(targetIP.String(), time.Now().UTC()); ok {
+		if entry, ok := currentProbeVirtualRouterFakeIPEntryByIP(targetIP.String()); ok {
 			targetNodeID = normalizeProbeRouteNodeID(entry.ExitNodeID)
 		}
 	}
-	probeVirtualRouterState.mu.RUnlock()
 	if targetNodeID == "" {
 		if rule, ok := currentProbeVirtualRouterRouteRuleForIP(targetIP.String()); ok && sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) == "probe_exit" {
 			targetNodeID = normalizeProbeRouteNodeID(rule.ExitNodeID)
@@ -2049,12 +2080,12 @@ func currentProbeVirtualRouterPathForPacket(packet []byte, dstIP string) []strin
 	nodeID := strings.TrimSpace(probeVirtualRouterState.localNodeID)
 	sourceNodeID := probeVirtualRouterState.ipToNode[sourceIP.String()]
 	targetNodeID := probeVirtualRouterState.ipToNode[targetIP.String()]
+	probeVirtualRouterState.mu.RUnlock()
 	if targetNodeID == "" {
-		if entry, ok := probeVirtualRouterFakeIPEntryByIPLocked(targetIP.String(), time.Now().UTC()); ok {
+		if entry, ok := currentProbeVirtualRouterFakeIPEntryByIP(targetIP.String()); ok {
 			targetNodeID = normalizeProbeRouteNodeID(entry.ExitNodeID)
 		}
 	}
-	probeVirtualRouterState.mu.RUnlock()
 	if targetNodeID == "" {
 		if rule, ok := currentProbeVirtualRouterRouteRuleForIP(targetIP.String()); ok && sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) == "probe_exit" {
 			targetNodeID = normalizeProbeRouteNodeID(rule.ExitNodeID)
