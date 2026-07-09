@@ -485,6 +485,7 @@ ExecStart=${BIN_PATH}
 Restart=always
 RestartSec=3
 NoNewPrivileges=true
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=full

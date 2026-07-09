@@ -142,6 +142,7 @@
                     <th>启用</th>
                     <th>A 端（主动）</th>
                     <th>B 端（监听）</th>
+                    <th>协议</th>
                     <th>操作</th>
                   </tr>
                 </thead>
@@ -448,6 +449,23 @@
       return ids.map((id) => `<option value="${escapeHTML(id)}" ${String(selected || '') === String(id) ? 'selected' : ''}>${escapeHTML(nodeLabel(id))}</option>`).join('');
     }
 
+    function normalizeVirtualRouterRouteLayer(raw) {
+      const value = String(raw || '').trim().toLowerCase();
+      if (value === 'http2' || value === 'h2' || value === 'http' || value === 'https' || value === 'websocket' || value === 'ws' || value === 'wss') return 'http2';
+      if (value === 'http3' || value === 'h3' || value === 'quic' || value === 'websocket-h3' || value === 'ws-h3') return 'http3';
+      return 'auto';
+    }
+
+    function virtualRouterRouteLayerSelect(rule, idx) {
+      const value = normalizeVirtualRouterRouteLayer(rule && rule.route_layer);
+      return `<select data-vr-route-layer="${idx}">
+        <option value="auto" ${value === 'auto' ? 'selected' : ''}>auto</option>
+        <option value="http2" ${value === 'http2' ? 'selected' : ''}>http2</option>
+        <option value="http3" ${value === 'http3' ? 'selected' : ''}>http3</option>
+      </select>
+      <div class="small muted">auto 优先 http3，失败回退 http2</div>`;
+    }
+
     function virtualRouterSpeedNodeIDs() {
       const ids = new Set();
       (state.virtualRouterNodeIDs || []).forEach((id) => {
@@ -514,7 +532,7 @@
       const rules = Array.isArray(cfg.topology_rules) ? cfg.topology_rules : [];
       const ruleBody = document.getElementById('vr-rule-body');
       if (!rules.length) {
-        ruleBody.innerHTML = '<tr><td colspan="4" class="muted">暂无拓扑规则。</td></tr>';
+        ruleBody.innerHTML = '<tr><td colspan="5" class="muted">暂无拓扑规则。</td></tr>';
       } else {
         ruleBody.innerHTML = rules.map((rule, idx) => `
           <tr>
@@ -531,6 +549,7 @@
                 <div class="endpoint-row"><span class="label">监听域名</span>${virtualRouterDomainSelect(rule, idx, 'to')}</div>
               </div>
             </td>
+            <td>${virtualRouterRouteLayerSelect(rule, idx)}</td>
             <td><button class="btn danger" data-vr-rule-remove="${idx}" type="button">删除</button></td>
           </tr>
         `).join('');
@@ -583,6 +602,13 @@
           renderVirtualRouter();
         });
       });
+      document.querySelectorAll('[data-vr-route-layer]').forEach((el) => {
+        el.addEventListener('change', () => {
+          const idx = Number.parseInt(el.getAttribute('data-vr-route-layer') || '-1', 10);
+          const rules = state.virtualRouter.topology_rules || [];
+          if (idx >= 0 && idx < rules.length) rules[idx].route_layer = normalizeVirtualRouterRouteLayer(el.value);
+        });
+      });
       document.querySelectorAll('[data-vr-rule-remove]').forEach((el) => {
         el.addEventListener('click', () => {
           const idx = Number.parseInt(el.getAttribute('data-vr-rule-remove') || '-1', 10);
@@ -623,6 +649,7 @@
         from_service_port: 0,
         to_service_domain: '',
         to_service_port: 0,
+        route_layer: 'auto',
         enabled: true,
       });
       renderVirtualRouter();
@@ -638,6 +665,7 @@
         rule.from_service_domain = '';
         rule.from_service_port = 0;
         rule.to_service_port = 0;
+        rule.route_layer = normalizeVirtualRouterRouteLayer(rule.route_layer);
       });
       const result = await requestJSON('/mng/api/route/virtual_router', {
         method: 'POST',

@@ -309,6 +309,7 @@ func TestMngLinkVirtualRouterHandlerSaveAndGet(t *testing.T) {
       "from_service_port":443,
       "to_service_domain":"edge-b.internal.lan",
       "to_service_port":443,
+      "route_layer":"http3",
       "enabled":true
     },
     {
@@ -355,6 +356,9 @@ func TestMngLinkVirtualRouterHandlerSaveAndGet(t *testing.T) {
 	first := payload.Item.TopologyRules[0]
 	if first.FromServiceDomain != "" || first.FromServicePort != 0 || first.ToServiceDomain != "edge-b.internal.lan" || first.ToServicePort != 0 {
 		t.Fatalf("service config not persisted: %+v", first)
+	}
+	if first.RouteLayer != "http3" || payload.Item.TopologyRules[1].RouteLayer != "auto" {
+		t.Fatalf("topology route layers=%+v", payload.Item.TopologyRules)
 	}
 	if strings.TrimSpace(first.Secret) == "" {
 		t.Fatalf("virtual router rule secret should be generated")

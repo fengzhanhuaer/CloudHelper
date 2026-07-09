@@ -77,6 +77,7 @@ type probeVirtualRouterTopologyRule struct {
 	FromServicePort   int    `json:"from_service_port,omitempty"`
 	ToServiceDomain   string `json:"to_service_domain,omitempty"`
 	ToServicePort     int    `json:"to_service_port,omitempty"`
+	RouteLayer        string `json:"route_layer,omitempty"`
 	UserID            string `json:"user_id,omitempty"`
 	UserPublicKey     string `json:"user_public_key,omitempty"`
 	Secret            string `json:"secret,omitempty"`
@@ -410,6 +411,7 @@ func normalizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopology
 			FromServicePort:   fromServicePort,
 			ToServiceDomain:   toServiceDomain,
 			ToServicePort:     toServicePort,
+			RouteLayer:        normalizeProbeVirtualRouterRouteLayer(item.RouteLayer),
 			UserID:            strings.TrimSpace(item.UserID),
 			UserPublicKey:     strings.TrimSpace(item.UserPublicKey),
 			Secret:            firstNonEmptyProbeVirtualRouter(strings.TrimSpace(item.Secret), randomProbeNodeSecret(probeVirtualRouterDefaultSecretLen)),
@@ -1223,6 +1225,19 @@ func probeVirtualRouterRuntimeRouteID(rule probeVirtualRouterTopologyRule) strin
 
 func normalizeProbeVirtualRouterDirection(raw string) string {
 	return probeVirtualRouterDirectionForward
+}
+
+func normalizeProbeVirtualRouterRouteLayer(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "auto", "default":
+		return "auto"
+	case "http2", "h2", "http", "https", "websocket", "ws", "wss":
+		return "http2"
+	case "http3", "h3", "quic", "websocket-h3", "ws-h3", "h3-websocket", "h3-ws":
+		return "http3"
+	default:
+		return "auto"
+	}
 }
 
 func normalizeProbeVirtualRouterIP(raw string) string {

@@ -150,30 +150,6 @@ type probeRouteRelayProtocolDialResult struct {
 	EndedAt   time.Time
 }
 
-type probeRouteRelaySpeedTestResult struct {
-	Protocol         string `json:"protocol"`
-	OK               bool   `json:"ok"`
-	LatencyMS        int64  `json:"latency_ms,omitempty"`
-	Bytes            int64  `json:"bytes,omitempty"`
-	RequestedBytes   int64  `json:"requested_bytes,omitempty"`
-	DurationMS       int64  `json:"duration_ms,omitempty"`
-	RateBPS          int64  `json:"rate_bps,omitempty"`
-	ReadCalls        int64  `json:"read_calls,omitempty"`
-	ReadChunkBytes   int64  `json:"read_chunk_bytes,omitempty"`
-	AvgReadBytes     int64  `json:"avg_read_bytes,omitempty"`
-	FirstByteMS      int64  `json:"first_byte_ms,omitempty"`
-	TotalReadBlockMS int64  `json:"total_read_block_ms,omitempty"`
-	MaxReadBlockMS   int64  `json:"max_read_block_ms,omitempty"`
-	LastReadBlockMS  int64  `json:"last_read_block_ms,omitempty"`
-	OpenHandshakeMS  int64  `json:"open_handshake_ms,omitempty"`
-	LocalStartedAt   string `json:"local_started_at,omitempty"`
-	LocalFirstByteAt string `json:"local_first_byte_at,omitempty"`
-	LocalCompletedAt string `json:"local_completed_at,omitempty"`
-	Error            string `json:"error,omitempty"`
-	StartedAt        string `json:"started_at,omitempty"`
-	EndedAt          string `json:"ended_at,omitempty"`
-}
-
 type probeRouteRelayNetAddr struct {
 	label string
 }
@@ -235,7 +211,7 @@ func probeRouteRelayJoinProtocols(protocols []string) string {
 	cleaned := make([]string, 0, len(protocols))
 	for _, protocol := range protocols {
 		value := normalizeProbeRouteRouteLayer(protocol)
-		if value == "" {
+		if value == "" || value == "auto" {
 			continue
 		}
 		cleaned = append(cleaned, value)
@@ -398,6 +374,8 @@ func probeRouteRelayProtocolCandidates(layer string) []string {
 		return []string{"websocket"}
 	case "websocket-h3":
 		return []string{"websocket-h3"}
+	case "auto":
+		return []string{"websocket-h3", "websocket"}
 	default:
 		return []string{"websocket-h3", "websocket"}
 	}
@@ -1179,71 +1157,74 @@ func openProbeRouteRelayHTTP3WebSocketNetConn(routeID string, secret string, rel
 		return nil, err
 	}
 	dialHostPort := net.JoinHostPort(relayDialHost, strconv.Itoa(relayPort))
-
-	// Reuse a pooled QUIC connection: HTTP/3 natively multiplexes request streams,
-	// so many CONNECT data streams ride one QUIC connection and avoid a fresh
-	// QUIC+TLS handshake (the dominant relay-server CPU cost) per stream.
-	logProbeRouteRelayDialAttempt("websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, openTimeout)
-	pooled, reused, err := acquireProbeRouteHTTP3PooledConn(routeID, relayHost, relayPort, relayDialHost, relayHostHeader, openTimeout)
-	if err != nil {
-		wrappedErr := wrapProbeRouteRelayDialError("websocket-h3", relayDialHost, relayPort, err)
-		logProbeRouteRelayDialOutcome("websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), wrappedErr)
-		return nil, wrappedErr
+	tlsConf := &tls.Config{
+		MinVersion:         tls.VersionTLS13,
+		NextProtos:         []string{http3.NextProtoH3},
+		ServerName:         resolveProbeRouteClientTLSServerName("websocket-h3", relayDialHost, relayHostHeader),
+		InsecureSkipVerify: true,
 	}
-
-	conn, err := openProbeRouteHTTP3WebSocketStreamOnConn(pooled, routeID, secret, relayURL, relayHost, relayPort, bridgeRole, relayMode, connToken, relayDialHost, relayHostHeader, openTimeout)
-	if err != nil {
-		// On a stream-level failure the shared QUIC conn may be dead; drop it from
-		// the pool so the next attempt redials, and on a freshly-created conn that
-		// never served a stream, retrying once with a brand-new conn avoids a stuck
-		// half-open endpoint.
-		releaseProbeRouteHTTP3PooledConn(pooled, true)
-		if reused {
-			retryPooled, _, retryErr := acquireProbeRouteHTTP3PooledConn(routeID, relayHost, relayPort, relayDialHost, relayHostHeader, openTimeout)
-			if retryErr == nil {
-				if retryConn, retryStreamErr := openProbeRouteHTTP3WebSocketStreamOnConn(retryPooled, routeID, secret, relayURL, relayHost, relayPort, bridgeRole, relayMode, connToken, relayDialHost, relayHostHeader, openTimeout); retryStreamErr == nil {
-					if cacheOnSuccess {
-						refreshProbeRouteRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
-					}
-					logProbeRouteRelayDialOutcome("websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), nil)
-					return retryConn, nil
-				}
-				releaseProbeRouteHTTP3PooledConn(retryPooled, true)
-			}
+	ctx, cancel := context.WithCancel(context.Background())
+	openTimer := time.AfterFunc(openTimeout, cancel)
+	stopOpenTimer := func() {
+		if openTimer != nil {
+			openTimer.Stop()
 		}
+	}
+	logProbeRouteRelayDialAttempt("websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, openTimeout)
+	quicConn, err := dialProbeRouteBoundQUIC(ctx, dialHostPort, tlsConf, newProbeRouteQUICConfig(0))
+	if err != nil {
+		stopOpenTimer()
+		cancel()
 		wrappedErr := wrapProbeRouteRelayDialError("websocket-h3", relayDialHost, relayPort, err)
 		logProbeRouteRelayDialOutcome("websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), wrappedErr)
 		return nil, wrappedErr
 	}
-
-	_ = dialHostPort
-	if cacheOnSuccess {
-		refreshProbeRouteRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
+	transport := &http3.Transport{}
+	clientConn := transport.NewClientConn(quicConn)
+	select {
+	case <-clientConn.ReceivedSettings():
+		settings := clientConn.Settings()
+		enableExtendedConnect := settings != nil && settings.EnableExtendedConnect
+		log.Printf("probe route relay h3 websocket settings: route=%s relay=%s:%d dial_host=%s host_header=%s extended_connect=%t", strings.TrimSpace(routeID), strings.TrimSpace(relayHost), relayPort, strings.TrimSpace(relayDialHost), strings.TrimSpace(relayHostHeader), enableExtendedConnect)
+	case <-ctx.Done():
+		_ = quicConn.CloseWithError(0, "h3 websocket settings timeout")
+		stopOpenTimer()
+		cancel()
+		timeoutErr := fmt.Errorf("probe relay h3 websocket open timeout: relay=%s:%d", relayDialHost, relayPort)
+		logProbeRouteRelayDialOutcome("websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), timeoutErr)
+		return nil, timeoutErr
+	case <-clientConn.Context().Done():
+		stopOpenTimer()
+		cancel()
+		stateErr := fmt.Errorf("probe relay h3 websocket failed: %w", context.Cause(clientConn.Context()))
+		logProbeRouteRelayDialOutcome("websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), stateErr)
+		return nil, stateErr
 	}
-	logProbeRouteRelayDialOutcome("websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), nil)
-	return conn, nil
-}
-
-// openProbeRouteHTTP3WebSocketStreamOnConn opens one extended-CONNECT websocket
-// request stream on an already-established (pooled) HTTP/3 connection.
-func openProbeRouteHTTP3WebSocketStreamOnConn(pooled *probeRouteHTTP3PooledConn, routeID string, secret string, relayURL string, relayHost string, relayPort int, bridgeRole string, relayMode string, connToken string, relayDialHost string, relayHostHeader string, openTimeout time.Duration) (net.Conn, error) {
-	if pooled == nil || pooled.clientConn == nil {
-		return nil, errors.New("h3 pooled connection is nil")
+	if settings := clientConn.Settings(); settings == nil || !settings.EnableExtendedConnect {
+		_ = quicConn.CloseWithError(0, "h3 websocket extended connect disabled")
+		stopOpenTimer()
+		cancel()
+		extendedErr := errors.New("probe relay h3 websocket failed: server did not enable extended connect")
+		logProbeRouteRelayDialOutcome("websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), extendedErr)
+		return nil, extendedErr
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), openTimeout)
-	clientConn := pooled.clientConn
 	streamTimeout := probeRouteHTTP3StreamOpenTimeout(openTimeout)
-
 	stream, err := clientConn.OpenRequestStream(ctx)
 	if err != nil {
+		_ = quicConn.CloseWithError(0, "h3 websocket stream open failed")
+		stopOpenTimer()
 		cancel()
-		return nil, err
+		wrappedErr := wrapProbeRouteRelayDialError("websocket-h3", relayDialHost, relayPort, err)
+		logProbeRouteRelayDialOutcome("websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), wrappedErr)
+		return nil, wrappedErr
 	}
 	_ = stream.SetDeadline(time.Now().Add(streamTimeout))
 	request, err := http.NewRequestWithContext(ctx, http.MethodConnect, relayURL, nil)
 	if err != nil {
 		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
 		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+		_ = quicConn.CloseWithError(0, "h3 websocket request build failed")
+		stopOpenTimer()
 		cancel()
 		return nil, err
 	}
@@ -1256,6 +1237,8 @@ func openProbeRouteHTTP3WebSocketStreamOnConn(pooled *probeRouteHTTP3PooledConn,
 	if err := applyProbeRouteSecretAuthHeaders(request.Header, routeID, secret); err != nil {
 		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
 		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+		_ = quicConn.CloseWithError(0, "h3 websocket auth failed")
+		stopOpenTimer()
 		cancel()
 		return nil, err
 	}
@@ -1270,43 +1253,57 @@ func openProbeRouteHTTP3WebSocketStreamOnConn(pooled *probeRouteHTTP3PooledConn,
 	if err := stream.SendRequestHeader(request); err != nil {
 		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
 		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+		_ = quicConn.CloseWithError(0, "h3 websocket header send failed")
+		stopOpenTimer()
 		cancel()
-		return nil, err
+		wrappedErr := wrapProbeRouteRelayDialError("websocket-h3", relayDialHost, relayPort, err)
+		logProbeRouteRelayDialOutcome("websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), wrappedErr)
+		return nil, wrappedErr
 	}
 	response, err := stream.ReadResponse()
 	if err != nil {
 		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
 		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+		_ = quicConn.CloseWithError(0, "h3 websocket response failed")
+		stopOpenTimer()
 		cancel()
-		return nil, err
+		wrappedErr := wrapProbeRouteRelayDialError("websocket-h3", relayDialHost, relayPort, err)
+		logProbeRouteRelayDialOutcome("websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), wrappedErr)
+		return nil, wrappedErr
 	}
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
 		_ = response.Body.Close()
 		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
 		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+		_ = quicConn.CloseWithError(0, "h3 websocket status failed")
+		stopOpenTimer()
 		cancel()
-		return nil, fmt.Errorf("probe relay h3 websocket failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
+		statusErr := fmt.Errorf("probe relay h3 websocket failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
+		logProbeRouteRelayDialOutcome("websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), statusErr)
+		return nil, statusErr
 	}
 	_ = stream.SetDeadline(time.Time{})
 
-	dialHostPort := net.JoinHostPort(relayDialHost, strconv.Itoa(relayPort))
-	pooled.addStream()
+	if cacheOnSuccess {
+		refreshProbeRouteRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
+	}
+	stopOpenTimer()
+	logProbeRouteRelayDialOutcome("websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), nil)
 	cancelOnce := sync.Once{}
 	return &probeRouteHTTP3StreamNetConn{
 		stream: stream,
 		local:  probeRouteRelayNetAddr{label: "probe-route-h3-websocket-local"},
 		remote: probeRouteRelayNetAddr{label: dialHostPort},
 		closeFn: func() error {
-			// Close only this request stream; the shared QUIC connection lives on in
-			// the pool for other streams. The pool decides when to retire the conn.
+			var closeErr error
 			cancelOnce.Do(func() {
 				cancel()
 				stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
 				stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-				pooled.removeStream()
+				closeErr = quicConn.CloseWithError(0, "h3 websocket closed")
 			})
-			return nil
+			return closeErr
 		},
 	}, nil
 }
@@ -1321,54 +1318,8 @@ func probeRouteHTTP3StreamOpenTimeout(openTimeout time.Duration) time.Duration {
 	return openTimeout
 }
 
-func probeRouteRelaySpeedTestDefault(routeID string, secret string, relayHost string, relayPort int, layer string, protocol string, byteCount int64) []probeRouteRelaySpeedTestResult {
-	endpointKey := probeRouteRelayProtocolEndpointKey(relayHost, relayPort)
-	candidates := probeRouteRelaySpeedTestCandidates(layer, protocol)
-	if byteCount <= 0 {
-		byteCount = probeRouteRelaySpeedTestBytes
-	}
-	if byteCount > probeRouteRelaySpeedTestMaxBytes {
-		byteCount = probeRouteRelaySpeedTestMaxBytes
-	}
-	results := make([]probeRouteRelaySpeedTestResult, 0, len(candidates))
-	for _, candidate := range candidates {
-		result := probeRouteRelaySpeedTestWithLayer(routeID, secret, relayHost, relayPort, candidate, byteCount, probeRouteRelaySpeedTestTimeout)
-		results = append(results, result)
-		probeResult := probeRouteRelayProtocolDialResult{
-			Protocol:  normalizeProbeRouteRouteLayer(candidate),
-			Latency:   time.Duration(result.LatencyMS) * time.Millisecond,
-			StartedAt: parseProbeRouteRFC3339Time(result.StartedAt),
-			EndedAt:   parseProbeRouteRFC3339Time(result.EndedAt),
-		}
-		if result.OK {
-			recordProbeRouteRelayProtocolSuccess(endpointKey, probeResult, "speed_test")
-			recordProbeRouteRelayProtocolObservedTraffic(endpointKey, normalizeProbeRouteRouteLayer(candidate), result.RateBPS, 0)
-			continue
-		}
-		err := errors.New(firstNonEmpty(strings.TrimSpace(result.Error), "speed test failed"))
-		probeResult.Err = err
-		recordProbeRouteRelayProtocolFailure(endpointKey, probeResult, err)
-	}
-	bestProtocol := ""
-	var bestScore int64
-	snapshot := snapshotProbeRouteProtocolState(relayHost, relayPort)
-	for _, quality := range snapshot.ProtocolQualities {
-		if !quality.Available || quality.Score <= 0 {
-			continue
-		}
-		if bestProtocol == "" || quality.Score < bestScore {
-			bestProtocol = strings.TrimSpace(quality.Protocol)
-			bestScore = quality.Score
-		}
-	}
-	if bestProtocol != "" {
-		recordProbeRouteRelayProtocolSelected(endpointKey, bestProtocol, "speed_test")
-	}
-	return results
-}
-
 func probeRouteRelayFetchSpeedDebugDefault(routeID string, secret string, relayHost string, relayPort int, layer string, protocol string, openTimeout time.Duration) (probeSpeedDebugResultPayload, error) {
-	candidates := probeRouteRelaySpeedTestCandidates(layer, protocol)
+	candidates := probeRouteRelayDebugProtocolCandidates(layer, protocol)
 	if len(candidates) == 0 {
 		candidates = probeRouteRelayProtocolCandidates(layer)
 	}
@@ -1415,418 +1366,13 @@ func probeRouteRelayFetchSpeedDebugWithLayer(routeID string, secret string, rela
 	return payload, nil
 }
 
-func probeRouteRelaySpeedTestCandidates(layer string, protocol string) []string {
+func probeRouteRelayDebugProtocolCandidates(layer string, protocol string) []string {
 	cleanProtocol := normalizeProbeRouteRouteLayer(protocol)
 	switch cleanProtocol {
 	case "websocket", "websocket-h3":
 		return []string{cleanProtocol}
 	}
 	return probeRouteRelayProtocolCandidates(layer)
-}
-
-func parseProbeRouteRFC3339Time(raw string) time.Time {
-	value, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
-	if err != nil {
-		return time.Time{}
-	}
-	return value
-}
-
-func probeRouteRelaySpeedTestWithLayer(routeID string, secret string, relayHost string, relayPort int, layer string, byteCount int64, timeout time.Duration) probeRouteRelaySpeedTestResult {
-	startedAt := time.Now()
-	result := probeRouteRelaySpeedTestResult{
-		Protocol:       normalizeProbeRouteRouteLayer(layer),
-		StartedAt:      startedAt.UTC().Format(time.RFC3339),
-		LocalStartedAt: startedAt.UTC().Format(time.RFC3339),
-	}
-	log.Printf("probe route relay speed test start: route=%s protocol=%s relay=%s:%d bytes=%d timeout=%s", strings.TrimSpace(routeID), normalizeProbeRouteRouteLayer(layer), strings.TrimSpace(relayHost), relayPort, byteCount, timeout)
-	defer func() {
-		if strings.TrimSpace(result.EndedAt) == "" {
-			result.EndedAt = time.Now().UTC().Format(time.RFC3339)
-		}
-		if result.OK {
-			log.Printf("probe route relay speed test done: route=%s protocol=%s relay=%s:%d ok=true latency_ms=%d bytes=%d duration_ms=%d rate_bps=%d", strings.TrimSpace(routeID), normalizeProbeRouteRouteLayer(layer), strings.TrimSpace(relayHost), relayPort, result.LatencyMS, result.Bytes, result.DurationMS, result.RateBPS)
-			return
-		}
-		log.Printf("probe route relay speed test done: route=%s protocol=%s relay=%s:%d ok=false latency_ms=%d bytes=%d duration_ms=%d err=%s", strings.TrimSpace(routeID), normalizeProbeRouteRouteLayer(layer), strings.TrimSpace(relayHost), relayPort, result.LatencyMS, result.Bytes, result.DurationMS, strings.TrimSpace(result.Error))
-	}()
-	if byteCount <= 0 {
-		byteCount = probeRouteRelaySpeedTestBytes
-	}
-	if byteCount > probeRouteRelaySpeedTestMaxBytes {
-		byteCount = probeRouteRelaySpeedTestMaxBytes
-	}
-	result.RequestedBytes = byteCount
-	if timeout <= 0 {
-		timeout = probeRouteRelaySpeedTestTimeout
-	}
-	deadlineAt := startedAt.Add(timeout)
-	cleanLayer := normalizeProbeRouteRouteLayer(layer)
-	if cleanLayer == "websocket" || cleanLayer == "websocket-h3" {
-		speedConn, speedErr := openProbeRouteRelaySpeedTestConn(routeID, secret, relayHost, relayPort, cleanLayer, byteCount, timeout)
-		headerAt := time.Now()
-		if speedErr != nil {
-			result.LatencyMS = probeDurationMilliseconds(headerAt.Sub(startedAt))
-			result.OpenHandshakeMS = result.LatencyMS
-			result.Error = speedErr.Error()
-			return result
-		}
-		defer speedConn.Close()
-		result.OpenHandshakeMS = probeDurationMilliseconds(headerAt.Sub(startedAt))
-		consumeProbeRouteRelaySpeedTestData(speedConn, byteCount, time.Until(deadlineAt), &result)
-		return result
-	}
-	result.Error = fmt.Sprintf("unsupported speed test protocol: %s", layer)
-	return result
-}
-
-func consumeProbeRouteRelaySpeedTestData(reader io.Reader, byteCount int64, maxDuration time.Duration, result *probeRouteRelaySpeedTestResult) {
-	if result == nil {
-		return
-	}
-	readStartedAt := time.Now()
-	result.LocalStartedAt = readStartedAt.UTC().Format(time.RFC3339)
-	result.ReadChunkBytes = int64(probeRouteRelaySpeedTestChunkBytes)
-	if maxDuration <= 0 {
-		maxDuration = probeRouteRelaySpeedTestTimeout
-	}
-	if deadliner, ok := reader.(interface{ SetReadDeadline(time.Time) error }); ok {
-		_ = deadliner.SetReadDeadline(readStartedAt.Add(maxDuration))
-		defer deadliner.SetReadDeadline(time.Time{})
-	}
-	var first [1]byte
-	firstN, firstErr := io.ReadFull(reader, first[:])
-	firstAt := time.Now()
-	if firstN > 0 {
-		result.LatencyMS = probeDurationMilliseconds(firstAt.Sub(readStartedAt))
-		result.FirstByteMS = result.LatencyMS
-		result.LocalFirstByteAt = firstAt.UTC().Format(time.RFC3339)
-		result.ReadCalls++
-		result.TotalReadBlockMS += result.LatencyMS
-		result.LastReadBlockMS = result.LatencyMS
-		result.MaxReadBlockMS = result.LatencyMS
-	}
-	remaining := byteCount - int64(firstN)
-	if remaining < 0 {
-		remaining = 0
-	}
-	n, err := copyProbeRouteRelaySpeedTestData(io.LimitReader(reader, remaining), result)
-	endedAt := time.Now()
-	result.EndedAt = endedAt.UTC().Format(time.RFC3339)
-	result.LocalCompletedAt = result.EndedAt
-	result.Bytes = int64(firstN) + n
-	result.DurationMS = probeDurationMilliseconds(endedAt.Sub(readStartedAt))
-	if result.ReadCalls > 0 {
-		result.AvgReadBytes = result.Bytes / result.ReadCalls
-	}
-	if firstErr != nil {
-		if isProbeRouteRelaySpeedTestDurationLimitErr(firstErr, result.Bytes, readStartedAt, maxDuration) {
-			finalizeProbeRouteRelaySpeedTestPartialResult(result, readStartedAt, endedAt)
-			return
-		}
-		result.Error = firstErr.Error()
-		return
-	}
-	if err != nil {
-		if isProbeRouteRelaySpeedTestDurationLimitErr(err, result.Bytes, readStartedAt, maxDuration) {
-			finalizeProbeRouteRelaySpeedTestPartialResult(result, readStartedAt, endedAt)
-			return
-		}
-		result.Error = err.Error()
-		return
-	}
-	if result.Bytes <= 0 {
-		result.Error = "speed test returned no data"
-		return
-	}
-	if result.Bytes < byteCount {
-		result.Error = fmt.Sprintf("speed test returned incomplete data: bytes=%d want=%d", result.Bytes, byteCount)
-		return
-	}
-	finalizeProbeRouteRelaySpeedTestPartialResult(result, readStartedAt, endedAt)
-}
-
-func finalizeProbeRouteRelaySpeedTestPartialResult(result *probeRouteRelaySpeedTestResult, startedAt time.Time, endedAt time.Time) {
-	if result == nil {
-		return
-	}
-	if result.Bytes <= 0 {
-		result.Error = "speed test returned no data"
-		return
-	}
-	elapsed := endedAt.Sub(startedAt)
-	if elapsed <= 0 {
-		elapsed = time.Millisecond
-	}
-	result.RateBPS = int64(float64(result.Bytes) / elapsed.Seconds())
-	result.OK = true
-	result.Error = ""
-}
-
-func copyProbeRouteRelaySpeedTestData(reader io.Reader, result *probeRouteRelaySpeedTestResult) (int64, error) {
-	if reader == nil {
-		return 0, nil
-	}
-	buf := make([]byte, probeRouteRelaySpeedTestChunkBytes)
-	var total int64
-	for {
-		startedAt := time.Now()
-		n, err := reader.Read(buf)
-		elapsedMS := probeDurationMilliseconds(time.Since(startedAt))
-		if n > 0 {
-			total += int64(n)
-			if result != nil {
-				result.ReadCalls++
-				result.TotalReadBlockMS += elapsedMS
-				result.LastReadBlockMS = elapsedMS
-				if elapsedMS > result.MaxReadBlockMS {
-					result.MaxReadBlockMS = elapsedMS
-				}
-			}
-		}
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return total, nil
-			}
-			return total, err
-		}
-		if n == 0 {
-			return total, io.ErrNoProgress
-		}
-	}
-}
-
-func isProbeRouteRelaySpeedTestDurationLimitErr(err error, bytesRead int64, startedAt time.Time, maxDuration time.Duration) bool {
-	if err == nil || bytesRead <= 0 || maxDuration <= 0 {
-		return false
-	}
-	elapsed := time.Since(startedAt)
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return true
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return true
-	}
-	text := strings.ToLower(strings.TrimSpace(err.Error()))
-	if !strings.Contains(text, "timeout") && !strings.Contains(text, "deadline") {
-		return false
-	}
-	return elapsed >= maxDuration || maxDuration <= time.Millisecond
-}
-
-func openProbeRouteRelaySpeedTestConn(routeID string, secret string, relayHost string, relayPort int, layer string, byteCount int64, openTimeout time.Duration) (net.Conn, error) {
-	relayDialHost, relayHostHeader, err := resolveProbeRouteDialIPHost(relayHost)
-	if err != nil {
-		return nil, err
-	}
-	switch normalizeProbeRouteRouteLayer(layer) {
-	case "websocket":
-		return openProbeRouteRelayWebSocketSpeedTestNetConn(routeID, secret, relayHost, relayPort, relayDialHost, relayHostHeader, byteCount, openTimeout)
-	case "websocket-h3":
-		return openProbeRouteRelayHTTP3WebSocketSpeedTestNetConn(routeID, secret, relayHost, relayPort, relayDialHost, relayHostHeader, byteCount, openTimeout)
-	default:
-		return nil, fmt.Errorf("unsupported speed test protocol: %s", layer)
-	}
-}
-
-func openProbeRouteRelayWebSocketSpeedTestNetConn(routeID string, secret string, relayHost string, relayPort int, relayDialHost string, relayHostHeader string, byteCount int64, openTimeout time.Duration) (net.Conn, error) {
-	startedAt := time.Now()
-	if openTimeout <= 0 {
-		openTimeout = probeRouteRelaySpeedTestTimeout
-	}
-	if byteCount <= 0 {
-		byteCount = probeRouteRelaySpeedTestBytes
-	}
-	relayURL, err := buildProbeRouteRelayWebSocketURL(relayHostHeader, relayPort, routeID)
-	if err != nil {
-		return nil, err
-	}
-	header := http.Header{}
-	header.Set(probeRouteLegacyRouteIDHeader, strings.TrimSpace(routeID))
-	header.Set(probeRouteCodexRouteIDHeader, strings.TrimSpace(routeID))
-	header.Set(probeRouteCodexVersionHeader, probeRouteAuthPacketVersion)
-	header.Set(probeRouteCodexRelayModeHeader, probeRouteRelayModeSpeedTest)
-	header.Set(probeRouteCodexSpeedBytesHeader, strconv.FormatInt(byteCount, 10))
-	if err := applyProbeRouteSecretAuthHeaders(header, routeID, secret); err != nil {
-		return nil, err
-	}
-	dialHostPort := net.JoinHostPort(relayDialHost, strconv.Itoa(relayPort))
-	dialer := websocket.Dialer{
-		HandshakeTimeout:  openTimeout,
-		Proxy:             nil,
-		ReadBufferSize:    probeRouteRelayWebSocketBufferBytes,
-		WriteBufferSize:   probeRouteRelayWebSocketBufferBytes,
-		EnableCompression: false,
-		NetDialContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
-			if err := ensureProbeRouteDirectBypass(dialHostPort); err != nil {
-				log.Printf("probe route relay speed websocket direct bypass failed: target=%s err=%v", strings.TrimSpace(dialHostPort), err)
-			}
-			netDialer := applyProbeRouteEgressDialer(&net.Dialer{Timeout: probeRouteRelayDialTimeout})
-			conn, err := netDialer.DialContext(ctx, probeRouteEgressDialNetwork(network, dialHostPort), dialHostPort)
-			if err == nil {
-				tuneProbeRouteNetConn(conn)
-			}
-			return conn, err
-		},
-		TLSClientConfig: &tls.Config{
-			MinVersion:         tls.VersionTLS12,
-			ServerName:         resolveProbeRouteClientTLSServerName("websocket", relayDialHost, relayHostHeader),
-			InsecureSkipVerify: true,
-		},
-	}
-	logProbeRouteRelayDialAttempt("speed-websocket", routeID, "websocket", relayHost, relayPort, relayDialHost, relayHostHeader, "", openTimeout)
-	ws, response, err := dialer.Dial(relayURL, header)
-	if err != nil {
-		if response != nil && response.Body != nil {
-			body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
-			_ = response.Body.Close()
-			statusErr := fmt.Errorf("probe relay websocket speed test failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
-			logProbeRouteRelayDialOutcome("speed-websocket", routeID, "websocket", relayHost, relayPort, relayDialHost, relayHostHeader, "", time.Since(startedAt), statusErr)
-			return nil, statusErr
-		}
-		wrappedErr := wrapProbeRouteRelayDialError("websocket", relayDialHost, relayPort, err)
-		logProbeRouteRelayDialOutcome("speed-websocket", routeID, "websocket", relayHost, relayPort, relayDialHost, relayHostHeader, "", time.Since(startedAt), wrappedErr)
-		return nil, wrappedErr
-	}
-	refreshProbeRouteRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
-	logProbeRouteRelayDialOutcome("speed-websocket", routeID, "websocket", relayHost, relayPort, relayDialHost, relayHostHeader, "", time.Since(startedAt), nil)
-	return newWebSocketNetConn(ws), nil
-}
-
-func openProbeRouteRelayHTTP3WebSocketSpeedTestNetConn(routeID string, secret string, relayHost string, relayPort int, relayDialHost string, relayHostHeader string, byteCount int64, openTimeout time.Duration) (net.Conn, error) {
-	startedAt := time.Now()
-	if openTimeout <= 0 {
-		openTimeout = probeRouteRelaySpeedTestTimeout
-	}
-	if byteCount <= 0 {
-		byteCount = probeRouteRelaySpeedTestBytes
-	}
-	relayURL, err := buildProbeRouteRelayURL(relayHostHeader, relayPort, routeID)
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), openTimeout)
-	dialHostPort := net.JoinHostPort(relayDialHost, strconv.Itoa(relayPort))
-	tlsConf := &tls.Config{
-		MinVersion:         tls.VersionTLS13,
-		NextProtos:         []string{http3.NextProtoH3},
-		ServerName:         resolveProbeRouteClientTLSServerName("websocket-h3", relayDialHost, relayHostHeader),
-		InsecureSkipVerify: true,
-	}
-	logProbeRouteRelayDialAttempt("speed-websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, "", openTimeout)
-	quicConn, err := dialProbeRouteBoundQUIC(ctx, dialHostPort, tlsConf, newProbeRouteQUICConfig(0))
-	if err != nil {
-		cancel()
-		wrappedErr := wrapProbeRouteRelayDialError("websocket-h3", relayDialHost, relayPort, err)
-		logProbeRouteRelayDialOutcome("speed-websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, "", time.Since(startedAt), wrappedErr)
-		return nil, wrappedErr
-	}
-	transport := &http3.Transport{}
-	clientConn := transport.NewClientConn(quicConn)
-	select {
-	case <-clientConn.ReceivedSettings():
-	case <-ctx.Done():
-		_ = quicConn.CloseWithError(0, "h3 speed websocket settings timeout")
-		cancel()
-		timeoutErr := fmt.Errorf("probe relay h3 websocket open timeout: relay=%s:%d", relayDialHost, relayPort)
-		logProbeRouteRelayDialOutcome("speed-websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, "", time.Since(startedAt), timeoutErr)
-		return nil, timeoutErr
-	case <-clientConn.Context().Done():
-		cancel()
-		stateErr := fmt.Errorf("probe relay h3 websocket failed: %w", context.Cause(clientConn.Context()))
-		logProbeRouteRelayDialOutcome("speed-websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, "", time.Since(startedAt), stateErr)
-		return nil, stateErr
-	}
-	if settings := clientConn.Settings(); settings == nil || !settings.EnableExtendedConnect {
-		_ = quicConn.CloseWithError(0, "h3 websocket extended connect disabled")
-		cancel()
-		extendedErr := errors.New("probe relay h3 websocket failed: server did not enable extended connect")
-		logProbeRouteRelayDialOutcome("speed-websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, "", time.Since(startedAt), extendedErr)
-		return nil, extendedErr
-	}
-	stream, err := clientConn.OpenRequestStream(ctx)
-	if err != nil {
-		_ = quicConn.CloseWithError(0, "h3 speed websocket stream open failed")
-		cancel()
-		wrappedErr := wrapProbeRouteRelayDialError("websocket-h3", relayDialHost, relayPort, err)
-		logProbeRouteRelayDialOutcome("speed-websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, "", time.Since(startedAt), wrappedErr)
-		return nil, wrappedErr
-	}
-	_ = stream.SetDeadline(time.Now().Add(probeRouteHTTP3StreamOpenTimeout(openTimeout)))
-	request, err := http.NewRequestWithContext(ctx, http.MethodConnect, relayURL, nil)
-	if err != nil {
-		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		_ = quicConn.CloseWithError(0, "h3 speed websocket request build failed")
-		cancel()
-		return nil, err
-	}
-	request.Proto = "websocket"
-	request.ProtoMajor = 3
-	request.ProtoMinor = 0
-	request.Header.Set(probeRouteLegacyRouteIDHeader, strings.TrimSpace(routeID))
-	request.Header.Set(probeRouteCodexRouteIDHeader, strings.TrimSpace(routeID))
-	request.Header.Set(probeRouteCodexVersionHeader, probeRouteAuthPacketVersion)
-	request.Header.Set(probeRouteCodexRelayModeHeader, probeRouteRelayModeSpeedTest)
-	request.Header.Set(probeRouteCodexSpeedBytesHeader, strconv.FormatInt(byteCount, 10))
-	if err := applyProbeRouteSecretAuthHeaders(request.Header, routeID, secret); err != nil {
-		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		_ = quicConn.CloseWithError(0, "h3 speed websocket auth failed")
-		cancel()
-		return nil, err
-	}
-	if strings.TrimSpace(relayHostHeader) != "" {
-		request.Host = strings.TrimSpace(relayHostHeader)
-	}
-	if err := stream.SendRequestHeader(request); err != nil {
-		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		_ = quicConn.CloseWithError(0, "h3 speed websocket header send failed")
-		cancel()
-		wrappedErr := wrapProbeRouteRelayDialError("websocket-h3", relayDialHost, relayPort, err)
-		logProbeRouteRelayDialOutcome("speed-websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, "", time.Since(startedAt), wrappedErr)
-		return nil, wrappedErr
-	}
-	response, err := stream.ReadResponse()
-	if err != nil {
-		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		_ = quicConn.CloseWithError(0, "h3 speed websocket response failed")
-		cancel()
-		wrappedErr := wrapProbeRouteRelayDialError("websocket-h3", relayDialHost, relayPort, err)
-		logProbeRouteRelayDialOutcome("speed-websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, "", time.Since(startedAt), wrappedErr)
-		return nil, wrappedErr
-	}
-	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
-		_ = response.Body.Close()
-		_ = quicConn.CloseWithError(0, "h3 speed websocket status failed")
-		cancel()
-		statusErr := fmt.Errorf("probe relay h3 websocket failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
-		logProbeRouteRelayDialOutcome("speed-websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, "", time.Since(startedAt), statusErr)
-		return nil, statusErr
-	}
-	_ = stream.SetDeadline(time.Time{})
-	refreshProbeRouteRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
-	logProbeRouteRelayDialOutcome("speed-websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, "", time.Since(startedAt), nil)
-	cancelOnce := sync.Once{}
-	return &probeRouteHTTP3StreamNetConn{
-		stream: stream,
-		local:  probeRouteRelayNetAddr{label: "probe-route-h3-speed-local"},
-		remote: probeRouteRelayNetAddr{label: dialHostPort},
-		closeFn: func() error {
-			var closeErr error
-			cancelOnce.Do(func() {
-				cancel()
-				stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-				stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-				closeErr = quicConn.CloseWithError(0, "h3 speed websocket closed")
-			})
-			return closeErr
-		},
-	}, nil
 }
 
 func probeDurationMilliseconds(elapsed time.Duration) int64 {

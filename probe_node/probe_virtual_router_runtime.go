@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -20,11 +21,12 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/quic-go/quic-go/http3"
 )
 
 const (
 	probeVirtualRouterRuntimeRouteIDPrefix                 = "vrouter-"
-	probeVirtualRouterRuntimeRouteLayer                    = "websocket"
+	probeVirtualRouterRuntimeRouteLayer                    = "auto"
 	probeVirtualRouterRuntimeRole                          = "virtual_router"
 	probeVirtualRouterFrameLinkTXBufferFrames              = 1024
 	probeVirtualRouterFrameLinkRXBufferFrames              = 1024
@@ -68,10 +70,88 @@ type probeVirtualRouterRuntime struct {
 }
 
 type probeVirtualRouterRelayServer struct {
-	listenAddr  string
-	httpsServer *http.Server
-	routeIDs    map[string]struct{}
-	closeOnce   sync.Once
+	listenAddr    string
+	httpsServer   *http.Server
+	http3Server   *http3.Server
+	tcpListener   net.Listener
+	udpPacketConn net.PacketConn
+	routeIDs      map[string]struct{}
+	closeOnce     sync.Once
+}
+
+type probeVirtualRouterH3Conn struct {
+	stream interface {
+		Read([]byte) (int, error)
+		Write([]byte) (int, error)
+		Close() error
+		SetReadDeadline(time.Time) error
+		SetWriteDeadline(time.Time) error
+	}
+	local   net.Addr
+	remote  net.Addr
+	closeFn func() error
+}
+
+func (c *probeVirtualRouterH3Conn) Read(p []byte) (int, error) {
+	if c == nil || c.stream == nil {
+		return 0, net.ErrClosed
+	}
+	return c.stream.Read(p)
+}
+
+func (c *probeVirtualRouterH3Conn) Write(p []byte) (int, error) {
+	if c == nil || c.stream == nil {
+		return 0, net.ErrClosed
+	}
+	return c.stream.Write(p)
+}
+
+func (c *probeVirtualRouterH3Conn) Close() error {
+	if c == nil || c.stream == nil {
+		return nil
+	}
+	if c.closeFn != nil {
+		return c.closeFn()
+	}
+	return c.stream.Close()
+}
+
+func (c *probeVirtualRouterH3Conn) LocalAddr() net.Addr {
+	if c == nil || c.local == nil {
+		return probeRouteRelayNetAddr{label: "probe-vrouter-h3-local"}
+	}
+	return c.local
+}
+
+func (c *probeVirtualRouterH3Conn) RemoteAddr() net.Addr {
+	if c == nil || c.remote == nil {
+		return probeRouteRelayNetAddr{label: "probe-vrouter-h3-remote"}
+	}
+	return c.remote
+}
+
+func (c *probeVirtualRouterH3Conn) SetDeadline(t time.Time) error {
+	if c == nil || c.stream == nil {
+		return net.ErrClosed
+	}
+	if err := c.stream.SetReadDeadline(t); err != nil {
+		return err
+	}
+	return c.stream.SetWriteDeadline(t)
+}
+
+func (c *probeVirtualRouterH3Conn) SetReadDeadline(t time.Time) error {
+	if c == nil || c.stream == nil {
+		return net.ErrClosed
+	}
+	return c.stream.SetReadDeadline(t)
+}
+
+func (c *probeVirtualRouterH3Conn) SetWriteDeadline(t time.Time) error {
+	if c == nil || c.stream == nil {
+		return net.ErrClosed
+	}
+	return c.stream.SetWriteDeadline(t)
 }
 
 type probeVirtualRouterFrameLink struct {
@@ -388,13 +468,31 @@ func startProbeVirtualRouterRelayServer(rt *probeVirtualRouterRuntime) error {
 		return fmt.Errorf("listen virtual router relay tcp failed: %w", err)
 	}
 	relay := &probeVirtualRouterRelayServer{
-		listenAddr: listenAddr,
-		routeIDs:   map[string]struct{}{routeID: {}},
+		listenAddr:  listenAddr,
+		tcpListener: tcpListener,
+		routeIDs:    map[string]struct{}{routeID: {}},
 	}
 	relay.httpsServer = &http.Server{
 		Addr:              listenAddr,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
+	}
+	if tlsCert, certErr := tls.LoadX509KeyPair(cert.CertPath, cert.KeyPath); certErr != nil {
+		log.Printf("warning: probe virtual router h3 relay certificate load failed: route=%s listen=%s err=%v", cfg.routeID, listenAddr, certErr)
+	} else if udpPacketConn, listenErr := net.ListenPacket("udp", listenAddr); listenErr != nil {
+		log.Printf("warning: probe virtual router h3 relay udp listen failed: route=%s listen=%s err=%v", cfg.routeID, listenAddr, listenErr)
+	} else {
+		relay.udpPacketConn = udpPacketConn
+		relay.http3Server = &http3.Server{
+			Addr:    listenAddr,
+			Handler: handler,
+			TLSConfig: &tls.Config{
+				Certificates: []tls.Certificate{tlsCert},
+				MinVersion:   tls.VersionTLS13,
+				NextProtos:   []string{http3.NextProtoH3},
+			},
+			QUICConfig: newProbeRouteQUICConfig(0),
+		}
 	}
 	probeVirtualRouterRelayServerState.servers[listenAddr] = relay
 	probeVirtualRouterRelayServerState.mu.Unlock()
@@ -403,6 +501,13 @@ func startProbeVirtualRouterRelayServer(rt *probeVirtualRouterRuntime) error {
 			log.Printf("probe virtual router relay exited: layer=websocket listen=%s err=%v", listenAddr, serveErr)
 		}
 	}()
+	if relay.http3Server != nil && relay.udpPacketConn != nil {
+		go func() {
+			if serveErr := relay.http3Server.Serve(relay.udpPacketConn); serveErr != nil && serveErr != http.ErrServerClosed {
+				log.Printf("probe virtual router relay exited: layer=websocket-h3 listen=%s err=%v", listenAddr, serveErr)
+			}
+		}()
+	}
 	rt.relayListenAddr = listenAddr
 	rt.relay = relay
 	log.Printf("probe virtual router relay started: route=%s listen=%s", cfg.routeID, listenAddr)
@@ -444,6 +549,15 @@ func closeProbeVirtualRouterRelayServer(relay *probeVirtualRouterRelayServer) {
 		defer cancel()
 		if relay.httpsServer != nil {
 			_ = relay.httpsServer.Shutdown(ctx)
+		}
+		if relay.http3Server != nil {
+			_ = relay.http3Server.Close()
+		}
+		if relay.tcpListener != nil {
+			_ = relay.tcpListener.Close()
+		}
+		if relay.udpPacketConn != nil {
+			_ = relay.udpPacketConn.Close()
 		}
 	})
 }
@@ -587,6 +701,10 @@ func handleProbeVirtualRouterRelayDispatch(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	bridgeRole := normalizeProbeRouteBridgeRole(r.Header.Get(probeRouteCodexRelayRoleHeader))
+	if isProbeVirtualRouterH3Connect(r) {
+		handleProbeVirtualRouterBridgeRelayH3(rt, bridgeRole, w, r)
+		return
+	}
 	if websocket.IsWebSocketUpgrade(r) {
 		handleProbeVirtualRouterBridgeRelayWebSocket(rt, bridgeRole, w, r)
 		return
@@ -614,6 +732,43 @@ func handleProbeVirtualRouterBridgeRelayWebSocket(rt *probeVirtualRouterRuntime,
 	conn := newWebSocketNetConn(ws)
 	sessionID := rt.nextBridgeSessionID("vrouter-carrier")
 	runProbeVirtualRouterPhysicalCarrier(rt, conn, sessionID, strings.TrimSpace(r.RemoteAddr))
+}
+
+func handleProbeVirtualRouterBridgeRelayH3(rt *probeVirtualRouterRuntime, bridgeRole string, w http.ResponseWriter, r *http.Request) {
+	if rt == nil {
+		http.Error(w, "virtual router runtime not found", http.StatusNotFound)
+		return
+	}
+	conn, ok := probeVirtualRouterConnFromH3(w, r, "probe-vrouter-h3-bridge")
+	if !ok {
+		log.Printf("probe virtual router h3 relay stream unavailable: route=%s remote=%s proto=%s", rt.cfg.routeID, r.RemoteAddr, r.Proto)
+		http.Error(w, "http3 stream unavailable", http.StatusInternalServerError)
+		return
+	}
+	defer conn.Close()
+	sessionID := rt.nextBridgeSessionID("vrouter-carrier")
+	runProbeVirtualRouterPhysicalCarrier(rt, conn, sessionID, strings.TrimSpace(r.RemoteAddr))
+}
+
+func isProbeVirtualRouterH3Connect(r *http.Request) bool {
+	return r != nil && r.Method == http.MethodConnect && r.ProtoMajor == 3 && strings.EqualFold(strings.TrimSpace(r.Proto), "websocket")
+}
+
+func probeVirtualRouterConnFromH3(w http.ResponseWriter, r *http.Request, label string) (net.Conn, bool) {
+	streamer, ok := w.(http3.HTTPStreamer)
+	if !ok {
+		return nil, false
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	stream := streamer.HTTPStream()
+	return &probeVirtualRouterH3Conn{
+		stream: stream,
+		local:  probeRouteRelayNetAddr{label: strings.TrimSpace(label)},
+		remote: probeRouteRelayNetAddr{label: strings.TrimSpace(r.RemoteAddr)},
+		closeFn: func() error {
+			return stream.Close()
+		},
+	}, true
 }
 
 func verifyProbeVirtualRouterRelayRequestAuth(rt *probeVirtualRouterRuntime, r *http.Request, routeID string) error {
@@ -947,7 +1102,7 @@ func buildProbeVirtualRouterRuntimeConfigForRule(config probeVirtualRouterConfig
 		authTicket:    authTicket,
 		listenHost:    "0.0.0.0",
 		listenPort:    localPort,
-		routeLayer:    probeVirtualRouterRuntimeRouteLayer,
+		routeLayer:    normalizeProbeRouteRouteLayer(firstNonEmpty(strings.TrimSpace(rule.RouteLayer), probeVirtualRouterRuntimeRouteLayer)),
 		fromNodeID:    fromNodeID,
 		toNodeID:      toNodeID,
 		localNodeID:   localNodeID,

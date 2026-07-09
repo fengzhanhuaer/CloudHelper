@@ -68,6 +68,7 @@ const (
 	probeVirtualRouterSpeedTestChunkBytes                         = 1024
 	probeVirtualRouterSpeedTestTXHighWatermarkPercent             = 75
 	probeVirtualRouterSpeedTestTXLowWatermarkPercent              = 50
+	probeVirtualRouterSpeedReceiveCompletedTTL                    = 2 * time.Minute
 	probeVirtualRouterCarrierStalePingFailures                    = 4
 	probeVirtualRouterCarrierStaleRXGrace                         = 2 * probeVirtualRouterPingPongInterval
 	probeVirtualRouterRouteConfigRefreshHotPathMinInterval        = 60 * time.Second
@@ -162,9 +163,10 @@ var probeVirtualRouterControlResponseState = struct {
 }{pending: make(map[string]chan probeVirtualRouterControlProbePayload)}
 
 var probeVirtualRouterSpeedReceiveState = struct {
-	mu       sync.Mutex
-	sessions map[string]*probeVirtualRouterSpeedReceiveSession
-}{sessions: make(map[string]*probeVirtualRouterSpeedReceiveSession)}
+	mu        sync.Mutex
+	sessions  map[string]*probeVirtualRouterSpeedReceiveSession
+	completed map[string]time.Time
+}{sessions: make(map[string]*probeVirtualRouterSpeedReceiveSession), completed: make(map[string]time.Time)}
 
 var probeVirtualRouterSpeedResponseState = struct {
 	mu      sync.Mutex
@@ -557,6 +559,7 @@ func sanitizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopologyR
 			FromServicePort:   fromServicePort,
 			ToServiceDomain:   toServiceDomain,
 			ToServicePort:     toServicePort,
+			RouteLayer:        normalizeProbeRouteRouteLayer(item.RouteLayer),
 			UserID:            strings.TrimSpace(item.UserID),
 			UserPublicKey:     strings.TrimSpace(item.UserPublicKey),
 			Secret:            strings.TrimSpace(item.Secret),
@@ -4127,11 +4130,16 @@ func startProbeVirtualRouterSpeedReceive(msg probeVirtualRouterSpeedTestResultPa
 	if probeVirtualRouterSpeedReceiveState.sessions == nil {
 		probeVirtualRouterSpeedReceiveState.sessions = make(map[string]*probeVirtualRouterSpeedReceiveSession)
 	}
+	if probeVirtualRouterSpeedReceiveState.completed == nil {
+		probeVirtualRouterSpeedReceiveState.completed = make(map[string]time.Time)
+	}
 	for key, item := range probeVirtualRouterSpeedReceiveState.sessions {
 		if item == nil || (!item.LastAt.IsZero() && now.Sub(item.LastAt) > time.Minute) {
 			delete(probeVirtualRouterSpeedReceiveState.sessions, key)
 		}
 	}
+	cleanupProbeVirtualRouterSpeedReceiveCompletedLocked(now)
+	delete(probeVirtualRouterSpeedReceiveState.completed, session.RequestID)
 	probeVirtualRouterSpeedReceiveState.sessions[session.RequestID] = session
 	probeVirtualRouterSpeedReceiveState.mu.Unlock()
 	log.Printf("probe virtual router speed receiver start: request_id=%s direction=%s route=%s local=%s source=%s target=%s result_node=%s path=%s max_duration_ms=%d", session.RequestID, session.Direction, strings.TrimSpace(routeID), normalizeProbeRouteNodeID(localNodeID), session.SourceNodeID, session.TargetNodeID, session.ResultNodeID, strings.Join(session.Path, ">"), session.MaxDurationMS)
@@ -4144,13 +4152,15 @@ func recordProbeVirtualRouterSpeedChunk(requestID string, bytes int64) {
 	}
 	now := time.Now()
 	probeVirtualRouterSpeedReceiveState.mu.Lock()
+	cleanupProbeVirtualRouterSpeedReceiveCompletedLocked(now)
+	if _, done := probeVirtualRouterSpeedReceiveState.completed[requestID]; done {
+		probeVirtualRouterSpeedReceiveState.mu.Unlock()
+		return
+	}
 	session := probeVirtualRouterSpeedReceiveState.sessions[requestID]
 	if session == nil {
-		session = &probeVirtualRouterSpeedReceiveSession{RequestID: requestID, LastAt: now}
-		if probeVirtualRouterSpeedReceiveState.sessions == nil {
-			probeVirtualRouterSpeedReceiveState.sessions = make(map[string]*probeVirtualRouterSpeedReceiveSession)
-		}
-		probeVirtualRouterSpeedReceiveState.sessions[requestID] = session
+		probeVirtualRouterSpeedReceiveState.mu.Unlock()
+		return
 	}
 	shouldStartTimer := false
 	if session.Frames == 0 || session.StartedAt.IsZero() {
@@ -4205,6 +4215,7 @@ func finalizeProbeVirtualRouterSpeedReceive(requestID string, localNodeID string
 	if session != nil {
 		delete(probeVirtualRouterSpeedReceiveState.sessions, requestID)
 	}
+	markProbeVirtualRouterSpeedReceiveCompletedLocked(requestID, now)
 	probeVirtualRouterSpeedReceiveState.mu.Unlock()
 	if session == nil {
 		log.Printf("probe virtual router speed receiver finalize missing session: request_id=%s local=%s fallback_direction=%s fallback_path=%s", requestID, normalizeProbeRouteNodeID(localNodeID), strings.TrimSpace(fallback.Direction), strings.Join(cleanProbeVirtualRouterPath(fallback.Path), ">"))
@@ -4247,6 +4258,30 @@ func finalizeProbeVirtualRouterSpeedReceive(requestID string, localNodeID string
 	}
 	log.Printf("probe virtual router speed receiver finalize: request_id=%s direction=%s route=%s local=%s source=%s target=%s result_node=%s bytes=%d frames=%d duration_ms=%d mbps=%.2f path=%s", requestID, strings.TrimSpace(result.Direction), strings.TrimSpace(session.RouteID), normalizeProbeRouteNodeID(localNodeID), normalizeProbeRouteNodeID(result.SourceNodeID), normalizeProbeRouteNodeID(result.TargetNodeID), normalizeProbeRouteNodeID(result.ResultNodeID), result.Bytes, result.Frames, result.DurationMS, result.Mbps, strings.Join(cleanProbeVirtualRouterPath(result.Path), ">"))
 	return result, true
+}
+
+func cleanupProbeVirtualRouterSpeedReceiveCompletedLocked(now time.Time) {
+	if probeVirtualRouterSpeedReceiveState.completed == nil {
+		probeVirtualRouterSpeedReceiveState.completed = make(map[string]time.Time)
+		return
+	}
+	for requestID, completedAt := range probeVirtualRouterSpeedReceiveState.completed {
+		if requestID == "" || completedAt.IsZero() || now.Sub(completedAt) > probeVirtualRouterSpeedReceiveCompletedTTL {
+			delete(probeVirtualRouterSpeedReceiveState.completed, requestID)
+		}
+	}
+}
+
+func markProbeVirtualRouterSpeedReceiveCompletedLocked(requestID string, completedAt time.Time) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return
+	}
+	if probeVirtualRouterSpeedReceiveState.completed == nil {
+		probeVirtualRouterSpeedReceiveState.completed = make(map[string]time.Time)
+	}
+	probeVirtualRouterSpeedReceiveState.completed[requestID] = completedAt
+	cleanupProbeVirtualRouterSpeedReceiveCompletedLocked(completedAt)
 }
 
 func completeProbeVirtualRouterSpeedReceiveAfter(requestID string, localNodeID string, delay time.Duration) {

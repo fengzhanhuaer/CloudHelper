@@ -71,6 +71,7 @@ type probeVirtualRouterTopologyRule struct {
 	FromServicePort   int    `json:"from_service_port,omitempty"`
 	ToServiceDomain   string `json:"to_service_domain,omitempty"`
 	ToServicePort     int    `json:"to_service_port,omitempty"`
+	RouteLayer        string `json:"route_layer,omitempty"`
 	UserID            string `json:"user_id,omitempty"`
 	UserPublicKey     string `json:"user_public_key,omitempty"`
 	Secret            string `json:"secret,omitempty"`

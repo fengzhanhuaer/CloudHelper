@@ -136,10 +136,8 @@ const (
 	probeRouteCodexRelayModeHeader  = "X-Codex-Relay-Mode"
 	probeRouteCodexRelayRoleHeader  = "X-Codex-Relay-Role"
 	probeRouteCodexConnIDHeader     = "X-Codex-Conn-Id"
-	probeRouteCodexSpeedBytesHeader = "X-Codex-Speed-Bytes"
 
 	probeRouteRelayModeBridge     = "bridge"
-	probeRouteRelayModeSpeedTest  = "speed_test"
 	probeRouteRelayModeSpeedDebug = "speed_debug"
 	probeRouteBridgeRoleToNext    = "to_next"
 	probeRouteBridgeRoleToPrev    = "to_prev"
@@ -160,10 +158,6 @@ const (
 	probeRouteRelayProtocolNegativeTTL         = 60 * time.Second
 	probeRouteRelayProtocolProbeTimeout        = 6 * time.Second
 	probeRouteRelayProtocolSwitchMinHold       = 30 * time.Second
-	probeRouteRelaySpeedTestBytes              = 128 * 1024 * 1024
-	probeRouteRelaySpeedTestMaxBytes           = 256 * 1024 * 1024
-	probeRouteRelaySpeedTestTimeout            = 10 * time.Second
-	probeRouteRelaySpeedTestChunkBytes         = 1024 * 1024
 	probeRouteRelayWebSocketBufferBytes        = 512 * 1024
 	probeRouteRelayWebSocketWriteBatchBytes    = 1024 * 1024
 	probeRouteRelayWebSocketWriteQueueDepth    = 64
@@ -206,10 +200,14 @@ var probeRouteAuthReplayStore = struct {
 
 func normalizeProbeRouteRouteLayer(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "websocket-h3", "h3", "http3", "quic":
+	case "", "auto", "default":
+		return "auto"
+	case "websocket-h3", "ws-h3", "h3-websocket", "h3-ws", "h3", "http3", "quic":
 		return "websocket-h3"
-	default:
+	case "websocket", "ws", "wss", "http2", "h2", "http", "https":
 		return "websocket"
+	default:
+		return "auto"
 	}
 }
 
@@ -352,8 +350,20 @@ func applyProbeRouteTCPConnTuningWithContext(conn *net.TCPConn, context string) 
 	readErr := conn.SetReadBuffer(probeRouteRelayTCPSocketBufferBytes)
 	writeErr := conn.SetWriteBuffer(probeRouteRelayTCPSocketBufferBytes)
 	actualRead, actualWrite, snapshotErr := probeRouteTCPConnSocketBufferSnapshot(conn)
+	forceAttempted := false
+	var forceReadErr error
+	var forceWriteErr error
+	if snapshotErr == nil && probeRouteTCPConnSocketBufferBelowRequested(actualRead, actualWrite, probeRouteRelayTCPSocketBufferBytes) {
+		forceAttempted, forceReadErr, forceWriteErr = probeRouteTCPConnForceSocketBuffer(conn, probeRouteRelayTCPSocketBufferBytes, probeRouteRelayTCPSocketBufferBytes)
+		if forceAttempted {
+			actualRead, actualWrite, snapshotErr = probeRouteTCPConnSocketBufferSnapshot(conn)
+		}
+	}
+	effectiveRead := probeRouteTCPConnSocketBufferEffectiveBytes(actualRead)
+	effectiveWrite := probeRouteTCPConnSocketBufferEffectiveBytes(actualWrite)
+	hint := probeRouteTCPConnSocketBufferTuneHint(probeRouteRelayTCPSocketBufferBytes, effectiveRead, effectiveWrite, snapshotErr, forceAttempted, forceReadErr, forceWriteErr)
 	log.Printf(
-		"probe route tcp socket buffer tuned: context=%s local=%s remote=%s requested_read=%d requested_write=%d actual_read=%d actual_write=%d set_read_err=%v set_write_err=%v snapshot_err=%v",
+		"probe route tcp socket buffer tuned: context=%s local=%s remote=%s requested_read=%d requested_write=%d actual_read=%d actual_write=%d effective_read=%d effective_write=%d force_attempted=%t force_read_err=%v force_write_err=%v set_read_err=%v set_write_err=%v snapshot_err=%v hint=%q",
 		strings.TrimSpace(context),
 		conn.LocalAddr(),
 		conn.RemoteAddr(),
@@ -361,10 +371,48 @@ func applyProbeRouteTCPConnTuningWithContext(conn *net.TCPConn, context string) 
 		probeRouteRelayTCPSocketBufferBytes,
 		actualRead,
 		actualWrite,
+		effectiveRead,
+		effectiveWrite,
+		forceAttempted,
+		forceReadErr,
+		forceWriteErr,
 		readErr,
 		writeErr,
 		snapshotErr,
+		hint,
 	)
+}
+
+func probeRouteTCPConnSocketBufferBelowRequested(actualRead int, actualWrite int, requested int) bool {
+	if requested <= 0 {
+		return false
+	}
+	return probeRouteTCPConnSocketBufferEffectiveBytes(actualRead) < requested ||
+		probeRouteTCPConnSocketBufferEffectiveBytes(actualWrite) < requested
+}
+
+func probeRouteTCPConnSocketBufferEffectiveBytes(actual int) int {
+	if actual <= 0 {
+		return actual
+	}
+	scale := probeRouteTCPConnSocketBufferKernelScale()
+	if scale <= 1 {
+		return actual
+	}
+	return actual / scale
+}
+
+func probeRouteTCPConnSocketBufferTuneHint(requested int, effectiveRead int, effectiveWrite int, snapshotErr error, forceAttempted bool, forceReadErr error, forceWriteErr error) string {
+	if snapshotErr != nil {
+		return "snapshot_failed"
+	}
+	if requested <= 0 || (effectiveRead >= requested && effectiveWrite >= requested) {
+		return "ok"
+	}
+	if forceAttempted && (forceReadErr != nil || forceWriteErr != nil) {
+		return "socket_buffer_below_request; linux may require CAP_NET_ADMIN or higher net.core.rmem_max/net.core.wmem_max"
+	}
+	return "socket_buffer_below_request; raise OS socket buffer limits"
 }
 
 func newProbeRouteQUICConfig(maxIncomingStreams int64) *quic.Config {

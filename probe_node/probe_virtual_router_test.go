@@ -122,6 +122,7 @@ func TestProbeVirtualRouterCacheRoundTrip(t *testing.T) {
 				FromServicePort:   443,
 				ToServiceDomain:   "edge-b.internal.lan",
 				ToServicePort:     443,
+				RouteLayer:        "http3",
 				Enabled:           true,
 			},
 			{
@@ -172,6 +173,9 @@ func TestProbeVirtualRouterCacheRoundTrip(t *testing.T) {
 	}
 	if loaded.TopologyRules[0].FromServiceDomain != "" || loaded.TopologyRules[0].FromServicePort != 0 || loaded.TopologyRules[0].ToServiceDomain != "edge-b.internal.lan" || loaded.TopologyRules[0].ToServicePort != 443 {
 		t.Fatalf("loaded service config=%+v", loaded.TopologyRules[0])
+	}
+	if loaded.TopologyRules[0].RouteLayer != "websocket-h3" || loaded.TopologyRules[1].RouteLayer != "auto" {
+		t.Fatalf("loaded route layers=%+v", loaded.TopologyRules)
 	}
 	if loaded.TopologyRules[1].FromServicePort != 0 || loaded.TopologyRules[1].ToServicePort != 443 {
 		t.Fatalf("service port reuse should be preserved: %+v", loaded.TopologyRules)
@@ -250,6 +254,10 @@ func resetProbeVirtualRouterStateForTest() {
 	probeVirtualRouterControllerState.identity = nodeIdentity{}
 	probeVirtualRouterControllerState.controllerBaseURL = ""
 	probeVirtualRouterControllerState.mu.Unlock()
+	probeVirtualRouterSpeedReceiveState.mu.Lock()
+	probeVirtualRouterSpeedReceiveState.sessions = make(map[string]*probeVirtualRouterSpeedReceiveSession)
+	probeVirtualRouterSpeedReceiveState.completed = make(map[string]time.Time)
+	probeVirtualRouterSpeedReceiveState.mu.Unlock()
 }
 
 func TestBuildProbeVirtualRouterRuntimeConfigRequiresLinkAuthFields(t *testing.T) {
@@ -276,6 +284,80 @@ func TestBuildProbeVirtualRouterRuntimeConfigRequiresLinkAuthFields(t *testing.T
 	}
 	if cfg.secret != "shared-link-secret" || cfg.authTicket == "" || len(cfg.userPublicKey) != ed25519.PublicKeySize {
 		t.Fatalf("runtime auth fields not applied: secret=%q ticket=%t pub=%d", cfg.secret, cfg.authTicket != "", len(cfg.userPublicKey))
+	}
+	if cfg.routeLayer != "auto" {
+		t.Fatalf("default runtime route layer=%q, want auto", cfg.routeLayer)
+	}
+	rule.RouteLayer = "http3"
+	rule = withProbeVirtualRouterRuleAuthForTest(t, rule)
+	cfg, ok = buildProbeVirtualRouterRuntimeConfigForRule(config, rule, nodeIdentity{NodeID: "1"}, "")
+	if !ok {
+		t.Fatalf("runtime config with route layer should be built")
+	}
+	if cfg.routeLayer != "websocket-h3" {
+		t.Fatalf("runtime route layer=%q, want websocket-h3", cfg.routeLayer)
+	}
+}
+
+func TestProbeRouteRelayProtocolCandidatesSupportVirtualRouterRouteLayerSelection(t *testing.T) {
+	cases := []struct {
+		name  string
+		layer string
+		want  []string
+	}{
+		{name: "auto", layer: "auto", want: []string{"websocket-h3", "websocket"}},
+		{name: "empty", layer: "", want: []string{"websocket-h3", "websocket"}},
+		{name: "http2", layer: "http2", want: []string{"websocket"}},
+		{name: "http3", layer: "http3", want: []string{"websocket-h3"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := probeRouteRelayProtocolCandidates(tc.layer); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("candidates=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProbeVirtualRouterSpeedReceiveDropsLateAndOrphanChunks(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	requestID := "speed-late-test"
+	startProbeVirtualRouterSpeedReceive(probeVirtualRouterSpeedTestResultPayload{
+		RequestID:     requestID,
+		Direction:     "down",
+		SourceNodeID:  "9",
+		TargetNodeID:  "19",
+		ResultNodeID:  "9",
+		Path:          []string{"19", "9"},
+		MaxDurationMS: 8000,
+	}, "9", "route-speed-test")
+	recordProbeVirtualRouterSpeedChunk(requestID, 1024)
+	result, ok := finishProbeVirtualRouterSpeedReceive(probeVirtualRouterSpeedTestResultPayload{RequestID: requestID}, "9")
+	if !ok {
+		t.Fatalf("finish should produce speed result")
+	}
+	if result.Bytes != 1024 || result.Frames != 1 || strings.Join(result.Path, ">") != "19>9" {
+		t.Fatalf("unexpected speed result: bytes=%d frames=%d path=%s", result.Bytes, result.Frames, strings.Join(result.Path, ">"))
+	}
+
+	recordProbeVirtualRouterSpeedChunk(requestID, 1024)
+	recordProbeVirtualRouterSpeedChunk("orphan-speed-test", 1024)
+
+	probeVirtualRouterSpeedReceiveState.mu.Lock()
+	lateSession := probeVirtualRouterSpeedReceiveState.sessions[requestID]
+	orphanSession := probeVirtualRouterSpeedReceiveState.sessions["orphan-speed-test"]
+	_, completed := probeVirtualRouterSpeedReceiveState.completed[requestID]
+	probeVirtualRouterSpeedReceiveState.mu.Unlock()
+	if lateSession != nil {
+		t.Fatalf("late chunk recreated completed speed session: %+v", lateSession)
+	}
+	if orphanSession != nil {
+		t.Fatalf("orphan chunk should not create speed session: %+v", orphanSession)
+	}
+	if !completed {
+		t.Fatalf("completed speed request should be retained for late chunk suppression")
 	}
 }
 
