@@ -287,7 +287,9 @@ func listMngVirtualRouterRouteStatus() []mngVirtualRouterRouteStatusView {
 		view.PacketsForwarded, view.BytesForwarded, view.PacketsReceived, view.BytesReceived, view.PacketsDelivered, view.BytesDelivered = sumMngVirtualRouterRoutePacketLifecycle(from.VirtualRouter, to.VirtualRouter)
 		view.FramesSent, view.FrameBytesSent, view.FramesReceived, view.FrameBytesReceived = sumMngVirtualRouterRouteFrames(from.VirtualRouter, to.VirtualRouter)
 		view.LastLatencyMS = lastMngVirtualRouterRouteLatency(from.VirtualRouter, to.VirtualRouter)
-		view.LastError = firstNonEmptyString(mngVirtualRouterSideStatsError(from), mngVirtualRouterSideStatsError(to))
+		if view.Status == "failed" {
+			view.LastError = firstNonEmptyString(mngVirtualRouterSideStatsError(from), mngVirtualRouterSideStatsError(to))
+		}
 		view.LastPacketAt = maxRFC3339String(mngVirtualRouterStatsPacketAt(from.VirtualRouter), mngVirtualRouterStatsPacketAt(to.VirtualRouter))
 		view.LastFrameAt = maxRFC3339String(mngVirtualRouterStatsFrameAt(from.VirtualRouter), mngVirtualRouterStatsFrameAt(to.VirtualRouter))
 		view.UpdatedAt = maxRFC3339String(from.LastSeen, to.LastSeen)

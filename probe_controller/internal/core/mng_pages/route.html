@@ -709,6 +709,7 @@
     }
 
     function routeSideErrors(side) {
+      if (String(side && side.status || '').trim() !== 'failed') return [];
       const stats = (side && side.virtual_router) || {};
       const errors = [];
       const pingError = String(stats.last_ping_error || '').trim();

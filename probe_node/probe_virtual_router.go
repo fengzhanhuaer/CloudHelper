@@ -749,10 +749,13 @@ func applyProbeVirtualRouterConfig(config probeVirtualRouterConfig) {
 func applyProbeVirtualRouterConfigForNode(config probeVirtualRouterConfig, nodeID string) {
 	sanitized := sanitizeProbeVirtualRouterConfigForCache(config)
 	index := buildProbeVirtualRouterTopologyIndex(sanitized)
+	now := time.Now().UTC()
+	fakeIPRouteChanged := false
 	probeVirtualRouterState.mu.Lock()
 	if sanitized.FakeIPLibrary.Version <= 0 && len(sanitized.FakeIPLibrary.Items) == 0 {
 		sanitized.FakeIPLibrary = sanitizeProbeVirtualRouterFakeIPLibrary(probeVirtualRouterState.config.FakeIPLibrary)
 	}
+	sanitized.FakeIPLibrary, fakeIPRouteChanged = reconcileProbeVirtualRouterFakeIPLibraryWithRouteRules(sanitized.FakeIPLibrary, sanitized.RouteRules, now)
 	effectiveNodeID := strings.TrimSpace(probeVirtualRouterState.localNodeID)
 	if cleanNodeID := normalizeProbeRouteNodeID(nodeID); cleanNodeID != "" {
 		effectiveNodeID = cleanNodeID
@@ -771,6 +774,8 @@ func applyProbeVirtualRouterConfigForNode(config probeVirtualRouterConfig, nodeI
 	probeVirtualRouterState.mu.Unlock()
 	if topologyChanged {
 		clearProbeVirtualRouterRouteCache("config updated")
+	} else if fakeIPRouteChanged {
+		clearProbeVirtualRouterRouteCache("fake ip route rules updated")
 	}
 	if sanitized.Enabled {
 		cleanupProbeRouteDirectBypassForVirtualRouterRules(sanitized)
@@ -878,6 +883,80 @@ func probeVirtualRouterTopologySignature(config probeVirtualRouterConfig, index 
 		}
 	}
 	return b.String()
+}
+
+func reconcileProbeVirtualRouterFakeIPLibraryWithRouteRules(library probeVirtualRouterFakeIPLibrary, rules []probeVirtualRouterRouteRule, now time.Time) (probeVirtualRouterFakeIPLibrary, bool) {
+	library = sanitizeProbeVirtualRouterFakeIPLibrary(library)
+	if len(library.Items) == 0 {
+		return library, false
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	updatedAt := now.Format(time.RFC3339)
+	kept := library.Items[:0]
+	changed := false
+	for _, item := range library.Items {
+		domain := normalizeProbeVirtualRouterDomain(item.Domain)
+		rule, ok := probeVirtualRouterRouteRuleForFakeIPDomain(rules, domain)
+		if !ok {
+			kept = append(kept, item)
+			continue
+		}
+		if sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) != "probe_exit" {
+			changed = true
+			continue
+		}
+		exitNodeID := normalizeProbeRouteNodeID(rule.ExitNodeID)
+		if exitNodeID == "" {
+			changed = true
+			continue
+		}
+		next := item
+		next.Domain = domain
+		next.RuleID = strings.TrimSpace(rule.ID)
+		next.Action = "probe_exit"
+		next.ExitNodeID = exitNodeID
+		if next.Domain != item.Domain ||
+			next.RuleID != strings.TrimSpace(item.RuleID) ||
+			sanitizeProbeVirtualRouterRouteRuleAction(item.Action, item.ExitNodeID) != next.Action ||
+			normalizeProbeRouteNodeID(item.ExitNodeID) != next.ExitNodeID {
+			next.UpdatedAt = updatedAt
+			changed = true
+		}
+		kept = append(kept, next)
+	}
+	if !changed {
+		return library, false
+	}
+	library.Items = kept
+	if library.Version <= 0 {
+		library.Version = 1
+	}
+	library.Version++
+	library.UpdatedAt = updatedAt
+	return library, true
+}
+
+func probeVirtualRouterRouteRuleForFakeIPDomain(rules []probeVirtualRouterRouteRule, domain string) (probeVirtualRouterRouteRule, bool) {
+	cleanDomain := normalizeProbeVirtualRouterDomain(domain)
+	if cleanDomain == "" {
+		return probeVirtualRouterRouteRule{}, false
+	}
+	for _, rule := range rules {
+		action := sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID)
+		if action == "" {
+			continue
+		}
+		for _, entry := range rule.Entries {
+			if probeVirtualRouterRouteRuleEntryMatchesDomain(cleanDomain, entry) {
+				rule.Action = action
+				rule.ExitNodeID = normalizeProbeRouteNodeID(rule.ExitNodeID)
+				return rule, true
+			}
+		}
+	}
+	return probeVirtualRouterRouteRule{}, false
 }
 
 func currentProbeVirtualRouterConfig() probeVirtualRouterConfig {

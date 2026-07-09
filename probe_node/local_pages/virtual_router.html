@@ -1425,6 +1425,12 @@
       return routeStatusSnapshot;
     }
 
+    async function ensureRouteSpeedTargetsLoaded() {
+      const select = document.getElementById('routeSpeedTargetNode');
+      if (select && select.options && select.options.length > 1) return;
+      await loadRouteStatus();
+    }
+
     async function runRouteTest(useCurl) {
       const target = String(document.getElementById('routeTestTarget').value || '').trim();
       const port = Number(document.getElementById('routeTestPort').value || 443);
@@ -1527,7 +1533,7 @@
       await loadSettings();
       await loadTunStatus();
       await loadTunEgress();
-      if (activeTab === 'routeStatus') await loadRouteStatus();
+      await loadRouteStatus();
       if (activeTab === 'packets') await loadPackets();
     }
 
@@ -1704,8 +1710,14 @@
         setMessage('下载测速失败：' + err.message, 'error');
       });
     });
+    document.getElementById('routeSpeedTargetNode').addEventListener('focus', () => {
+      ensureRouteSpeedTargetsLoaded().catch((err) => setMessage('读取测速目标失败：' + err.message, 'error'));
+    });
     document.getElementById('debugLogBtn').addEventListener('click', () => {
       runDebugLogFetch().catch((err) => setMessage('拉取对端日志失败：' + err.message, 'error'));
+    });
+    document.getElementById('debugLogTargetNode').addEventListener('focus', () => {
+      ensureRouteSpeedTargetsLoaded().catch((err) => setMessage('读取目标节点失败：' + err.message, 'error'));
     });
     document.getElementById('routeTestTarget').addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {

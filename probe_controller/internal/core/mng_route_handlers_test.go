@@ -133,6 +133,8 @@ func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T)
 				PingCount:                 1,
 				LastPingLatencyMS:         12,
 				LastPingAt:                "2026-06-27T00:00:01Z",
+				LastOpenError:             "dial cloudflare candidate failed",
+				LastOpenAt:                "2026-06-27T00:00:01Z",
 				LastPingBridgeConnections: 1,
 				LastPacketAt:              "2026-06-27T00:00:01Z",
 				LastFrameAt:               "2026-06-27T00:00:01Z",
@@ -186,6 +188,9 @@ func TestMngLinkVirtualRouterStatusHandlerReturnsRuleRuntimeStatus(t *testing.T)
 	item := payload.Items[0]
 	if item.Status != "ready" || item.RouteID != routeID {
 		t.Fatalf("unexpected route status: %+v", item)
+	}
+	if item.LastError != "" {
+		t.Fatalf("ready route should not expose stale connection error: %q", item.LastError)
 	}
 	if item.Direction != "A->B" {
 		t.Fatalf("route physical direction=%q, want A->B", item.Direction)

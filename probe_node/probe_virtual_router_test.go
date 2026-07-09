@@ -617,6 +617,119 @@ func TestProbeVirtualRouterReservedProbePoolDoesNotScheduleFakeIPRefresh(t *test
 	}
 }
 
+func TestProbeVirtualRouterApplyConfigReconcilesLocalFakeIPExitWithRouteRules(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	expiresAt := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "1", IP: "198.18.0.1"},
+			{NodeID: "2", IP: "198.18.0.2"},
+			{NodeID: "3", IP: "198.18.0.3"},
+		},
+		RouteRules: []probeVirtualRouterRouteRule{{
+			ID:         "rr-old",
+			Name:       "example",
+			Action:     "probe_exit",
+			ExitNodeID: "2",
+			Entries:    []string{"domain_suffix:example.com"},
+		}},
+		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{
+			Version: 1,
+			Items: []probeVirtualRouterFakeIPEntry{{
+				Domain:     "api.example.com",
+				FakeIP:     "198.18.4.9",
+				RuleID:     "rr-old",
+				Action:     "probe_exit",
+				ExitNodeID: "2",
+				ExpiresAt:  expiresAt,
+			}},
+		},
+	}, "1")
+
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "1", IP: "198.18.0.1"},
+			{NodeID: "2", IP: "198.18.0.2"},
+			{NodeID: "3", IP: "198.18.0.3"},
+		},
+		RouteRules: []probeVirtualRouterRouteRule{{
+			ID:         "rr-new",
+			Name:       "example",
+			Action:     "probe_exit",
+			ExitNodeID: "3",
+			Entries:    []string{"domain_suffix:example.com"},
+		}},
+	}, "1")
+
+	entry, ok := currentProbeVirtualRouterFakeIPEntryByIP("198.18.4.9")
+	if !ok {
+		t.Fatalf("fake ip entry should be kept")
+	}
+	if entry.RuleID != "rr-new" || entry.Action != "probe_exit" || entry.ExitNodeID != "3" {
+		t.Fatalf("fake ip entry did not follow route rule exit update: %+v", entry)
+	}
+}
+
+func TestProbeVirtualRouterApplyConfigRemovesLocalFakeIPWhenRouteNoLongerUsesExit(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	expiresAt := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "1", IP: "198.18.0.1"},
+			{NodeID: "2", IP: "198.18.0.2"},
+		},
+		RouteRules: []probeVirtualRouterRouteRule{{
+			ID:         "rr-exit",
+			Name:       "example",
+			Action:     "probe_exit",
+			ExitNodeID: "2",
+			Entries:    []string{"domain_suffix:example.com"},
+		}},
+		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{
+			Version: 1,
+			Items: []probeVirtualRouterFakeIPEntry{{
+				Domain:     "api.example.com",
+				FakeIP:     "198.18.4.9",
+				RuleID:     "rr-exit",
+				Action:     "probe_exit",
+				ExitNodeID: "2",
+				ExpiresAt:  expiresAt,
+			}},
+		},
+	}, "1")
+
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "1", IP: "198.18.0.1"},
+			{NodeID: "2", IP: "198.18.0.2"},
+		},
+		RouteRules: []probeVirtualRouterRouteRule{{
+			ID:      "rr-direct",
+			Name:    "example",
+			Action:  "direct",
+			Entries: []string{"domain_suffix:example.com"},
+		}},
+	}, "1")
+
+	if entry, ok := currentProbeVirtualRouterFakeIPEntryByIP("198.18.4.9"); ok {
+		t.Fatalf("fake ip entry should be removed after route no longer uses exit: %+v", entry)
+	}
+}
+
 func TestBuildProbeVirtualRouterRuntimeConfigsForNode(t *testing.T) {
 	config := probeVirtualRouterConfig{
 		Enabled: true,
