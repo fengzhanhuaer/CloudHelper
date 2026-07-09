@@ -559,6 +559,64 @@ func TestProbeVirtualRouterCurrentLocalPathToIP(t *testing.T) {
 	}
 }
 
+func TestProbeVirtualRouterIPCanBeFakeIPSkipsReservedProbePool(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "19", IP: "198.18.0.21"},
+		},
+	}, "19")
+
+	cases := []struct {
+		ip   string
+		want bool
+	}{
+		{ip: "198.18.0.0", want: false},
+		{ip: "198.18.0.7", want: false},
+		{ip: "198.18.0.21", want: false},
+		{ip: "198.18.4.0", want: false},
+		{ip: "198.18.4.1", want: true},
+		{ip: "149.154.167.51", want: false},
+	}
+	for _, tc := range cases {
+		if got := probeVirtualRouterIPCanBeFakeIP(tc.ip); got != tc.want {
+			t.Fatalf("probeVirtualRouterIPCanBeFakeIP(%q)=%t, want %t", tc.ip, got, tc.want)
+		}
+	}
+}
+
+func TestProbeVirtualRouterReservedProbePoolDoesNotScheduleFakeIPRefresh(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("reserved probe-pool ip should not request fake-ip refresh: %s", r.URL.Path)
+	}))
+	defer server.Close()
+
+	rememberProbeVirtualRouterController(nodeIdentity{NodeID: "19", Secret: "secret"}, server.URL)
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "19", IP: "198.18.0.21"},
+		},
+	}, "19")
+
+	if scheduleProbeVirtualRouterFakeIPItemRefreshByIP("198.18.0.7") {
+		t.Fatalf("reserved probe-pool ip scheduled fake-ip refresh")
+	}
+	if scheduleProbeVirtualRouterFakeIPItemRefreshByIP("198.18.4.0") {
+		t.Fatalf("last reserved probe-pool ip scheduled fake-ip refresh")
+	}
+}
+
 func TestBuildProbeVirtualRouterRuntimeConfigsForNode(t *testing.T) {
 	config := probeVirtualRouterConfig{
 		Enabled: true,

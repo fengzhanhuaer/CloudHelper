@@ -69,7 +69,7 @@ func maybeScheduleProbeVirtualRouterFakeIPVerifyForTCPRetransmit(packet []byte, 
 	if !strings.Contains(flags, "SYN") || strings.Contains(flags, "ACK") {
 		return false
 	}
-	if !probeVirtualRouterIPInCurrentFakeCIDR(info.DestinationIP) || len(cleanProbeVirtualRouterPath(path)) < 2 {
+	if !probeVirtualRouterIPCanBeFakeIP(info.DestinationIP) || len(cleanProbeVirtualRouterPath(path)) < 2 {
 		return false
 	}
 	now := time.Now()
@@ -103,7 +103,7 @@ func maybeScheduleProbeVirtualRouterFakeIPVerifyForTCPRetransmit(packet []byte, 
 
 func scheduleProbeVirtualRouterFakeIPVerifyForPacket(packet []byte, path []string, reason string) bool {
 	dstIP := probeVirtualRouterIPv4Destination(packet)
-	if !probeVirtualRouterIPInCurrentFakeCIDR(dstIP) {
+	if !probeVirtualRouterIPCanBeFakeIP(dstIP) {
 		return false
 	}
 	cleanPath := cleanProbeVirtualRouterPath(path)

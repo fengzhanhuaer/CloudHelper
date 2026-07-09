@@ -72,6 +72,7 @@ const (
 	probeVirtualRouterCarrierStalePingFailures                    = 4
 	probeVirtualRouterCarrierStaleRXGrace                         = 2 * probeVirtualRouterPingPongInterval
 	probeVirtualRouterRouteConfigRefreshHotPathMinInterval        = 60 * time.Second
+	probeVirtualRouterProbeIPPoolSize                             = 1024
 )
 
 var probeVirtualRouterEnsureDirectBypass = ensureProbeRouteDirectBypass
@@ -2608,6 +2609,23 @@ func probeVirtualRouterIPInCurrentFakeCIDR(ipText string) bool {
 	return err == nil && network != nil && network.Contains(ip)
 }
 
+func probeVirtualRouterIPInReservedProbePool(ipText string) bool {
+	ip := net.ParseIP(strings.TrimSpace(ipText)).To4()
+	if ip == nil {
+		return false
+	}
+	_, network, err := net.ParseCIDR(currentProbeVirtualRouterFakeIPCIDR())
+	if err != nil || network == nil || network.IP.To4() == nil || !network.Contains(ip) {
+		return false
+	}
+	base := binary.BigEndian.Uint32(network.IP.To4())
+	value := binary.BigEndian.Uint32(ip)
+	if value < base {
+		return false
+	}
+	return uint64(value-base) <= uint64(probeVirtualRouterProbeIPPoolSize)
+}
+
 func refreshProbeVirtualRouterRouteConfigFromController(reason string) bool {
 	identity, controllerBaseURL, ok := currentProbeVirtualRouterController()
 	if !ok {
@@ -2664,6 +2682,9 @@ func scheduleProbeVirtualRouterFakeIPItemRefreshByIP(fakeIP string) bool {
 	if cleanIP == "" {
 		return false
 	}
+	if !probeVirtualRouterIPCanBeFakeIP(cleanIP) {
+		return false
+	}
 	identity, controllerBaseURL, ok := currentProbeVirtualRouterController()
 	if !ok {
 		return false
@@ -2699,6 +2720,20 @@ func scheduleProbeVirtualRouterFakeIPItemRefreshByIP(fakeIP string) bool {
 		applyProbeVirtualRouterFakeIPEntry(item)
 	}()
 	return true
+}
+
+func probeVirtualRouterIPCanBeFakeIP(ip string) bool {
+	cleanIP := ""
+	if parsed := net.ParseIP(strings.TrimSpace(ip)).To4(); parsed != nil {
+		cleanIP = parsed.String()
+	}
+	if cleanIP == "" || !probeVirtualRouterIPInCurrentFakeCIDR(cleanIP) {
+		return false
+	}
+	if probeVirtualRouterIPInReservedProbePool(cleanIP) {
+		return false
+	}
+	return currentProbeVirtualRouterNodeIDForIP(cleanIP) == ""
 }
 
 func scheduleProbeVirtualRouterFakeIPItemRefreshByDomain(identity nodeIdentity, controllerBaseURL string, domain string, rule probeVirtualRouterRouteRule) bool {

@@ -583,6 +583,9 @@ func currentProbeVirtualRouterFakeIPEntryByIPWithAsyncRefresh(ip string) (probeV
 	if entry, ok := currentProbeVirtualRouterFakeIPEntryByIP(ip); ok {
 		return entry, true
 	}
+	if !probeVirtualRouterIPCanBeFakeIP(ip) {
+		return probeVirtualRouterFakeIPEntry{}, false
+	}
 	scheduleProbeVirtualRouterFakeIPItemRefreshByIP(ip)
 	return probeVirtualRouterFakeIPEntry{}, false
 }
@@ -590,6 +593,9 @@ func currentProbeVirtualRouterFakeIPEntryByIPWithAsyncRefresh(ip string) (probeV
 func currentProbeVirtualRouterFakeIPEntryByIPWithControllerRefresh(ip string) (probeVirtualRouterFakeIPEntry, bool) {
 	if entry, ok := currentProbeVirtualRouterFakeIPEntryByIP(ip); ok {
 		return entry, true
+	}
+	if !probeVirtualRouterIPCanBeFakeIP(ip) {
+		return probeVirtualRouterFakeIPEntry{}, false
 	}
 	identity, controllerBaseURL, ok := currentProbeVirtualRouterController()
 	if !ok {
