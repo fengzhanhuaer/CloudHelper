@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -1613,6 +1614,86 @@ func TestProbeVirtualRouterPathRTTErrorQuarantinesOnlyAfterFiveFailures(t *testi
 	probeVirtualRouterPathRTTState.mu.RUnlock()
 	if item.ConsecutiveFailureCount != 0 || item.LastError != "" {
 		t.Fatalf("successful path should clear failure state: %+v", item)
+	}
+}
+
+func TestProbeVirtualRouterPathRTTSupportsAdjacentDirectPath(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(func() { closeProbeVirtualRouterFrameLinks("test cleanup") })
+
+	path := []string{"1", "2"}
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled: true,
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "1", IP: "198.18.0.1"},
+			{NodeID: "2", IP: "198.18.0.2"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{{
+			FromNodeID: "1",
+			ToNodeID:   "2",
+			Enabled:    true,
+		}},
+	}, "1")
+
+	rt := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{
+		routeID:     "vrouter-direct-1-2",
+		localNodeID: "1",
+		peerNodeID:  "2",
+		fromNodeID:  "1",
+		toNodeID:    "2",
+		dialer:      true,
+	}}
+	probeVirtualRouterRuntimeState.mu.Lock()
+	probeVirtualRouterRuntimeState.runtimes = map[string]*probeVirtualRouterRuntime{rt.cfg.routeID: rt}
+	probeVirtualRouterRuntimeState.mu.Unlock()
+
+	key := probeVirtualRouterFrameLinkKey(rt, probeRouteBridgeRoleToNext, "", path)
+	link := newProbeVirtualRouterFrameLink(key, rt, nil, path)
+	probeVirtualRouterFrameLinkState.mu.Lock()
+	probeVirtualRouterFrameLinkState.links = map[string]*probeVirtualRouterFrameLink{key: link}
+	probeVirtualRouterFrameLinkState.mu.Unlock()
+
+	done := make(chan error, 1)
+	go func() {
+		select {
+		case frame := <-link.tx:
+			if frame.MainType != probeVirtualRouterFrameMainTypePingPong || frame.SubType != probeVirtualRouterPingPongSubTypePing {
+				done <- fmt.Errorf("frame type=%d/%d, want ping", frame.MainType, frame.SubType)
+				return
+			}
+			var msg probeVirtualRouterControlProbePayload
+			if err := json.Unmarshal(frame.Data, &msg); err != nil {
+				done <- err
+				return
+			}
+			time.Sleep(4 * time.Millisecond)
+			completeProbeVirtualRouterControlResponse(probeVirtualRouterControlProbePayload{
+				RequestID: msg.RequestID,
+				OK:        true,
+				Responder: "2",
+			})
+			done <- nil
+		case <-time.After(time.Second):
+			done <- errors.New("timed out waiting for direct path rtt frame")
+		}
+	}()
+
+	latency, err := probeVirtualRouterQueryPathRTT(path)
+	if err != nil {
+		t.Fatalf("probeVirtualRouterQueryPathRTT returned error: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("direct path rtt probe failed: %v", err)
+	}
+	if latency <= 0 {
+		t.Fatalf("latency=%v, want positive", latency)
+	}
+	probeVirtualRouterPathRTTState.mu.RLock()
+	record := probeVirtualRouterPathRTTState.items[probeVirtualRouterPathKey(path)]
+	probeVirtualRouterPathRTTState.mu.RUnlock()
+	if record.RTTMS <= 0 || record.Responder != "2" || record.ConsecutiveFailureCount != 0 || strings.TrimSpace(record.LastError) != "" {
+		t.Fatalf("path rtt record=%+v, want successful direct rtt", record)
 	}
 }
 

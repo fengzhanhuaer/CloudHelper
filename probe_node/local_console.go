@@ -1643,6 +1643,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/virtual_router/packets", probeLocalVirtualRouterPacketsHandler)
 	mux.HandleFunc("/local/api/virtual_router/debug", probeLocalVirtualRouterDebugHandler)
 	mux.HandleFunc("/local/api/virtual_router/debug/logs", probeLocalVirtualRouterDebugLogsHandler)
+	mux.HandleFunc("/local/api/virtual_router/path_rtt", probeLocalVirtualRouterPathRTTHandler)
 	mux.HandleFunc("/local/api/virtual_router/route_test", probeLocalVirtualRouterRouteTestHandler)
 	mux.HandleFunc("/local/api/virtual_router/route_test/curl", probeLocalVirtualRouterRouteTestCurlHandler)
 	mux.HandleFunc("/local/api/virtual_router/route_test/speed", probeLocalVirtualRouterRouteTestSpeedHandler)
@@ -2101,6 +2102,23 @@ func probeLocalVirtualRouterStatusHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, probeLocalVirtualRouterStatusPayload())
+}
+
+func probeLocalVirtualRouterPathRTTHandler(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	queried := probeVirtualRouterQueryAllPathRTTs()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":         true,
+		"queried":    queried,
+		"updated_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"status":     probeLocalVirtualRouterStatusPayload(),
+	})
 }
 
 func probeLocalVirtualRouterDebugHandler(w http.ResponseWriter, r *http.Request) {

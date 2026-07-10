@@ -28,6 +28,8 @@
     main { width: 100%; margin: 0 auto; }
     h1 { margin: 0; color: #fff; font-size: 24px; }
     h2 { margin: 0 0 12px; color: #e6edf3; font-size: 17px; }
+    .section-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 12px; }
+    .section-title h2 { margin: 0; }
     .hint { color: var(--muted); font-size: 13px; line-height: 1.5; }
     .page-version { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
     .topbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
@@ -610,7 +612,10 @@
       </section>
 
       <section class="card" style="margin-top:14px;">
-        <h2>虚拟路由路径</h2>
+        <div class="section-title">
+          <h2>虚拟路由路径</h2>
+          <button id="routePathRTTRefreshBtn" class="secondary" type="button">刷新路径延迟</button>
+        </div>
         <div class="table-wrap">
           <table>
             <thead>
@@ -1490,6 +1495,20 @@
       return routeStatusSnapshot;
     }
 
+    async function refreshRoutePathRTT() {
+      const button = document.getElementById('routePathRTTRefreshBtn');
+      if (button) button.disabled = true;
+      try {
+        const data = await requestJSON('/local/api/virtual_router/path_rtt', { method: 'POST', body: '{}' }, 30000);
+        routeStatusSnapshot = (data && data.status) || {};
+        renderRouteStatus(routeStatusSnapshot);
+        setMessage('路径延迟已刷新：探测 ' + formatNumber(data && data.queried) + ' 条路径', 'success');
+        return data || {};
+      } finally {
+        if (button) button.disabled = false;
+      }
+    }
+
     async function ensureRouteSpeedTargetsLoaded() {
       const select = document.getElementById('routeSpeedTargetNode');
       if (select && select.options && select.options.length > 1) return;
@@ -1740,6 +1759,9 @@
     });
     document.getElementById('routeStatusRefreshBtn').addEventListener('click', () => {
       loadRouteStatus().then(() => setMessage('路由状态已刷新', 'success')).catch((err) => setMessage('读取路由状态失败：' + err.message, 'error'));
+    });
+    document.getElementById('routePathRTTRefreshBtn').addEventListener('click', () => {
+      refreshRoutePathRTT().catch((err) => setMessage('刷新路径延迟失败：' + err.message, 'error'));
     });
     document.getElementById('packetRefreshBtn').addEventListener('click', () => {
       loadPackets().then(() => setMessage('最近报文已刷新', 'success')).catch((err) => setMessage('读取最近报文失败：' + err.message, 'error'));

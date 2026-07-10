@@ -3288,16 +3288,17 @@ func probeVirtualRouterQueryPathRTT(path []string) (time.Duration, error) {
 	if localNodeID == "" {
 		return 0, errors.New("local virtual router node id is empty")
 	}
-	if len(path) < 2 || normalizeProbeRouteNodeID(path[0]) != localNodeID {
+	cleanPath := cleanProbeVirtualRouterPath(path)
+	if len(cleanPath) < 2 || normalizeProbeRouteNodeID(cleanPath[0]) != localNodeID {
 		return 0, errors.New("virtual router rtt query path must start at local node")
 	}
-	if err := validateProbeVirtualRouterForwardPath(path); err != nil {
+	if err := validateProbeVirtualRouterForwardPath(cleanPath); err != nil {
 		return 0, err
 	}
-	response, err := queryProbeVirtualRouterPathRTTControl(path)
+	response, err := queryProbeVirtualRouterPathRTTControl(cleanPath)
 	if err != nil {
-		if recordProbeVirtualRouterPathRTTError(path, err) {
-			scheduleProbeVirtualRouterPathRecovery(path)
+		if recordProbeVirtualRouterPathRTTError(cleanPath, err) {
+			scheduleProbeVirtualRouterPathRecovery(cleanPath)
 		}
 		return 0, err
 	}
@@ -3306,13 +3307,13 @@ func probeVirtualRouterQueryPathRTT(path []string) (time.Duration, error) {
 		if err.Error() == "" {
 			err = errors.New("virtual router rtt query failed")
 		}
-		if recordProbeVirtualRouterPathRTTError(path, err) {
-			scheduleProbeVirtualRouterPathRecovery(path)
+		if recordProbeVirtualRouterPathRTTError(cleanPath, err) {
+			scheduleProbeVirtualRouterPathRecovery(cleanPath)
 		}
 		return 0, err
 	}
 	latency := time.Duration(response.LatencyMS) * time.Millisecond
-	recordProbeVirtualRouterPathRTTSuccess(path, latency, response.Responder)
+	recordProbeVirtualRouterPathRTTSuccess(cleanPath, latency, response.Responder)
 	return latency, nil
 }
 
@@ -4907,6 +4908,22 @@ func queryProbeVirtualRouterPathRTTControl(path []string) (probeVirtualRouterPat
 		return probeVirtualRouterPathRTTQueryResponse{}, err
 	}
 	targetNodeID := cleanPath[len(cleanPath)-1]
+	if len(cleanPath) == 2 {
+		rt, direction := probeVirtualRouterRuntimeForAdjacentNode(targetNodeID)
+		if rt == nil {
+			return probeVirtualRouterPathRTTQueryResponse{}, errors.New("adjacent virtual router rtt runtime is unavailable")
+		}
+		response, err := queryProbeVirtualRouterAdjacentPing(rt, direction, targetNodeID)
+		if err != nil {
+			return probeVirtualRouterPathRTTQueryResponse{}, err
+		}
+		return probeVirtualRouterPathRTTQueryResponse{
+			OK:        response.OK,
+			LatencyMS: response.LatencyMS,
+			Error:     response.Error,
+			Responder: response.Responder,
+		}, nil
+	}
 	nextNodeID := probeVirtualRouterNextHopInPath(cleanPath, localNodeID)
 	if nextNodeID == "" {
 		return probeVirtualRouterPathRTTQueryResponse{}, errors.New("next virtual router rtt hop is unavailable")
