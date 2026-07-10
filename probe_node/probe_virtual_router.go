@@ -3433,6 +3433,7 @@ func (s *probeVirtualRouterFrameLink) runTXWorker() {
 			err = writeProbeVirtualRouterWireFrameRaw(token.conn, frame)
 			if err == nil {
 				token.markWrite()
+				recordProbeVirtualRouterRuntimeCarrierTXSuccess(s.runtime)
 				s.touch()
 				continue
 			}
@@ -5636,6 +5637,20 @@ func recordProbeVirtualRouterRuntimeFrameSent(rt *probeVirtualRouterRuntime, fra
 		item.FramesSent++
 		item.FrameBytesSent += int64(frameBytes)
 		item.LastFrameAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Unlock()
+}
+
+// A frame that reached the physical carrier proves that a prior transient
+// enqueue or carrier-send failure has recovered without requiring a reconnect.
+func recordProbeVirtualRouterRuntimeCarrierTXSuccess(rt *probeVirtualRouterRuntime) {
+	if rt == nil {
+		return
+	}
+	probeVirtualRouterRuntimeStatsState.mu.Lock()
+	item := probeVirtualRouterRuntimeStatsForUpdateLocked(rt.cfg.routeID)
+	if item != nil {
+		item.LastOpenError = ""
 	}
 	probeVirtualRouterRuntimeStatsState.mu.Unlock()
 }

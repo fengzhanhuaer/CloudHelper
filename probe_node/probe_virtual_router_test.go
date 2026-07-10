@@ -1870,6 +1870,51 @@ func TestProbeVirtualRouterFrameLinkTXWorkerWritesBufferedFrame(t *testing.T) {
 	}
 }
 
+func TestProbeVirtualRouterFrameTXSuccessClearsRecoveredTransportError(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	left, right := net.Pipe()
+	defer right.Close()
+	rt := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-tx-recovery"}}
+	link := newProbeVirtualRouterFrameLink("packet|vrouter-tx-recovery", rt, left, nil)
+	link.Start()
+	t.Cleanup(func() { stopProbeVirtualRouterFrameLink(link) })
+
+	recordProbeVirtualRouterRuntimeOpenError(rt.cfg.routeID, errors.New("virtual router tx queue full: depth=1024 capacity=1024"))
+	frame, err := buildProbeVirtualRouterIPFrame([]byte{0x45, 0x00, 0x00, 0x14}, []string{"1", "2"}, nil)
+	if err != nil {
+		t.Fatalf("build frame failed: %v", err)
+	}
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := readProbeVirtualRouterWireFrame(bufio.NewReader(right))
+		readDone <- err
+	}()
+	if err := link.EnqueueProbeVirtualRouterFrame(frame); err != nil {
+		t.Fatalf("enqueue frame failed: %v", err)
+	}
+	select {
+	case err := <-readDone:
+		if err != nil {
+			t.Fatalf("read frame failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for tx worker frame")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		stats := snapshotProbeVirtualRouterRuntimeStats(rt.cfg.routeID)
+		if stats != nil && stats.LastOpenError == "" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	stats := snapshotProbeVirtualRouterRuntimeStats(rt.cfg.routeID)
+	t.Fatalf("successful carrier write should clear recovered transport error, stats=%+v", stats)
+}
+
 func TestProbeVirtualRouterFrameLinkTXWorkerSurvivesCarrierMigration(t *testing.T) {
 	firstLeft, firstRight := net.Pipe()
 	link := newProbeVirtualRouterFrameLink("test-link", nil, firstLeft, nil)
