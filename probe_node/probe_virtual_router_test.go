@@ -200,6 +200,7 @@ func withProbeVirtualRouterRuleAuthForTest(t *testing.T, rule probeVirtualRouter
 }
 
 func resetProbeVirtualRouterStateForTest() {
+	setProbeVirtualRouterNonDirectPathGuardEnabled(false)
 	probeVirtualRouterRelayServerState.mu.Lock()
 	relays := make([]*probeVirtualRouterRelayServer, 0, len(probeVirtualRouterRelayServerState.servers))
 	for _, relay := range probeVirtualRouterRelayServerState.servers {
@@ -243,6 +244,9 @@ func resetProbeVirtualRouterStateForTest() {
 	probeVirtualRouterLocalInterfaceEnsureState.running = false
 	probeVirtualRouterLocalInterfaceEnsureState.mu.Unlock()
 	clearProbeVirtualRouterRouteCache("test reset")
+	probeVirtualRouterDisconnectedCarrierState.mu.Lock()
+	probeVirtualRouterDisconnectedCarrierState.routeIDs = make(map[string]struct{})
+	probeVirtualRouterDisconnectedCarrierState.mu.Unlock()
 	probeVirtualRouterPathRTTState.mu.Lock()
 	probeVirtualRouterPathRTTState.items = make(map[string]probeVirtualRouterPathRTTRecord)
 	probeVirtualRouterPathRTTState.mu.Unlock()
@@ -788,8 +792,8 @@ func TestBuildProbeVirtualRouterRuntimeConfigsForNode(t *testing.T) {
 	config := probeVirtualRouterConfig{
 		Enabled: true,
 		ProbeIPs: []probeVirtualRouterProbeIP{
-			{NodeID: "1", IP: "198.18.0.11", ServicePort: 12040},
-			{NodeID: "2", IP: "198.18.0.12", ServicePort: 12440},
+			{NodeID: "1", DisplayName: "入口节点", IP: "198.18.0.11", ServicePort: 12040},
+			{NodeID: "2", DisplayName: "东京出口", IP: "198.18.0.12", ServicePort: 12440},
 		},
 		TopologyRules: []probeVirtualRouterTopologyRule{
 			withProbeVirtualRouterRuleAuthForTest(t, probeVirtualRouterTopologyRule{
@@ -813,10 +817,10 @@ func TestBuildProbeVirtualRouterRuntimeConfigsForNode(t *testing.T) {
 	if left[0].routeID != right[0].routeID || !isProbeVirtualRouterRuntimeRouteID(left[0].routeID) {
 		t.Fatalf("unexpected route ids left=%q right=%q", left[0].routeID, right[0].routeID)
 	}
-	if left[0].peerNodeID != "2" || left[0].peerHost != "b.internal" || left[0].peerPort != 12440 || !left[0].dialer {
+	if left[0].peerNodeID != "2" || left[0].peerName != "东京出口" || left[0].peerHost != "b.internal" || left[0].peerPort != 12440 || !left[0].dialer {
 		t.Fatalf("left runtime should dial node 2: %+v", left[0])
 	}
-	if right[0].peerNodeID != "1" || right[0].dialer || right[0].peerHost != "" || right[0].peerPort != 0 {
+	if right[0].peerNodeID != "1" || right[0].peerName != "入口节点" || right[0].dialer || right[0].peerHost != "" || right[0].peerPort != 0 {
 		t.Fatalf("right runtime should wait for node 1: %+v", right[0])
 	}
 	if left[0].listenPort != 0 || right[0].listenPort != 12440 {
@@ -903,6 +907,35 @@ func TestProbeVirtualRouterBridgeResolvesOrdinaryDomainToIP(t *testing.T) {
 	}
 	if dialHost != "203.0.113.9" || hostHeader != "203.0.113.9" {
 		t.Fatalf("ordinary host should resolve to ip, dial=%q host=%q", dialHost, hostHeader)
+	}
+}
+
+func TestProbeRouteRelayFailedDialInvalidatesCachedDomainIP(t *testing.T) {
+	resetProbeRouteRelayResolveCacheForTest()
+	oldLookup := probeRouteRelayLookupIP
+	lookupCalls := 0
+	probeRouteRelayLookupIP = func(_ context.Context, _ string, host string) ([]net.IP, error) {
+		lookupCalls++
+		if host != "route.example.com" {
+			t.Fatalf("lookup host=%q", host)
+		}
+		return []net.IP{net.ParseIP("203.0.113.20")}, nil
+	}
+	t.Cleanup(func() {
+		probeRouteRelayLookupIP = oldLookup
+		resetProbeRouteRelayResolveCacheForTest()
+	})
+
+	storeProbeRouteRelayResolveCache("route.example.com", "203.0.113.10", "203.0.113.10")
+	dialHost, _, err := resolveProbeRouteDialIPHost("route.example.com")
+	if err != nil || dialHost != "203.0.113.10" || lookupCalls != 0 {
+		t.Fatalf("cached dial host=%q lookup_calls=%d err=%v", dialHost, lookupCalls, err)
+	}
+
+	invalidateProbeRouteRelayResolveCacheAfterFailedDial("route.example.com", dialHost)
+	dialHost, _, err = resolveProbeRouteDialIPHost("route.example.com")
+	if err != nil || dialHost != "203.0.113.20" || lookupCalls != 1 {
+		t.Fatalf("refreshed dial host=%q lookup_calls=%d err=%v", dialHost, lookupCalls, err)
 	}
 }
 
@@ -1331,6 +1364,129 @@ func TestCurrentProbeVirtualRouterPathUsesPathPingPongSumForRouteSelection(t *te
 
 	if got := currentProbeVirtualRouterPathBetweenNodes("1", "4"); !reflect.DeepEqual(got, []string{"1", "3", "4"}) {
 		t.Fatalf("path=%v, want [1 3 4]", got)
+	}
+}
+
+func TestProbeVirtualRouterPathSelectionAvoidsGuardianFailedPath(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled: true,
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "1", IP: "198.18.0.11"},
+			{NodeID: "2", IP: "198.18.0.12"},
+			{NodeID: "3", IP: "198.18.0.13"},
+			{NodeID: "4", IP: "198.18.0.14"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "1", ToNodeID: "2", Enabled: true},
+			{FromNodeID: "2", ToNodeID: "4", Enabled: true},
+			{FromNodeID: "1", ToNodeID: "3", Enabled: true},
+			{FromNodeID: "3", ToNodeID: "4", Enabled: true},
+		},
+	}, "1")
+
+	recordProbeVirtualRouterPathRTTError([]string{"1", "2", "4"}, errors.New("physical carrier disconnected"))
+	if got := currentProbeVirtualRouterPathBetweenNodes("1", "4"); !reflect.DeepEqual(got, []string{"1", "3", "4"}) {
+		t.Fatalf("path=%v, want healthy alternate [1 3 4]", got)
+	}
+}
+
+func TestProbeVirtualRouterPathSelectionRestoresRecoveredGuardianPath(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled: true,
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "1", IP: "198.18.0.11"},
+			{NodeID: "2", IP: "198.18.0.12"},
+			{NodeID: "3", IP: "198.18.0.13"},
+			{NodeID: "4", IP: "198.18.0.14"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "1", ToNodeID: "2", Enabled: true},
+			{FromNodeID: "2", ToNodeID: "4", Enabled: true},
+			{FromNodeID: "1", ToNodeID: "3", Enabled: true},
+			{FromNodeID: "3", ToNodeID: "4", Enabled: true},
+		},
+	}, "1")
+
+	failedPath := []string{"1", "2", "4"}
+	recordProbeVirtualRouterPathRTTError(failedPath, errors.New("physical carrier disconnected"))
+	if got := currentProbeVirtualRouterPathBetweenNodes("1", "4"); !reflect.DeepEqual(got, []string{"1", "3", "4"}) {
+		t.Fatalf("path=%v, want healthy alternate [1 3 4]", got)
+	}
+
+	recordProbeVirtualRouterPathRTTSuccess(failedPath, 10*time.Millisecond, "4")
+	if got := currentProbeVirtualRouterPathBetweenNodes("1", "4"); !reflect.DeepEqual(got, failedPath) {
+		t.Fatalf("path=%v, want recovered path [1 2 4]", got)
+	}
+}
+
+func TestProbeVirtualRouterPathSelectionAvoidsDisconnectedFirstHop(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled: true,
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "1", IP: "198.18.0.11"},
+			{NodeID: "2", IP: "198.18.0.12"},
+			{NodeID: "3", IP: "198.18.0.13"},
+			{NodeID: "4", IP: "198.18.0.14"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "1", ToNodeID: "2", Enabled: true},
+			{FromNodeID: "2", ToNodeID: "4", Enabled: true},
+			{FromNodeID: "1", ToNodeID: "3", Enabled: true},
+			{FromNodeID: "3", ToNodeID: "4", Enabled: true},
+		},
+	}, "1")
+	storeProbeVirtualRouterRoutePath("1", "4", []string{"1", "2", "4"})
+	probeVirtualRouterRuntimeState.mu.Lock()
+	probeVirtualRouterRuntimeState.runtimes = map[string]*probeVirtualRouterRuntime{
+		"vrouter-1-2": {cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-1-2", localNodeID: "1", peerNodeID: "2", dialer: true}},
+	}
+	probeVirtualRouterRuntimeState.mu.Unlock()
+	markProbeVirtualRouterPhysicalCarrierDisconnected(&probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-1-2", fromNodeID: "1", toNodeID: "2"}}, "test")
+
+	if got := currentProbeVirtualRouterPathBetweenNodes("1", "4"); !reflect.DeepEqual(got, []string{"1", "3", "4"}) {
+		t.Fatalf("path=%v, want alternate [1 3 4] after first-hop disconnect", got)
+	}
+	clearProbeVirtualRouterPhysicalCarrierDisconnected(&probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-1-2", fromNodeID: "1", toNodeID: "2"}})
+	if got := currentProbeVirtualRouterPathBetweenNodes("1", "4"); !reflect.DeepEqual(got, []string{"1", "2", "4"}) {
+		t.Fatalf("path=%v, want recovered first-hop path [1 2 4]", got)
+	}
+}
+
+func TestProbeVirtualRouterPathSelectionReturnsNoPathWhenEveryFirstHopIsDisconnected(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled: true,
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "1", IP: "198.18.0.11"},
+			{NodeID: "2", IP: "198.18.0.12"},
+			{NodeID: "3", IP: "198.18.0.13"},
+			{NodeID: "4", IP: "198.18.0.14"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "1", ToNodeID: "2", Enabled: true},
+			{FromNodeID: "2", ToNodeID: "4", Enabled: true},
+			{FromNodeID: "1", ToNodeID: "3", Enabled: true},
+			{FromNodeID: "3", ToNodeID: "4", Enabled: true},
+		},
+	}, "1")
+	probeVirtualRouterRuntimeState.mu.Lock()
+	probeVirtualRouterRuntimeState.runtimes = map[string]*probeVirtualRouterRuntime{
+		"vrouter-1-2": {cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-1-2", localNodeID: "1", peerNodeID: "2", dialer: true}},
+		"vrouter-1-3": {cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-1-3", localNodeID: "1", peerNodeID: "3", dialer: true}},
+	}
+	probeVirtualRouterRuntimeState.mu.Unlock()
+	markProbeVirtualRouterPhysicalCarrierDisconnected(&probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-1-2", fromNodeID: "1", toNodeID: "2"}}, "test")
+	markProbeVirtualRouterPhysicalCarrierDisconnected(&probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-1-3", fromNodeID: "1", toNodeID: "3"}}, "test")
+
+	if got := currentProbeVirtualRouterPathBetweenNodes("1", "4"); len(got) != 0 {
+		t.Fatalf("path=%v, want no path while all first-hop carriers are disconnected", got)
 	}
 }
 
@@ -2750,7 +2906,6 @@ func TestProbeVirtualRouterFakeIPExitTargetsResolveRealIP(t *testing.T) {
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 	t.Cleanup(resetProbeLocalDNSServiceForTest)
 
-	storeProbeLocalDNSCacheRecords("api.example.com", []string{"198.51.100.99"})
 	lookupCalls := 0
 	oldExitLookup := probeVirtualRouterExitLookupIPv4
 	probeVirtualRouterExitLookupIPv4 = func(domain string) ([]string, error) {

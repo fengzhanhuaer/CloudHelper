@@ -121,12 +121,14 @@ var probeLocalDNSState = struct {
 	fakeCursor          uint32
 	fakeDomainToIP      map[string]string
 	fakeIPToEntry       map[string]probeLocalDNSFakeIPRuntimeEntry
+	staticHostIPs       map[string][]string
 	routeHints          map[string]probeLocalDNSRouteHintEntry
 	routeIPHints        map[string]probeLocalDNSRouteHintEntry
 }{
 	cache:          make(map[string]probeLocalDNSUnifiedRecord),
 	fakeDomainToIP: make(map[string]string),
 	fakeIPToEntry:  make(map[string]probeLocalDNSFakeIPRuntimeEntry),
+	staticHostIPs:  make(map[string][]string),
 	routeHints:     make(map[string]probeLocalDNSRouteHintEntry),
 	routeIPHints:   make(map[string]probeLocalDNSRouteHintEntry),
 }
@@ -183,6 +185,15 @@ func ensureProbeLocalDNSCacheLoaded() {
 	now := probeLocalDNSNow().UTC()
 	probeLocalDNSState.mu.Lock()
 	if !probeLocalDNSState.cacheLoaded {
+		removedRealIPs := false
+		for domain, record := range cache {
+			if len(record.RealIPs) == 0 {
+				continue
+			}
+			record.RealIPs = nil
+			cache[domain] = record
+			removedRealIPs = true
+		}
 		probeLocalDNSState.cache = cache
 		if strings.TrimSpace(fakeCIDR) != "" {
 			probeLocalDNSState.fakeCIDR = strings.TrimSpace(fakeCIDR)
@@ -190,18 +201,15 @@ func ensureProbeLocalDNSCacheLoaded() {
 		overlayProbeLocalDNSHostMappingsLocked(hosts, now)
 		rebuildProbeLocalDNSRuntimeIndexesLocked(now)
 		probeLocalDNSState.cacheLoaded = true
+		probeLocalDNSState.cacheDirty = probeLocalDNSState.cacheDirty || removedRealIPs
 		pruneProbeLocalDNSUnifiedRecordsLocked(now)
 	}
 	probeLocalDNSState.mu.Unlock()
 }
 
 func overlayProbeLocalDNSHostMappingsLocked(hosts []probeLocalHostMapping, now time.Time) {
-	if len(hosts) == 0 {
-		return
-	}
-	if probeLocalDNSState.cache == nil {
-		probeLocalDNSState.cache = make(map[string]probeLocalDNSUnifiedRecord)
-	}
+	_ = now
+	probeLocalDNSState.staticHostIPs = make(map[string][]string)
 	for _, item := range hosts {
 		domain := normalizeProbeLocalDNSDomain(item.DNS)
 		if domain == "" {
@@ -211,15 +219,7 @@ func overlayProbeLocalDNSHostMappingsLocked(hosts []probeLocalHostMapping, now t
 		if parsedIP == nil || parsedIP.To4() == nil {
 			continue
 		}
-		record := probeLocalDNSState.cache[domain]
-		record.Domain = domain
-		record.RealIPs = []string{parsedIP.To4().String()}
-		if record.ExpiresAt.IsZero() || now.After(record.ExpiresAt) {
-			record.ExpiresAt = now.Add(probeLocalDNSCacheTTL)
-		}
-		record.UpdatedAt = now
-		probeLocalDNSState.cache[domain] = record
-		probeLocalDNSState.cacheDirty = true
+		probeLocalDNSState.staticHostIPs[domain] = []string{parsedIP.To4().String()}
 	}
 }
 
@@ -287,9 +287,9 @@ func resolveProbeLocalDNSInternalRealIPv4s(domain string, decision probeLocalDNS
 	if cleanDomain == "" {
 		return nil, errors.New("dns domain is empty")
 	}
-	if cached := lookupProbeLocalDNSCacheIPv4ByDomain(cleanDomain); len(cached) > 0 {
-		storeProbeLocalDNSRouteHints(cleanDomain, cached, decision)
-		return cached, nil
+	if staticIPs := lookupProbeLocalDNSStaticHostIPv4ByDomain(cleanDomain); len(staticIPs) > 0 {
+		storeProbeLocalDNSRouteHints(cleanDomain, staticIPs, decision)
+		return staticIPs, nil
 	}
 	ips, err := resolveProbeLocalDNSRealIPv4sFromUpstreams(cleanDomain, decision)
 	if err != nil {
@@ -305,7 +305,6 @@ func storeProbeLocalDNSInternalRealIPv4s(domain string, ips []string, decision p
 	if cleanDomain == "" || len(realIPs) == 0 {
 		return
 	}
-	storeProbeLocalDNSCacheRecords(cleanDomain, realIPs)
 	storeProbeLocalDNSRouteHints(cleanDomain, realIPs, decision)
 }
 
@@ -880,8 +879,8 @@ func resolveProbeLocalDNSIPv4s(host string) ([]string, error) {
 	if parsedIP := net.ParseIP(cleanHost); parsedIP != nil && parsedIP.To4() != nil {
 		return []string{parsedIP.To4().String()}, nil
 	}
-	if cached := lookupProbeLocalDNSCacheIPv4ByDomain(cleanHost); len(cached) > 0 {
-		return cached, nil
+	if staticIPs := lookupProbeLocalDNSStaticHostIPv4ByDomain(cleanHost); len(staticIPs) > 0 {
+		return staticIPs, nil
 	}
 	ips, err := probeLocalDNSBootstrapLookupIPv4(cleanHost)
 	if err != nil {
@@ -890,7 +889,6 @@ func resolveProbeLocalDNSIPv4s(host string) ([]string, error) {
 	if len(ips) == 0 {
 		return nil, fmt.Errorf("bootstrap resolve returned no ipv4 for %s", cleanHost)
 	}
-	storeProbeLocalDNSCacheRecords(cleanHost, ips)
 	return ips, nil
 }
 
@@ -931,21 +929,15 @@ func resolveProbeLocalDNSIPv4LiteralHostPort(address string, defaultPort string)
 	return net.JoinHostPort(parsedIP.To4().String(), strings.TrimSpace(port)), true
 }
 
-func lookupProbeLocalDNSCacheIPv4ByDomain(domain string) []string {
+func lookupProbeLocalDNSStaticHostIPv4ByDomain(domain string) []string {
 	cleanDomain := normalizeProbeLocalDNSDomain(domain)
 	if cleanDomain == "" {
 		return nil
 	}
 	ensureProbeLocalDNSCacheLoaded()
-	now := probeLocalDNSNow().UTC()
 	probeLocalDNSState.mu.Lock()
 	defer probeLocalDNSState.mu.Unlock()
-	pruneProbeLocalDNSUnifiedRecordsLocked(now)
-	entry, ok := probeLocalDNSState.cache[cleanDomain]
-	if !ok || len(entry.RealIPs) == 0 {
-		return nil
-	}
-	return dedupeProbeLocalDNSIPStrings(entry.RealIPs)
+	return append([]string(nil), probeLocalDNSState.staticHostIPs[cleanDomain]...)
 }
 
 func buildProbeLocalDNSQueryA(domain string) ([]byte, error) {
@@ -1267,6 +1259,7 @@ func reconcileProbeLocalDNSRecordsForRouteRulesLocked(now time.Time) {
 	}
 	probeLocalDNSState.fakeDomainToIP = make(map[string]string)
 	probeLocalDNSState.fakeIPToEntry = make(map[string]probeLocalDNSFakeIPRuntimeEntry)
+	probeLocalDNSState.staticHostIPs = make(map[string][]string)
 	probeLocalDNSState.routeHints = make(map[string]probeLocalDNSRouteHintEntry)
 	probeLocalDNSState.routeIPHints = make(map[string]probeLocalDNSRouteHintEntry)
 	for domain, record := range probeLocalDNSState.cache {
@@ -1472,29 +1465,6 @@ func currentProbeLocalDNSFakeIPCIDR() string {
 	defer probeLocalDNSState.mu.Unlock()
 	ensureProbeLocalDNSFakePoolLocked()
 	return strings.TrimSpace(probeLocalDNSState.fakeCIDR)
-}
-
-func storeProbeLocalDNSCacheRecords(urlText string, ips []string) {
-	cleanDomain := normalizeProbeLocalDNSDomain(urlText)
-	if cleanDomain == "" || len(ips) == 0 {
-		return
-	}
-	ensureProbeLocalDNSCacheLoaded()
-	now := probeLocalDNSNow().UTC()
-	probeLocalDNSState.mu.Lock()
-	defer probeLocalDNSState.mu.Unlock()
-	if probeLocalDNSState.cache == nil {
-		probeLocalDNSState.cache = make(map[string]probeLocalDNSUnifiedRecord)
-	}
-	record := probeLocalDNSState.cache[cleanDomain]
-	record.Domain = cleanDomain
-	record.RealIPs = mergeProbeLocalDNSUniqueIPs(record.RealIPs, ips)
-	if record.ExpiresAt.IsZero() || now.After(record.ExpiresAt) {
-		record.ExpiresAt = now.Add(probeLocalDNSCacheTTL)
-	}
-	record.UpdatedAt = now
-	probeLocalDNSState.cache[cleanDomain] = record
-	probeLocalDNSState.cacheDirty = true
 }
 
 func pruneProbeLocalDNSUnifiedRecordsLocked(now time.Time) {

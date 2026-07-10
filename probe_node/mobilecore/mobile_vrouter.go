@@ -422,6 +422,14 @@ func mobileVRouteStatusPayload(configDir string) map[string]any {
 		}
 	}
 	sort.Strings(nodes)
+	exitNodeItems := make([]map[string]any, 0, len(nodes))
+	for _, id := range nodes {
+		exitNodeItems = append(exitNodeItems, map[string]any{
+			"node_id":      id,
+			"ip":           mobileVRouteProbeIPForNode(config, id),
+			"service_port": mobileVRouteServicePortForNode(config, id, 0),
+		})
+	}
 	routeRuleItems := make([]map[string]any, 0, len(config.RouteRules))
 	for _, rule := range config.RouteRules {
 		routeRuleItems = append(routeRuleItems, map[string]any{
@@ -443,6 +451,7 @@ func mobileVRouteStatusPayload(configDir string) map[string]any {
 		"route_rules":      len(config.RouteRules),
 		"route_rule_items": routeRuleItems,
 		"exit_nodes":       nodes,
+		"exit_node_items":  exitNodeItems,
 		"updated_at":       strings.TrimSpace(config.UpdatedAt),
 	}
 }

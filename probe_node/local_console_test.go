@@ -220,8 +220,8 @@ func TestProbeLocalVirtualRouterStatusHandlerReturnsRuntimeDebugState(t *testing
 		Enabled:    true,
 		FakeIPCIDR: "198.18.0.0/15",
 		ProbeIPs: []probeVirtualRouterProbeIP{
-			{NodeID: "16", IP: "198.18.0.16"},
-			{NodeID: "19", IP: "198.18.0.19"},
+			{NodeID: "16", DisplayName: "本机", IP: "198.18.0.16"},
+			{NodeID: "19", DisplayName: "东京出口", IP: "198.18.0.19"},
 		},
 		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{
 			Items: []probeVirtualRouterFakeIPEntry{{
@@ -255,6 +255,7 @@ func TestProbeLocalVirtualRouterStatusHandlerReturnsRuntimeDebugState(t *testing
 		name:        "edge",
 		localNodeID: "16",
 		peerNodeID:  "19",
+		peerName:    "东京出口",
 		fromNodeID:  "16",
 		toNodeID:    "19",
 		localIP:     "198.18.0.16",
@@ -326,7 +327,7 @@ func TestProbeLocalVirtualRouterStatusHandlerReturnsRuntimeDebugState(t *testing
 		t.Fatalf("runtimes=%T %v", payload["runtimes"], payload["runtimes"])
 	}
 	firstRuntime, ok := runtimes[0].(map[string]any)
-	if !ok || firstRuntime["route_layer"] != "auto" || firstRuntime["selected_protocol"] != "websocket" || firstRuntime["protocol_text"] != "auto -> websocket" {
+	if !ok || firstRuntime["peer_node_name"] != "东京出口" || firstRuntime["route_layer"] != "auto" || firstRuntime["selected_protocol"] != "websocket" || firstRuntime["protocol_text"] != "auto -> websocket" {
 		t.Fatalf("unexpected runtime protocol state: %+v", firstRuntime)
 	}
 	links, ok := payload["frame_links"].([]any)
@@ -744,10 +745,10 @@ func TestResolveProbeLocalDNSUpstreamBypassTarget(t *testing.T) {
 	if err := persistProbeLocalHostMappings([]probeLocalHostMapping{
 		{DNS: "dns.alidns.com", IP: "223.5.5.5"},
 		{DNS: "dns.google", IP: "8.8.4.4"},
+		{DNS: "cached.example", IP: "9.9.9.9"},
 	}); err != nil {
 		t.Fatalf("persist host mappings failed: %v", err)
 	}
-	storeProbeLocalDNSCacheRecords("cached.example", []string{"9.9.9.9"})
 	oldBootstrap := probeLocalDNSBootstrapLookupIPv4
 	probeLocalDNSBootstrapLookupIPv4 = func(string) ([]string, error) {
 		return nil, errors.New("unexpected bootstrap lookup")
@@ -771,7 +772,7 @@ func TestResolveProbeLocalDNSUpstreamBypassTarget(t *testing.T) {
 		{name: "doh ipv4 https", kind: "doh", address: "https://1.1.1.1/dns-query", want: "1.1.1.1:443", wantFound: true},
 		{name: "doh ipv4 http", kind: "doh", address: "http://8.8.8.8/dns-query", want: "8.8.8.8:80", wantFound: true},
 		{name: "doh domain static host", kind: "doh", address: "https://dns.google/dns-query", want: "8.8.4.4:443", wantFound: true},
-		{name: "doh domain cached host", kind: "doh", address: "https://cached.example/dns-query", want: "9.9.9.9:443", wantFound: true},
+		{name: "doh domain static host", kind: "doh", address: "https://cached.example/dns-query", want: "9.9.9.9:443", wantFound: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -815,24 +816,21 @@ func TestCurrentProbeLocalDNSUpstreamCandidatesAppendsSystemDNSLast(t *testing.T
 	}
 }
 
-func TestProbeLocalDNSStartupLoadsCacheThenHostMapping(t *testing.T) {
+func TestProbeLocalDNSStartupLoadsStaticHostMappingWithoutDNSCache(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
-	resetProbeLocalDNSServiceForTest()
-	storeProbeLocalDNSCacheRecords("static.example.com", []string{"203.0.113.20"})
-	flushProbeLocalDNSCacheToDisk()
 	resetProbeLocalDNSServiceForTest()
 	if err := persistProbeLocalHostMappings([]probeLocalHostMapping{
 		{DNS: "static.example.com", IP: "203.0.113.10"},
 	}); err != nil {
 		t.Fatalf("persist host mappings failed: %v", err)
 	}
-	ips := lookupProbeLocalDNSCacheIPv4ByDomain("static.example.com")
+	ips := lookupProbeLocalDNSStaticHostIPv4ByDomain("static.example.com")
 	if strings.Join(ips, ",") != "203.0.113.10" {
 		t.Fatalf("ips=%v", ips)
 	}
 }
 
-func TestResolveProbeLocalDNSUpstreamHostIPv4CachesBootstrapResult(t *testing.T) {
+func TestResolveProbeLocalDNSUpstreamHostIPv4DoesNotCacheBootstrapResult(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeLocalDNSServiceForTest()
 	oldBootstrap := probeLocalDNSBootstrapLookupIPv4
@@ -857,29 +855,35 @@ func TestResolveProbeLocalDNSUpstreamHostIPv4CachesBootstrapResult(t *testing.T)
 	if target1 != "203.0.113.20:443" || target2 != "203.0.113.20:443" {
 		t.Fatalf("unexpected targets: target1=%q target2=%q", target1, target2)
 	}
-	if lookupCalls != 1 {
-		t.Fatalf("bootstrap lookupCalls=%d want=1", lookupCalls)
-	}
-	if got := strings.Join(lookupProbeLocalDNSCacheIPv4ByDomain("bootstrap.example"), ","); got != "203.0.113.20" {
-		t.Fatalf("cached bootstrap ips=%q", got)
+	if lookupCalls != 2 {
+		t.Fatalf("bootstrap lookupCalls=%d want=2", lookupCalls)
 	}
 }
 
-func TestProbeLocalDNSCachePersistsToDiskAndReloads(t *testing.T) {
+func TestProbeLocalDNSRealIPResultsDoNotPersistToDisk(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeLocalDNSServiceForTest()
-	storeProbeLocalDNSCacheRecords("persist.example", []string{"203.0.113.30"})
-	flushProbeLocalDNSCacheToDisk()
-
-	resetProbeLocalDNSServiceForTest()
-
-	if got := strings.Join(lookupProbeLocalDNSCacheIPv4ByDomain("persist.example"), ","); got != "203.0.113.30" {
-		t.Fatalf("reloaded cache ips=%q", got)
+	oldBootstrap := probeLocalDNSBootstrapLookupIPv4
+	probeLocalDNSBootstrapLookupIPv4 = func(host string) ([]string, error) {
+		if host != "persist.example" {
+			return nil, fmt.Errorf("unexpected bootstrap host: %s", host)
+		}
+		return []string{"203.0.113.30"}, nil
 	}
-
-	ips := lookupProbeLocalDNSCacheIPv4ByDomain("persist.example")
-	if strings.Join(ips, ",") != "203.0.113.30" {
-		t.Fatalf("ips=%v", ips)
+	t.Cleanup(func() {
+		probeLocalDNSBootstrapLookupIPv4 = oldBootstrap
+		resetProbeLocalDNSServiceForTest()
+	})
+	if _, ok := resolveProbeLocalDNSUpstreamBypassTarget("doh", "https://persist.example/dns-query"); !ok {
+		t.Fatal("bootstrap target was not resolved")
+	}
+	flushProbeLocalDNSCacheToDisk()
+	cachePath, err := resolveProbeLocalDNSCachePath()
+	if err != nil {
+		t.Fatalf("resolve cache path failed: %v", err)
+	}
+	if _, err := os.Stat(cachePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("real dns result should not create cache db, stat err=%v", err)
 	}
 }
 

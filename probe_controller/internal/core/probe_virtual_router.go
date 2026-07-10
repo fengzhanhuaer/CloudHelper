@@ -62,6 +62,7 @@ type probeVirtualRouterFakeIPEntry struct {
 
 type probeVirtualRouterProbeIP struct {
 	NodeID      string `json:"node_id"`
+	DisplayName string `json:"display_name,omitempty"`
 	IP          string `json:"ip"`
 	ServicePort int    `json:"service_port,omitempty"`
 	Note        string `json:"note,omitempty"`
@@ -181,11 +182,34 @@ func buildProbeVirtualRouterConfigForNodeLocked(nodeID string) probeVirtualRoute
 		return defaultProbeVirtualRouterConfig()
 	}
 	config := enrichProbeVirtualRouterAuthTickets(ensureProbeVirtualRouterAuthFields(ensureProbeVirtualRouterProbeIPsForKnownNodes(normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter))))
+	config = enrichProbeVirtualRouterProbeIPDisplayNames(config)
 	config.FakeIPLibrary = probeVirtualRouterFakeIPLibrary{}
 	if !config.Enabled {
 		config.ProbeIPs = []probeVirtualRouterProbeIP{}
 		config.TopologyRules = []probeVirtualRouterTopologyRule{}
 		return config
+	}
+	return config
+}
+
+// enrichProbeVirtualRouterProbeIPDisplayNames augments only the config response
+// sent to probes. The stored virtual-router configuration remains keyed by the
+// stable node ID, so renaming a probe does not rewrite route topology data.
+func enrichProbeVirtualRouterProbeIPDisplayNames(config probeVirtualRouterConfig) probeVirtualRouterConfig {
+	if ProbeStore == nil || len(config.ProbeIPs) == 0 {
+		return config
+	}
+	ProbeStore.mu.RLock()
+	names := make(map[string]string)
+	for _, node := range loadProbeNodesLocked() {
+		nodeID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
+		if nodeID != "" {
+			names[nodeID] = strings.TrimSpace(node.NodeName)
+		}
+	}
+	ProbeStore.mu.RUnlock()
+	for index := range config.ProbeIPs {
+		config.ProbeIPs[index].DisplayName = names[normalizeProbeNodeID(config.ProbeIPs[index].NodeID)]
 	}
 	return config
 }

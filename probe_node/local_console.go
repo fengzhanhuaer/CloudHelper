@@ -2291,6 +2291,7 @@ func probeLocalVirtualRouterRuntimeStatusPayloads() []map[string]any {
 			"name":                       strings.TrimSpace(cfg.name),
 			"local_node_id":              normalizeProbeRouteNodeID(cfg.localNodeID),
 			"peer_node_id":               normalizeProbeRouteNodeID(cfg.peerNodeID),
+			"peer_node_name":             strings.TrimSpace(cfg.peerName),
 			"from_node_id":               normalizeProbeRouteNodeID(cfg.fromNodeID),
 			"to_node_id":                 normalizeProbeRouteNodeID(cfg.toNodeID),
 			"local_ip":                   strings.TrimSpace(cfg.localIP),

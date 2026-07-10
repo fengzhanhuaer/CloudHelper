@@ -288,6 +288,36 @@ func TestMobileVRouteRuntimeStatusDeclaresMobileCapabilityBoundary(t *testing.T)
 	}
 }
 
+func TestMobileVRouteStatusPayloadIncludesExitNodeEndpoint(t *testing.T) {
+	configDir := t.TempDir()
+	if err := persistMobileVRouteConfig(configDir, mobileVRouteConfig{
+		LocalNodeID: "9",
+		Enabled:     true,
+		ProbeIPs: []mobileVRouteProbeIP{
+			{NodeID: "9", IP: "198.18.0.9", ServicePort: 12040},
+			{NodeID: "17", IP: "198.18.0.17", ServicePort: 12041},
+		},
+		RouteRules: []mobileVRouteRouteRule{{
+			ID:         "rr-tg",
+			Name:       "Telegram",
+			Action:     "probe_exit",
+			ExitNodeID: "17",
+			Entries:    []string{"domain_suffix:telegram.org"},
+		}},
+	}); err != nil {
+		t.Fatalf("persist vroute config failed: %v", err)
+	}
+
+	status := mobileVRouteStatusPayload(configDir)
+	items, ok := status["exit_node_items"].([]map[string]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("exit_node_items = %#v, want one item", status["exit_node_items"])
+	}
+	if items[0]["node_id"] != "17" || items[0]["ip"] != "198.18.0.17" || items[0]["service_port"] != 12041 {
+		t.Fatalf("unexpected exit node item: %#v", items[0])
+	}
+}
+
 func TestMobileVRouteForwardPlanBuildsAdjacentCarrier(t *testing.T) {
 	configDir := t.TempDir()
 	if err := persistMobileVRouteConfig(configDir, mobileVRouteConfig{

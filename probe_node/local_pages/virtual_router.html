@@ -456,7 +456,7 @@
             <thead>
               <tr>
                 <th>规则</th>
-                <th>Route</th>
+                <th>对端名称</th>
                 <th>方向</th>
                 <th>本机</th>
                 <th>对端</th>
@@ -478,7 +478,7 @@
           <table>
             <thead>
               <tr>
-                <th>Route</th>
+                <th>对端名称</th>
                 <th>对端</th>
                 <th>角色</th>
                 <th>协议</th>
@@ -967,7 +967,7 @@
         const role = item.dialer ? '拨出' : '监听';
         return `<tr>
           <td>${escapeHTML(item.rule_name || item.rule_id || '-')}</td>
-          <td class="mono">${escapeHTML(item.route_id || '-')}</td>
+          <td>${escapeHTML(peerNodeDisplayName(item))}</td>
           <td>${escapeHTML(role)}</td>
           <td class="mono">${escapeHTML([item.local_node_id, item.local_ip].filter(Boolean).join(' / ') || '-')}</td>
           <td class="mono">${escapeHTML([item.peer_node_id, item.peer_ip].filter(Boolean).join(' / ') || '-')}</td>
@@ -995,7 +995,7 @@
         if (stats.last_remote_rtt_ms) pingParts.push('RTT ' + formatDurationMS(stats.last_remote_rtt_ms));
         const lastActivity = [stats.last_packet_at, stats.last_frame_at].filter(Boolean).map(formatDateTime).join(' / ') || '-';
         return `<tr${item.last_error ? ' class="packet-error"' : ''}>
-          <td class="mono">${escapeHTML(item.route_id || '-')}</td>
+          <td>${escapeHTML(peerNodeDisplayName(item))}</td>
           <td class="mono">${escapeHTML([item.peer_node_id, item.peer_ip].filter(Boolean).join(' / ') || '-')}</td>
           <td>${escapeHTML(item.dialer ? '拨出' : '监听')}</td>
           <td><div class="mono">${escapeHTML(runtimeProtocolText(item))}</div>${item.selected_protocol_endpoint ? `<div class="queue-meta mono">${escapeHTML(item.selected_protocol_endpoint)}</div>` : ''}</td>
@@ -1006,6 +1006,13 @@
           <td class="mono">${escapeHTML(lastActivity)}</td>
         </tr>`;
       }).join('');
+    }
+
+    function peerNodeDisplayName(item) {
+      const name = String(item && item.peer_node_name || '').trim();
+      if (name) return name;
+      const nodeID = String(item && item.peer_node_id || '').trim();
+      return nodeID ? `节点 ${nodeID}` : '-';
     }
 
     function renderRouteStatusLinks(items) {

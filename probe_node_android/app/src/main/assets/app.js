@@ -647,6 +647,7 @@ function renderVRouteStatus(vpnData) {
   const capabilities = vroute.capabilities || {};
   const carrierItems = Array.isArray(carriers.items) ? carriers.items : [];
   const routeRules = Array.isArray(config.route_rule_items) ? config.route_rule_items : [];
+  const exitNodes = Array.isArray(config.exit_node_items) ? config.exit_node_items : [];
   const enabled = !!config.enabled;
   const error = String(config.error || carriers.last_error || "").trim();
   setText("vrouteStatus", [
@@ -656,10 +657,37 @@ function renderVRouteStatus(vpnData) {
     `Carrier ${Number(carriers.active || carrierItems.length || 0)}`,
     error ? `错误：${error}` : ""
   ].filter(Boolean).join("；"));
+  renderVRouteHealth(enabled, error, config.updated_at, carriers.last_error_at);
   renderVRouteSummary(config, carriers);
+  renderVRouteExitNodes(exitNodes, config.exit_nodes);
   renderVRouteCarriers(carrierItems);
   renderVRouteRules(routeRules);
   renderVRouteCapabilities(capabilities);
+}
+
+function renderVRouteHealth(enabled, error, updatedAt, lastErrorAt) {
+  const target = byId("vrouteHealth");
+  if (!target) {
+    return;
+  }
+  target.innerHTML = "";
+  const state = document.createElement("div");
+  state.className = "vroute-health";
+  if (error) {
+    state.classList.add("error");
+  } else if (!enabled) {
+    state.classList.add("off");
+  }
+  const title = document.createElement("strong");
+  title.textContent = error ? "虚拟路由异常" : (enabled ? "虚拟路由正在接管匹配流量" : "虚拟路由尚未启用");
+  const detail = document.createElement("span");
+  detail.textContent = error
+    ? `${error}${lastErrorAt ? `（${formatCompactTime(lastErrorAt)}）` : ""}`
+    : (enabled
+      ? `配置更新时间：${formatCompactTime(updatedAt) || "未知"}。承载连接会在规则需要时建立或重连。`
+      : "请在主控为此节点启用虚拟路由并下发规则。");
+  state.append(title, detail);
+  target.appendChild(state);
 }
 
 function renderVRouteSummary(config, carriers) {
@@ -675,6 +703,35 @@ function renderVRouteSummary(config, carriers) {
   appendVRouteMetric(target, "更新时间", formatCompactTime(config.updated_at) || "-");
   appendVRouteMetric(target, "Carrier", `${Number(carriers.active || 0)} 活动`);
   appendVRouteMetric(target, "最近错误", carriers.last_error || config.error || "-");
+}
+
+function renderVRouteExitNodes(items, fallbackIDs) {
+  const target = byId("vrouteExitNodes");
+  if (!target) {
+    return;
+  }
+  target.innerHTML = "";
+  const fallback = Array.isArray(fallbackIDs) ? fallbackIDs : [];
+  const nodes = items.length ? items : fallback.map((nodeID) => ({ node_id: nodeID }));
+  appendVRouteSectionTitle(target, `出口节点 (${nodes.length})`);
+  if (!nodes.length) {
+    appendVRouteEmpty(target, "当前规则没有指定远端出口节点；命中本机出口的规则会直接由本机处理。");
+    return;
+  }
+  nodes.forEach((item) => {
+    const card = document.createElement("article");
+    card.className = "vroute-card";
+    const title = document.createElement("div");
+    title.className = "vroute-card-title";
+    title.textContent = `节点 ${item.node_id || "-"}`;
+    const meta = document.createElement("div");
+    meta.className = "vroute-card-meta";
+    const host = String(item.ip || "").trim();
+    const port = Number(item.service_port || 0);
+    meta.textContent = host ? `地址 ${host}${port > 0 ? `:${port}` : ""}` : "未下发节点地址";
+    card.append(title, meta);
+    target.appendChild(card);
+  });
 }
 
 function appendVRouteMetric(parent, label, value) {
@@ -750,8 +807,9 @@ function renderVRouteRules(items) {
     const meta = document.createElement("div");
     meta.className = "vroute-card-meta";
     meta.textContent = [
-      item.action || "-",
+      vrouteActionLabel(item.action),
       item.exit_node_id ? `出口 ${item.exit_node_id}` : "",
+      item.updated_at ? `更新 ${formatCompactTime(item.updated_at)}` : "",
       item.id ? `ID ${item.id}` : ""
     ].filter(Boolean).join(" · ");
     const entries = document.createElement("div");
@@ -772,6 +830,15 @@ function renderVRouteRules(items) {
     card.append(title, meta, entries);
     target.appendChild(card);
   });
+}
+
+function vrouteActionLabel(action) {
+  const clean = String(action || "").trim().toLowerCase();
+  if (clean === "probe_exit") return "远端出口";
+  if (clean === "local_exit") return "本机出口";
+  if (clean === "direct") return "直接连接";
+  if (clean === "reject") return "拒绝";
+  return clean || "未指定动作";
 }
 
 function appendVRouteEntryGroup(parent, label, items) {

@@ -461,6 +461,38 @@ input {
   gap: 8px;
   margin-top: 10px;
 }
+.vroute-health {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
+  border: 1px solid #99f6e4;
+  border-left: 4px solid #0f766e;
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: #f0fdfa;
+  color: #134e4a;
+}
+.vroute-health.error {
+  border-color: #fecaca;
+  border-left-color: #b91c1c;
+  background: #fef2f2;
+  color: #7f1d1d;
+}
+.vroute-health.off {
+  border-color: #e7e5e4;
+  border-left-color: #78716c;
+  background: #fafaf9;
+  color: #57534e;
+}
+.vroute-health strong {
+  font-size: 14px;
+  font-weight: 760;
+}
+.vroute-health span {
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
+}
 .vroute-list,
 .vroute-capabilities {
   display: grid;

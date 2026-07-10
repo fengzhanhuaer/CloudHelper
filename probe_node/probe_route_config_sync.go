@@ -56,6 +56,7 @@ type probeVirtualRouterFakeIPEntry struct {
 
 type probeVirtualRouterProbeIP struct {
 	NodeID      string `json:"node_id"`
+	DisplayName string `json:"display_name,omitempty"`
 	IP          string `json:"ip"`
 	ServicePort int    `json:"service_port,omitempty"`
 	Note        string `json:"note,omitempty"`

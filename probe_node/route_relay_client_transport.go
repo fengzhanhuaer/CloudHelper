@@ -1071,13 +1071,21 @@ func openProbeRouteRelayNetConnWithResolvedHostModeAndToken(routeID string, secr
 		relayHostHeader = strings.TrimSpace(strings.Trim(relayHost, "[]"))
 	}
 	layer = normalizeProbeRouteRouteLayer(layer)
+	var (
+		conn net.Conn
+		err  error
+	)
 	if layer == "websocket" {
-		return openProbeRouteRelayWebSocketNetConn(routeID, secret, relayHost, relayPort, bridgeRole, relayMode, connToken, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
+		conn, err = openProbeRouteRelayWebSocketNetConn(routeID, secret, relayHost, relayPort, bridgeRole, relayMode, connToken, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
+	} else if layer == "websocket-h3" {
+		conn, err = openProbeRouteRelayHTTP3WebSocketNetConn(routeID, secret, relayHost, relayPort, bridgeRole, relayMode, connToken, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
+	} else {
+		return nil, fmt.Errorf("unsupported relay protocol: %s", layer)
 	}
-	if layer == "websocket-h3" {
-		return openProbeRouteRelayHTTP3WebSocketNetConn(routeID, secret, relayHost, relayPort, bridgeRole, relayMode, connToken, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
+	if err != nil {
+		invalidateProbeRouteRelayResolveCacheAfterFailedDial(relayHost, relayDialHost)
 	}
-	return nil, fmt.Errorf("unsupported relay protocol: %s", layer)
+	return conn, err
 }
 
 func openProbeRouteRelayWebSocketNetConn(routeID string, secret string, relayHost string, relayPort int, bridgeRole string, relayMode string, connToken string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
@@ -1650,6 +1658,25 @@ func refreshProbeRouteRelayResolveCacheOnConnectSuccess(host string, dialHost st
 		return
 	}
 	storeProbeRouteRelayResolveCache(cleanHost, dialHost, hostHeader)
+}
+
+// invalidateProbeRouteRelayResolveCacheAfterFailedDial makes the next relay
+// reconnect resolve the configured domain again instead of retrying a known
+// failed cached IP. Domain-preserving relay paths have no entry to remove.
+func invalidateProbeRouteRelayResolveCacheAfterFailedDial(host string, dialHost string) {
+	cleanHost := strings.TrimSpace(strings.Trim(host, "[]"))
+	cleanDialHost := strings.TrimSpace(strings.Trim(dialHost, "[]"))
+	if cleanHost == "" || cleanDialHost == "" || net.ParseIP(cleanHost) != nil {
+		return
+	}
+	probeRouteRelayResolveCache.mu.Lock()
+	defer probeRouteRelayResolveCache.mu.Unlock()
+	entry, ok := probeRouteRelayResolveCache.items[cleanHost]
+	if !ok || !strings.EqualFold(strings.TrimSpace(entry.DialHost), cleanDialHost) {
+		return
+	}
+	delete(probeRouteRelayResolveCache.items, cleanHost)
+	log.Printf("probe route relay cached dns ip invalidated after dial failure: host=%s ip=%s", cleanHost, cleanDialHost)
 }
 
 func resetProbeRouteRelayResolveCacheForTest() {

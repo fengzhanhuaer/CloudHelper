@@ -49,6 +49,7 @@ type probeVirtualRouterRuntimeConfig struct {
 	toNodeID      string
 	localNodeID   string
 	peerNodeID    string
+	peerName      string
 	localIP       string
 	peerIP        string
 	peerHost      string
@@ -1107,6 +1108,7 @@ func buildProbeVirtualRouterRuntimeConfigForRule(config probeVirtualRouterConfig
 		toNodeID:      toNodeID,
 		localNodeID:   localNodeID,
 		peerNodeID:    peerNodeID,
+		peerName:      probeVirtualRouterDisplayNameForNode(config, peerNodeID),
 		localIP:       currentProbeVirtualRouterIPForNode(localNodeID),
 		peerIP:        currentProbeVirtualRouterIPForNode(peerNodeID),
 		peerHost:      "",

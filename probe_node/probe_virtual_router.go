@@ -71,6 +71,7 @@ const (
 	probeVirtualRouterSpeedReceiveCompletedTTL                    = 2 * time.Minute
 	probeVirtualRouterCarrierStalePingFailures                    = 4
 	probeVirtualRouterCarrierStaleRXGrace                         = 2 * probeVirtualRouterPingPongInterval
+	probeVirtualRouterNonDirectPathGuardInterval                  = time.Minute
 	probeVirtualRouterRouteConfigRefreshHotPathMinInterval        = 60 * time.Second
 	probeVirtualRouterProbeIPPoolSize                             = 1024
 )
@@ -134,6 +135,16 @@ var probeVirtualRouterRouteCacheState = struct {
 	mu     sync.RWMutex
 	routes map[string][]string
 }{routes: make(map[string][]string)}
+
+var probeVirtualRouterNonDirectPathGuardState = struct {
+	mu     sync.Mutex
+	stopCh chan struct{}
+}{}
+
+var probeVirtualRouterDisconnectedCarrierState = struct {
+	mu       sync.RWMutex
+	routeIDs map[string]struct{}
+}{routeIDs: make(map[string]struct{})}
 
 var probeVirtualRouterPathRTTState = struct {
 	mu    sync.RWMutex
@@ -508,6 +519,7 @@ func sanitizeProbeVirtualRouterProbeIPs(items []probeVirtualRouterProbeIP) []pro
 		seenIP[ipText] = struct{}{}
 		out = append(out, probeVirtualRouterProbeIP{
 			NodeID:      nodeID,
+			DisplayName: strings.TrimSpace(item.DisplayName),
 			IP:          ipText,
 			ServicePort: normalizeProbeVirtualRouterServicePort(item.ServicePort),
 			Note:        strings.TrimSpace(item.Note),
@@ -777,6 +789,7 @@ func applyProbeVirtualRouterConfigForNode(config probeVirtualRouterConfig, nodeI
 	} else if fakeIPRouteChanged {
 		clearProbeVirtualRouterRouteCache("fake ip route rules updated")
 	}
+	setProbeVirtualRouterNonDirectPathGuardEnabled(sanitized.Enabled)
 	if sanitized.Enabled {
 		cleanupProbeRouteDirectBypassForVirtualRouterRules(sanitized)
 	}
@@ -1557,6 +1570,19 @@ func probeVirtualRouterIPForNode(config probeVirtualRouterConfig, nodeID string)
 	return ""
 }
 
+func probeVirtualRouterDisplayNameForNode(config probeVirtualRouterConfig, nodeID string) string {
+	target := normalizeProbeRouteNodeID(nodeID)
+	if target == "" {
+		return ""
+	}
+	for _, item := range config.ProbeIPs {
+		if normalizeProbeRouteNodeID(item.NodeID) == target {
+			return strings.TrimSpace(item.DisplayName)
+		}
+	}
+	return ""
+}
+
 func probeVirtualRouterReachable(config probeVirtualRouterConfig, fromNodeID string, toNodeID string) bool {
 	return len(probeVirtualRouterPath(config, fromNodeID, toNodeID)) > 0
 }
@@ -1708,6 +1734,16 @@ func selectProbeVirtualRouterBestPath(paths [][]string, useRTT bool) []string {
 	if len(paths) == 0 {
 		return nil
 	}
+	eligible := make([][]string, 0, len(paths))
+	for _, path := range paths {
+		if !probeVirtualRouterPathShouldAvoid(path) {
+			eligible = append(eligible, path)
+		}
+	}
+	if len(eligible) == 0 {
+		return nil
+	}
+	paths = eligible
 	best := append([]string(nil), paths[0]...)
 	for _, path := range paths[1:] {
 		if probeVirtualRouterPathLess(path, best, useRTT) {
@@ -1715,6 +1751,76 @@ func selectProbeVirtualRouterBestPath(paths [][]string, useRTT bool) []string {
 		}
 	}
 	return best
+}
+
+func probeVirtualRouterPathShouldAvoid(path []string) bool {
+	key := probeVirtualRouterPathKey(path)
+	if key == "" {
+		return false
+	}
+	probeVirtualRouterPathRTTState.mu.RLock()
+	item, ok := probeVirtualRouterPathRTTState.items[key]
+	probeVirtualRouterPathRTTState.mu.RUnlock()
+	if ok && strings.TrimSpace(item.LastError) != "" {
+		return true
+	}
+	cleanPath := cleanProbeVirtualRouterPath(path)
+	localNodeID := currentProbeVirtualRouterLocalNodeID()
+	if len(cleanPath) < 2 || localNodeID == "" || cleanPath[0] != localNodeID {
+		return false
+	}
+	rt, _ := probeVirtualRouterRuntimeForAdjacentNode(cleanPath[1])
+	return rt != nil && rt.cfg.dialer && probeVirtualRouterPhysicalCarrierIsDisconnected(rt.cfg.routeID)
+}
+
+func probeVirtualRouterPhysicalCarrierIsDisconnected(routeID string) bool {
+	key := strings.TrimSpace(routeID)
+	if key == "" {
+		return false
+	}
+	probeVirtualRouterDisconnectedCarrierState.mu.RLock()
+	_, disconnected := probeVirtualRouterDisconnectedCarrierState.routeIDs[key]
+	probeVirtualRouterDisconnectedCarrierState.mu.RUnlock()
+	return disconnected
+}
+
+func markProbeVirtualRouterPhysicalCarrierDisconnected(rt *probeVirtualRouterRuntime, reason string) {
+	if rt == nil {
+		return
+	}
+	routeID := strings.TrimSpace(rt.cfg.routeID)
+	if routeID == "" {
+		return
+	}
+	probeVirtualRouterDisconnectedCarrierState.mu.Lock()
+	_, alreadyDisconnected := probeVirtualRouterDisconnectedCarrierState.routeIDs[routeID]
+	if probeVirtualRouterDisconnectedCarrierState.routeIDs == nil {
+		probeVirtualRouterDisconnectedCarrierState.routeIDs = make(map[string]struct{})
+	}
+	probeVirtualRouterDisconnectedCarrierState.routeIDs[routeID] = struct{}{}
+	probeVirtualRouterDisconnectedCarrierState.mu.Unlock()
+	if !alreadyDisconnected {
+		clearProbeVirtualRouterRouteCacheForRuntime(rt, "physical carrier disconnected")
+		log.Printf("probe virtual router physical carrier marked unavailable: route=%s reason=%s", routeID, strings.TrimSpace(reason))
+	}
+}
+
+func clearProbeVirtualRouterPhysicalCarrierDisconnected(rt *probeVirtualRouterRuntime) {
+	if rt == nil {
+		return
+	}
+	routeID := strings.TrimSpace(rt.cfg.routeID)
+	if routeID == "" {
+		return
+	}
+	probeVirtualRouterDisconnectedCarrierState.mu.Lock()
+	_, wasDisconnected := probeVirtualRouterDisconnectedCarrierState.routeIDs[routeID]
+	delete(probeVirtualRouterDisconnectedCarrierState.routeIDs, routeID)
+	probeVirtualRouterDisconnectedCarrierState.mu.Unlock()
+	if wasDisconnected {
+		clearProbeVirtualRouterRouteCache("physical carrier recovered")
+		log.Printf("probe virtual router physical carrier recovered: route=%s", routeID)
+	}
 }
 
 func probeVirtualRouterPathLess(left []string, right []string, useRTT bool) bool {
@@ -1939,7 +2045,10 @@ func currentProbeVirtualRouterPathBetweenNodes(fromNodeID string, toNodeID strin
 		return []string{from}
 	}
 	if path := cachedProbeVirtualRouterRoutePath(from, to); len(path) > 0 {
-		return path
+		if !probeVirtualRouterPathShouldAvoid(path) {
+			return path
+		}
+		clearProbeVirtualRouterRouteCacheForPath(path, "cached path is unavailable")
 	}
 	probeVirtualRouterState.mu.RLock()
 	neighbors := probeVirtualRouterCloneNeighborsLocked()
@@ -2029,6 +2138,24 @@ func clearProbeVirtualRouterRouteCacheForEdge(fromNodeID string, toNodeID string
 	probeVirtualRouterRouteCacheState.mu.Unlock()
 	if removed > 0 && strings.TrimSpace(reason) != "" {
 		log.Printf("probe virtual router route cache entries cleared: reason=%s edge=%s>%s count=%d", strings.TrimSpace(reason), from, to, removed)
+	}
+}
+
+func clearProbeVirtualRouterRouteCacheForPath(path []string, reason string) {
+	cleanPath := cleanProbeVirtualRouterPath(path)
+	if len(cleanPath) < 2 {
+		return
+	}
+	key := probeVirtualRouterRouteCacheKey(cleanPath[0], cleanPath[len(cleanPath)-1])
+	if key == "" {
+		return
+	}
+	probeVirtualRouterRouteCacheState.mu.Lock()
+	_, removed := probeVirtualRouterRouteCacheState.routes[key]
+	delete(probeVirtualRouterRouteCacheState.routes, key)
+	probeVirtualRouterRouteCacheState.mu.Unlock()
+	if removed && strings.TrimSpace(reason) != "" {
+		log.Printf("probe virtual router route cache cleared: path=%s reason=%s", strings.Join(cleanPath, ">"), strings.TrimSpace(reason))
 	}
 }
 
@@ -3134,6 +3261,106 @@ func probeVirtualRouterQueryAllPathRTTs() int {
 	return len(paths)
 }
 
+func setProbeVirtualRouterNonDirectPathGuardEnabled(enabled bool) {
+	probeVirtualRouterNonDirectPathGuardState.mu.Lock()
+	if !enabled {
+		stopCh := probeVirtualRouterNonDirectPathGuardState.stopCh
+		probeVirtualRouterNonDirectPathGuardState.stopCh = nil
+		probeVirtualRouterNonDirectPathGuardState.mu.Unlock()
+		if stopCh != nil {
+			close(stopCh)
+		}
+		return
+	}
+	if probeVirtualRouterNonDirectPathGuardState.stopCh != nil {
+		probeVirtualRouterNonDirectPathGuardState.mu.Unlock()
+		return
+	}
+	stopCh := make(chan struct{})
+	probeVirtualRouterNonDirectPathGuardState.stopCh = stopCh
+	probeVirtualRouterNonDirectPathGuardState.mu.Unlock()
+	go runProbeVirtualRouterNonDirectPathGuard(stopCh)
+}
+
+func runProbeVirtualRouterNonDirectPathGuard(stopCh <-chan struct{}) {
+	ticker := time.NewTicker(probeVirtualRouterNonDirectPathGuardInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stopCh:
+			return
+		case <-ticker.C:
+			guarded := probeVirtualRouterGuardNonDirectPaths()
+			if guarded > 0 {
+				log.Printf("probe virtual router non-direct path guardian completed: paths=%d", guarded)
+			}
+		}
+	}
+}
+
+func probeVirtualRouterGuardNonDirectPaths() int {
+	localNodeID := currentProbeVirtualRouterLocalNodeID()
+	if localNodeID == "" {
+		return 0
+	}
+	probeVirtualRouterState.mu.RLock()
+	nodeToIP := probeVirtualRouterCloneNodeToIPLocked()
+	neighbors := probeVirtualRouterCloneNeighborsLocked()
+	probeVirtualRouterState.mu.RUnlock()
+	nodeIDs := make([]string, 0, len(nodeToIP))
+	for nodeID := range nodeToIP {
+		cleanNodeID := normalizeProbeRouteNodeID(nodeID)
+		if cleanNodeID != "" && cleanNodeID != localNodeID {
+			nodeIDs = append(nodeIDs, cleanNodeID)
+		}
+	}
+	sort.Strings(nodeIDs)
+	pathsByKey := make(map[string][]string)
+	for _, nodeID := range nodeIDs {
+		for _, path := range probeVirtualRouterShortestPathsFromNeighbors(neighbors, localNodeID, nodeID) {
+			if len(path) <= 2 {
+				continue
+			}
+			if key := probeVirtualRouterPathKey(path); key != "" {
+				pathsByKey[key] = path
+			}
+		}
+	}
+	pathKeys := make([]string, 0, len(pathsByKey))
+	for key := range pathsByKey {
+		pathKeys = append(pathKeys, key)
+	}
+	sort.Strings(pathKeys)
+	guarded := 0
+	for _, key := range pathKeys {
+		path := pathsByKey[key]
+		guarded++
+		if _, err := probeVirtualRouterQueryPathRTT(path); err != nil {
+			if errors.Is(err, errProbeVirtualRouterAdjacentRTTUnavailable) {
+				recordProbeVirtualRouterPathRTTError(path, err)
+			}
+			clearProbeVirtualRouterRouteCacheForPath(path, "non-direct path guardian ping-pong failed")
+			log.Printf("probe virtual router non-direct path guardian failed: path=%s err=%v", strings.Join(path, ">"), err)
+			if replacement := currentProbeVirtualRouterPathBetweenNodes(localNodeID, path[len(path)-1]); len(replacement) > 0 && !sameProbeVirtualRouterPath(path, replacement) {
+				log.Printf("probe virtual router non-direct path guardian reselected path: old=%s new=%s", strings.Join(path, ">"), strings.Join(replacement, ">"))
+			}
+		}
+	}
+	return guarded
+}
+
+func sameProbeVirtualRouterPath(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if normalizeProbeRouteNodeID(left[index]) != normalizeProbeRouteNodeID(right[index]) {
+			return false
+		}
+	}
+	return true
+}
+
 func probeVirtualRouterPingPongDirection(rt *probeVirtualRouterRuntime, direction string) {
 	if rt == nil {
 		return
@@ -3228,6 +3455,7 @@ func (s *probeVirtualRouterFrameLink) AttachCarrier(conn net.Conn, sessionID str
 	if old != nil {
 		old.close()
 	}
+	clearProbeVirtualRouterPhysicalCarrierDisconnected(s.runtime)
 	if droppedTX > 0 || droppedRX > 0 {
 		log.Printf("probe virtual router frame buffers cleared: reason=carrier_attached route=%s key=%s tx=%d rx=%d session_id=%s remote=%s", probeVirtualRouterRuntimeLogRouteID(s.runtime), strings.TrimSpace(s.key), droppedTX, droppedRX, strings.TrimSpace(sessionID), strings.TrimSpace(remoteAddr))
 	}
@@ -4010,6 +4238,7 @@ func (s *probeVirtualRouterFrameLink) detachCarrierWithReason(token *probeVirtua
 	}
 	if detached && s.runtime != nil {
 		clearProbeVirtualRouterRuntimePingError(s.runtime.cfg.routeID)
+		markProbeVirtualRouterPhysicalCarrierDisconnected(s.runtime, reason)
 	}
 }
 
