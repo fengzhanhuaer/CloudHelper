@@ -503,7 +503,7 @@
             <thead>
               <tr>
                 <th>Link</th>
-                <th>Route</th>
+                <th>对端</th>
                 <th>承载</th>
                 <th>远端</th>
                 <th>连接时长</th>
@@ -603,6 +603,29 @@
               </tr>
             </thead>
             <tbody id="routeTestRows">
+              <tr><td colspan="8" class="hint">-</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card" style="margin-top:14px;">
+        <h2>虚拟路由路径</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>目标节点</th>
+                <th>虚拟 IP</th>
+                <th>当前路径</th>
+                <th>跳数</th>
+                <th>延迟</th>
+                <th>状态</th>
+                <th>失败</th>
+                <th>最近探测</th>
+              </tr>
+            </thead>
+            <tbody id="routeStatusPathRows">
               <tr><td colspan="8" class="hint">-</td></tr>
             </tbody>
           </table>
@@ -912,6 +935,7 @@
       setText('routeStatusReasons', reasons.length ? reasons.join('；') : '当前观察项未发现阻断');
       renderRouteStatusRules(Array.isArray(payload.rules) ? payload.rules : []);
       renderRouteStatusRuntimes(Array.isArray(payload.runtimes) ? payload.runtimes : []);
+      renderRouteStatusPaths(Array.isArray(payload.paths) ? payload.paths : []);
       renderRouteStatusLinks(Array.isArray(payload.frame_links) ? payload.frame_links : []);
       renderRouteStatusLatestError(payload.recent_summary || {});
       renderRouteSpeedTargetOptions(payload);
@@ -1008,6 +1032,40 @@
       }).join('');
     }
 
+    function renderRouteStatusPaths(items) {
+      const rows = document.getElementById('routeStatusPathRows');
+      if (!rows) return;
+      if (!items.length) {
+        rows.innerHTML = '<tr><td colspan="8" class="hint">暂无目标节点</td></tr>';
+        return;
+      }
+      rows.innerHTML = items.map((item) => {
+        const path = Array.isArray(item.path) ? item.path : [];
+        const pathText = path.map((node) => {
+          const name = String(node && node.node_name || '').trim();
+          const id = String(node && node.node_id || '').trim();
+          return name ? (id ? name + ' (' + id + ')' : name) : (id ? '节点 ' + id : '-');
+        }).join(' → ') || '-';
+        const targetName = String(item.target_node_name || '').trim();
+        const targetID = String(item.target_node_id || '').trim();
+        const target = targetName ? (targetID ? targetName + ' (' + targetID + ')' : targetName) : (targetID ? '节点 ' + targetID : '-');
+        const status = String(item.status || 'unavailable');
+        const statusKind = status === 'running' ? 'ok' : 'warn';
+        const labels = { running: '可用', degraded: '需观察', quarantined: '已隔离', unavailable: '不可达' };
+        const error = String(item.last_error || '').trim();
+        return `<tr${status === 'running' ? '' : ' class="packet-error"'}>
+          <td>${escapeHTML(target)}</td>
+          <td class="mono">${escapeHTML(item.target_ip || '-')}</td>
+          <td class="mono">${escapeHTML(pathText)}</td>
+          <td class="mono">${escapeHTML(formatNumber(item.hop_count))}</td>
+          <td class="mono">${escapeHTML(item.rtt_ms ? formatDurationMS(item.rtt_ms) : '-')}</td>
+          <td>${statusPillHTML(statusKind, labels[status] || status)}${error ? `<div class="queue-meta">${escapeHTML(error)}</div>` : ''}</td>
+          <td class="mono">${escapeHTML(formatNumber(item.failure_count))}</td>
+          <td class="mono">${escapeHTML(formatDateTime(item.last_observed_at))}</td>
+        </tr>`;
+      }).join('');
+    }
+
     function peerNodeDisplayName(item) {
       const name = String(item && item.peer_node_name || '').trim();
       if (name) return name;
@@ -1029,7 +1087,7 @@
         const rxWorkers = Number(item.rx_dispatch_workers || 0);
         return `<tr${item.carrier ? '' : ' class="packet-error"'}>
           <td class="mono">${escapeHTML(item.key || '-')}</td>
-          <td class="mono">${escapeHTML(item.route_id || '-')}</td>
+          <td>${escapeHTML(peerNodeDisplayName(item))}</td>
           <td>${statusPillHTML(carrierKind, carrierText)}</td>
           <td class="mono">${escapeHTML(item.remote_addr || '-')}</td>
           <td class="mono">${escapeHTML(formatDurationMS(item.connected_ms))}</td>

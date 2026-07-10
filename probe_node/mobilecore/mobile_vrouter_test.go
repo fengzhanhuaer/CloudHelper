@@ -165,7 +165,7 @@ func TestMobileVRouteCIDRRuleSelectsRemoteProbeExit(t *testing.T) {
 	mobileVRouteCarrierState.mu.Lock()
 	mobileVRouteCarrierState.items[carrier.key] = carrier
 	mobileVRouteCarrierState.mu.Unlock()
-	carrier.start()
+	go carrier.runTXWorker()
 
 	frameCh := make(chan mobileVRouteFrame, 1)
 	errCh := make(chan error, 1)
@@ -252,7 +252,7 @@ func TestMobileVRouteCarrierWriteFailureClosesAndRecordsError(t *testing.T) {
 	mobileVRouteCarrierState.mu.Lock()
 	mobileVRouteCarrierState.items[carrier.key] = carrier
 	mobileVRouteCarrierState.mu.Unlock()
-	carrier.start()
+	go carrier.runTXWorker()
 
 	if err := carrier.writeIPPacket(buildMobileVRouteTestIPv4Packet(6, "10.0.0.2", "198.18.0.17", 12345, 443), []string{"9", "17"}); err != nil {
 		t.Fatalf("enqueue write failed: %v", err)
@@ -283,8 +283,8 @@ func TestMobileVRouteRuntimeStatusDeclaresMobileCapabilityBoundary(t *testing.T)
 	if capabilities["ip_frame"] != true || capabilities["websocket_carrier"] != true || capabilities["vpn_tun_writeback"] != true {
 		t.Fatalf("required mobile vroute capabilities missing: %+v", capabilities)
 	}
-	if capabilities["websocket_h3"] != false || capabilities["inbound_listener"] != false || capabilities["reverse_first_hop"] != false {
-		t.Fatalf("unsupported mobile vroute capabilities should be explicit false: %+v", capabilities)
+	if capabilities["websocket_h3"] != false || capabilities["inbound_listener"] != false || capabilities["reverse_first_hop"] != true || capabilities["relay_forwarding"] != true || capabilities["control_ping"] != true || capabilities["path_rtt"] != true {
+		t.Fatalf("unexpected mobile vroute capabilities: %+v", capabilities)
 	}
 }
 
@@ -376,7 +376,7 @@ func TestMobileVRouteForwardPlanBuildsAdjacentCarrier(t *testing.T) {
 	}
 }
 
-func TestMobileVRouteOutboundCarrierPlansOnlyIncludeLocalForwardRules(t *testing.T) {
+func TestMobileVRouteOutboundCarrierPlansIncludeForwardAndReverseRules(t *testing.T) {
 	plans := mobileVRouteOutboundCarrierPlans(mobileVRouteConfig{
 		LocalNodeID: "9",
 		Enabled:     true,
@@ -390,12 +390,18 @@ func TestMobileVRouteOutboundCarrierPlansOnlyIncludeLocalForwardRules(t *testing
 			{ID: "inbound", FromNodeID: "19", ToNodeID: "9", FromServiceDomain: "edge-19.example.com", Secret: "secret", AuthTicket: "ticket", Enabled: true},
 		},
 	})
-	if len(plans) != 1 {
-		t.Fatalf("outbound plans=%d, want 1: %+v", len(plans), plans)
+	if len(plans) != 2 {
+		t.Fatalf("outbound plans=%d, want 2: %+v", len(plans), plans)
 	}
-	plan := plans[0]
-	if plan.NextNode != "17" || plan.RelayHost != "edge-17.example.com" || plan.RelayPort != 12040 || plan.BridgeRole != mobileVRouteBridgeRoleToNext || plan.Layer != "websocket" {
-		t.Fatalf("unexpected outbound plan: %+v", plan)
+	byNextNode := map[string]mobileVRouteForwardPlan{}
+	for _, plan := range plans {
+		byNextNode[plan.NextNode] = plan
+	}
+	if plan := byNextNode["17"]; plan.RelayHost != "edge-17.example.com" || plan.RelayPort != 12040 || plan.BridgeRole != mobileVRouteBridgeRoleToNext || plan.Layer != "websocket" {
+		t.Fatalf("unexpected forward plan: %+v", plan)
+	}
+	if plan := byNextNode["19"]; plan.RelayHost != "edge-19.example.com" || plan.RelayPort != 12041 || plan.BridgeRole != mobileVRouteBridgeRoleToPrev || plan.Layer != "websocket" {
+		t.Fatalf("unexpected reverse plan: %+v", plan)
 	}
 }
 
@@ -627,7 +633,7 @@ func TestMobileVRouteExplicitHTTP3IsNotSilentlyDowngraded(t *testing.T) {
 	}
 }
 
-func TestMobileVRouteForwardPlanRejectsReverseAdjacentCarrier(t *testing.T) {
+func TestMobileVRouteForwardPlanBuildsReverseAdjacentCarrier(t *testing.T) {
 	configDir := t.TempDir()
 	if err := persistMobileVRouteConfig(configDir, mobileVRouteConfig{
 		LocalNodeID: "12",
@@ -652,8 +658,12 @@ func TestMobileVRouteForwardPlanRejectsReverseAdjacentCarrier(t *testing.T) {
 		t.Fatalf("persist vroute config failed: %v", err)
 	}
 
-	if _, err := buildMobileVRouteForwardPlan(configDir, "vroute:9"); err == nil || !strings.Contains(err.Error(), "reverse first hop") {
-		t.Fatalf("build reverse forward plan err=%v, want reverse first hop unsupported", err)
+	plan, err := buildMobileVRouteForwardPlan(configDir, "vroute:9")
+	if err != nil {
+		t.Fatalf("build reverse forward plan: %v", err)
+	}
+	if plan.NextNode != "9" || plan.RelayHost != "edge-9.example.com" || plan.RelayPort != 13000 || plan.BridgeRole != mobileVRouteBridgeRoleToPrev {
+		t.Fatalf("unexpected reverse forward plan: %+v", plan)
 	}
 }
 

@@ -2163,6 +2163,7 @@ func probeLocalVirtualRouterStatusPayload() map[string]any {
 	runtimes := probeLocalVirtualRouterRuntimeStatusPayloads()
 	frameLinks := probeLocalVirtualRouterFrameLinkStatusPayloads()
 	rules := probeLocalVirtualRouterRuleRuntimeStatusPayloads()
+	paths := probeLocalVirtualRouterPathStatusPayloads()
 	recentPackets := snapshotProbeVirtualRouterRecentPackets()
 	recentSummary := probeLocalVirtualRouterRecentPacketSummaryPayload(recentPackets)
 
@@ -2262,10 +2263,71 @@ func probeLocalVirtualRouterStatusPayload() map[string]any {
 			"recent_drop_count":  recentSummary["drop_count"],
 		},
 		"rules":          rules,
+		"paths":          paths,
 		"runtimes":       runtimes,
 		"frame_links":    frameLinks,
 		"recent_summary": recentSummary,
 	}
+}
+
+func probeLocalVirtualRouterPathStatusPayloads() []map[string]any {
+	probeVirtualRouterState.mu.RLock()
+	config := probeVirtualRouterState.config
+	localNodeID := normalizeProbeRouteNodeID(probeVirtualRouterState.localNodeID)
+	probeVirtualRouterState.mu.RUnlock()
+	if localNodeID == "" {
+		return []map[string]any{}
+	}
+	items := make([]map[string]any, 0, len(config.ProbeIPs))
+	for _, probe := range config.ProbeIPs {
+		targetNodeID := normalizeProbeRouteNodeID(probe.NodeID)
+		if targetNodeID == "" || targetNodeID == localNodeID {
+			continue
+		}
+		path := currentProbeVirtualRouterPathBetweenNodes(localNodeID, targetNodeID)
+		pathNodes := make([]map[string]string, 0, len(path))
+		for _, nodeID := range path {
+			cleanNodeID := normalizeProbeRouteNodeID(nodeID)
+			if cleanNodeID == "" {
+				continue
+			}
+			pathNodes = append(pathNodes, map[string]string{
+				"node_id":   cleanNodeID,
+				"node_name": probeVirtualRouterDisplayNameForNode(config, cleanNodeID),
+			})
+		}
+		pathKey := probeVirtualRouterPathKey(path)
+		probeVirtualRouterPathRTTState.mu.RLock()
+		rtt := probeVirtualRouterPathRTTState.items[pathKey]
+		probeVirtualRouterPathRTTState.mu.RUnlock()
+		status := "unavailable"
+		hopCount := 0
+		if len(path) >= 2 {
+			hopCount = len(path) - 1
+			status = "running"
+			if probeVirtualRouterPathShouldAvoid(path) {
+				status = "quarantined"
+			} else if strings.TrimSpace(rtt.LastError) != "" {
+				status = "degraded"
+			}
+		}
+		items = append(items, map[string]any{
+			"target_node_id":   targetNodeID,
+			"target_node_name": probeVirtualRouterDisplayNameForNode(config, targetNodeID),
+			"target_ip":        strings.TrimSpace(probe.IP),
+			"path":             pathNodes,
+			"hop_count":        hopCount,
+			"rtt_ms":           rtt.RTTMS,
+			"failure_count":    rtt.ConsecutiveFailureCount,
+			"last_error":       strings.TrimSpace(rtt.LastError),
+			"last_observed_at": probeLocalVirtualRouterTimeString(rtt.LastAt),
+			"status":           status,
+		})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return strings.TrimSpace(items[i]["target_node_id"].(string)) < strings.TrimSpace(items[j]["target_node_id"].(string))
+	})
+	return items
 }
 
 func probeLocalVirtualRouterRuntimeStatusPayloads() []map[string]any {
@@ -2428,6 +2490,7 @@ func probeLocalVirtualRouterFrameLinkStatusPayload(link *probeVirtualRouterFrame
 	}
 	if rt != nil {
 		item["peer_node_id"] = normalizeProbeRouteNodeID(rt.cfg.peerNodeID)
+		item["peer_node_name"] = strings.TrimSpace(rt.cfg.peerName)
 		item["bridge_role"] = probeLocalVirtualRouterRuntimeBridgeRole(rt.cfg)
 	}
 	if token == nil {

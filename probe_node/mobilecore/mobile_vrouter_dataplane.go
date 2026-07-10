@@ -55,6 +55,7 @@ const (
 	mobileVRouteCarrierRetryMax                = 30 * time.Second
 	mobileVRouteCarrierTXBufferFrames          = 1024
 	mobileVRouteCarrierRXBufferFrames          = 1024
+	mobileVRouteMaxHops                         = 3
 )
 
 type mobileVRouteFrame struct {
@@ -73,6 +74,7 @@ type mobileVRouteForwardPlan struct {
 	ExitNode   string
 	Path       []string
 	NextNode   string
+	Config     mobileVRouteConfig
 	Rule       mobileVRouteTopology
 	RouteID    string
 	RelayHost  string
@@ -178,13 +180,13 @@ func buildMobileVRouteForwardPlan(configDir string, routeID string) (mobileVRout
 	if len(path) < 2 {
 		return mobileVRouteForwardPlan{}, fmt.Errorf("vroute path unavailable: %s>%s", localNode, exitNode)
 	}
+	if err := validateMobileVRoutePath(path); err != nil {
+		return mobileVRouteForwardPlan{}, err
+	}
 	nextNode := path[1]
 	rule, reverse, ok := mobileVRouteFindTopologyRule(config, localNode, nextNode)
 	if !ok {
 		return mobileVRouteForwardPlan{}, fmt.Errorf("vroute adjacent topology unavailable: %s>%s", localNode, nextNode)
-	}
-	if reverse {
-		return mobileVRouteForwardPlan{}, fmt.Errorf("vroute reverse first hop requires inbound relay listener and is not supported by mobilecore: %s>%s", localNode, nextNode)
 	}
 	host, port := mobileVRoutePeerEndpoint(config, rule, reverse)
 	if host == "" || port <= 0 {
@@ -205,6 +207,44 @@ func buildMobileVRouteForwardPlan(configDir string, routeID string) (mobileVRout
 		ExitNode:   exitNode,
 		Path:       path,
 		NextNode:   nextNode,
+		Config:     config,
+		Rule:       rule,
+		RouteID:    mobileVRouteRuntimeRouteID(rule),
+		RelayHost:  host,
+		RelayPort:  port,
+		BridgeRole: bridgeRole,
+		Layer:      normalizeMobileVRouteRelayLayer(rule.RouteLayer),
+	}, nil
+}
+
+func buildMobileVRouteAdjacentPlan(config mobileVRouteConfig, path []string, localNode string, nextNode string) (mobileVRouteForwardPlan, error) {
+	path = mobileVRouteCleanPath(path)
+	if err := validateMobileVRoutePath(path); err != nil {
+		return mobileVRouteForwardPlan{}, err
+	}
+	localNode = normalizeMobileRouteNodeID(localNode)
+	nextNode = normalizeMobileRouteNodeID(nextNode)
+	if localNode == "" || nextNode == "" {
+		return mobileVRouteForwardPlan{}, errors.New("vroute adjacent nodes are required")
+	}
+	rule, reverse, ok := mobileVRouteFindTopologyRule(config, localNode, nextNode)
+	if !ok {
+		return mobileVRouteForwardPlan{}, fmt.Errorf("vroute adjacent topology unavailable: %s>%s", localNode, nextNode)
+	}
+	host, port := mobileVRoutePeerEndpoint(config, rule, reverse)
+	if host == "" || port <= 0 || strings.TrimSpace(rule.Secret) == "" || strings.TrimSpace(rule.AuthTicket) == "" {
+		return mobileVRouteForwardPlan{}, fmt.Errorf("vroute adjacent endpoint or auth unavailable: %s>%s", localNode, nextNode)
+	}
+	bridgeRole := mobileVRouteBridgeRoleToNext
+	if reverse {
+		bridgeRole = mobileVRouteBridgeRoleToPrev
+	}
+	return mobileVRouteForwardPlan{
+		LocalNode:  localNode,
+		ExitNode:   path[len(path)-1],
+		Path:       append([]string(nil), path...),
+		NextNode:   nextNode,
+		Config:     config,
 		Rule:       rule,
 		RouteID:    mobileVRouteRuntimeRouteID(rule),
 		RelayHost:  host,
@@ -277,6 +317,10 @@ func (c *mobileVRouteCarrier) writeIPPacket(packet []byte, path []string) error 
 	if err != nil {
 		return err
 	}
+	return c.enqueueFrame(frame)
+}
+
+func (c *mobileVRouteCarrier) enqueueFrame(frame mobileVRouteFrame) error {
 	if c.tx == nil || c.done == nil {
 		return io.ErrClosedPipe
 	}
@@ -310,6 +354,7 @@ func (c *mobileVRouteCarrier) runTXWorker() {
 			}
 			if err != nil {
 				c.markError(err)
+				recordMobileVRouteCarrierStateError(err)
 				androidLogStore.add("vpn", "warn", "vroute carrier write failed: "+err.Error())
 				c.close()
 				return
@@ -334,21 +379,63 @@ func (c *mobileVRouteCarrier) readLoop() {
 			}
 			return
 		}
-		if frame.MainType != mobileVRouteFrameMainTypeIP || frame.SubType != mobileVRouteIPSubTypeIPv4 || len(frame.Data) == 0 {
-			continue
+		if err := c.handleIncomingFrame(frame); err != nil {
+			c.markError(err)
+			recordMobileVRouteCarrierStateError(err)
+			androidLogStore.add("vpn", "warn", "vroute frame handling failed: "+err.Error())
 		}
-		c.rxFrames.Add(1)
-		c.rxBytes.Add(int64(len(frame.Data)))
-		c.markActivity()
+	}
+}
+
+func (c *mobileVRouteCarrier) handleIncomingFrame(frame mobileVRouteFrame) error {
+	if c == nil {
+		return io.ErrClosedPipe
+	}
+	control := mobileVRouteFrameControlEnvelope{}
+	if err := json.Unmarshal(frame.Control, &control); err != nil {
+		return err
+	}
+	path := mobileVRouteCleanPath(control.Path)
+	if err := validateMobileVRoutePath(path); err != nil {
+		return err
+	}
+	localNode := normalizeMobileRouteNodeID(c.plan.LocalNode)
+	position := -1
+	for index, nodeID := range path {
+		if nodeID == localNode {
+			position = index
+			break
+		}
+	}
+	if position < 0 {
+		return fmt.Errorf("vroute frame path does not include local node=%s", localNode)
+	}
+	c.rxFrames.Add(1)
+	c.rxBytes.Add(int64(len(frame.Data)))
+	c.markActivity()
+	if position < len(path)-1 {
+		nextNode := path[position+1]
+		plan, err := buildMobileVRouteAdjacentPlan(c.plan.Config, path, localNode, nextNode)
+		if err != nil {
+			return err
+		}
+		carrier, err := ensureMobileVRouteCarrier(plan, c.currentWriteBack())
+		if err != nil {
+			return err
+		}
+		return carrier.enqueueFrame(frame)
+	}
+	if frame.MainType == mobileVRouteFrameMainTypeIP && frame.SubType == mobileVRouteIPSubTypeIPv4 && len(frame.Data) > 0 {
 		select {
 		case c.rx <- frame:
 		case <-c.done:
-			return
+			return io.ErrClosedPipe
 		default:
 			c.rxDropped.Add(1)
 			androidLogStore.add("vpn", "warn", "vroute carrier rx queue full: route="+c.plan.RouteID+" depth="+strconv.Itoa(len(c.rx))+" capacity="+strconv.Itoa(cap(c.rx)))
 		}
 	}
+	return nil
 }
 
 func (c *mobileVRouteCarrier) runRXWorker() {
@@ -534,24 +621,38 @@ func mobileVRouteOutboundCarrierPlans(config mobileVRouteConfig) []mobileVRouteF
 	}
 	plans := make([]mobileVRouteForwardPlan, 0, len(config.TopologyRules))
 	for _, rule := range config.TopologyRules {
-		if !rule.Enabled || normalizeMobileRouteNodeID(rule.FromNodeID) != localNode {
+		if !rule.Enabled {
 			continue
 		}
-		nextNode := normalizeMobileRouteNodeID(rule.ToNodeID)
-		host, port := mobileVRoutePeerEndpoint(config, rule, false)
+		fromNode := normalizeMobileRouteNodeID(rule.FromNodeID)
+		toNode := normalizeMobileRouteNodeID(rule.ToNodeID)
+		reverse := toNode == localNode
+		if fromNode != localNode && !reverse {
+			continue
+		}
+		nextNode := toNode
+		if reverse {
+			nextNode = fromNode
+		}
+		host, port := mobileVRoutePeerEndpoint(config, rule, reverse)
 		if nextNode == "" || host == "" || port <= 0 || strings.TrimSpace(rule.Secret) == "" || strings.TrimSpace(rule.AuthTicket) == "" {
 			continue
+		}
+		bridgeRole := mobileVRouteBridgeRoleToNext
+		if reverse {
+			bridgeRole = mobileVRouteBridgeRoleToPrev
 		}
 		plans = append(plans, mobileVRouteForwardPlan{
 			LocalNode:  localNode,
 			ExitNode:   nextNode,
 			Path:       []string{localNode, nextNode},
 			NextNode:   nextNode,
+			Config:     config,
 			Rule:       rule,
 			RouteID:    mobileVRouteRuntimeRouteID(rule),
 			RelayHost:  host,
 			RelayPort:  port,
-			BridgeRole: mobileVRouteBridgeRoleToNext,
+			BridgeRole: bridgeRole,
 			Layer:      normalizeMobileVRouteRelayLayer(rule.RouteLayer),
 		})
 	}
@@ -644,9 +745,10 @@ func mobileVRouteCapabilitiesPayload() map[string]any {
 		"websocket_h3":       false,
 		"outbound_dialer":    true,
 		"inbound_listener":   false,
-		"reverse_first_hop":  false,
-		"control_ping":       false,
-		"path_rtt":           false,
+		"reverse_first_hop":  true,
+		"relay_forwarding":   true,
+		"control_ping":       true,
+		"path_rtt":           true,
 		"route_test":         false,
 		"speed_test":         false,
 		"debug_log_pull":     false,
@@ -809,7 +911,11 @@ func buildMobileVRouteIPFrame(packet []byte, path []string) (mobileVRouteFrame, 
 	if len(packet) == 0 {
 		return mobileVRouteFrame{}, errors.New("vroute ip packet is empty")
 	}
-	control, err := json.Marshal(mobileVRouteFrameControlEnvelope{Path: mobileVRouteCleanPath(path)})
+	cleanPath := mobileVRouteCleanPath(path)
+	if err := validateMobileVRoutePath(cleanPath); err != nil {
+		return mobileVRouteFrame{}, err
+	}
+	control, err := json.Marshal(mobileVRouteFrameControlEnvelope{Path: cleanPath})
 	if err != nil {
 		return mobileVRouteFrame{}, err
 	}
@@ -941,14 +1047,19 @@ func mobileVRouteShortestPath(config mobileVRouteConfig, from string, to string)
 	}
 	queue := []string{from}
 	prev := map[string]string{from: ""}
+	hops := map[string]int{from: 0}
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
+		if hops[current] >= mobileVRouteMaxHops {
+			continue
+		}
 		for _, next := range neighbors[current] {
 			if _, seen := prev[next]; seen {
 				continue
 			}
 			prev[next] = current
+			hops[next] = hops[current] + 1
 			if next == to {
 				path := []string{to}
 				for at := current; at != ""; at = prev[at] {
@@ -1008,6 +1119,24 @@ func mobileVRouteCleanPath(path []string) []string {
 		}
 	}
 	return out
+}
+
+func validateMobileVRoutePath(path []string) error {
+	cleanPath := mobileVRouteCleanPath(path)
+	if len(cleanPath) < 2 {
+		return errors.New("vroute path is incomplete")
+	}
+	if len(cleanPath)-1 > mobileVRouteMaxHops {
+		return fmt.Errorf("vroute path exceeds maximum hops: hops=%d max=%d", len(cleanPath)-1, mobileVRouteMaxHops)
+	}
+	seen := make(map[string]struct{}, len(cleanPath))
+	for _, nodeID := range cleanPath {
+		if _, exists := seen[nodeID]; exists {
+			return fmt.Errorf("vroute path contains a loop at node=%s", nodeID)
+		}
+		seen[nodeID] = struct{}{}
+	}
+	return nil
 }
 
 func mobileVRouteIPv4PacketTarget(packet []byte) (string, string, bool) {

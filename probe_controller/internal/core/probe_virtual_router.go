@@ -405,8 +405,11 @@ func normalizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopology
 		if fromNodeID == "" || toNodeID == "" || fromNodeID == toNodeID {
 			continue
 		}
-		fromServiceDomain := ""
-		fromServicePort := 0
+		fromServiceDomain := strings.TrimSpace(item.FromServiceDomain)
+		fromServicePort := item.FromServicePort
+		if fromServicePort < 0 || fromServicePort > 65535 {
+			fromServicePort = 0
+		}
 		toServiceDomain := strings.TrimSpace(item.ToServiceDomain)
 		toServicePort := 0
 		ruleID := strings.TrimSpace(item.ID)

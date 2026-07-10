@@ -555,8 +555,8 @@ func sanitizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopologyR
 		if fromNodeID == "" || toNodeID == "" || fromNodeID == toNodeID {
 			continue
 		}
-		fromServiceDomain := ""
-		fromServicePort := 0
+		fromServiceDomain := strings.TrimSpace(item.FromServiceDomain)
+		fromServicePort := sanitizeProbeVirtualRouterOptionalServicePort(item.FromServicePort)
 		toServiceDomain := strings.TrimSpace(item.ToServiceDomain)
 		toServicePort := sanitizeProbeVirtualRouterOptionalServicePort(item.ToServicePort)
 		ruleID := strings.TrimSpace(item.ID)
