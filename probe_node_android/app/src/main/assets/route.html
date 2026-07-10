@@ -6,25 +6,32 @@
   <title>CloudHelper Probe Node</title>
   <link rel="stylesheet" href="app.css">
 </head>
-<body data-page="link">
+<body data-page="route">
   <div class="shell">
     <aside>
       <h1 class="brand">CloudHelper<br>Probe Node</h1>
       <nav>
         <a class="nav-button" data-page="status" href="status.html">状态</a>
-        <a class="nav-button" data-page="link" href="link.html">链路</a>
+        <a class="nav-button" data-page="route" href="route.html">路由</a>
         <a class="nav-button" data-page="settings" href="settings.html">设置</a>
       </nav>
     </aside>
     <main>
-      <h2 id="pageTitle" class="page-title">链路</h2>
+      <h2 id="pageTitle" class="page-title">路由</h2>
       <p id="pageSubtitle" class="page-subtitle"></p>
       <section class="page">
-        <div class="actions">
-          <button class="command neutral" onclick="refreshLinks()">刷新</button>
+        <div class="route-control">
+          <div>
+            <h3>路由开关</h3>
+            <p>开启后启动 Android VPN，关闭后停止 VPN 并释放本机路由能力。</p>
+          </div>
+          <label class="route-switch" aria-label="启用路由">
+            <input id="routeEnabled" type="checkbox" role="switch" aria-describedby="routeState routeDetail">
+            <span class="route-switch-track" aria-hidden="true"></span>
+          </label>
         </div>
-        <div class="status-box" id="linkStatus"></div>
-        <div id="linkList" class="link-list"></div>
+        <div id="routeState" class="route-state" aria-live="polite"></div>
+        <div id="routeDetail" class="route-detail" aria-live="polite"></div>
       </section>
     </main>
   </div>

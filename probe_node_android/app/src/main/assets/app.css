@@ -372,6 +372,87 @@ input {
   line-height: 1.35;
   word-break: break-word;
 }
+.route-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  min-height: 118px;
+  padding: 18px;
+  border: 1px solid #d7d3ca;
+  border-radius: 6px;
+  background: #fff;
+}
+.route-control h3 {
+  margin: 0;
+  font-size: 17px;
+}
+.route-control p {
+  max-width: 480px;
+  margin: 8px 0 0;
+  color: #57534e;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.route-switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 54px;
+  height: 32px;
+}
+.route-switch input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.route-switch-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 16px;
+  background: #a8a29e;
+  cursor: pointer;
+  transition: background 160ms ease;
+}
+.route-switch-track::after {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #fff;
+  content: "";
+  transition: transform 160ms ease;
+}
+.route-switch input:checked + .route-switch-track {
+  background: #0f766e;
+}
+.route-switch input:checked + .route-switch-track::after {
+  transform: translateX(22px);
+}
+.route-switch input:focus-visible + .route-switch-track {
+  outline: 3px solid #93c5fd;
+  outline-offset: 2px;
+}
+.route-switch input:disabled + .route-switch-track {
+  cursor: wait;
+  opacity: 0.55;
+}
+.route-state {
+  margin-top: 14px;
+  min-height: 22px;
+  color: #292524;
+  font-size: 14px;
+  font-weight: 700;
+}
+.route-detail {
+  margin-top: 4px;
+  min-height: 22px;
+  color: #57534e;
+  font-size: 14px;
+  line-height: 1.45;
+}
 .vroute-summary-grid,
 .vroute-card-grid,
 .vroute-capability-grid {
@@ -575,7 +656,7 @@ input {
     display: none;
   }
   nav {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 6px;
   }
   .nav-button {
@@ -598,5 +679,8 @@ input {
   .key-value {
     grid-template-columns: 1fr;
     gap: 4px;
+  }
+  .route-control {
+    align-items: flex-start;
   }
 }

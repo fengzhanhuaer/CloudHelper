@@ -5,7 +5,7 @@ let bootErrorLogged = false;
 
 const pages = {
   status: ["状态", "当前 Android 节点配置与运行状态。"],
-  link: ["链路", "查看链路入口，并执行真实 relay 延迟与测速测试。"],
+  route: ["路由", "通过 Android VPN 启用或关闭本机路由能力。"],
   settings: ["设置", "配置主控与节点密钥，并执行直连升级。"]
 };
 
@@ -29,6 +29,7 @@ window.CloudHelperUI = {
       button.disabled = false;
       button.textContent = "VPN 自检";
     }
+    renderRouteControl();
     refreshVRouteIfVisible();
     refreshConnectionsIfVisible();
     refreshLogsIfVisible();
@@ -1101,6 +1102,72 @@ function refreshVPNDiagnostics() {
   }
 }
 
+let routeToggleBusy = false;
+
+function setupRouteControl() {
+  const toggle = byId("routeEnabled");
+  if (!toggle) {
+    return;
+  }
+  toggle.onchange = () => setRouteEnabled(toggle.checked);
+  refreshRouteControl();
+}
+
+function refreshRouteControl() {
+  const toggle = byId("routeEnabled");
+  if (!toggle) {
+    return;
+  }
+  try {
+    const data = parseJSON(window.CloudHelper && window.CloudHelper.vpnStatus ? window.CloudHelper.vpnStatus() : "{}");
+    const running = isVPNRunning(data);
+    const starting = isVPNStarting(data);
+    toggle.checked = running || starting;
+    toggle.disabled = routeToggleBusy;
+    setText("routeState", running ? "已开启" : (starting ? "正在开启" : "已关闭"));
+    setText("routeDetail", [
+      running ? "VPN 路由正在接管本机流量。" : (starting ? "VPN 正在启动，请稍候。" : "开启后将通过 Android VPN 启用本机路由能力。"),
+      data.android_error || data.last_error ? `错误：${data.android_error || data.last_error}` : ""
+    ].filter(Boolean).join("；"));
+  } catch (error) {
+    toggle.checked = false;
+    toggle.disabled = routeToggleBusy;
+    setText("routeState", "状态不可用");
+    setText("routeDetail", `读取 VPN 状态失败：${error && error.message ? error.message : error}`);
+  }
+}
+
+function setRouteEnabled(enabled) {
+  const toggle = byId("routeEnabled");
+  if (!toggle || routeToggleBusy) {
+    return;
+  }
+  const method = enabled ? "startVpn" : "stopVpn";
+  if (!hasCloudHelper(method)) {
+    toggle.checked = !enabled;
+    setText("routeState", "不可用");
+    setText("routeDetail", "Android VPN 控制不可用。");
+    return;
+  }
+  routeToggleBusy = true;
+  toggle.disabled = true;
+  setText("routeState", enabled ? "正在开启" : "正在关闭");
+  try {
+    const message = callCloudHelperString(method, enabled ? "VPN 正在启动..." : "VPN 正在停止...");
+    setText("routeDetail", message);
+    appendUILog("route", message);
+  } catch (error) {
+    toggle.checked = !enabled;
+    setText("routeState", "操作失败");
+    setText("routeDetail", `路由切换失败：${error && error.message ? error.message : error}`);
+  } finally {
+    window.setTimeout(() => {
+      routeToggleBusy = false;
+      refreshRouteControl();
+    }, 800);
+  }
+}
+
 function renderVPNDiagnostics(data) {
   const vpnRunning = isVPNRunning(data);
   const vpnStarting = isVPNStarting(data);
@@ -1296,6 +1363,7 @@ function refreshSummarySilent() {
     setText("summaryRuntime", runtime);
     setText("summaryLocalVersion", data.localVersion || "-");
     refreshVPNDiagnostics();
+    refreshRouteControl();
   } catch (_) {
   }
 }
@@ -1347,8 +1415,8 @@ function initPage() {
   if (page === "status") {
     setupStatusTabs();
   }
-  if (page === "link") {
-    refreshLinks();
+  if (page === "route") {
+    setupRouteControl();
   }
   if (page === "settings") {
     setupSettingsTabs();
