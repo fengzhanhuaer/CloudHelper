@@ -150,8 +150,9 @@ type androidVPNDNSPersistRouteEntry struct {
 
 func currentAndroidVPNConfigDir() string {
 	vpnRuntime.mu.Lock()
-	defer vpnRuntime.mu.Unlock()
-	return strings.TrimSpace(vpnRuntime.configDir)
+	dir := strings.TrimSpace(vpnRuntime.configDir)
+	vpnRuntime.mu.Unlock()
+	return normalizeMobileConfigDir(dir)
 }
 
 func resolveAndroidVPNDNSCachePath(configDir string) (string, bool) {
@@ -362,10 +363,7 @@ func VpnStart(fd int64, configDir string) string {
 	if fd < 0 {
 		return "vpn start failed: invalid tun fd"
 	}
-	if strings.TrimSpace(configDir) == "" {
-		_ = os.NewFile(uintptr(fd), "cloudhelper-vpn-tun").Close()
-		return "vpn start failed: config dir is required"
-	}
+	configDir = normalizeMobileConfigDir(configDir)
 	tun := os.NewFile(uintptr(fd), "cloudhelper-vpn-tun")
 	if tun == nil {
 		return "vpn start failed: open tun fd failed"

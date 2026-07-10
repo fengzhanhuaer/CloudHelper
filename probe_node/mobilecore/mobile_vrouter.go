@@ -143,6 +143,9 @@ func persistMobileVRouteConfig(configDir string, config mobileVRouteConfig) erro
 	if !ok {
 		return errors.New("config dir is required")
 	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
 	payload := mobileVRouteConfigCacheFile{
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 		Item:      sanitizeMobileVRouteConfig(config),
@@ -167,7 +170,7 @@ func loadMobileVRouteConfig(configDir string) (mobileVRouteConfig, error) {
 }
 
 func mobileVRouteConfigPath(configDir string) (string, bool) {
-	dir := strings.TrimSpace(configDir)
+	dir := normalizeMobileConfigDir(configDir)
 	if dir == "" {
 		return "", false
 	}
@@ -404,6 +407,12 @@ func normalizeMobileVRouteDomain(domain string) string {
 func mobileVRouteStatusPayload(configDir string) map[string]any {
 	config, err := loadMobileVRouteConfig(configDir)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return map[string]any{
+				"enabled": false,
+				"status":  "not_loaded",
+			}
+		}
 		return map[string]any{
 			"enabled": false,
 			"error":   err.Error(),

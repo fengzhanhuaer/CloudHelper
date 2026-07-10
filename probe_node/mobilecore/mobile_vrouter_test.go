@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -474,14 +475,24 @@ func TestMobileVRouteCarrierWorkerRetriesFailedDial(t *testing.T) {
 
 func TestMobileVRouteRelayDialCandidatesPreferIPv4(t *testing.T) {
 	oldLookup := mobileVRouteLookupIP
+	lookups := map[string]bool{}
+	var lookupsMu sync.Mutex
 	mobileVRouteLookupIP = func(ctx context.Context, network string, host string) ([]net.IP, error) {
-		if network != "ip" || host != "edge.example.com" {
+		if host != "edge.example.com" {
 			t.Fatalf("lookup network=%q host=%q", network, host)
 		}
-		return []net.IP{
-			net.ParseIP("2001:db8::17"),
-			net.ParseIP("192.0.2.17"),
-		}, nil
+		lookupsMu.Lock()
+		lookups[network] = true
+		lookupsMu.Unlock()
+		switch network {
+		case "ip4":
+			return []net.IP{net.ParseIP("192.0.2.17")}, nil
+		case "ip6":
+			return []net.IP{net.ParseIP("2001:db8::17")}, nil
+		default:
+			t.Fatalf("unexpected lookup network=%q", network)
+			return nil, nil
+		}
 	}
 	t.Cleanup(func() {
 		mobileVRouteLookupIP = oldLookup
@@ -493,6 +504,11 @@ func TestMobileVRouteRelayDialCandidatesPreferIPv4(t *testing.T) {
 	}
 	if len(candidates) != 2 {
 		t.Fatalf("candidates=%+v, want 2", candidates)
+	}
+	lookupsMu.Lock()
+	defer lookupsMu.Unlock()
+	if !lookups["ip4"] || !lookups["ip6"] {
+		t.Fatalf("lookups=%+v, want both ip4 and ip6", lookups)
 	}
 	if candidates[0].URLHost != "192.0.2.17" || candidates[0].DialHost != "192.0.2.17" || candidates[0].Network != "tcp4" {
 		t.Fatalf("first candidate should use ipv4 directly: %+v", candidates[0])
@@ -537,6 +553,30 @@ func TestMobileVRouteRelayDialCandidatesReturnResolveError(t *testing.T) {
 
 	if _, err := mobileVRouteRelayDialCandidates("edge.example.com"); err == nil || !strings.Contains(err.Error(), "resolve vroute relay host failed") {
 		t.Fatalf("resolve error=%v", err)
+	}
+}
+
+func TestMobileVRouteStatusUsesDefaultConfigDir(t *testing.T) {
+	oldConfigDir := mobileRouteConfigDir()
+	setMobileRouteConfigDir("")
+	t.Cleanup(func() {
+		setMobileRouteConfigDir(oldConfigDir)
+	})
+	t.Setenv(mobileDefaultConfigDirEnv, t.TempDir())
+
+	status := mobileVRouteStatusPayload("")
+	if status["error"] != nil {
+		t.Fatalf("empty status should not expose config dir error: %+v", status)
+	}
+	if status["enabled"] != false || status["status"] != "not_loaded" {
+		t.Fatalf("empty status=%+v, want not_loaded disabled", status)
+	}
+	if err := persistMobileVRouteConfig("", mobileVRouteConfig{Enabled: true, LocalNodeID: "9"}); err != nil {
+		t.Fatalf("persist with default config dir failed: %v", err)
+	}
+	status = mobileVRouteStatusPayload("")
+	if status["enabled"] != true || status["local_node_id"] != "9" {
+		t.Fatalf("status from default config dir=%+v", status)
 	}
 }
 

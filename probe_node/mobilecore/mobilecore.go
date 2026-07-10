@@ -135,6 +135,7 @@ func StartWithConfigDir(controllerURL string, nodeID string, nodeSecret string, 
 	controllerURL = strings.TrimSpace(controllerURL)
 	nodeID = strings.TrimSpace(nodeID)
 	nodeSecret = strings.TrimSpace(nodeSecret)
+	configDir = normalizeMobileConfigDir(configDir)
 	if controllerURL == "" || nodeID == "" || nodeSecret == "" {
 		return "controller URL, node ID, and node secret are required"
 	}
@@ -152,6 +153,10 @@ func StartWithConfigDir(controllerURL string, nodeID string, nodeSecret string, 
 	manager.cancel = cancel
 	manager.status = "starting"
 	manager.mu.Unlock()
+	vpnRuntime.mu.Lock()
+	vpnRuntime.configDir = configDir
+	vpnRuntime.mu.Unlock()
+	setMobileRouteConfigDir(configDir)
 
 	go runLoop(cancel, wsURL, nodeID, nodeSecret)
 	return "starting"
@@ -235,16 +240,17 @@ func refreshConfigFiles(controllerURL string, nodeID string, nodeSecret string, 
 	}
 	nodeID = strings.TrimSpace(nodeID)
 	nodeSecret = strings.TrimSpace(nodeSecret)
-	configDir = strings.TrimSpace(configDir)
+	configDir = normalizeMobileConfigDir(configDir)
 	if nodeID == "" || nodeSecret == "" {
 		return configRefreshSummary{}, errors.New("node ID and node secret are required")
-	}
-	if configDir == "" {
-		return configRefreshSummary{}, errors.New("config dir is required")
 	}
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		return configRefreshSummary{}, fmt.Errorf("create config dir: %w", err)
 	}
+	vpnRuntime.mu.Lock()
+	vpnRuntime.configDir = configDir
+	vpnRuntime.mu.Unlock()
+	setMobileRouteConfigDir(configDir)
 	vrouteConfig, err := refreshMobileVRouteConfig(controllerURL, nodeID, nodeSecret, configDir)
 	if err != nil {
 		return configRefreshSummary{}, err

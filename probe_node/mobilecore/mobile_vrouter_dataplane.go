@@ -135,6 +135,12 @@ type mobileVRouteRelayDialCandidate struct {
 	Network  string
 }
 
+type mobileVRouteRelayLookupResult struct {
+	Network string
+	IPs     []net.IP
+	Err     error
+}
+
 var mobileVRouteCarrierRetryMin = time.Second
 
 func mobileVRouteHandleVPNPacket(configDir string, packet []byte, writeBack func([]byte) error) (bool, error) {
@@ -949,48 +955,106 @@ func mobileVRouteRelayDialCandidates(host string) ([]mobileVRouteRelayDialCandid
 
 	var candidates []mobileVRouteRelayDialCandidate
 	seen := map[string]struct{}{}
-	ctx, cancel := context.WithTimeout(context.Background(), mobileVRouteRelayResolveTimeout)
-	ips, err := mobileVRouteLookupIP(ctx, "ip", cleanHost)
-	cancel()
+	ips, err := lookupMobileVRouteRelayIPs(cleanHost)
 	if err != nil {
 		androidLogStore.add("vpn", "warn", "vroute relay resolve failed: host="+cleanHost+" err="+err.Error())
 		return nil, fmt.Errorf("resolve vroute relay host failed: %w", err)
-	} else {
-		appendIPCandidates := func(wantIPv4 bool) {
-			for _, ip := range ips {
-				if ip == nil {
-					continue
-				}
-				v4 := ip.To4()
-				if wantIPv4 != (v4 != nil) {
-					continue
-				}
-				dialIP := ip
-				if v4 != nil {
-					dialIP = v4
-				} else if dialIP = ip.To16(); dialIP == nil {
-					continue
-				}
-				dialHost := dialIP.String()
-				key := strings.ToLower(dialHost)
-				if _, exists := seen[key]; exists {
-					continue
-				}
-				seen[key] = struct{}{}
-				candidates = append(candidates, mobileVRouteRelayDialCandidate{
-					URLHost:  dialHost,
-					DialHost: dialHost,
-					Network:  mobileVRouteTCPNetworkForIP(dialIP),
-				})
-			}
-		}
-		appendIPCandidates(true)
-		appendIPCandidates(false)
 	}
+	appendIPCandidates := func(wantIPv4 bool) {
+		for _, ip := range ips {
+			if ip == nil {
+				continue
+			}
+			v4 := ip.To4()
+			if wantIPv4 != (v4 != nil) {
+				continue
+			}
+			dialIP := ip
+			if v4 != nil {
+				dialIP = v4
+			} else if dialIP = ip.To16(); dialIP == nil {
+				continue
+			}
+			dialHost := dialIP.String()
+			key := strings.ToLower(dialHost)
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			candidates = append(candidates, mobileVRouteRelayDialCandidate{
+				URLHost:  dialHost,
+				DialHost: dialHost,
+				Network:  mobileVRouteTCPNetworkForIP(dialIP),
+			})
+		}
+	}
+	appendIPCandidates(true)
+	appendIPCandidates(false)
 	if len(candidates) == 0 {
 		return nil, errors.New("resolve vroute relay host failed: no ip")
 	}
 	return candidates, nil
+}
+
+func lookupMobileVRouteRelayIPs(host string) ([]net.IP, error) {
+	cleanHost := strings.TrimSpace(strings.Trim(host, "[]"))
+	if cleanHost == "" {
+		return nil, errors.New("relay host is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), mobileVRouteRelayResolveTimeout)
+	defer cancel()
+
+	results := make(chan mobileVRouteRelayLookupResult, 2)
+	for _, network := range []string{"ip4", "ip6"} {
+		network := network
+		go func() {
+			ips, err := mobileVRouteLookupIP(ctx, network, cleanHost)
+			results <- mobileVRouteRelayLookupResult{Network: network, IPs: ips, Err: err}
+		}()
+	}
+
+	var ipv4 []net.IP
+	var ipv6 []net.IP
+	var ipv4Err error
+	var ipv6Err error
+	for i := 0; i < 2; i++ {
+		select {
+		case result := <-results:
+			switch result.Network {
+			case "ip4":
+				ipv4 = append(ipv4, result.IPs...)
+				ipv4Err = result.Err
+			case "ip6":
+				ipv6 = append(ipv6, result.IPs...)
+				ipv6Err = result.Err
+			}
+		case <-ctx.Done():
+			if len(ipv4) > 0 || len(ipv6) > 0 {
+				out := make([]net.IP, 0, len(ipv4)+len(ipv6))
+				out = append(out, ipv4...)
+				out = append(out, ipv6...)
+				return out, nil
+			}
+			return nil, ctx.Err()
+		}
+	}
+
+	if len(ipv4) > 0 || len(ipv6) > 0 {
+		out := make([]net.IP, 0, len(ipv4)+len(ipv6))
+		out = append(out, ipv4...)
+		out = append(out, ipv6...)
+		return out, nil
+	}
+	if ipv4Err != nil && ipv6Err != nil {
+		return nil, fmt.Errorf("ipv4: %v; ipv6: %v", ipv4Err, ipv6Err)
+	}
+	if ipv4Err != nil {
+		return nil, ipv4Err
+	}
+	if ipv6Err != nil {
+		return nil, ipv6Err
+	}
+	return nil, errors.New("no ip")
 }
 
 func mobileVRouteTCPNetworkForIP(ip net.IP) string {
