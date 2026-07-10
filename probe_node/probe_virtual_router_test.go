@@ -250,6 +250,9 @@ func resetProbeVirtualRouterStateForTest() {
 	probeVirtualRouterPathRTTState.mu.Lock()
 	probeVirtualRouterPathRTTState.items = make(map[string]probeVirtualRouterPathRTTRecord)
 	probeVirtualRouterPathRTTState.mu.Unlock()
+	probeVirtualRouterPathRecoveryState.mu.Lock()
+	probeVirtualRouterPathRecoveryState.inflight = make(map[string]struct{})
+	probeVirtualRouterPathRecoveryState.mu.Unlock()
 	probeVirtualRouterRecentPacketState.mu.Lock()
 	probeVirtualRouterRecentPacketState.nextID = 0
 	probeVirtualRouterRecentPacketState.items = nil
@@ -1367,7 +1370,7 @@ func TestCurrentProbeVirtualRouterPathUsesPathPingPongSumForRouteSelection(t *te
 	}
 }
 
-func TestProbeVirtualRouterPathSelectionAvoidsGuardianFailedPath(t *testing.T) {
+func TestProbeVirtualRouterPathSelectionKeepsPathAfterGuardianProbeError(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
@@ -1387,12 +1390,12 @@ func TestProbeVirtualRouterPathSelectionAvoidsGuardianFailedPath(t *testing.T) {
 	}, "1")
 
 	recordProbeVirtualRouterPathRTTError([]string{"1", "2", "4"}, errors.New("physical carrier disconnected"))
-	if got := currentProbeVirtualRouterPathBetweenNodes("1", "4"); !reflect.DeepEqual(got, []string{"1", "3", "4"}) {
-		t.Fatalf("path=%v, want healthy alternate [1 3 4]", got)
+	if got := currentProbeVirtualRouterPathBetweenNodes("1", "4"); !reflect.DeepEqual(got, []string{"1", "2", "4"}) {
+		t.Fatalf("path=%v, want original route [1 2 4]", got)
 	}
 }
 
-func TestProbeVirtualRouterPathSelectionRestoresRecoveredGuardianPath(t *testing.T) {
+func TestProbeVirtualRouterPathSelectionDoesNotQuarantineGuardianError(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
@@ -1413,8 +1416,8 @@ func TestProbeVirtualRouterPathSelectionRestoresRecoveredGuardianPath(t *testing
 
 	failedPath := []string{"1", "2", "4"}
 	recordProbeVirtualRouterPathRTTError(failedPath, errors.New("physical carrier disconnected"))
-	if got := currentProbeVirtualRouterPathBetweenNodes("1", "4"); !reflect.DeepEqual(got, []string{"1", "3", "4"}) {
-		t.Fatalf("path=%v, want healthy alternate [1 3 4]", got)
+	if got := currentProbeVirtualRouterPathBetweenNodes("1", "4"); !reflect.DeepEqual(got, failedPath) {
+		t.Fatalf("path=%v, want original route [1 2 4]", got)
 	}
 
 	recordProbeVirtualRouterPathRTTSuccess(failedPath, 10*time.Millisecond, "4")
@@ -1571,6 +1574,57 @@ func TestProbeVirtualRouterAdjacentLatencyMillisecondsUsesHalfRTT(t *testing.T) 
 	}
 	if got := probeVirtualRouterAdjacentLatencyMilliseconds(time.Millisecond); got != 1 {
 		t.Fatalf("minimum latency=%d, want 1", got)
+	}
+}
+
+func TestProbeVirtualRouterPathLatencyUsesSourceTimestamp(t *testing.T) {
+	sentAt := time.Unix(1700000000, 100).UnixNano()
+	latencyMS, err := probeVirtualRouterPathLatencyMilliseconds(sentAt, sentAt+81*int64(time.Millisecond))
+	if err != nil {
+		t.Fatalf("path latency returned error: %v", err)
+	}
+	if latencyMS != 40 {
+		t.Fatalf("path latency=%d, want 40", latencyMS)
+	}
+	if _, err := probeVirtualRouterPathLatencyMilliseconds(sentAt, sentAt-1); err == nil {
+		t.Fatalf("backward source timestamp should fail")
+	}
+}
+
+func TestProbeVirtualRouterPathRTTErrorQuarantinesOnlyAfterFiveFailures(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	path := []string{"1", "2", "3"}
+	for attempt := 1; attempt <= probeVirtualRouterPathRTTFailureThreshold; attempt++ {
+		reached := recordProbeVirtualRouterPathRTTError(path, errors.New("destination unreachable"))
+		if reached != (attempt == probeVirtualRouterPathRTTFailureThreshold) {
+			t.Fatalf("attempt=%d threshold reached=%t", attempt, reached)
+		}
+	}
+	probeVirtualRouterPathRTTState.mu.RLock()
+	item := probeVirtualRouterPathRTTState.items[probeVirtualRouterPathKey(path)]
+	probeVirtualRouterPathRTTState.mu.RUnlock()
+	if item.ConsecutiveFailureCount != probeVirtualRouterPathRTTFailureThreshold {
+		t.Fatalf("failure count=%d", item.ConsecutiveFailureCount)
+	}
+	recordProbeVirtualRouterPathRTTSuccess(path, 20*time.Millisecond, "3")
+	probeVirtualRouterPathRTTState.mu.RLock()
+	item = probeVirtualRouterPathRTTState.items[probeVirtualRouterPathKey(path)]
+	probeVirtualRouterPathRTTState.mu.RUnlock()
+	if item.ConsecutiveFailureCount != 0 || item.LastError != "" {
+		t.Fatalf("successful path should clear failure state: %+v", item)
+	}
+}
+
+func TestProbeVirtualRouterForwardPathRejectsLoopsAndMoreThanThreeHops(t *testing.T) {
+	if err := validateProbeVirtualRouterForwardPath([]string{"1", "2", "3", "4"}); err != nil {
+		t.Fatalf("three-hop path rejected: %v", err)
+	}
+	if err := validateProbeVirtualRouterForwardPath([]string{"1", "2", "3", "4", "5"}); err == nil {
+		t.Fatalf("four-hop path should be rejected")
+	}
+	if err := validateProbeVirtualRouterForwardPath([]string{"1", "2", "3", "2", "4"}); err == nil {
+		t.Fatalf("loop path should be rejected")
 	}
 }
 
