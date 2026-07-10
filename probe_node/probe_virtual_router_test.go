@@ -1761,6 +1761,15 @@ func TestProbeVirtualRouterFrameEnvelopeCarriesTypeControlAndPath(t *testing.T) 
 	}
 }
 
+func TestProbeVirtualRouterFrameChecksumKeepsOddControlAdjacentToData(t *testing.T) {
+	header := make([]byte, probeVirtualRouterFrameEnvelopeHeaderSize-2)
+	control := []byte{0x01}
+	data := []byte{0x02}
+	if got, want := probeVirtualRouterFrameChecksum(header, control, data), uint16(0xfefd); got != want {
+		t.Fatalf("checksum=0x%x, want 0x%x", got, want)
+	}
+}
+
 func TestProbeVirtualRouterFrameEnvelopeUsesTwoByteLengths(t *testing.T) {
 	frame := probeVirtualRouterFrame{
 		MainType: probeVirtualRouterFrameMainTypeSpeed,

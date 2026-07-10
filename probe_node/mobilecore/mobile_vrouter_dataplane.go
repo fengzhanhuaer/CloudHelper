@@ -14,6 +14,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +52,9 @@ const (
 	mobileVRouteIPSubTypeIPv4           uint16 = 1
 	mobileVRouteFrameWriteTimeout              = 5 * time.Second
 	mobileVRouteCarrierDialTimeout             = 12 * time.Second
+	mobileVRouteCarrierRetryMax                = 30 * time.Second
+	mobileVRouteCarrierTXBufferFrames          = 1024
+	mobileVRouteCarrierRXBufferFrames          = 1024
 )
 
 type mobileVRouteFrame struct {
@@ -81,25 +86,44 @@ type mobileVRouteCarrier struct {
 	plan            mobileVRouteForwardPlan
 	conn            net.Conn
 	reader          *bufio.Reader
-	writeMu         sync.Mutex
 	closeOne        sync.Once
 	createdUnixNS   int64
 	lastActivityNS  atomic.Int64
 	txFrames        atomic.Int64
 	txBytes         atomic.Int64
+	txDropped       atomic.Int64
 	rxFrames        atomic.Int64
 	rxBytes         atomic.Int64
+	rxDropped       atomic.Int64
 	lastErrorMu     sync.Mutex
 	lastError       string
 	lastErrorUnixNS int64
+	writeBackMu     sync.RWMutex
+	writeBack       func([]byte) error
+	tx              chan mobileVRouteFrame
+	rx              chan mobileVRouteFrame
+	done            chan struct{}
+}
+
+type mobileVRouteCarrierWorker struct {
+	plan     mobileVRouteForwardPlan
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 var mobileVRouteCarrierState = struct {
 	mu              sync.Mutex
 	items           map[string]*mobileVRouteCarrier
+	workers         map[string]*mobileVRouteCarrierWorker
 	lastError       string
 	lastErrorUnixNS int64
-}{items: map[string]*mobileVRouteCarrier{}}
+}{
+	items:   map[string]*mobileVRouteCarrier{},
+	workers: map[string]*mobileVRouteCarrierWorker{},
+}
+
+var mobileVRouteCarrierDial = dialMobileVRouteCarrier
+var mobileVRouteCarrierRetryMin = time.Second
 
 func mobileVRouteHandleVPNPacket(configDir string, packet []byte, writeBack func([]byte) error) (bool, error) {
 	if len(packet) == 0 {
@@ -195,32 +219,54 @@ func ensureMobileVRouteCarrier(plan mobileVRouteForwardPlan, writeBack func([]by
 	mobileVRouteCarrierState.mu.Lock()
 	if existing := mobileVRouteCarrierState.items[key]; existing != nil {
 		mobileVRouteCarrierState.mu.Unlock()
+		existing.setWriteBack(writeBack)
 		return existing, nil
 	}
 	mobileVRouteCarrierState.mu.Unlock()
 
-	conn, err := dialMobileVRouteCarrier(plan)
+	conn, err := mobileVRouteCarrierDial(plan)
 	if err != nil {
 		return nil, err
 	}
-	carrier := &mobileVRouteCarrier{
-		key:           key,
-		plan:          plan,
-		conn:          conn,
-		reader:        bufio.NewReaderSize(conn, 256*1024),
-		createdUnixNS: time.Now().UnixNano(),
-	}
+	carrier := newMobileVRouteCarrier(key, plan, conn)
+	carrier.setWriteBack(writeBack)
 	carrier.markActivity()
 	mobileVRouteCarrierState.mu.Lock()
 	if existing := mobileVRouteCarrierState.items[key]; existing != nil {
 		mobileVRouteCarrierState.mu.Unlock()
 		_ = conn.Close()
+		existing.setWriteBack(writeBack)
 		return existing, nil
 	}
 	mobileVRouteCarrierState.items[key] = carrier
 	mobileVRouteCarrierState.mu.Unlock()
-	go carrier.readLoop(writeBack)
+	carrier.start()
 	return carrier, nil
+}
+
+func newMobileVRouteCarrier(key string, plan mobileVRouteForwardPlan, conn net.Conn) *mobileVRouteCarrier {
+	if conn == nil {
+		return nil
+	}
+	return &mobileVRouteCarrier{
+		key:           key,
+		plan:          plan,
+		conn:          conn,
+		reader:        bufio.NewReaderSize(conn, 256*1024),
+		createdUnixNS: time.Now().UnixNano(),
+		tx:            make(chan mobileVRouteFrame, mobileVRouteCarrierTXBufferFrames),
+		rx:            make(chan mobileVRouteFrame, mobileVRouteCarrierRXBufferFrames),
+		done:          make(chan struct{}),
+	}
+}
+
+func (c *mobileVRouteCarrier) start() {
+	if c == nil || c.conn == nil || c.tx == nil || c.rx == nil || c.done == nil {
+		return
+	}
+	go c.runTXWorker()
+	go c.readLoop()
+	go c.runRXWorker()
 }
 
 func (c *mobileVRouteCarrier) writeIPPacket(packet []byte, path []string) error {
@@ -231,28 +277,53 @@ func (c *mobileVRouteCarrier) writeIPPacket(packet []byte, path []string) error 
 	if err != nil {
 		return err
 	}
-	payload, err := encodeMobileVRouteFrame(frame)
-	if err != nil {
-		return err
+	if c.tx == nil || c.done == nil {
+		return io.ErrClosedPipe
 	}
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	if mobileVRouteFrameWriteTimeout > 0 {
-		_ = c.conn.SetWriteDeadline(time.Now().Add(mobileVRouteFrameWriteTimeout))
-		defer c.conn.SetWriteDeadline(time.Time{})
+	select {
+	case c.tx <- frame:
+		return nil
+	case <-c.done:
+		return io.ErrClosedPipe
+	default:
+		c.txDropped.Add(1)
+		return fmt.Errorf("mobile vroute tx queue full: route=%s depth=%d capacity=%d", strings.TrimSpace(c.plan.RouteID), len(c.tx), cap(c.tx))
 	}
-	if err := writeMobileVRouteAll(c.conn, payload); err != nil {
-		c.markError(err)
-		c.close()
-		return err
-	}
-	c.txFrames.Add(1)
-	c.txBytes.Add(int64(len(packet)))
-	c.markActivity()
-	return nil
 }
 
-func (c *mobileVRouteCarrier) readLoop(writeBack func([]byte) error) {
+func (c *mobileVRouteCarrier) runTXWorker() {
+	if c == nil || c.tx == nil || c.done == nil {
+		return
+	}
+	for {
+		select {
+		case frame := <-c.tx:
+			payload, err := encodeMobileVRouteFrame(frame)
+			if err == nil && mobileVRouteFrameWriteTimeout > 0 {
+				_ = c.conn.SetWriteDeadline(time.Now().Add(mobileVRouteFrameWriteTimeout))
+			}
+			if err == nil {
+				err = writeMobileVRouteAll(c.conn, payload)
+			}
+			if mobileVRouteFrameWriteTimeout > 0 {
+				_ = c.conn.SetWriteDeadline(time.Time{})
+			}
+			if err != nil {
+				c.markError(err)
+				androidLogStore.add("vpn", "warn", "vroute carrier write failed: "+err.Error())
+				c.close()
+				return
+			}
+			c.txFrames.Add(1)
+			c.txBytes.Add(int64(len(frame.Data)))
+			c.markActivity()
+		case <-c.done:
+			return
+		}
+	}
+}
+
+func (c *mobileVRouteCarrier) readLoop() {
 	defer c.close()
 	for {
 		frame, err := readMobileVRouteFrame(c.reader)
@@ -269,13 +340,225 @@ func (c *mobileVRouteCarrier) readLoop(writeBack func([]byte) error) {
 		c.rxFrames.Add(1)
 		c.rxBytes.Add(int64(len(frame.Data)))
 		c.markActivity()
-		if writeBack != nil {
-			if err := writeBack(append([]byte(nil), frame.Data...)); err != nil {
-				c.markError(err)
-				androidLogStore.add("vpn", "warn", "vroute packet writeback failed: "+err.Error())
-			}
+		select {
+		case c.rx <- frame:
+		case <-c.done:
+			return
+		default:
+			c.rxDropped.Add(1)
+			androidLogStore.add("vpn", "warn", "vroute carrier rx queue full: route="+c.plan.RouteID+" depth="+strconv.Itoa(len(c.rx))+" capacity="+strconv.Itoa(cap(c.rx)))
 		}
 	}
+}
+
+func (c *mobileVRouteCarrier) runRXWorker() {
+	if c == nil || c.rx == nil || c.done == nil {
+		return
+	}
+	for {
+		select {
+		case frame := <-c.rx:
+			if writeBack := c.currentWriteBack(); writeBack != nil {
+				if err := writeBack(append([]byte(nil), frame.Data...)); err != nil {
+					c.markError(err)
+					androidLogStore.add("vpn", "warn", "vroute packet writeback failed: "+err.Error())
+				}
+			}
+		case <-c.done:
+			return
+		}
+	}
+}
+
+func (c *mobileVRouteCarrier) setWriteBack(writeBack func([]byte) error) {
+	if c == nil || writeBack == nil {
+		return
+	}
+	c.writeBackMu.Lock()
+	c.writeBack = writeBack
+	c.writeBackMu.Unlock()
+}
+
+func (c *mobileVRouteCarrier) currentWriteBack() func([]byte) error {
+	if c == nil {
+		return nil
+	}
+	c.writeBackMu.RLock()
+	defer c.writeBackMu.RUnlock()
+	return c.writeBack
+}
+
+func startMobileVRouteCarrierWorkers(config mobileVRouteConfig) {
+	for _, plan := range mobileVRouteOutboundCarrierPlans(config) {
+		worker := &mobileVRouteCarrierWorker{plan: plan, stopCh: make(chan struct{})}
+		key := mobileVRouteCarrierKey(plan)
+		mobileVRouteCarrierState.mu.Lock()
+		if existing := mobileVRouteCarrierState.workers[key]; existing != nil {
+			mobileVRouteCarrierState.mu.Unlock()
+			continue
+		}
+		mobileVRouteCarrierState.workers[key] = worker
+		mobileVRouteCarrierState.mu.Unlock()
+		go worker.run()
+	}
+}
+
+func startMobileVRouteCarrierWorkersFromConfigDir(configDir string) {
+	config, err := loadMobileVRouteConfig(configDir)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			androidLogStore.add("route", "warning", "vroute carrier config load failed: "+err.Error())
+		}
+		return
+	}
+	startMobileVRouteCarrierWorkers(config)
+}
+
+func stopMobileVRouteCarrierWorkers() {
+	mobileVRouteCarrierState.mu.Lock()
+	workers := make([]*mobileVRouteCarrierWorker, 0, len(mobileVRouteCarrierState.workers))
+	for _, worker := range mobileVRouteCarrierState.workers {
+		workers = append(workers, worker)
+	}
+	mobileVRouteCarrierState.workers = map[string]*mobileVRouteCarrierWorker{}
+	mobileVRouteCarrierState.mu.Unlock()
+	for _, worker := range workers {
+		worker.stop()
+	}
+}
+
+func (w *mobileVRouteCarrierWorker) run() {
+	if w == nil {
+		return
+	}
+	backoff := mobileVRouteCarrierRetryMin
+	for {
+		select {
+		case <-w.stopCh:
+			return
+		default:
+		}
+		carrier, err := ensureMobileVRouteCarrier(w.plan, nil)
+		if err != nil {
+			recordMobileVRouteCarrierStateError(err)
+			androidLogStore.add("route", "warning", "vroute carrier dial failed: route="+w.plan.RouteID+" relay="+net.JoinHostPort(w.plan.RelayHost, strconv.Itoa(w.plan.RelayPort))+" err="+err.Error())
+			if !w.wait(backoff) {
+				return
+			}
+			backoff = nextMobileVRouteCarrierRetry(backoff)
+			continue
+		}
+		clearMobileVRouteCarrierStateError()
+		backoff = mobileVRouteCarrierRetryMin
+		if !w.waitCarrier(carrier) {
+			if carrier != nil {
+				carrier.close()
+			}
+			return
+		}
+	}
+}
+
+func (w *mobileVRouteCarrierWorker) wait(delay time.Duration) bool {
+	if w == nil {
+		return false
+	}
+	if delay <= 0 {
+		delay = time.Second
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-w.stopCh:
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func (w *mobileVRouteCarrierWorker) waitCarrier(carrier *mobileVRouteCarrier) bool {
+	if w == nil {
+		return false
+	}
+	if carrier == nil || carrier.done == nil {
+		return w.wait(mobileVRouteCarrierRetryMin)
+	}
+	select {
+	case <-w.stopCh:
+		return false
+	case <-carrier.done:
+		return true
+	}
+}
+
+func (w *mobileVRouteCarrierWorker) stop() {
+	if w == nil {
+		return
+	}
+	w.stopOnce.Do(func() { close(w.stopCh) })
+}
+
+func nextMobileVRouteCarrierRetry(current time.Duration) time.Duration {
+	if current <= 0 {
+		return time.Second
+	}
+	next := current * 2
+	if next > mobileVRouteCarrierRetryMax {
+		return mobileVRouteCarrierRetryMax
+	}
+	return next
+}
+
+func recordMobileVRouteCarrierStateError(err error) {
+	if err == nil {
+		return
+	}
+	mobileVRouteCarrierState.mu.Lock()
+	mobileVRouteCarrierState.lastError = strings.TrimSpace(err.Error())
+	mobileVRouteCarrierState.lastErrorUnixNS = time.Now().UnixNano()
+	mobileVRouteCarrierState.mu.Unlock()
+}
+
+func clearMobileVRouteCarrierStateError() {
+	mobileVRouteCarrierState.mu.Lock()
+	mobileVRouteCarrierState.lastError = ""
+	mobileVRouteCarrierState.lastErrorUnixNS = 0
+	mobileVRouteCarrierState.mu.Unlock()
+}
+
+func mobileVRouteOutboundCarrierPlans(config mobileVRouteConfig) []mobileVRouteForwardPlan {
+	config = sanitizeMobileVRouteConfig(config)
+	localNode := normalizeMobileRouteNodeID(config.LocalNodeID)
+	if !config.Enabled || localNode == "" {
+		return nil
+	}
+	plans := make([]mobileVRouteForwardPlan, 0, len(config.TopologyRules))
+	for _, rule := range config.TopologyRules {
+		if !rule.Enabled || normalizeMobileRouteNodeID(rule.FromNodeID) != localNode {
+			continue
+		}
+		nextNode := normalizeMobileRouteNodeID(rule.ToNodeID)
+		host, port := mobileVRoutePeerEndpoint(config, rule, false)
+		if nextNode == "" || host == "" || port <= 0 || strings.TrimSpace(rule.Secret) == "" || strings.TrimSpace(rule.AuthTicket) == "" {
+			continue
+		}
+		plans = append(plans, mobileVRouteForwardPlan{
+			LocalNode:  localNode,
+			ExitNode:   nextNode,
+			Path:       []string{localNode, nextNode},
+			NextNode:   nextNode,
+			Rule:       rule,
+			RouteID:    mobileVRouteRuntimeRouteID(rule),
+			RelayHost:  host,
+			RelayPort:  port,
+			BridgeRole: mobileVRouteBridgeRoleToNext,
+			Layer:      normalizeMobileVRouteRelayLayer(rule.RouteLayer),
+		})
+	}
+	sort.Slice(plans, func(i, j int) bool {
+		return plans[i].RouteID < plans[j].RouteID
+	})
+	return plans
 }
 
 func (c *mobileVRouteCarrier) close() {
@@ -291,6 +574,9 @@ func (c *mobileVRouteCarrier) close() {
 			delete(mobileVRouteCarrierState.items, c.key)
 		}
 		mobileVRouteCarrierState.mu.Unlock()
+		if c.done != nil {
+			close(c.done)
+		}
 	})
 }
 
@@ -591,22 +877,30 @@ func readMobileVRouteFrame(reader *bufio.Reader) (mobileVRouteFrame, error) {
 }
 
 func mobileVRouteFrameChecksum(headerPrefix []byte, control []byte, data []byte) uint16 {
-	sum := uint32(0)
+	var sum uint32
+	var pending byte
+	hasPending := false
 	add := func(payload []byte) {
-		for len(payload) > 1 {
-			sum += uint32(binary.BigEndian.Uint16(payload[:2]))
-			payload = payload[2:]
-		}
-		if len(payload) == 1 {
-			sum += uint32(payload[0]) << 8
-		}
-		for (sum >> 16) != 0 {
-			sum = (sum & 0xffff) + (sum >> 16)
+		for _, item := range payload {
+			if hasPending {
+				sum += uint32(pending)<<8 | uint32(item)
+				sum = (sum & 0xffff) + (sum >> 16)
+				hasPending = false
+				continue
+			}
+			pending = item
+			hasPending = true
 		}
 	}
 	add(headerPrefix)
 	add(control)
 	add(data)
+	if hasPending {
+		sum += uint32(pending) << 8
+	}
+	for sum > 0xffff {
+		sum = (sum & 0xffff) + (sum >> 16)
+	}
 	return ^uint16(sum)
 }
 

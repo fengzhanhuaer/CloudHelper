@@ -249,7 +249,9 @@ func refreshConfigFiles(controllerURL string, nodeID string, nodeSecret string, 
 	if err != nil {
 		return configRefreshSummary{}, err
 	}
+	stopMobileVRouteCarrierWorkers()
 	closeMobileVRouteCarriers()
+	startMobileVRouteCarrierWorkers(vrouteConfig)
 	androidLogStore.add("route", "normal", "refreshed android vroute config: "+mobileVRouteSummary(vrouteConfig))
 	return configRefreshSummary{
 		ConfigDir:    configDir,

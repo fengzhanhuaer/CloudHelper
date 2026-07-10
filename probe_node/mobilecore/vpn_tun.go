@@ -389,6 +389,7 @@ func VpnStart(fd int64, configDir string) string {
 	vpnRuntime.selfCheck = map[string]any{"ok": false, "status": "pending", "updated_at": vpnRuntime.updatedAt}
 	vpnRuntime.mu.Unlock()
 	setMobileRouteConfigDir(configDir)
+	startMobileVRouteCarrierWorkersFromConfigDir(strings.TrimSpace(configDir))
 	go cleanupPreviousAndroidVPNDataPlane(oldStack, oldTun)
 	go ensureAndroidVPNDNSCacheLoaded(strings.TrimSpace(configDir))
 	go runVPNStartupSelfCheck(strings.TrimSpace(configDir))
@@ -419,6 +420,7 @@ func VpnStop() string {
 	if dataPlane != nil {
 		_ = dataPlane.Close()
 	}
+	stopMobileVRouteCarrierWorkers()
 	closeMobileVRouteCarriers()
 	if tun != nil {
 		_ = tun.Close()

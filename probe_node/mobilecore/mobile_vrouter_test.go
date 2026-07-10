@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +21,7 @@ import (
 
 func resetMobileVRouteVPNStateForTest(t *testing.T, configDir string) {
 	t.Helper()
+	stopMobileVRouteCarrierWorkers()
 	closeMobileVRouteCarriers()
 	mobileVRouteCarrierState.mu.Lock()
 	oldCarrierItems := mobileVRouteCarrierState.items
@@ -54,6 +54,7 @@ func resetMobileVRouteVPNStateForTest(t *testing.T, configDir string) {
 	vpnDNSState.mu.Unlock()
 
 	t.Cleanup(func() {
+		stopMobileVRouteCarrierWorkers()
 		closeMobileVRouteCarriers()
 		mobileVRouteCarrierState.mu.Lock()
 		mobileVRouteCarrierState.items = oldCarrierItems
@@ -156,17 +157,15 @@ func TestMobileVRouteCIDRRuleSelectsRemoteProbeExit(t *testing.T) {
 	left, right := net.Pipe()
 	defer left.Close()
 	defer right.Close()
-	carrier := &mobileVRouteCarrier{
-		key:           mobileVRouteCarrierKey(plan),
-		plan:          plan,
-		conn:          left,
-		reader:        bufio.NewReader(left),
-		createdUnixNS: time.Now().UnixNano(),
+	carrier := newMobileVRouteCarrier(mobileVRouteCarrierKey(plan), plan, left)
+	if carrier == nil {
+		t.Fatal("carrier is nil")
 	}
 	carrier.markActivity()
 	mobileVRouteCarrierState.mu.Lock()
 	mobileVRouteCarrierState.items[carrier.key] = carrier
 	mobileVRouteCarrierState.mu.Unlock()
+	carrier.start()
 
 	frameCh := make(chan mobileVRouteFrame, 1)
 	errCh := make(chan error, 1)
@@ -235,33 +234,36 @@ func TestMobileVRouteCarrierWriteFailureClosesAndRecordsError(t *testing.T) {
 	resetMobileVRouteVPNStateForTest(t, configDir)
 	left, right := net.Pipe()
 	_ = right.Close()
-	carrier := &mobileVRouteCarrier{
-		key: "test-carrier",
-		plan: mobileVRouteForwardPlan{
-			RouteID:    "vrouter-test",
-			Path:       []string{"9", "17"},
-			NextNode:   "17",
-			ExitNode:   "17",
-			RelayHost:  "edge.example.com",
-			RelayPort:  12040,
-			BridgeRole: mobileVRouteBridgeRoleToNext,
-			Layer:      "websocket",
-		},
-		conn:          left,
-		reader:        bufio.NewReader(left),
-		createdUnixNS: time.Now().UnixNano(),
+	plan := mobileVRouteForwardPlan{
+		RouteID:    "vrouter-test",
+		Path:       []string{"9", "17"},
+		NextNode:   "17",
+		ExitNode:   "17",
+		RelayHost:  "edge.example.com",
+		RelayPort:  12040,
+		BridgeRole: mobileVRouteBridgeRoleToNext,
+		Layer:      "websocket",
+	}
+	carrier := newMobileVRouteCarrier("test-carrier", plan, left)
+	if carrier == nil {
+		t.Fatal("carrier is nil")
 	}
 	carrier.markActivity()
 	mobileVRouteCarrierState.mu.Lock()
 	mobileVRouteCarrierState.items[carrier.key] = carrier
 	mobileVRouteCarrierState.mu.Unlock()
+	carrier.start()
 
-	err := carrier.writeIPPacket(buildMobileVRouteTestIPv4Packet(6, "10.0.0.2", "198.18.0.17", 12345, 443), []string{"9", "17"})
-	if err == nil {
-		t.Fatalf("write succeeded, want failure")
+	if err := carrier.writeIPPacket(buildMobileVRouteTestIPv4Packet(6, "10.0.0.2", "198.18.0.17", 12345, 443), []string{"9", "17"}); err != nil {
+		t.Fatalf("enqueue write failed: %v", err)
 	}
-	if !errors.Is(err, io.ErrClosedPipe) && !strings.Contains(strings.ToLower(err.Error()), "closed") {
-		t.Fatalf("write error=%v, want closed pipe", err)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		status := snapshotMobileVRouteCarriers()
+		if status["active"] == 0 && strings.TrimSpace(stringFromAny(status["last_error"])) != "" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	status := snapshotMobileVRouteCarriers()
 	if status["active"] != 0 {
@@ -341,6 +343,121 @@ func TestMobileVRouteForwardPlanBuildsAdjacentCarrier(t *testing.T) {
 	}
 	if plan.Layer != "websocket" {
 		t.Fatalf("layer=%s, want websocket", plan.Layer)
+	}
+}
+
+func TestMobileVRouteOutboundCarrierPlansOnlyIncludeLocalForwardRules(t *testing.T) {
+	plans := mobileVRouteOutboundCarrierPlans(mobileVRouteConfig{
+		LocalNodeID: "9",
+		Enabled:     true,
+		ProbeIPs: []mobileVRouteProbeIP{
+			{NodeID: "9", IP: "198.18.0.9"},
+			{NodeID: "17", IP: "198.18.0.17", ServicePort: 12040},
+			{NodeID: "19", IP: "198.18.0.19", ServicePort: 12041},
+		},
+		TopologyRules: []mobileVRouteTopology{
+			{ID: "forward", FromNodeID: "9", ToNodeID: "17", ToServiceDomain: "edge-17.example.com", Secret: "secret", AuthTicket: "ticket", Enabled: true},
+			{ID: "inbound", FromNodeID: "19", ToNodeID: "9", FromServiceDomain: "edge-19.example.com", Secret: "secret", AuthTicket: "ticket", Enabled: true},
+		},
+	})
+	if len(plans) != 1 {
+		t.Fatalf("outbound plans=%d, want 1: %+v", len(plans), plans)
+	}
+	plan := plans[0]
+	if plan.NextNode != "17" || plan.RelayHost != "edge-17.example.com" || plan.RelayPort != 12040 || plan.BridgeRole != mobileVRouteBridgeRoleToNext || plan.Layer != "websocket" {
+		t.Fatalf("unexpected outbound plan: %+v", plan)
+	}
+}
+
+func TestMobileVRouteCarrierWorkerRetriesFailedDial(t *testing.T) {
+	resetMobileVRouteVPNStateForTest(t, t.TempDir())
+	oldDial := mobileVRouteCarrierDial
+	oldRetryMin := mobileVRouteCarrierRetryMin
+	mobileVRouteCarrierRetryMin = 5 * time.Millisecond
+	t.Cleanup(func() {
+		stopMobileVRouteCarrierWorkers()
+		closeMobileVRouteCarriers()
+		mobileVRouteCarrierDial = oldDial
+		mobileVRouteCarrierRetryMin = oldRetryMin
+	})
+
+	attempts := make(chan int, 2)
+	peerConns := make(chan net.Conn, 1)
+	callCount := 0
+	mobileVRouteCarrierDial = func(mobileVRouteForwardPlan) (net.Conn, error) {
+		callCount++
+		attempts <- callCount
+		if callCount == 1 {
+			return nil, errors.New("temporary dial failure")
+		}
+		left, right := net.Pipe()
+		peerConns <- right
+		return left, nil
+	}
+
+	config := mobileVRouteConfig{
+		LocalNodeID: "9",
+		Enabled:     true,
+		ProbeIPs: []mobileVRouteProbeIP{
+			{NodeID: "9", IP: "198.18.0.9"},
+			{NodeID: "17", IP: "198.18.0.17", ServicePort: 12040},
+		},
+		TopologyRules: []mobileVRouteTopology{{
+			ID:              "worker-retry",
+			FromNodeID:      "9",
+			ToNodeID:        "17",
+			ToServiceDomain: "edge-17.example.com",
+			Secret:          "secret",
+			AuthTicket:      "ticket",
+			Enabled:         true,
+		}},
+	}
+	startMobileVRouteCarrierWorkers(config)
+	for want := 1; want <= 2; want++ {
+		select {
+		case got := <-attempts:
+			if got != want {
+				t.Fatalf("dial attempt=%d, want %d", got, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for dial attempt %d", want)
+		}
+	}
+	peer := <-peerConns
+	defer peer.Close()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if active := snapshotMobileVRouteCarriers()["active"]; active == 1 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("active carriers=%v, want 1", snapshotMobileVRouteCarriers()["active"])
+}
+
+func TestMobileVRouteExistingCarrierAcceptsVPNWriteBack(t *testing.T) {
+	resetMobileVRouteVPNStateForTest(t, t.TempDir())
+
+	plan := mobileVRouteForwardPlan{RouteID: "vrouter-prewarmed", RelayHost: "edge.example.com", RelayPort: 12040, BridgeRole: mobileVRouteBridgeRoleToNext}
+	carrier := &mobileVRouteCarrier{key: mobileVRouteCarrierKey(plan), plan: plan}
+	mobileVRouteCarrierState.mu.Lock()
+	mobileVRouteCarrierState.items[carrier.key] = carrier
+	mobileVRouteCarrierState.mu.Unlock()
+	called := false
+	writeBack := func([]byte) error {
+		called = true
+		return nil
+	}
+	got, err := ensureMobileVRouteCarrier(plan, writeBack)
+	if err != nil || got != carrier {
+		t.Fatalf("ensure prewarmed carrier got=%p err=%v", got, err)
+	}
+	callback := carrier.currentWriteBack()
+	if callback == nil {
+		t.Fatal("prewarmed carrier should retain later VPN writeback")
+	}
+	if err := callback([]byte{0x45}); err != nil || !called {
+		t.Fatalf("writeback err=%v called=%v", err, called)
 	}
 }
 
@@ -541,6 +658,15 @@ func TestMobileVRouteFrameRoundTrip(t *testing.T) {
 	encoded[len(encoded)-1] ^= 0xff
 	if _, err := readMobileVRouteFrame(bufio.NewReader(bytes.NewReader(encoded))); err == nil {
 		t.Fatalf("read corrupted frame succeeded, want checksum error")
+	}
+}
+
+func TestMobileVRouteFrameChecksumKeepsOddControlAdjacentToData(t *testing.T) {
+	header := make([]byte, mobileVRouteFrameEnvelopeHeaderSize-2)
+	control := []byte{0x01}
+	data := []byte{0x02}
+	if got, want := mobileVRouteFrameChecksum(header, control, data), uint16(0xfefd); got != want {
+		t.Fatalf("checksum=0x%x, want 0x%x", got, want)
 	}
 }
 
