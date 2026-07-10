@@ -2,6 +2,7 @@ package mobilecore
 
 import (
 	"bufio"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/tls"
@@ -55,7 +56,8 @@ const (
 	mobileVRouteCarrierRetryMax                = 30 * time.Second
 	mobileVRouteCarrierTXBufferFrames          = 1024
 	mobileVRouteCarrierRXBufferFrames          = 1024
-	mobileVRouteMaxHops                         = 3
+	mobileVRouteMaxHops                        = 3
+	mobileVRouteRelayResolveTimeout            = 5 * time.Second
 )
 
 type mobileVRouteFrame struct {
@@ -125,6 +127,14 @@ var mobileVRouteCarrierState = struct {
 }
 
 var mobileVRouteCarrierDial = dialMobileVRouteCarrier
+var mobileVRouteLookupIP = net.DefaultResolver.LookupIP
+
+type mobileVRouteRelayDialCandidate struct {
+	URLHost  string
+	DialHost string
+	Network  string
+}
+
 var mobileVRouteCarrierRetryMin = time.Second
 
 func mobileVRouteHandleVPNPacket(configDir string, packet []byte, writeBack func([]byte) error) (bool, error) {
@@ -822,10 +832,6 @@ func dialMobileVRouteCarrier(plan mobileVRouteForwardPlan) (net.Conn, error) {
 }
 
 func dialMobileVRouteWebSocketCarrier(plan mobileVRouteForwardPlan) (net.Conn, error) {
-	relayURL, err := mobileVRouteRelayWebSocketURL(plan.RelayHost, plan.RelayPort, plan.RouteID)
-	if err != nil {
-		return nil, err
-	}
 	header := http.Header{}
 	header.Set(mobileVRouteLegacyRouteIDHeader, strings.TrimSpace(plan.RouteID))
 	header.Set(mobileVRouteCodexRouteIDHeader, strings.TrimSpace(plan.RouteID))
@@ -835,15 +841,49 @@ func dialMobileVRouteWebSocketCarrier(plan mobileVRouteForwardPlan) (net.Conn, e
 	if err := applyMobileVRouteSecretAuthHeaders(header, plan.RouteID, plan.Rule.Secret, plan.Rule.AuthTicket); err != nil {
 		return nil, err
 	}
+	candidates, err := mobileVRouteRelayDialCandidates(plan.RelayHost)
+	if err != nil {
+		return nil, err
+	}
+	var attempts []string
+	for _, candidate := range candidates {
+		conn, err := dialMobileVRouteWebSocketCarrierCandidate(plan, header, candidate)
+		if err == nil {
+			androidLogStore.add("vpn", "info", "vroute carrier connected: route="+plan.RouteID+" path="+strings.Join(plan.Path, ">")+" dial="+candidate.DialHost)
+			return conn, nil
+		}
+		attempts = append(attempts, strings.TrimSpace(candidate.DialHost)+": "+err.Error())
+		androidLogStore.add("vpn", "warn", "vroute carrier dial failed: route="+plan.RouteID+" dial="+candidate.DialHost+" err="+err.Error())
+	}
+	if len(attempts) == 0 {
+		return nil, errors.New("vroute websocket dial failed: no relay candidate")
+	}
+	return nil, fmt.Errorf("vroute websocket dial failed: %s", strings.Join(attempts, "; "))
+}
+
+func dialMobileVRouteWebSocketCarrierCandidate(plan mobileVRouteForwardPlan, header http.Header, candidate mobileVRouteRelayDialCandidate) (net.Conn, error) {
+	relayURL, err := mobileVRouteRelayWebSocketURL(candidate.URLHost, plan.RelayPort, plan.RouteID)
+	if err != nil {
+		return nil, err
+	}
+	dialHostPort := net.JoinHostPort(candidate.DialHost, strconv.Itoa(plan.RelayPort))
 	dialer := websocket.Dialer{
 		HandshakeTimeout:  mobileVRouteCarrierDialTimeout,
 		Proxy:             nil,
 		ReadBufferSize:    512 * 1024,
 		WriteBufferSize:   512 * 1024,
 		EnableCompression: false,
+		NetDialContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
+			dialNetwork := strings.TrimSpace(candidate.Network)
+			if dialNetwork == "" {
+				dialNetwork = network
+			}
+			netDialer := &net.Dialer{Timeout: mobileVRouteCarrierDialTimeout}
+			return netDialer.DialContext(ctx, dialNetwork, dialHostPort)
+		},
 		TLSClientConfig: &tls.Config{
 			MinVersion:         tls.VersionTLS12,
-			ServerName:         strings.TrimSpace(plan.RelayHost),
+			ServerName:         strings.TrimSpace(candidate.URLHost),
 			InsecureSkipVerify: true,
 		},
 	}
@@ -856,7 +896,6 @@ func dialMobileVRouteWebSocketCarrier(plan mobileVRouteForwardPlan) (net.Conn, e
 		}
 		return nil, err
 	}
-	androidLogStore.add("vpn", "info", "vroute carrier connected: route="+plan.RouteID+" path="+strings.Join(plan.Path, ">"))
 	return newWebSocketNetConn(ws), nil
 }
 
@@ -886,6 +925,85 @@ func buildMobileVRouteHMAC(secret string, routeID string, nonce string) string {
 	_, _ = h.Write([]byte("\n"))
 	_, _ = h.Write([]byte(strings.TrimSpace(nonce)))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func mobileVRouteRelayDialCandidates(host string) ([]mobileVRouteRelayDialCandidate, error) {
+	cleanHost := strings.TrimSpace(strings.Trim(host, "[]"))
+	if cleanHost == "" {
+		return nil, errors.New("relay host is required")
+	}
+	if parsed := net.ParseIP(cleanHost); parsed != nil {
+		return []mobileVRouteRelayDialCandidate{{
+			URLHost:  parsed.String(),
+			DialHost: parsed.String(),
+			Network:  mobileVRouteTCPNetworkForIP(parsed),
+		}}, nil
+	}
+	if mobileVRouteIsCloudflareCopilotDomain(cleanHost) {
+		return []mobileVRouteRelayDialCandidate{{
+			URLHost:  cleanHost,
+			DialHost: cleanHost,
+			Network:  "tcp",
+		}}, nil
+	}
+
+	var candidates []mobileVRouteRelayDialCandidate
+	seen := map[string]struct{}{}
+	ctx, cancel := context.WithTimeout(context.Background(), mobileVRouteRelayResolveTimeout)
+	ips, err := mobileVRouteLookupIP(ctx, "ip", cleanHost)
+	cancel()
+	if err != nil {
+		androidLogStore.add("vpn", "warn", "vroute relay resolve failed: host="+cleanHost+" err="+err.Error())
+		return nil, fmt.Errorf("resolve vroute relay host failed: %w", err)
+	} else {
+		appendIPCandidates := func(wantIPv4 bool) {
+			for _, ip := range ips {
+				if ip == nil {
+					continue
+				}
+				v4 := ip.To4()
+				if wantIPv4 != (v4 != nil) {
+					continue
+				}
+				dialIP := ip
+				if v4 != nil {
+					dialIP = v4
+				} else if dialIP = ip.To16(); dialIP == nil {
+					continue
+				}
+				dialHost := dialIP.String()
+				key := strings.ToLower(dialHost)
+				if _, exists := seen[key]; exists {
+					continue
+				}
+				seen[key] = struct{}{}
+				candidates = append(candidates, mobileVRouteRelayDialCandidate{
+					URLHost:  dialHost,
+					DialHost: dialHost,
+					Network:  mobileVRouteTCPNetworkForIP(dialIP),
+				})
+			}
+		}
+		appendIPCandidates(true)
+		appendIPCandidates(false)
+	}
+	if len(candidates) == 0 {
+		return nil, errors.New("resolve vroute relay host failed: no ip")
+	}
+	return candidates, nil
+}
+
+func mobileVRouteTCPNetworkForIP(ip net.IP) string {
+	if ip == nil {
+		return "tcp"
+	}
+	if ip.To4() != nil {
+		return "tcp4"
+	}
+	if ip.To16() != nil {
+		return "tcp6"
+	}
+	return "tcp"
 }
 
 func mobileVRouteRelayWebSocketURL(host string, port int, routeID string) (string, error) {

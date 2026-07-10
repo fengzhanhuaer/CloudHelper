@@ -3,6 +3,7 @@ package mobilecore
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
@@ -469,6 +470,74 @@ func TestMobileVRouteCarrierWorkerRetriesFailedDial(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("active carriers=%v, want 1", snapshotMobileVRouteCarriers()["active"])
+}
+
+func TestMobileVRouteRelayDialCandidatesPreferIPv4(t *testing.T) {
+	oldLookup := mobileVRouteLookupIP
+	mobileVRouteLookupIP = func(ctx context.Context, network string, host string) ([]net.IP, error) {
+		if network != "ip" || host != "edge.example.com" {
+			t.Fatalf("lookup network=%q host=%q", network, host)
+		}
+		return []net.IP{
+			net.ParseIP("2001:db8::17"),
+			net.ParseIP("192.0.2.17"),
+		}, nil
+	}
+	t.Cleanup(func() {
+		mobileVRouteLookupIP = oldLookup
+	})
+
+	candidates, err := mobileVRouteRelayDialCandidates("edge.example.com")
+	if err != nil {
+		t.Fatalf("mobileVRouteRelayDialCandidates returned error: %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("candidates=%+v, want 2", candidates)
+	}
+	if candidates[0].URLHost != "192.0.2.17" || candidates[0].DialHost != "192.0.2.17" || candidates[0].Network != "tcp4" {
+		t.Fatalf("first candidate should use ipv4 directly: %+v", candidates[0])
+	}
+	if candidates[1].URLHost != "2001:db8::17" || candidates[1].DialHost != "2001:db8::17" || candidates[1].Network != "tcp6" {
+		t.Fatalf("second candidate should use ipv6 directly: %+v", candidates[1])
+	}
+}
+
+func TestMobileVRouteRelayDialCandidatesPreserveCloudflareDomain(t *testing.T) {
+	lookupCalled := false
+	oldLookup := mobileVRouteLookupIP
+	mobileVRouteLookupIP = func(context.Context, string, string) ([]net.IP, error) {
+		lookupCalled = true
+		return []net.IP{net.ParseIP("192.0.2.17")}, nil
+	}
+	t.Cleanup(func() {
+		mobileVRouteLookupIP = oldLookup
+	})
+
+	host := "api_copilot_nw.example.com"
+	candidates, err := mobileVRouteRelayDialCandidates(host)
+	if err != nil {
+		t.Fatalf("mobileVRouteRelayDialCandidates returned error: %v", err)
+	}
+	if lookupCalled {
+		t.Fatalf("cloudflare copilot domain should not be resolved")
+	}
+	if len(candidates) != 1 || candidates[0].URLHost != host || candidates[0].DialHost != host || candidates[0].Network != "tcp" {
+		t.Fatalf("cloudflare candidates=%+v", candidates)
+	}
+}
+
+func TestMobileVRouteRelayDialCandidatesReturnResolveError(t *testing.T) {
+	oldLookup := mobileVRouteLookupIP
+	mobileVRouteLookupIP = func(context.Context, string, string) ([]net.IP, error) {
+		return nil, errors.New("dns unavailable")
+	}
+	t.Cleanup(func() {
+		mobileVRouteLookupIP = oldLookup
+	})
+
+	if _, err := mobileVRouteRelayDialCandidates("edge.example.com"); err == nil || !strings.Contains(err.Error(), "resolve vroute relay host failed") {
+		t.Fatalf("resolve error=%v", err)
+	}
 }
 
 func TestMobileVRouteExistingCarrierAcceptsVPNWriteBack(t *testing.T) {
