@@ -6,7 +6,7 @@ let bootErrorLogged = false;
 const pages = {
   status: ["状态", "当前 Android 节点配置与运行状态。"],
   route: ["路由", "通过 Android VPN 启用或关闭本机路由能力。"],
-  settings: ["设置", "配置主控与节点密钥，并执行直连升级。"]
+  settings: ["设置", "配置主控与节点密钥，并执行直连或主控代理升级。"]
 };
 
 window.CloudHelperUI = {
@@ -1280,7 +1280,7 @@ function renderUpgradeStatus(data) {
 }
 
 function setUpgradeButtonsDisabled(disabled) {
-  ["directUpgradeButton"].forEach((id) => {
+  ["directUpgradeButton", "controllerUpgradeButton"].forEach((id) => {
     const button = byId(id);
     if (button) {
       button.disabled = Boolean(disabled);
