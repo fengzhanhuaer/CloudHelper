@@ -688,7 +688,6 @@ func (n *androidVPNDataPlane) inputLoop(ctx context.Context) {
 		} else if ok {
 			packet = rewritten
 		}
-		logAndroidVPNDiagnostic("tun_rx", "realtime", "vpn tun packet received: "+androidVPNPacketSummary(packet), 5*time.Second)
 		handled, routeErr := mobileVRouteHandleVPNPacket(currentAndroidVPNConfigDir(), packet, func(reply []byte) error {
 			if len(reply) == 0 {
 				return nil
@@ -828,7 +827,6 @@ func (n *androidVPNDataPlane) handleTCPForwarder(req *tcp.ForwarderRequest) {
 	outbound, route, err := openVPNDirectTCPForTarget(dialTarget, flowID, targetAddr)
 	if err != nil {
 		if sni != "" && !route.Direct && !route.Reject && strings.TrimSpace(route.SelectedRouteID) != "" {
-			logAndroidVPNDiagnostic("sni_takeover_"+route.SelectedRouteID, "normal", "tcp sni takeover warmed; current connection will retry: original="+targetAddr+" domain="+dialTarget+" route="+route.SelectedRouteID, 2*time.Second)
 			_ = inbound.Close()
 			return
 		}
@@ -2300,7 +2298,6 @@ func storeAndroidVPNControllerFakeIP(configDir string, domain string, fakeIP str
 	}
 	vpnDNSState.mu.Unlock()
 	markAndroidVPNDNSCacheDirty(configDir)
-	logAndroidVPNDiagnostic("fake_ip_controller_"+route.SelectedRouteID, "normal", "controller fake ip ready: domain="+cleanDomain+" fake_ip="+ipText+" route="+route.SelectedRouteID, 5*time.Second)
 	return ipText, true
 }
 

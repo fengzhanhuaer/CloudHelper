@@ -271,11 +271,9 @@ func mobileVRouteHandleVPNPacket(configDir string, packet []byte, writeBack func
 		return true, nil
 	}
 	if route.Direct || strings.TrimSpace(route.SelectedRouteID) == "" {
-		logAndroidVPNDiagnostic("takeover_direct", "realtime", "vroute takeover bypassed as direct: target="+targetAddr+" group="+route.Group, 10*time.Second)
 		return false, nil
 	}
 	if mobileVRouteRouteIsLocalExit(configDir, route.SelectedRouteID) {
-		logAndroidVPNDiagnostic("takeover_local_exit_"+route.SelectedRouteID, "normal", "vroute takeover uses local exit: target="+targetAddr+" route="+route.SelectedRouteID, 10*time.Second)
 		return false, nil
 	}
 	plan, err := buildMobileVRouteForwardPlan(configDir, route.SelectedRouteID)
@@ -306,14 +304,12 @@ func mobileVRouteHandleVPNPacket(configDir string, packet []byte, writeBack func
 		logAndroidVPNDiagnostic("takeover_carrier_error_"+plan.RouteID, "error", "vroute takeover carrier unavailable: target="+targetAddr+" route="+plan.RouteID+" next="+plan.NextNode+" relay="+net.JoinHostPort(plan.RelayHost, strconv.Itoa(plan.RelayPort))+" err="+err.Error(), 2*time.Second)
 		return true, err
 	}
-	logAndroidVPNDiagnostic("takeover_selected_"+plan.RouteID, "normal", "vroute takeover selected: "+androidVPNPacketSummary(packet)+" route="+plan.RouteID+" path="+strings.Join(plan.Path, ">")+" next="+plan.NextNode, 5*time.Second)
 	if err := carrier.writeIPPacket(forwardPacket, plan.Path); err != nil {
 		recordMobileVRouteConnectionFailure("enqueue_failed", targetAddr, plan.RouteID, route.Group, "", err)
 		logAndroidVPNDiagnostic("takeover_enqueue_error_"+plan.RouteID, "error", "vroute takeover enqueue failed: route="+plan.RouteID+" err="+err.Error(), 2*time.Second)
 		return true, err
 	}
 	trackMobileVRouteOutbound(forwardPacket, route, plan)
-	logAndroidVPNDiagnostic("takeover_queued_"+plan.RouteID, "realtime", "vroute takeover packet queued: route="+plan.RouteID+" path="+strings.Join(plan.Path, ">"), 5*time.Second)
 	return true, nil
 }
 
@@ -553,7 +549,6 @@ func (c *mobileVRouteCarrier) runTXWorker() {
 				c.txControlFrames.Add(1)
 			}
 			c.markActivity()
-			logAndroidVPNDiagnostic("carrier_tx_"+c.plan.RouteID, "normal", "vroute carrier frame sent: route="+c.plan.RouteID+" kind="+mobileVRouteFrameKind(frame)+" type="+strconv.Itoa(int(frame.MainType))+" subtype="+strconv.Itoa(int(frame.SubType))+" frames="+strconv.FormatInt(c.txFrames.Load(), 10)+" ip_frames="+strconv.FormatInt(c.txIPFrames.Load(), 10)+" control_frames="+strconv.FormatInt(c.txControlFrames.Load(), 10)+" bytes="+strconv.FormatInt(c.txBytes.Load(), 10), 5*time.Second)
 		case <-c.done:
 			return
 		}
@@ -612,7 +607,6 @@ func (c *mobileVRouteCarrier) handleIncomingFrame(frame mobileVRouteFrame) error
 		c.rxControlFrames.Add(1)
 	}
 	c.markActivity()
-	logAndroidVPNDiagnostic("carrier_rx_"+c.plan.RouteID, "normal", "vroute carrier frame received: route="+c.plan.RouteID+" kind="+mobileVRouteFrameKind(frame)+" type="+strconv.Itoa(int(frame.MainType))+" subtype="+strconv.Itoa(int(frame.SubType))+" path="+strings.Join(path, ">")+" frames="+strconv.FormatInt(c.rxFrames.Load(), 10)+" ip_frames="+strconv.FormatInt(c.rxIPFrames.Load(), 10)+" control_frames="+strconv.FormatInt(c.rxControlFrames.Load(), 10), 5*time.Second)
 	if position < len(path)-1 {
 		nextNode := path[position+1]
 		plan, err := buildMobileVRouteAdjacentPlan(c.plan.Config, path, localNode, nextNode)
@@ -668,7 +662,6 @@ func (c *mobileVRouteCarrier) runRXWorker() {
 				} else {
 					c.tunWriteFrames.Add(1)
 					c.tunWriteBytes.Add(int64(len(frame.Data)))
-					logAndroidVPNDiagnostic("tun_writeback_"+c.plan.RouteID, "normal", "vroute response written back to tun: "+androidVPNPacketSummary(frame.Data)+" route="+c.plan.RouteID, 5*time.Second)
 				}
 			}
 		case <-c.done:
