@@ -59,6 +59,14 @@
           <div id="vrouteStatus" class="inline-feedback" aria-live="polite"></div>
           <div id="vrouteHealth"></div>
           <div id="vrouteSummary" class="vroute-summary-grid"></div>
+          <div class="vroute-rtt-tools">
+            <label for="vrouteRTTTarget">RTT 目标节点</label>
+            <div class="vroute-rtt-actions">
+              <select id="vrouteRTTTarget"></select>
+              <button id="vrouteRTTButton" class="command secondary" type="button">测量 RTT</button>
+            </div>
+            <div id="vrouteRTTResult" class="inline-feedback" aria-live="polite"></div>
+          </div>
           <div id="vrouteExitNodes" class="vroute-list"></div>
           <div id="vrouteCarriers" class="vroute-list"></div>
           <div id="vrouteCapabilities" class="vroute-capabilities"></div>

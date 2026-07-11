@@ -11,10 +11,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -28,6 +30,9 @@ func resetMobileVRouteVPNStateForTest(t *testing.T, configDir string) {
 	t.Helper()
 	stopMobileVRouteCarrierWorkers()
 	closeMobileVRouteCarriers()
+	mobileVRouteRTTState.mu.Lock()
+	mobileVRouteRTTState.pending = make(map[string]chan mobileVRouteControlProbePayload)
+	mobileVRouteRTTState.mu.Unlock()
 	mobileVRouteCarrierState.mu.Lock()
 	oldCarrierItems := mobileVRouteCarrierState.items
 	oldCarrierLastError := mobileVRouteCarrierState.lastError
@@ -972,6 +977,183 @@ func TestMobileVRouteRespondsToPeerDebugLogPull(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for mobile debug log response")
+	}
+}
+
+func TestMobileVRouteRespondsToPingAndPathRTT(t *testing.T) {
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+	carrier := newMobileVRouteCarrier("rtt", mobileVRouteForwardPlan{LocalNode: "9", RouteID: "vrouter-9-19"}, left)
+	if carrier == nil {
+		t.Fatal("carrier is nil")
+	}
+	path := []string{"19", "9"}
+	control, err := json.Marshal(mobileVRouteFrameControlEnvelope{Path: path})
+	if err != nil {
+		t.Fatalf("marshal control: %v", err)
+	}
+
+	tests := []struct {
+		name                string
+		mainType            uint16
+		querySubType        uint16
+		responseSubType     uint16
+		preserveCreatedTime bool
+	}{
+		{name: "adjacent ping", mainType: mobileVRouteFrameMainTypePingPong, querySubType: mobileVRoutePingPongSubTypePing, responseSubType: mobileVRoutePingPongSubTypePong},
+		{name: "path rtt", mainType: mobileVRouteFrameMainTypePathRTT, querySubType: mobileVRoutePathRTTSubTypeQuery, responseSubType: mobileVRoutePathRTTSubTypeResponse, preserveCreatedTime: true},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			createdAt := time.Now().Add(time.Hour).UnixNano() + int64(index)
+			request := mobileVRouteControlProbePayload{
+				RequestID:         "rtt-request-" + strconv.Itoa(index),
+				SourceNodeID:      "19",
+				TargetNodeID:      "9",
+				Path:              path,
+				CreatedAtUnixNano: createdAt,
+				PingBytes:         64,
+			}
+			payload, err := json.Marshal(request)
+			if err != nil {
+				t.Fatalf("marshal request: %v", err)
+			}
+			if err := carrier.handleIncomingFrame(mobileVRouteFrame{
+				MainType: test.mainType,
+				SubType:  test.querySubType,
+				Control:  control,
+				Data:     payload,
+			}); err != nil {
+				t.Fatalf("handle rtt query: %v", err)
+			}
+
+			select {
+			case frame := <-carrier.tx:
+				if frame.MainType != test.mainType || frame.SubType != test.responseSubType {
+					t.Fatalf("response frame=%d/%d, want %d/%d", frame.MainType, frame.SubType, test.mainType, test.responseSubType)
+				}
+				var responseControl mobileVRouteFrameControlEnvelope
+				if err := json.Unmarshal(frame.Control, &responseControl); err != nil {
+					t.Fatalf("unmarshal response control: %v", err)
+				}
+				if got := strings.Join(responseControl.Path, ">"); got != "9>19" {
+					t.Fatalf("response path=%s, want 9>19", got)
+				}
+				response := mobileVRouteControlProbePayload{}
+				if err := json.Unmarshal(frame.Data, &response); err != nil {
+					t.Fatalf("unmarshal response: %v", err)
+				}
+				if !response.OK || response.Responder != "9" || response.LatencyMS != 0 {
+					t.Fatalf("unexpected rtt response: %+v", response)
+				}
+				if test.preserveCreatedTime && response.CreatedAtUnixNano != createdAt {
+					t.Fatalf("path rtt timestamp=%d, want original %d", response.CreatedAtUnixNano, createdAt)
+				}
+				if !test.preserveCreatedTime && (response.CreatedAtUnixNano <= 0 || response.CreatedAtUnixNano == createdAt) {
+					t.Fatalf("ping timestamp=%d should be responder time, request=%d", response.CreatedAtUnixNano, createdAt)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for mobile rtt response")
+			}
+		})
+	}
+}
+
+func TestMobileVRouteActivelyMeasuresAdjacentRTT(t *testing.T) {
+	configDir := t.TempDir()
+	resetMobileVRouteVPNStateForTest(t, configDir)
+	config := mobileVRouteConfig{
+		LocalNodeID: "9",
+		Enabled:     true,
+		ProbeIPs: []mobileVRouteProbeIP{
+			{NodeID: "9", IP: "198.18.0.9"},
+			{NodeID: "19", IP: "198.18.0.19", ServicePort: 12040},
+		},
+		TopologyRules: []mobileVRouteTopology{{
+			ID:              "vrouter-9-19",
+			FromNodeID:      "9",
+			ToNodeID:        "19",
+			ToServiceDomain: "edge-19.example.com",
+			ToServicePort:   12040,
+			Secret:          "secret-9-19",
+			AuthTicket:      "ticket-9-19",
+			Enabled:         true,
+		}},
+	}
+	if err := persistMobileVRouteConfig(configDir, config); err != nil {
+		t.Fatalf("persist config: %v", err)
+	}
+	plan, err := buildMobileVRouteForwardPlan(configDir, mobileVRouteProbeExitRouteID("19"))
+	if err != nil {
+		t.Fatalf("build plan: %v", err)
+	}
+	left, right := net.Pipe()
+	defer right.Close()
+	carrier := newMobileVRouteCarrier(mobileVRouteCarrierKey(plan), plan, left)
+	if carrier == nil {
+		t.Fatal("carrier is nil")
+	}
+	mobileVRouteCarrierState.mu.Lock()
+	mobileVRouteCarrierState.items[carrier.key] = carrier
+	mobileVRouteCarrierState.mu.Unlock()
+	carrier.start()
+	defer carrier.close()
+
+	peerDone := make(chan error, 1)
+	go func() {
+		frame, err := readMobileVRouteFrame(bufio.NewReader(right))
+		if err != nil {
+			peerDone <- err
+			return
+		}
+		if frame.MainType != mobileVRouteFrameMainTypePingPong || frame.SubType != mobileVRoutePingPongSubTypePing {
+			peerDone <- fmt.Errorf("query frame=%d/%d, want ping", frame.MainType, frame.SubType)
+			return
+		}
+		request := mobileVRouteControlProbePayload{}
+		if err := json.Unmarshal(frame.Data, &request); err != nil {
+			peerDone <- err
+			return
+		}
+		request.OK = true
+		request.Responder = "19"
+		request.LatencyMS = 0
+		request.CreatedAtUnixNano = time.Now().UnixNano()
+		payload, err := json.Marshal(request)
+		if err != nil {
+			peerDone <- err
+			return
+		}
+		control, err := json.Marshal(mobileVRouteFrameControlEnvelope{Path: []string{"19", "9"}})
+		if err != nil {
+			peerDone <- err
+			return
+		}
+		encoded, err := encodeMobileVRouteFrame(mobileVRouteFrame{
+			MainType: mobileVRouteFrameMainTypePingPong,
+			SubType:  mobileVRoutePingPongSubTypePong,
+			Control:  control,
+			Data:     payload,
+		})
+		if err == nil {
+			_, err = right.Write(encoded)
+		}
+		peerDone <- err
+	}()
+
+	result := runMobileVRoutePathRTT("19")
+	if ok, _ := result["ok"].(bool); !ok {
+		t.Fatalf("active RTT failed: %+v", result)
+	}
+	if result["responder"] != "19" || result["target_node_id"] != "19" {
+		t.Fatalf("unexpected active RTT result: %+v", result)
+	}
+	if latency, _ := result["latency_ms"].(int64); latency < 1 {
+		t.Fatalf("latency=%v, want positive RTT: %+v", result["latency_ms"], result)
+	}
+	if err := <-peerDone; err != nil {
+		t.Fatalf("peer exchange failed: %v", err)
 	}
 }
 

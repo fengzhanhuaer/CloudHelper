@@ -113,6 +113,14 @@ object MobileCoreBridge {
         return callString("vpnStatus", emptyArray<Class<*>>(), emptyArray())
     }
 
+    fun vRoutePathRTT(targetNodeID: String): String {
+        return callString(
+            methodName = "vRoutePathRTT",
+            parameterTypes = arrayOf(String::class.java),
+            args = arrayOf(targetNodeID),
+        )
+    }
+
     fun vpnSelfCheck(context: Context): String {
         return recordResult("mobilecore", callString(
             methodName = "vpnSelfCheck",

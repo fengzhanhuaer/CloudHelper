@@ -101,6 +101,16 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun emitVRouteRTT(payload: String) {
+        AndroidLogStore.add("route", payload, if (payload.contains("\"ok\":false")) "error" else "info")
+        runOnUiThread {
+            webView.evaluateJavascript(
+                "window.CloudHelperUI && window.CloudHelperUI.setVRouteRTT(${JSONObject.quote(payload)});",
+                null,
+            )
+        }
+    }
+
     private fun evaluatePageScript(script: String) {
         runOnUiThread {
             webView.evaluateJavascript(script, null)
@@ -268,6 +278,15 @@ class MainActivity : Activity() {
         fun vpnStatus(): String {
             refreshCachedStatusAsync()
             return ProbeNodeVpnService.mergedStatusJSON(cachedVpnStatus)
+        }
+
+        @JavascriptInterface
+        fun vroutePathRTT(targetNodeID: String): String {
+            AndroidLogStore.add("route", "vroute RTT requested: target=$targetNodeID")
+            thread(name = "cloudhelper-android-vroute-rtt") {
+                emitVRouteRTT(MobileCoreBridge.vRoutePathRTT(targetNodeID))
+            }
+            return "RTT 测量已开始"
         }
 
         @JavascriptInterface

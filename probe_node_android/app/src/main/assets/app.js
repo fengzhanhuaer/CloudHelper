@@ -33,6 +33,15 @@ window.CloudHelperUI = {
     refreshVRouteIfVisible();
     refreshConnectionsIfVisible();
     refreshLogsIfVisible();
+  },
+  setVRouteRTT(payload) {
+    renderVRouteRTTResult(parseJSON(payload || "{}"));
+    const button = byId("vrouteRTTButton");
+    if (button) {
+      button.disabled = false;
+      button.textContent = "测量 RTT";
+    }
+    refreshLogsIfVisible();
   }
 };
 
@@ -565,6 +574,10 @@ function setupStatusTabs() {
   if (refreshVRouteButton) {
     refreshVRouteButton.onclick = refreshVRoute;
   }
+  const vrouteRTTButton = byId("vrouteRTTButton");
+  if (vrouteRTTButton) {
+    vrouteRTTButton.onclick = runVRouteRTT;
+  }
   const selfCheck = byId("vpnSelfCheckButton");
   if (selfCheck) {
     selfCheck.onclick = runVPNSelfCheck;
@@ -658,9 +671,79 @@ function renderVRouteStatus(vpnData) {
   ].filter(Boolean).join("；"));
   renderVRouteHealth(enabled, error, config.updated_at, carriers.last_error_at);
   renderVRouteSummary(config, carriers);
+  renderVRouteRTTTargets(config);
   renderVRouteExitNodes(exitNodes, config.exit_nodes);
   renderVRouteCarriers(carrierItems);
   renderVRouteCapabilities(capabilities);
+}
+
+function renderVRouteRTTTargets(config) {
+  const select = byId("vrouteRTTTarget");
+  if (!select) {
+    return;
+  }
+  const current = String(select.value || "").trim();
+  const items = Array.isArray(config.probe_items) ? config.probe_items : [];
+  select.innerHTML = "";
+  const empty = document.createElement("option");
+  empty.value = "";
+  empty.textContent = items.length ? "选择目标节点" : "暂无可达节点";
+  select.appendChild(empty);
+  items.forEach((item) => {
+    const nodeID = String(item.node_id || "").trim();
+    if (!nodeID) {
+      return;
+    }
+    const option = document.createElement("option");
+    option.value = nodeID;
+    option.textContent = item.ip ? `节点 ${nodeID} (${item.ip})` : `节点 ${nodeID}`;
+    select.appendChild(option);
+  });
+  if (current && items.some((item) => String(item.node_id || "").trim() === current)) {
+    select.value = current;
+  }
+}
+
+function runVRouteRTT() {
+  const select = byId("vrouteRTTTarget");
+  const targetNodeID = select ? String(select.value || "").trim() : "";
+  if (!targetNodeID) {
+    setText("vrouteRTTResult", "请选择目标节点");
+    return;
+  }
+  const button = byId("vrouteRTTButton");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "测量中...";
+  }
+  setText("vrouteRTTResult", `正在测量到节点 ${targetNodeID} 的 RTT...`);
+  try {
+    const message = window.CloudHelper && window.CloudHelper.vroutePathRTT
+      ? window.CloudHelper.vroutePathRTT(targetNodeID)
+      : "RTT 接口不可用";
+    if (message && !String(message).includes("已开始")) {
+      setText("vrouteRTTResult", message);
+      if (button) {
+        button.disabled = false;
+        button.textContent = "测量 RTT";
+      }
+    }
+  } catch (error) {
+    setText("vrouteRTTResult", `RTT 测量失败：${error && error.message ? error.message : error}`);
+    if (button) {
+      button.disabled = false;
+      button.textContent = "测量 RTT";
+    }
+  }
+}
+
+function renderVRouteRTTResult(result) {
+  const path = Array.isArray(result.path) ? result.path.join(" > ") : "";
+  if (!result.ok) {
+    setText("vrouteRTTResult", `RTT 失败：${result.error || "未收到响应"}${path ? `；路径 ${path}` : ""}`);
+    return;
+  }
+  setText("vrouteRTTResult", `节点 ${result.target_node_id || result.responder || "-"}：${Number(result.latency_ms || 0)} ms${path ? `；路径 ${path}` : ""}`);
 }
 
 function renderVRouteHealth(enabled, error, updatedAt, lastErrorAt) {

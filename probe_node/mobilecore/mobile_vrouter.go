@@ -439,6 +439,21 @@ func mobileVRouteStatusPayload(configDir string) map[string]any {
 			"service_port": mobileVRouteServicePortForNode(config, id, 0),
 		})
 	}
+	probeItems := make([]map[string]any, 0, len(config.ProbeIPs))
+	for _, probe := range config.ProbeIPs {
+		nodeID := normalizeMobileRouteNodeID(probe.NodeID)
+		if nodeID == "" || nodeID == normalizeMobileRouteNodeID(config.LocalNodeID) {
+			continue
+		}
+		probeItems = append(probeItems, map[string]any{
+			"node_id":      nodeID,
+			"ip":           strings.TrimSpace(probe.IP),
+			"service_port": probe.ServicePort,
+		})
+	}
+	sort.SliceStable(probeItems, func(i, j int) bool {
+		return stringFromAny(probeItems[i]["node_id"]) < stringFromAny(probeItems[j]["node_id"])
+	})
 	return map[string]any{
 		"local_node_id":   strings.TrimSpace(config.LocalNodeID),
 		"local_ip":        mobileVRouteProbeIPForNode(config, config.LocalNodeID),
@@ -449,6 +464,7 @@ func mobileVRouteStatusPayload(configDir string) map[string]any {
 		"route_rules":     len(config.RouteRules),
 		"exit_nodes":      nodes,
 		"exit_node_items": exitNodeItems,
+		"probe_items":     probeItems,
 		"updated_at":      strings.TrimSpace(config.UpdatedAt),
 	}
 }

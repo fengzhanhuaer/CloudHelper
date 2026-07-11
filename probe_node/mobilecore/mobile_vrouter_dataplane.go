@@ -53,6 +53,12 @@ const (
 	mobileVRouteFrameMaxBytes                  = mobileVRouteFrameEnvelopeHeaderSize + mobileVRouteFrameMaxControlBytes + mobileVRouteFrameMaxDataBytes
 	mobileVRouteFrameMainTypeIP         uint16 = 1
 	mobileVRouteIPSubTypeIPv4           uint16 = 1
+	mobileVRouteFrameMainTypePingPong   uint16 = 2
+	mobileVRoutePingPongSubTypePing     uint16 = 1
+	mobileVRoutePingPongSubTypePong     uint16 = 2
+	mobileVRouteFrameMainTypePathRTT    uint16 = 3
+	mobileVRoutePathRTTSubTypeQuery     uint16 = 1
+	mobileVRoutePathRTTSubTypeResponse  uint16 = 2
 	mobileVRouteFrameMainTypeDebugLog   uint16 = 7
 	mobileVRouteDebugLogSubTypeQuery    uint16 = 1
 	mobileVRouteDebugLogSubTypeResponse uint16 = 2
@@ -549,6 +555,18 @@ func (c *mobileVRouteCarrier) handleIncomingFrame(frame mobileVRouteFrame) error
 			return err
 		}
 		return carrier.enqueueFrame(frame)
+	}
+	if frame.MainType == mobileVRouteFrameMainTypePingPong && frame.SubType == mobileVRoutePingPongSubTypePong {
+		return completeMobileVRouteRTTResponse(frame)
+	}
+	if frame.MainType == mobileVRouteFrameMainTypePathRTT && frame.SubType == mobileVRoutePathRTTSubTypeResponse {
+		return completeMobileVRouteRTTResponse(frame)
+	}
+	if frame.MainType == mobileVRouteFrameMainTypePingPong && frame.SubType == mobileVRoutePingPongSubTypePing {
+		return c.respondToRTTFrame(frame, path, mobileVRouteFrameMainTypePingPong, mobileVRoutePingPongSubTypePong)
+	}
+	if frame.MainType == mobileVRouteFrameMainTypePathRTT && frame.SubType == mobileVRoutePathRTTSubTypeQuery {
+		return c.respondToRTTFrame(frame, path, mobileVRouteFrameMainTypePathRTT, mobileVRoutePathRTTSubTypeResponse)
 	}
 	if frame.MainType == mobileVRouteFrameMainTypeDebugLog && frame.SubType == mobileVRouteDebugLogSubTypeQuery {
 		return c.respondToDebugLogFrame(frame, path)
