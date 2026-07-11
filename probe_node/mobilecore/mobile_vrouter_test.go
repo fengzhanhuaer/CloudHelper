@@ -316,13 +316,54 @@ func TestMobileVRouteCIDRRuleSelectsRemoteProbeExit(t *testing.T) {
 	}
 	select {
 	case frame := <-frameCh:
-		if frame.MainType != mobileVRouteFrameMainTypeIP || frame.SubType != mobileVRouteIPSubTypeIPv4 || !bytes.Equal(frame.Data, packet) {
+		forwarded, rewriteErr := rewriteAndroidVPNIPv4Packet(packet, "198.18.0.9", "")
+		if rewriteErr != nil {
+			t.Fatalf("rewrite expected cidr frame: %v", rewriteErr)
+		}
+		if frame.MainType != mobileVRouteFrameMainTypeIP || frame.SubType != mobileVRouteIPSubTypeIPv4 || !bytes.Equal(frame.Data, forwarded) {
 			t.Fatalf("unexpected cidr vroute frame: %+v", frame)
 		}
 	case readErr := <-errCh:
 		t.Fatalf("read cidr vroute frame failed: %v", readErr)
 	case <-time.After(time.Second):
 		t.Fatalf("timed out waiting for cidr vroute frame")
+	}
+}
+
+func TestMobileVRouteRewritesTUNSourceToLocalVirtualIP(t *testing.T) {
+	plan := mobileVRouteForwardPlan{
+		LocalNode: "15",
+		Config: mobileVRouteConfig{ProbeIPs: []mobileVRouteProbeIP{
+			{NodeID: "15", IP: "198.18.0.15"},
+		}},
+	}
+	packet := buildMobileVRouteTestIPv4Packet(6, "10.111.0.2", "198.18.4.52", 42794, 443)
+	forwarded, tunSourceIP, err := mobileVRouteRewriteTUNPacketForForward(packet, plan)
+	if err != nil {
+		t.Fatalf("rewrite forward packet: %v", err)
+	}
+	forwardInfo, ok := parseAndroidVPNIPv4TransportPacket(forwarded)
+	if !ok || forwardInfo.SourceIP != "198.18.0.15" || forwardInfo.DestinationIP != "198.18.4.52" {
+		t.Fatalf("unexpected forwarded packet: %+v", forwardInfo)
+	}
+	if tunSourceIP != "10.111.0.2" {
+		t.Fatalf("TUN source=%q, want 10.111.0.2", tunSourceIP)
+	}
+
+	reply := buildMobileVRouteTestIPv4Packet(6, "198.18.4.52", "198.18.0.15", 443, 42794)
+	restored, err := mobileVRouteRestoreTUNPacketFromReply(reply, tunSourceIP)
+	if err != nil {
+		t.Fatalf("restore reply packet: %v", err)
+	}
+	restoredInfo, ok := parseAndroidVPNIPv4TransportPacket(restored)
+	if !ok || restoredInfo.SourceIP != "198.18.4.52" || restoredInfo.DestinationIP != "10.111.0.2" {
+		t.Fatalf("unexpected restored packet: %+v", restoredInfo)
+	}
+	if got := binary.BigEndian.Uint16(forwarded[10:12]); got == 0 {
+		t.Fatal("forwarded IPv4 checksum was not set")
+	}
+	if got := binary.BigEndian.Uint16(restored[10:12]); got == 0 {
+		t.Fatal("restored IPv4 checksum was not set")
 	}
 }
 

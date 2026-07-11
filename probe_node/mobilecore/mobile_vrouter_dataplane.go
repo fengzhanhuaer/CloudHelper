@@ -284,21 +284,64 @@ func mobileVRouteHandleVPNPacket(configDir string, packet []byte, writeBack func
 		logAndroidVPNDiagnostic("takeover_plan_error_"+route.SelectedRouteID, "error", "vroute takeover plan failed: target="+targetAddr+" route="+route.SelectedRouteID+" err="+err.Error(), 2*time.Second)
 		return true, err
 	}
-	carrier, err := ensureMobileVRouteCarrier(plan, writeBack)
+	forwardPacket, tunSourceIP, err := mobileVRouteRewriteTUNPacketForForward(packet, plan)
+	if err != nil {
+		recordMobileVRouteConnectionFailure("source_route_rewrite_failed", targetAddr, plan.RouteID, route.Group, "", err)
+		logAndroidVPNDiagnostic("takeover_source_route_error_"+plan.RouteID, "error", "vroute takeover source-route rewrite failed: route="+plan.RouteID+" err="+err.Error(), 2*time.Second)
+		return true, err
+	}
+	carrierWriteBack := func(reply []byte) error {
+		restored, restoreErr := mobileVRouteRestoreTUNPacketFromReply(reply, tunSourceIP)
+		if restoreErr != nil {
+			return restoreErr
+		}
+		if writeBack == nil {
+			return nil
+		}
+		return writeBack(restored)
+	}
+	carrier, err := ensureMobileVRouteCarrier(plan, carrierWriteBack)
 	if err != nil {
 		recordMobileVRouteConnectionFailure("carrier_open_failed", targetAddr, plan.RouteID, route.Group, "", err)
 		logAndroidVPNDiagnostic("takeover_carrier_error_"+plan.RouteID, "error", "vroute takeover carrier unavailable: target="+targetAddr+" route="+plan.RouteID+" next="+plan.NextNode+" relay="+net.JoinHostPort(plan.RelayHost, strconv.Itoa(plan.RelayPort))+" err="+err.Error(), 2*time.Second)
 		return true, err
 	}
 	logAndroidVPNDiagnostic("takeover_selected_"+plan.RouteID, "normal", "vroute takeover selected: "+androidVPNPacketSummary(packet)+" route="+plan.RouteID+" path="+strings.Join(plan.Path, ">")+" next="+plan.NextNode, 5*time.Second)
-	if err := carrier.writeIPPacket(packet, plan.Path); err != nil {
+	if err := carrier.writeIPPacket(forwardPacket, plan.Path); err != nil {
 		recordMobileVRouteConnectionFailure("enqueue_failed", targetAddr, plan.RouteID, route.Group, "", err)
 		logAndroidVPNDiagnostic("takeover_enqueue_error_"+plan.RouteID, "error", "vroute takeover enqueue failed: route="+plan.RouteID+" err="+err.Error(), 2*time.Second)
 		return true, err
 	}
-	trackMobileVRouteOutbound(packet, route, plan)
+	trackMobileVRouteOutbound(forwardPacket, route, plan)
 	logAndroidVPNDiagnostic("takeover_queued_"+plan.RouteID, "realtime", "vroute takeover packet queued: route="+plan.RouteID+" path="+strings.Join(plan.Path, ">"), 5*time.Second)
 	return true, nil
+}
+
+// The Android VPN TUN address is local to the handset.  Frames entering the
+// shared virtual-router network must instead use this node's configured
+// virtual-router address, so normal reverse path lookup resolves back to it.
+func mobileVRouteRewriteTUNPacketForForward(packet []byte, plan mobileVRouteForwardPlan) ([]byte, string, error) {
+	info, ok := parseAndroidVPNIPv4TransportPacket(packet)
+	if !ok {
+		return nil, "", errors.New("vroute packet is not IPv4 TCP/UDP")
+	}
+	localNodeID := normalizeMobileRouteNodeID(plan.LocalNode)
+	virtualIP := strings.TrimSpace(mobileVRouteProbeIPForNode(plan.Config, localNodeID))
+	if net.ParseIP(virtualIP).To4() == nil {
+		return nil, "", fmt.Errorf("vroute local virtual IP is unavailable: node=%s", localNodeID)
+	}
+	forwardPacket, err := rewriteAndroidVPNIPv4Packet(packet, virtualIP, "")
+	if err != nil {
+		return nil, "", err
+	}
+	return forwardPacket, info.SourceIP, nil
+}
+
+func mobileVRouteRestoreTUNPacketFromReply(packet []byte, tunSourceIP string) ([]byte, error) {
+	if net.ParseIP(strings.TrimSpace(tunSourceIP)).To4() == nil {
+		return nil, fmt.Errorf("invalid Android VPN TUN source IP: %s", tunSourceIP)
+	}
+	return rewriteAndroidVPNIPv4Packet(packet, "", tunSourceIP)
 }
 
 func buildMobileVRouteForwardPlan(configDir string, routeID string) (mobileVRouteForwardPlan, error) {
