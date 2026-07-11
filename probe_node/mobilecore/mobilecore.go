@@ -24,7 +24,7 @@ import (
 )
 
 const defaultReportIntervalSec = 60
-const androidLogMaxEntries = 300
+const androidLogMaxEntries = 1000
 const mobileWebSocketWriteBatchBytes = 1024 * 1024
 const mobileWebSocketWriteQueueDepth = 64
 const mobileRelayTCPSocketBufferBytes = 8 * 1024 * 1024

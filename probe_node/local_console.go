@@ -2112,12 +2112,14 @@ func probeLocalVirtualRouterPathRTTHandler(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	queried := probeVirtualRouterQueryAllPathRTTs()
+	refresh := probeVirtualRouterExploreAllPathRTTs()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":         true,
-		"queried":    queried,
-		"updated_at": time.Now().UTC().Format(time.RFC3339Nano),
-		"status":     probeLocalVirtualRouterStatusPayload(),
+		"ok":                true,
+		"queried":           refresh.Queried,
+		"explored":          refresh.Explored,
+		"recovered_targets": refresh.RecoveredTargets,
+		"updated_at":        time.Now().UTC().Format(time.RFC3339Nano),
+		"status":            probeLocalVirtualRouterStatusPayload(),
 	})
 }
 

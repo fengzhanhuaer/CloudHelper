@@ -388,6 +388,12 @@ type probeVirtualRouterPathRTTRecord struct {
 	Responder               string
 }
 
+type probeVirtualRouterPathRefreshResult struct {
+	Queried          int
+	Explored         int
+	RecoveredTargets int
+}
+
 type probeVirtualRouterPathRTTQueryRequest struct {
 	RequestID string `json:"request_id,omitempty"`
 }
@@ -1717,6 +1723,14 @@ func probeVirtualRouterCandidatePathsFromNeighbors(neighbors map[string]map[stri
 		}
 	}
 	walk(from, []string{from})
+	filtered := out[:0]
+	for _, path := range out {
+		if probeVirtualRouterPathHasAvailableSourceShortcut(neighbors, path) {
+			continue
+		}
+		filtered = append(filtered, path)
+	}
+	out = filtered
 	sort.SliceStable(out, func(i, j int) bool {
 		if len(out[i]) != len(out[j]) {
 			return len(out[i]) < len(out[j])
@@ -1724,6 +1738,31 @@ func probeVirtualRouterCandidatePathsFromNeighbors(neighbors map[string]map[stri
 		return compareProbeVirtualRouterPathLexicographic(out[i], out[j]) < 0
 	})
 	return out
+}
+
+func probeVirtualRouterPathHasAvailableSourceShortcut(neighbors map[string]map[string]struct{}, path []string) bool {
+	cleanPath := cleanProbeVirtualRouterPath(path)
+	if len(cleanPath) < 3 {
+		return false
+	}
+	source := cleanPath[0]
+	for index := 2; index < len(cleanPath); index++ {
+		candidate := cleanPath[index]
+		if _, adjacent := neighbors[source][candidate]; !adjacent {
+			continue
+		}
+		directPath := []string{source, candidate}
+		if probeVirtualRouterPathShouldAvoid(directPath) {
+			continue
+		}
+		if _, ok := currentProbeVirtualRouterPathLatencyMS(directPath); ok {
+			return true
+		}
+		if rt, _ := probeVirtualRouterRuntimeForAdjacentNode(candidate); rt != nil && probeVirtualRouterRuntimeHasPhysicalBridgeSession(rt) {
+			return true
+		}
+	}
+	return false
 }
 
 func sortedProbeVirtualRouterNeighborIDs(neighbors map[string]map[string]struct{}, nodeID string) []string {
@@ -1806,21 +1845,12 @@ func selectProbeVirtualRouterBestPath(paths [][]string, useRTT bool) []string {
 
 func probeVirtualRouterPathShouldAvoid(path []string) bool {
 	cleanPath := cleanProbeVirtualRouterPath(path)
-	if key := probeVirtualRouterPathKey(cleanPath); key != "" {
-		probeVirtualRouterPathRTTState.mu.RLock()
-		failures := probeVirtualRouterPathRTTState.items[key].ConsecutiveFailureCount
-		probeVirtualRouterPathRTTState.mu.RUnlock()
-		if failures >= probeVirtualRouterPathRTTFailureThreshold {
-			return true
-		}
-	}
 	localNodeID := currentProbeVirtualRouterLocalNodeID()
 	if len(cleanPath) < 2 || localNodeID == "" || cleanPath[0] != localNodeID {
 		return false
 	}
-	// A transient end-to-end timeout is observable but does not remove a route.
-	// Paths are quarantined only after the destination is unreachable repeatedly,
-	// or when the locally observed first-hop carrier is disconnected.
+	// End-to-end probe failures are diagnostic. Only a disconnected local carrier
+	// can prove that the selected first hop is unavailable.
 	rt, _ := probeVirtualRouterRuntimeForAdjacentNode(cleanPath[1])
 	return rt != nil && rt.cfg.dialer && probeVirtualRouterPhysicalCarrierIsDisconnected(rt.cfg.routeID)
 }
@@ -2144,15 +2174,15 @@ func currentProbeVirtualRouterPathBetweenNodes(fromNodeID string, toNodeID strin
 	if from == to {
 		return []string{from}
 	}
+	probeVirtualRouterState.mu.RLock()
+	neighbors := probeVirtualRouterCloneNeighborsLocked()
+	probeVirtualRouterState.mu.RUnlock()
 	if path := cachedProbeVirtualRouterRoutePath(from, to); len(path) > 0 {
-		if !probeVirtualRouterPathShouldAvoid(path) {
+		if !probeVirtualRouterPathShouldAvoid(path) && !probeVirtualRouterPathHasAvailableSourceShortcut(neighbors, path) {
 			return path
 		}
 		clearProbeVirtualRouterRouteCacheForPath(path, "cached path is unavailable")
 	}
-	probeVirtualRouterState.mu.RLock()
-	neighbors := probeVirtualRouterCloneNeighborsLocked()
-	probeVirtualRouterState.mu.RUnlock()
 	path := probeVirtualRouterPathFromNeighbors(neighbors, from, to)
 	if len(path) > 0 {
 		storeProbeVirtualRouterRoutePath(from, to, path)
@@ -3317,10 +3347,22 @@ func probeVirtualRouterQueryPathRTT(path []string) (time.Duration, error) {
 	return latency, nil
 }
 
-func probeVirtualRouterQueryAllPathRTTs() int {
+func probeVirtualRouterQueryAllPathRTTs() probeVirtualRouterPathRefreshResult {
+	return probeVirtualRouterRefreshPathRTTs(probeVirtualRouterQueryPathRTT, false)
+}
+
+func probeVirtualRouterExploreAllPathRTTs() probeVirtualRouterPathRefreshResult {
+	return probeVirtualRouterRefreshPathRTTs(probeVirtualRouterQueryPathRTT, true)
+}
+
+func probeVirtualRouterRefreshPathRTTs(query func([]string) (time.Duration, error), exploreFailures bool) probeVirtualRouterPathRefreshResult {
+	result := probeVirtualRouterPathRefreshResult{}
+	if query == nil {
+		return result
+	}
 	localNodeID := currentProbeVirtualRouterLocalNodeID()
 	if localNodeID == "" {
-		return 0
+		return result
 	}
 	probeVirtualRouterState.mu.RLock()
 	neighbors := probeVirtualRouterCloneNeighborsLocked()
@@ -3334,26 +3376,106 @@ func probeVirtualRouterQueryAllPathRTTs() int {
 		}
 	}
 	sort.Strings(nodeIDs)
-	var paths [][]string
+	shortestByTarget := make(map[string][][]string, len(nodeIDs))
+	var shortestPaths [][]string
 	for _, nodeID := range nodeIDs {
-		paths = append(paths, probeVirtualRouterShortestPathsFromNeighbors(neighbors, localNodeID, nodeID)...)
+		paths := probeVirtualRouterShortestPathsFromNeighbors(neighbors, localNodeID, nodeID)
+		shortestByTarget[nodeID] = paths
+		shortestPaths = append(shortestPaths, paths...)
 	}
-	var wg sync.WaitGroup
+	shortestReachable, queried := probeVirtualRouterQueryPathSet(shortestPaths, query)
+	result.Queried += queried
+	for _, nodeID := range nodeIDs {
+		reachable := probeVirtualRouterReachablePathSubset(shortestByTarget[nodeID], shortestReachable)
+		if selected := selectProbeVirtualRouterBestPath(reachable, true); len(selected) > 0 {
+			clearProbeVirtualRouterRouteCacheForPath(selected, "manual path refresh")
+			storeProbeVirtualRouterRoutePath(localNodeID, nodeID, selected)
+			continue
+		}
+		if !exploreFailures {
+			continue
+		}
+
+		shortestKeys := probeVirtualRouterPathKeySet(shortestByTarget[nodeID])
+		candidates := probeVirtualRouterCandidatePathsFromNeighbors(neighbors, localNodeID, nodeID)
+		exploration := make([][]string, 0, len(candidates))
+		for _, candidate := range candidates {
+			if _, alreadyQueried := shortestKeys[probeVirtualRouterPathKey(candidate)]; !alreadyQueried {
+				exploration = append(exploration, candidate)
+			}
+		}
+		reachable, explored := probeVirtualRouterQueryPathSet(exploration, query)
+		result.Queried += explored
+		result.Explored += explored
+		selected := selectProbeVirtualRouterBestPath(reachable, true)
+		if len(selected) == 0 {
+			clearProbeVirtualRouterRouteCacheForPath([]string{localNodeID, nodeID}, "manual path exploration failed")
+			continue
+		}
+		clearProbeVirtualRouterRouteCacheForPath(selected, "manual path exploration recovered")
+		storeProbeVirtualRouterRoutePath(localNodeID, nodeID, selected)
+		result.RecoveredTargets++
+		log.Printf("probe virtual router manual path exploration recovered: target=%s path=%s", nodeID, strings.Join(selected, ">"))
+	}
+	return result
+}
+
+func probeVirtualRouterQueryPathSet(paths [][]string, query func([]string) (time.Duration, error)) ([][]string, int) {
+	unique := make(map[string][]string, len(paths))
 	for _, path := range paths {
+		if key := probeVirtualRouterPathKey(path); key != "" {
+			unique[key] = append([]string(nil), path...)
+		}
+	}
+	if len(unique) == 0 {
+		return nil, 0
+	}
+	var mu sync.Mutex
+	reachable := make([][]string, 0, len(unique))
+	semaphore := make(chan struct{}, 16)
+	var wg sync.WaitGroup
+	for _, path := range unique {
 		pathCopy := append([]string(nil), path...)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := probeVirtualRouterQueryPathRTT(pathCopy); err != nil {
-				if errors.Is(err, errProbeVirtualRouterAdjacentRTTUnavailable) {
-					return
+			semaphore <- struct{}{}
+			_, err := query(pathCopy)
+			<-semaphore
+			if err != nil {
+				if !errors.Is(err, errProbeVirtualRouterAdjacentRTTUnavailable) {
+					log.Printf("probe virtual router path rtt query failed: path=%s err=%v", strings.Join(pathCopy, ">"), err)
 				}
-				log.Printf("probe virtual router path rtt query failed: path=%s err=%v", strings.Join(pathCopy, ">"), err)
+				return
 			}
+			mu.Lock()
+			reachable = append(reachable, pathCopy)
+			mu.Unlock()
 		}()
 	}
 	wg.Wait()
-	return len(paths)
+	return reachable, len(unique)
+}
+
+func probeVirtualRouterPathKeySet(paths [][]string) map[string]struct{} {
+	out := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		if key := probeVirtualRouterPathKey(path); key != "" {
+			out[key] = struct{}{}
+		}
+	}
+	return out
+}
+
+func probeVirtualRouterReachablePathSubset(paths [][]string, reachable [][]string) [][]string {
+	wanted := probeVirtualRouterPathKeySet(paths)
+	out := make([][]string, 0, len(reachable))
+	for _, path := range reachable {
+		if _, ok := wanted[probeVirtualRouterPathKey(path)]; ok {
+			out = append(out, path)
+		}
+	}
+	return out
 }
 
 func setProbeVirtualRouterNonDirectPathGuardEnabled(enabled bool) {

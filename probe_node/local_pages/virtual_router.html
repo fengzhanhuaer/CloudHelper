@@ -1502,7 +1502,10 @@
         const data = await requestJSON('/local/api/virtual_router/path_rtt', { method: 'POST', body: '{}' }, 30000);
         routeStatusSnapshot = (data && data.status) || {};
         renderRouteStatus(routeStatusSnapshot);
-        setMessage('路径延迟已刷新：探测 ' + formatNumber(data && data.queried) + ' 条路径', 'success');
+        const refreshParts = ['探测 ' + formatNumber(data && data.queried) + ' 条路径'];
+        if (Number(data && data.explored || 0) > 0) refreshParts.push('主动探索 ' + formatNumber(data.explored) + ' 条');
+        if (Number(data && data.recovered_targets || 0) > 0) refreshParts.push('恢复 ' + formatNumber(data.recovered_targets) + ' 个目标');
+        setMessage('路径延迟已刷新：' + refreshParts.join('，'), 'success');
         return data || {};
       } finally {
         if (button) button.disabled = false;

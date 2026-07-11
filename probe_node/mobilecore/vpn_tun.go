@@ -680,6 +680,7 @@ func (n *androidVPNDataPlane) inputLoop(ctx context.Context) {
 		} else if ok {
 			packet = rewritten
 		}
+		logAndroidVPNDiagnostic("tun_rx", "realtime", "vpn tun packet received: "+androidVPNPacketSummary(packet), 5*time.Second)
 		handled, routeErr := mobileVRouteHandleVPNPacket(currentAndroidVPNConfigDir(), packet, func(reply []byte) error {
 			if len(reply) == 0 {
 				return nil
@@ -692,6 +693,7 @@ func (n *androidVPNDataPlane) inputLoop(ctx context.Context) {
 			return n.writeTunPacket(reply)
 		})
 		if routeErr != nil {
+			logAndroidVPNDiagnostic("tun_takeover_error", "error", "vpn tun takeover failed: "+androidVPNPacketSummary(packet)+" err="+routeErr.Error(), 2*time.Second)
 			recordVPNRuntimeError("vroute_packet", routeErr)
 		}
 		if handled {

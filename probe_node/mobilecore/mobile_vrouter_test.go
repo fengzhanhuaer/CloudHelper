@@ -363,6 +363,9 @@ func TestMobileVRouteRuntimeStatusDeclaresMobileCapabilityBoundary(t *testing.T)
 	if capabilities["websocket_h3"] != true || capabilities["inbound_listener"] != false || capabilities["reverse_first_hop"] != true || capabilities["relay_forwarding"] != true || capabilities["control_ping"] != true || capabilities["path_rtt"] != true {
 		t.Fatalf("unexpected mobile vroute capabilities: %+v", capabilities)
 	}
+	if capabilities["debug_log_pull"] != true {
+		t.Fatalf("mobile peer debug log pull capability missing: %+v", capabilities)
+	}
 }
 
 func TestMobileVRouteStatusPayloadIncludesExitNodeEndpoint(t *testing.T) {
@@ -898,6 +901,77 @@ func TestMobileVRouteFrameRoundTrip(t *testing.T) {
 	encoded[len(encoded)-1] ^= 0xff
 	if _, err := readMobileVRouteFrame(bufio.NewReader(bytes.NewReader(encoded))); err == nil {
 		t.Fatalf("read corrupted frame succeeded, want checksum error")
+	}
+}
+
+func TestMobileVRouteRespondsToPeerDebugLogPull(t *testing.T) {
+	androidLogStore.mu.Lock()
+	oldEntries := append([]androidLogEntry(nil), androidLogStore.entries...)
+	androidLogStore.entries = nil
+	androidLogStore.mu.Unlock()
+	t.Cleanup(func() {
+		androidLogStore.mu.Lock()
+		androidLogStore.entries = oldEntries
+		androidLogStore.mu.Unlock()
+	})
+	androidLogStore.add("vpn", "warning", "takeover-test carrier failed")
+	androidLogStore.add("vpn", "normal", "unrelated message")
+
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+	carrier := newMobileVRouteCarrier("debug-log", mobileVRouteForwardPlan{LocalNode: "9", RouteID: "vrouter-9-19"}, left)
+	if carrier == nil {
+		t.Fatal("carrier is nil")
+	}
+	path := []string{"19", "9"}
+	control, err := json.Marshal(mobileVRouteFrameControlEnvelope{Path: path})
+	if err != nil {
+		t.Fatalf("marshal control: %v", err)
+	}
+	request := mobileVRouteDebugLogPayload{
+		RequestID:    "debug-request-1",
+		SourceNodeID: "19",
+		TargetNodeID: "9",
+		Path:         path,
+		Lines:        200,
+		MinLevel:     "realtime",
+		Keyword:      "takeover-test",
+	}
+	payload, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	if err := carrier.handleIncomingFrame(mobileVRouteFrame{
+		MainType: mobileVRouteFrameMainTypeDebugLog,
+		SubType:  mobileVRouteDebugLogSubTypeQuery,
+		Control:  control,
+		Data:     payload,
+	}); err != nil {
+		t.Fatalf("handle debug log query: %v", err)
+	}
+
+	select {
+	case frame := <-carrier.tx:
+		if frame.MainType != mobileVRouteFrameMainTypeDebugLog || frame.SubType != mobileVRouteDebugLogSubTypeResponse {
+			t.Fatalf("unexpected response frame: %+v", frame)
+		}
+		var responseControl mobileVRouteFrameControlEnvelope
+		if err := json.Unmarshal(frame.Control, &responseControl); err != nil {
+			t.Fatalf("unmarshal response control: %v", err)
+		}
+		if got := strings.Join(responseControl.Path, ">"); got != "9>19" {
+			t.Fatalf("response path=%s, want 9>19", got)
+		}
+		response := mobileVRouteDebugLogPayload{}
+		if err := json.Unmarshal(frame.Data, &response); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		if !response.OK || response.Responder != "9" || response.Source != "android" || response.Count != 1 || !strings.Contains(response.Content, "takeover-test") {
+			t.Fatalf("unexpected debug log response: %+v", response)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for mobile debug log response")
 	}
 }
 

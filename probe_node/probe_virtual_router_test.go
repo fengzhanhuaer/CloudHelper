@@ -2342,6 +2342,100 @@ func TestCurrentProbeVirtualRouterPathUsesRouteCacheUntilInvalidated(t *testing.
 	}
 }
 
+func TestCurrentProbeVirtualRouterPathDropsCachedDetourAfterDirectPrefixRecovers(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled: true,
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "9", IP: "198.18.0.9"},
+			{NodeID: "18", IP: "198.18.0.18"},
+			{NodeID: "17", IP: "198.18.0.17"},
+			{NodeID: "19", IP: "198.18.0.19"},
+			{NodeID: "15", IP: "198.18.0.15"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "9", ToNodeID: "18", Enabled: true},
+			{FromNodeID: "18", ToNodeID: "19", Enabled: true},
+			{FromNodeID: "9", ToNodeID: "19", Enabled: true},
+			{FromNodeID: "19", ToNodeID: "15", Enabled: true},
+		},
+	}, "9")
+
+	recordProbeVirtualRouterPathRTTSuccess([]string{"9", "19"}, 8*time.Millisecond, "19")
+	storeProbeVirtualRouterRoutePath("9", "15", []string{"9", "18", "19", "15"})
+	for attempt := 0; attempt < probeVirtualRouterPathRTTFailureThreshold; attempt++ {
+		recordProbeVirtualRouterPathRTTError([]string{"9", "19", "15"}, errors.New("virtual router control response timeout"))
+	}
+
+	if got := currentProbeVirtualRouterPathBetweenNodes("9", "15"); !reflect.DeepEqual(got, []string{"9", "19", "15"}) {
+		t.Fatalf("path=%v, want direct recovered prefix [9 19 15]", got)
+	}
+
+	directRuntime := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{
+		routeID:     "vrouter-9-19",
+		localNodeID: "9",
+		peerNodeID:  "19",
+		fromNodeID:  "9",
+		toNodeID:    "19",
+		dialer:      true,
+	}}
+	probeVirtualRouterRuntimeState.mu.Lock()
+	probeVirtualRouterRuntimeState.runtimes = map[string]*probeVirtualRouterRuntime{directRuntime.cfg.routeID: directRuntime}
+	probeVirtualRouterRuntimeState.mu.Unlock()
+	markProbeVirtualRouterPhysicalCarrierDisconnected(directRuntime, "test")
+
+	if got := currentProbeVirtualRouterPathBetweenNodes("9", "15"); !reflect.DeepEqual(got, []string{"9", "18", "19", "15"}) {
+		t.Fatalf("path=%v, want detour [9 18 19 15] while direct prefix is disconnected", got)
+	}
+}
+
+func TestProbeVirtualRouterManualRefreshExploresAlternatePathImmediately(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled: true,
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "9", IP: "198.18.0.9"},
+			{NodeID: "18", IP: "198.18.0.18"},
+			{NodeID: "17", IP: "198.18.0.17"},
+			{NodeID: "19", IP: "198.18.0.19"},
+			{NodeID: "15", IP: "198.18.0.15"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "9", ToNodeID: "19", Enabled: true},
+			{FromNodeID: "19", ToNodeID: "15", Enabled: true},
+			{FromNodeID: "9", ToNodeID: "18", Enabled: true},
+			{FromNodeID: "18", ToNodeID: "17", Enabled: true},
+			{FromNodeID: "17", ToNodeID: "15", Enabled: true},
+		},
+	}, "9")
+
+	query := func(path []string) (time.Duration, error) {
+		switch strings.Join(path, ">") {
+		case "9>17", "9>18", "9>19":
+			return 2 * time.Millisecond, nil
+		case "9>19>15":
+			return 0, errors.New("virtual router control response timeout")
+		case "9>18>17", "9>18>17>15":
+			return 15 * time.Millisecond, nil
+		default:
+			return 0, errors.New("unreachable")
+		}
+	}
+	backgroundResult := probeVirtualRouterRefreshPathRTTs(query, false)
+	if backgroundResult.Explored != 0 || backgroundResult.RecoveredTargets != 0 || len(cachedProbeVirtualRouterRoutePath("9", "15")) != 0 {
+		t.Fatalf("background refresh unexpectedly explored alternates: result=%+v path=%v", backgroundResult, cachedProbeVirtualRouterRoutePath("9", "15"))
+	}
+	result := probeVirtualRouterRefreshPathRTTs(query, true)
+	if result.Explored == 0 || result.RecoveredTargets != 1 {
+		t.Fatalf("refresh result=%+v, want active exploration recovery", result)
+	}
+	if got := cachedProbeVirtualRouterRoutePath("9", "15"); !reflect.DeepEqual(got, []string{"9", "18", "17", "15"}) {
+		t.Fatalf("cached path=%v, want explored path [9 18 17 15]", got)
+	}
+}
+
 func TestProbeVirtualRouterPacketTargetsLocalIPUsesStoredVirtualIP(t *testing.T) {
 	config := probeVirtualRouterConfig{
 		Enabled: true,
