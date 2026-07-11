@@ -13,15 +13,102 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 const (
-	mobileVRouteConfigAPIPath       = "/api/probe/route/config"
-	mobileVRouteConfigFileName      = "probe_route_config.json"
-	mobileVRouteConfigFetchTimeout  = 15 * time.Second
-	mobileVRouteProbeExitRouteIDPre = "vroute:"
+	mobileVRouteConfigAPIPath        = "/api/probe/route/config"
+	mobileVRouteFakeIPResolveAPIPath = "/api/probe/route/fake_ip/resolve"
+	mobileVRouteConfigFileName       = "probe_route_config.json"
+	mobileVRouteConfigFetchTimeout   = 15 * time.Second
+	mobileVRouteFakeIPResolveTimeout = 5 * time.Second
+	mobileVRouteProbeExitRouteIDPre  = "vroute:"
 )
+
+var mobileVRouteControllerState = struct {
+	mu         sync.RWMutex
+	baseURL    string
+	nodeID     string
+	nodeSecret string
+}{}
+
+type mobileVRouteControllerFakeIPResponse struct {
+	Item struct {
+		Domain     string `json:"domain"`
+		FakeIP     string `json:"fake_ip"`
+		Action     string `json:"action,omitempty"`
+		ExitNodeID string `json:"exit_node_id,omitempty"`
+	} `json:"item"`
+}
+
+func setMobileVRouteControllerIdentity(controllerURL string, nodeID string, nodeSecret string) {
+	baseURL, err := normalizeControllerBaseURL(controllerURL)
+	if err != nil {
+		return
+	}
+	mobileVRouteControllerState.mu.Lock()
+	mobileVRouteControllerState.baseURL = strings.TrimRight(baseURL, "/")
+	mobileVRouteControllerState.nodeID = strings.TrimSpace(nodeID)
+	mobileVRouteControllerState.nodeSecret = strings.TrimSpace(nodeSecret)
+	mobileVRouteControllerState.mu.Unlock()
+}
+
+func requestMobileVRouteControllerFakeIP(domain string, route androidRouteDecision) (string, bool, error) {
+	mobileVRouteControllerState.mu.RLock()
+	baseURL := mobileVRouteControllerState.baseURL
+	nodeID := mobileVRouteControllerState.nodeID
+	nodeSecret := mobileVRouteControllerState.nodeSecret
+	mobileVRouteControllerState.mu.RUnlock()
+	if baseURL == "" || nodeID == "" || nodeSecret == "" {
+		return "", false, nil
+	}
+	exitNodeID := mobileVRouteProbeExitNodeFromRouteID(route.SelectedRouteID)
+	if exitNodeID == "" {
+		return "", true, errors.New("mobile vroute fake ip exit node is missing")
+	}
+	body, err := json.Marshal(map[string]string{
+		"domain":       normalizeMobileVRouteDomain(domain),
+		"action":       "probe_exit",
+		"exit_node_id": exitNodeID,
+	})
+	if err != nil {
+		return "", true, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), mobileVRouteFakeIPResolveTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+mobileVRouteFakeIPResolveAPIPath, strings.NewReader(string(body)))
+	if err != nil {
+		return "", true, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	applyAuthHeaders(req, nodeID, nodeSecret)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", true, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", true, fmt.Errorf("request mobile vroute fake ip failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	payload := mobileVRouteControllerFakeIPResponse{}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&payload); err != nil {
+		return "", true, err
+	}
+	fakeIP := net.ParseIP(strings.TrimSpace(payload.Item.FakeIP)).To4()
+	if fakeIP == nil {
+		return "", true, errors.New("controller returned invalid mobile vroute fake ip")
+	}
+	if normalizeMobileVRouteDomain(payload.Item.Domain) != normalizeMobileVRouteDomain(domain) {
+		return "", true, errors.New("controller returned mismatched mobile vroute fake ip domain")
+	}
+	if normalizeMobileRouteNodeID(payload.Item.ExitNodeID) != exitNodeID {
+		return "", true, errors.New("controller returned mismatched mobile vroute fake ip exit node")
+	}
+	return fakeIP.String(), true, nil
+}
 
 type mobileVRouteConfigResponse struct {
 	NodeID        string             `json:"node_id"`
@@ -96,6 +183,7 @@ func refreshMobileVRouteConfig(controllerURL string, nodeID string, nodeSecret s
 	if err != nil {
 		return mobileVRouteConfig{}, err
 	}
+	setMobileVRouteControllerIdentity(baseURL, nodeID, nodeSecret)
 	ctx, cancel := context.WithTimeout(context.Background(), mobileVRouteConfigFetchTimeout)
 	defer cancel()
 	config, err := fetchMobileVRouteConfig(ctx, baseURL, nodeID, nodeSecret)

@@ -30,6 +30,7 @@ func resetMobileVRouteVPNStateForTest(t *testing.T, configDir string) {
 	t.Helper()
 	stopMobileVRouteCarrierWorkers()
 	closeMobileVRouteCarriers()
+	closeMobileVRouteTrackedFlows("test_reset")
 	mobileVRouteRTTState.mu.Lock()
 	mobileVRouteRTTState.pending = make(map[string]chan mobileVRouteControlProbePayload)
 	mobileVRouteRTTState.mu.Unlock()
@@ -47,6 +48,14 @@ func resetMobileVRouteVPNStateForTest(t *testing.T, configDir string) {
 	vpnRuntime.configDir = strings.TrimSpace(configDir)
 	vpnRuntime.mu.Unlock()
 	setMobileRouteConfigDir(configDir)
+	mobileVRouteControllerState.mu.Lock()
+	oldControllerBaseURL := mobileVRouteControllerState.baseURL
+	oldControllerNodeID := mobileVRouteControllerState.nodeID
+	oldControllerNodeSecret := mobileVRouteControllerState.nodeSecret
+	mobileVRouteControllerState.baseURL = ""
+	mobileVRouteControllerState.nodeID = ""
+	mobileVRouteControllerState.nodeSecret = ""
+	mobileVRouteControllerState.mu.Unlock()
 
 	vpnDNSState.mu.Lock()
 	oldDNSState := *vpnDNSState
@@ -77,6 +86,12 @@ func resetMobileVRouteVPNStateForTest(t *testing.T, configDir string) {
 		vpnRuntime.mu.Lock()
 		vpnRuntime.configDir = oldConfigDir
 		vpnRuntime.mu.Unlock()
+		mobileVRouteControllerState.mu.Lock()
+		mobileVRouteControllerState.baseURL = oldControllerBaseURL
+		mobileVRouteControllerState.nodeID = oldControllerNodeID
+		mobileVRouteControllerState.nodeSecret = oldControllerNodeSecret
+		mobileVRouteControllerState.mu.Unlock()
+		closeMobileVRouteTrackedFlows("test_cleanup")
 		vpnDNSState.mu.Lock()
 		if vpnDNSState.cacheTimer != nil {
 			vpnDNSState.cacheTimer.Stop()
@@ -84,6 +99,107 @@ func resetMobileVRouteVPNStateForTest(t *testing.T, configDir string) {
 		*vpnDNSState = oldDNSState
 		vpnDNSState.mu.Unlock()
 	})
+}
+
+func TestAndroidVPNFakeIPMigratesToControllerAllocation(t *testing.T) {
+	configDir := t.TempDir()
+	resetMobileVRouteVPNStateForTest(t, configDir)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != mobileVRouteFakeIPResolveAPIPath || r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		var request map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if request["domain"] != "play.googleapis.com" || request["action"] != "probe_exit" || request["exit_node_id"] != "17" {
+			t.Errorf("unexpected controller fake ip request: %+v", request)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"node_id": "15",
+			"item": map[string]any{
+				"domain":       "play.googleapis.com",
+				"fake_ip":      "198.18.4.9",
+				"action":       "probe_exit",
+				"exit_node_id": "17",
+			},
+		})
+	}))
+	defer server.Close()
+	setMobileVRouteControllerIdentity(server.URL, "15", "secret-15")
+
+	vpnDNSState.mu.Lock()
+	vpnDNSState.cacheLoaded = true
+	vpnDNSState.cacheDir = configDir
+	vpnDNSState.fakeDomainToIP["play.googleapis.com"] = "198.18.3.188"
+	vpnDNSState.fakeIPToEntry["198.18.3.188"] = androidVPNDNSFakeEntry{
+		Domain:          "play.googleapis.com",
+		Group:           "Google",
+		SelectedRouteID: "vroute:17",
+		ExpiresAt:       time.Now().Add(time.Minute),
+	}
+	vpnDNSState.mu.Unlock()
+
+	fakeIP, ok := allocateAndroidVPNDNSFakeIP("play.googleapis.com", androidRouteDecision{
+		Group:           "Google",
+		SelectedRouteID: "vroute:17",
+	})
+	if !ok || fakeIP != "198.18.4.9" {
+		t.Fatalf("fake ip=%q ok=%t, want controller allocation", fakeIP, ok)
+	}
+	vpnDNSState.mu.Lock()
+	entry := vpnDNSState.fakeIPToEntry[fakeIP]
+	_, oldExists := vpnDNSState.fakeIPToEntry["198.18.3.188"]
+	vpnDNSState.mu.Unlock()
+	if !entry.ControllerManaged || oldExists {
+		t.Fatalf("controller entry=%+v old_exists=%t", entry, oldExists)
+	}
+}
+
+func TestMobileVRouteFlowAppearsInConnectionMonitor(t *testing.T) {
+	oldConnections := globalandroidRouteConnectionState
+	globalandroidRouteConnectionState = newandroidRouteConnectionState()
+	t.Cleanup(func() {
+		closeMobileVRouteTrackedFlows("test_cleanup")
+		globalandroidRouteConnectionState = oldConnections
+	})
+	packet := buildMobileVRouteTestIPv4Packet(6, "10.111.0.2", "198.18.4.9", 42620, 443)
+	route := vpnRouteDecision{TargetAddr: "play.googleapis.com:443", Group: "Google", SelectedRouteID: "vroute:17"}
+	plan := mobileVRouteForwardPlan{RouteID: "vrouter-15-19", Path: []string{"15", "19", "17"}}
+	trackMobileVRouteOutbound(packet, route, plan)
+	snapshot := globalandroidRouteConnectionState.snapshot()
+	if snapshot.ActiveCount != 1 || len(snapshot.Active) != 1 || snapshot.Active[0].Scope != "vpn_vroute" {
+		t.Fatalf("active snapshot=%+v", snapshot)
+	}
+	statusPayload := struct {
+		Connections androidRouteConnectionSnapshot `json:"connections"`
+	}{}
+	if err := json.Unmarshal([]byte(VpnStatus()), &statusPayload); err != nil {
+		t.Fatalf("decode vpn status: %v", err)
+	}
+	if statusPayload.Connections.ActiveCount != 1 {
+		t.Fatalf("vpn status connections=%+v, want active proxy flow", statusPayload.Connections)
+	}
+	reply := buildMobileVRouteTestIPv4Packet(6, "198.18.4.9", "10.111.0.2", 443, 42620)
+	trackMobileVRouteInbound(reply)
+	snapshot = globalandroidRouteConnectionState.snapshot()
+	if len(snapshot.Active) != 1 || snapshot.Active[0].BytesUp == 0 || snapshot.Active[0].BytesDown == 0 {
+		t.Fatalf("flow bytes not tracked: %+v", snapshot.Active)
+	}
+	finishMobileVRouteTrackedFlow(mobileVRouteFlowKey(6, "10.111.0.2", 42620, "198.18.4.9", 443), "test_closed")
+	snapshot = globalandroidRouteConnectionState.snapshot()
+	if snapshot.ActiveCount != 0 || snapshot.CompletedCount != 1 {
+		t.Fatalf("completed snapshot=%+v", snapshot)
+	}
+	trackMobileVRouteOutbound(packet, route, plan)
+	failMobileVRouteTrackedFlowsForCarrier(plan, "carrier_write_failed", errors.New("test carrier write failed"))
+	snapshot = globalandroidRouteConnectionState.snapshot()
+	if snapshot.ActiveCount != 0 || snapshot.CompletedCount != 2 || snapshot.FailureCount != 1 {
+		t.Fatalf("failed carrier snapshot=%+v", snapshot)
+	}
 }
 
 func TestMobileVRouteLocalExitIsDirect(t *testing.T) {

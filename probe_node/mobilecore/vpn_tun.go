@@ -105,12 +105,13 @@ type androidVPNDNSState struct {
 }
 
 type androidVPNDNSFakeEntry struct {
-	Domain          string
-	Group           string
-	Direct          bool
-	Reject          bool
-	SelectedRouteID string
-	ExpiresAt       time.Time
+	Domain            string
+	Group             string
+	Direct            bool
+	Reject            bool
+	SelectedRouteID   string
+	ControllerManaged bool
+	ExpiresAt         time.Time
 }
 
 type androidVPNDNSRouteHintEntry struct {
@@ -152,13 +153,14 @@ type androidVPNDNSPersistFile struct {
 }
 
 type androidVPNDNSPersistFakeEntry struct {
-	IP              string    `json:"ip"`
-	Domain          string    `json:"domain"`
-	Group           string    `json:"group,omitempty"`
-	Direct          bool      `json:"direct,omitempty"`
-	Reject          bool      `json:"reject,omitempty"`
-	SelectedRouteID string    `json:"selected_route_id,omitempty"`
-	ExpiresAt       time.Time `json:"expires_at"`
+	IP                string    `json:"ip"`
+	Domain            string    `json:"domain"`
+	Group             string    `json:"group,omitempty"`
+	Direct            bool      `json:"direct,omitempty"`
+	Reject            bool      `json:"reject,omitempty"`
+	SelectedRouteID   string    `json:"selected_route_id,omitempty"`
+	ControllerManaged bool      `json:"controller_managed,omitempty"`
+	ExpiresAt         time.Time `json:"expires_at"`
 }
 
 type androidVPNDNSPersistRouteEntry struct {
@@ -237,12 +239,13 @@ func ensureAndroidVPNDNSCacheLoaded(configDir string) {
 		ipText := ip.To4().String()
 		vpnDNSState.fakeDomainToIP[domain] = ipText
 		vpnDNSState.fakeIPToEntry[ipText] = androidVPNDNSFakeEntry{
-			Domain:          domain,
-			Group:           strings.TrimSpace(item.Group),
-			Direct:          item.Direct,
-			Reject:          item.Reject,
-			SelectedRouteID: strings.TrimSpace(item.SelectedRouteID),
-			ExpiresAt:       item.ExpiresAt,
+			Domain:            domain,
+			Group:             strings.TrimSpace(item.Group),
+			Direct:            item.Direct,
+			Reject:            item.Reject,
+			SelectedRouteID:   strings.TrimSpace(item.SelectedRouteID),
+			ControllerManaged: item.ControllerManaged,
+			ExpiresAt:         item.ExpiresAt,
 		}
 	}
 	for _, item := range payload.RouteHints {
@@ -335,13 +338,14 @@ func persistAndroidVPNDNSCacheForState(configDir string, state *androidVPNDNSSta
 	}
 	for ip, entry := range state.fakeIPToEntry {
 		payload.FakeIPs = append(payload.FakeIPs, androidVPNDNSPersistFakeEntry{
-			IP:              ip,
-			Domain:          entry.Domain,
-			Group:           entry.Group,
-			Direct:          entry.Direct,
-			Reject:          entry.Reject,
-			SelectedRouteID: entry.SelectedRouteID,
-			ExpiresAt:       entry.ExpiresAt,
+			IP:                ip,
+			Domain:            entry.Domain,
+			Group:             entry.Group,
+			Direct:            entry.Direct,
+			Reject:            entry.Reject,
+			SelectedRouteID:   entry.SelectedRouteID,
+			ControllerManaged: entry.ControllerManaged,
+			ExpiresAt:         entry.ExpiresAt,
 		})
 	}
 	for ip, entry := range state.routeIPHints {
@@ -448,6 +452,7 @@ func VpnStop() string {
 	}
 	stopMobileVRouteCarrierWorkers()
 	closeMobileVRouteCarriers()
+	closeMobileVRouteTrackedFlows("vpn_stopped")
 	if tun != nil {
 		_ = tun.Close()
 	}
@@ -456,6 +461,7 @@ func VpnStop() string {
 }
 
 func VpnStatus() string {
+	cleanupMobileVRouteTrackedFlows()
 	vpnRuntime.mu.Lock()
 	selfCheck := cloneVPNMap(vpnRuntime.selfCheck)
 	running := vpnRuntime.stack != nil
@@ -464,16 +470,18 @@ func VpnStatus() string {
 	updatedAt := vpnRuntime.updatedAt
 	vpnRuntime.mu.Unlock()
 	dnsStatus := snapshotAndroidVPNDNSStatus()
+	connections := globalandroidRouteConnectionState.snapshot()
 	configDir := currentAndroidVPNConfigDir()
 	return marshalRouteJSON(map[string]any{
-		"ok":         true,
-		"running":    running,
-		"status":     status,
-		"last_error": lastError,
-		"updated_at": updatedAt,
-		"dns":        dnsStatus,
-		"vroute":     mobileVRouteRuntimeStatusPayload(configDir),
-		"self_check": selfCheck,
+		"ok":          true,
+		"running":     running,
+		"status":      status,
+		"last_error":  lastError,
+		"updated_at":  updatedAt,
+		"dns":         dnsStatus,
+		"connections": connections,
+		"vroute":      mobileVRouteRuntimeStatusPayload(configDir),
+		"self_check":  selfCheck,
 	})
 }
 
@@ -819,6 +827,11 @@ func (n *androidVPNDataPlane) handleTCPForwarder(req *tcp.ForwarderRequest) {
 	flowID := newAndroidRouteFlowID("vpn_tcp", dialTarget)
 	outbound, route, err := openVPNDirectTCPForTarget(dialTarget, flowID, targetAddr)
 	if err != nil {
+		if sni != "" && !route.Direct && !route.Reject && strings.TrimSpace(route.SelectedRouteID) != "" {
+			logAndroidVPNDiagnostic("sni_takeover_"+route.SelectedRouteID, "normal", "tcp sni takeover warmed; current connection will retry: original="+targetAddr+" domain="+dialTarget+" route="+route.SelectedRouteID, 2*time.Second)
+			_ = inbound.Close()
+			return
+		}
 		stage := "tcp_open " + targetAddr
 		if dialTarget != targetAddr {
 			stage += " via_sni " + dialTarget
@@ -2187,21 +2200,52 @@ func allocateAndroidVPNDNSFakeIP(domain string, route androidRouteDecision) (str
 	configDir := currentAndroidVPNConfigDir()
 	ensureAndroidVPNDNSCacheLoaded(configDir)
 	now := time.Now().UTC()
+	remoteRoute := !route.Direct && !route.Reject && strings.TrimSpace(route.SelectedRouteID) != ""
 	vpnDNSState.mu.Lock()
 	pruneAndroidVPNDNSFakeLocked(now)
-	if existingIP, ok := vpnDNSState.fakeDomainToIP[cleanDomain]; ok {
+	existingIP := vpnDNSState.fakeDomainToIP[cleanDomain]
+	if existingIP != "" {
 		entry := vpnDNSState.fakeIPToEntry[existingIP]
-		entry.Domain = cleanDomain
-		entry.Group = strings.TrimSpace(route.Group)
-		entry.Direct = route.Direct
-		entry.Reject = route.Reject
-		entry.SelectedRouteID = strings.TrimSpace(route.SelectedRouteID)
-		entry.ExpiresAt = now.Add(vpnDNSCacheTTL)
-		vpnDNSState.fakeIPToEntry[existingIP] = entry
-		vpnDNSState.mu.Unlock()
-		markAndroidVPNDNSCacheDirty(configDir)
-		return existingIP, true
+		if !remoteRoute || entry.ControllerManaged {
+			entry.Domain = cleanDomain
+			entry.Group = strings.TrimSpace(route.Group)
+			entry.Direct = route.Direct
+			entry.Reject = route.Reject
+			entry.SelectedRouteID = strings.TrimSpace(route.SelectedRouteID)
+			entry.ExpiresAt = now.Add(vpnDNSCacheTTL)
+			vpnDNSState.fakeIPToEntry[existingIP] = entry
+			vpnDNSState.mu.Unlock()
+			markAndroidVPNDNSCacheDirty(configDir)
+			return existingIP, true
+		}
 	}
+	vpnDNSState.mu.Unlock()
+	if remoteRoute {
+		fakeIP, controllerAvailable, err := requestMobileVRouteControllerFakeIP(cleanDomain, route)
+		if err != nil {
+			logAndroidVPNDiagnostic("fake_ip_controller_"+route.SelectedRouteID, "error", "controller fake ip allocation failed: domain="+cleanDomain+" route="+route.SelectedRouteID+" err="+err.Error(), 2*time.Second)
+			return "", false
+		}
+		if controllerAvailable {
+			return storeAndroidVPNControllerFakeIP(configDir, cleanDomain, fakeIP, route, now)
+		}
+		if existingIP != "" {
+			vpnDNSState.mu.Lock()
+			entry := vpnDNSState.fakeIPToEntry[existingIP]
+			entry.Domain = cleanDomain
+			entry.Group = strings.TrimSpace(route.Group)
+			entry.Direct = route.Direct
+			entry.Reject = route.Reject
+			entry.SelectedRouteID = strings.TrimSpace(route.SelectedRouteID)
+			entry.ExpiresAt = now.Add(vpnDNSCacheTTL)
+			vpnDNSState.fakeIPToEntry[existingIP] = entry
+			vpnDNSState.mu.Unlock()
+			markAndroidVPNDNSCacheDirty(configDir)
+			return existingIP, true
+		}
+	}
+	vpnDNSState.mu.Lock()
+	pruneAndroidVPNDNSFakeLocked(now)
 	for attempts := 0; attempts < 131000; attempts++ {
 		ip := nextAndroidVPNDNSFakeIPLocked()
 		if ip == "" {
@@ -2213,12 +2257,13 @@ func allocateAndroidVPNDNSFakeIP(domain string, route androidRouteDecision) (str
 		}
 		vpnDNSState.fakeDomainToIP[cleanDomain] = ip
 		vpnDNSState.fakeIPToEntry[ip] = androidVPNDNSFakeEntry{
-			Domain:          cleanDomain,
-			Group:           strings.TrimSpace(route.Group),
-			Direct:          route.Direct,
-			Reject:          route.Reject,
-			SelectedRouteID: strings.TrimSpace(route.SelectedRouteID),
-			ExpiresAt:       now.Add(vpnDNSCacheTTL),
+			Domain:            cleanDomain,
+			Group:             strings.TrimSpace(route.Group),
+			Direct:            route.Direct,
+			Reject:            route.Reject,
+			SelectedRouteID:   strings.TrimSpace(route.SelectedRouteID),
+			ControllerManaged: false,
+			ExpiresAt:         now.Add(vpnDNSCacheTTL),
 		}
 		vpnDNSState.mu.Unlock()
 		markAndroidVPNDNSCacheDirty(configDir)
@@ -2226,6 +2271,37 @@ func allocateAndroidVPNDNSFakeIP(domain string, route androidRouteDecision) (str
 	}
 	vpnDNSState.mu.Unlock()
 	return "", false
+}
+
+func storeAndroidVPNControllerFakeIP(configDir string, domain string, fakeIP string, route androidRouteDecision, now time.Time) (string, bool) {
+	cleanDomain := normalizeMobileVRouteDomain(domain)
+	ip := net.ParseIP(strings.TrimSpace(fakeIP)).To4()
+	if cleanDomain == "" || ip == nil {
+		return "", false
+	}
+	ipText := ip.String()
+	vpnDNSState.mu.Lock()
+	pruneAndroidVPNDNSFakeLocked(now)
+	if oldIP := vpnDNSState.fakeDomainToIP[cleanDomain]; oldIP != "" && oldIP != ipText {
+		delete(vpnDNSState.fakeIPToEntry, oldIP)
+	}
+	if oldEntry, exists := vpnDNSState.fakeIPToEntry[ipText]; exists && normalizeMobileVRouteDomain(oldEntry.Domain) != cleanDomain {
+		delete(vpnDNSState.fakeDomainToIP, normalizeMobileVRouteDomain(oldEntry.Domain))
+	}
+	vpnDNSState.fakeDomainToIP[cleanDomain] = ipText
+	vpnDNSState.fakeIPToEntry[ipText] = androidVPNDNSFakeEntry{
+		Domain:            cleanDomain,
+		Group:             strings.TrimSpace(route.Group),
+		Direct:            route.Direct,
+		Reject:            route.Reject,
+		SelectedRouteID:   strings.TrimSpace(route.SelectedRouteID),
+		ControllerManaged: true,
+		ExpiresAt:         now.Add(vpnDNSCacheTTL),
+	}
+	vpnDNSState.mu.Unlock()
+	markAndroidVPNDNSCacheDirty(configDir)
+	logAndroidVPNDiagnostic("fake_ip_controller_"+route.SelectedRouteID, "normal", "controller fake ip ready: domain="+cleanDomain+" fake_ip="+ipText+" route="+route.SelectedRouteID, 5*time.Second)
+	return ipText, true
 }
 
 func nextAndroidVPNDNSFakeIPLocked() string {

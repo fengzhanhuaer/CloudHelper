@@ -272,19 +272,23 @@ func mobileVRouteHandleVPNPacket(configDir string, packet []byte, writeBack func
 	}
 	plan, err := buildMobileVRouteForwardPlan(configDir, route.SelectedRouteID)
 	if err != nil {
+		recordMobileVRouteConnectionFailure("route_plan_failed", targetAddr, route.SelectedRouteID, route.Group, "", err)
 		logAndroidVPNDiagnostic("takeover_plan_error_"+route.SelectedRouteID, "error", "vroute takeover plan failed: target="+targetAddr+" route="+route.SelectedRouteID+" err="+err.Error(), 2*time.Second)
 		return true, err
 	}
 	carrier, err := ensureMobileVRouteCarrier(plan, writeBack)
 	if err != nil {
+		recordMobileVRouteConnectionFailure("carrier_open_failed", targetAddr, plan.RouteID, route.Group, "", err)
 		logAndroidVPNDiagnostic("takeover_carrier_error_"+plan.RouteID, "error", "vroute takeover carrier unavailable: target="+targetAddr+" route="+plan.RouteID+" next="+plan.NextNode+" relay="+net.JoinHostPort(plan.RelayHost, strconv.Itoa(plan.RelayPort))+" err="+err.Error(), 2*time.Second)
 		return true, err
 	}
 	logAndroidVPNDiagnostic("takeover_selected_"+plan.RouteID, "normal", "vroute takeover selected: "+androidVPNPacketSummary(packet)+" route="+plan.RouteID+" path="+strings.Join(plan.Path, ">")+" next="+plan.NextNode, 5*time.Second)
 	if err := carrier.writeIPPacket(packet, plan.Path); err != nil {
+		recordMobileVRouteConnectionFailure("enqueue_failed", targetAddr, plan.RouteID, route.Group, "", err)
 		logAndroidVPNDiagnostic("takeover_enqueue_error_"+plan.RouteID, "error", "vroute takeover enqueue failed: route="+plan.RouteID+" err="+err.Error(), 2*time.Second)
 		return true, err
 	}
+	trackMobileVRouteOutbound(packet, route, plan)
 	logAndroidVPNDiagnostic("takeover_queued_"+plan.RouteID, "realtime", "vroute takeover packet queued: route="+plan.RouteID+" path="+strings.Join(plan.Path, ">"), 5*time.Second)
 	return true, nil
 }
@@ -484,6 +488,7 @@ func (c *mobileVRouteCarrier) runTXWorker() {
 			if err != nil {
 				c.markError(err)
 				recordMobileVRouteCarrierStateError(err)
+				failMobileVRouteTrackedFlowsForCarrier(c.plan, "carrier_write_failed", err)
 				androidLogStore.add("vpn", "warn", "vroute carrier write failed: "+err.Error())
 				c.close()
 				return
@@ -491,7 +496,7 @@ func (c *mobileVRouteCarrier) runTXWorker() {
 			c.txFrames.Add(1)
 			c.txBytes.Add(int64(len(frame.Data)))
 			c.markActivity()
-			logAndroidVPNDiagnostic("carrier_tx_"+c.plan.RouteID, "realtime", "vroute carrier frame sent: route="+c.plan.RouteID+" type="+strconv.Itoa(int(frame.MainType))+" subtype="+strconv.Itoa(int(frame.SubType))+" frames="+strconv.FormatInt(c.txFrames.Load(), 10)+" bytes="+strconv.FormatInt(c.txBytes.Load(), 10), 5*time.Second)
+			logAndroidVPNDiagnostic("carrier_tx_"+c.plan.RouteID, "normal", "vroute carrier frame sent: route="+c.plan.RouteID+" type="+strconv.Itoa(int(frame.MainType))+" subtype="+strconv.Itoa(int(frame.SubType))+" frames="+strconv.FormatInt(c.txFrames.Load(), 10)+" bytes="+strconv.FormatInt(c.txBytes.Load(), 10), 5*time.Second)
 		case <-c.done:
 			return
 		}
@@ -505,6 +510,7 @@ func (c *mobileVRouteCarrier) readLoop() {
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
 				c.markError(err)
+				failMobileVRouteTrackedFlowsForCarrier(c.plan, "carrier_read_failed", err)
 				androidLogStore.add("vpn", "warn", "vroute carrier read failed: "+err.Error())
 			}
 			return
@@ -543,7 +549,7 @@ func (c *mobileVRouteCarrier) handleIncomingFrame(frame mobileVRouteFrame) error
 	c.rxFrames.Add(1)
 	c.rxBytes.Add(int64(len(frame.Data)))
 	c.markActivity()
-	logAndroidVPNDiagnostic("carrier_rx_"+c.plan.RouteID, "realtime", "vroute carrier frame received: route="+c.plan.RouteID+" type="+strconv.Itoa(int(frame.MainType))+" subtype="+strconv.Itoa(int(frame.SubType))+" path="+strings.Join(path, ">")+" frames="+strconv.FormatInt(c.rxFrames.Load(), 10), 5*time.Second)
+	logAndroidVPNDiagnostic("carrier_rx_"+c.plan.RouteID, "normal", "vroute carrier frame received: route="+c.plan.RouteID+" type="+strconv.Itoa(int(frame.MainType))+" subtype="+strconv.Itoa(int(frame.SubType))+" path="+strings.Join(path, ">")+" frames="+strconv.FormatInt(c.rxFrames.Load(), 10), 5*time.Second)
 	if position < len(path)-1 {
 		nextNode := path[position+1]
 		plan, err := buildMobileVRouteAdjacentPlan(c.plan.Config, path, localNode, nextNode)
@@ -591,12 +597,13 @@ func (c *mobileVRouteCarrier) runRXWorker() {
 	for {
 		select {
 		case frame := <-c.rx:
+			trackMobileVRouteInbound(frame.Data)
 			if writeBack := c.currentWriteBack(); writeBack != nil {
 				if err := writeBack(append([]byte(nil), frame.Data...)); err != nil {
 					c.markError(err)
 					androidLogStore.add("vpn", "warn", "vroute packet writeback failed: "+err.Error())
 				} else {
-					logAndroidVPNDiagnostic("tun_writeback_"+c.plan.RouteID, "realtime", "vroute response written back to tun: "+androidVPNPacketSummary(frame.Data)+" route="+c.plan.RouteID, 5*time.Second)
+					logAndroidVPNDiagnostic("tun_writeback_"+c.plan.RouteID, "normal", "vroute response written back to tun: "+androidVPNPacketSummary(frame.Data)+" route="+c.plan.RouteID, 5*time.Second)
 				}
 			}
 		case <-c.done:

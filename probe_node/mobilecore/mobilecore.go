@@ -139,6 +139,7 @@ func StartWithConfigDir(controllerURL string, nodeID string, nodeSecret string, 
 	if controllerURL == "" || nodeID == "" || nodeSecret == "" {
 		return "controller URL, node ID, and node secret are required"
 	}
+	setMobileVRouteControllerIdentity(controllerURL, nodeID, nodeSecret)
 	wsURL, err := resolveWebSocketURL(controllerURL)
 	if err != nil {
 		return err.Error()
@@ -164,6 +165,7 @@ func StartWithConfigDir(controllerURL string, nodeID string, nodeSecret string, 
 
 func RefreshConfig(controllerURL string, nodeID string, nodeSecret string, configDir string) string {
 	setControllerDirectTarget(controllerURL)
+	setMobileVRouteControllerIdentity(controllerURL, nodeID, nodeSecret)
 	summary, err := refreshConfigFiles(controllerURL, nodeID, nodeSecret, configDir)
 	if err != nil {
 		return "配置刷新失败：" + err.Error()
