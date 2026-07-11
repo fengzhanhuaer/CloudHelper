@@ -94,11 +94,9 @@ class ProbeNodeVpnService : VpnService() {
                     .setSession("CloudHelper Probe Node")
                     .setMtu(1500)
                     .addAddress("10.111.0.2", 32)
-                    .addAddress("fd00:111:111::2", 128)
                     .addRoute("0.0.0.0", 0)
-                    .addRoute("::", 0)
                     .addDnsServer("10.111.0.1")
-                    .addDnsServer("fd00:111:111::1")
+                AndroidLogStore.add("vpn", "VPN IPv6 disabled: current Android VRoute data plane is IPv4-only")
                 try {
                     builder.addDisallowedApplication(packageName)
                     AndroidLogStore.add("vpn", "excluded own package from VPN routing: $packageName")

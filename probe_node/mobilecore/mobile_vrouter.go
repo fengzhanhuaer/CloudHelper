@@ -439,29 +439,17 @@ func mobileVRouteStatusPayload(configDir string) map[string]any {
 			"service_port": mobileVRouteServicePortForNode(config, id, 0),
 		})
 	}
-	routeRuleItems := make([]map[string]any, 0, len(config.RouteRules))
-	for _, rule := range config.RouteRules {
-		routeRuleItems = append(routeRuleItems, map[string]any{
-			"id":           strings.TrimSpace(rule.ID),
-			"name":         strings.TrimSpace(rule.Name),
-			"action":       normalizeMobileVRouteRuleAction(rule.Action, rule.ExitNodeID),
-			"exit_node_id": normalizeMobileRouteNodeID(rule.ExitNodeID),
-			"entries":      append([]string(nil), rule.Entries...),
-			"updated_at":   strings.TrimSpace(rule.UpdatedAt),
-		})
-	}
 	return map[string]any{
-		"local_node_id":    strings.TrimSpace(config.LocalNodeID),
-		"local_ip":         mobileVRouteProbeIPForNode(config, config.LocalNodeID),
-		"enabled":          config.Enabled,
-		"fake_ip_cidr":     strings.TrimSpace(config.FakeIPCIDR),
-		"probe_ips":        len(config.ProbeIPs),
-		"topology_rules":   len(config.TopologyRules),
-		"route_rules":      len(config.RouteRules),
-		"route_rule_items": routeRuleItems,
-		"exit_nodes":       nodes,
-		"exit_node_items":  exitNodeItems,
-		"updated_at":       strings.TrimSpace(config.UpdatedAt),
+		"local_node_id":   strings.TrimSpace(config.LocalNodeID),
+		"local_ip":        mobileVRouteProbeIPForNode(config, config.LocalNodeID),
+		"enabled":         config.Enabled,
+		"fake_ip_cidr":    strings.TrimSpace(config.FakeIPCIDR),
+		"probe_ips":       len(config.ProbeIPs),
+		"topology_rules":  len(config.TopologyRules),
+		"route_rules":     len(config.RouteRules),
+		"exit_nodes":      nodes,
+		"exit_node_items": exitNodeItems,
+		"updated_at":      strings.TrimSpace(config.UpdatedAt),
 	}
 }
 

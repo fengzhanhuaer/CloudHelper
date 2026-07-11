@@ -1102,6 +1102,28 @@ func TestMobileVRouteDNSReturnsFakeIPForProbeExitDomain(t *testing.T) {
 	}
 }
 
+func TestAndroidVPNDNSSuppressesAAAAWhenIPv6Disabled(t *testing.T) {
+	configDir := t.TempDir()
+	resetMobileVRouteVPNStateForTest(t, configDir)
+	if err := persistMobileVRouteConfig(configDir, mobileVRouteConfig{
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("persist vroute config failed: %v", err)
+	}
+
+	query, err := buildAndroidVPNDNSQuery("example.com", dnsmessage.TypeAAAA)
+	if err != nil {
+		t.Fatalf("build dns query failed: %v", err)
+	}
+	response, err := resolveAndroidVPNDNSPacket(query)
+	if err != nil {
+		t.Fatalf("resolve dns packet failed: %v", err)
+	}
+	if ips := extractAndroidVPNDNSResponseIPs(response); len(ips) != 0 {
+		t.Fatalf("AAAA ips=%v, want empty response while android vpn ipv6 is disabled", ips)
+	}
+}
+
 func TestAndroidVPNTCPDNSReturnsFakeIPForProbeExitDomain(t *testing.T) {
 	configDir := t.TempDir()
 	resetMobileVRouteVPNStateForTest(t, configDir)

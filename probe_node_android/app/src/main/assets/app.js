@@ -646,7 +646,6 @@ function renderVRouteStatus(vpnData) {
   const carriers = vroute.carriers || {};
   const capabilities = vroute.capabilities || {};
   const carrierItems = Array.isArray(carriers.items) ? carriers.items : [];
-  const routeRules = Array.isArray(config.route_rule_items) ? config.route_rule_items : [];
   const exitNodes = Array.isArray(config.exit_node_items) ? config.exit_node_items : [];
   const enabled = !!config.enabled;
   const error = String(config.error || carriers.last_error || "").trim();
@@ -661,7 +660,6 @@ function renderVRouteStatus(vpnData) {
   renderVRouteSummary(config, carriers);
   renderVRouteExitNodes(exitNodes, config.exit_nodes);
   renderVRouteCarriers(carrierItems);
-  renderVRouteRules(routeRules);
   renderVRouteCapabilities(capabilities);
 }
 
@@ -785,71 +783,6 @@ function renderVRouteCarriers(items) {
     card.append(title, meta, stats);
     target.appendChild(card);
   });
-}
-
-function renderVRouteRules(items) {
-  const target = byId("vrouteRules");
-  if (!target) {
-    return;
-  }
-  target.innerHTML = "";
-  appendVRouteSectionTitle(target, `路由规则 (${items.length})`);
-  if (!items.length) {
-    appendVRouteEmpty(target, "暂无已下发的虚拟路由规则。");
-    return;
-  }
-  items.forEach((item) => {
-    const card = document.createElement("article");
-    card.className = "vroute-card";
-    const title = document.createElement("div");
-    title.className = "vroute-card-title";
-    title.textContent = item.name || item.id || "未命名规则";
-    const meta = document.createElement("div");
-    meta.className = "vroute-card-meta";
-    meta.textContent = [
-      vrouteActionLabel(item.action),
-      item.exit_node_id ? `出口 ${item.exit_node_id}` : "",
-      item.updated_at ? `更新 ${formatCompactTime(item.updated_at)}` : "",
-      item.id ? `ID ${item.id}` : ""
-    ].filter(Boolean).join(" · ");
-    const entries = document.createElement("div");
-    entries.className = "vroute-entry-list";
-    const cidrs = [];
-    const domains = [];
-    (Array.isArray(item.entries) ? item.entries : []).forEach((entry) => {
-      const text = String(entry || "").trim();
-      if (!text) return;
-      if (/^(cidr|ip_cidr|ip-cidr):/i.test(text)) {
-        cidrs.push(text);
-      } else {
-        domains.push(text);
-      }
-    });
-    appendVRouteEntryGroup(entries, "CIDR", cidrs);
-    appendVRouteEntryGroup(entries, "域名", domains);
-    card.append(title, meta, entries);
-    target.appendChild(card);
-  });
-}
-
-function vrouteActionLabel(action) {
-  const clean = String(action || "").trim().toLowerCase();
-  if (clean === "probe_exit") return "远端出口";
-  if (clean === "local_exit") return "本机出口";
-  if (clean === "direct") return "直接连接";
-  if (clean === "reject") return "拒绝";
-  return clean || "未指定动作";
-}
-
-function appendVRouteEntryGroup(parent, label, items) {
-  const row = document.createElement("div");
-  row.className = "vroute-entry-group";
-  const title = document.createElement("span");
-  title.textContent = label;
-  const value = document.createElement("strong");
-  value.textContent = items.length ? items.slice(0, 6).join("，") + (items.length > 6 ? `，等 ${items.length} 条` : "") : "-";
-  row.append(title, value);
-  parent.appendChild(row);
 }
 
 function renderVRouteCapabilities(capabilities) {

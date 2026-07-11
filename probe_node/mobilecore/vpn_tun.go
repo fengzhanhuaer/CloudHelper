@@ -23,7 +23,6 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
-	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
@@ -49,8 +48,6 @@ const (
 var (
 	vpnIPv4GatewayAddress = tcpip.AddrFrom4([4]byte{10, 111, 0, 1})
 	vpnIPv4Address        = tcpip.AddrFrom4([4]byte{10, 111, 0, 2})
-	vpnIPv6GatewayAddress = tcpip.AddrFrom16([16]byte{0xfd, 0x00, 0x01, 0x11, 0x01, 0x11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1})
-	vpnIPv6Address        = tcpip.AddrFrom16([16]byte{0xfd, 0x00, 0x01, 0x11, 0x01, 0x11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2})
 )
 
 var vpnRuntime = &androidVPNRuntime{}
@@ -603,7 +600,7 @@ func setVPNSelfCheckResult(result map[string]any) {
 
 func newandroidVPNDataPlane(tun *os.File) (*androidVPNDataPlane, error) {
 	gStack := stack.New(stack.Options{
-		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
+		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol},
 	})
 	linkEP := channel.New(vpnQueueSize, vpnMTU, "")
@@ -627,17 +624,8 @@ func newandroidVPNDataPlane(tun *os.File) (*androidVPNDataPlane, error) {
 		gStack.Destroy()
 		return nil, err
 	}
-	if err := addAndroidVPNProtocolAddress(gStack, ipv6.ProtocolNumber, vpnIPv6GatewayAddress, 128); err != nil {
-		gStack.Destroy()
-		return nil, err
-	}
-	if err := addAndroidVPNProtocolAddress(gStack, ipv6.ProtocolNumber, vpnIPv6Address, 128); err != nil {
-		gStack.Destroy()
-		return nil, err
-	}
 	gStack.SetRouteTable([]tcpip.Route{
 		{Destination: header.IPv4EmptySubnet, NIC: vpnNICID},
-		{Destination: header.IPv6EmptySubnet, NIC: vpnNICID},
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	runner := &androidVPNDataPlane{
@@ -1404,7 +1392,8 @@ func resolveAndroidVPNDNSPacket(packet []byte) ([]byte, error) {
 	if qType != dnsmessage.TypeA && qType != dnsmessage.TypeAAAA {
 		return buildAndroidVPNDNSSuccess(packet, nil, qType), nil
 	}
-	if qType == dnsmessage.TypeAAAA && !route.Direct {
+	if qType == dnsmessage.TypeAAAA {
+		androidLogStore.add("vpn", "debug", "dns suppress AAAA "+domain+": android vroute ipv6 disabled")
 		return buildAndroidVPNDNSSuccess(packet, nil, qType), nil
 	}
 	response, err := queryAndroidVPNDNSUpstream(packet)
@@ -2383,7 +2372,7 @@ func vpnProtocolFromPacket(packet []byte) (tcpip.NetworkProtocolNumber, error) {
 	case 4:
 		return ipv4.ProtocolNumber, nil
 	case 6:
-		return ipv6.ProtocolNumber, nil
+		return 0, errors.New("android vpn ipv6 disabled")
 	default:
 		return 0, errors.New("unsupported ip version")
 	}
