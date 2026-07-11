@@ -1570,9 +1570,9 @@ func TestProbeVirtualRouterControlPingDoesNotUseRemoteClockForLatency(t *testing
 	}
 }
 
-func TestProbeVirtualRouterAdjacentLatencyMillisecondsUsesHalfRTT(t *testing.T) {
-	if got := probeVirtualRouterAdjacentLatencyMilliseconds(558 * time.Millisecond); got != 279 {
-		t.Fatalf("latency=%d, want 279", got)
+func TestProbeVirtualRouterAdjacentLatencyMillisecondsUsesFullRTT(t *testing.T) {
+	if got := probeVirtualRouterAdjacentLatencyMilliseconds(558 * time.Millisecond); got != 558 {
+		t.Fatalf("latency=%d, want 558", got)
 	}
 	if got := probeVirtualRouterAdjacentLatencyMilliseconds(time.Millisecond); got != 1 {
 		t.Fatalf("minimum latency=%d, want 1", got)
@@ -1585,8 +1585,8 @@ func TestProbeVirtualRouterPathLatencyUsesSourceTimestamp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("path latency returned error: %v", err)
 	}
-	if latencyMS != 40 {
-		t.Fatalf("path latency=%d, want 40", latencyMS)
+	if latencyMS != 81 {
+		t.Fatalf("path latency=%d, want 81", latencyMS)
 	}
 	if _, err := probeVirtualRouterPathLatencyMilliseconds(sentAt, sentAt-1); err == nil {
 		t.Fatalf("backward source timestamp should fail")

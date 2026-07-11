@@ -90,10 +90,7 @@ func runMobileVRoutePathRTT(targetNodeID string) map[string]any {
 	if err != nil {
 		return mobileVRouteRTTErrorResult(targetNodeID, path, err)
 	}
-	latencyMS := (time.Since(startedAt) / 2).Milliseconds()
-	if latencyMS < 1 {
-		latencyMS = 1
-	}
+	latencyMS := mobileVRouteRTTMilliseconds(time.Since(startedAt))
 	return map[string]any{
 		"ok":             response.OK,
 		"source_node_id": localNodeID,
@@ -104,6 +101,14 @@ func runMobileVRoutePathRTT(targetNodeID string) map[string]any {
 		"error":          strings.TrimSpace(response.Error),
 		"updated_at":     time.Now().UTC().Format(time.RFC3339Nano),
 	}
+}
+
+func mobileVRouteRTTMilliseconds(elapsed time.Duration) int64 {
+	latencyMS := elapsed.Milliseconds()
+	if latencyMS < 1 {
+		return 1
+	}
+	return latencyMS
 }
 
 func mobileVRouteRTTErrorResult(targetNodeID string, path []string, err error) map[string]any {

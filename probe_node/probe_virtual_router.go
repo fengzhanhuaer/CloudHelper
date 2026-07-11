@@ -5010,14 +5010,14 @@ func queryProbeVirtualRouterAdjacentPing(rt *probeVirtualRouterRuntime, directio
 }
 
 func probeVirtualRouterAdjacentLatencyMilliseconds(elapsed time.Duration) int64 {
-	return probeDurationMilliseconds(elapsed / 2)
+	return probeDurationMilliseconds(elapsed)
 }
 
 func probeVirtualRouterPathLatencyMilliseconds(sentAtUnixNano int64, receivedAtUnixNano int64) (int64, error) {
 	if sentAtUnixNano <= 0 || receivedAtUnixNano < sentAtUnixNano {
 		return 0, errors.New("invalid virtual router path rtt source timestamp")
 	}
-	return probeDurationMilliseconds(time.Duration(receivedAtUnixNano-sentAtUnixNano) / 2), nil
+	return probeDurationMilliseconds(time.Duration(receivedAtUnixNano - sentAtUnixNano)), nil
 }
 
 func queryProbeVirtualRouterPathRTTControl(path []string) (probeVirtualRouterPathRTTQueryResponse, error) {

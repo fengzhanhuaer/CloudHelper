@@ -367,6 +367,15 @@ func TestMobileVRouteRewritesTUNSourceToLocalVirtualIP(t *testing.T) {
 	}
 }
 
+func TestMobileVRouteRTTMillisecondsUsesFullRTT(t *testing.T) {
+	if got := mobileVRouteRTTMilliseconds(558 * time.Millisecond); got != 558 {
+		t.Fatalf("latency=%d, want 558", got)
+	}
+	if got := mobileVRouteRTTMilliseconds(time.Millisecond); got != 1 {
+		t.Fatalf("minimum latency=%d, want 1", got)
+	}
+}
+
 func TestMobileVRouteHandleStaleFakeIPLocalExitFallsThrough(t *testing.T) {
 	configDir := t.TempDir()
 	resetMobileVRouteVPNStateForTest(t, configDir)
