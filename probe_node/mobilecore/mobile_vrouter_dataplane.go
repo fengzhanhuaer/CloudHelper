@@ -107,9 +107,17 @@ type mobileVRouteCarrier struct {
 	lastActivityNS  atomic.Int64
 	txFrames        atomic.Int64
 	txBytes         atomic.Int64
+	txIPFrames      atomic.Int64
+	txIPBytes       atomic.Int64
+	txControlFrames atomic.Int64
 	txDropped       atomic.Int64
 	rxFrames        atomic.Int64
 	rxBytes         atomic.Int64
+	rxIPFrames      atomic.Int64
+	rxIPBytes       atomic.Int64
+	rxControlFrames atomic.Int64
+	tunWriteFrames  atomic.Int64
+	tunWriteBytes   atomic.Int64
 	rxDropped       atomic.Int64
 	lastErrorMu     sync.Mutex
 	lastError       string
@@ -495,8 +503,14 @@ func (c *mobileVRouteCarrier) runTXWorker() {
 			}
 			c.txFrames.Add(1)
 			c.txBytes.Add(int64(len(frame.Data)))
+			if mobileVRouteFrameIsIP(frame) {
+				c.txIPFrames.Add(1)
+				c.txIPBytes.Add(int64(len(frame.Data)))
+			} else {
+				c.txControlFrames.Add(1)
+			}
 			c.markActivity()
-			logAndroidVPNDiagnostic("carrier_tx_"+c.plan.RouteID, "normal", "vroute carrier frame sent: route="+c.plan.RouteID+" type="+strconv.Itoa(int(frame.MainType))+" subtype="+strconv.Itoa(int(frame.SubType))+" frames="+strconv.FormatInt(c.txFrames.Load(), 10)+" bytes="+strconv.FormatInt(c.txBytes.Load(), 10), 5*time.Second)
+			logAndroidVPNDiagnostic("carrier_tx_"+c.plan.RouteID, "normal", "vroute carrier frame sent: route="+c.plan.RouteID+" kind="+mobileVRouteFrameKind(frame)+" type="+strconv.Itoa(int(frame.MainType))+" subtype="+strconv.Itoa(int(frame.SubType))+" frames="+strconv.FormatInt(c.txFrames.Load(), 10)+" ip_frames="+strconv.FormatInt(c.txIPFrames.Load(), 10)+" control_frames="+strconv.FormatInt(c.txControlFrames.Load(), 10)+" bytes="+strconv.FormatInt(c.txBytes.Load(), 10), 5*time.Second)
 		case <-c.done:
 			return
 		}
@@ -548,8 +562,14 @@ func (c *mobileVRouteCarrier) handleIncomingFrame(frame mobileVRouteFrame) error
 	}
 	c.rxFrames.Add(1)
 	c.rxBytes.Add(int64(len(frame.Data)))
+	if mobileVRouteFrameIsIP(frame) {
+		c.rxIPFrames.Add(1)
+		c.rxIPBytes.Add(int64(len(frame.Data)))
+	} else {
+		c.rxControlFrames.Add(1)
+	}
 	c.markActivity()
-	logAndroidVPNDiagnostic("carrier_rx_"+c.plan.RouteID, "normal", "vroute carrier frame received: route="+c.plan.RouteID+" type="+strconv.Itoa(int(frame.MainType))+" subtype="+strconv.Itoa(int(frame.SubType))+" path="+strings.Join(path, ">")+" frames="+strconv.FormatInt(c.rxFrames.Load(), 10), 5*time.Second)
+	logAndroidVPNDiagnostic("carrier_rx_"+c.plan.RouteID, "normal", "vroute carrier frame received: route="+c.plan.RouteID+" kind="+mobileVRouteFrameKind(frame)+" type="+strconv.Itoa(int(frame.MainType))+" subtype="+strconv.Itoa(int(frame.SubType))+" path="+strings.Join(path, ">")+" frames="+strconv.FormatInt(c.rxFrames.Load(), 10)+" ip_frames="+strconv.FormatInt(c.rxIPFrames.Load(), 10)+" control_frames="+strconv.FormatInt(c.rxControlFrames.Load(), 10), 5*time.Second)
 	if position < len(path)-1 {
 		nextNode := path[position+1]
 		plan, err := buildMobileVRouteAdjacentPlan(c.plan.Config, path, localNode, nextNode)
@@ -603,6 +623,8 @@ func (c *mobileVRouteCarrier) runRXWorker() {
 					c.markError(err)
 					androidLogStore.add("vpn", "warn", "vroute packet writeback failed: "+err.Error())
 				} else {
+					c.tunWriteFrames.Add(1)
+					c.tunWriteBytes.Add(int64(len(frame.Data)))
 					logAndroidVPNDiagnostic("tun_writeback_"+c.plan.RouteID, "normal", "vroute response written back to tun: "+androidVPNPacketSummary(frame.Data)+" route="+c.plan.RouteID, 5*time.Second)
 				}
 			}
@@ -610,6 +632,17 @@ func (c *mobileVRouteCarrier) runRXWorker() {
 			return
 		}
 	}
+}
+
+func mobileVRouteFrameIsIP(frame mobileVRouteFrame) bool {
+	return frame.MainType == mobileVRouteFrameMainTypeIP && frame.SubType == mobileVRouteIPSubTypeIPv4
+}
+
+func mobileVRouteFrameKind(frame mobileVRouteFrame) string {
+	if mobileVRouteFrameIsIP(frame) {
+		return "ip"
+	}
+	return "control"
 }
 
 func (c *mobileVRouteCarrier) setWriteBack(writeBack func([]byte) error) {
@@ -933,21 +966,29 @@ func snapshotMobileVRouteCarriers() map[string]any {
 		itemLastErrorUnixNS := item.lastErrorUnixNS
 		item.lastErrorMu.Unlock()
 		carriers = append(carriers, map[string]any{
-			"route_id":         item.plan.RouteID,
-			"path":             append([]string(nil), item.plan.Path...),
-			"next_node":        item.plan.NextNode,
-			"exit_node":        item.plan.ExitNode,
-			"relay":            net.JoinHostPort(item.plan.RelayHost, strconv.Itoa(item.plan.RelayPort)),
-			"bridge_role":      item.plan.BridgeRole,
-			"layer":            item.plan.Layer,
-			"tx_frames":        item.txFrames.Load(),
-			"tx_bytes":         item.txBytes.Load(),
-			"rx_frames":        item.rxFrames.Load(),
-			"rx_bytes":         item.rxBytes.Load(),
-			"created_at":       mobileVRouteUnixNanoRFC3339(item.createdUnixNS),
-			"last_activity_at": mobileVRouteUnixNanoRFC3339(item.lastActivityNS.Load()),
-			"last_error":       itemLastError,
-			"last_error_at":    mobileVRouteUnixNanoRFC3339(itemLastErrorUnixNS),
+			"route_id":          item.plan.RouteID,
+			"path":              append([]string(nil), item.plan.Path...),
+			"next_node":         item.plan.NextNode,
+			"exit_node":         item.plan.ExitNode,
+			"relay":             net.JoinHostPort(item.plan.RelayHost, strconv.Itoa(item.plan.RelayPort)),
+			"bridge_role":       item.plan.BridgeRole,
+			"layer":             item.plan.Layer,
+			"tx_frames":         item.txFrames.Load(),
+			"tx_bytes":          item.txBytes.Load(),
+			"tx_ip_frames":      item.txIPFrames.Load(),
+			"tx_ip_bytes":       item.txIPBytes.Load(),
+			"tx_control_frames": item.txControlFrames.Load(),
+			"rx_frames":         item.rxFrames.Load(),
+			"rx_bytes":          item.rxBytes.Load(),
+			"rx_ip_frames":      item.rxIPFrames.Load(),
+			"rx_ip_bytes":       item.rxIPBytes.Load(),
+			"rx_control_frames": item.rxControlFrames.Load(),
+			"tun_write_frames":  item.tunWriteFrames.Load(),
+			"tun_write_bytes":   item.tunWriteBytes.Load(),
+			"created_at":        mobileVRouteUnixNanoRFC3339(item.createdUnixNS),
+			"last_activity_at":  mobileVRouteUnixNanoRFC3339(item.lastActivityNS.Load()),
+			"last_error":        itemLastError,
+			"last_error_at":     mobileVRouteUnixNanoRFC3339(itemLastErrorUnixNS),
 		})
 	}
 	return map[string]any{

@@ -170,8 +170,14 @@ func applyMobileVRouteCarrierReport(item *mobileProbeRouteRelayReportItem, carri
 	}
 	txFrames := carrier.txFrames.Load()
 	txBytes := carrier.txBytes.Load()
+	txIPFrames := carrier.txIPFrames.Load()
+	txIPBytes := carrier.txIPBytes.Load()
 	rxFrames := carrier.rxFrames.Load()
 	rxBytes := carrier.rxBytes.Load()
+	rxIPFrames := carrier.rxIPFrames.Load()
+	rxIPBytes := carrier.rxIPBytes.Load()
+	tunWriteFrames := carrier.tunWriteFrames.Load()
+	tunWriteBytes := carrier.tunWriteBytes.Load()
 	createdAt := mobileVRouteUnixNanoRFC3339(carrier.createdUnixNS)
 	lastActivityAt := mobileVRouteUnixNanoRFC3339(carrier.lastActivityNS.Load())
 	carrier.lastErrorMu.Lock()
@@ -201,12 +207,12 @@ func applyMobileVRouteCarrierReport(item *mobileProbeRouteRelayReportItem, carri
 		stats = &mobileProbeVirtualRouterRuntimeStats{}
 		item.VirtualRouter = stats
 	}
-	stats.PacketsForwarded = txFrames
-	stats.BytesForwarded = txBytes
-	stats.PacketsReceived = rxFrames
-	stats.BytesReceived = rxBytes
-	stats.PacketsDelivered = rxFrames
-	stats.BytesDelivered = rxBytes
+	stats.PacketsForwarded = txIPFrames
+	stats.BytesForwarded = txIPBytes
+	stats.PacketsReceived = rxIPFrames
+	stats.BytesReceived = rxIPBytes
+	stats.PacketsDelivered = tunWriteFrames
+	stats.BytesDelivered = tunWriteBytes
 	stats.FramesSent = txFrames
 	stats.FrameBytesSent = txBytes
 	stats.FramesReceived = rxFrames

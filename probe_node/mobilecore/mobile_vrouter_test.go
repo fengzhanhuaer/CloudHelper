@@ -805,6 +805,98 @@ func TestMobileVRouteExistingCarrierAcceptsVPNWriteBack(t *testing.T) {
 	}
 }
 
+func TestMobileVRouteCarrierSeparatesControlIPAndTUNWritebackStats(t *testing.T) {
+	resetMobileVRouteVPNStateForTest(t, t.TempDir())
+
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+	plan := mobileVRouteForwardPlan{
+		LocalNode:  "9",
+		RouteID:    "vrouter-stats",
+		Path:       []string{"9", "17"},
+		NextNode:   "17",
+		ExitNode:   "17",
+		RelayHost:  "edge.example.com",
+		RelayPort:  12040,
+		BridgeRole: mobileVRouteBridgeRoleToNext,
+		Layer:      "websocket",
+	}
+	carrier := newMobileVRouteCarrier(mobileVRouteCarrierKey(plan), plan, left)
+	if carrier == nil {
+		t.Fatal("carrier is nil")
+	}
+	defer carrier.close()
+	wroteBack := make(chan []byte, 1)
+	carrier.setWriteBack(func(packet []byte) error {
+		wroteBack <- append([]byte(nil), packet...)
+		return nil
+	})
+	mobileVRouteCarrierState.mu.Lock()
+	mobileVRouteCarrierState.items[carrier.key] = carrier
+	mobileVRouteCarrierState.mu.Unlock()
+	go carrier.runRXWorker()
+
+	control, err := json.Marshal(mobileVRouteFrameControlEnvelope{Path: []string{"17", "9"}})
+	if err != nil {
+		t.Fatalf("marshal control: %v", err)
+	}
+	responsePayload, err := json.Marshal(mobileVRouteControlProbePayload{RequestID: "stats-rtt"})
+	if err != nil {
+		t.Fatalf("marshal rtt response: %v", err)
+	}
+	if err := carrier.handleIncomingFrame(mobileVRouteFrame{
+		MainType: mobileVRouteFrameMainTypePathRTT,
+		SubType:  mobileVRoutePathRTTSubTypeResponse,
+		Control:  control,
+		Data:     responsePayload,
+	}); err != nil {
+		t.Fatalf("handle control frame: %v", err)
+	}
+
+	packet := buildMobileVRouteTestIPv4Packet(6, "198.18.0.17", "10.111.0.2", 443, 12345)
+	if err := carrier.handleIncomingFrame(mobileVRouteFrame{
+		MainType: mobileVRouteFrameMainTypeIP,
+		SubType:  mobileVRouteIPSubTypeIPv4,
+		Control:  control,
+		Data:     packet,
+	}); err != nil {
+		t.Fatalf("handle ip frame: %v", err)
+	}
+
+	select {
+	case got := <-wroteBack:
+		if !bytes.Equal(got, packet) {
+			t.Fatalf("writeback packet mismatch")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for TUN writeback")
+	}
+
+	status := snapshotMobileVRouteCarriers()
+	items, ok := status["items"].([]map[string]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("carrier snapshot items=%T %+v", status["items"], status["items"])
+	}
+	item := items[0]
+	for key, want := range map[string]int64{
+		"rx_frames":         2,
+		"rx_control_frames": 1,
+		"rx_ip_frames":      1,
+		"tun_write_frames":  1,
+	} {
+		if got, _ := item[key].(int64); got != want {
+			t.Fatalf("%s=%v, want %d; item=%+v", key, item[key], want, item)
+		}
+	}
+	if got, _ := item["rx_ip_bytes"].(int64); got != int64(len(packet)) {
+		t.Fatalf("rx_ip_bytes=%v, want %d", item["rx_ip_bytes"], len(packet))
+	}
+	if got, _ := item["tun_write_bytes"].(int64); got != int64(len(packet)) {
+		t.Fatalf("tun_write_bytes=%v, want %d", item["tun_write_bytes"], len(packet))
+	}
+}
+
 func TestMobileVRouteRelayReportMatchesProbeNodeStatusShape(t *testing.T) {
 	configDir := t.TempDir()
 	resetMobileVRouteVPNStateForTest(t, configDir)

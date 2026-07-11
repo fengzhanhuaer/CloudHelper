@@ -856,8 +856,18 @@ function renderVRouteCarriers(items) {
     ].filter(Boolean).join(" · ");
     const stats = document.createElement("div");
     stats.className = "vroute-card-grid";
-    appendVRouteMetric(stats, "TX", `${Number(item.tx_frames || 0)} / ${formatBytes(item.tx_bytes || 0)}`);
-    appendVRouteMetric(stats, "RX", `${Number(item.rx_frames || 0)} / ${formatBytes(item.rx_bytes || 0)}`);
+    const txIPFrames = Number(item.tx_ip_frames || 0);
+    const txIPBytes = Number(item.tx_ip_bytes || 0);
+    const rxIPFrames = Number(item.rx_ip_frames || 0);
+    const rxIPBytes = Number(item.rx_ip_bytes || 0);
+    const txControlFrames = Number(item.tx_control_frames || 0);
+    const rxControlFrames = Number(item.rx_control_frames || 0);
+    const tunWriteFrames = Number(item.tun_write_frames || 0);
+    const tunWriteBytes = Number(item.tun_write_bytes || 0);
+    appendVRouteMetric(stats, "TX业务", `${txIPFrames} / ${formatBytes(txIPBytes)}`);
+    appendVRouteMetric(stats, "RX业务", `${rxIPFrames} / ${formatBytes(rxIPBytes)}`);
+    appendVRouteMetric(stats, "控制帧", `TX ${txControlFrames} / RX ${rxControlFrames}`);
+    appendVRouteMetric(stats, "TUN回写", `${tunWriteFrames} / ${formatBytes(tunWriteBytes)}`);
     appendVRouteMetric(stats, "路径", Array.isArray(item.path) ? item.path.join(" > ") : "-");
     appendVRouteMetric(stats, "活动", formatCompactTime(item.last_activity_at) || "-");
     if (item.last_error) {
