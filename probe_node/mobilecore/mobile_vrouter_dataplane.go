@@ -24,6 +24,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 )
 
 const (
@@ -58,6 +60,7 @@ const (
 	mobileVRouteCarrierRXBufferFrames          = 1024
 	mobileVRouteMaxHops                        = 3
 	mobileVRouteRelayResolveTimeout            = 5 * time.Second
+	mobileVRouteH3StreamOpenTimeout            = 6 * time.Second
 )
 
 type mobileVRouteFrame struct {
@@ -128,6 +131,7 @@ var mobileVRouteCarrierState = struct {
 
 var mobileVRouteCarrierDial = dialMobileVRouteCarrier
 var mobileVRouteLookupIP = net.DefaultResolver.LookupIP
+var mobileVRouteH3QUICDial = quic.DialAddr
 
 type mobileVRouteRelayDialCandidate struct {
 	URLHost  string
@@ -139,6 +143,94 @@ type mobileVRouteRelayLookupResult struct {
 	Network string
 	IPs     []net.IP
 	Err     error
+}
+
+type mobileVRouteNetAddr struct {
+	label string
+}
+
+func (a mobileVRouteNetAddr) Network() string {
+	return "mobile-vroute"
+}
+
+func (a mobileVRouteNetAddr) String() string {
+	return strings.TrimSpace(a.label)
+}
+
+type mobileVRouteH3StreamNetConn struct {
+	stream  mobileVRouteH3Stream
+	local   net.Addr
+	remote  net.Addr
+	closeFn func() error
+}
+
+type mobileVRouteH3Stream interface {
+	io.ReadWriteCloser
+	SetDeadline(time.Time) error
+	SetReadDeadline(time.Time) error
+	SetWriteDeadline(time.Time) error
+}
+
+func (c *mobileVRouteH3StreamNetConn) Read(payload []byte) (int, error) {
+	if c == nil || c.stream == nil {
+		return 0, io.EOF
+	}
+	return c.stream.Read(payload)
+}
+
+func (c *mobileVRouteH3StreamNetConn) Write(payload []byte) (int, error) {
+	if c == nil || c.stream == nil {
+		return 0, io.ErrClosedPipe
+	}
+	return c.stream.Write(payload)
+}
+
+func (c *mobileVRouteH3StreamNetConn) Close() error {
+	if c == nil {
+		return nil
+	}
+	if c.closeFn != nil {
+		return c.closeFn()
+	}
+	if c.stream != nil {
+		return c.stream.Close()
+	}
+	return nil
+}
+
+func (c *mobileVRouteH3StreamNetConn) LocalAddr() net.Addr {
+	if c != nil && c.local != nil {
+		return c.local
+	}
+	return mobileVRouteNetAddr{label: "mobile-vroute-h3-local"}
+}
+
+func (c *mobileVRouteH3StreamNetConn) RemoteAddr() net.Addr {
+	if c != nil && c.remote != nil {
+		return c.remote
+	}
+	return mobileVRouteNetAddr{label: "mobile-vroute-h3-remote"}
+}
+
+func (c *mobileVRouteH3StreamNetConn) SetDeadline(t time.Time) error {
+	if c == nil || c.stream == nil {
+		return nil
+	}
+	return c.stream.SetDeadline(t)
+}
+
+func (c *mobileVRouteH3StreamNetConn) SetReadDeadline(t time.Time) error {
+	if c == nil || c.stream == nil {
+		return nil
+	}
+	return c.stream.SetReadDeadline(t)
+}
+
+func (c *mobileVRouteH3StreamNetConn) SetWriteDeadline(t time.Time) error {
+	if c == nil || c.stream == nil {
+		return nil
+	}
+	return c.stream.SetWriteDeadline(t)
 }
 
 var mobileVRouteCarrierRetryMin = time.Second
@@ -758,7 +850,7 @@ func mobileVRouteCapabilitiesPayload() map[string]any {
 		"ip_frame":           true,
 		"ipv4":               true,
 		"websocket_carrier":  true,
-		"websocket_h3":       false,
+		"websocket_h3":       true,
 		"outbound_dialer":    true,
 		"inbound_listener":   false,
 		"reverse_first_hop":  true,
@@ -831,7 +923,7 @@ func dialMobileVRouteCarrier(plan mobileVRouteForwardPlan) (net.Conn, error) {
 	case "websocket":
 		return dialMobileVRouteWebSocketCarrier(plan)
 	case "websocket-h3":
-		return nil, errors.New("vroute relay protocol websocket-h3 is not supported by mobilecore yet")
+		return dialMobileVRouteH3Carrier(plan)
 	default:
 		return nil, fmt.Errorf("unsupported vroute relay protocol: %s", strings.TrimSpace(plan.Layer))
 	}
@@ -903,6 +995,138 @@ func dialMobileVRouteWebSocketCarrierCandidate(plan mobileVRouteForwardPlan, hea
 		return nil, err
 	}
 	return newWebSocketNetConn(ws), nil
+}
+
+func dialMobileVRouteH3Carrier(plan mobileVRouteForwardPlan) (net.Conn, error) {
+	candidates, err := mobileVRouteRelayDialCandidates(plan.RelayHost)
+	if err != nil {
+		return nil, err
+	}
+	var attempts []string
+	for _, candidate := range candidates {
+		conn, err := dialMobileVRouteH3CarrierCandidate(plan, candidate)
+		if err == nil {
+			androidLogStore.add("vpn", "info", "vroute h3 carrier connected: route="+plan.RouteID+" path="+strings.Join(plan.Path, ">")+" dial="+candidate.DialHost)
+			return conn, nil
+		}
+		attempts = append(attempts, strings.TrimSpace(candidate.DialHost)+": "+err.Error())
+		androidLogStore.add("vpn", "warn", "vroute h3 carrier dial failed: route="+plan.RouteID+" dial="+candidate.DialHost+" err="+err.Error())
+	}
+	if len(attempts) == 0 {
+		return nil, errors.New("vroute h3 dial failed: no relay candidate")
+	}
+	return nil, fmt.Errorf("vroute h3 dial failed: %s", strings.Join(attempts, "; "))
+}
+
+func dialMobileVRouteH3CarrierCandidate(plan mobileVRouteForwardPlan, candidate mobileVRouteRelayDialCandidate) (net.Conn, error) {
+	relayURL, err := mobileVRouteRelayWebSocketURL(candidate.URLHost, plan.RelayPort, plan.RouteID)
+	if err != nil {
+		return nil, err
+	}
+	dialHostPort := net.JoinHostPort(candidate.DialHost, strconv.Itoa(plan.RelayPort))
+	tlsConf := &tls.Config{
+		MinVersion:         tls.VersionTLS13,
+		NextProtos:         []string{http3.NextProtoH3},
+		ServerName:         strings.TrimSpace(candidate.URLHost),
+		InsecureSkipVerify: true,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), mobileVRouteCarrierDialTimeout)
+	defer cancel()
+	quicConn, err := mobileVRouteH3QUICDial(ctx, dialHostPort, tlsConf, mobileVRouteQUICConfig())
+	if err != nil {
+		return nil, err
+	}
+	clientConn := (&http3.Transport{}).NewClientConn(quicConn)
+	select {
+	case <-clientConn.ReceivedSettings():
+	case <-ctx.Done():
+		_ = quicConn.CloseWithError(0, "mobile vroute h3 settings timeout")
+		return nil, fmt.Errorf("vroute h3 settings timeout: relay=%s", dialHostPort)
+	case <-clientConn.Context().Done():
+		_ = quicConn.CloseWithError(0, "mobile vroute h3 connection closed")
+		return nil, fmt.Errorf("vroute h3 connection failed: %w", context.Cause(clientConn.Context()))
+	}
+	if settings := clientConn.Settings(); settings == nil || !settings.EnableExtendedConnect {
+		_ = quicConn.CloseWithError(0, "mobile vroute h3 extended connect disabled")
+		return nil, errors.New("vroute h3 failed: server did not enable extended connect")
+	}
+	stream, err := clientConn.OpenRequestStream(ctx)
+	if err != nil {
+		_ = quicConn.CloseWithError(0, "mobile vroute h3 stream open failed")
+		return nil, err
+	}
+	_ = stream.SetDeadline(time.Now().Add(mobileVRouteH3StreamOpenTimeout))
+	request, err := http.NewRequestWithContext(ctx, http.MethodConnect, relayURL, nil)
+	if err != nil {
+		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+		_ = quicConn.CloseWithError(0, "mobile vroute h3 request build failed")
+		return nil, err
+	}
+	request.Proto = "websocket"
+	request.ProtoMajor = 3
+	request.ProtoMinor = 0
+	request.Header.Set(mobileVRouteLegacyRouteIDHeader, strings.TrimSpace(plan.RouteID))
+	request.Header.Set(mobileVRouteCodexRouteIDHeader, strings.TrimSpace(plan.RouteID))
+	request.Header.Set(mobileVRouteCodexVersionHeader, mobileVRouteAuthPacketVersion)
+	request.Header.Set(mobileVRouteCodexRelayModeHeader, mobileVRouteRelayModeBridge)
+	request.Header.Set(mobileVRouteCodexRelayRoleHeader, plan.BridgeRole)
+	if err := applyMobileVRouteSecretAuthHeaders(request.Header, plan.RouteID, plan.Rule.Secret, plan.Rule.AuthTicket); err != nil {
+		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+		_ = quicConn.CloseWithError(0, "mobile vroute h3 auth failed")
+		return nil, err
+	}
+	if strings.TrimSpace(candidate.URLHost) != "" {
+		request.Host = strings.TrimSpace(candidate.URLHost)
+	}
+	if err := stream.SendRequestHeader(request); err != nil {
+		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+		_ = quicConn.CloseWithError(0, "mobile vroute h3 header send failed")
+		return nil, err
+	}
+	response, err := stream.ReadResponse()
+	if err != nil {
+		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+		_ = quicConn.CloseWithError(0, "mobile vroute h3 response failed")
+		return nil, err
+	}
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
+		_ = response.Body.Close()
+		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+		_ = quicConn.CloseWithError(0, "mobile vroute h3 status failed")
+		return nil, fmt.Errorf("vroute h3 failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
+	}
+	_ = stream.SetDeadline(time.Time{})
+	cancelOnce := sync.Once{}
+	return &mobileVRouteH3StreamNetConn{
+		stream: stream,
+		local:  mobileVRouteNetAddr{label: "mobile-vroute-h3-local"},
+		remote: mobileVRouteNetAddr{label: dialHostPort},
+		closeFn: func() error {
+			var closeErr error
+			cancelOnce.Do(func() {
+				stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+				stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+				closeErr = quicConn.CloseWithError(0, "mobile vroute h3 closed")
+			})
+			return closeErr
+		},
+	}, nil
+}
+
+func mobileVRouteQUICConfig() *quic.Config {
+	return &quic.Config{
+		InitialStreamReceiveWindow:     128 * 1024 * 1024,
+		MaxStreamReceiveWindow:         512 * 1024 * 1024,
+		InitialConnectionReceiveWindow: 512 * 1024 * 1024,
+		MaxConnectionReceiveWindow:     1024 * 1024 * 1024,
+		EnableDatagrams:                true,
+	}
 }
 
 func applyMobileVRouteSecretAuthHeaders(headers http.Header, routeID string, secret string, authTicket string) error {

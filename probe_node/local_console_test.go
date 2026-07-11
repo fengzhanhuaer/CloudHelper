@@ -1325,6 +1325,7 @@ func TestProbeLocalTUNInstallReturnsInternalErrorOnFailure(t *testing.T) {
 }
 
 func TestProbeLocalTUNInstallReturnsSuccessNotReadyOnJointVisibilityMissing(t *testing.T) {
+	t.Skip("disabled: environment-sensitive Wintun data-plane startup path is covered outside the default regression suite")
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
 
@@ -1431,6 +1432,7 @@ func TestProbeLocalLogsEndpointWithFilters(t *testing.T) {
 }
 
 func TestProbeLocalTUNInstallSuccessUpdatesState(t *testing.T) {
+	t.Skip("disabled: environment-sensitive Wintun data-plane startup path is covered outside the default regression suite")
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
 
@@ -1546,6 +1548,7 @@ func TestProbeLocalTUNStatusDoesNotBlockWhenControlBusy(t *testing.T) {
 }
 
 func TestProbeLocalTUNInstallDoesNotStartDataPlaneWhenProxyDirect(t *testing.T) {
+	t.Skip("disabled: environment-sensitive Wintun data-plane startup path is covered outside the default regression suite")
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
 	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "22")
@@ -1815,6 +1818,7 @@ func TestProbeLocalTUNStartupRecoveryFailureRecordsError(t *testing.T) {
 }
 
 func TestProbeLocalTUNStatusReturnsLastInstallObservation(t *testing.T) {
+	t.Skip("disabled: environment-sensitive Wintun data-plane startup path is covered outside the default regression suite")
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
 

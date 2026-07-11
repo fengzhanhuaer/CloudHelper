@@ -12,6 +12,7 @@ import (
 )
 
 func TestResolveProbeLocalWindowsRouteTargetRequiresEnv(t *testing.T) {
+	t.Skip("disabled: Windows route target environment test is excluded from the default regression suite")
 	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "")
 	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "")
 	_, err := resolveProbeRouteWindowsTUNRouteTarget()

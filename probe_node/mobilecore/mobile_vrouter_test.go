@@ -6,10 +6,12 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"golang.org/x/net/dns/dnsmessage"
 )
 
@@ -46,6 +49,8 @@ func resetMobileVRouteVPNStateForTest(t *testing.T, configDir string) {
 	vpnDNSState.fakeDomainToIP = map[string]string{}
 	vpnDNSState.fakeIPToEntry = map[string]androidVPNDNSFakeEntry{}
 	vpnDNSState.routeIPHints = map[string]androidVPNDNSRouteHintEntry{}
+	vpnDNSState.realIPToFake = map[string]androidVPNDNSRealIPFakeEntry{}
+	vpnDNSState.fakeFlowToReal = map[string]androidVPNDNSRealIPFakeEntry{}
 	vpnDNSState.cacheDir = ""
 	vpnDNSState.cacheLoaded = false
 	vpnDNSState.cacheDirty = false
@@ -231,6 +236,76 @@ func TestMobileVRouteHandleStaleFakeIPLocalExitFallsThrough(t *testing.T) {
 	}
 }
 
+func TestMobileVRouteSNIWarmsFakeIPButDoesNotRouteRealIP(t *testing.T) {
+	configDir := t.TempDir()
+	resetMobileVRouteVPNStateForTest(t, configDir)
+	if err := persistMobileVRouteConfig(configDir, mobileVRouteConfig{
+		LocalNodeID: "9",
+		Enabled:     true,
+		ProbeIPs: []mobileVRouteProbeIP{
+			{NodeID: "9", IP: "198.18.0.9", ServicePort: 12040},
+			{NodeID: "17", IP: "198.18.0.17", ServicePort: 12041},
+		},
+		TopologyRules: []mobileVRouteTopology{{
+			ID:              "link-9-17",
+			FromNodeID:      "9",
+			ToNodeID:        "17",
+			ToServiceDomain: "edge-17.example.com",
+			ToServicePort:   12041,
+			Secret:          "secret-9-17",
+			AuthTicket:      "ticket-9-17",
+			Enabled:         true,
+		}},
+		RouteRules: []mobileVRouteRouteRule{{
+			ID:         "rr-google",
+			Name:       "Google",
+			Action:     "probe_exit",
+			ExitNodeID: "17",
+			Entries:    []string{"domain_suffix:googleapis.com"},
+		}},
+	}); err != nil {
+		t.Fatalf("persist vroute config failed: %v", err)
+	}
+
+	route, err := decideVPNRouteForTarget("play.googleapis.com:443")
+	if err != nil {
+		t.Fatalf("decide sni route failed: %v", err)
+	}
+	if route.Direct || route.Reject || route.SelectedRouteID != "vroute:17" {
+		t.Fatalf("unexpected sni route: %+v", route)
+	}
+	rememberAndroidVPNSNIFakeIP("216.239.38.223:443", "play.googleapis.com:443", route)
+
+	vpnDNSState.mu.Lock()
+	fakeIP := vpnDNSState.fakeDomainToIP["play.googleapis.com"]
+	vpnDNSState.mu.Unlock()
+	if fakeIP == "" || net.ParseIP(fakeIP).To4() == nil {
+		t.Fatalf("fake ip was not warmed for play.googleapis.com: %q", fakeIP)
+	}
+	fakeRoute, err := decideVPNRouteForTarget(net.JoinHostPort(fakeIP, "443"))
+	if err != nil {
+		t.Fatalf("decide warmed fake-ip route failed: %v", err)
+	}
+	if fakeRoute.Direct || fakeRoute.Reject || fakeRoute.SelectedRouteID != "vroute:17" || fakeRoute.TargetAddr != "play.googleapis.com:443" {
+		t.Fatalf("unexpected warmed fake-ip route: %+v", fakeRoute)
+	}
+
+	realRoute, err := decideVPNRouteForTarget("216.239.38.223:443")
+	if err != nil {
+		t.Fatalf("decide real-ip route failed: %v", err)
+	}
+	if !realRoute.Direct || realRoute.SelectedRouteID != "" {
+		t.Fatalf("real ip must not be routed through vroute: %+v", realRoute)
+	}
+	handled, err := mobileVRouteHandleVPNPacket(configDir, buildMobileVRouteTestIPv4Packet(6, "10.0.0.2", "216.239.38.223", 12345, 443), nil)
+	if err != nil {
+		t.Fatalf("handle real-ip packet failed: %v", err)
+	}
+	if handled {
+		t.Fatalf("real-ip packet was handled by vroute carrier; vroute must only carry fake/virtual IPs")
+	}
+}
+
 func TestMobileVRouteCarrierWriteFailureClosesAndRecordsError(t *testing.T) {
 	configDir := t.TempDir()
 	resetMobileVRouteVPNStateForTest(t, configDir)
@@ -285,7 +360,7 @@ func TestMobileVRouteRuntimeStatusDeclaresMobileCapabilityBoundary(t *testing.T)
 	if capabilities["ip_frame"] != true || capabilities["websocket_carrier"] != true || capabilities["vpn_tun_writeback"] != true {
 		t.Fatalf("required mobile vroute capabilities missing: %+v", capabilities)
 	}
-	if capabilities["websocket_h3"] != false || capabilities["inbound_listener"] != false || capabilities["reverse_first_hop"] != true || capabilities["relay_forwarding"] != true || capabilities["control_ping"] != true || capabilities["path_rtt"] != true {
+	if capabilities["websocket_h3"] != true || capabilities["inbound_listener"] != false || capabilities["reverse_first_hop"] != true || capabilities["relay_forwarding"] != true || capabilities["control_ping"] != true || capabilities["path_rtt"] != true {
 		t.Fatalf("unexpected mobile vroute capabilities: %+v", capabilities)
 	}
 }
@@ -736,9 +811,25 @@ func TestMobileVRouteExplicitHTTP3IsNotSilentlyDowngraded(t *testing.T) {
 	if got := normalizeMobileVRouteRelayLayer("http3"); got != "websocket-h3" {
 		t.Fatalf("http3 normalized to %q, want websocket-h3", got)
 	}
-	plan := mobileVRouteForwardPlan{Layer: "websocket-h3"}
-	if _, err := dialMobileVRouteCarrier(plan); err == nil || !strings.Contains(err.Error(), "websocket-h3") {
-		t.Fatalf("dial h3 err=%v, want explicit unsupported websocket-h3", err)
+	oldDial := mobileVRouteH3QUICDial
+	defer func() { mobileVRouteH3QUICDial = oldDial }()
+	called := false
+	mobileVRouteH3QUICDial = func(context.Context, string, *tls.Config, *quic.Config) (*quic.Conn, error) {
+		called = true
+		return nil, errors.New("h3 dial hook")
+	}
+	plan := mobileVRouteForwardPlan{
+		Layer:     "websocket-h3",
+		RouteID:   "vrouter-h3",
+		RelayHost: "203.0.113.17",
+		RelayPort: 12040,
+		Rule:      mobileVRouteTopology{Secret: "secret", AuthTicket: "ticket"},
+	}
+	if _, err := dialMobileVRouteCarrier(plan); err == nil || !strings.Contains(err.Error(), "h3 dial hook") {
+		t.Fatalf("dial h3 err=%v, want hook error", err)
+	}
+	if !called {
+		t.Fatalf("h3 dial hook was not called")
 	}
 }
 
@@ -1008,5 +1099,122 @@ func TestMobileVRouteDNSReturnsFakeIPForProbeExitDomain(t *testing.T) {
 	}
 	if route.SelectedRouteID != "vroute:1" || route.Group != "AI" || route.TargetAddr != "chatgpt.com:443" {
 		t.Fatalf("unexpected fake ip route: %+v", route)
+	}
+}
+
+func TestAndroidVPNTCPDNSReturnsFakeIPForProbeExitDomain(t *testing.T) {
+	configDir := t.TempDir()
+	resetMobileVRouteVPNStateForTest(t, configDir)
+	if err := persistMobileVRouteConfig(configDir, mobileVRouteConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		RouteRules: []mobileVRouteRouteRule{{
+			ID:         "rr-ai",
+			Name:       "AI",
+			Action:     "probe_exit",
+			ExitNodeID: "1",
+			Entries:    []string{"domain_suffix:chatgpt.com"},
+		}},
+	}); err != nil {
+		t.Fatalf("persist vroute config failed: %v", err)
+	}
+	client, server := net.Pipe()
+	defer client.Close()
+	go serveAndroidVPNTCPDNS(server, "10.111.0.1:53")
+
+	query, err := buildAndroidVPNDNSQuery("chatgpt.com", dnsmessage.TypeA)
+	if err != nil {
+		t.Fatalf("build dns query failed: %v", err)
+	}
+	request := make([]byte, 2+len(query))
+	binary.BigEndian.PutUint16(request[:2], uint16(len(query)))
+	copy(request[2:], query)
+	if _, err := client.Write(request); err != nil {
+		t.Fatalf("write tcp dns query failed: %v", err)
+	}
+	header := make([]byte, 2)
+	if _, err := io.ReadFull(client, header); err != nil {
+		t.Fatalf("read tcp dns header failed: %v", err)
+	}
+	response := make([]byte, int(binary.BigEndian.Uint16(header)))
+	if _, err := io.ReadFull(client, response); err != nil {
+		t.Fatalf("read tcp dns response failed: %v", err)
+	}
+	ips := extractAndroidVPNDNSResponseIPs(response)
+	if len(ips) != 1 || net.ParseIP(ips[0]).To4() == nil || !strings.HasPrefix(ips[0], "198.18.") {
+		t.Fatalf("tcp dns ips=%v, want one 198.18 fake ip", ips)
+	}
+}
+
+func TestAndroidVPNRealIPFakeNATRewritesPacketsLocally(t *testing.T) {
+	configDir := t.TempDir()
+	resetMobileVRouteVPNStateForTest(t, configDir)
+	if err := persistMobileVRouteConfig(configDir, mobileVRouteConfig{
+		LocalNodeID: "9",
+		Enabled:     true,
+		RouteRules: []mobileVRouteRouteRule{{
+			ID:         "rr-google",
+			Name:       "Google",
+			Action:     "probe_exit",
+			ExitNodeID: "17",
+			Entries:    []string{"domain_suffix:googleapis.com"},
+		}},
+	}); err != nil {
+		t.Fatalf("persist vroute config failed: %v", err)
+	}
+	route, err := decideVPNRouteForTarget("play.googleapis.com:443")
+	if err != nil {
+		t.Fatalf("decide route failed: %v", err)
+	}
+	rememberAndroidVPNSNIFakeIP("216.239.38.223:443", "play.googleapis.com:443", route)
+
+	vpnDNSState.mu.Lock()
+	fakeIP := vpnDNSState.fakeDomainToIP["play.googleapis.com"]
+	natCount := len(vpnDNSState.realIPToFake)
+	vpnDNSState.mu.Unlock()
+	if fakeIP == "" || natCount != 2 {
+		t.Fatalf("fakeIP=%q natCount=%d, want mapping", fakeIP, natCount)
+	}
+
+	outbound := buildMobileVRouteTestIPv4Packet(6, "10.111.0.2", "216.239.38.223", 45678, 443)
+	rewritten, ok, err := rewriteAndroidVPNRealIPPacketToFake(outbound)
+	if err != nil {
+		t.Fatalf("rewrite outbound failed: %v", err)
+	}
+	if !ok {
+		t.Fatalf("outbound packet was not rewritten")
+	}
+	info, ok := parseAndroidVPNIPv4TransportPacket(rewritten)
+	if !ok || info.DestinationIP != fakeIP || info.SourceIP != "10.111.0.2" {
+		t.Fatalf("unexpected rewritten outbound: %+v fake=%s", info, fakeIP)
+	}
+	if got := binary.BigEndian.Uint16(rewritten[10:12]); got == 0 {
+		t.Fatalf("ipv4 checksum was not set")
+	}
+
+	reply := buildMobileVRouteTestIPv4Packet(6, fakeIP, "10.111.0.2", 443, 45678)
+	restored, ok, err := rewriteAndroidVPNFakeIPPacketToReal(reply)
+	if err != nil {
+		t.Fatalf("rewrite reply failed: %v", err)
+	}
+	if !ok {
+		t.Fatalf("reply packet was not rewritten")
+	}
+	replyInfo, ok := parseAndroidVPNIPv4TransportPacket(restored)
+	if !ok || replyInfo.SourceIP != "216.239.38.223" || replyInfo.DestinationIP != "10.111.0.2" {
+		t.Fatalf("unexpected restored reply: %+v", replyInfo)
+	}
+
+	udpOutbound := buildMobileVRouteTestIPv4Packet(17, "10.111.0.2", "216.239.38.223", 45679, 443)
+	udpRewritten, ok, err := rewriteAndroidVPNRealIPPacketToFake(udpOutbound)
+	if err != nil {
+		t.Fatalf("rewrite udp outbound failed: %v", err)
+	}
+	if !ok {
+		t.Fatalf("udp outbound packet was not rewritten")
+	}
+	udpInfo, ok := parseAndroidVPNIPv4TransportPacket(udpRewritten)
+	if !ok || udpInfo.DestinationIP != fakeIP || udpInfo.Protocol != 17 {
+		t.Fatalf("unexpected rewritten udp outbound: %+v fake=%s", udpInfo, fakeIP)
 	}
 }

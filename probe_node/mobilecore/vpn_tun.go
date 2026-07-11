@@ -59,6 +59,8 @@ var vpnDNSState = &androidVPNDNSState{
 	fakeDomainToIP: map[string]string{},
 	fakeIPToEntry:  map[string]androidVPNDNSFakeEntry{},
 	routeIPHints:   map[string]androidVPNDNSRouteHintEntry{},
+	realIPToFake:   map[string]androidVPNDNSRealIPFakeEntry{},
+	fakeFlowToReal: map[string]androidVPNDNSRealIPFakeEntry{},
 }
 
 type androidVPNRuntime struct {
@@ -97,6 +99,8 @@ type androidVPNDNSState struct {
 	fakeDomainToIP map[string]string
 	fakeIPToEntry  map[string]androidVPNDNSFakeEntry
 	routeIPHints   map[string]androidVPNDNSRouteHintEntry
+	realIPToFake   map[string]androidVPNDNSRealIPFakeEntry
+	fakeFlowToReal map[string]androidVPNDNSRealIPFakeEntry
 	cacheDir       string
 	cacheLoaded    bool
 	cacheDirty     bool
@@ -119,6 +123,27 @@ type androidVPNDNSRouteHintEntry struct {
 	IPv6      []string
 	Group     string
 	ExpiresAt time.Time
+}
+
+type androidVPNDNSRealIPFakeEntry struct {
+	Domain          string
+	RealIP          string
+	FakeIP          string
+	Port            string
+	Group           string
+	SelectedRouteID string
+	Protocol        uint8
+	ExpiresAt       time.Time
+}
+
+type androidVPNIPv4TransportInfo struct {
+	Protocol        uint8
+	SourceIP        string
+	DestinationIP   string
+	SourcePort      uint16
+	DestinationPort uint16
+	HeaderLength    int
+	TotalLength     int
 }
 
 type androidVPNDNSPersistFile struct {
@@ -182,7 +207,7 @@ func ensureAndroidVPNDNSCacheLoaded(configDir string) {
 	if vpnDNSState.cacheLoaded && strings.EqualFold(strings.TrimSpace(vpnDNSState.cacheDir), dir) {
 		return
 	}
-	keepRuntime := strings.TrimSpace(vpnDNSState.cacheDir) == "" && (len(vpnDNSState.fakeIPToEntry) > 0 || len(vpnDNSState.routeIPHints) > 0)
+	keepRuntime := strings.TrimSpace(vpnDNSState.cacheDir) == "" && (len(vpnDNSState.fakeIPToEntry) > 0 || len(vpnDNSState.routeIPHints) > 0 || len(vpnDNSState.realIPToFake) > 0 || len(vpnDNSState.fakeFlowToReal) > 0)
 	vpnDNSState.cacheDir = dir
 	vpnDNSState.cacheLoaded = true
 	if vpnDNSState.fakeDomainToIP == nil || !keepRuntime {
@@ -193,6 +218,12 @@ func ensureAndroidVPNDNSCacheLoaded(configDir string) {
 	}
 	if vpnDNSState.routeIPHints == nil || !keepRuntime {
 		vpnDNSState.routeIPHints = map[string]androidVPNDNSRouteHintEntry{}
+	}
+	if vpnDNSState.realIPToFake == nil || !keepRuntime {
+		vpnDNSState.realIPToFake = map[string]androidVPNDNSRealIPFakeEntry{}
+	}
+	if vpnDNSState.fakeFlowToReal == nil || !keepRuntime {
+		vpnDNSState.fakeFlowToReal = map[string]androidVPNDNSRealIPFakeEntry{}
 	}
 	if payload.NextFakeOffset > vpnDNSState.nextFakeOffset || !keepRuntime {
 		vpnDNSState.nextFakeOffset = payload.NextFakeOffset
@@ -656,9 +687,19 @@ func (n *androidVPNDataPlane) inputLoop(ctx context.Context) {
 			continue
 		}
 		packet := append([]byte(nil), buf[:readN]...)
+		if rewritten, ok, rewriteErr := rewriteAndroidVPNRealIPPacketToFake(packet); rewriteErr != nil {
+			recordVPNRuntimeError("real_ip_fake_rewrite", rewriteErr)
+		} else if ok {
+			packet = rewritten
+		}
 		handled, routeErr := mobileVRouteHandleVPNPacket(currentAndroidVPNConfigDir(), packet, func(reply []byte) error {
 			if len(reply) == 0 {
 				return nil
+			}
+			if rewritten, ok, rewriteErr := rewriteAndroidVPNFakeIPPacketToReal(reply); rewriteErr != nil {
+				recordVPNRuntimeError("fake_ip_real_rewrite", rewriteErr)
+			} else if ok {
+				reply = rewritten
 			}
 			return n.writeTunPacket(reply)
 		})
@@ -780,9 +821,13 @@ func (n *androidVPNDataPlane) handleTCPForwarder(req *tcp.ForwarderRequest) {
 	}
 	req.Complete(false)
 	inbound := gonet.NewTCPConn(&wq, ep)
+	if isAndroidVPNDNSTarget(targetAddr) {
+		go serveAndroidVPNTCPDNS(inbound, targetAddr)
+		return
+	}
 	preface, dialTarget, sni := prepareVPNTCPDialTarget(inbound, targetAddr)
 	flowID := newAndroidRouteFlowID("vpn_tcp", dialTarget)
-	outbound, route, err := openVPNDirectTCPForTarget(dialTarget, flowID)
+	outbound, route, err := openVPNDirectTCPForTarget(dialTarget, flowID, targetAddr)
 	if err != nil {
 		stage := "tcp_open " + targetAddr
 		if dialTarget != targetAddr {
@@ -879,7 +924,7 @@ func (n *androidVPNDataPlane) handleDNSForwarder(req *udp.ForwarderRequest, targ
 	go serveAndroidVPNDNS(inbound, targetAddr)
 }
 
-func openVPNDirectTCPForTarget(targetAddr string, flowID string) (net.Conn, vpnRouteDecision, error) {
+func openVPNDirectTCPForTarget(targetAddr string, flowID string, originalTargetAddr string) (net.Conn, vpnRouteDecision, error) {
 	route, err := decideVPNRouteForTarget(targetAddr)
 	if err != nil {
 		return nil, route, err
@@ -887,6 +932,7 @@ func openVPNDirectTCPForTarget(targetAddr string, flowID string) (net.Conn, vpnR
 	if route.Reject {
 		return nil, route, errors.New("route rejected")
 	}
+	rememberAndroidVPNSNIFakeIP(originalTargetAddr, targetAddr, route)
 	conn, err := dialVPNDirectTCPWithFlow(route, flowID)
 	if err == nil {
 		return conn, route, nil
@@ -1287,6 +1333,51 @@ func serveAndroidVPNDNS(conn *gonet.UDPConn, targetAddr string) {
 	}
 }
 
+func serveAndroidVPNTCPDNS(conn net.Conn, targetAddr string) {
+	defer conn.Close()
+	header := make([]byte, 2)
+	for {
+		_ = conn.SetReadDeadline(time.Now().Add(vpnDNSReadTimeout))
+		if _, err := io.ReadFull(conn, header); err != nil {
+			if !errors.Is(err, os.ErrDeadlineExceeded) && !isTimeoutError(err) && !errors.Is(err, io.EOF) {
+				recordVPNRuntimeError("dns_tcp_read "+targetAddr, err)
+			}
+			return
+		}
+		packetLen := int(binary.BigEndian.Uint16(header))
+		if packetLen <= 0 || packetLen > 4096 {
+			recordVPNRuntimeError("dns_tcp_read "+targetAddr, fmt.Errorf("invalid dns tcp packet length: %d", packetLen))
+			return
+		}
+		packet := make([]byte, packetLen)
+		if _, err := io.ReadFull(conn, packet); err != nil {
+			if !errors.Is(err, os.ErrDeadlineExceeded) && !isTimeoutError(err) && !errors.Is(err, io.EOF) {
+				recordVPNRuntimeError("dns_tcp_read "+targetAddr, err)
+			}
+			return
+		}
+		response, err := resolveAndroidVPNDNSPacket(packet)
+		if err != nil {
+			recordVPNRuntimeError("dns_tcp_resolve "+targetAddr, err)
+			response = buildAndroidVPNDNSRCode(packet, dnsmessage.RCodeServerFailure)
+		}
+		if len(response) == 0 {
+			response = buildAndroidVPNDNSRCode(packet, dnsmessage.RCodeServerFailure)
+		}
+		if len(response) == 0 || len(response) > 65535 {
+			return
+		}
+		out := make([]byte, 2+len(response))
+		binary.BigEndian.PutUint16(out[:2], uint16(len(response)))
+		copy(out[2:], response)
+		_ = conn.SetWriteDeadline(time.Now().Add(vpnDNSLookupTimeout))
+		if _, err := conn.Write(out); err != nil {
+			recordVPNRuntimeError("dns_tcp_write "+targetAddr, err)
+			return
+		}
+	}
+}
+
 func resolveAndroidVPNDNSPacket(packet []byte) ([]byte, error) {
 	domain, qType, err := parseAndroidVPNDNSQuestion(packet)
 	if err != nil {
@@ -1530,6 +1621,252 @@ func storeAndroidVPNDNSRouteHints(domain string, response []byte, route androidR
 	}
 	vpnDNSState.mu.Unlock()
 	markAndroidVPNDNSCacheDirty(configDir)
+}
+
+func rememberAndroidVPNSNIFakeIP(originalTargetAddr string, sniTargetAddr string, route vpnRouteDecision) {
+	if route.Direct || route.Reject || strings.TrimSpace(route.SelectedRouteID) == "" {
+		return
+	}
+	sniHost, port, err := net.SplitHostPort(strings.TrimSpace(sniTargetAddr))
+	if err != nil {
+		return
+	}
+	domain := strings.TrimSpace(strings.ToLower(strings.Trim(sniHost, ".")))
+	if domain == "" || net.ParseIP(strings.Trim(domain, "[]")) != nil {
+		return
+	}
+	_, ok := allocateAndroidVPNDNSFakeIP(domain, androidRouteDecision{
+		Direct:          route.Direct,
+		Reject:          route.Reject,
+		TargetAddr:      net.JoinHostPort(domain, strings.TrimSpace(port)),
+		Group:           strings.TrimSpace(route.Group),
+		SelectedRouteID: strings.TrimSpace(route.SelectedRouteID),
+	})
+	if ok {
+		androidLogStore.add("vpn", "debug", "tcp sni fake-ip warmed "+domain+" group="+route.Group)
+	}
+	rememberAndroidVPNRealIPFakeMapping(originalTargetAddr, domain, strings.TrimSpace(port), route, 6)
+	rememberAndroidVPNRealIPFakeMapping(originalTargetAddr, domain, strings.TrimSpace(port), route, 17)
+}
+
+func rememberAndroidVPNRealIPFakeMapping(originalTargetAddr string, domain string, port string, route vpnRouteDecision, protocol uint8) {
+	if route.Direct || route.Reject || strings.TrimSpace(route.SelectedRouteID) == "" {
+		return
+	}
+	originalHost, originalPort, err := net.SplitHostPort(strings.TrimSpace(originalTargetAddr))
+	if err != nil {
+		return
+	}
+	realIP := net.ParseIP(strings.TrimSpace(strings.Trim(originalHost, "[]"))).To4()
+	if realIP == nil {
+		return
+	}
+	cleanDomain := strings.TrimSpace(strings.ToLower(strings.Trim(domain, ".")))
+	cleanPort := firstNonEmptyString(strings.TrimSpace(port), strings.TrimSpace(originalPort))
+	if cleanDomain == "" || cleanPort == "" {
+		return
+	}
+	fakeIP, ok := allocateAndroidVPNDNSFakeIP(cleanDomain, androidRouteDecision{
+		Direct:          route.Direct,
+		Reject:          route.Reject,
+		TargetAddr:      net.JoinHostPort(cleanDomain, cleanPort),
+		Group:           strings.TrimSpace(route.Group),
+		SelectedRouteID: strings.TrimSpace(route.SelectedRouteID),
+	})
+	if !ok {
+		return
+	}
+	entry := androidVPNDNSRealIPFakeEntry{
+		Domain:          cleanDomain,
+		RealIP:          realIP.String(),
+		FakeIP:          fakeIP,
+		Port:            cleanPort,
+		Group:           strings.TrimSpace(route.Group),
+		SelectedRouteID: strings.TrimSpace(route.SelectedRouteID),
+		Protocol:        protocol,
+		ExpiresAt:       time.Now().UTC().Add(vpnDNSCacheTTL),
+	}
+	configDir := currentAndroidVPNConfigDir()
+	ensureAndroidVPNDNSCacheLoaded(configDir)
+	vpnDNSState.mu.Lock()
+	pruneAndroidVPNDNSFakeLocked(time.Now().UTC())
+	if vpnDNSState.realIPToFake == nil {
+		vpnDNSState.realIPToFake = map[string]androidVPNDNSRealIPFakeEntry{}
+	}
+	vpnDNSState.realIPToFake[androidVPNRealIPFakeKey(protocol, entry.RealIP, cleanPort)] = entry
+	vpnDNSState.mu.Unlock()
+	androidLogStore.add("vpn", "debug", "real-ip fake-ip mapping "+entry.RealIP+":"+cleanPort+" -> "+fakeIP+" domain="+cleanDomain+" group="+route.Group)
+}
+
+func rewriteAndroidVPNRealIPPacketToFake(packet []byte) ([]byte, bool, error) {
+	info, ok := parseAndroidVPNIPv4TransportPacket(packet)
+	if !ok {
+		return nil, false, nil
+	}
+	vpnDNSState.mu.Lock()
+	pruneAndroidVPNDNSFakeLocked(time.Now().UTC())
+	entry, ok := vpnDNSState.realIPToFake[androidVPNRealIPFakeKey(info.Protocol, info.DestinationIP, strconv.Itoa(int(info.DestinationPort)))]
+	vpnDNSState.mu.Unlock()
+	if !ok || strings.TrimSpace(entry.FakeIP) == "" {
+		return nil, false, nil
+	}
+	rewritten, err := rewriteAndroidVPNIPv4Packet(packet, "", entry.FakeIP)
+	if err != nil {
+		return nil, false, err
+	}
+	replyKey := androidVPNFlowKey(info.Protocol, entry.FakeIP, info.DestinationPort, info.SourceIP, info.SourcePort)
+	entry.ExpiresAt = time.Now().UTC().Add(vpnDNSCacheTTL)
+	vpnDNSState.mu.Lock()
+	if vpnDNSState.fakeFlowToReal == nil {
+		vpnDNSState.fakeFlowToReal = map[string]androidVPNDNSRealIPFakeEntry{}
+	}
+	vpnDNSState.fakeFlowToReal[replyKey] = entry
+	vpnDNSState.mu.Unlock()
+	return rewritten, true, nil
+}
+
+func rewriteAndroidVPNFakeIPPacketToReal(packet []byte) ([]byte, bool, error) {
+	info, ok := parseAndroidVPNIPv4TransportPacket(packet)
+	if !ok {
+		return nil, false, nil
+	}
+	key := androidVPNFlowKey(info.Protocol, info.SourceIP, info.SourcePort, info.DestinationIP, info.DestinationPort)
+	vpnDNSState.mu.Lock()
+	pruneAndroidVPNDNSFakeLocked(time.Now().UTC())
+	entry, ok := vpnDNSState.fakeFlowToReal[key]
+	vpnDNSState.mu.Unlock()
+	if !ok || strings.TrimSpace(entry.RealIP) == "" {
+		return nil, false, nil
+	}
+	rewritten, err := rewriteAndroidVPNIPv4Packet(packet, entry.RealIP, "")
+	if err != nil {
+		return nil, false, err
+	}
+	return rewritten, true, nil
+}
+
+func parseAndroidVPNIPv4TransportPacket(packet []byte) (androidVPNIPv4TransportInfo, bool) {
+	if len(packet) < 20 || packet[0]>>4 != 4 {
+		return androidVPNIPv4TransportInfo{}, false
+	}
+	ihl := int(packet[0]&0x0f) * 4
+	if ihl < 20 || len(packet) < ihl {
+		return androidVPNIPv4TransportInfo{}, false
+	}
+	totalLen := int(binary.BigEndian.Uint16(packet[2:4]))
+	if totalLen < ihl || totalLen > len(packet) {
+		totalLen = len(packet)
+	}
+	protocol := packet[9]
+	if protocol != 6 && protocol != 17 {
+		return androidVPNIPv4TransportInfo{}, false
+	}
+	if totalLen < ihl+4 {
+		return androidVPNIPv4TransportInfo{}, false
+	}
+	return androidVPNIPv4TransportInfo{
+		Protocol:        protocol,
+		SourceIP:        net.IPv4(packet[12], packet[13], packet[14], packet[15]).String(),
+		DestinationIP:   net.IPv4(packet[16], packet[17], packet[18], packet[19]).String(),
+		SourcePort:      binary.BigEndian.Uint16(packet[ihl : ihl+2]),
+		DestinationPort: binary.BigEndian.Uint16(packet[ihl+2 : ihl+4]),
+		HeaderLength:    ihl,
+		TotalLength:     totalLen,
+	}, true
+}
+
+func rewriteAndroidVPNIPv4Packet(packet []byte, sourceIP string, destinationIP string) ([]byte, error) {
+	info, ok := parseAndroidVPNIPv4TransportPacket(packet)
+	if !ok {
+		return nil, errors.New("packet is not IPv4 TCP/UDP")
+	}
+	out := append([]byte(nil), packet...)
+	if cleanSource := strings.TrimSpace(sourceIP); cleanSource != "" {
+		ip := net.ParseIP(cleanSource).To4()
+		if ip == nil {
+			return nil, fmt.Errorf("invalid source IPv4: %s", cleanSource)
+		}
+		copy(out[12:16], ip)
+	}
+	if cleanDestination := strings.TrimSpace(destinationIP); cleanDestination != "" {
+		ip := net.ParseIP(cleanDestination).To4()
+		if ip == nil {
+			return nil, fmt.Errorf("invalid destination IPv4: %s", cleanDestination)
+		}
+		copy(out[16:20], ip)
+	}
+	setAndroidVPNIPv4HeaderChecksum(out, info.HeaderLength)
+	setAndroidVPNTransportChecksum(out, info)
+	return out, nil
+}
+
+func setAndroidVPNIPv4HeaderChecksum(packet []byte, ihl int) {
+	if len(packet) < ihl || ihl < 20 {
+		return
+	}
+	packet[10] = 0
+	packet[11] = 0
+	binary.BigEndian.PutUint16(packet[10:12], androidVPNChecksum(packet[:ihl]))
+}
+
+func setAndroidVPNTransportChecksum(packet []byte, info androidVPNIPv4TransportInfo) {
+	if len(packet) < info.TotalLength || info.TotalLength <= info.HeaderLength {
+		return
+	}
+	transport := packet[info.HeaderLength:info.TotalLength]
+	switch info.Protocol {
+	case 6:
+		if len(transport) < 18 {
+			return
+		}
+		transport[16] = 0
+		transport[17] = 0
+		binary.BigEndian.PutUint16(transport[16:18], androidVPNTransportChecksum(packet, transport, info.Protocol))
+	case 17:
+		if len(transport) < 8 {
+			return
+		}
+		transport[6] = 0
+		transport[7] = 0
+		checksum := androidVPNTransportChecksum(packet, transport, info.Protocol)
+		if checksum == 0 {
+			checksum = 0xffff
+		}
+		binary.BigEndian.PutUint16(transport[6:8], checksum)
+	}
+}
+
+func androidVPNTransportChecksum(packet []byte, transport []byte, protocol uint8) uint16 {
+	pseudo := make([]byte, 12+len(transport))
+	copy(pseudo[0:4], packet[12:16])
+	copy(pseudo[4:8], packet[16:20])
+	pseudo[9] = protocol
+	binary.BigEndian.PutUint16(pseudo[10:12], uint16(len(transport)))
+	copy(pseudo[12:], transport)
+	return androidVPNChecksum(pseudo)
+}
+
+func androidVPNChecksum(data []byte) uint16 {
+	var sum uint32
+	for len(data) >= 2 {
+		sum += uint32(binary.BigEndian.Uint16(data[:2]))
+		data = data[2:]
+	}
+	if len(data) > 0 {
+		sum += uint32(data[0]) << 8
+	}
+	for sum>>16 != 0 {
+		sum = (sum & 0xffff) + (sum >> 16)
+	}
+	return ^uint16(sum)
+}
+
+func androidVPNRealIPFakeKey(protocol uint8, ip string, port string) string {
+	return strconv.Itoa(int(protocol)) + "|" + strings.TrimSpace(ip) + "|" + strings.TrimSpace(port)
+}
+
+func androidVPNFlowKey(protocol uint8, sourceIP string, sourcePort uint16, destinationIP string, destinationPort uint16) string {
+	return strconv.Itoa(int(protocol)) + "|" + strings.TrimSpace(sourceIP) + "|" + strconv.Itoa(int(sourcePort)) + "|" + strings.TrimSpace(destinationIP) + "|" + strconv.Itoa(int(destinationPort))
 }
 
 func lookupAndroidVPNDNSRouteHint(configDir string, ipText string, port string) (androidRouteDecision, bool) {
@@ -1802,11 +2139,27 @@ func snapshotAndroidVPNDNSStatus() map[string]any {
 			"expires_at": entry.ExpiresAt.UTC().Format(time.RFC3339),
 		})
 	}
+	natItems := make([]map[string]any, 0, len(vpnDNSState.realIPToFake))
+	for _, entry := range vpnDNSState.realIPToFake {
+		natItems = append(natItems, map[string]any{
+			"domain":            entry.Domain,
+			"real_ip":           entry.RealIP,
+			"fake_ip":           entry.FakeIP,
+			"port":              entry.Port,
+			"group":             entry.Group,
+			"selected_route_id": entry.SelectedRouteID,
+			"protocol":          entry.Protocol,
+			"expires_at":        entry.ExpiresAt.UTC().Format(time.RFC3339),
+		})
+	}
 	if len(fakeItems) > 8 {
 		fakeItems = fakeItems[:8]
 	}
 	if len(routeItems) > 8 {
 		routeItems = routeItems[:8]
+	}
+	if len(natItems) > 8 {
+		natItems = natItems[:8]
 	}
 	return map[string]any{
 		"enabled":          true,
@@ -1814,8 +2167,11 @@ func snapshotAndroidVPNDNSStatus() map[string]any {
 		"fake_ip_cidr":     "198.18.0.0/15",
 		"fake_ip_count":    len(vpnDNSState.fakeIPToEntry),
 		"route_hint_count": len(vpnDNSState.routeIPHints),
+		"real_nat_count":   len(vpnDNSState.realIPToFake),
+		"flow_nat_count":   len(vpnDNSState.fakeFlowToReal),
 		"fake_ip_items":    fakeItems,
 		"route_hint_items": routeItems,
+		"real_nat_items":   natItems,
 	}
 }
 
@@ -1916,6 +2272,18 @@ func pruneAndroidVPNDNSStateLocked(state *androidVPNDNSState, now time.Time) {
 			continue
 		}
 		delete(state.routeIPHints, ip)
+	}
+	for key, entry := range state.realIPToFake {
+		if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
+			continue
+		}
+		delete(state.realIPToFake, key)
+	}
+	for key, entry := range state.fakeFlowToReal {
+		if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
+			continue
+		}
+		delete(state.fakeFlowToReal, key)
 	}
 }
 
