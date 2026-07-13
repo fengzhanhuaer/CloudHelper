@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -104,11 +105,13 @@ func resetMobileVRouteVPNStateForTest(t *testing.T, configDir string) {
 func TestAndroidVPNFakeIPMigratesToControllerAllocation(t *testing.T) {
 	configDir := t.TempDir()
 	resetMobileVRouteVPNStateForTest(t, configDir)
+	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != mobileVRouteFakeIPResolveAPIPath || r.Method != http.MethodPost {
 			http.NotFound(w, r)
 			return
 		}
+		requestCount++
 		var request map[string]string
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Errorf("decode request: %v", err)
@@ -156,6 +159,106 @@ func TestAndroidVPNFakeIPMigratesToControllerAllocation(t *testing.T) {
 	vpnDNSState.mu.Unlock()
 	if !entry.ControllerManaged || oldExists {
 		t.Fatalf("controller entry=%+v old_exists=%t", entry, oldExists)
+	}
+	if time.Until(entry.ExpiresAt) < 47*time.Hour || time.Until(entry.ExpiresAt) > 49*time.Hour {
+		t.Fatalf("controller fake ip ttl=%s, want about 48h entry=%+v", time.Until(entry.ExpiresAt), entry)
+	}
+	firstExpiresAt := entry.ExpiresAt
+	fakeIP, ok = allocateAndroidVPNDNSFakeIP("play.googleapis.com", androidRouteDecision{
+		Group:           "Google",
+		SelectedRouteID: "vroute:17",
+	})
+	if !ok || fakeIP != "198.18.4.9" || requestCount != 1 {
+		t.Fatalf("cached fake ip=%q ok=%t controller_requests=%d, want cached controller entry", fakeIP, ok, requestCount)
+	}
+	vpnDNSState.mu.Lock()
+	entry = vpnDNSState.fakeIPToEntry[fakeIP]
+	vpnDNSState.mu.Unlock()
+	if !entry.ExpiresAt.Equal(firstExpiresAt) {
+		t.Fatalf("cached fake ip ttl should not slide: first=%s second=%s", firstExpiresAt, entry.ExpiresAt)
+	}
+}
+
+func TestAndroidVPNDNSCacheDoesNotPersistOrLoadFakeIPs(t *testing.T) {
+	configDir := t.TempDir()
+	resetMobileVRouteVPNStateForTest(t, configDir)
+	now := time.Now().UTC()
+	vpnDNSState.mu.Lock()
+	vpnDNSState.cacheDir = configDir
+	vpnDNSState.cacheLoaded = true
+	vpnDNSState.cacheDirty = true
+	vpnDNSState.fakeDomainToIP["api.example.com"] = "198.18.4.9"
+	vpnDNSState.fakeIPToEntry["198.18.4.9"] = androidVPNDNSFakeEntry{
+		Domain:            "api.example.com",
+		Group:             "AI",
+		SelectedRouteID:   "vroute:17",
+		ControllerManaged: true,
+		ExpiresAt:         now.Add(vpnDNSFakeIPTTL),
+	}
+	vpnDNSState.routeIPHints["203.0.113.10"] = androidVPNDNSRouteHintEntry{
+		Domain:    "api.example.com",
+		IP:        "203.0.113.10",
+		IPv4:      []string{"203.0.113.10"},
+		Group:     "AI",
+		ExpiresAt: now.Add(vpnDNSCacheTTL),
+	}
+	vpnDNSState.mu.Unlock()
+
+	persistAndroidVPNDNSCache(configDir)
+	path, ok := resolveAndroidVPNDNSCachePath(configDir)
+	if !ok {
+		t.Fatalf("resolve dns cache path failed")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read dns cache failed: %v", err)
+	}
+	if strings.Contains(string(raw), "fake_ips") || strings.Contains(string(raw), "198.18.4.9") {
+		t.Fatalf("fake ip should not be persisted: %s", string(raw))
+	}
+	if !strings.Contains(string(raw), "route_hints") || !strings.Contains(string(raw), "203.0.113.10") {
+		t.Fatalf("route hints should still persist: %s", string(raw))
+	}
+
+	rawWithLegacyFake := []byte(`{
+  "version": 1,
+  "saved_at": "2099-01-01T00:00:00Z",
+  "fake_ips": [{
+    "ip": "198.18.4.99",
+    "domain": "legacy.example.com",
+    "group": "legacy",
+    "controller_managed": true,
+    "expires_at": "2099-01-01T00:00:00Z"
+  }],
+  "route_hints": [{
+    "ip": "203.0.113.11",
+    "domain": "hint.example.com",
+    "ipv4": ["203.0.113.11"],
+    "expires_at": "2099-01-01T00:00:00Z"
+  }]
+}`)
+	if err := os.WriteFile(path, rawWithLegacyFake, 0o644); err != nil {
+		t.Fatalf("write legacy dns cache failed: %v", err)
+	}
+	vpnDNSState.mu.Lock()
+	vpnDNSState.fakeDomainToIP = map[string]string{}
+	vpnDNSState.fakeIPToEntry = map[string]androidVPNDNSFakeEntry{}
+	vpnDNSState.routeIPHints = map[string]androidVPNDNSRouteHintEntry{}
+	vpnDNSState.cacheDir = ""
+	vpnDNSState.cacheLoaded = false
+	vpnDNSState.cacheDirty = false
+	vpnDNSState.mu.Unlock()
+
+	ensureAndroidVPNDNSCacheLoaded(configDir)
+	vpnDNSState.mu.Lock()
+	_, fakeLoaded := vpnDNSState.fakeIPToEntry["198.18.4.99"]
+	_, hintLoaded := vpnDNSState.routeIPHints["203.0.113.11"]
+	vpnDNSState.mu.Unlock()
+	if fakeLoaded {
+		t.Fatalf("legacy fake ip should not be loaded from dns cache")
+	}
+	if !hintLoaded {
+		t.Fatalf("route hint should still load from dns cache")
 	}
 }
 

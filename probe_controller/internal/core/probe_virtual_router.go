@@ -926,11 +926,12 @@ func allocateProbeVirtualRouterFakeIPForDomain(domain string, rule probeVirtualR
 		if strings.TrimSpace(library.Items[index].RuleID) == strings.TrimSpace(rule.ID) &&
 			normalizeProbeVirtualRouterRouteRuleAction(library.Items[index].Action, library.Items[index].ExitNodeID) == action &&
 			normalizeProbeNodeID(library.Items[index].ExitNodeID) == exitNodeID {
-			if changed {
-				ProbeRouteConfigStore.data.VirtualRouter = config
-				ProbeRouteConfigStore.data.VirtualRouterFakeIP = library
-			}
-			return library.Items[index], library, changed, nil
+			library.Items[index].ExpiresAt = expiresAt
+			library.Items[index].UpdatedAt = now.Format(time.RFC3339)
+			bumpProbeVirtualRouterFakeIPLibraryVersion(&library, now)
+			ProbeRouteConfigStore.data.VirtualRouter = config
+			ProbeRouteConfigStore.data.VirtualRouterFakeIP = library
+			return library.Items[index], library, true, nil
 		}
 		library.Items[index].RuleID = strings.TrimSpace(rule.ID)
 		library.Items[index].Action = action

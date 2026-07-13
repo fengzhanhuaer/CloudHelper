@@ -172,15 +172,17 @@ func TestProbeVirtualRouterFakeIPLibraryAllocatesReusesAndResetsIndependentStore
 	if err != nil || time.Until(expiresAt) < 29*24*time.Hour {
 		t.Fatalf("expires_at=%q err=%v", first.ExpiresAt, err)
 	}
+	oldReuseExpiresAt := time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339)
+	ProbeRouteConfigStore.data.VirtualRouterFakeIP.Items[0].ExpiresAt = oldReuseExpiresAt
 
 	second, secondLibrary, secondChanged, err := allocateProbeVirtualRouterFakeIPForDomain("www.reddit.com", rule)
 	if err != nil {
 		t.Fatalf("reuse fake ip failed: %v", err)
 	}
-	if secondChanged {
-		t.Fatalf("unchanged fake ip lookup reported library change")
+	if !secondChanged {
+		t.Fatalf("reused fake ip lookup should renew library ttl")
 	}
-	if second.FakeIP != first.FakeIP || secondLibrary.Version != firstLibrary.Version || second.ExpiresAt != first.ExpiresAt {
+	if second.FakeIP != first.FakeIP || secondLibrary.Version != firstLibrary.Version+1 || second.ExpiresAt == oldReuseExpiresAt {
 		t.Fatalf("reuse entry=%+v library=%+v first=%+v first_library=%+v", second, secondLibrary, first, firstLibrary)
 	}
 

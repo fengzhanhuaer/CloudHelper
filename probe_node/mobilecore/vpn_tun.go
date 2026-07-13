@@ -37,6 +37,7 @@ const (
 	vpnTCPInFlight      = 512
 	vpnRelayIdle        = 5 * time.Minute
 	vpnUDPRelayTimeout  = 30 * time.Second
+	vpnDNSFakeIPTTL     = 48 * time.Hour
 	vpnDNSCacheTTL      = 10 * time.Minute
 	vpnDNSPersistDelay  = 10 * time.Second
 	vpnDNSReadTimeout   = 20 * time.Second
@@ -230,24 +231,6 @@ func ensureAndroidVPNDNSCacheLoaded(configDir string) {
 	if vpnDNSState.nextFakeOffset < 2 {
 		vpnDNSState.nextFakeOffset = 2
 	}
-	for _, item := range payload.FakeIPs {
-		ip := net.ParseIP(strings.TrimSpace(strings.Trim(item.IP, "[]")))
-		domain := strings.TrimSpace(strings.ToLower(strings.Trim(item.Domain, ".")))
-		if ip == nil || ip.To4() == nil || domain == "" || item.ExpiresAt.IsZero() || now.After(item.ExpiresAt) {
-			continue
-		}
-		ipText := ip.To4().String()
-		vpnDNSState.fakeDomainToIP[domain] = ipText
-		vpnDNSState.fakeIPToEntry[ipText] = androidVPNDNSFakeEntry{
-			Domain:            domain,
-			Group:             strings.TrimSpace(item.Group),
-			Direct:            item.Direct,
-			Reject:            item.Reject,
-			SelectedRouteID:   strings.TrimSpace(item.SelectedRouteID),
-			ControllerManaged: item.ControllerManaged,
-			ExpiresAt:         item.ExpiresAt,
-		}
-	}
 	for _, item := range payload.RouteHints {
 		ip := net.ParseIP(strings.TrimSpace(strings.Trim(item.IP, "[]")))
 		domain := strings.TrimSpace(strings.ToLower(strings.Trim(item.Domain, ".")))
@@ -333,20 +316,7 @@ func persistAndroidVPNDNSCacheForState(configDir string, state *androidVPNDNSSta
 		Version:        1,
 		SavedAt:        now,
 		NextFakeOffset: state.nextFakeOffset,
-		FakeIPs:        make([]androidVPNDNSPersistFakeEntry, 0, len(state.fakeIPToEntry)),
 		RouteHints:     make([]androidVPNDNSPersistRouteEntry, 0, len(state.routeIPHints)),
-	}
-	for ip, entry := range state.fakeIPToEntry {
-		payload.FakeIPs = append(payload.FakeIPs, androidVPNDNSPersistFakeEntry{
-			IP:                ip,
-			Domain:            entry.Domain,
-			Group:             entry.Group,
-			Direct:            entry.Direct,
-			Reject:            entry.Reject,
-			SelectedRouteID:   entry.SelectedRouteID,
-			ControllerManaged: entry.ControllerManaged,
-			ExpiresAt:         entry.ExpiresAt,
-		})
 	}
 	for ip, entry := range state.routeIPHints {
 		payload.RouteHints = append(payload.RouteHints, androidVPNDNSPersistRouteEntry{
@@ -2210,10 +2180,11 @@ func allocateAndroidVPNDNSFakeIP(domain string, route androidRouteDecision) (str
 			entry.Direct = route.Direct
 			entry.Reject = route.Reject
 			entry.SelectedRouteID = strings.TrimSpace(route.SelectedRouteID)
-			entry.ExpiresAt = now.Add(vpnDNSCacheTTL)
+			if entry.ExpiresAt.IsZero() {
+				entry.ExpiresAt = androidVPNFakeIPExpiresAt(now)
+			}
 			vpnDNSState.fakeIPToEntry[existingIP] = entry
 			vpnDNSState.mu.Unlock()
-			markAndroidVPNDNSCacheDirty(configDir)
 			return existingIP, true
 		}
 	}
@@ -2235,10 +2206,11 @@ func allocateAndroidVPNDNSFakeIP(domain string, route androidRouteDecision) (str
 			entry.Direct = route.Direct
 			entry.Reject = route.Reject
 			entry.SelectedRouteID = strings.TrimSpace(route.SelectedRouteID)
-			entry.ExpiresAt = now.Add(vpnDNSCacheTTL)
+			if entry.ExpiresAt.IsZero() {
+				entry.ExpiresAt = androidVPNFakeIPExpiresAt(now)
+			}
 			vpnDNSState.fakeIPToEntry[existingIP] = entry
 			vpnDNSState.mu.Unlock()
-			markAndroidVPNDNSCacheDirty(configDir)
 			return existingIP, true
 		}
 	}
@@ -2261,10 +2233,9 @@ func allocateAndroidVPNDNSFakeIP(domain string, route androidRouteDecision) (str
 			Reject:            route.Reject,
 			SelectedRouteID:   strings.TrimSpace(route.SelectedRouteID),
 			ControllerManaged: false,
-			ExpiresAt:         now.Add(vpnDNSCacheTTL),
+			ExpiresAt:         androidVPNFakeIPExpiresAt(now),
 		}
 		vpnDNSState.mu.Unlock()
-		markAndroidVPNDNSCacheDirty(configDir)
 		return ip, true
 	}
 	vpnDNSState.mu.Unlock()
@@ -2294,11 +2265,17 @@ func storeAndroidVPNControllerFakeIP(configDir string, domain string, fakeIP str
 		Reject:            route.Reject,
 		SelectedRouteID:   strings.TrimSpace(route.SelectedRouteID),
 		ControllerManaged: true,
-		ExpiresAt:         now.Add(vpnDNSCacheTTL),
+		ExpiresAt:         androidVPNFakeIPExpiresAt(now),
 	}
 	vpnDNSState.mu.Unlock()
-	markAndroidVPNDNSCacheDirty(configDir)
 	return ipText, true
+}
+
+func androidVPNFakeIPExpiresAt(now time.Time) time.Time {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	return now.UTC().Add(vpnDNSFakeIPTTL)
 }
 
 func nextAndroidVPNDNSFakeIPLocked() string {
