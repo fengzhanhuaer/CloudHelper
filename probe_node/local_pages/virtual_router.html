@@ -301,6 +301,7 @@
     <div class="subtabs" role="tablist">
       <button class="subtab active" data-tab="status" type="button" role="tab" aria-selected="true">路由设置</button>
       <button class="subtab" data-tab="routeStatus" type="button" role="tab" aria-selected="false">路由状态</button>
+      <button class="subtab" data-tab="connections" type="button" role="tab" aria-selected="false">最近连接</button>
       <button class="subtab" data-tab="packets" type="button" role="tab" aria-selected="false">最近报文</button>
       <button class="subtab" data-tab="routeTest" type="button" role="tab" aria-selected="false">路由测试</button>
     </div>
@@ -567,6 +568,43 @@
       </section>
     </div>
 
+    <div id="connectionsTab" class="tab-panel">
+      <section class="card">
+        <h2>最近连接与 DNS</h2>
+        <div class="packet-controls">
+          <div class="field">
+            <label for="connectionFilterInput">模糊搜索</label>
+            <input id="connectionFilterInput" class="mono" placeholder="IP / 端口 / 协议 / 域名 / 节点 / 路径 / 状态" />
+          </div>
+          <div class="packet-actions">
+            <button id="connectionRefreshBtn" class="secondary">刷新</button>
+            <button id="connectionAutoRefreshBtn" class="secondary">暂停刷新</button>
+            <span id="connectionSummary" class="packet-summary">-</span>
+          </div>
+        </div>
+        <div class="table-wrap" style="margin-top:12px;">
+          <table>
+            <thead>
+              <tr>
+                <th>首次 / 最近活动</th>
+                <th>端点 A</th>
+                <th>端点 B</th>
+                <th>协议</th>
+                <th>网络活动</th>
+                <th>路由 / 路径</th>
+                <th>状态</th>
+                <th>Fake IP</th>
+                <th>最近事件</th>
+              </tr>
+            </thead>
+            <tbody id="connectionRows">
+              <tr><td colspan="9" class="hint">-</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
     <div id="routeTestTab" class="tab-panel">
       <section class="card">
         <h2>路由测试</h2>
@@ -694,6 +732,9 @@
     let routeSpeedPollingTimer = null;
     let routeTestActiveRequestID = '';
     let routeSpeedActiveRequestID = '';
+    let connectionAutoRefreshPaused = false;
+    let connectionFilterText = '';
+    let connectionSnapshot = { items: [] };
     let packetAutoRefreshPaused = false;
     let packetFilterText = '';
     let packetSnapshot = { items: [] };
@@ -1137,6 +1178,10 @@
         local_icmp: '本机 ICMP',
         drop: '丢弃',
         bypass: '旁路',
+        direct: 'DNS 直连解析',
+        fake_ip: '分配 Fake IP',
+        reject: 'DNS 拒绝',
+        connected: '已建立连接',
       };
       return labels[value] || value || '-';
     }
@@ -1145,6 +1190,7 @@
       const value = String(source || '').trim();
       if (value === 'tun_rx') return 'TUN';
       if (value === 'frame_rx') return 'vRouter';
+      if (value === 'dns') return 'DNS';
       return value || '-';
     }
 
@@ -1240,6 +1286,93 @@
           <td class="mono">${escapeHTML(item.path_text || '-')}</td>
           <td>${escapeHTML(fakeText)}</td>
           <td>${escapeHTML(detailParts.join(' / ') || '-')}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function connectionStatusLabel(status) {
+      const value = String(status || '').trim();
+      const labels = { active: '活动', closed: '已关闭', error: '异常', connected: '已连接', unconnected: '未连接' };
+      return labels[value] || value || '-';
+    }
+
+    function connectionSearchText(item) {
+      return [
+        item.kind,
+        item.protocol,
+        item.domain,
+        item.endpoint_a,
+        item.endpoint_b,
+        item.route_id,
+        item.local_node_id,
+        item.peer_node_id,
+        item.path_text,
+        item.status,
+        connectionStatusLabel(item.status),
+        item.fake_ip_domain,
+        item.fake_ip_exit_node,
+        item.last_source,
+        packetSourceLabel(item.last_source),
+        item.last_action,
+        packetActionLabel(item.last_action),
+        item.last_tcp_flags,
+        item.last_detail,
+        item.last_error,
+      ].map((value) => String(value === undefined || value === null ? '' : value).toLowerCase()).join(' ');
+    }
+
+    function filterConnections(items) {
+      const terms = String(connectionFilterText || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+      if (!terms.length) return items;
+      return items.filter((item) => terms.every((term) => connectionSearchText(item || {}).includes(term)));
+    }
+
+    function renderConnections(data) {
+      const rows = document.getElementById('connectionRows');
+      const allItems = Array.isArray(data && data.items) ? data.items : [];
+      const items = filterConnections(allItems);
+      const summary = document.getElementById('connectionSummary');
+      if (summary) {
+        const autoText = connectionAutoRefreshPaused ? '自动刷新已停止' : '自动刷新中';
+        const retentionSeconds = Number(data && data.retention_seconds || 0);
+        const historyText = retentionSeconds > 0 ? `保留 ${Math.round(retentionSeconds / 60)} 分钟` : '保留最近活动';
+        summary.textContent = connectionFilterText ? `显示 ${items.length}/${allItems.length} 条，${historyText}，${autoText}` : `${allItems.length} 条，${historyText}，${autoText}`;
+      }
+      if (!items.length) {
+        rows.innerHTML = `<tr><td colspan="9" class="hint">${allItems.length ? '没有匹配的连接' : '-'}</td></tr>`;
+        return;
+      }
+      rows.innerHTML = items.map((item) => {
+        const isDNS = item.kind === 'dns';
+        const activity = isDNS
+          ? [`问询 ${formatNumber(item.dns_queries || item.events || 0)} 次`]
+          : [
+              `事件 ${formatNumber(item.events || 0)} / ${formatBytes(item.bytes || 0)}`,
+              `TUN ${formatNumber(item.tun_events || 0)} · 帧 ${formatNumber(item.frame_events || 0)}`,
+              `转发 ${formatNumber(item.forwarded || 0)} · 投递 ${formatNumber(item.delivered || 0)}`,
+            ];
+        if (Number(item.dropped || 0) > 0) activity.push(`丢弃 ${formatNumber(item.dropped)}`);
+        if (Number(item.errors || 0) > 0) activity.push(`错误 ${formatNumber(item.errors)}`);
+        const routeParts = [item.route_id, item.path_text].filter(Boolean);
+        const fakeParts = [item.fake_ip_domain, item.fake_ip_exit_node ? `出口 ${item.fake_ip_exit_node}` : ''].filter(Boolean);
+        const eventParts = [
+          item.last_source ? packetSourceLabel(item.last_source) : '',
+          item.last_action ? packetActionLabel(item.last_action) : '',
+          item.last_tcp_flags ? `TCP ${item.last_tcp_flags}` : '',
+          item.last_detail,
+          item.last_error,
+        ].filter(Boolean);
+        const rowClass = item.status === 'error' ? ' class="packet-error"' : '';
+        return `<tr${rowClass}>
+          <td class="mono">${escapeHTML(packetTime(item.first_seen))}<br><span class="hint">${escapeHTML(packetTime(item.last_seen))}</span></td>
+          <td class="mono">${escapeHTML(item.endpoint_a || '-')}</td>
+          <td class="mono">${escapeHTML(item.endpoint_b || '-')}</td>
+          <td class="mono">${escapeHTML(item.protocol || '-')}</td>
+          <td>${escapeHTML(activity.join(' / '))}</td>
+          <td class="mono">${escapeHTML(routeParts.join(' / ') || '-')}</td>
+          <td><span class="packet-badge">${escapeHTML(connectionStatusLabel(item.status))}</span></td>
+          <td>${escapeHTML(fakeParts.join(' / ') || '-')}</td>
+          <td>${escapeHTML(eventParts.join(' / ') || '-')}</td>
         </tr>`;
       }).join('');
     }
@@ -1488,6 +1621,13 @@
       return data || {};
     }
 
+    async function loadConnections() {
+      const data = await requestJSON('/local/api/virtual_router/connections', { method: 'GET' });
+      connectionSnapshot = data || { items: [] };
+      renderConnections(data || {});
+      return data || {};
+    }
+
     async function loadRouteStatus() {
       const data = await requestJSON('/local/api/virtual_router/status', { method: 'GET' });
       routeStatusSnapshot = data || {};
@@ -1717,12 +1857,13 @@
       tunPollingTimer = setInterval(() => {
         loadTunStatus().catch(() => {});
         if (activeTab === 'routeStatus') loadRouteStatus().catch(() => {});
+        if (activeTab === 'connections' && !connectionAutoRefreshPaused) loadConnections().catch(() => {});
         if (activeTab === 'packets' && !packetAutoRefreshPaused) loadPackets().catch(() => {});
       }, 3000);
     }
 
     function switchTab(tab) {
-      activeTab = tab === 'routeStatus' || tab === 'packets' || tab === 'routeTest' ? tab : 'status';
+      activeTab = tab === 'routeStatus' || tab === 'connections' || tab === 'packets' || tab === 'routeTest' ? tab : 'status';
       document.querySelectorAll('.subtab').forEach((btn) => {
         const active = btn.dataset.tab === activeTab;
         btn.classList.toggle('active', active);
@@ -1730,10 +1871,14 @@
       });
       document.getElementById('statusTab').classList.toggle('active', activeTab === 'status');
       document.getElementById('routeStatusTab').classList.toggle('active', activeTab === 'routeStatus');
+      document.getElementById('connectionsTab').classList.toggle('active', activeTab === 'connections');
       document.getElementById('packetsTab').classList.toggle('active', activeTab === 'packets');
       document.getElementById('routeTestTab').classList.toggle('active', activeTab === 'routeTest');
       if (activeTab === 'routeStatus') {
         loadRouteStatus().catch((err) => setMessage('读取路由状态失败：' + err.message, 'error'));
+      }
+      if (activeTab === 'connections') {
+        loadConnections().catch((err) => setMessage('读取最近连接失败：' + err.message, 'error'));
       }
       if (activeTab === 'packets') {
         loadPackets().catch((err) => setMessage('读取最近报文失败：' + err.message, 'error'));
@@ -1765,6 +1910,22 @@
     });
     document.getElementById('routePathRTTRefreshBtn').addEventListener('click', () => {
       refreshRoutePathRTT().catch((err) => setMessage('刷新路径延迟失败：' + err.message, 'error'));
+    });
+    document.getElementById('connectionRefreshBtn').addEventListener('click', () => {
+      loadConnections().then(() => setMessage('最近连接已刷新', 'success')).catch((err) => setMessage('读取最近连接失败：' + err.message, 'error'));
+    });
+    document.getElementById('connectionAutoRefreshBtn').addEventListener('click', () => {
+      connectionAutoRefreshPaused = !connectionAutoRefreshPaused;
+      document.getElementById('connectionAutoRefreshBtn').textContent = connectionAutoRefreshPaused ? '继续刷新' : '暂停刷新';
+      renderConnections(connectionSnapshot);
+      setMessage(connectionAutoRefreshPaused ? '最近连接自动刷新已停止' : '最近连接自动刷新已恢复', 'success');
+      if (!connectionAutoRefreshPaused && activeTab === 'connections') {
+        loadConnections().catch((err) => setMessage('读取最近连接失败：' + err.message, 'error'));
+      }
+    });
+    document.getElementById('connectionFilterInput').addEventListener('input', (event) => {
+      connectionFilterText = String(event.target.value || '').trim();
+      renderConnections(connectionSnapshot);
     });
     document.getElementById('packetRefreshBtn').addEventListener('click', () => {
       loadPackets().then(() => setMessage('最近报文已刷新', 'success')).catch((err) => setMessage('读取最近报文失败：' + err.message, 'error'));

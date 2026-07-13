@@ -1641,6 +1641,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/virtual_router/settings", probeLocalVirtualRouterSettingsHandler)
 	mux.HandleFunc("/local/api/virtual_router/status", probeLocalVirtualRouterStatusHandler)
 	mux.HandleFunc("/local/api/virtual_router/packets", probeLocalVirtualRouterPacketsHandler)
+	mux.HandleFunc("/local/api/virtual_router/connections", probeLocalVirtualRouterConnectionsHandler)
 	mux.HandleFunc("/local/api/virtual_router/debug", probeLocalVirtualRouterDebugHandler)
 	mux.HandleFunc("/local/api/virtual_router/debug/logs", probeLocalVirtualRouterDebugLogsHandler)
 	mux.HandleFunc("/local/api/virtual_router/path_rtt", probeLocalVirtualRouterPathRTTHandler)
@@ -2650,6 +2651,22 @@ func probeLocalVirtualRouterPacketsHandler(w http.ResponseWriter, r *http.Reques
 		"items":    items,
 		"count":    len(items),
 		"capacity": probeVirtualRouterRecentPacketLimit,
+	})
+}
+
+func probeLocalVirtualRouterConnectionsHandler(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	items := snapshotProbeVirtualRouterRecentConnections()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":             items,
+		"count":             len(items),
+		"retention_seconds": int(probeVirtualRouterRecentConnectionTTL / time.Second),
 	})
 }
 

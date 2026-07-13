@@ -260,10 +260,16 @@ func resolveProbeVirtualRouterDNSPacketBestEffort(packet []byte) []byte {
 	return result.Response
 }
 
-func resolveProbeVirtualRouterDNSPacket(packet []byte) (probeVirtualRouterDNSPacketResponse, error) {
+func resolveProbeVirtualRouterDNSPacket(packet []byte) (result probeVirtualRouterDNSPacketResponse, err error) {
 	domain, qType := parseProbeLocalDNSQueryDomainAndType(packet)
 	cleanDomain := normalizeProbeVirtualRouterDomain(domain)
-	result := probeVirtualRouterDNSPacketResponse{Domain: cleanDomain}
+	result = probeVirtualRouterDNSPacketResponse{Domain: cleanDomain}
+	trackingAction := "direct"
+	trackingExitNodeID := ""
+	trackingFakeIP := ""
+	defer func() {
+		recordProbeVirtualRouterRecentDNSQuery(cleanDomain, trackingAction, trackingExitNodeID, trackingFakeIP, result.RealIPs, err)
+	}()
 	if cleanDomain == "" {
 		result.Response = buildProbeLocalDNSRefused(packet)
 		return result, nil
@@ -277,9 +283,12 @@ func resolveProbeVirtualRouterDNSPacket(packet []byte) (probeVirtualRouterDNSPac
 	}
 	switch strings.TrimSpace(rule.Action) {
 	case "reject":
+		trackingAction = "reject"
 		result.Response = buildProbeLocalDNSRefused(packet)
 		return result, nil
 	case "probe_exit":
+		trackingAction = "fake_ip"
+		trackingExitNodeID = normalizeProbeRouteNodeID(rule.ExitNodeID)
 		if qType != dnsmessage.TypeA {
 			response, realIPs, err := resolveProbeVirtualRouterDNSRealPacket(packet, cleanDomain)
 			result.Response = response
@@ -291,6 +300,7 @@ func resolveProbeVirtualRouterDNSPacket(packet []byte) (probeVirtualRouterDNSPac
 			result.Response = buildProbeLocalDNSServfail(packet)
 			return result, err
 		}
+		trackingFakeIP = strings.TrimSpace(item.FakeIP)
 		result.Response = buildProbeLocalDNSSuccessA(packet, item.FakeIP)
 		return result, nil
 	default:

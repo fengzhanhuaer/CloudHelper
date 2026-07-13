@@ -259,6 +259,9 @@ func resetProbeVirtualRouterStateForTest() {
 	probeVirtualRouterRecentPacketState.nextID = 0
 	probeVirtualRouterRecentPacketState.items = nil
 	probeVirtualRouterRecentPacketState.mu.Unlock()
+	probeVirtualRouterRecentConnectionState.mu.Lock()
+	probeVirtualRouterRecentConnectionState.items = make(map[string]probeVirtualRouterRecentConnection)
+	probeVirtualRouterRecentConnectionState.mu.Unlock()
 	probeVirtualRouterControllerState.mu.Lock()
 	probeVirtualRouterControllerState.identity = nodeIdentity{}
 	probeVirtualRouterControllerState.controllerBaseURL = ""
@@ -2893,6 +2896,72 @@ func TestProbeVirtualRouterRecentPacketRecordsFakeIPSummary(t *testing.T) {
 	}
 	if !reflect.DeepEqual(item.Path, []string{"16", "19"}) || item.PathText != "16>19" || !item.LocalMatch {
 		t.Fatalf("unexpected path/local match: %+v", item)
+	}
+}
+
+func TestProbeVirtualRouterRecentConnectionsAggregateBidirectionalTraffic(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	forward := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.16", "198.18.4.9", 49152, 443)
+	reply := buildProbeVirtualRouterTestTCPPacket(t, "198.18.4.9", "198.18.0.16", 443, 49152)
+	recordProbeVirtualRouterRecentPacket("tun_rx", "forward", nil, forward, []string{"16", "19"}, false, nil)
+	recordProbeVirtualRouterRecentPacket("frame_rx", "deliver", nil, reply, []string{"19", "16"}, true, nil)
+
+	connections := snapshotProbeVirtualRouterRecentConnections()
+	if len(connections) != 1 {
+		t.Fatalf("connections=%d, want 1: %+v", len(connections), connections)
+	}
+	connection := connections[0]
+	if connection.Protocol != "TCP" || connection.Events != 2 || connection.TUNEvents != 1 || connection.FrameEvents != 1 || connection.Forwarded != 1 || connection.Delivered != 1 {
+		t.Fatalf("unexpected connection activity: %+v", connection)
+	}
+	if connection.EndpointA != "198.18.0.16:49152" || connection.EndpointB != "198.18.4.9:443" || connection.Status != "active" {
+		t.Fatalf("unexpected connection identity: %+v", connection)
+	}
+	probeVirtualRouterRecentConnectionState.mu.Lock()
+	for key, item := range probeVirtualRouterRecentConnectionState.items {
+		item.lastAt = time.Now().Add(-probeVirtualRouterRecentConnectionTTL - time.Second)
+		probeVirtualRouterRecentConnectionState.items[key] = item
+	}
+	probeVirtualRouterRecentConnectionState.mu.Unlock()
+	if expired := snapshotProbeVirtualRouterRecentConnections(); len(expired) != 0 {
+		t.Fatalf("expired connections=%d, want 0: %+v", len(expired), expired)
+	}
+}
+
+func TestProbeVirtualRouterRecentConnectionsKeepDNSWithoutNetworkConnection(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	recordProbeVirtualRouterRecentDNSQuery("api.example.com", "fake_ip", "17", "198.18.4.9", nil, nil)
+	recordProbeVirtualRouterRecentDNSQuery("failed.example.com", "fake_ip", "17", "", nil, errors.New("controller unavailable"))
+
+	findConnection := func(domain string) probeVirtualRouterRecentConnection {
+		for _, item := range snapshotProbeVirtualRouterRecentConnections() {
+			if item.Kind == "dns" && item.Domain == domain {
+				return item
+			}
+		}
+		t.Fatalf("DNS connection for %s was not retained", domain)
+		return probeVirtualRouterRecentConnection{}
+	}
+	query := findConnection("api.example.com")
+	if query.Status != "unconnected" || query.DNSQueries != 1 || query.FakeIPExitNode != "17" {
+		t.Fatalf("unexpected unconnected DNS query: %+v", query)
+	}
+	markProbeVirtualRouterRecentDNSConnection("api.example.com", probeVirtualRouterRecentPacket{
+		CapturedAt:      time.Now().UTC().Format(time.RFC3339Nano),
+		Source:          "tun_rx",
+		Protocol:        "TCP",
+		DestinationIP:   "198.18.4.9",
+		DestinationPort: 443,
+	})
+	if connected := findConnection("api.example.com"); connected.Status != "connected" || !connected.Connected {
+		t.Fatalf("DNS query should show connected after network activity: %+v", connected)
+	}
+	if failed := findConnection("failed.example.com"); failed.Status != "error" || failed.Errors != 1 || !strings.Contains(failed.LastError, "controller unavailable") {
+		t.Fatalf("unexpected failed DNS query: %+v", failed)
 	}
 }
 

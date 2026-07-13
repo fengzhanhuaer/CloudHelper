@@ -206,6 +206,32 @@ func TestProbeLocalVirtualRouterPacketsHandlerReturnsRecentPackets(t *testing.T)
 	}
 }
 
+func TestProbeLocalVirtualRouterConnectionsHandlerReturnsRecentConnections(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	forward := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.18", "198.18.0.21", 49152, 443)
+	reply := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.21", "198.18.0.18", 443, 49152)
+	recordProbeVirtualRouterRecentPacket("tun_rx", "forward", nil, forward, []string{"16", "19"}, false, nil)
+	recordProbeVirtualRouterRecentPacket("frame_rx", "deliver", nil, reply, []string{"19", "16"}, true, nil)
+
+	resp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/virtual_router/connections", nil, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("connections status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	items, ok := payload["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("items=%T %v", payload["items"], payload["items"])
+	}
+	connection, ok := items[0].(map[string]any)
+	if !ok || connection["events"] != float64(2) || connection["status"] != "active" || connection["endpoint_a"] != "198.18.0.18:49152" || connection["endpoint_b"] != "198.18.0.21:443" || payload["retention_seconds"] != float64(300) {
+		t.Fatalf("unexpected connection item=%+v", connection)
+	}
+}
+
 func TestProbeLocalVirtualRouterStatusHandlerReturnsRuntimeDebugState(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
 	resetProbeVirtualRouterLocalSettingsForTest()

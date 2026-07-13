@@ -20,9 +20,10 @@ import (
 )
 
 const (
-	probeVirtualRouterDirectionForward   = "forward"
-	probeVirtualRouterDefaultServicePort = 12040
-	probeVirtualRouterRecentPacketLimit  = 256
+	probeVirtualRouterDirectionForward    = "forward"
+	probeVirtualRouterDefaultServicePort  = 12040
+	probeVirtualRouterRecentPacketLimit   = 256
+	probeVirtualRouterRecentConnectionTTL = 5 * time.Minute
 
 	// vRouter frame header is a stable 12-byte wire protocol boundary:
 	// magic 2 bytes, maintype 2 bytes, subtype 2 bytes,
@@ -172,6 +173,11 @@ var probeVirtualRouterRecentPacketState = struct {
 	items  []probeVirtualRouterRecentPacket
 }{}
 
+var probeVirtualRouterRecentConnectionState = struct {
+	mu    sync.Mutex
+	items map[string]probeVirtualRouterRecentConnection
+}{items: make(map[string]probeVirtualRouterRecentConnection)}
+
 var probeVirtualRouterICMPPingState = struct {
 	mu      sync.Mutex
 	pending map[string]probeVirtualRouterICMPPingPending
@@ -297,6 +303,41 @@ type probeVirtualRouterRecentPacket struct {
 	FakeIPExitNode  string   `json:"fake_ip_exit_node,omitempty"`
 	Detail          string   `json:"detail,omitempty"`
 	Error           string   `json:"error,omitempty"`
+}
+
+type probeVirtualRouterRecentConnection struct {
+	Kind           string `json:"kind,omitempty"`
+	FirstSeen      string `json:"first_seen"`
+	LastSeen       string `json:"last_seen"`
+	Protocol       string `json:"protocol,omitempty"`
+	Domain         string `json:"domain,omitempty"`
+	EndpointA      string `json:"endpoint_a"`
+	EndpointB      string `json:"endpoint_b"`
+	RouteID        string `json:"route_id,omitempty"`
+	LocalNodeID    string `json:"local_node_id,omitempty"`
+	PeerNodeID     string `json:"peer_node_id,omitempty"`
+	PathText       string `json:"path_text,omitempty"`
+	Events         int    `json:"events"`
+	Bytes          int64  `json:"bytes"`
+	TUNEvents      int    `json:"tun_events"`
+	FrameEvents    int    `json:"frame_events"`
+	Forwarded      int    `json:"forwarded"`
+	Delivered      int    `json:"delivered"`
+	Dropped        int    `json:"dropped"`
+	Errors         int    `json:"errors"`
+	DNSQueries     int    `json:"dns_queries"`
+	Connected      bool   `json:"connected,omitempty"`
+	Status         string `json:"status"`
+	LastSource     string `json:"last_source,omitempty"`
+	LastAction     string `json:"last_action,omitempty"`
+	LastTCPFlags   string `json:"last_tcp_flags,omitempty"`
+	LastDetail     string `json:"last_detail,omitempty"`
+	LastError      string `json:"last_error,omitempty"`
+	FakeIPDomain   string `json:"fake_ip_domain,omitempty"`
+	FakeIPExitNode string `json:"fake_ip_exit_node,omitempty"`
+
+	closed bool
+	lastAt time.Time
 }
 
 type probeVirtualRouterICMPEchoLogInfo struct {
@@ -1231,6 +1272,7 @@ func recordProbeVirtualRouterRecentPacket(source string, action string, runtime 
 		probeVirtualRouterRecentPacketState.items = probeVirtualRouterRecentPacketState.items[:probeVirtualRouterRecentPacketLimit]
 	}
 	probeVirtualRouterRecentPacketState.mu.Unlock()
+	recordProbeVirtualRouterRecentConnection(item)
 }
 
 func buildProbeVirtualRouterRecentPacket(source string, action string, runtime *probeVirtualRouterRuntime, packet []byte, path []string, localMatch bool, err error) probeVirtualRouterRecentPacket {
@@ -1318,6 +1360,203 @@ func snapshotProbeVirtualRouterRecentPackets() []probeVirtualRouterRecentPacket 
 		out[i], out[j] = out[j], out[i]
 	}
 	return out
+}
+
+func snapshotProbeVirtualRouterRecentConnections() []probeVirtualRouterRecentConnection {
+	now := time.Now()
+	probeVirtualRouterRecentConnectionState.mu.Lock()
+	pruneProbeVirtualRouterRecentConnectionsLocked(now)
+	connections := make([]probeVirtualRouterRecentConnection, 0, len(probeVirtualRouterRecentConnectionState.items))
+	for _, item := range probeVirtualRouterRecentConnectionState.items {
+		connections = append(connections, finalizeProbeVirtualRouterRecentConnection(item))
+	}
+	probeVirtualRouterRecentConnectionState.mu.Unlock()
+	sort.Slice(connections, func(i, j int) bool {
+		return connections[i].lastAt.After(connections[j].lastAt)
+	})
+	return connections
+}
+
+func recordProbeVirtualRouterRecentConnection(packet probeVirtualRouterRecentPacket) {
+	key, endpointA, endpointB := probeVirtualRouterRecentConnectionKey(packet)
+	if key == "" {
+		return
+	}
+	now := time.Now()
+	probeVirtualRouterRecentConnectionState.mu.Lock()
+	pruneProbeVirtualRouterRecentConnectionsLocked(now)
+	connection, ok := probeVirtualRouterRecentConnectionState.items[key]
+	flags := strings.ToUpper(strings.TrimSpace(packet.TCPFlags))
+	if !ok || (connection.closed && strings.Contains(flags, "SYN") && !strings.Contains(flags, "ACK")) {
+		connection = probeVirtualRouterRecentConnection{
+			Kind:      "connection",
+			FirstSeen: packet.CapturedAt,
+			Protocol:  strings.ToUpper(strings.TrimSpace(packet.Protocol)),
+			EndpointA: endpointA,
+			EndpointB: endpointB,
+		}
+	}
+	connection.Events++
+	connection.Bytes += int64(packet.Length)
+	if packet.Source == "tun_rx" {
+		connection.TUNEvents++
+	} else if packet.Source == "frame_rx" {
+		connection.FrameEvents++
+	}
+	switch strings.TrimSpace(packet.Action) {
+	case "forward":
+		connection.Forwarded++
+	case "deliver", "fake_exit", "exit", "local_icmp":
+		connection.Delivered++
+	case "drop":
+		connection.Dropped++
+	}
+	if strings.TrimSpace(packet.Error) != "" || strings.Contains(strings.TrimSpace(packet.Action), "error") {
+		connection.Errors++
+	}
+	connection.LastSeen = packet.CapturedAt
+	connection.lastAt = now
+	connection.RouteID = strings.TrimSpace(packet.RouteID)
+	connection.LocalNodeID = strings.TrimSpace(packet.LocalNodeID)
+	connection.PeerNodeID = strings.TrimSpace(packet.PeerNodeID)
+	connection.PathText = strings.TrimSpace(packet.PathText)
+	connection.LastSource = strings.TrimSpace(packet.Source)
+	connection.LastAction = strings.TrimSpace(packet.Action)
+	connection.LastTCPFlags = strings.TrimSpace(packet.TCPFlags)
+	connection.LastDetail = strings.TrimSpace(packet.Detail)
+	connection.LastError = strings.TrimSpace(packet.Error)
+	if strings.TrimSpace(packet.FakeIPDomain) != "" {
+		connection.FakeIPDomain = strings.TrimSpace(packet.FakeIPDomain)
+		connection.FakeIPExitNode = strings.TrimSpace(packet.FakeIPExitNode)
+	}
+	if strings.Contains(flags, "FIN") || strings.Contains(flags, "RST") {
+		connection.closed = true
+	}
+	probeVirtualRouterRecentConnectionState.items[key] = connection
+	probeVirtualRouterRecentConnectionState.mu.Unlock()
+	if domain := strings.TrimSpace(packet.FakeIPDomain); domain != "" {
+		markProbeVirtualRouterRecentDNSConnection(domain, packet)
+	}
+}
+
+func pruneProbeVirtualRouterRecentConnectionsLocked(now time.Time) {
+	for key, item := range probeVirtualRouterRecentConnectionState.items {
+		if item.lastAt.IsZero() || now.Sub(item.lastAt) > probeVirtualRouterRecentConnectionTTL {
+			delete(probeVirtualRouterRecentConnectionState.items, key)
+		}
+	}
+}
+
+func finalizeProbeVirtualRouterRecentConnection(item probeVirtualRouterRecentConnection) probeVirtualRouterRecentConnection {
+	if item.Kind == "dns" {
+		if item.Connected {
+			item.Status = "connected"
+		} else if strings.TrimSpace(item.LastError) != "" {
+			item.Status = "error"
+		} else {
+			item.Status = "unconnected"
+		}
+		return item
+	}
+	if item.Errors > 0 || item.Dropped > 0 {
+		item.Status = "error"
+	} else if item.closed {
+		item.Status = "closed"
+	} else {
+		item.Status = "active"
+	}
+	return item
+}
+
+func recordProbeVirtualRouterRecentDNSQuery(domain string, action string, exitNodeID string, fakeIP string, realIPs []string, err error) {
+	domain = normalizeProbeVirtualRouterDomain(domain)
+	if domain == "" {
+		return
+	}
+	now := time.Now()
+	key := "DNS|" + domain
+	probeVirtualRouterRecentConnectionState.mu.Lock()
+	defer probeVirtualRouterRecentConnectionState.mu.Unlock()
+	pruneProbeVirtualRouterRecentConnectionsLocked(now)
+	connection, ok := probeVirtualRouterRecentConnectionState.items[key]
+	if !ok || connection.Kind != "dns" {
+		connection = probeVirtualRouterRecentConnection{
+			Kind:      "dns",
+			FirstSeen: now.UTC().Format(time.RFC3339Nano),
+			Protocol:  "DNS",
+			Domain:    domain,
+			EndpointA: "DNS",
+			EndpointB: domain,
+		}
+	}
+	connection.Events++
+	connection.DNSQueries++
+	connection.LastSeen = now.UTC().Format(time.RFC3339Nano)
+	connection.lastAt = now
+	connection.LastSource = "dns"
+	connection.LastAction = strings.TrimSpace(action)
+	connection.PeerNodeID = normalizeProbeRouteNodeID(exitNodeID)
+	if strings.TrimSpace(fakeIP) != "" {
+		connection.FakeIPDomain = domain
+		connection.FakeIPExitNode = normalizeProbeRouteNodeID(exitNodeID)
+		connection.LastDetail = "Fake IP " + strings.TrimSpace(fakeIP)
+	} else if len(realIPs) > 0 {
+		connection.LastDetail = "A " + strings.Join(realIPs, ", ")
+	}
+	if err != nil {
+		connection.Errors++
+		connection.LastError = strings.TrimSpace(err.Error())
+	} else {
+		connection.LastError = ""
+	}
+	probeVirtualRouterRecentConnectionState.items[key] = connection
+}
+
+func markProbeVirtualRouterRecentDNSConnection(domain string, packet probeVirtualRouterRecentPacket) {
+	domain = normalizeProbeVirtualRouterDomain(domain)
+	if domain == "" {
+		return
+	}
+	now := time.Now()
+	key := "DNS|" + domain
+	probeVirtualRouterRecentConnectionState.mu.Lock()
+	defer probeVirtualRouterRecentConnectionState.mu.Unlock()
+	connection, ok := probeVirtualRouterRecentConnectionState.items[key]
+	if !ok || connection.Kind != "dns" {
+		return
+	}
+	connection.Connected = true
+	connection.LastSeen = packet.CapturedAt
+	connection.lastAt = now
+	connection.LastSource = strings.TrimSpace(packet.Source)
+	connection.LastAction = "connected"
+	connection.LastDetail = strings.TrimSpace(packet.Protocol) + " " + probeVirtualRouterRecentConnectionEndpoint(packet.DestinationIP, packet.DestinationPort)
+	probeVirtualRouterRecentConnectionState.items[key] = connection
+}
+
+func probeVirtualRouterRecentConnectionKey(packet probeVirtualRouterRecentPacket) (string, string, string) {
+	protocol := strings.ToUpper(strings.TrimSpace(packet.Protocol))
+	left := probeVirtualRouterRecentConnectionEndpoint(packet.SourceIP, packet.SourcePort)
+	right := probeVirtualRouterRecentConnectionEndpoint(packet.DestinationIP, packet.DestinationPort)
+	if protocol == "" || left == "" || right == "" {
+		return "", "", ""
+	}
+	endpointA, endpointB := left, right
+	if endpointB < endpointA {
+		endpointA, endpointB = endpointB, endpointA
+	}
+	return strings.Join([]string{protocol, endpointA, endpointB}, "|"), endpointA, endpointB
+}
+
+func probeVirtualRouterRecentConnectionEndpoint(ip string, port uint16) string {
+	address := strings.TrimSpace(ip)
+	if address == "" {
+		return ""
+	}
+	if port == 0 {
+		return address
+	}
+	return net.JoinHostPort(address, strconv.Itoa(int(port)))
 }
 
 func applyProbeVirtualRouterFakeIPLibrary(library probeVirtualRouterFakeIPLibrary) {
