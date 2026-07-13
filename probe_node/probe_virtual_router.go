@@ -78,6 +78,7 @@ const (
 	probeVirtualRouterNonDirectPathGuardInterval                  = time.Minute
 	probeVirtualRouterRouteConfigRefreshHotPathMinInterval        = 60 * time.Second
 	probeVirtualRouterProbeIPPoolSize                             = 1024
+	probeVirtualRouterFakeIPMemoryTTL                             = 48 * time.Hour
 )
 
 var probeVirtualRouterEnsureDirectBypass = ensureProbeRouteDirectBypass
@@ -116,16 +117,6 @@ var probeVirtualRouterFakeIPItemRefreshState = struct {
 }{
 	running: make(map[string]bool),
 	lastAt:  make(map[string]time.Time),
-}
-
-var probeVirtualRouterFakeIPHitRenewState = struct {
-	mu      sync.Mutex
-	running bool
-	lastAt  map[string]time.Time
-	pending map[string]struct{}
-}{
-	lastAt:  make(map[string]time.Time),
-	pending: make(map[string]struct{}),
 }
 
 type probeVirtualRouterTopologyIndex struct {
@@ -764,9 +755,11 @@ func persistProbeRouteConfigCache(config probeVirtualRouterConfig) error {
 	if err != nil {
 		return err
 	}
+	cacheItem := sanitizeProbeVirtualRouterConfigForCache(config)
+	cacheItem.FakeIPLibrary = probeVirtualRouterFakeIPLibrary{}
 	payload := probeRouteConfigCacheFile{
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
-		Item:      sanitizeProbeVirtualRouterConfigForCache(config),
+		Item:      cacheItem,
 	}
 	encoded, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
@@ -798,6 +791,7 @@ func loadProbeRouteConfigCache() (probeVirtualRouterConfig, error) {
 		return probeVirtualRouterConfig{}, err
 	}
 	config := sanitizeProbeVirtualRouterConfigForCache(payload.Item)
+	config.FakeIPLibrary = probeVirtualRouterFakeIPLibrary{}
 	rememberProbeVirtualRouterAuthTickets(config)
 	return config, nil
 }
@@ -823,6 +817,7 @@ func applyProbeVirtualRouterConfigForNode(config probeVirtualRouterConfig, nodeI
 	if sanitized.FakeIPLibrary.Version <= 0 && len(sanitized.FakeIPLibrary.Items) == 0 {
 		sanitized.FakeIPLibrary = sanitizeProbeVirtualRouterFakeIPLibrary(probeVirtualRouterState.config.FakeIPLibrary)
 	}
+	sanitized.FakeIPLibrary = probeVirtualRouterFakeIPLibraryWithMemoryTTL(sanitized.FakeIPLibrary, now)
 	sanitized.FakeIPLibrary, fakeIPRouteChanged = reconcileProbeVirtualRouterFakeIPLibraryWithRouteRules(sanitized.FakeIPLibrary, sanitized.RouteRules, now)
 	effectiveNodeID := strings.TrimSpace(probeVirtualRouterState.localNodeID)
 	if cleanNodeID := normalizeProbeRouteNodeID(nodeID); cleanNodeID != "" {
@@ -1133,13 +1128,19 @@ func resolveProbeVirtualRouterFakeIPForDNS(domain string, rule probeVirtualRoute
 	}
 	identity, controllerBaseURL, ok := currentProbeVirtualRouterController()
 	if ok {
-		scheduleProbeVirtualRouterFakeIPItemRefreshByDomain(identity, controllerBaseURL, cleanDomain, rule)
-	}
-	if item, exists := currentProbeVirtualRouterFakeIPEntryByDomain(cleanDomain); exists {
-		return item, nil
-	}
-	if ok {
-		return probeVirtualRouterFakeIPEntry{}, errors.New("virtual router fake ip request is pending")
+		ctx, cancel := context.WithTimeout(context.Background(), probeRouteConfigSyncFetchTimeout)
+		item, _, err := probeRequestRouteFakeIP(ctx, controllerBaseURL, identity, cleanDomain, rule)
+		cancel()
+		if err != nil {
+			return probeVirtualRouterFakeIPEntry{}, err
+		}
+		if !applyProbeVirtualRouterFakeIPEntry(item) {
+			return probeVirtualRouterFakeIPEntry{}, errors.New("virtual router fake ip response is invalid")
+		}
+		if item, exists := currentProbeVirtualRouterFakeIPEntryByDomain(cleanDomain); exists {
+			return item, nil
+		}
+		return probeVirtualRouterFakeIPEntry{}, errors.New("virtual router fake ip response was not cached")
 	}
 	return probeVirtualRouterFakeIPEntry{}, errors.New("virtual router controller is unavailable")
 }
@@ -1560,17 +1561,13 @@ func probeVirtualRouterRecentConnectionEndpoint(ip string, port uint16) string {
 }
 
 func applyProbeVirtualRouterFakeIPLibrary(library probeVirtualRouterFakeIPLibrary) {
-	nextLibrary := sanitizeProbeVirtualRouterFakeIPLibrary(library)
+	nextLibrary := probeVirtualRouterFakeIPLibraryWithMemoryTTL(library, time.Now().UTC())
 	probeVirtualRouterState.mu.Lock()
 	currentVersion := probeVirtualRouterState.config.FakeIPLibrary.Version
 	if nextLibrary.Version >= currentVersion {
 		probeVirtualRouterState.config.FakeIPLibrary = nextLibrary
 	}
-	nextConfig := sanitizeProbeVirtualRouterConfigForCache(probeVirtualRouterState.config)
 	probeVirtualRouterState.mu.Unlock()
-	if nextLibrary.Version >= currentVersion {
-		_ = persistProbeRouteConfigCache(nextConfig)
-	}
 }
 
 func applyProbeVirtualRouterFakeIPEntry(item probeVirtualRouterFakeIPEntry) bool {
@@ -1578,9 +1575,11 @@ func applyProbeVirtualRouterFakeIPEntry(item probeVirtualRouterFakeIPEntry) bool
 	if strings.TrimSpace(item.Domain) == "" || strings.TrimSpace(item.FakeIP) == "" {
 		return false
 	}
-	if probeVirtualRouterFakeIPEntryExpired(item, time.Now().UTC()) {
+	now := time.Now().UTC()
+	if probeVirtualRouterFakeIPEntryExpired(item, now) {
 		return false
 	}
+	item = probeVirtualRouterFakeIPEntryWithMemoryTTL(item, now)
 	probeVirtualRouterState.mu.Lock()
 	library := sanitizeProbeVirtualRouterFakeIPLibrary(probeVirtualRouterState.config.FakeIPLibrary)
 	next := library.Items[:0]
@@ -1601,10 +1600,33 @@ func applyProbeVirtualRouterFakeIPEntry(item probeVirtualRouterFakeIPEntry) bool
 		return library.Items[i].Domain < library.Items[j].Domain
 	})
 	probeVirtualRouterState.config.FakeIPLibrary = library
-	nextConfig := sanitizeProbeVirtualRouterConfigForCache(probeVirtualRouterState.config)
 	probeVirtualRouterState.mu.Unlock()
-	_ = persistProbeRouteConfigCache(nextConfig)
 	return true
+}
+
+func probeVirtualRouterFakeIPLibraryWithMemoryTTL(library probeVirtualRouterFakeIPLibrary, now time.Time) probeVirtualRouterFakeIPLibrary {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	library = sanitizeProbeVirtualRouterFakeIPLibrary(library)
+	next := library.Items[:0]
+	for _, item := range library.Items {
+		if probeVirtualRouterFakeIPEntryExpired(item, now) {
+			continue
+		}
+		next = append(next, probeVirtualRouterFakeIPEntryWithMemoryTTL(item, now))
+	}
+	library.Items = next
+	return library
+}
+
+func probeVirtualRouterFakeIPEntryWithMemoryTTL(item probeVirtualRouterFakeIPEntry, now time.Time) probeVirtualRouterFakeIPEntry {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	item.ExpiresAt = now.Add(probeVirtualRouterFakeIPMemoryTTL).Format(time.RFC3339)
+	item.UpdatedAt = now.Format(time.RFC3339)
+	return item
 }
 
 func sanitizeProbeVirtualRouterFakeIPEntry(item probeVirtualRouterFakeIPEntry) probeVirtualRouterFakeIPEntry {
@@ -3384,72 +3406,7 @@ func scheduleProbeVirtualRouterFakeIPItemRefreshByDomain(identity nodeIdentity, 
 }
 
 func recordProbeVirtualRouterFakeIPExitHit(domain string) {
-	cleanDomain := normalizeProbeVirtualRouterDomain(domain)
-	if cleanDomain == "" {
-		return
-	}
-	identity, controllerBaseURL, ok := currentProbeVirtualRouterController()
-	if !ok {
-		return
-	}
-	now := time.Now()
-	probeVirtualRouterFakeIPHitRenewState.mu.Lock()
-	if lastAt := probeVirtualRouterFakeIPHitRenewState.lastAt[cleanDomain]; !lastAt.IsZero() && now.Sub(lastAt) < 24*time.Hour {
-		probeVirtualRouterFakeIPHitRenewState.mu.Unlock()
-		return
-	}
-	probeVirtualRouterFakeIPHitRenewState.pending[cleanDomain] = struct{}{}
-	if probeVirtualRouterFakeIPHitRenewState.running {
-		probeVirtualRouterFakeIPHitRenewState.mu.Unlock()
-		return
-	}
-	probeVirtualRouterFakeIPHitRenewState.running = true
-	probeVirtualRouterFakeIPHitRenewState.mu.Unlock()
-
-	go flushProbeVirtualRouterFakeIPExitHits(identity, controllerBaseURL)
-}
-
-func flushProbeVirtualRouterFakeIPExitHits(identity nodeIdentity, controllerBaseURL string) {
-	defer func() {
-		probeVirtualRouterFakeIPHitRenewState.mu.Lock()
-		probeVirtualRouterFakeIPHitRenewState.running = false
-		more := len(probeVirtualRouterFakeIPHitRenewState.pending) > 0
-		probeVirtualRouterFakeIPHitRenewState.mu.Unlock()
-		if more {
-			go flushProbeVirtualRouterFakeIPExitHits(identity, controllerBaseURL)
-		}
-	}()
-	time.Sleep(500 * time.Millisecond)
-	probeVirtualRouterFakeIPHitRenewState.mu.Lock()
-	domains := make([]string, 0, len(probeVirtualRouterFakeIPHitRenewState.pending))
-	for domain := range probeVirtualRouterFakeIPHitRenewState.pending {
-		domains = append(domains, domain)
-		delete(probeVirtualRouterFakeIPHitRenewState.pending, domain)
-	}
-	probeVirtualRouterFakeIPHitRenewState.mu.Unlock()
-	if len(domains) == 0 {
-		return
-	}
-	sort.Strings(domains)
-	ctx, cancel := context.WithTimeout(context.Background(), probeRouteConfigSyncFetchTimeout)
-	items, err := probeRequestRouteFakeIPRenew(ctx, controllerBaseURL, identity, domains)
-	cancel()
-	if err != nil {
-		logProbeWarnf("probe virtual router fake ip hit renew failed: domains=%s err=%v", strings.Join(domains, ","), err)
-		return
-	}
-	now := time.Now()
-	renewed := map[string]struct{}{}
-	for _, item := range items {
-		if applyProbeVirtualRouterFakeIPEntry(item) {
-			renewed[normalizeProbeVirtualRouterDomain(item.Domain)] = struct{}{}
-		}
-	}
-	probeVirtualRouterFakeIPHitRenewState.mu.Lock()
-	for domain := range renewed {
-		probeVirtualRouterFakeIPHitRenewState.lastAt[domain] = now
-	}
-	probeVirtualRouterFakeIPHitRenewState.mu.Unlock()
+	_ = domain
 }
 
 func probeVirtualRouterShouldDropNonUnicastDestination(dstIP string) bool {

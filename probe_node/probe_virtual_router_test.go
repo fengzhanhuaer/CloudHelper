@@ -187,6 +187,50 @@ func TestProbeVirtualRouterCacheRoundTrip(t *testing.T) {
 	}
 }
 
+func TestProbeVirtualRouterCacheDoesNotPersistFakeIPLibrary(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	expiresAt := time.Now().UTC().Add(30 * 24 * time.Hour).Format(time.RFC3339)
+	config := probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "1", IP: "198.18.0.11"},
+		},
+		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{
+			Version:   7,
+			UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+			Items: []probeVirtualRouterFakeIPEntry{{
+				Domain:     "api.example.com",
+				FakeIP:     "198.18.4.9",
+				Action:     "probe_exit",
+				ExitNodeID: "9",
+				ExpiresAt:  expiresAt,
+			}},
+		},
+	}
+	if err := persistProbeRouteConfigCache(config); err != nil {
+		t.Fatalf("persist cache failed: %v", err)
+	}
+	path, err := resolveProbeRouteConfigCachePath()
+	if err != nil {
+		t.Fatalf("resolve cache path failed: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read cache failed: %v", err)
+	}
+	if strings.Contains(string(raw), "api.example.com") || strings.Contains(string(raw), "198.18.4.9") {
+		t.Fatalf("fake ip library should not be persisted: %s", string(raw))
+	}
+	loaded, err := loadProbeRouteConfigCache()
+	if err != nil {
+		t.Fatalf("load cache failed: %v", err)
+	}
+	if len(loaded.FakeIPLibrary.Items) != 0 || loaded.FakeIPLibrary.Version != 0 {
+		t.Fatalf("loaded fake ip library should be empty: %+v", loaded.FakeIPLibrary)
+	}
+}
+
 func withProbeVirtualRouterRuleAuthForTest(t *testing.T, rule probeVirtualRouterTopologyRule) probeVirtualRouterTopologyRule {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -231,11 +275,6 @@ func resetProbeVirtualRouterStateForTest() {
 	probeVirtualRouterFakeIPItemRefreshState.running = make(map[string]bool)
 	probeVirtualRouterFakeIPItemRefreshState.lastAt = make(map[string]time.Time)
 	probeVirtualRouterFakeIPItemRefreshState.mu.Unlock()
-	probeVirtualRouterFakeIPHitRenewState.mu.Lock()
-	probeVirtualRouterFakeIPHitRenewState.running = false
-	probeVirtualRouterFakeIPHitRenewState.lastAt = make(map[string]time.Time)
-	probeVirtualRouterFakeIPHitRenewState.pending = make(map[string]struct{})
-	probeVirtualRouterFakeIPHitRenewState.mu.Unlock()
 	probeVirtualRouterFakeIPVerifyState.mu.Lock()
 	probeVirtualRouterFakeIPVerifyState.pending = make(map[string]chan probeVirtualRouterFakeIPVerifyPayload)
 	probeVirtualRouterFakeIPVerifyState.running = make(map[string]bool)
@@ -3302,33 +3341,34 @@ func TestProbeVirtualRouterFakeIPExitTargetsRefreshMissingMappingItemFromControl
 		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{Version: 1},
 	}, "19")
 
-	if _, _, err := probeVirtualRouterFakeIPTargetsFromTransportID(tcpip.AddrFrom4([4]byte{198, 18, 4, 9}), 443); err == nil {
-		t.Fatalf("first resolve should miss while single-item refresh runs in background")
+	targets, _, err := probeVirtualRouterFakeIPTargetsFromTransportID(tcpip.AddrFrom4([4]byte{198, 18, 4, 9}), 443)
+	if err != nil {
+		t.Fatalf("first resolve should wait for controller item refresh: %v", err)
 	}
 	select {
 	case <-requestCh:
-	case <-time.After(2 * time.Second):
+	default:
 		t.Fatalf("controller item refresh was not requested")
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if entry, ok := currentProbeVirtualRouterFakeIPEntryByIP("198.18.4.9"); ok && entry.Domain == "api.example.com" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("fake ip item was not applied after controller refresh")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	targets, _, err := probeVirtualRouterFakeIPTargetsFromTransportID(tcpip.AddrFrom4([4]byte{198, 18, 4, 9}), 443)
-	if err != nil {
-		t.Fatalf("resolve fake ip targets after item refresh failed: %v", err)
 	}
 	if !reflect.DeepEqual(targets, []string{"203.0.113.10:443"}) {
 		t.Fatalf("targets=%v, want [203.0.113.10:443]", targets)
 	}
 	if entry, ok := currentProbeVirtualRouterFakeIPEntryByIP("198.18.4.9"); !ok || entry.Domain != "api.example.com" {
 		t.Fatalf("fake ip item should be refreshed, entry=%+v ok=%v", entry, ok)
+	} else if expiresAt, err := time.Parse(time.RFC3339, entry.ExpiresAt); err != nil || time.Until(expiresAt) > 49*time.Hour || time.Until(expiresAt) < 47*time.Hour {
+		t.Fatalf("local fake ip ttl should be about 48h, expires_at=%q err=%v", entry.ExpiresAt, err)
+	}
+	targets, _, err = probeVirtualRouterFakeIPTargetsFromTransportID(tcpip.AddrFrom4([4]byte{198, 18, 4, 9}), 443)
+	if err != nil {
+		t.Fatalf("resolve fake ip targets after item refresh failed: %v", err)
+	}
+	if !reflect.DeepEqual(targets, []string{"203.0.113.10:443"}) {
+		t.Fatalf("targets=%v, want [203.0.113.10:443]", targets)
+	}
+	select {
+	case <-requestCh:
+		t.Fatalf("cached fake ip item should not request controller again")
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 

@@ -77,10 +77,16 @@ func ProbeRouteFakeIPResolveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.TrimSpace(req.FakeIP) != "" {
-		item, _, ok := lookupProbeVirtualRouterFakeIPByIP(req.FakeIP)
+		item, _, changed, ok := lookupProbeVirtualRouterFakeIPByIP(req.FakeIP)
 		if !ok {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "fake ip mapping not found"})
 			return
+		}
+		if changed {
+			if err := ProbeRouteConfigStore.Save(); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
 		}
 		writeJSON(w, http.StatusOK, probeRouteFakeIPResolveResponse{
 			NodeID: nodeID,

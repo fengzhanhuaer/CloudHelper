@@ -120,7 +120,7 @@ func handleProbeVirtualRouterFakeIPExitPacket(runtime *probeVirtualRouterRuntime
 func currentProbeVirtualRouterExitEntryForDestinationIP(dstIP string, runtime *probeVirtualRouterRuntime) (probeVirtualRouterFakeIPEntry, bool, bool) {
 	localNodeID := currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)
 	if probeVirtualRouterIPInCurrentFakeCIDR(dstIP) {
-		if entry, ok := currentProbeVirtualRouterFakeIPEntryByIPWithAsyncRefresh(dstIP); ok {
+		if entry, ok := currentProbeVirtualRouterFakeIPEntryByIPWithControllerRefresh(dstIP); ok {
 			return entry, true, normalizeProbeRouteNodeID(entry.ExitNodeID) == localNodeID
 		}
 	}
@@ -545,7 +545,7 @@ func probeVirtualRouterFakeIPTargetsFromTransportID(addr tcpip.Address, port uin
 	var entry probeVirtualRouterFakeIPEntry
 	ok := false
 	if probeVirtualRouterIPInCurrentFakeCIDR(host) {
-		entry, ok = currentProbeVirtualRouterFakeIPEntryByIPWithAsyncRefresh(host)
+		entry, ok = currentProbeVirtualRouterFakeIPEntryByIPWithControllerRefresh(host)
 	}
 	if !ok {
 		rule, ruleOK := currentProbeVirtualRouterRouteRuleForIP(host)

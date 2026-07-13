@@ -130,31 +130,16 @@ func TestResolveProbeVirtualRouterDNSResponseUsesControllerFakeIPForExitRule(t *
 		t.Fatalf("build dns query failed: %v", err)
 	}
 	result, err := resolveProbeVirtualRouterDNSPacket(packet)
-	if err == nil {
-		t.Fatalf("first resolve should schedule fake ip request in background")
-	}
-	if result.Domain != "www.reddit.com" || len(result.RealIPs) != 0 {
-		t.Fatalf("domain=%q ips=%v", result.Domain, result.RealIPs)
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if item, ok := currentProbeVirtualRouterFakeIPEntryByDomain("www.reddit.com"); ok && item.FakeIP == "198.18.4.9" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("fake ip entry was not applied after background request")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	result, err = resolveProbeVirtualRouterDNSPacket(packet)
 	if err != nil {
-		t.Fatalf("resolve virtual router dns after background request failed: %v", err)
+		t.Fatalf("first resolve virtual router dns failed: %v", err)
 	}
 	if got := strings.Join(extractProbeLocalDNSResponseIPsBestEffort(result.Response), ","); got != "198.18.4.9" {
 		t.Fatalf("response fake ip=%q", got)
 	}
 	if item, ok := currentProbeVirtualRouterFakeIPEntryByDomain("www.reddit.com"); !ok || item.FakeIP != "198.18.4.9" {
 		t.Fatalf("cached fake ip entry=%+v ok=%v", item, ok)
+	} else if expiresAt, err := time.Parse(time.RFC3339, item.ExpiresAt); err != nil || time.Until(expiresAt) > 49*time.Hour || time.Until(expiresAt) < 47*time.Hour {
+		t.Fatalf("local fake ip ttl should be about 48h, expires_at=%q err=%v", item.ExpiresAt, err)
 	}
 }
 

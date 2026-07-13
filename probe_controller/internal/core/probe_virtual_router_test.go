@@ -361,6 +361,76 @@ func TestProbeRouteFakeIPRenewHandlerRenewsOnlyReportedDomains(t *testing.T) {
 	}
 }
 
+func TestProbeRouteFakeIPResolveHandlerRenewsOnFakeIPLookup(t *testing.T) {
+	oldRouteStore := ProbeRouteConfigStore
+	oldProbeStore := ProbeStore
+	t.Cleanup(func() {
+		ProbeRouteConfigStore = oldRouteStore
+		ProbeStore = oldProbeStore
+	})
+	tmpDir := t.TempDir()
+	now := time.Now().UTC()
+	oldExpiresAt := now.Add(2 * time.Hour).Format(time.RFC3339)
+	ProbeStore = &probeConfigStore{data: probeConfigData{
+		ProbeNodes:   []probeNodeRecord{{NodeNo: 1, NodeName: "node-1"}, {NodeNo: 9, NodeName: "exit-9"}},
+		ProbeSecrets: map[string]string{"1": "secret-1", "9": "secret-9"},
+	}}
+	ProbeRouteConfigStore = &probeRouteConfigStore{
+		path: filepath.Join(tmpDir, "probe_route_config.json"),
+		data: probeRouteConfigStoreData{
+			VirtualRouter: probeVirtualRouterConfig{
+				Enabled:    true,
+				FakeIPCIDR: probeVirtualRouterDefaultCIDR,
+				ProbeIPs:   []probeVirtualRouterProbeIP{{NodeID: "9", IP: "198.18.0.9"}},
+				RouteRules: []probeVirtualRouterRouteRule{{
+					ID:         "rr-1",
+					Name:       "reddit",
+					Action:     probeVirtualRouterRouteRuleActionExit,
+					ExitNodeID: "9",
+					Entries:    []string{"domain_suffix:reddit.com"},
+				}},
+			},
+			VirtualRouterFakeIP: probeVirtualRouterFakeIPLibrary{
+				Version:   4,
+				UpdatedAt: now.Add(-24 * time.Hour).Format(time.RFC3339),
+				Items: []probeVirtualRouterFakeIPEntry{{
+					Domain:     "api.reddit.com",
+					FakeIP:     "198.18.4.1",
+					RuleID:     "rr-old",
+					Action:     probeVirtualRouterRouteRuleActionExit,
+					ExitNodeID: "9",
+					ExpiresAt:  oldExpiresAt,
+					UpdatedAt:  oldExpiresAt,
+				}},
+			},
+		},
+	}
+
+	body := bytes.NewBufferString(`{"fake_ip":"198.18.4.1"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/probe/route/fake_ip/resolve?node_id=1&secret=secret-1", body)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rr := httptest.NewRecorder()
+	ProbeRouteFakeIPResolveHandler(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("fake ip resolve status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var payload probeRouteFakeIPResolveResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode fake ip resolve failed: %v", err)
+	}
+	if payload.Item.Domain != "api.reddit.com" || payload.Item.RuleID != "rr-1" {
+		t.Fatalf("payload item=%+v", payload.Item)
+	}
+	library := ProbeRouteConfigStore.data.VirtualRouterFakeIP
+	if library.Version != 5 || len(library.Items) != 1 {
+		t.Fatalf("library=%+v", library)
+	}
+	renewed, err := time.Parse(time.RFC3339, library.Items[0].ExpiresAt)
+	if err != nil || time.Until(renewed) < 29*24*time.Hour {
+		t.Fatalf("fake ip lookup should renew expires_at=%q err=%v", library.Items[0].ExpiresAt, err)
+	}
+}
+
 func TestMngLinkVirtualRouterFakeIPResetHandlerDoesNotDispatchRouteConfigSync(t *testing.T) {
 	oldRouteStore := ProbeRouteConfigStore
 	oldProbeStore := ProbeStore

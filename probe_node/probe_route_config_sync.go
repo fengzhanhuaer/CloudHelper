@@ -17,7 +17,6 @@ import (
 const (
 	probeRouteConfigAPIPath          = "/api/probe/route/config"
 	probeRouteFakeIPResolveAPIPath   = "/api/probe/route/fake_ip/resolve"
-	probeRouteFakeIPRenewAPIPath     = "/api/probe/route/fake_ip/renew"
 	probeRouteConfigSyncPollInterval = 60 * time.Minute
 	probeRouteConfigSyncFetchTimeout = 15 * time.Second
 	probeRouteConfigCacheFileName    = "probe_route_config.json"
@@ -103,16 +102,10 @@ type probeRouteFakeIPResolveResponse struct {
 	FakeIPLibrary probeVirtualRouterFakeIPLibrary `json:"fake_ip_library"`
 }
 
-type probeRouteFakeIPRenewResponse struct {
-	NodeID string                          `json:"node_id"`
-	Items  []probeVirtualRouterFakeIPEntry `json:"items"`
-}
-
 var (
-	probeRequestRouteConfig      = requestProbeRouteConfig
-	probeRequestRouteFakeIP      = requestProbeRouteFakeIP
-	probeRequestRouteFakeIPByIP  = requestProbeRouteFakeIPByIP
-	probeRequestRouteFakeIPRenew = requestProbeRouteFakeIPRenew
+	probeRequestRouteConfig     = requestProbeRouteConfig
+	probeRequestRouteFakeIP     = requestProbeRouteFakeIP
+	probeRequestRouteFakeIPByIP = requestProbeRouteFakeIPByIP
 )
 
 func startProbeRouteConfigSyncLoop(identity nodeIdentity, controllerBaseURL string) {
@@ -296,52 +289,6 @@ func requestProbeRouteFakeIPItem(ctx context.Context, controllerBaseURL string, 
 		return probeVirtualRouterFakeIPEntry{}, err
 	}
 	return payload.Item, nil
-}
-
-func requestProbeRouteFakeIPRenew(ctx context.Context, controllerBaseURL string, identity nodeIdentity, domains []string) ([]probeVirtualRouterFakeIPEntry, error) {
-	baseURL := strings.TrimRight(strings.TrimSpace(controllerBaseURL), "/")
-	if baseURL == "" {
-		return nil, errors.New("controller base url is required")
-	}
-	nodeID := strings.TrimSpace(identity.NodeID)
-	secret := strings.TrimSpace(identity.Secret)
-	if nodeID == "" || secret == "" {
-		return nil, errors.New("node identity is missing node id or secret")
-	}
-	query := url.Values{}
-	query.Set("node_id", nodeID)
-	query.Set("secret", secret)
-	endpoint := baseURL + probeRouteFakeIPRenewAPIPath + "?" + query.Encode()
-	body, err := json.Marshal(map[string][]string{"domains": domains})
-	if err != nil {
-		return nil, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(body)))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Forwarded-Proto", "https")
-	client, closeClient, err := newProbeResolvedHTTPClientForURL(endpoint, probeRouteConfigSyncFetchTimeout)
-	if err != nil {
-		return nil, err
-	}
-	defer closeClient()
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("request route fake ip renew failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(raw)))
-	}
-	var payload probeRouteFakeIPRenewResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&payload); err != nil {
-		return nil, err
-	}
-	return payload.Items, nil
 }
 
 func rememberProbeVirtualRouterAuthTickets(config probeVirtualRouterConfig) {
