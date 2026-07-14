@@ -4038,10 +4038,9 @@ func TestProbeVirtualRouterFrameLinkDebugStateIncludesCarrierDetails(t *testing.
 	}
 }
 
-func TestProbeVirtualRouterAttachCarrierRejectsDuplicateWhenCurrentCarrierActive(t *testing.T) {
+func TestProbeVirtualRouterAttachCarrierReplacesCurrentCarrier(t *testing.T) {
 	firstLeft, firstRight := net.Pipe()
 	defer firstRight.Close()
-	defer firstLeft.Close()
 	link := newProbeVirtualRouterFrameLink("packet|vrouter-duplicate", &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-duplicate"}}, nil, nil)
 	first := link.AttachCarrier(firstLeft, "carrier-active", "198.51.100.10:12040")
 	if first == nil {
@@ -4050,15 +4049,22 @@ func TestProbeVirtualRouterAttachCarrierRejectsDuplicateWhenCurrentCarrierActive
 
 	secondLeft, secondRight := net.Pipe()
 	defer secondRight.Close()
-	if second := link.AttachCarrier(secondLeft, "carrier-duplicate", "198.51.100.11:12040"); second != nil {
-		t.Fatalf("duplicate carrier should be rejected while current carrier is active")
+	defer secondLeft.Close()
+	second := link.AttachCarrier(secondLeft, "carrier-replacement", "198.51.100.11:12040")
+	if second == nil {
+		t.Fatalf("authenticated new carrier should replace the current carrier")
 	}
 
 	link.mu.Lock()
 	got := link.carrier
 	link.mu.Unlock()
-	if got != first {
-		t.Fatalf("active carrier should remain attached")
+	if got != second {
+		t.Fatalf("new carrier should be attached")
+	}
+	select {
+	case <-first.done:
+	case <-time.After(time.Second):
+		t.Fatalf("replaced carrier should be closed")
 	}
 }
 

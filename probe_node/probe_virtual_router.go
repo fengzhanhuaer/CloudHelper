@@ -3842,7 +3842,6 @@ func (s *probeVirtualRouterFrameLink) AttachCarrier(conn net.Conn, sessionID str
 	}
 	token := newProbeVirtualRouterPhysicalCarrier(conn, sessionID, remoteAddr)
 	var old *probeVirtualRouterPhysicalCarrier
-	rejectDuplicate := false
 	s.mu.Lock()
 	select {
 	case <-s.done:
@@ -3852,15 +3851,6 @@ func (s *probeVirtualRouterFrameLink) AttachCarrier(conn net.Conn, sessionID str
 	default:
 	}
 	old = s.carrier
-	if s.runtime != nil && old != nil && len(s.tx) == 0 && probeVirtualRouterPhysicalCarrierRecentlyActive(old, probeVirtualRouterCarrierStaleRXGrace) {
-		rejectDuplicate = true
-	}
-	if rejectDuplicate {
-		s.mu.Unlock()
-		token.close()
-		log.Printf("probe virtual router physical carrier duplicate rejected: route=%s key=%s current_session=%s current_remote=%s new_session=%s new_remote=%s", probeVirtualRouterRuntimeLogRouteID(s.runtime), strings.TrimSpace(s.key), strings.TrimSpace(old.sessionID), strings.TrimSpace(old.remoteAddr), strings.TrimSpace(sessionID), strings.TrimSpace(remoteAddr))
-		return nil
-	}
 	s.carrier = token
 	s.openedAt = token.connectedAt
 	s.lastUsed = token.connectedAt
@@ -3875,28 +3865,6 @@ func (s *probeVirtualRouterFrameLink) AttachCarrier(conn net.Conn, sessionID str
 		log.Printf("probe virtual router frame buffers cleared: reason=carrier_attached route=%s key=%s tx=%d rx=%d session_id=%s remote=%s", probeVirtualRouterRuntimeLogRouteID(s.runtime), strings.TrimSpace(s.key), droppedTX, droppedRX, strings.TrimSpace(sessionID), strings.TrimSpace(remoteAddr))
 	}
 	return token
-}
-
-func probeVirtualRouterPhysicalCarrierRecentlyActive(token *probeVirtualRouterPhysicalCarrier, maxIdle time.Duration) bool {
-	if token == nil {
-		return false
-	}
-	if maxIdle <= 0 {
-		maxIdle = probeVirtualRouterCarrierStaleRXGrace
-	}
-	token.mu.Lock()
-	lastReadAt := token.lastReadAt
-	lastWriteAt := token.lastWriteAt
-	connectedAt := token.connectedAt
-	token.mu.Unlock()
-	lastActiveAt := lastReadAt
-	if lastWriteAt.After(lastActiveAt) {
-		lastActiveAt = lastWriteAt
-	}
-	if lastActiveAt.IsZero() {
-		lastActiveAt = connectedAt
-	}
-	return !lastActiveAt.IsZero() && time.Since(lastActiveAt) < maxIdle
 }
 
 func (s *probeVirtualRouterFrameLink) signalCarrierChangedLocked() {
