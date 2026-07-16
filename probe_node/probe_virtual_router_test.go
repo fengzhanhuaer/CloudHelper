@@ -279,8 +279,12 @@ func resetProbeVirtualRouterStateForTest() {
 	probeVirtualRouterFakeIPVerifyState.pending = make(map[string]chan probeVirtualRouterFakeIPVerifyPayload)
 	probeVirtualRouterFakeIPVerifyState.running = make(map[string]bool)
 	probeVirtualRouterFakeIPVerifyState.lastAt = make(map[string]time.Time)
+	probeVirtualRouterFakeIPVerifyState.failures = make(map[string]int)
 	probeVirtualRouterFakeIPVerifyState.synFlows = make(map[string]probeVirtualRouterFakeIPVerifySYNFlow)
 	probeVirtualRouterFakeIPVerifyState.mu.Unlock()
+	probeVirtualRouterLogThrottleState.mu.Lock()
+	probeVirtualRouterLogThrottleState.items = make(map[string]probeVirtualRouterLogThrottleEntry)
+	probeVirtualRouterLogThrottleState.mu.Unlock()
 	waitProbeVirtualRouterLocalInterfaceIPEnsure()
 	clearProbeVirtualRouterRouteCache("test reset")
 	probeVirtualRouterDisconnectedCarrierState.mu.Lock()
@@ -3214,6 +3218,111 @@ func TestProbeVirtualRouterFakeIPVerifySYNRetransmitSchedulesSourceVerify(t *tes
 	defer probeVirtualRouterFakeIPVerifyState.mu.Unlock()
 	if len(probeVirtualRouterFakeIPVerifyState.lastAt) != 1 {
 		t.Fatalf("verify lastAt state=%+v", probeVirtualRouterFakeIPVerifyState.lastAt)
+	}
+}
+
+func TestProbeVirtualRouterFakeIPVerifyTimeoutAdaptsToPathRTT(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	path := []string{"9", "17"}
+	if got := probeVirtualRouterFakeIPVerifyTimeoutForPath(path); got != probeVirtualRouterFakeIPVerifyMinTimeout {
+		t.Fatalf("timeout without RTT=%s, want %s", got, probeVirtualRouterFakeIPVerifyMinTimeout)
+	}
+	recordProbeVirtualRouterPathRTTSuccess(path, 4700*time.Millisecond, "17")
+	if got := probeVirtualRouterFakeIPVerifyTimeoutForPath(path); got != 11400*time.Millisecond {
+		t.Fatalf("timeout with 4.7s RTT=%s, want 11.4s", got)
+	}
+	recordProbeVirtualRouterPathRTTSuccess(path, 20*time.Second, "17")
+	if got := probeVirtualRouterFakeIPVerifyTimeoutForPath(path); got != probeVirtualRouterFakeIPVerifyMaxTimeout {
+		t.Fatalf("timeout cap=%s, want %s", got, probeVirtualRouterFakeIPVerifyMaxTimeout)
+	}
+}
+
+func TestProbeVirtualRouterFakeIPVerifyFailureCooldownBacksOff(t *testing.T) {
+	tests := []struct {
+		failures int
+		want     time.Duration
+	}{
+		{failures: 0, want: 15 * time.Second},
+		{failures: 1, want: 30 * time.Second},
+		{failures: 2, want: time.Minute},
+		{failures: 3, want: 2 * time.Minute},
+		{failures: 5, want: 5 * time.Minute},
+		{failures: 20, want: 5 * time.Minute},
+	}
+	for _, test := range tests {
+		if got := probeVirtualRouterFakeIPVerifyCooldownForFailures(test.failures); got != test.want {
+			t.Fatalf("failures=%d cooldown=%s, want %s", test.failures, got, test.want)
+		}
+	}
+}
+
+func TestProbeVirtualRouterFakeIPVerifyScheduleHonorsConcurrencyAndFailureBackoff(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	msg := probeVirtualRouterFakeIPVerifyPayload{
+		SourceNodeID: "9",
+		ExitNodeID:   "17",
+		Path:         []string{"9", "17"},
+		Domain:       "api.example.com",
+		FakeIP:       "198.18.4.9",
+		Port:         443,
+		Protocol:     "tcp",
+	}
+	key := probeVirtualRouterFakeIPVerifyKey(msg)
+	probeVirtualRouterFakeIPVerifyState.mu.Lock()
+	probeVirtualRouterFakeIPVerifyState.lastAt[key] = time.Now()
+	probeVirtualRouterFakeIPVerifyState.failures[key] = 1
+	probeVirtualRouterFakeIPVerifyState.mu.Unlock()
+	if scheduleProbeVirtualRouterFakeIPVerify(msg, nil) {
+		t.Fatal("failure backoff should suppress an immediate retry")
+	}
+
+	probeVirtualRouterFakeIPVerifyState.mu.Lock()
+	delete(probeVirtualRouterFakeIPVerifyState.lastAt, key)
+	delete(probeVirtualRouterFakeIPVerifyState.failures, key)
+	for index := 0; index < probeVirtualRouterFakeIPVerifyMaxConcurrent; index++ {
+		probeVirtualRouterFakeIPVerifyState.running[fmt.Sprintf("busy-%d", index)] = true
+	}
+	probeVirtualRouterFakeIPVerifyState.mu.Unlock()
+	if scheduleProbeVirtualRouterFakeIPVerify(msg, nil) {
+		t.Fatal("global verify concurrency limit should suppress excess diagnostics")
+	}
+
+	probeVirtualRouterFakeIPVerifyState.mu.Lock()
+	probeVirtualRouterFakeIPVerifyState.running = map[string]bool{key: true}
+	probeVirtualRouterFakeIPVerifyState.failures[key] = 3
+	probeVirtualRouterFakeIPVerifyState.mu.Unlock()
+	if failures := completeProbeVirtualRouterFakeIPVerifySchedule(key, true); failures != 0 {
+		t.Fatalf("successful verify failure count=%d, want 0", failures)
+	}
+	probeVirtualRouterFakeIPVerifyState.mu.Lock()
+	_, stillRunning := probeVirtualRouterFakeIPVerifyState.running[key]
+	_, stillFailing := probeVirtualRouterFakeIPVerifyState.failures[key]
+	probeVirtualRouterFakeIPVerifyState.mu.Unlock()
+	if stillRunning || stillFailing {
+		t.Fatalf("successful verify should clear running and failure state: running=%t failing=%t", stillRunning, stillFailing)
+	}
+}
+
+func TestProbeVirtualRouterLogThrottleAggregatesSuppressedEntries(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	period := 30 * time.Second
+	startedAt := time.Unix(100, 0)
+	if allowed, suppressed := takeProbeVirtualRouterLogThrottle("verify|9>17", period, startedAt); !allowed || suppressed != 0 {
+		t.Fatalf("first log=(%t,%d), want (true,0)", allowed, suppressed)
+	}
+	for index := 1; index <= 2; index++ {
+		if allowed, suppressed := takeProbeVirtualRouterLogThrottle("verify|9>17", period, startedAt.Add(time.Duration(index)*time.Second)); allowed || suppressed != 0 {
+			t.Fatalf("throttled log %d=(%t,%d), want (false,0)", index, allowed, suppressed)
+		}
+	}
+	if allowed, suppressed := takeProbeVirtualRouterLogThrottle("verify|9>17", period, startedAt.Add(period)); !allowed || suppressed != 2 {
+		t.Fatalf("aggregated log=(%t,%d), want (true,2)", allowed, suppressed)
 	}
 }
 

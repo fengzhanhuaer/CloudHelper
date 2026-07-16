@@ -88,6 +88,7 @@ const (
 	probeVirtualRouterPathRecoveryMaxCandidates                   = 64
 	probeVirtualRouterPathRecoveryMaxHops                         = 3
 	probeVirtualRouterNonDirectPathGuardInterval                  = time.Minute
+	probeVirtualRouterDiagnosticLogPeriod                         = 5 * time.Minute
 	probeVirtualRouterRouteConfigRefreshHotPathMinInterval        = 60 * time.Second
 	probeVirtualRouterProbeIPPoolSize                             = 1024
 	probeVirtualRouterFakeIPMemoryTTL                             = 48 * time.Hour
@@ -3919,7 +3920,10 @@ func probeVirtualRouterGuardNonDirectPaths() int {
 			if errors.Is(err, errProbeVirtualRouterAdjacentRTTUnavailable) {
 				recordProbeVirtualRouterPathRTTError(path, err)
 			}
-			log.Printf("probe virtual router non-direct path guardian failed: path=%s err=%v", strings.Join(path, ">"), err)
+			logKey := "non_direct_guardian|" + strings.Join(path, ">")
+			if shouldLog, suppressed := takeProbeVirtualRouterLogThrottle(logKey, probeVirtualRouterDiagnosticLogPeriod, time.Now()); shouldLog {
+				log.Printf("probe virtual router non-direct path guardian failed: path=%s suppressed=%d err=%v", strings.Join(path, ">"), suppressed, err)
+			}
 			if probeVirtualRouterPathShouldAvoid(path) {
 				clearProbeVirtualRouterRouteCacheForPath(path, "non-direct path first hop is unavailable")
 				if replacement := currentProbeVirtualRouterPathBetweenNodes(localNodeID, path[len(path)-1]); len(replacement) > 0 && !sameProbeVirtualRouterPath(path, replacement) {
@@ -6729,7 +6733,11 @@ func recordProbeVirtualRouterRuntimePingError(rt *probeVirtualRouterRuntime, dir
 			applyProbeVirtualRouterPingContext(item, direction, bridgeStatus, bridgeSession)
 		}
 		probeVirtualRouterRuntimeStatsState.mu.Unlock()
-		log.Printf("probe virtual router bridge ping error ignored while carrier is receiving: route=%s direction=%s err=%s", routeID, normalizeProbeRouteBridgeRole(direction), normalizedErr)
+		direction = normalizeProbeRouteBridgeRole(direction)
+		logKey := strings.Join([]string{"active_carrier_ping_delayed", routeID, direction}, "|")
+		if shouldLog, suppressed := takeProbeVirtualRouterLogThrottle(logKey, probeVirtualRouterDiagnosticLogPeriod, time.Now()); shouldLog {
+			log.Printf("probe virtual router bridge ping response delayed while carrier is receiving: route=%s direction=%s suppressed=%d cause=%s", routeID, direction, suppressed, normalizedErr)
+		}
 		return
 	}
 	failureCount := 0

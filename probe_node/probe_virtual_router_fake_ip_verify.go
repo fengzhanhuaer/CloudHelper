@@ -13,8 +13,13 @@ import (
 )
 
 const (
-	probeVirtualRouterFakeIPVerifyTimeout         = 3 * time.Second
-	probeVirtualRouterFakeIPVerifyCooldown        = 5 * time.Second
+	probeVirtualRouterFakeIPVerifyMinTimeout      = 5 * time.Second
+	probeVirtualRouterFakeIPVerifyMaxTimeout      = 15 * time.Second
+	probeVirtualRouterFakeIPVerifyRTTPadding      = 2 * time.Second
+	probeVirtualRouterFakeIPVerifyCooldown        = 15 * time.Second
+	probeVirtualRouterFakeIPVerifyMaxCooldown     = 5 * time.Minute
+	probeVirtualRouterFakeIPVerifyMaxConcurrent   = 4
+	probeVirtualRouterFakeIPVerifyLogPeriod       = 30 * time.Second
 	probeVirtualRouterFakeIPVerifySYNWindow       = 5 * time.Second
 	probeVirtualRouterFakeIPVerifySYNTriggerCount = 2
 	probeVirtualRouterFakeIPVerifySYNFlowMaxAge   = 30 * time.Second
@@ -25,11 +30,13 @@ var probeVirtualRouterFakeIPVerifyState = struct {
 	pending  map[string]chan probeVirtualRouterFakeIPVerifyPayload
 	running  map[string]bool
 	lastAt   map[string]time.Time
+	failures map[string]int
 	synFlows map[string]probeVirtualRouterFakeIPVerifySYNFlow
 }{
 	pending:  make(map[string]chan probeVirtualRouterFakeIPVerifyPayload),
 	running:  make(map[string]bool),
 	lastAt:   make(map[string]time.Time),
+	failures: make(map[string]int),
 	synFlows: make(map[string]probeVirtualRouterFakeIPVerifySYNFlow),
 }
 
@@ -172,14 +179,19 @@ func scheduleProbeVirtualRouterFakeIPVerify(msg probeVirtualRouterFakeIPVerifyPa
 	if strings.TrimSpace(msg.Protocol) == "" {
 		msg.Protocol = "tcp"
 	}
-	key := strings.Join([]string{msg.SourceNodeID, msg.ExitNodeID, msg.Domain, strings.TrimSpace(msg.TargetIP), strings.TrimSpace(msg.FakeIP), strconv.Itoa(msg.Port), strings.TrimSpace(msg.Protocol)}, "|")
+	key := probeVirtualRouterFakeIPVerifyKey(msg)
 	now := time.Now()
 	probeVirtualRouterFakeIPVerifyState.mu.Lock()
 	if probeVirtualRouterFakeIPVerifyState.running[key] {
 		probeVirtualRouterFakeIPVerifyState.mu.Unlock()
 		return false
 	}
-	if lastAt := probeVirtualRouterFakeIPVerifyState.lastAt[key]; !lastAt.IsZero() && now.Sub(lastAt) < probeVirtualRouterFakeIPVerifyCooldown {
+	if len(probeVirtualRouterFakeIPVerifyState.running) >= probeVirtualRouterFakeIPVerifyMaxConcurrent {
+		probeVirtualRouterFakeIPVerifyState.mu.Unlock()
+		return false
+	}
+	cooldown := probeVirtualRouterFakeIPVerifyCooldownForFailures(probeVirtualRouterFakeIPVerifyState.failures[key])
+	if lastAt := probeVirtualRouterFakeIPVerifyState.lastAt[key]; !lastAt.IsZero() && now.Sub(lastAt) < cooldown {
 		probeVirtualRouterFakeIPVerifyState.mu.Unlock()
 		return false
 	}
@@ -188,21 +200,30 @@ func scheduleProbeVirtualRouterFakeIPVerify(msg probeVirtualRouterFakeIPVerifyPa
 	probeVirtualRouterFakeIPVerifyState.mu.Unlock()
 	packetCopy := append([]byte(nil), packet...)
 	go func() {
-		defer func() {
-			probeVirtualRouterFakeIPVerifyState.mu.Lock()
-			delete(probeVirtualRouterFakeIPVerifyState.running, key)
-			probeVirtualRouterFakeIPVerifyState.mu.Unlock()
-		}()
-		response, err := queryProbeVirtualRouterFakeIPVerify(msg, probeVirtualRouterFakeIPVerifyTimeout)
+		timeout := probeVirtualRouterFakeIPVerifyTimeoutForPath(msg.Path)
+		response, err := queryProbeVirtualRouterFakeIPVerify(msg, timeout)
+		failureCount := completeProbeVirtualRouterFakeIPVerifySchedule(key, err == nil && response.OK)
 		if err != nil {
-			log.Printf("probe virtual router fake ip verify failed: domain=%s fake_ip=%s port=%d path=%s reason=%s err=%v", msg.Domain, strings.TrimSpace(msg.FakeIP), msg.Port, strings.Join(msg.Path, ">"), strings.TrimSpace(msg.Reason), err)
-			if len(packetCopy) > 0 {
+			logKey := strings.Join([]string{"fake_ip_verify", strings.Join(msg.Path, ">"), strings.TrimSpace(msg.Reason), "query_error"}, "|")
+			shouldLog, suppressed := takeProbeVirtualRouterLogThrottle(logKey, probeVirtualRouterFakeIPVerifyLogPeriod, time.Now())
+			if shouldLog {
+				log.Printf("probe virtual router fake ip verify failed: domain=%s fake_ip=%s port=%d path=%s reason=%s timeout_ms=%d consecutive_failures=%d suppressed=%d err=%v", msg.Domain, strings.TrimSpace(msg.FakeIP), msg.Port, strings.Join(msg.Path, ">"), strings.TrimSpace(msg.Reason), probeDurationMilliseconds(timeout), failureCount, suppressed, err)
+			}
+			if shouldLog && len(packetCopy) > 0 {
 				recordProbeVirtualRouterRecentPacket("fake_verify", "verify_error", nil, packetCopy, msg.Path, false, err)
 			}
 			return
 		}
-		log.Printf("probe virtual router fake ip verify result: ok=%v domain=%s fake_ip=%s port=%d resolved=%s checked=%s latency_ms=%d path=%s reason=%s err=%s", response.OK, msg.Domain, strings.TrimSpace(msg.FakeIP), msg.Port, strings.Join(response.ResolvedIPs, ","), strings.TrimSpace(response.CheckedAddress), response.LatencyMS, strings.Join(msg.Path, ">"), strings.TrimSpace(msg.Reason), strings.TrimSpace(response.Error))
-		if len(packetCopy) > 0 {
+		outcome := "result_ok"
+		if !response.OK {
+			outcome = "result_error"
+		}
+		logKey := strings.Join([]string{"fake_ip_verify", strings.Join(msg.Path, ">"), strings.TrimSpace(msg.Reason), outcome}, "|")
+		shouldLog, suppressed := takeProbeVirtualRouterLogThrottle(logKey, probeVirtualRouterFakeIPVerifyLogPeriod, time.Now())
+		if shouldLog {
+			log.Printf("probe virtual router fake ip verify result: ok=%v domain=%s fake_ip=%s port=%d resolved=%s checked=%s latency_ms=%d path=%s reason=%s consecutive_failures=%d suppressed=%d err=%s", response.OK, msg.Domain, strings.TrimSpace(msg.FakeIP), msg.Port, strings.Join(response.ResolvedIPs, ","), strings.TrimSpace(response.CheckedAddress), response.LatencyMS, strings.Join(msg.Path, ">"), strings.TrimSpace(msg.Reason), failureCount, suppressed, strings.TrimSpace(response.Error))
+		}
+		if shouldLog && len(packetCopy) > 0 {
 			action := "verify_ok"
 			if !response.OK {
 				action = "verify_error"
@@ -217,13 +238,59 @@ func scheduleProbeVirtualRouterFakeIPVerify(msg probeVirtualRouterFakeIPVerifyPa
 	return true
 }
 
+func probeVirtualRouterFakeIPVerifyKey(msg probeVirtualRouterFakeIPVerifyPayload) string {
+	return strings.Join([]string{msg.SourceNodeID, msg.ExitNodeID, msg.Domain, strings.TrimSpace(msg.TargetIP), strings.TrimSpace(msg.FakeIP), strconv.Itoa(msg.Port), strings.TrimSpace(msg.Protocol)}, "|")
+}
+
+func probeVirtualRouterFakeIPVerifyTimeoutForPath(path []string) time.Duration {
+	latencyMS, _ := probeVirtualRouterPathRTTScore(cleanProbeVirtualRouterPath(path))
+	if latencyMS <= 0 {
+		return probeVirtualRouterFakeIPVerifyMinTimeout
+	}
+	timeout := 2*time.Duration(latencyMS)*time.Millisecond + probeVirtualRouterFakeIPVerifyRTTPadding
+	if timeout < probeVirtualRouterFakeIPVerifyMinTimeout {
+		return probeVirtualRouterFakeIPVerifyMinTimeout
+	}
+	if timeout > probeVirtualRouterFakeIPVerifyMaxTimeout {
+		return probeVirtualRouterFakeIPVerifyMaxTimeout
+	}
+	return timeout
+}
+
+func probeVirtualRouterFakeIPVerifyCooldownForFailures(failures int) time.Duration {
+	cooldown := probeVirtualRouterFakeIPVerifyCooldown
+	for attempt := 0; attempt < failures && cooldown < probeVirtualRouterFakeIPVerifyMaxCooldown; attempt++ {
+		cooldown *= 2
+		if cooldown >= probeVirtualRouterFakeIPVerifyMaxCooldown {
+			return probeVirtualRouterFakeIPVerifyMaxCooldown
+		}
+	}
+	return cooldown
+}
+
+func completeProbeVirtualRouterFakeIPVerifySchedule(key string, success bool) int {
+	probeVirtualRouterFakeIPVerifyState.mu.Lock()
+	defer probeVirtualRouterFakeIPVerifyState.mu.Unlock()
+	if !probeVirtualRouterFakeIPVerifyState.running[key] {
+		return 0
+	}
+	delete(probeVirtualRouterFakeIPVerifyState.running, key)
+	probeVirtualRouterFakeIPVerifyState.lastAt[key] = time.Now()
+	if success {
+		delete(probeVirtualRouterFakeIPVerifyState.failures, key)
+		return 0
+	}
+	probeVirtualRouterFakeIPVerifyState.failures[key]++
+	return probeVirtualRouterFakeIPVerifyState.failures[key]
+}
+
 func queryProbeVirtualRouterFakeIPVerify(msg probeVirtualRouterFakeIPVerifyPayload, timeout time.Duration) (probeVirtualRouterFakeIPVerifyPayload, error) {
 	msg.Path = cleanProbeVirtualRouterPath(msg.Path)
 	if len(msg.Path) < 2 {
 		return probeVirtualRouterFakeIPVerifyPayload{}, errors.New("fake ip verify path is incomplete")
 	}
 	if timeout <= 0 {
-		timeout = probeVirtualRouterFakeIPVerifyTimeout
+		timeout = probeVirtualRouterFakeIPVerifyMinTimeout
 	}
 	msg.RequestID = newProbeTCPDebugFlowID("vrouter_fake_ip_verify", firstNonEmpty(msg.Domain, msg.FakeIP, msg.TargetIP))
 	msg.CreatedAtUnixNano = time.Now().UnixNano()
@@ -382,7 +449,7 @@ func waitProbeVirtualRouterFakeIPVerifyResponse(ch chan probeVirtualRouterFakeIP
 		return probeVirtualRouterFakeIPVerifyPayload{}, errors.New("virtual router fake ip verify response waiter is nil")
 	}
 	if timeout <= 0 {
-		timeout = probeVirtualRouterFakeIPVerifyTimeout
+		timeout = probeVirtualRouterFakeIPVerifyMinTimeout
 	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
