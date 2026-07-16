@@ -15,6 +15,10 @@ import (
 
 const probeVRouteInternetSettingsKey = `Software\Microsoft\Windows\CurrentVersion\Internet Settings`
 
+func probeVRouteSystemProxyRequired() bool {
+	return true
+}
+
 type probeVRouteRegistryInteger struct {
 	value  uint64
 	exists bool
@@ -36,6 +40,7 @@ var probeVRouteWindowsSystemProxyState = struct {
 	applied  bool
 	http     string
 	socks5   string
+	userSID  string
 	original probeVRouteWindowsProxySnapshot
 }{}
 
@@ -58,7 +63,14 @@ func setProbeVRouteSystemProxy(httpListenAddress string, socks5ListenAddress str
 		strings.EqualFold(probeVRouteWindowsSystemProxyState.socks5, socks5Address) {
 		return nil
 	}
-	key, err := registry.OpenKey(registry.CURRENT_USER, probeVRouteInternetSettingsKey, registry.QUERY_VALUE|registry.SET_VALUE)
+	if !probeVRouteWindowsSystemProxyState.captured {
+		userSID, targetErr := probeVRouteWindowsSystemProxyUserSID()
+		if targetErr != nil {
+			return targetErr
+		}
+		probeVRouteWindowsSystemProxyState.userSID = userSID
+	}
+	key, err := openProbeVRouteWindowsInternetSettings(probeVRouteWindowsSystemProxyState.userSID)
 	if err != nil {
 		return err
 	}
@@ -94,7 +106,7 @@ func restoreProbeVRouteSystemProxy() error {
 	if !probeVRouteWindowsSystemProxyState.captured {
 		return nil
 	}
-	key, err := registry.OpenKey(registry.CURRENT_USER, probeVRouteInternetSettingsKey, registry.QUERY_VALUE|registry.SET_VALUE)
+	key, err := openProbeVRouteWindowsInternetSettings(probeVRouteWindowsSystemProxyState.userSID)
 	if err != nil {
 		return err
 	}
@@ -109,6 +121,7 @@ func restoreProbeVRouteSystemProxy() error {
 	probeVRouteWindowsSystemProxyState.applied = false
 	probeVRouteWindowsSystemProxyState.http = ""
 	probeVRouteWindowsSystemProxyState.socks5 = ""
+	probeVRouteWindowsSystemProxyState.userSID = ""
 	probeVRouteWindowsSystemProxyState.original = probeVRouteWindowsProxySnapshot{}
 	logProbeInfof("probe vroute windows system proxy restored")
 	return nil
@@ -134,6 +147,50 @@ func probeVRouteSystemProxyAddress(listenAddress string) (string, error) {
 
 func probeVRouteWindowsProxyServerValue(httpAddress string, socks5Address string) string {
 	return "http=" + httpAddress + ";https=" + httpAddress + ";socks=socks5://" + socks5Address
+}
+
+func probeVRouteWindowsSystemProxyUserSID() (string, error) {
+	processToken, err := windows.OpenCurrentProcessToken()
+	if err != nil {
+		return "", err
+	}
+	defer processToken.Close()
+	processUser, err := processToken.GetTokenUser()
+	if err != nil {
+		return "", err
+	}
+	processSID := processUser.User.Sid.String()
+	if !strings.EqualFold(processSID, "S-1-5-18") {
+		return "", nil
+	}
+	sessionID := windows.WTSGetActiveConsoleSessionId()
+	if sessionID == ^uint32(0) {
+		return "", errors.New("windows system proxy requires an active console user")
+	}
+	var userToken windows.Token
+	if err := windows.WTSQueryUserToken(sessionID, &userToken); err != nil {
+		return "", fmt.Errorf("query active console user token: %w", err)
+	}
+	defer userToken.Close()
+	user, err := userToken.GetTokenUser()
+	if err != nil {
+		return "", err
+	}
+	userSID := user.User.Sid.String()
+	if userSID == "" || strings.EqualFold(userSID, "S-1-5-18") {
+		return "", errors.New("windows active console user sid is unavailable")
+	}
+	return userSID, nil
+}
+
+func openProbeVRouteWindowsInternetSettings(userSID string) (registry.Key, error) {
+	root := registry.CURRENT_USER
+	path := probeVRouteInternetSettingsKey
+	if strings.TrimSpace(userSID) != "" {
+		root = registry.USERS
+		path = strings.TrimSpace(userSID) + `\` + probeVRouteInternetSettingsKey
+	}
+	return registry.OpenKey(root, path, registry.QUERY_VALUE|registry.SET_VALUE)
 }
 
 func readProbeVRouteWindowsProxySnapshot(key registry.Key) (probeVRouteWindowsProxySnapshot, error) {
@@ -183,6 +240,7 @@ func rollbackProbeVRouteWindowsProxyLocked(key registry.Key, cause error) error 
 	probeVRouteWindowsSystemProxyState.applied = false
 	probeVRouteWindowsSystemProxyState.http = ""
 	probeVRouteWindowsSystemProxyState.socks5 = ""
+	probeVRouteWindowsSystemProxyState.userSID = ""
 	probeVRouteWindowsSystemProxyState.original = probeVRouteWindowsProxySnapshot{}
 	return cause
 }

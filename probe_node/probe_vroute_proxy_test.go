@@ -298,6 +298,54 @@ func TestReconcileProbeVRouteProxyRuntimeRollsBackSystemProxyFailure(t *testing.
 	}
 }
 
+func TestRecoverProbeVRouteProxyRuntimeAfterSystemProxyBecomesAvailable(t *testing.T) {
+	resetProbeVRouteProxyRuntimeForTest()
+	oldSet := probeVRouteSystemProxySet
+	oldRestore := probeVRouteSystemProxyRestore
+	t.Cleanup(func() {
+		probeVRouteSystemProxySet = oldSet
+		probeVRouteSystemProxyRestore = oldRestore
+	})
+	setCalls := 0
+	probeVRouteSystemProxySet = func(string, string) error {
+		setCalls++
+		if setCalls == 1 {
+			return errors.New("active console user unavailable")
+		}
+		return nil
+	}
+	probeVRouteSystemProxyRestore = func() error { return nil }
+	t.Cleanup(resetProbeVRouteProxyRuntimeForTest)
+	settings := probeVirtualRouterLocalSettings{
+		ProxyEnabled: true, HTTPProxyListen: reserveProbeVRouteProxyTCPAddress(t), SOCKS5ProxyListen: reserveProbeVRouteProxyTCPUDPAddress(t),
+	}
+	probeVirtualRouterLocalSettingsState.mu.Lock()
+	oldSettingsState := probeVirtualRouterLocalSettingsState.settings
+	oldSettingsLoaded := probeVirtualRouterLocalSettingsState.loaded
+	probeVirtualRouterLocalSettingsState.settings = settings
+	probeVirtualRouterLocalSettingsState.loaded = true
+	probeVirtualRouterLocalSettingsState.mu.Unlock()
+	t.Cleanup(func() {
+		probeVirtualRouterLocalSettingsState.mu.Lock()
+		probeVirtualRouterLocalSettingsState.settings = oldSettingsState
+		probeVirtualRouterLocalSettingsState.loaded = oldSettingsLoaded
+		probeVirtualRouterLocalSettingsState.mu.Unlock()
+	})
+
+	if err := reconcileProbeVRouteProxyRuntime(settings); err == nil {
+		t.Fatal("initial system proxy failure was not returned")
+	}
+	if err := recoverProbeVRouteProxyRuntimeOnce(); err != nil {
+		t.Fatalf("proxy recovery failed: %v", err)
+	}
+	probeVRouteProxyRuntimeState.mu.RLock()
+	runtime := probeVRouteProxyRuntimeState.runtime
+	probeVRouteProxyRuntimeState.mu.RUnlock()
+	if runtime == nil || setCalls != 2 {
+		t.Fatalf("recovered runtime=%v system proxy set calls=%d", runtime != nil, setCalls)
+	}
+}
+
 func jsonUnmarshalForProxyTest(payload []byte, value any) error {
 	return json.Unmarshal(payload, value)
 }

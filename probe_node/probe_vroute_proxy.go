@@ -21,6 +21,7 @@ const (
 	probeVRouteProxyDefaultHTTPListen   = "127.0.0.1:18080"
 	probeVRouteProxyDefaultSOCKS5Listen = "127.0.0.1:18081"
 	probeVRouteProxyHTTPHeaderTimeout   = 15 * time.Second
+	probeVRouteProxyRecoveryInterval    = 15 * time.Second
 )
 
 type probeVRouteProxyListenerRuntime struct {
@@ -51,6 +52,8 @@ var (
 	probeVRouteSystemProxySet     = setProbeVRouteSystemProxy
 	probeVRouteSystemProxyRestore = restoreProbeVRouteSystemProxy
 )
+
+var probeVRouteProxyRecoveryLoopOnce sync.Once
 
 func sanitizeProbeVRouteProxySettings(settings probeVirtualRouterLocalSettings) (probeVirtualRouterLocalSettings, error) {
 	settings.HTTPProxyListen = strings.TrimSpace(settings.HTTPProxyListen)
@@ -129,6 +132,10 @@ func reconcileProbeVRouteProxyRuntime(settings probeVirtualRouterLocalSettings) 
 	}
 	if current != nil && current.sameListeners(settings) {
 		current.updateSettings(settings)
+		if err := probeVRouteSystemProxySet(current.httpListener.Addr().String(), current.socksListener.Addr().String()); err != nil {
+			setProbeVRouteProxyRuntime(current, err.Error())
+			return fmt.Errorf("set windows system proxy: %w", err)
+		}
 		setProbeVRouteProxyRuntime(current, "")
 		return nil
 	}
@@ -167,6 +174,38 @@ func reconcileProbeVRouteProxyRuntime(settings probeVirtualRouterLocalSettings) 
 	}
 	setProbeVRouteProxyRuntime(next, "")
 	return nil
+}
+
+func startProbeVRouteProxyRecoveryLoop() {
+	if !probeVRouteSystemProxyRequired() {
+		return
+	}
+	probeVRouteProxyRecoveryLoopOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(probeVRouteProxyRecoveryInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				if err := recoverProbeVRouteProxyRuntimeOnce(); err != nil {
+					logProbeWarnf("probe vroute proxy recovery failed: err=%v", err)
+				}
+			}
+		}()
+	})
+}
+
+func recoverProbeVRouteProxyRuntimeOnce() error {
+	if !probeVRouteSystemProxyRequired() {
+		return nil
+	}
+	settings := loadProbeVirtualRouterLocalSettings()
+	if !settings.ProxyEnabled {
+		return nil
+	}
+	applied, _, _ := snapshotProbeVRouteSystemProxy()
+	if applied {
+		return nil
+	}
+	return reconcileProbeVRouteProxyRuntime(settings)
 }
 
 func setProbeVRouteProxyRuntime(runtime *probeVRouteProxyListenerRuntime, lastError string) {

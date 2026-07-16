@@ -2271,17 +2271,29 @@ func TestProbeVirtualRouterFrameLinkTXWorkerSurvivesCarrierMigration(t *testing.
 	_ = firstLeft.Close()
 	_ = firstRight.Close()
 	defer stopProbeVirtualRouterFrameLink(link)
+	detachDeadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := link.currentCarrier(); err != nil {
+			break
+		}
+		if time.Now().After(detachDeadline) {
+			t.Fatal("timed out waiting for old carrier detach")
+		}
+		time.Sleep(time.Millisecond)
+	}
 
 	wantPacket := []byte{0x45, 0x00, 0x00, 0x14}
 	wantPath := []string{"16", "19"}
-	if err := writeProbeVirtualRouterIPFrame(link, wantPacket, wantPath, nil); err != nil {
-		t.Fatalf("enqueue frame failed: %v", err)
-	}
-
 	secondLeft, secondRight := net.Pipe()
 	defer secondRight.Close()
 	if token := link.AttachCarrier(secondLeft, "reconnected", "pipe"); token == nil {
 		t.Fatalf("attach carrier returned nil")
+	}
+	if err := writeProbeVirtualRouterIPFrame(link, wantPacket, wantPath, nil); err != nil {
+		t.Fatalf("enqueue frame failed: %v", err)
+	}
+	if err := secondRight.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set migrated carrier read deadline failed: %v", err)
 	}
 	frame, err := readProbeVirtualRouterWireFrame(bufio.NewReader(secondRight))
 	if err != nil {

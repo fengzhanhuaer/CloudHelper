@@ -327,6 +327,7 @@ func runProbeNode(options probeLaunchOptions) error {
 	if err := reconcileProbeVRouteProxyRuntime(loadProbeVirtualRouterLocalSettings()); err != nil {
 		logProbeWarnf("probe vroute proxy startup failed: %v", err)
 	}
+	startProbeVRouteProxyRecoveryLoop()
 
 	ensureProbeLocalListenConfigDefaults()
 	if options.LocalConsoleEnabled {

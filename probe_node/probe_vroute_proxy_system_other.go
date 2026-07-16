@@ -2,6 +2,10 @@
 
 package main
 
+func probeVRouteSystemProxyRequired() bool {
+	return false
+}
+
 func setProbeVRouteSystemProxy(string, string) error {
 	return nil
 }
