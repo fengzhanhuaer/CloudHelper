@@ -16,12 +16,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -322,6 +324,9 @@ func runProbeNode(options probeLaunchOptions) error {
 	ensureProbeVirtualRouterDNSRuntime()
 	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(options.ControllerURL), strings.TrimSpace(options.ControllerWS))
 	setprobeLocalRouteRuntimeContext(identity, controllerBaseURL)
+	if err := reconcileProbeVRouteProxyRuntime(loadProbeVirtualRouterLocalSettings()); err != nil {
+		logProbeWarnf("probe vroute proxy startup failed: %v", err)
+	}
 
 	ensureProbeLocalListenConfigDefaults()
 	if options.LocalConsoleEnabled {
@@ -342,7 +347,12 @@ func runProbeNode(options probeLaunchOptions) error {
 
 	logProbeInfof("probe node started: node_id=%s version=%s", identity.NodeID, BuildVersion)
 	startProbeLocalTUNStartupRecoveryAsync()
-	select {}
+	stopSignal := make(chan os.Signal, 1)
+	signal.Notify(stopSignal, os.Interrupt, syscall.SIGTERM)
+	<-stopSignal
+	signal.Stop(stopSignal)
+	stopProbeVRouteProxyRuntime()
+	return nil
 }
 
 func buildProbeNodeHTTPMux(identity nodeIdentity) *http.ServeMux {

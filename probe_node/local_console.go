@@ -2063,17 +2063,44 @@ func probeLocalVirtualRouterSettingsHandler(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusOK, probeLocalVirtualRouterSettingsPayload(loadProbeVirtualRouterLocalSettings()))
 	case http.MethodPost:
 		var req struct {
-			VirtualRouterEnabled bool `json:"virtual_router_enabled"`
-			VirtualDNSEnabled    bool `json:"virtual_dns_enabled"`
+			VirtualRouterEnabled *bool   `json:"virtual_router_enabled"`
+			VirtualDNSEnabled    *bool   `json:"virtual_dns_enabled"`
+			ProxyEnabled         *bool   `json:"proxy_enabled"`
+			HTTPProxyListen      *string `json:"http_proxy_listen"`
+			SOCKS5ProxyListen    *string `json:"socks5_proxy_listen"`
+			ProxyUsername        *string `json:"proxy_username"`
+			ProxyPassword        *string `json:"proxy_password"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 			return
 		}
-		settings, err := saveProbeVirtualRouterLocalSettings(probeVirtualRouterLocalSettings{
-			VirtualRouterEnabled: req.VirtualRouterEnabled,
-			VirtualDNSEnabled:    req.VirtualDNSEnabled,
-		})
+		next := loadProbeVirtualRouterLocalSettings()
+		if req.VirtualRouterEnabled != nil {
+			next.VirtualRouterEnabled = *req.VirtualRouterEnabled
+		}
+		if req.VirtualDNSEnabled != nil {
+			next.VirtualDNSEnabled = *req.VirtualDNSEnabled
+		}
+		if req.ProxyEnabled != nil {
+			next.ProxyEnabled = *req.ProxyEnabled
+		}
+		if req.HTTPProxyListen != nil {
+			next.HTTPProxyListen = strings.TrimSpace(*req.HTTPProxyListen)
+		}
+		if req.SOCKS5ProxyListen != nil {
+			next.SOCKS5ProxyListen = strings.TrimSpace(*req.SOCKS5ProxyListen)
+		}
+		if req.ProxyUsername != nil {
+			next.ProxyUsername = strings.TrimSpace(*req.ProxyUsername)
+			if next.ProxyUsername == "" && req.ProxyPassword == nil {
+				next.ProxyPassword = ""
+			}
+		}
+		if req.ProxyPassword != nil {
+			next.ProxyPassword = *req.ProxyPassword
+		}
+		settings, err := saveProbeVirtualRouterLocalSettings(next)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -2087,14 +2114,19 @@ func probeLocalVirtualRouterSettingsHandler(w http.ResponseWriter, r *http.Reque
 func probeLocalVirtualRouterSettingsPayload(settings probeVirtualRouterLocalSettings) map[string]any {
 	library := currentProbeVirtualRouterFakeIPLibrary()
 	return map[string]any{
-		"virtual_router_enabled": settings.VirtualRouterEnabled,
-		"virtual_dns_enabled":    settings.VirtualDNSEnabled,
-		"updated_at":             settings.UpdatedAt,
-		"local_node_id":          currentProbeVirtualRouterLocalNodeID(),
-		"local_ip":               currentProbeVirtualRouterLocalIP(),
-		"fake_ip_cidr":           currentProbeVirtualRouterFakeIPCIDR(),
-		"fake_ip_library":        library,
-		"fake_ip_count":          len(library.Items),
+		"virtual_router_enabled":    settings.VirtualRouterEnabled,
+		"virtual_dns_enabled":       settings.VirtualDNSEnabled,
+		"proxy_enabled":             settings.ProxyEnabled,
+		"http_proxy_listen":         settings.HTTPProxyListen,
+		"socks5_proxy_listen":       settings.SOCKS5ProxyListen,
+		"proxy_username":            settings.ProxyUsername,
+		"proxy_password_configured": settings.ProxyPassword != "",
+		"updated_at":                settings.UpdatedAt,
+		"local_node_id":             currentProbeVirtualRouterLocalNodeID(),
+		"local_ip":                  currentProbeVirtualRouterLocalIP(),
+		"fake_ip_cidr":              currentProbeVirtualRouterFakeIPCIDR(),
+		"fake_ip_library":           library,
+		"fake_ip_count":             len(library.Items),
 	}
 }
 
@@ -2191,6 +2223,7 @@ func probeLocalVirtualRouterStatusPayload() map[string]any {
 	paths := probeLocalVirtualRouterPathStatusPayloads()
 	recentPackets := snapshotProbeVirtualRouterRecentPackets()
 	recentSummary := probeLocalVirtualRouterRecentPacketSummaryPayload(recentPackets)
+	proxyStatus := snapshotProbeVRouteProxyRuntime()
 
 	hasCarrier := false
 	txQueued := 0
@@ -2207,7 +2240,7 @@ func probeLocalVirtualRouterStatusPayload() map[string]any {
 		}
 	}
 	reasons := make([]string, 0, 6)
-	if !settings.VirtualRouterEnabled && !settings.VirtualDNSEnabled {
+	if !settings.VirtualRouterEnabled && !settings.VirtualDNSEnabled && !settings.ProxyEnabled {
 		reasons = append(reasons, "虚拟路由未开启")
 	}
 	if strings.TrimSpace(currentProbeVirtualRouterLocalNodeID()) == "" {
@@ -2216,7 +2249,7 @@ func probeLocalVirtualRouterStatusPayload() map[string]any {
 	if strings.TrimSpace(currentProbeVirtualRouterLocalIP()) == "" {
 		reasons = append(reasons, "本机虚拟 IP 为空")
 	}
-	if !tunStats.Running {
+	if settings.VirtualRouterEnabled && !tunStats.Running {
 		reasons = append(reasons, "TUN 数据面未运行")
 	}
 	if len(runtimes) == 0 {
@@ -2236,10 +2269,12 @@ func probeLocalVirtualRouterStatusPayload() map[string]any {
 		"reasons":                reasons,
 		"virtual_router_enabled": settings.VirtualRouterEnabled,
 		"virtual_dns_enabled":    settings.VirtualDNSEnabled,
+		"proxy_enabled":          settings.ProxyEnabled,
 		"local_node_id":          currentProbeVirtualRouterLocalNodeID(),
 		"local_ip":               currentProbeVirtualRouterLocalIP(),
 		"fake_ip_cidr":           currentProbeVirtualRouterFakeIPCIDR(),
 		"fake_ip_count":          len(library.Items),
+		"proxy":                  proxyStatus,
 		"tun": map[string]any{
 			"running":                         tunStats.Running,
 			"rx_packets":                      tunStats.RXPackets,
@@ -3187,6 +3222,7 @@ func probeLocalShellStreamHandler(w http.ResponseWriter, r *http.Request) {
 
 func prepareProbeLocalProcessRestart() {
 	logProbeInfof("probe local restart preparing: closing listeners")
+	stopProbeVRouteProxyRuntime()
 	_ = stopProbeVirtualRouterTUNDataPlane()
 	stopProbeLocalConsoleServer("process restart")
 	time.Sleep(300 * time.Millisecond)

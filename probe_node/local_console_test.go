@@ -367,6 +367,67 @@ func TestProbeLocalVirtualRouterStatusHandlerReturnsRuntimeDebugState(t *testing
 	}
 }
 
+func TestProbeLocalVirtualRouterSettingsHandlerConfiguresProxy(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+	oldSet := probeVRouteSystemProxySet
+	oldRestore := probeVRouteSystemProxyRestore
+	t.Cleanup(func() {
+		probeVRouteSystemProxySet = oldSet
+		probeVRouteSystemProxyRestore = oldRestore
+	})
+	applied := make(chan [2]string, 1)
+	probeVRouteSystemProxySet = func(httpAddress string, socks5Address string) error {
+		applied <- [2]string{httpAddress, socks5Address}
+		return nil
+	}
+	probeVRouteSystemProxyRestore = func() error { return nil }
+	t.Cleanup(stopProbeVRouteProxyRuntime)
+	httpListen := reserveProbeVRouteProxyTCPAddress(t)
+	socks5Listen := reserveProbeVRouteProxyTCPUDPAddress(t)
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/virtual_router/settings", map[string]any{
+		"proxy_enabled":       true,
+		"http_proxy_listen":   httpListen,
+		"socks5_proxy_listen": socks5Listen,
+		"proxy_username":      "proxy-user",
+		"proxy_password":      "proxy-secret",
+	}, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("proxy settings status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	if payload["proxy_enabled"] != true || payload["http_proxy_listen"] != httpListen || payload["socks5_proxy_listen"] != socks5Listen {
+		t.Fatalf("unexpected proxy settings payload=%+v", payload)
+	}
+	if payload["proxy_password_configured"] != true {
+		t.Fatalf("proxy password configured=%v", payload["proxy_password_configured"])
+	}
+	if _, exposed := payload["proxy_password"]; exposed {
+		t.Fatal("proxy settings response exposed password")
+	}
+	select {
+	case addresses := <-applied:
+		if addresses != [2]string{httpListen, socks5Listen} {
+			t.Fatalf("applied system proxy addresses=%v", addresses)
+		}
+	default:
+		t.Fatal("proxy settings did not apply system proxy")
+	}
+
+	getResp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/virtual_router/settings", nil, sessionCookie)
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("get proxy settings status=%d body=%s", getResp.Code, getResp.Body.String())
+	}
+	getPayload := decodeProbeLocalJSON(t, getResp)
+	if getPayload["proxy_username"] != "proxy-user" || getPayload["proxy_password_configured"] != true {
+		t.Fatalf("unexpected saved proxy auth payload=%+v", getPayload)
+	}
+	if _, exposed := getPayload["proxy_password"]; exposed {
+		t.Fatal("saved proxy settings response exposed password")
+	}
+}
+
 func TestProbeLocalVirtualRouterRouteTestHandlerReturnsExitReachability(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)

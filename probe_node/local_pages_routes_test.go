@@ -88,6 +88,18 @@ func TestProbeLocalStandalonePagesServedAfterLogin(t *testing.T) {
 		notExists []string
 	}{
 		{
+			path: "/local/virtual-router",
+			contains: []string{
+				"id=\"virtualRouterEnabled\"",
+				"id=\"proxyEnabled\"",
+				"id=\"httpProxyListen\"",
+				"id=\"socks5ProxyListen\"",
+				"id=\"proxyUsername\"",
+				"id=\"proxyPassword\"",
+				"system_proxy_socks5",
+			},
+		},
+		{
 			path: "/local/logs",
 			contains: []string{
 				"<title>Probe Node 运行日志</title>",
@@ -174,7 +186,7 @@ func TestProbeLocalStandalonePagesServedAfterLogin(t *testing.T) {
 
 func TestProbeLocalPanelMethodNotAllowed(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
-	paths := []string{"/local/panel", "/local/logs", "/local/system", "/local/sync", "/local/shell"}
+	paths := []string{"/local/panel", "/local/virtual-router", "/local/logs", "/local/system", "/local/sync", "/local/shell"}
 	for _, path := range paths {
 		t.Run(path, func(t *testing.T) {
 			resp := doProbeLocalRequest(t, mux, http.MethodPost, path, map[string]any{})

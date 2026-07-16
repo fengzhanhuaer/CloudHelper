@@ -46,6 +46,7 @@ const (
 	probeVirtualRouterFrameMainTypeRouteTest               uint16 = 5
 	probeVirtualRouterFrameMainTypeFakeIPVerify            uint16 = 6
 	probeVirtualRouterFrameMainTypeDebugLog                uint16 = 7
+	probeVirtualRouterFrameMainTypeProxy                   uint16 = 8
 	probeVirtualRouterFrameSubTypeUnknown                  uint16 = 0
 	probeVirtualRouterIPSubTypeIPv4                        uint16 = 1
 	probeVirtualRouterPingPongSubTypePing                  uint16 = 1
@@ -63,6 +64,13 @@ const (
 	probeVirtualRouterFakeIPVerifySubTypeResponse          uint16 = 2
 	probeVirtualRouterDebugLogSubTypeQuery                 uint16 = 1
 	probeVirtualRouterDebugLogSubTypeResponse              uint16 = 2
+	probeVirtualRouterProxySubTypeTCPOpen                  uint16 = 1
+	probeVirtualRouterProxySubTypeTCPOpenResult            uint16 = 2
+	probeVirtualRouterProxySubTypeTCPData                  uint16 = 3
+	probeVirtualRouterProxySubTypeTCPClose                 uint16 = 4
+	probeVirtualRouterProxySubTypeUDPRequest               uint16 = 5
+	probeVirtualRouterProxySubTypeUDPResponse              uint16 = 6
+	probeVirtualRouterProxySubTypeUDPClose                 uint16 = 7
 	probeVirtualRouterFrameLinkIdleTTL                            = 45 * time.Second
 	probeVirtualRouterPingPongInterval                            = 30 * time.Second
 	probeVirtualRouterPingPongTimeout                             = 5 * time.Second
@@ -2301,6 +2309,8 @@ func markProbeVirtualRouterPhysicalCarrierDisconnected(rt *probeVirtualRouterRun
 	probeVirtualRouterDisconnectedCarrierState.mu.Unlock()
 	if !alreadyDisconnected {
 		clearProbeVirtualRouterRouteCacheForRuntime(rt, "physical carrier disconnected")
+		closeProbeVRouteProxyTCPSessionsForEdge(rt.cfg.localNodeID, rt.cfg.peerNodeID, reason)
+		closeProbeVRouteProxyUDPSessionsForEdge(rt.cfg.localNodeID, rt.cfg.peerNodeID)
 		log.Printf("probe virtual router physical carrier marked unavailable: route=%s reason=%s", routeID, strings.TrimSpace(reason))
 	}
 }
@@ -4381,6 +4391,9 @@ func probeVirtualRouterFrameRXDispatchHash(frame probeVirtualRouterFrame) uint32
 	h := fnvOffset
 	h = hashUint16(h, frame.MainType)
 	h = hashUint16(h, frame.SubType)
+	if frame.MainType == probeVirtualRouterFrameMainTypeProxy {
+		return probeVRouteProxyFrameDispatchHash(frame.SubType, frame.Data, h)
+	}
 	if frame.MainType != probeVirtualRouterFrameMainTypeIP {
 		return h
 	}
@@ -4886,7 +4899,7 @@ func handleProbeVirtualRouterFrame(runtime *probeVirtualRouterRuntime, link *pro
 			return fmt.Errorf("unsupported virtual router ip subtype=%d", frame.SubType)
 		}
 		return handleProbeVirtualRouterIPFrame(runtime, link, frame.Data, control.Path, control.Trace)
-	case probeVirtualRouterFrameMainTypePingPong, probeVirtualRouterFrameMainTypePathRTT, probeVirtualRouterFrameMainTypeSpeed, probeVirtualRouterFrameMainTypeRouteTest, probeVirtualRouterFrameMainTypeFakeIPVerify, probeVirtualRouterFrameMainTypeDebugLog:
+	case probeVirtualRouterFrameMainTypePingPong, probeVirtualRouterFrameMainTypePathRTT, probeVirtualRouterFrameMainTypeSpeed, probeVirtualRouterFrameMainTypeRouteTest, probeVirtualRouterFrameMainTypeFakeIPVerify, probeVirtualRouterFrameMainTypeDebugLog, probeVirtualRouterFrameMainTypeProxy:
 		return handleProbeVirtualRouterBusinessFrame(runtime, link, frame.MainType, frame.SubType, frame.Data, control.Path)
 	default:
 		return fmt.Errorf("unsupported virtual router business type=%d subtype=%d", frame.MainType, frame.SubType)
@@ -4894,6 +4907,9 @@ func handleProbeVirtualRouterFrame(runtime *probeVirtualRouterRuntime, link *pro
 }
 
 func handleProbeVirtualRouterBusinessFrame(runtime *probeVirtualRouterRuntime, link *probeVirtualRouterFrameLink, mainType uint16, subType uint16, payload []byte, framePath []string) error {
+	if mainType == probeVirtualRouterFrameMainTypeProxy {
+		return handleProbeVRouteProxyFrame(runtime, subType, payload, framePath)
+	}
 	if mainType == probeVirtualRouterFrameMainTypeSpeed && subType == probeVirtualRouterSpeedSubTypeChunk {
 		return handleProbeVirtualRouterSpeedChunk(runtime, payload, framePath)
 	}

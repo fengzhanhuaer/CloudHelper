@@ -62,7 +62,7 @@
       font-size: 14px;
     }
     .kv > div:nth-child(odd) { color: var(--muted); }
-    .switches { display: grid; gap: 10px; margin-top: 12px; }
+    .switches { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
     .check-row {
       display: flex;
       align-items: flex-start;
@@ -279,6 +279,7 @@
       body { padding: 16px; }
       .topbar { flex-direction: column; }
       .kv { grid-template-columns: 140px minmax(0, 1fr); }
+      .switches { grid-template-columns: minmax(0, 1fr); }
     }
   </style>
 </head>
@@ -318,6 +319,31 @@
               <span class="hint">开启后同时启用虚拟路由与虚拟 DNS；关闭时恢复系统 DNS，并仅保留 Fake IP / 虚拟 IP 网段转发能力。</span>
             </span>
           </label>
+          <label class="check-row">
+            <input id="proxyEnabled" type="checkbox" />
+            <span>
+              <span class="check-title">代理</span><br />
+              <span class="hint">启用 HTTP 与 SOCKS5 代理，并接管 Windows 系统代理；关闭时恢复原系统代理。</span>
+            </span>
+          </label>
+        </div>
+        <div class="toolbar">
+          <div class="field">
+            <label for="httpProxyListen">HTTP 监听</label>
+            <input id="httpProxyListen" class="mono" placeholder="127.0.0.1:18080" />
+          </div>
+          <div class="field">
+            <label for="socks5ProxyListen">SOCKS5 监听</label>
+            <input id="socks5ProxyListen" class="mono" placeholder="127.0.0.1:18081" />
+          </div>
+          <div class="field">
+            <label for="proxyUsername">用户名</label>
+            <input id="proxyUsername" autocomplete="username" />
+          </div>
+          <div class="field">
+            <label for="proxyPassword">密码</label>
+            <input id="proxyPassword" type="password" autocomplete="new-password" />
+          </div>
         </div>
         <div class="actions">
           <button id="saveSettingsBtn">保存开关</button>
@@ -329,6 +355,8 @@
           <div>本机虚拟 IP</div><div id="localIP">-</div>
           <div>Fake IP CIDR</div><div id="fakeIPCIDR">-</div>
           <div>Fake IP 数量</div><div id="fakeIPCount">0</div>
+          <div>代理运行</div><div id="proxyRuntimeStatus">-</div>
+          <div>系统代理</div><div id="systemProxyStatus">-</div>
         </div>
       </section>
 
@@ -723,8 +751,13 @@
   <script>
     const messageEl = document.getElementById('message');
     const routerEnabledEl = document.getElementById('virtualRouterEnabled');
+    const proxyEnabledEl = document.getElementById('proxyEnabled');
+    const httpProxyListenEl = document.getElementById('httpProxyListen');
+    const socks5ProxyListenEl = document.getElementById('socks5ProxyListen');
+    const proxyUsernameEl = document.getElementById('proxyUsername');
+    const proxyPasswordEl = document.getElementById('proxyPassword');
     const tunEgressSelectEl = document.getElementById('tunEgressSelect');
-    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260708-debug-log';
+    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260716-vroute-proxy';
     const REQUEST_TIMEOUT_DEFAULT_MS = 20000;
     const REQUEST_TIMEOUT_TUN_INSTALL_MS = 90000;
     let tunPollingTimer = null;
@@ -821,6 +854,12 @@
 
     function renderSettings(data) {
       routerEnabledEl.checked = !!(data && (data.virtual_router_enabled || data.virtual_dns_enabled));
+      proxyEnabledEl.checked = !!(data && data.proxy_enabled);
+      httpProxyListenEl.value = String(data && data.http_proxy_listen || '127.0.0.1:18080');
+      socks5ProxyListenEl.value = String(data && data.socks5_proxy_listen || '127.0.0.1:18081');
+      proxyUsernameEl.value = String(data && data.proxy_username || '');
+      proxyPasswordEl.value = '';
+      proxyPasswordEl.placeholder = data && data.proxy_password_configured ? '已设置，留空保持' : '';
       setText('settingsUpdatedAt', data && data.updated_at);
       setText('localNodeID', data && data.local_node_id);
       setText('localIP', data && data.local_ip);
@@ -965,6 +1004,7 @@
       const summary = payload.summary && typeof payload.summary === 'object' ? payload.summary : {};
       const tun = payload.tun && typeof payload.tun === 'object' ? payload.tun : {};
       const exitNetstack = payload.exit_netstack && typeof payload.exit_netstack === 'object' ? payload.exit_netstack : {};
+      const proxy = payload.proxy && typeof payload.proxy === 'object' ? payload.proxy : {};
       const reasons = Array.isArray(payload.reasons) ? payload.reasons : [];
       const status = String(payload.status || '').trim();
       setHTML('routeStatusOverall', statusPillHTML(status === 'ok' ? 'ok' : 'warn', status === 'ok' ? '可传输' : '需观察'));
@@ -979,6 +1019,10 @@
       setText('routeStatusLocalIP', payload.local_ip);
       setText('routeStatusFakeIP', [payload.fake_ip_cidr, '数量 ' + formatNumber(payload.fake_ip_count)].filter(Boolean).join(' / '));
       setText('routeStatusReasons', reasons.length ? reasons.join('；') : '当前观察项未发现阻断');
+      setText('proxyRuntimeStatus', proxy.running ? '运行中' : (proxy.enabled ? '启动失败' : '未启用'));
+      setText('systemProxyStatus', proxy.system_proxy_applied
+        ? ['HTTP ' + String(proxy.system_proxy_http || ''), 'SOCKS5 ' + String(proxy.system_proxy_socks5 || '')].join(' / ')
+        : '未接管');
       renderRouteStatusRules(Array.isArray(payload.rules) ? payload.rules : []);
       renderRouteStatusRuntimes(Array.isArray(payload.runtimes) ? payload.runtimes : []);
       renderRouteStatusPaths(Array.isArray(payload.paths) ? payload.paths : []);
@@ -1765,15 +1809,22 @@
     }
 
     async function saveSettings() {
+      const payload = {
+        virtual_router_enabled: routerEnabledEl.checked,
+        virtual_dns_enabled: routerEnabledEl.checked,
+        proxy_enabled: proxyEnabledEl.checked,
+        http_proxy_listen: httpProxyListenEl.value.trim(),
+        socks5_proxy_listen: socks5ProxyListenEl.value.trim(),
+        proxy_username: proxyUsernameEl.value.trim(),
+      };
+      if (proxyPasswordEl.value !== '') payload.proxy_password = proxyPasswordEl.value;
       const data = await requestJSON('/local/api/virtual_router/settings', {
         method: 'POST',
-        body: JSON.stringify({
-          virtual_router_enabled: routerEnabledEl.checked,
-          virtual_dns_enabled: routerEnabledEl.checked,
-        }),
+        body: JSON.stringify(payload),
       });
       renderSettings(data || {});
-      setMessage('虚拟路由设置已保存', 'success');
+      await loadRouteStatus();
+      setMessage('虚拟路由与代理设置已保存', 'success');
     }
 
     function formatTunError(err) {
