@@ -545,7 +545,13 @@ func probeVirtualRouterRouteSpeedQueueSnapshot() map[string]any {
 			"tx_dropped":                   tunStats.TXDropped,
 			"tx_errors":                    tunStats.TXErrors,
 			"tx_slow_writes":               tunStats.TXSlowWrites,
+			"tx_slow_queue_waits":          tunStats.TXSlowQueueWaits,
 			"tx_max_write_ms":              tunStats.TXMaxWriteMs,
+			"tx_max_queue_wait_ms":         tunStats.TXMaxQueueWaitMs,
+			"tx_max_lock_wait_us":          tunStats.TXMaxLockWaitUS,
+			"tx_max_allocate_us":           tunStats.TXMaxAllocateUS,
+			"tx_max_copy_us":               tunStats.TXMaxCopyUS,
+			"tx_max_send_us":               tunStats.TXMaxSendUS,
 		},
 		"exit_netstack": map[string]any{
 			"running":               exitStats.Running,

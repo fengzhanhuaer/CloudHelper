@@ -19,8 +19,15 @@ type probeVirtualRouterTUNDataPlaneStats struct {
 	TXDropped                    uint64
 	TXErrors                     uint64
 	TXSlowWrites                 uint64
+	TXSlowQueueWaits             uint64
 	TXLastWriteMs                uint64
 	TXMaxWriteMs                 uint64
+	TXLastQueueWaitMs            uint64
+	TXMaxQueueWaitMs             uint64
+	TXMaxLockWaitUS              uint64
+	TXMaxAllocateUS              uint64
+	TXMaxCopyUS                  uint64
+	TXMaxSendUS                  uint64
 }
 
 type probeVirtualRouterTUNDataPlane interface {

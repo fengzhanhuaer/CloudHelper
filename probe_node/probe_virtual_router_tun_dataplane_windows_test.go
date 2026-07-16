@@ -480,3 +480,80 @@ func TestProbeVirtualRouterTUNDataPlaneRunnerDropsInboundWhenQueueFull(t *testin
 		t.Fatalf("logs=%v, want handler_queue_full drop", logs)
 	}
 }
+
+func TestProbeVirtualRouterTUNDataPlaneRunnerWritePacketCopiesIntoPooledQueueItem(t *testing.T) {
+	runner := &probeVirtualRouterTUNDataPlaneRunner{
+		outboundCh: make(chan *probeVirtualRouterTUNOutboundPacket, 1),
+		stopCh:     make(chan struct{}),
+	}
+	runner.running.Store(true)
+	packet := []byte{0x45, 0x00, 0x00, 0x14}
+	if err := runner.WritePacket(packet); err != nil {
+		t.Fatalf("WritePacket returned error: %v", err)
+	}
+	packet[0] = 0
+	outbound := <-runner.outboundCh
+	defer releaseProbeVirtualRouterTUNOutboundPacket(outbound)
+	if outbound.enqueuedAt.IsZero() {
+		t.Fatal("queued packet is missing enqueue timestamp")
+	}
+	if got := outbound.payload; len(got) != 4 || got[0] != 0x45 {
+		t.Fatalf("queued payload=%v, want independent packet copy", got)
+	}
+}
+
+func TestProbeVirtualRouterTUNOutboundPacketPoolReusesTypicalPacketBuffer(t *testing.T) {
+	packet := make([]byte, 1464)
+	warm := acquireProbeVirtualRouterTUNOutboundPacket(packet)
+	releaseProbeVirtualRouterTUNOutboundPacket(warm)
+	allocs := testing.AllocsPerRun(1000, func() {
+		outbound := acquireProbeVirtualRouterTUNOutboundPacket(packet)
+		releaseProbeVirtualRouterTUNOutboundPacket(outbound)
+	})
+	if allocs != 0 {
+		t.Fatalf("pooled packet allocations=%v, want 0", allocs)
+	}
+}
+
+func TestProbeVirtualRouterTUNDataPlaneRunnerAggregatesSlowWriteLogs(t *testing.T) {
+	var logs []string
+	runner := &probeVirtualRouterTUNDataPlaneRunner{
+		outboundCh: make(chan *probeVirtualRouterTUNOutboundPacket, 4096),
+		logf: func(format string, args ...any) {
+			logs = append(logs, fmt.Sprintf(format, args...))
+		},
+	}
+	runner.recordSlowWriteSummary(1464, 132, 25*time.Millisecond, probeVirtualRouterTUNWriteTiming{
+		total:    119 * time.Millisecond,
+		lockWait: 2 * time.Millisecond,
+		allocate: 4 * time.Millisecond,
+		copy:     800 * time.Microsecond,
+		send:     110 * time.Millisecond,
+	}, true, true)
+	runner.recordSlowWriteSummary(44, 55, 12*time.Millisecond, probeVirtualRouterTUNWriteTiming{
+		total: 15 * time.Millisecond,
+		send:  14 * time.Millisecond,
+	}, true, true)
+	runner.flushSlowWriteSummary()
+	if len(logs) != 1 {
+		t.Fatalf("logs=%v, want one aggregate log", logs)
+	}
+	for _, want := range []string{
+		"packets=2",
+		"write_slow=2",
+		"queue_slow=2",
+		"write_max_ms=119",
+		"queue_wait_max_ms=25",
+		"allocate_max_us=4000",
+		"send_max_us=110000",
+		"queue_max=132/4096",
+	} {
+		if !strings.Contains(logs[0], want) {
+			t.Fatalf("log=%q, want %q", logs[0], want)
+		}
+	}
+	runner.flushSlowWriteSummary()
+	if len(logs) != 1 {
+		t.Fatalf("empty summary emitted another log: %v", logs)
+	}
+}

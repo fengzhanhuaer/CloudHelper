@@ -23,7 +23,9 @@ const (
 	probeLocalTUNInboundQueueFrames     = 2048
 	probeLocalTUNInboundDispatchShards  = 8
 	probeLocalTUNOutboundQueueFrames    = 4096
+	probeLocalTUNPooledPacketCapacity   = 2048
 	probeLocalTUNSlowWriteThreshold     = 10 * time.Millisecond
+	probeLocalTUNSlowWriteLogInterval   = time.Second
 )
 
 var (
@@ -33,7 +35,37 @@ var (
 	probeLocalCloseWintunAdapterForDataPlane  = closeProbeLocalWintunAdapter
 	probeVirtualRouterNewTUNDataPlaneRunner   = newProbeVirtualRouterTUNDataPlaneRunner
 	probeLocalTUNInboundPacketHandler         func([]byte)
+	probeLocalTUNOutboundPacketPool           = sync.Pool{New: func() any {
+		return &probeVirtualRouterTUNOutboundPacket{payload: make([]byte, probeLocalTUNPooledPacketCapacity)}
+	}}
 )
+
+type probeVirtualRouterTUNOutboundPacket struct {
+	payload    []byte
+	enqueuedAt time.Time
+}
+
+type probeVirtualRouterTUNWriteTiming struct {
+	total    time.Duration
+	lockWait time.Duration
+	allocate time.Duration
+	copy     time.Duration
+	send     time.Duration
+}
+
+type probeVirtualRouterTUNSlowWriteSummary struct {
+	packets       uint64
+	writeSlow     uint64
+	queueSlow     uint64
+	maxWrite      time.Duration
+	maxQueueWait  time.Duration
+	maxLockWait   time.Duration
+	maxAllocate   time.Duration
+	maxCopy       time.Duration
+	maxSend       time.Duration
+	maxBytes      int
+	maxQueueDepth int
+}
 
 var probeVirtualRouterTUNDataPlaneState = struct {
 	mu            sync.Mutex
@@ -256,24 +288,32 @@ type probeVirtualRouterTUNDataPlaneRunner struct {
 
 	inboundCh       chan []byte
 	inboundDispatch []chan []byte
-	outboundCh      chan []byte
+	outboundCh      chan *probeVirtualRouterTUNOutboundPacket
 	writeMu         sync.Mutex
+	slowWrite       probeVirtualRouterTUNSlowWriteSummary
 
 	stopCh      chan struct{}
 	doneCh      chan struct{}
 	writeDoneCh chan struct{}
 	closeOnce   sync.Once
 
-	running       atomic.Bool
-	rxPackets     atomic.Uint64
-	rxBytes       atomic.Uint64
-	txPackets     atomic.Uint64
-	txBytes       atomic.Uint64
-	txDropped     atomic.Uint64
-	txErrors      atomic.Uint64
-	txSlowWrites  atomic.Uint64
-	txLastWriteMs atomic.Uint64
-	txMaxWriteMs  atomic.Uint64
+	running           atomic.Bool
+	rxPackets         atomic.Uint64
+	rxBytes           atomic.Uint64
+	txPackets         atomic.Uint64
+	txBytes           atomic.Uint64
+	txDropped         atomic.Uint64
+	txErrors          atomic.Uint64
+	txSlowWrites      atomic.Uint64
+	txSlowQueueWaits  atomic.Uint64
+	txLastWriteMs     atomic.Uint64
+	txMaxWriteMs      atomic.Uint64
+	txLastQueueWaitMs atomic.Uint64
+	txMaxQueueWaitMs  atomic.Uint64
+	txMaxLockWaitUS   atomic.Uint64
+	txMaxAllocateUS   atomic.Uint64
+	txMaxCopyUS       atomic.Uint64
+	txMaxSendUS       atomic.Uint64
 }
 
 func newProbeVirtualRouterTUNDataPlaneRunner(libraryPath string, adapterHandle uintptr, onPacket func([]byte), logf func(string, ...any)) (probeVirtualRouterTUNDataPlane, error) {
@@ -329,7 +369,7 @@ func newProbeVirtualRouterTUNDataPlaneRunner(libraryPath string, adapterHandle u
 		logf:                     logf,
 		inboundCh:                make(chan []byte, probeLocalTUNInboundQueueFrames),
 		inboundDispatch:          makeProbeVirtualRouterTUNInboundDispatchShards(probeLocalTUNInboundDispatchShards, probeLocalTUNInboundQueueFrames),
-		outboundCh:               make(chan []byte, probeLocalTUNOutboundQueueFrames),
+		outboundCh:               make(chan *probeVirtualRouterTUNOutboundPacket, probeLocalTUNOutboundQueueFrames),
 		stopCh:                   make(chan struct{}),
 		doneCh:                   make(chan struct{}),
 		writeDoneCh:              make(chan struct{}),
@@ -458,45 +498,104 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) inboundShardWorker(shardID int, s
 }
 
 func (r *probeVirtualRouterTUNDataPlaneRunner) writeLoop() {
-	defer close(r.writeDoneCh)
+	ticker := time.NewTicker(probeLocalTUNSlowWriteLogInterval)
+	defer func() {
+		ticker.Stop()
+		r.flushSlowWriteSummary()
+		r.releaseQueuedOutboundPackets()
+		close(r.writeDoneCh)
+	}()
 	for {
 		select {
 		case <-r.stopCh:
 			return
-		default:
-		}
-		select {
-		case <-r.stopCh:
-			return
-		case packet := <-r.outboundCh:
-			if len(packet) == 0 {
+		case <-ticker.C:
+			r.flushSlowWriteSummary()
+		case outbound := <-r.outboundCh:
+			if outbound == nil || len(outbound.payload) == 0 {
+				releaseProbeVirtualRouterTUNOutboundPacket(outbound)
 				continue
 			}
-			startedAt := time.Now()
-			if err := r.writePacketDirect(packet); err != nil {
+			packet := outbound.payload
+			packetBytes := len(packet)
+			queueWait := time.Since(outbound.enqueuedAt)
+			timing, err := r.writePacketDirectTimed(packet)
+			releaseProbeVirtualRouterTUNOutboundPacket(outbound)
+			r.recordWriteTimings(queueWait, timing)
+			if err != nil {
 				r.txErrors.Add(1)
 				if r.logf != nil {
 					r.logf("probe local tun outbound packet write failed: err=%v", err)
 				}
 				continue
 			}
-			elapsed := time.Since(startedAt)
-			elapsedMs := uint64(probeDurationMilliseconds(elapsed))
-			r.txLastWriteMs.Store(elapsedMs)
-			for {
-				old := r.txMaxWriteMs.Load()
-				if elapsedMs <= old || r.txMaxWriteMs.CompareAndSwap(old, elapsedMs) {
-					break
-				}
-			}
-			if elapsed >= probeLocalTUNSlowWriteThreshold {
+			writeSlow := timing.total >= probeLocalTUNSlowWriteThreshold
+			queueSlow := queueWait >= probeLocalTUNSlowWriteThreshold
+			if writeSlow {
 				r.txSlowWrites.Add(1)
-				if r.logf != nil {
-					r.logf("probe local tun outbound packet slow write: write_ms=%d bytes=%d queue=%d/%d", elapsedMs, len(packet), len(r.outboundCh), cap(r.outboundCh))
-				}
+			}
+			if queueSlow {
+				r.txSlowQueueWaits.Add(1)
+			}
+			if writeSlow || queueSlow {
+				r.recordSlowWriteSummary(packetBytes, len(r.outboundCh), queueWait, timing, writeSlow, queueSlow)
 			}
 		}
 	}
+}
+
+func (r *probeVirtualRouterTUNDataPlaneRunner) recordWriteTimings(queueWait time.Duration, timing probeVirtualRouterTUNWriteTiming) {
+	storeProbeVirtualRouterTUNDuration(&r.txLastWriteMs, &r.txMaxWriteMs, timing.total, time.Millisecond)
+	storeProbeVirtualRouterTUNDuration(&r.txLastQueueWaitMs, &r.txMaxQueueWaitMs, queueWait, time.Millisecond)
+}
+
+func (r *probeVirtualRouterTUNDataPlaneRunner) recordSlowWriteSummary(packetBytes int, queueDepth int, queueWait time.Duration, timing probeVirtualRouterTUNWriteTiming, writeSlow bool, queueSlow bool) {
+	summary := &r.slowWrite
+	summary.packets++
+	if writeSlow {
+		summary.writeSlow++
+	}
+	if queueSlow {
+		summary.queueSlow++
+	}
+	summary.maxWrite = max(summary.maxWrite, timing.total)
+	summary.maxQueueWait = max(summary.maxQueueWait, queueWait)
+	summary.maxLockWait = max(summary.maxLockWait, timing.lockWait)
+	summary.maxAllocate = max(summary.maxAllocate, timing.allocate)
+	summary.maxCopy = max(summary.maxCopy, timing.copy)
+	summary.maxSend = max(summary.maxSend, timing.send)
+	summary.maxBytes = max(summary.maxBytes, packetBytes)
+	summary.maxQueueDepth = max(summary.maxQueueDepth, queueDepth)
+	storeProbeVirtualRouterTUNMaximumDuration(&r.txMaxLockWaitUS, timing.lockWait, time.Microsecond)
+	storeProbeVirtualRouterTUNMaximumDuration(&r.txMaxAllocateUS, timing.allocate, time.Microsecond)
+	storeProbeVirtualRouterTUNMaximumDuration(&r.txMaxCopyUS, timing.copy, time.Microsecond)
+	storeProbeVirtualRouterTUNMaximumDuration(&r.txMaxSendUS, timing.send, time.Microsecond)
+}
+
+func (r *probeVirtualRouterTUNDataPlaneRunner) flushSlowWriteSummary() {
+	summary := r.slowWrite
+	if summary.packets == 0 {
+		return
+	}
+	r.slowWrite = probeVirtualRouterTUNSlowWriteSummary{}
+	if r.logf == nil {
+		return
+	}
+	r.logf(
+		"probe local tun outbound slow summary: packets=%d write_slow=%d queue_slow=%d write_max_ms=%d queue_wait_max_ms=%d lock_wait_max_us=%d allocate_max_us=%d copy_max_us=%d send_max_us=%d bytes_max=%d queue_max=%d/%d",
+		summary.packets,
+		summary.writeSlow,
+		summary.queueSlow,
+		probeTUNDurationUnits(summary.maxWrite, time.Millisecond),
+		probeTUNDurationUnits(summary.maxQueueWait, time.Millisecond),
+		probeTUNDurationUnits(summary.maxLockWait, time.Microsecond),
+		probeTUNDurationUnits(summary.maxAllocate, time.Microsecond),
+		probeTUNDurationUnits(summary.maxCopy, time.Microsecond),
+		probeTUNDurationUnits(summary.maxSend, time.Microsecond),
+		summary.maxBytes,
+		summary.maxQueueDepth,
+		cap(r.outboundCh),
+	)
 }
 
 func (r *probeVirtualRouterTUNDataPlaneRunner) Close() error {
@@ -518,6 +617,7 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) Close() error {
 				r.logf("probe local tun data plane write close wait timeout")
 			}
 		}
+		r.releaseQueuedOutboundPackets()
 		r.writeMu.Lock()
 		defer r.writeMu.Unlock()
 		if r.endSessionProc != nil && r.sessionHandle != 0 {
@@ -532,7 +632,10 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) Close() error {
 
 func (r *probeVirtualRouterTUNDataPlaneRunner) Stats() probeVirtualRouterTUNDataPlaneStats {
 	entryDepth, entryCapacity, dispatchDepth, dispatchCapacity, dispatchWorkers := snapshotProbeVirtualRouterTUNInboundQueues(r.inboundCh, r.inboundDispatch)
-	outDepth, outCapacity, outWorkers := snapshotProbeVirtualRouterTUNOutboundQueue(r.outboundCh)
+	outDepth, outCapacity, outWorkers := 0, 0, 0
+	if r.outboundCh != nil {
+		outDepth, outCapacity, outWorkers = len(r.outboundCh), cap(r.outboundCh), 1
+	}
 	return probeVirtualRouterTUNDataPlaneStats{
 		Running:                      r.running.Load(),
 		RXPackets:                    r.rxPackets.Load(),
@@ -552,8 +655,15 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) Stats() probeVirtualRouterTUNData
 		TXDropped:                    r.txDropped.Load(),
 		TXErrors:                     r.txErrors.Load(),
 		TXSlowWrites:                 r.txSlowWrites.Load(),
+		TXSlowQueueWaits:             r.txSlowQueueWaits.Load(),
 		TXLastWriteMs:                r.txLastWriteMs.Load(),
 		TXMaxWriteMs:                 r.txMaxWriteMs.Load(),
+		TXLastQueueWaitMs:            r.txLastQueueWaitMs.Load(),
+		TXMaxQueueWaitMs:             r.txMaxQueueWaitMs.Load(),
+		TXMaxLockWaitUS:              r.txMaxLockWaitUS.Load(),
+		TXMaxAllocateUS:              r.txMaxAllocateUS.Load(),
+		TXMaxCopyUS:                  r.txMaxCopyUS.Load(),
+		TXMaxSendUS:                  r.txMaxSendUS.Load(),
 	}
 }
 
@@ -567,45 +677,132 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) WritePacket(packet []byte) error 
 	if r.outboundCh == nil {
 		return r.writePacketDirect(packet)
 	}
-	payload := append([]byte(nil), packet...)
+	outbound := acquireProbeVirtualRouterTUNOutboundPacket(packet)
 	select {
-	case r.outboundCh <- payload:
+	case r.outboundCh <- outbound:
 		return nil
 	case <-r.stopCh:
+		releaseProbeVirtualRouterTUNOutboundPacket(outbound)
 		return errors.New("probe virtual router tun data plane is not running")
 	default:
+		releaseProbeVirtualRouterTUNOutboundPacket(outbound)
 		r.txDropped.Add(1)
 		return fmt.Errorf("probe virtual router tun outbound queue full: depth=%d capacity=%d", len(r.outboundCh), cap(r.outboundCh))
 	}
 }
 
 func (r *probeVirtualRouterTUNDataPlaneRunner) writePacketDirect(packet []byte) error {
+	_, err := r.writePacketDirectTimed(packet)
+	return err
+}
+
+func (r *probeVirtualRouterTUNDataPlaneRunner) writePacketDirectTimed(packet []byte) (timing probeVirtualRouterTUNWriteTiming, err error) {
+	startedAt := time.Now()
+	defer func() {
+		timing.total = time.Since(startedAt)
+	}()
 	if len(packet) == 0 {
-		return nil
+		return timing, nil
 	}
 	if !r.running.Load() {
-		return errors.New("probe virtual router tun data plane is not running")
+		return timing, errors.New("probe virtual router tun data plane is not running")
 	}
+	lockStartedAt := time.Now()
 	r.writeMu.Lock()
+	timing.lockWait = time.Since(lockStartedAt)
 	defer r.writeMu.Unlock()
 	if !r.running.Load() {
-		return errors.New("probe virtual router tun data plane is not running")
+		return timing, errors.New("probe virtual router tun data plane is not running")
 	}
+	allocateStartedAt := time.Now()
 	packetPtr, _, allocErr := r.allocateSendPacketProc.Call(r.sessionHandle, uintptr(len(packet)))
+	timing.allocate = time.Since(allocateStartedAt)
 	if packetPtr == 0 {
 		if allocErr != nil && !probeLocalTUNIsZeroErrno(allocErr) {
-			return fmt.Errorf("WintunAllocateSendPacket failed: %w", allocErr)
+			return timing, fmt.Errorf("WintunAllocateSendPacket failed: %w", allocErr)
 		}
-		return errors.New("WintunAllocateSendPacket returned empty packet pointer")
+		return timing, errors.New("WintunAllocateSendPacket returned empty packet pointer")
 	}
+	copyStartedAt := time.Now()
 	copy(probeLocalTUNUintptrToByteSlice(packetPtr, len(packet)), packet)
+	timing.copy = time.Since(copyStartedAt)
+	sendStartedAt := time.Now()
 	_, _, sendErr := r.sendPacketProc.Call(r.sessionHandle, packetPtr)
+	timing.send = time.Since(sendStartedAt)
 	if sendErr != nil && !probeLocalTUNIsZeroErrno(sendErr) {
-		return fmt.Errorf("WintunSendPacket failed: %w", sendErr)
+		return timing, fmt.Errorf("WintunSendPacket failed: %w", sendErr)
 	}
 	r.txPackets.Add(1)
 	r.txBytes.Add(uint64(len(packet)))
-	return nil
+	return timing, nil
+}
+
+func acquireProbeVirtualRouterTUNOutboundPacket(packet []byte) *probeVirtualRouterTUNOutboundPacket {
+	outbound := probeLocalTUNOutboundPacketPool.Get().(*probeVirtualRouterTUNOutboundPacket)
+	if cap(outbound.payload) < len(packet) {
+		outbound.payload = make([]byte, len(packet))
+	} else {
+		outbound.payload = outbound.payload[:len(packet)]
+	}
+	copy(outbound.payload, packet)
+	outbound.enqueuedAt = time.Now()
+	return outbound
+}
+
+func releaseProbeVirtualRouterTUNOutboundPacket(outbound *probeVirtualRouterTUNOutboundPacket) {
+	if outbound == nil {
+		return
+	}
+	if cap(outbound.payload) != probeLocalTUNPooledPacketCapacity {
+		return
+	}
+	outbound.payload = outbound.payload[:probeLocalTUNPooledPacketCapacity]
+	outbound.enqueuedAt = time.Time{}
+	probeLocalTUNOutboundPacketPool.Put(outbound)
+}
+
+func (r *probeVirtualRouterTUNDataPlaneRunner) releaseQueuedOutboundPackets() {
+	if r == nil || r.outboundCh == nil {
+		return
+	}
+	for {
+		select {
+		case outbound := <-r.outboundCh:
+			releaseProbeVirtualRouterTUNOutboundPacket(outbound)
+		default:
+			return
+		}
+	}
+}
+
+func storeProbeVirtualRouterTUNDuration(last *atomic.Uint64, maximum *atomic.Uint64, duration time.Duration, unit time.Duration) {
+	value := probeTUNDurationUnits(duration, unit)
+	last.Store(value)
+	storeProbeVirtualRouterTUNMaximum(maximum, value)
+}
+
+func storeProbeVirtualRouterTUNMaximumDuration(maximum *atomic.Uint64, duration time.Duration, unit time.Duration) {
+	storeProbeVirtualRouterTUNMaximum(maximum, probeTUNDurationUnits(duration, unit))
+}
+
+func storeProbeVirtualRouterTUNMaximum(maximum *atomic.Uint64, value uint64) {
+	for {
+		old := maximum.Load()
+		if value <= old || maximum.CompareAndSwap(old, value) {
+			return
+		}
+	}
+}
+
+func probeTUNDurationUnits(duration time.Duration, unit time.Duration) uint64 {
+	if duration <= 0 || unit <= 0 {
+		return 0
+	}
+	value := uint64(duration / unit)
+	if value == 0 {
+		return 1
+	}
+	return value
 }
 
 func probeLocalTUNIsZeroErrno(err error) bool {
