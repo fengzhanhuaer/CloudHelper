@@ -1286,6 +1286,11 @@ func probeVirtualRouterFakeIPEntryExpired(item probeVirtualRouterFakeIPEntry, no
 }
 
 func recordProbeVirtualRouterRecentPacket(source string, action string, runtime *probeVirtualRouterRuntime, packet []byte, path []string, localMatch bool, err error) {
+	queue := ensureProbeVirtualRouterRecentPacketRecorder()
+	if len(queue) >= cap(queue) {
+		recordProbeVirtualRouterRecentPacketMonitorDrop(len(queue), cap(queue))
+		return
+	}
 	event := probeVirtualRouterRecentPacketEvent{
 		source:     strings.TrimSpace(source),
 		action:     strings.TrimSpace(action),
@@ -1304,7 +1309,6 @@ func recordProbeVirtualRouterRecentPacket(source string, action string, runtime 
 	if err != nil {
 		event.errorText = strings.TrimSpace(err.Error())
 	}
-	queue := ensureProbeVirtualRouterRecentPacketRecorder()
 	select {
 	case queue <- event:
 	default:
