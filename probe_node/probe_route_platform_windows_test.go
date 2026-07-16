@@ -175,6 +175,44 @@ func TestEnsureProbeRouteDirectBypassWritesHostRoute(t *testing.T) {
 	}
 }
 
+func TestEnsureProbeRouteDirectBypassBeforeTUNEnvironmentReady(t *testing.T) {
+	t.Setenv("PROBE_LOCAL_TUN_GATEWAY", "")
+	t.Setenv("PROBE_LOCAL_TUN_IF_LUID", "")
+	t.Setenv("PROBE_LOCAL_TUN_IF_INDEX", "")
+	resetProbeRouteDirectBypassStateForTest()
+	oldFindWintunAdapter := probeLocalFindWintunAdapter
+	t.Cleanup(func() {
+		probeLocalFindWintunAdapter = oldFindWintunAdapter
+		resetProbeRouteDirectBypassStateForTest()
+		resetProbeVirtualRouterTUNDataPlaneHooksForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
+	})
+
+	probeLocalFindWintunAdapter = func() (probeLocalWindowsNetAdapter, bool, error) {
+		return probeLocalWindowsNetAdapter{InterfaceIndex: 8}, true, nil
+	}
+	var excludedIfIndex int
+	probeLocalResolveWindowsPrimaryEgressRoute = func(excluded int) (probeRouteWindowsDirectRouteTarget, error) {
+		excludedIfIndex = excluded
+		return probeRouteWindowsDirectRouteTarget{InterfaceIndex: 21, NextHop: "172.18.55.254"}, nil
+	}
+	var created []probeRouteWindowsRouteDef
+	probeLocalCreateWindowsRouteEntry = func(routeDef probeRouteWindowsRouteDef) (bool, error) {
+		created = append(created, routeDef)
+		return true, nil
+	}
+
+	if err := ensureProbeRouteDirectBypass("172.18.53.157:12040"); err != nil {
+		t.Fatalf("ensure direct bypass before tun environment ready failed: %v", err)
+	}
+	if excludedIfIndex != 8 {
+		t.Fatalf("excluded if index=%d, want wintun if index 8", excludedIfIndex)
+	}
+	if len(created) != 1 || created[0].Prefix != "172.18.53.157" || created[0].Gateway != "172.18.55.254" || created[0].IfIndex != 21 {
+		t.Fatalf("unexpected direct bypass routes=%+v", created)
+	}
+}
+
 func TestEnsureProbeRouteDirectBypassSkipsFakeIPTarget(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeLocalDNSServiceForTest()

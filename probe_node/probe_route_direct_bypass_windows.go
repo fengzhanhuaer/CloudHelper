@@ -100,11 +100,9 @@ func clearProbeRouteWindowsDirectRouteTarget() {
 
 func resolveProbeRouteWindowsDirectRouteTarget() (probeRouteWindowsDirectRouteTarget, error) {
 	if routeTarget, candidateID, label, ok := currentProbeRouteWindowsDirectManualRouteTarget(); ok {
-		excludedIfIndex := currentProbeVirtualRouterTUNDataPlaneIfIndex()
-		if excludedIfIndex <= 0 {
-			if tunTarget, err := resolveProbeRouteWindowsTUNRouteTarget(); err == nil {
-				excludedIfIndex = tunTarget.InterfaceIndex
-			}
+		excludedIfIndex, err := resolveProbeRouteWindowsDirectBypassExcludedIfIndex()
+		if err != nil {
+			return probeRouteWindowsDirectRouteTarget{}, err
 		}
 		options, err := probeLocalWindowsEgressRouteOptions(excludedIfIndex)
 		if err != nil {
@@ -126,11 +124,28 @@ func resolveProbeRouteWindowsDirectRouteTarget() (probeRouteWindowsDirectRouteTa
 		}
 		return refreshed, nil
 	}
-	routeTarget, err := resolveProbeRouteWindowsTUNRouteTarget()
+	excludedIfIndex, err := resolveProbeRouteWindowsDirectBypassExcludedIfIndex()
 	if err != nil {
 		return probeRouteWindowsDirectRouteTarget{}, err
 	}
-	return probeLocalResolveWindowsPrimaryEgressRoute(routeTarget.InterfaceIndex)
+	return probeLocalResolveWindowsPrimaryEgressRoute(excludedIfIndex)
+}
+
+func resolveProbeRouteWindowsDirectBypassExcludedIfIndex() (int, error) {
+	if ifIndex := currentProbeVirtualRouterTUNDataPlaneIfIndex(); ifIndex > 0 {
+		return ifIndex, nil
+	}
+	if routeTarget, err := resolveProbeRouteWindowsTUNRouteTarget(); err == nil && routeTarget.InterfaceIndex > 0 {
+		return routeTarget.InterfaceIndex, nil
+	}
+	adapter, exists, err := probeLocalFindWintunAdapter()
+	if err != nil {
+		return 0, fmt.Errorf("resolve wintun adapter for direct bypass: %w", err)
+	}
+	if exists && adapter.InterfaceIndex > 0 {
+		return adapter.InterfaceIndex, nil
+	}
+	return 0, nil
 }
 
 func sameProbeRouteWindowsDirectRouteTarget(left, right probeRouteWindowsDirectRouteTarget) bool {

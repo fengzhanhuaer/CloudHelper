@@ -318,6 +318,7 @@ func runProbeNode(options probeLaunchOptions) error {
 	if err := loadProbeRouteAuthBlacklistFromDisk(); err != nil {
 		logProbeWarnf("probe route auth blacklist restore failed: %v", err)
 	}
+	applyProbeLocalTUNEgressPersistentState(currentProbeLocalTUNEgressPersistentStateBestEffort())
 	ensureProbeVirtualRouterDNSRuntime()
 	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(options.ControllerURL), strings.TrimSpace(options.ControllerWS))
 	setprobeLocalRouteRuntimeContext(identity, controllerBaseURL)

@@ -127,11 +127,11 @@ func ensureProbeRouteDirectBypass(targetAddr string) error {
 	bypassTarget, ok := currentProbeRouteWindowsDirectRouteTarget()
 	if !ok || bypassTarget.InterfaceIndex <= 0 || strings.TrimSpace(bypassTarget.NextHop) == "" {
 		if excludedIfIndex <= 0 {
-			routeTarget, routeErr := resolveProbeRouteWindowsTUNRouteTarget()
-			if routeErr != nil {
-				return routeErr
+			var excludeErr error
+			excludedIfIndex, excludeErr = resolveProbeRouteWindowsDirectBypassExcludedIfIndex()
+			if excludeErr != nil {
+				return excludeErr
 			}
-			excludedIfIndex = routeTarget.InterfaceIndex
 		}
 		bypassTarget, err = probeLocalResolveWindowsPrimaryEgressRoute(excludedIfIndex)
 		if err != nil {
