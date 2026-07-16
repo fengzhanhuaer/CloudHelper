@@ -281,9 +281,7 @@ func resetProbeVirtualRouterStateForTest() {
 	probeVirtualRouterFakeIPVerifyState.lastAt = make(map[string]time.Time)
 	probeVirtualRouterFakeIPVerifyState.synFlows = make(map[string]probeVirtualRouterFakeIPVerifySYNFlow)
 	probeVirtualRouterFakeIPVerifyState.mu.Unlock()
-	probeVirtualRouterLocalInterfaceEnsureState.mu.Lock()
-	probeVirtualRouterLocalInterfaceEnsureState.running = false
-	probeVirtualRouterLocalInterfaceEnsureState.mu.Unlock()
+	waitProbeVirtualRouterLocalInterfaceIPEnsure()
 	clearProbeVirtualRouterRouteCache("test reset")
 	probeVirtualRouterDisconnectedCarrierState.mu.Lock()
 	probeVirtualRouterDisconnectedCarrierState.routeIDs = make(map[string]struct{})

@@ -26,6 +26,7 @@ func setupProbeLocalConsoleTest(t *testing.T) *http.ServeMux {
 	setprobeLocalRouteRuntimeContext(nodeIdentity{}, "")
 	probeLocalTUNRouteFeatureEnabled = func() bool { return true }
 	t.Cleanup(func() {
+		waitProbeVirtualRouterLocalInterfaceIPEnsure()
 		resetProbeLocalAuthManagerForTest()
 		resetProbeLocalControlStateForTest()
 		resetProbeLocalDNSServiceForTest()

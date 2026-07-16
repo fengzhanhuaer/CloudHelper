@@ -132,6 +132,7 @@ type mobileVRouteCarrier struct {
 type mobileVRouteCarrierWorker struct {
 	plan     mobileVRouteForwardPlan
 	stopCh   chan struct{}
+	doneCh   chan struct{}
 	stopOnce sync.Once
 }
 
@@ -701,7 +702,11 @@ func (c *mobileVRouteCarrier) currentWriteBack() func([]byte) error {
 
 func startMobileVRouteCarrierWorkers(config mobileVRouteConfig) {
 	for _, plan := range mobileVRouteOutboundCarrierPlans(config) {
-		worker := &mobileVRouteCarrierWorker{plan: plan, stopCh: make(chan struct{})}
+		worker := &mobileVRouteCarrierWorker{
+			plan:   plan,
+			stopCh: make(chan struct{}),
+			doneCh: make(chan struct{}),
+		}
 		key := mobileVRouteCarrierKey(plan)
 		mobileVRouteCarrierState.mu.Lock()
 		if existing := mobileVRouteCarrierState.workers[key]; existing != nil {
@@ -742,6 +747,7 @@ func (w *mobileVRouteCarrierWorker) run() {
 	if w == nil {
 		return
 	}
+	defer close(w.doneCh)
 	backoff := mobileVRouteCarrierRetryMin
 	for {
 		select {
@@ -807,6 +813,9 @@ func (w *mobileVRouteCarrierWorker) stop() {
 		return
 	}
 	w.stopOnce.Do(func() { close(w.stopCh) })
+	if w.doneCh != nil {
+		<-w.doneCh
+	}
 }
 
 func nextMobileVRouteCarrierRetry(current time.Duration) time.Duration {

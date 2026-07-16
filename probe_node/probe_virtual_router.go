@@ -216,6 +216,7 @@ var probeVirtualRouterLocalInterfaceRetryState = struct {
 var probeVirtualRouterLocalInterfaceEnsureState = struct {
 	mu      sync.Mutex
 	running bool
+	done    chan struct{}
 }{}
 
 type probeVirtualRouterRuntimeStats struct {
@@ -1867,12 +1868,16 @@ func scheduleProbeVirtualRouterLocalInterfaceIPEnsure(reason string) {
 		probeVirtualRouterLocalInterfaceEnsureState.mu.Unlock()
 		return
 	}
+	done := make(chan struct{})
 	probeVirtualRouterLocalInterfaceEnsureState.running = true
+	probeVirtualRouterLocalInterfaceEnsureState.done = done
 	probeVirtualRouterLocalInterfaceEnsureState.mu.Unlock()
 	go func() {
 		defer func() {
 			probeVirtualRouterLocalInterfaceEnsureState.mu.Lock()
 			probeVirtualRouterLocalInterfaceEnsureState.running = false
+			probeVirtualRouterLocalInterfaceEnsureState.done = nil
+			close(done)
 			probeVirtualRouterLocalInterfaceEnsureState.mu.Unlock()
 		}()
 		if cleanReason := strings.TrimSpace(reason); cleanReason != "" {
@@ -1880,6 +1885,15 @@ func scheduleProbeVirtualRouterLocalInterfaceIPEnsure(reason string) {
 		}
 		ensureProbeVirtualRouterLocalInterfaceIP()
 	}()
+}
+
+func waitProbeVirtualRouterLocalInterfaceIPEnsure() {
+	probeVirtualRouterLocalInterfaceEnsureState.mu.Lock()
+	done := probeVirtualRouterLocalInterfaceEnsureState.done
+	probeVirtualRouterLocalInterfaceEnsureState.mu.Unlock()
+	if done != nil {
+		<-done
+	}
 }
 
 func ensureProbeVirtualRouterLocalInterfaceIPOnce() (string, error) {
