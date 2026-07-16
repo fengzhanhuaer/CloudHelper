@@ -1281,7 +1281,10 @@ func collectSystemStatus(sampler *cpuSampler) systemStatus {
 	memoryPercent := percentFromUsed(memoryUsed, memoryTotal)
 	swapPercent := percentFromUsed(swapUsed, swapTotal)
 	diskPercent := percentFromUsed(diskUsed, diskTotal)
-	cpuPercent := sampler.usagePercent()
+	cpuPercent := 0.0
+	if sampler != nil {
+		cpuPercent = sampler.usagePercent()
+	}
 
 	return systemStatus{
 		CPUPercent:        cpuPercent,
@@ -1311,7 +1314,7 @@ func (s *cpuSampler) usagePercent() float64 {
 	deltaTotal := snapshot.total - s.prev.total
 	deltaIdle := snapshot.idle - s.prev.idle
 	s.prev = snapshot
-	if deltaTotal == 0 {
+	if deltaTotal == 0 || deltaIdle > deltaTotal {
 		return 0
 	}
 	used := deltaTotal - deltaIdle
@@ -1319,6 +1322,9 @@ func (s *cpuSampler) usagePercent() float64 {
 }
 
 func readCPUSnapshot() (cpuSnapshot, bool) {
+	if runtime.GOOS == "windows" {
+		return readWindowsCPUSnapshot()
+	}
 	f, err := os.Open("/proc/stat")
 	if err != nil {
 		return cpuSnapshot{}, false
@@ -1358,6 +1364,9 @@ func readCPUSnapshot() (cpuSnapshot, bool) {
 }
 
 func readLinuxMemInfo() (memoryTotal uint64, memoryUsed uint64, swapTotal uint64, swapUsed uint64) {
+	if runtime.GOOS == "windows" {
+		return readWindowsMemoryInfo()
+	}
 	f, err := os.Open("/proc/meminfo")
 	if err != nil {
 		return 0, 0, 0, 0
