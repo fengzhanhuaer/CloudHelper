@@ -51,7 +51,7 @@
 - AS-06: 设置保存后监听器按配置重建；绑定失败返回可观测错误，不影响远端出口处理能力。
 - AS-07: HTTP/SOCKS5 非回环监听必须配置认证；默认仅监听回环地址。
 - AS-08: `go test ./...` 与 `go test -race ./...` 通过，新增定向测试覆盖 R1-R8。
-- AS-09: Windows 系统代理应用与恢复具备幂等测试，且默认关闭时不修改系统代理。
+- AS-09: Windows 系统代理应用与恢复具备幂等测试，默认关闭时不修改系统代理；LocalSystem 必须支持控制台无 token、实际用户位于 RDP Active session 的场景。
 
 #### 1.1.5 风险
 - VRoute 单帧数据上限为 65535 字节，TCP/UDP 负载必须分块并预留 stream/datagram 头。
@@ -195,7 +195,7 @@
 - 职责: 在监听成功后设置当前用户 WinINet HTTP/HTTPS/SOCKS 代理，并在关闭时恢复首次接管前状态。
 - 输入: proxy enabled、HTTP 与 SOCKS5 listener address。
 - 输出: applied/restored 状态或错误。
-- 处理规则: 默认关闭不写注册表；重复应用幂等；只在 listener 成功后接管；普通进程写当前用户，LocalSystem 服务写活动控制台用户 SID 对应的 `HKEY_USERS`；进程正常退出恢复原设置。
+- 处理规则: 默认关闭不写注册表；重复应用幂等；只在 listener 成功后接管；普通进程写当前用户，LocalSystem 服务优先查询活动控制台用户，控制台无 token 时枚举 Active/Connected WTS 会话并写有效用户 SID 对应的 `HKEY_USERS`；进程正常退出恢复原设置。
 - 异常规则: 设置失败时关闭新代理 runtime 并恢复旧 runtime/系统代理状态；测试通过 hook 隔离真实注册表。
 
 #### 1.3.3 风险
@@ -223,6 +223,7 @@
 | T-06 | REQ-PN-VROUTE-PROXY-001-R6 | U-09 | `probe_node/local_console.go`、`probe_node/local_pages/virtual_router.html`、`probe_node/local_console_test.go` | 修改 | 设置、状态 API 与页面配置可用，旧设置兼容 |
 | T-07 | REQ-PN-VROUTE-PROXY-001-R1-R8 | U-01-U-09 | `probe_node/*proxy*_test.go`、`probe_node/probe_virtual_router_test.go`、`doc/REQ-PN-VROUTE-PROXY-001-collaboration.md` | 新增、修改 | 普通测试、race 测试和需求矩阵证据完整 |
 | T-08 | REQ-PN-VROUTE-PROXY-001-R9 | U-02,U-10 | `probe_node/probe_vroute_proxy.go`、`probe_node/probe_vroute_proxy_system_windows.go`、`probe_node/probe_vroute_proxy_system_other.go`、`probe_node/probe_vroute_proxy_test.go` | 新增、修改 | listener 成功后应用系统代理，关闭/退出恢复，失败回滚测试通过 |
+| T-09 | REQ-PN-VROUTE-PROXY-001-R9 | U-10 | `probe_node/probe_vroute_proxy_system_windows.go`、`probe_node/probe_vroute_proxy_system_windows_test.go`、本文档 | 修改 | 控制台 session 返回 `ERROR_NO_TOKEN` 时选择 Active RDP 用户 SID；Windows 定向、全量和 race 测试通过 |
 
 #### 1.4.3 源码修改规则
 - 必须使用 encoding_tools/README.md 描述的接口。
@@ -259,7 +260,7 @@
 | REQ-PN-VROUTE-PROXY-001-R6 | 设置、状态和页面 | 1.2 | U-01,U-02,U-09 | T-05,T-06,T-07 | 已完成 | API与页面测试通过 |
 | REQ-PN-VROUTE-PROXY-001-R7 | 中间转发与出口独立性 | 1.2 | U-06-U-08 | T-01,T-03,T-04,T-07 | 已完成 | frame路径与断链清理覆盖 |
 | REQ-PN-VROUTE-PROXY-001-R8 | 完整测试 | 1.2 | U-01-U-09 | T-07 | 已完成 | 普通全套与完整race通过 |
-| REQ-PN-VROUTE-PROXY-001-R9 | Windows 系统代理接管与恢复 | 1.2 | U-02,U-10 | T-08 | 已完成 | 活动用户SID与登录后恢复已覆盖 |
+| REQ-PN-VROUTE-PROXY-001-R9 | Windows 系统代理接管与恢复 | 1.2 | U-02,U-10 | T-08,T-09 | 已完成 | 控制台无 token 时回退 Active/Connected RDP session |
 
 ### 1.6 Architect关键接口跟踪矩阵
 - 状态: 已完成
@@ -299,7 +300,7 @@
 | Code证据完整 | 通过 | 第2.5节 | 命令、结果、失败与风险均已记录 |
 | Code任务反馈已处理 | 通过 | 当前无反馈 | 后续持续检查 |
 | 验收标准可测试 | 通过 | AS-01-AS-09 | 无 |
-| 需求任务覆盖完整 | 通过 | 1.5与T-01-T-08 | 无 |
+| 需求任务覆盖完整 | 通过 | 1.5与T-01-T-09 | 无 |
 | 任务自测覆盖完整 | 通过 | TEST-01-TEST-04 | 普通全套、完整race成功记录、最终定向race |
 | 修改文件在允许范围内 | 通过 | 1.4.1、git diff | 无越界文件 |
 | 测试失败已记录缺陷 | 通过 | 第2.4、2.5节 | 新增race已修复；既有flaky单列 |
@@ -320,7 +321,7 @@
 - 整改要求: 无。
 
 #### 1.7.5 结论
-- carrier迁移测试与登录后系统代理恢复风险已关闭，AS-01-AS-09通过，需求关闭。
+- carrier迁移、登录后系统代理恢复及 RDP Active session token 回退风险已关闭，AS-01-AS-09通过，需求关闭。
 
 ## 第2章 Code章节
 - 章节责任角色: Code
@@ -333,7 +334,7 @@
 |---|---|---|---|---|---|---|
 | REQ-PN-VROUTE-PROXY-001-R1-R7 | T-01-T-06 | `probe_node/probe_vroute_proxy*.go`、`probe_node/probe_virtual_router*.go`、`probe_node/main.go`、`probe_node/local_console.go`、`probe_node/local_pages/virtual_router.html` | 已完成 | 通过 | HTTP/SOCKS5 TCP+UDP、Fake-IP、frame codec、页面/API 测试 | 无 |
 | REQ-PN-VROUTE-PROXY-001-R8 | T-07 | `probe_node/probe_vroute_proxy_test.go`、`probe_node/local_console_test.go`、`probe_node/local_pages_routes_test.go` | 已完成 | 通过 | 普通全套、完整race及最终定向race | 既有flaky见2.5.8 |
-| REQ-PN-VROUTE-PROXY-001-R9 | T-08 | `probe_node/probe_vroute_proxy.go`、`probe_node/probe_vroute_proxy_system_windows.go`、`probe_node/probe_vroute_proxy_system_other.go`、`probe_node/main.go` | 已完成 | 定向通过 | 系统代理启停与失败回滚测试通过 | HTTP/HTTPS/SOCKS 均配置 |
+| REQ-PN-VROUTE-PROXY-001-R9 | T-08,T-09 | `probe_node/probe_vroute_proxy.go`、`probe_node/probe_vroute_proxy_system_windows.go`、`probe_node/probe_vroute_proxy_system_other.go`、`probe_node/probe_vroute_proxy_system_windows_test.go`、`probe_node/main.go` | 已完成 | 定向、全量和race通过 | 系统代理启停、失败回滚、RDP session 回退测试通过 | HTTP/HTTPS/SOCKS 均配置 |
 
 ### 2.2 Code关键接口跟踪矩阵
 - 状态: 已完成
@@ -350,7 +351,7 @@
 |---|---|---|---|---|---|---|---|---|
 | TEST-01 | R2-R5 | T-01-T-04 | codec、hash、Fake-IP、TCP frame | Go 定向单测 | 通过 | `TestProbeVRouteProxyFrameCodecsAndDispatchHash` 等 | 无 | 无 |
 | TEST-02 | R1,R4,R6 | T-05,T-06 | 无 TUN HTTP/SOCKS5 TCP/UDP 与页面/API | 本地 listener 端到端测试 | 通过 | `TestProbeVRouteProxyListenersWorkWithoutTUN` 等 | 无 | 无 |
-| TEST-03 | R9 | T-08 | Windows 系统代理启停与失败回滚 | hook 隔离单测 | 通过 | `TestReconcileProbeVRouteProxyRuntime*` | 无 | 无 |
+| TEST-03 | R9 | T-08,T-09 | Windows 系统代理启停、失败回滚与 RDP session 回退 | hook 隔离单测 | 通过 | `TestReconcileProbeVRouteProxyRuntime*`、`TestProbeVRouteWindowsSystemProxyFallsBackToActiveRDPSession` | 无 | 无 |
 | TEST-04 | R1-R9 | T-07 | 全包与 race 回归 | `go test` / `go test -race` | 通过 | `go test ./...` 通过；`go test -race ./...` 于21:59通过 | 无 | 后续短超时复跑暴露既有flaky，见2.5.8 |
 
 ### 2.4 Code缺陷跟踪矩阵
@@ -364,6 +365,7 @@
 | DEF-04 | R3 | TEST-04 | 测试恢复 sender hook 时后台 close 仍可能读取，触发race | 中 | 已修复 | 显式等待 TCP Close 帧；连续20次及完整race通过 | 仅测试同步问题 |
 | DEF-05 | R7 | TEST-04 | carrier迁移测试在清缓冲契约下依赖调度且读取无deadline | 中 | 已修复 | 先等待旧carrier脱离、attach后入队、2秒deadline；race连续100次通过 | 未改生产清缓冲语义 |
 | DEF-06 | R9 | TEST-03 | LocalSystem服务早于用户登录时系统代理首次设置失败且不会恢复 | 高 | 已修复 | 15秒恢复循环与失败后恢复测试普通/race各20次通过 | 登录后无需重启服务 |
+| DEF-07 | R9 | TEST-03 | LocalSystem 只查询控制台 session；控制台无 token 而用户位于 Active RDP session 时保存失败 | 高 | 已修复 | WTS session 排序、`ERROR_NO_TOKEN` 回退测试及全量race通过 | 现场为 console=1 Connected、rdp session=2 Active |
 
 ### 2.5 Code执行证据
 - 状态: 已完成
@@ -376,9 +378,11 @@
 
 #### 2.5.3 执行报告
 - T-01-T-08 已实现并完成验证；未修改或部署 `C:\Tools\probe_node` 运行库。
+- T-09 已实现：LocalSystem 先查询控制台 session；无有效 token 时枚举 Active/Connected WTS session，逐个选择首个有效非 LocalSystem 用户 SID；Disconnected/Listen session 不参与选择。
 
 #### 2.5.4 影响文件
 - 影响范围限定在1.4.1；未修改 C/C++、controller、Android/mobilecore 或既有 frame envelope。
+- T-09 修改 `probe_node/probe_vroute_proxy_system_windows.go`、`probe_node/probe_vroute_proxy_system_windows_test.go` 与本文档。
 
 #### 2.5.5 测试命令
 - `go test . -run 'Test(ReconcileProbeVRouteProxy|ProbeVRouteProxy|DecideProbeVRouteProxy|ResolveProbeVRouteProxy|ProbeLocalVirtualRouterSettingsHandlerConfiguresProxy|ProbeLocalStandalonePagesServedAfterLogin)' -count=1 -timeout 180s`。
@@ -388,11 +392,15 @@
 - `go test . -run 'Test(RecoverProbeVRouteProxy|ReconcileProbeVRouteProxy|ProbeVirtualRouterFrameLinkTXWorkerSurvivesCarrierMigration)' -count=20 -timeout 3m`。
 - `$env:PATH='C:\msys64\ucrt64\bin;' + $env:PATH; go test -race . -run 'Test(RecoverProbeVRouteProxy|ReconcileProbeVRouteProxy|ProbeVirtualRouterFrameLinkTXWorkerSurvivesCarrierMigration)' -count=20 -timeout 3m`。
 - 最终：`go test ./... -count=1 -timeout 60s` 与 `go test -race ./... -count=1 -timeout 60s`。
+- T-09：`go test -count=1 -run "TestProbeVRouteWindows|TestProbeVRouteSystemProxyAddress|TestReconcileProbeVRouteProxyRuntime" .`。
+- T-09：`go test -count=1 ./...`。
+- T-09：临时设置 `CGO_ENABLED=1` 与进程 PATH 后执行 `go test -race -count=1 ./...`；GCC 为 `C:\msys64\ucrt64\bin\gcc.exe`。
 
 #### 2.5.6 自测结果
 - 上述定向测试通过；HTTP 普通代理、HTTP CONNECT、SOCKS5 TCP、SOCKS5 UDP 均完成本机 echo 往返且 TUN 未运行。
 - `go test ./...` 最终通过；完整 `go test -race ./...` 曾通过（主包17.344s、mobilecore 2.144s）；最终改动后的代理相关race通过（2.638s）。
 - 风险修复后最终普通全套通过（主包16.970s、mobilecore 1.064s），完整race通过（主包17.891s、mobilecore 2.294s）。
+- T-09 Windows 定向测试通过；全量普通测试通过（主包16.892s、mobilecore 0.904s）；全量race通过（主包18.349s、mobilecore 2.152s）。
 
 #### 2.5.7 未执行测试原因
 - 按用户要求未替换、停止或重启 `C:\Tools\probe_node`，因此未执行真实服务账号注册表与 Chrome 访问验证。
@@ -411,7 +419,7 @@
 
 | 反馈编号 | 任务编号 | 反馈类型 | 反馈描述 | 阻塞影响 | Code建议 | Architect处理状态 | Architect处理结论 |
 |---|---|---|---|---|---|---|---|
-| 无 | T-01-T-08 | 无 | 无 | 无 | 无 | 无需处理 | 无 |
+| 无 | T-01-T-09 | 无 | 无 | 无 | 无 | 无需处理 | 无 |
 
 #### 2.6.1 结论
 - 当前无反馈。

@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
@@ -163,13 +164,82 @@ func probeVRouteWindowsSystemProxyUserSID() (string, error) {
 	if !strings.EqualFold(processSID, "S-1-5-18") {
 		return "", nil
 	}
-	sessionID := windows.WTSGetActiveConsoleSessionId()
-	if sessionID == ^uint32(0) {
-		return "", errors.New("windows system proxy requires an active console user")
+	sessionIDs, enumerateErr := probeVRouteWindowsLoggedOnSessionIDs()
+	userSID, err := probeVRouteWindowsSelectUserSID(sessionIDs, probeVRouteWindowsSessionUserSID)
+	if err == nil {
+		return userSID, nil
 	}
+	if enumerateErr != nil {
+		return "", fmt.Errorf("enumerate windows user sessions: %v; %w", enumerateErr, err)
+	}
+	return "", err
+}
+
+func probeVRouteWindowsLoggedOnSessionIDs() ([]uint32, error) {
+	consoleSessionID := windows.WTSGetActiveConsoleSessionId()
+	var sessionInfo *windows.WTS_SESSION_INFO
+	var count uint32
+	err := windows.WTSEnumerateSessions(0, 0, 1, &sessionInfo, &count)
+	if err != nil {
+		return probeVRouteWindowsOrderSessionIDs(consoleSessionID, nil), err
+	}
+	if sessionInfo == nil || count == 0 {
+		return probeVRouteWindowsOrderSessionIDs(consoleSessionID, nil), nil
+	}
+	defer windows.WTSFreeMemory(uintptr(unsafe.Pointer(sessionInfo)))
+	sessions := unsafe.Slice(sessionInfo, int(count))
+	return probeVRouteWindowsOrderSessionIDs(consoleSessionID, sessions), nil
+}
+
+func probeVRouteWindowsOrderSessionIDs(consoleSessionID uint32, sessions []windows.WTS_SESSION_INFO) []uint32 {
+	ids := make([]uint32, 0, len(sessions)+1)
+	seen := make(map[uint32]struct{}, len(sessions)+1)
+	appendSession := func(sessionID uint32) {
+		if sessionID == ^uint32(0) {
+			return
+		}
+		if _, ok := seen[sessionID]; ok {
+			return
+		}
+		seen[sessionID] = struct{}{}
+		ids = append(ids, sessionID)
+	}
+	appendSession(consoleSessionID)
+	for _, state := range []uint32{windows.WTSActive, windows.WTSConnected} {
+		for _, session := range sessions {
+			if session.State == state {
+				appendSession(session.SessionID)
+			}
+		}
+	}
+	return ids
+}
+
+func probeVRouteWindowsSelectUserSID(sessionIDs []uint32, query func(uint32) (string, error)) (string, error) {
+	if len(sessionIDs) == 0 {
+		return "", errors.New("windows system proxy requires an active logged-on user")
+	}
+	attempts := make([]string, 0, len(sessionIDs))
+	for _, sessionID := range sessionIDs {
+		userSID, err := query(sessionID)
+		if err != nil {
+			attempts = append(attempts, fmt.Sprintf("session=%d: %v", sessionID, err))
+			continue
+		}
+		userSID = strings.TrimSpace(userSID)
+		if userSID == "" || strings.EqualFold(userSID, "S-1-5-18") {
+			attempts = append(attempts, fmt.Sprintf("session=%d: user sid unavailable", sessionID))
+			continue
+		}
+		return userSID, nil
+	}
+	return "", fmt.Errorf("no active windows user token is available (%s)", strings.Join(attempts, "; "))
+}
+
+func probeVRouteWindowsSessionUserSID(sessionID uint32) (string, error) {
 	var userToken windows.Token
 	if err := windows.WTSQueryUserToken(sessionID, &userToken); err != nil {
-		return "", fmt.Errorf("query active console user token: %w", err)
+		return "", fmt.Errorf("query user token: %w", err)
 	}
 	defer userToken.Close()
 	user, err := userToken.GetTokenUser()
@@ -178,7 +248,7 @@ func probeVRouteWindowsSystemProxyUserSID() (string, error) {
 	}
 	userSID := user.User.Sid.String()
 	if userSID == "" || strings.EqualFold(userSID, "S-1-5-18") {
-		return "", errors.New("windows active console user sid is unavailable")
+		return "", errors.New("windows session user sid is unavailable")
 	}
 	return userSID, nil
 }
