@@ -103,6 +103,14 @@ func loadProbeVirtualRouterLocalSettings() probeVirtualRouterLocalSettings {
 }
 
 func saveProbeVirtualRouterLocalSettings(settings probeVirtualRouterLocalSettings) (probeVirtualRouterLocalSettings, error) {
+	return saveProbeVirtualRouterLocalSettingsWithProxyReconcile(settings, true)
+}
+
+func saveProbeVirtualRouterLocalSettingsWithoutProxyReconcile(settings probeVirtualRouterLocalSettings) (probeVirtualRouterLocalSettings, error) {
+	return saveProbeVirtualRouterLocalSettingsWithProxyReconcile(settings, false)
+}
+
+func saveProbeVirtualRouterLocalSettingsWithProxyReconcile(settings probeVirtualRouterLocalSettings, reconcileProxy bool) (probeVirtualRouterLocalSettings, error) {
 	previous := loadProbeVirtualRouterLocalSettings()
 	var err error
 	settings, err = sanitizeProbeVRouteProxySettings(settings)
@@ -121,12 +129,16 @@ func saveProbeVirtualRouterLocalSettings(settings probeVirtualRouterLocalSetting
 	if err != nil {
 		return settings, err
 	}
-	if err := reconcileProbeVRouteProxyRuntime(settings); err != nil {
-		return settings, err
+	if reconcileProxy {
+		if err := reconcileProbeVRouteProxyRuntime(settings); err != nil {
+			return settings, err
+		}
 	}
 	if err := os.WriteFile(path, raw, 0o644); err != nil {
-		if rollbackErr := reconcileProbeVRouteProxyRuntime(previous); rollbackErr != nil {
-			logProbeWarnf("probe vroute proxy settings rollback failed: err=%v", rollbackErr)
+		if reconcileProxy {
+			if rollbackErr := reconcileProbeVRouteProxyRuntime(previous); rollbackErr != nil {
+				logProbeWarnf("probe vroute proxy settings rollback failed: err=%v", rollbackErr)
+			}
 		}
 		return settings, err
 	}

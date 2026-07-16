@@ -55,6 +55,7 @@ var (
 	probeLocalResolveWindowsPrimaryEgressRoute = resolveProbeLocalWindowsPrimaryEgressRouteTarget
 	probeLocalSnapshotWindowsIPv4Routes        = snapshotProbeLocalWindowsIPv4Routes
 	probeLocalSetWindowsInterfaceDNS           = setProbeLocalWindowsInterfaceDNS
+	probeLocalResetWindowsInterfaceDNS         = resetProbeLocalWindowsInterfaceDNS
 	probeLocalFindWindowsAdapterByIfIndex      = windowsFindAdapterByIfIndex
 	probeLocalFindWindowsAdapterByLUID         = windowsFindAdapterByLUID
 	probeLocalUpsertWindowsInterfaceIPv4       = upsertProbeLocalWindowsInterfaceIPv4Address
@@ -818,14 +819,6 @@ func snapshotProbeLocalWindowsIPv4Routes() (string, error) {
 }
 
 func setProbeLocalWindowsInterfaceDNS(interfaceGUID string, dnsServers []string) error {
-	cleanGUID := strings.TrimSpace(interfaceGUID)
-	if cleanGUID == "" {
-		return errors.New("empty interface guid")
-	}
-	guid, err := windows.GUIDFromString(cleanGUID)
-	if err != nil {
-		return fmt.Errorf("invalid interface guid: %w", err)
-	}
 	items := make([]string, 0, len(dnsServers))
 	for _, item := range dnsServers {
 		ip4 := net.ParseIP(strings.TrimSpace(item)).To4()
@@ -837,7 +830,23 @@ func setProbeLocalWindowsInterfaceDNS(interfaceGUID string, dnsServers []string)
 	if len(items) == 0 {
 		return errors.New("empty dns servers")
 	}
-	nameServerPtr, err := syscall.UTF16PtrFromString(strings.Join(items, ","))
+	return applyProbeLocalWindowsInterfaceDNSSettings(interfaceGUID, strings.Join(items, ","))
+}
+
+func resetProbeLocalWindowsInterfaceDNS(interfaceGUID string) error {
+	return applyProbeLocalWindowsInterfaceDNSSettings(interfaceGUID, "")
+}
+
+func applyProbeLocalWindowsInterfaceDNSSettings(interfaceGUID string, nameServers string) error {
+	cleanGUID := strings.TrimSpace(interfaceGUID)
+	if cleanGUID == "" {
+		return errors.New("empty interface guid")
+	}
+	guid, err := windows.GUIDFromString(cleanGUID)
+	if err != nil {
+		return fmt.Errorf("invalid interface guid: %w", err)
+	}
+	nameServerPtr, err := syscall.UTF16PtrFromString(strings.TrimSpace(nameServers))
 	if err != nil {
 		return fmt.Errorf("encode dns servers failed: %w", err)
 	}

@@ -979,6 +979,15 @@ func TestProbeLocalTUNResetAndUninstallHandlers(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
 
+	settings := defaultProbeVirtualRouterLocalSettings()
+	settings.VirtualRouterEnabled = true
+	settings.VirtualDNSEnabled = true
+	settings.ProxyEnabled = true
+	probeVirtualRouterLocalSettingsState.mu.Lock()
+	probeVirtualRouterLocalSettingsState.loaded = true
+	probeVirtualRouterLocalSettingsState.settings = settings
+	probeVirtualRouterLocalSettingsState.mu.Unlock()
+
 	probeLocalControl.mu.Lock()
 	probeLocalControl.tun.Installed = true
 	probeLocalControl.tun.Enabled = true
@@ -990,6 +999,11 @@ func TestProbeLocalTUNResetAndUninstallHandlers(t *testing.T) {
 		return nil
 	}
 	probeLocalDetectTUNInstalled = func() (bool, error) { return true, nil }
+	restoreDNSCalls := 0
+	probeVirtualRouterRestoreSystemDNS = func() error {
+		restoreDNSCalls++
+		return nil
+	}
 	t.Cleanup(func() { resetprobeLocalRouteHooksForTest(); resetProbeLocalTUNHooksForTest() })
 
 	resetResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/tun/reset", map[string]any{}, sessionCookie)
@@ -1010,6 +1024,16 @@ func TestProbeLocalTUNResetAndUninstallHandlers(t *testing.T) {
 	if uninstallCalls != 0 {
 		t.Fatalf("after reset uninstall=%d", uninstallCalls)
 	}
+	settings = loadProbeVirtualRouterLocalSettings()
+	if settings.VirtualRouterEnabled || settings.VirtualDNSEnabled {
+		t.Fatalf("tun/reset should disable virtual router and dns: %+v", settings)
+	}
+	if !settings.ProxyEnabled {
+		t.Fatalf("tun/reset should preserve the independent proxy switch: %+v", settings)
+	}
+	if restoreDNSCalls < 1 {
+		t.Fatal("tun/reset should restore system DNS")
+	}
 
 	uninstallResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/tun/uninstall", map[string]any{}, sessionCookie)
 	if uninstallResp.Code != http.StatusOK {
@@ -1025,6 +1049,9 @@ func TestProbeLocalTUNResetAndUninstallHandlers(t *testing.T) {
 	}
 	if uninstallCalls != 1 {
 		t.Fatalf("after uninstall uninstall=%d", uninstallCalls)
+	}
+	if restoreDNSCalls < 2 {
+		t.Fatal("tun/uninstall should restore system DNS even when settings are already disabled")
 	}
 }
 

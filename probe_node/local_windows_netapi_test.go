@@ -197,6 +197,33 @@ func TestSetProbeLocalWindowsInterfaceDNSFallsBackToQWords(t *testing.T) {
 	}
 }
 
+func TestResetProbeLocalWindowsInterfaceDNSClearsNameServerOverride(t *testing.T) {
+	ptrCalls := 0
+	probeLocalCallSetInterfaceDNSSettingsByPtr = func(guid *windows.GUID, settings *probeLocalDNSInterfaceSettings) (uintptr, error) {
+		ptrCalls++
+		if guid == nil || settings == nil {
+			t.Fatal("guid/settings nil")
+		}
+		if settings.Flags != probeLocalDNSSettingNameServer|probeLocalDNSSettingSearchList {
+			t.Fatalf("flags=%d", settings.Flags)
+		}
+		if got := windows.UTF16PtrToString(settings.NameServer); got != "" {
+			t.Fatalf("name server override=%q, want empty", got)
+		}
+		return 0, nil
+	}
+	t.Cleanup(func() {
+		probeLocalCallSetInterfaceDNSSettingsByPtr = probeLocalCallSetInterfaceDNSSettingsByPtrDefault
+	})
+
+	if err := resetProbeLocalWindowsInterfaceDNS("{6BA2B7A3-1C2D-4E63-9E3C-6F7A8B9C0D21}"); err != nil {
+		t.Fatalf("resetProbeLocalWindowsInterfaceDNS returned error: %v", err)
+	}
+	if ptrCalls != 1 {
+		t.Fatalf("ptr calls=%d, want 1", ptrCalls)
+	}
+}
+
 func TestSetProbeLocalWindowsInterfaceDNSUsesDWordsAsLastFallback(t *testing.T) {
 	ptrCalls := 0
 	qwordCalls := 0

@@ -80,6 +80,7 @@ func resetProbeLocalWindowsNativeRouteHooksForTest() {
 	probeLocalResolveWindowsPrimaryEgressRoute = resolveProbeLocalWindowsPrimaryEgressRouteTarget
 	probeLocalSnapshotWindowsIPv4Routes = snapshotProbeLocalWindowsIPv4Routes
 	probeLocalSetWindowsInterfaceDNS = setProbeLocalWindowsInterfaceDNS
+	probeLocalResetWindowsInterfaceDNS = resetProbeLocalWindowsInterfaceDNS
 	probeLocalFindWindowsAdapterByIfIndex = windowsFindAdapterByIfIndex
 }
 

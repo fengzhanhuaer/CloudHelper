@@ -756,6 +756,18 @@ func (m *probeLocalControlManager) resetTUNLocked(uninstall bool) (probeLocalTun
 	defer m.mu.Unlock()
 
 	var allErr error
+	settings := loadProbeVirtualRouterLocalSettings()
+	if settings.VirtualRouterEnabled || settings.VirtualDNSEnabled {
+		settings.VirtualRouterEnabled = false
+		settings.VirtualDNSEnabled = false
+		if _, err := saveProbeVirtualRouterLocalSettingsWithoutProxyReconcile(settings); err != nil {
+			allErr = errors.Join(allErr, fmt.Errorf("disable virtual router settings: %w", err))
+		}
+	}
+	stopProbeVirtualRouterDNSService()
+	if err := probeVirtualRouterRestoreSystemDNS(); err != nil {
+		allErr = errors.Join(allErr, fmt.Errorf("restore system dns: %w", err))
+	}
 	if err := stopProbeVirtualRouterTUNDataPlane(); err != nil {
 		allErr = errors.Join(allErr, err)
 	}
@@ -3446,6 +3458,8 @@ func resetProbeLocalTUNHooksForTest() {
 	probeLocalCheckTUNReadyAfterInstall = probeLocalNoopPostInstallTUNReadyCheck
 	probeLocalResetTUNDetectInstalledHook()
 	probeLocalUninstallTUNDriver = uninstallProbeLocalTUNDriver
+	probeVirtualRouterApplySystemDNS = applyProbeVirtualRouterSystemDNS
+	probeVirtualRouterRestoreSystemDNS = restoreProbeVirtualRouterSystemDNS
 	resetProbeVirtualRouterTUNDataPlaneHooksForTest()
 }
 

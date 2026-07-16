@@ -47,6 +47,8 @@ var probeVirtualRouterDNSState = struct {
 
 var probeVirtualRouterDNSListenPacket = net.ListenPacket
 var probeVirtualRouterDNSListen = net.Listen
+var probeVirtualRouterApplySystemDNS = applyProbeVirtualRouterSystemDNS
+var probeVirtualRouterRestoreSystemDNS = restoreProbeVirtualRouterSystemDNS
 
 func ensureProbeVirtualRouterDNSRuntime() {
 	reconcileProbeVirtualRouterDNSRuntime()
@@ -55,15 +57,16 @@ func ensureProbeVirtualRouterDNSRuntime() {
 func reconcileProbeVirtualRouterDNSRuntime() {
 	if !probeVirtualRouterLocalDNSEnabled() {
 		stopProbeVirtualRouterDNSService()
-		if err := restoreProbeVirtualRouterSystemDNS(); err != nil {
+		if err := probeVirtualRouterRestoreSystemDNS(); err != nil {
 			logProbeWarnf("restore virtual router system dns failed: %v", err)
 		}
 		return
 	}
 	if err := startProbeVirtualRouterDNSService(); err != nil {
 		logProbeWarnf("probe virtual router dns service startup failed: %v", err)
+		return
 	}
-	if err := applyProbeVirtualRouterSystemDNS(); err != nil {
+	if err := probeVirtualRouterApplySystemDNS(); err != nil {
 		logProbeWarnf("apply virtual router system dns failed: %v", err)
 	}
 }
