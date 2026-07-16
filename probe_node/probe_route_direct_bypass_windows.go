@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -10,6 +11,8 @@ import (
 
 type probeRouteWindowsDirectRouteTarget struct {
 	InterfaceIndex int    `json:"interface_index"`
+	InterfaceLUID  uint64 `json:"interface_luid,omitempty"`
+	InterfaceGUID  string `json:"interface_guid,omitempty"`
 	NextHop        string `json:"next_hop"`
 }
 
@@ -29,7 +32,7 @@ func prepareProbeRouteWindowsDirectRouteTarget() error {
 		return err
 	}
 	setProbeRouteWindowsDirectRouteTarget(routeTarget)
-	logProbeInfof("probe route direct route route target prepared: if_index=%d next_hop=%s", routeTarget.InterfaceIndex, strings.TrimSpace(routeTarget.NextHop))
+	logProbeInfof("probe route direct route route target prepared: %s", describeProbeLocalTUNEgressTarget(routeTarget))
 	return nil
 }
 
@@ -96,16 +99,45 @@ func clearProbeRouteWindowsDirectRouteTarget() {
 }
 
 func resolveProbeRouteWindowsDirectRouteTarget() (probeRouteWindowsDirectRouteTarget, error) {
-	if routeTarget, _, _, ok := currentProbeRouteWindowsDirectManualRouteTarget(); ok {
-		if routeTarget.InterfaceIndex > 0 && strings.TrimSpace(routeTarget.NextHop) != "" {
-			return routeTarget, nil
+	if routeTarget, candidateID, label, ok := currentProbeRouteWindowsDirectManualRouteTarget(); ok {
+		excludedIfIndex := currentProbeVirtualRouterTUNDataPlaneIfIndex()
+		if excludedIfIndex <= 0 {
+			if tunTarget, err := resolveProbeRouteWindowsTUNRouteTarget(); err == nil {
+				excludedIfIndex = tunTarget.InterfaceIndex
+			}
 		}
+		options, err := probeLocalWindowsEgressRouteOptions(excludedIfIndex)
+		if err != nil {
+			return probeRouteWindowsDirectRouteTarget{}, fmt.Errorf("resolve current manual egress candidates failed: %w", err)
+		}
+		candidate, matched := probeLocalTUNEgressFindCandidate(options, candidateID, routeTarget)
+		if !matched {
+			return probeRouteWindowsDirectRouteTarget{}, fmt.Errorf("manual egress adapter is unavailable: %s", describeProbeLocalTUNEgressTarget(routeTarget))
+		}
+		refreshed := probeRouteWindowsDirectRouteTargetFromEgressOption(candidate)
+		if !sameProbeRouteWindowsDirectRouteTarget(routeTarget, refreshed) || !strings.EqualFold(strings.TrimSpace(candidateID), strings.TrimSpace(candidate.CandidateID)) {
+			setProbeRouteWindowsDirectManualRouteTarget(refreshed, candidate.CandidateID, probeLocalTUNEgressSelectedLabel(&candidate))
+			if persistErr := persistProbeLocalTUNEgressManualState(candidate); persistErr != nil {
+				logProbeWarnf("probe route direct route stable manual target persist failed: %v", persistErr)
+			}
+			logProbeWarnf("probe route direct route stable manual target rebound: old={%s} new={%s}", describeProbeLocalTUNEgressTarget(routeTarget), describeProbeLocalTUNEgressTarget(refreshed))
+		} else if strings.TrimSpace(label) == "" {
+			setProbeRouteWindowsDirectManualRouteTarget(refreshed, candidate.CandidateID, probeLocalTUNEgressSelectedLabel(&candidate))
+		}
+		return refreshed, nil
 	}
 	routeTarget, err := resolveProbeRouteWindowsTUNRouteTarget()
 	if err != nil {
 		return probeRouteWindowsDirectRouteTarget{}, err
 	}
 	return probeLocalResolveWindowsPrimaryEgressRoute(routeTarget.InterfaceIndex)
+}
+
+func sameProbeRouteWindowsDirectRouteTarget(left, right probeRouteWindowsDirectRouteTarget) bool {
+	return left.InterfaceIndex == right.InterfaceIndex &&
+		left.InterfaceLUID == right.InterfaceLUID &&
+		normalizeProbeLocalTUNEgressInterfaceGUID(left.InterfaceGUID) == normalizeProbeLocalTUNEgressInterfaceGUID(right.InterfaceGUID) &&
+		strings.EqualFold(strings.TrimSpace(left.NextHop), strings.TrimSpace(right.NextHop))
 }
 
 func resetProbeRouteDirectBypassStateForTest() {

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -11,12 +12,13 @@ import (
 	"time"
 )
 
-const probeLocalTUNEgressAPIVersion = "tun-egress-mode-candidate-v2"
+const probeLocalTUNEgressAPIVersion = "tun-egress-stable-adapter-v3"
 
 type probeLocalTUNEgressRouteTargetOption struct {
 	CandidateID     string `json:"candidate_id"`
 	InterfaceIndex  int    `json:"interface_index"`
 	InterfaceLUID   uint64 `json:"interface_luid,omitempty"`
+	InterfaceGUID   string `json:"interface_guid,omitempty"`
 	NextHop         string `json:"next_hop"`
 	Name            string `json:"name,omitempty"`
 	Description     string `json:"description,omitempty"`
@@ -106,16 +108,25 @@ func probeLocalTUNEgressSelectedLabel(option *probeLocalTUNEgressRouteTargetOpti
 func probeLocalTUNEgressOptionFromCandidate(option probeLocalTUNEgressRouteTargetOption) *probeLocalTUNEgressRouteTargetOption {
 	copy := option
 	if strings.TrimSpace(copy.CandidateID) == "" {
-		copy.CandidateID = probeLocalTUNEgressCandidateID(copy.InterfaceIndex, copy.NextHop)
+		copy.CandidateID = probeLocalTUNEgressCandidateID(copy.InterfaceGUID, copy.InterfaceLUID, copy.InterfaceIndex, copy.NextHop)
 	}
 	return &copy
 }
 
-func probeLocalTUNEgressCandidateID(interfaceIndex int, nextHop string) string {
-	return strings.ToLower(strings.TrimSpace(strings.Join([]string{
-		strconv.Itoa(interfaceIndex),
-		strings.TrimSpace(nextHop),
-	}, "|")))
+func probeLocalTUNEgressCandidateID(interfaceGUID string, interfaceLUID uint64, interfaceIndex int, nextHop string) string {
+	identity := ""
+	if guid := normalizeProbeLocalTUNEgressInterfaceGUID(interfaceGUID); guid != "" {
+		identity = "guid:" + guid
+	} else if interfaceLUID > 0 {
+		identity = fmt.Sprintf("luid:%d", interfaceLUID)
+	} else {
+		identity = "ifindex:" + strconv.Itoa(interfaceIndex)
+	}
+	return strings.ToLower(strings.TrimSpace(strings.Join([]string{identity, strings.TrimSpace(nextHop)}, "|")))
+}
+
+func normalizeProbeLocalTUNEgressInterfaceGUID(value string) string {
+	return strings.ToLower(strings.Trim(strings.TrimSpace(value), "{}"))
 }
 
 func probeLocalTUNEgressModeValue(manual bool, supported bool) string {
@@ -137,7 +148,11 @@ func persistProbeLocalTUNEgressManualState(candidate probeLocalTUNEgressRouteTar
 			Mode:           "manual",
 			CandidateID:    strings.TrimSpace(candidate.CandidateID),
 			InterfaceIndex: candidate.InterfaceIndex,
+			InterfaceLUID:  candidate.InterfaceLUID,
+			InterfaceGUID:  strings.TrimSpace(candidate.InterfaceGUID),
 			NextHop:        strings.TrimSpace(candidate.NextHop),
+			Name:           strings.TrimSpace(candidate.Name),
+			Description:    strings.TrimSpace(candidate.Description),
 			Label:          probeLocalTUNEgressSelectedLabel(&candidate),
 			UpdatedAt:      now,
 		},
@@ -220,12 +235,19 @@ func normalizeProbeLocalTUNEgressStateFile(payload *probeLocalTUNEgressStateFile
 		mode = "auto"
 		payload.TUNEgress.CandidateID = ""
 		payload.TUNEgress.InterfaceIndex = 0
+		payload.TUNEgress.InterfaceLUID = 0
+		payload.TUNEgress.InterfaceGUID = ""
 		payload.TUNEgress.NextHop = ""
+		payload.TUNEgress.Name = ""
+		payload.TUNEgress.Description = ""
 		payload.TUNEgress.Label = ""
 	}
 	payload.TUNEgress.Mode = mode
 	payload.TUNEgress.CandidateID = strings.TrimSpace(payload.TUNEgress.CandidateID)
+	payload.TUNEgress.InterfaceGUID = strings.TrimSpace(payload.TUNEgress.InterfaceGUID)
 	payload.TUNEgress.NextHop = strings.TrimSpace(payload.TUNEgress.NextHop)
+	payload.TUNEgress.Name = strings.TrimSpace(payload.TUNEgress.Name)
+	payload.TUNEgress.Description = strings.TrimSpace(payload.TUNEgress.Description)
 	payload.TUNEgress.Label = strings.TrimSpace(payload.TUNEgress.Label)
 	if strings.TrimSpace(payload.TUNEgress.UpdatedAt) == "" {
 		payload.TUNEgress.UpdatedAt = payload.UpdatedAt

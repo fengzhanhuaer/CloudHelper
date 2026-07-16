@@ -27,6 +27,34 @@ func TestProbeIPReportLANFilterOnlyAppliesToLANIPs(t *testing.T) {
 	}
 }
 
+func TestProbeIPReportLANFilterAcceptsLegacyInterfaceAlias(t *testing.T) {
+	settings := probeIPReportSettings{
+		OnlySelectedLANInterfaces: true,
+		SelectedInterfaceIDs:      []string{"mac:00:11:22:33:44:55"},
+	}
+	interfaceIDs := []string{
+		"guid:90078d57-7beb-4176-8bfb-82a52fe5d5b1",
+		"mac:00:11:22:33:44:55",
+		"name:ethernet",
+	}
+
+	if !shouldIncludeProbeReportInterfaceIPByIDs(net.ParseIP("192.168.1.20"), interfaceIDs, settings) {
+		t.Fatal("legacy mac selection should match the stable interface identity aliases")
+	}
+}
+
+func TestProbeIPReportFallbackInterfaceIdentityPrefersMAC(t *testing.T) {
+	hardwareAddr, err := net.ParseMAC("00:11:22:33:44:55")
+	if err != nil {
+		t.Fatalf("parse mac: %v", err)
+	}
+	ids := probeIPReportFallbackInterfaceIDs(net.Interface{Index: 15, Name: "Ethernet", HardwareAddr: hardwareAddr})
+	want := []string{"mac:00:11:22:33:44:55", "name:ethernet", "index:15"}
+	if !reflect.DeepEqual(ids, want) {
+		t.Fatalf("fallback ids=%v want=%v", ids, want)
+	}
+}
+
 func TestSortProbeIPReportStringsIPv4First(t *testing.T) {
 	values := []string{"2001:db8::2", "192.168.1.20", "10.0.0.5", "fe80::1"}
 

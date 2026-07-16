@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -11,6 +12,8 @@ import (
 
 	"golang.org/x/sys/windows"
 )
+
+var probeLocalWindowsEgressRouteOptions = probeLocalWindowsPrimaryEgressRouteOptions
 
 func probeLocalTUNEgressSnapshot() (probeLocalTUNEgressStatus, error) {
 	applyProbeLocalTUNEgressPersistentState(currentProbeLocalTUNEgressPersistentStateBestEffort())
@@ -25,7 +28,7 @@ func probeLocalTUNEgressSnapshot() (probeLocalTUNEgressStatus, error) {
 	if routeTarget, err := resolveProbeRouteWindowsTUNRouteTarget(); err == nil {
 		excludedIfIndex = routeTarget.InterfaceIndex
 	}
-	options, err := probeLocalWindowsPrimaryEgressRouteOptions(excludedIfIndex)
+	options, err := probeLocalWindowsEgressRouteOptions(excludedIfIndex)
 	if err != nil {
 		return status, err
 	}
@@ -41,6 +44,8 @@ func probeLocalTUNEgressSnapshot() (probeLocalTUNEgressStatus, error) {
 		status.ManualSelected = probeLocalTUNEgressOptionFromCandidate(probeLocalTUNEgressRouteTargetOption{
 			CandidateID:    manualID,
 			InterfaceIndex: manualTarget.InterfaceIndex,
+			InterfaceLUID:  manualTarget.InterfaceLUID,
+			InterfaceGUID:  manualTarget.InterfaceGUID,
 			NextHop:        strings.TrimSpace(manualTarget.NextHop),
 		})
 		if matched, ok := probeLocalTUNEgressFindCandidate(options, manualID, manualTarget); ok {
@@ -85,7 +90,7 @@ func probeLocalTUNEgressUpdate(req probeLocalTUNEgressUpdateRequest) (probeLocal
 		}
 		return probeLocalTUNEgressSnapshot()
 	case "manual":
-		options, err := probeLocalWindowsPrimaryEgressRouteOptions(excludedIfIndex)
+		options, err := probeLocalWindowsEgressRouteOptions(excludedIfIndex)
 		if err != nil {
 			return probeLocalTUNEgressStatus{}, err
 		}
@@ -94,10 +99,7 @@ func probeLocalTUNEgressUpdate(req probeLocalTUNEgressUpdateRequest) (probeLocal
 			return probeLocalTUNEgressStatus{}, &probeLocalHTTPError{Status: 404, Message: "candidate not found"}
 		}
 		setProbeRouteWindowsDirectManualRouteTarget(
-			probeRouteWindowsDirectRouteTarget{
-				InterfaceIndex: candidate.InterfaceIndex,
-				NextHop:        candidate.NextHop,
-			},
+			probeRouteWindowsDirectRouteTargetFromEgressOption(candidate),
 			candidate.CandidateID,
 			probeLocalTUNEgressSelectedLabel(&candidate),
 		)
@@ -118,20 +120,51 @@ func applyProbeLocalTUNEgressPersistentState(egress probeLocalTUNEgressPersisten
 		clearProbeRouteWindowsDirectManualRouteTarget()
 		return
 	}
-	if egress.InterfaceIndex <= 0 || strings.TrimSpace(egress.NextHop) == "" {
-		logProbeWarnf("probe local tun egress persisted manual target ignored: if_index=%d next_hop=%s", egress.InterfaceIndex, strings.TrimSpace(egress.NextHop))
+	if egress.InterfaceIndex <= 0 && egress.InterfaceLUID == 0 && normalizeProbeLocalTUNEgressInterfaceGUID(egress.InterfaceGUID) == "" {
+		logProbeWarnf("probe local tun egress persisted manual target ignored: missing adapter identity next_hop=%s", strings.TrimSpace(egress.NextHop))
 		clearProbeRouteWindowsDirectManualRouteTarget()
 		return
 	}
+	if strings.TrimSpace(egress.NextHop) == "" {
+		logProbeWarnf("probe local tun egress persisted manual target ignored: adapter identity has no next hop")
+		clearProbeRouteWindowsDirectManualRouteTarget()
+		return
+	}
+
+	candidateID := strings.TrimSpace(egress.CandidateID)
+	label := strings.TrimSpace(egress.Label)
+	target := probeRouteWindowsDirectRouteTarget{
+		InterfaceIndex: egress.InterfaceIndex,
+		InterfaceLUID:  egress.InterfaceLUID,
+		InterfaceGUID:  strings.TrimSpace(egress.InterfaceGUID),
+		NextHop:        strings.TrimSpace(egress.NextHop),
+	}
+	excludedIfIndex := 0
+	if routeTarget, err := resolveProbeRouteWindowsTUNRouteTarget(); err == nil {
+		excludedIfIndex = routeTarget.InterfaceIndex
+	}
+	if options, err := probeLocalWindowsEgressRouteOptions(excludedIfIndex); err == nil {
+		if candidate, ok := probeLocalTUNEgressFindPersistentCandidate(options, egress); ok {
+			target = probeRouteWindowsDirectRouteTargetFromEgressOption(candidate)
+			candidateID = candidate.CandidateID
+			label = probeLocalTUNEgressSelectedLabel(&candidate)
+			if !probeLocalTUNEgressPersistentStateMatchesCandidate(egress, candidate) {
+				if persistErr := persistProbeLocalTUNEgressManualState(candidate); persistErr != nil {
+					logProbeWarnf("probe local tun egress stable adapter migration persist failed: %v", persistErr)
+				} else {
+					logProbeInfof("probe local tun egress stable adapter migrated: old_if_index=%d new_if_index=%d interface_guid=%s next_hop=%s", egress.InterfaceIndex, candidate.InterfaceIndex, strings.TrimSpace(candidate.InterfaceGUID), strings.TrimSpace(candidate.NextHop))
+				}
+			}
+		}
+	} else {
+		logProbeWarnf("probe local tun egress current candidates unavailable while restoring manual target: %v", err)
+	}
 	setProbeRouteWindowsDirectManualRouteTarget(
-		probeRouteWindowsDirectRouteTarget{
-			InterfaceIndex: egress.InterfaceIndex,
-			NextHop:        strings.TrimSpace(egress.NextHop),
-		},
-		strings.TrimSpace(egress.CandidateID),
-		strings.TrimSpace(egress.Label),
+		target,
+		candidateID,
+		label,
 	)
-	logProbeInfof("probe local tun egress restored manual target: if_index=%d next_hop=%s", egress.InterfaceIndex, strings.TrimSpace(egress.NextHop))
+	logProbeInfof("probe local tun egress restored manual target: if_index=%d interface_guid=%s next_hop=%s", target.InterfaceIndex, strings.TrimSpace(target.InterfaceGUID), strings.TrimSpace(target.NextHop))
 }
 
 func probeLocalWindowsPrimaryEgressRouteOptions(excludedIfIndex int) ([]probeLocalTUNEgressRouteTargetOption, error) {
@@ -179,7 +212,7 @@ func probeLocalWindowsPrimaryEgressRouteOptions(excludedIfIndex int) ([]probeLoc
 		if !ok || adapter.OperStatus != windows.IfOperStatusUp {
 			continue
 		}
-		candidateID := probeLocalTUNEgressCandidateID(int(row.InterfaceIndex), nextHop)
+		candidateID := probeLocalTUNEgressCandidateID(adapter.AdapterGUID, adapter.InterfaceLUID, int(row.InterfaceIndex), nextHop)
 		if _, exists := seen[candidateID]; exists {
 			continue
 		}
@@ -188,6 +221,7 @@ func probeLocalWindowsPrimaryEgressRouteOptions(excludedIfIndex int) ([]probeLoc
 			CandidateID:     candidateID,
 			InterfaceIndex:  int(row.InterfaceIndex),
 			InterfaceLUID:   adapter.InterfaceLUID,
+			InterfaceGUID:   adapter.AdapterGUID,
 			NextHop:         nextHop,
 			Name:            strings.TrimSpace(adapter.Name),
 			Description:     strings.TrimSpace(adapter.Description),
@@ -239,6 +273,21 @@ func probeLocalTUNEgressFindCandidateByRequest(options []probeLocalTUNEgressRout
 
 func probeLocalTUNEgressFindCandidate(options []probeLocalTUNEgressRouteTargetOption, candidateID string, target probeRouteWindowsDirectRouteTarget) (probeLocalTUNEgressRouteTargetOption, bool) {
 	cleanID := strings.ToLower(strings.TrimSpace(candidateID))
+	cleanGUID := normalizeProbeLocalTUNEgressInterfaceGUID(target.InterfaceGUID)
+	if cleanGUID != "" {
+		for _, option := range options {
+			if normalizeProbeLocalTUNEgressInterfaceGUID(option.InterfaceGUID) == cleanGUID {
+				return option, true
+			}
+		}
+	}
+	if target.InterfaceLUID > 0 {
+		for _, option := range options {
+			if option.InterfaceLUID == target.InterfaceLUID {
+				return option, true
+			}
+		}
+	}
 	for _, option := range options {
 		if cleanID != "" && strings.EqualFold(strings.TrimSpace(option.CandidateID), cleanID) {
 			return option, true
@@ -247,5 +296,72 @@ func probeLocalTUNEgressFindCandidate(options []probeLocalTUNEgressRouteTargetOp
 			return option, true
 		}
 	}
+	nextHop := strings.TrimSpace(target.NextHop)
+	if nextHop != "" {
+		matches := make([]probeLocalTUNEgressRouteTargetOption, 0, 1)
+		for _, option := range options {
+			if strings.EqualFold(strings.TrimSpace(option.NextHop), nextHop) {
+				matches = append(matches, option)
+			}
+		}
+		if len(matches) == 1 {
+			return matches[0], true
+		}
+	}
 	return probeLocalTUNEgressRouteTargetOption{}, false
+}
+
+func probeLocalTUNEgressFindPersistentCandidate(options []probeLocalTUNEgressRouteTargetOption, egress probeLocalTUNEgressPersistentState) (probeLocalTUNEgressRouteTargetOption, bool) {
+	target := probeRouteWindowsDirectRouteTarget{
+		InterfaceIndex: egress.InterfaceIndex,
+		InterfaceLUID:  egress.InterfaceLUID,
+		InterfaceGUID:  egress.InterfaceGUID,
+		NextHop:        egress.NextHop,
+	}
+	if candidate, ok := probeLocalTUNEgressFindCandidate(options, egress.CandidateID, target); ok {
+		return candidate, true
+	}
+	legacyName := strings.TrimSpace(egress.Name)
+	if legacyName == "" {
+		legacyName = probeLocalTUNEgressNameFromLabel(egress.Label)
+	}
+	if legacyName != "" {
+		for _, option := range options {
+			if strings.EqualFold(strings.TrimSpace(option.Name), legacyName) && strings.EqualFold(strings.TrimSpace(option.NextHop), strings.TrimSpace(egress.NextHop)) {
+				return option, true
+			}
+		}
+	}
+	return probeLocalTUNEgressRouteTargetOption{}, false
+}
+
+func probeLocalTUNEgressNameFromLabel(label string) string {
+	parts := strings.Split(strings.TrimSpace(label), " / ")
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(parts[0])
+}
+
+func probeRouteWindowsDirectRouteTargetFromEgressOption(candidate probeLocalTUNEgressRouteTargetOption) probeRouteWindowsDirectRouteTarget {
+	return probeRouteWindowsDirectRouteTarget{
+		InterfaceIndex: candidate.InterfaceIndex,
+		InterfaceLUID:  candidate.InterfaceLUID,
+		InterfaceGUID:  strings.TrimSpace(candidate.InterfaceGUID),
+		NextHop:        strings.TrimSpace(candidate.NextHop),
+	}
+}
+
+func probeLocalTUNEgressPersistentStateMatchesCandidate(state probeLocalTUNEgressPersistentState, candidate probeLocalTUNEgressRouteTargetOption) bool {
+	return strings.EqualFold(strings.TrimSpace(state.CandidateID), strings.TrimSpace(candidate.CandidateID)) &&
+		state.InterfaceIndex == candidate.InterfaceIndex &&
+		state.InterfaceLUID == candidate.InterfaceLUID &&
+		normalizeProbeLocalTUNEgressInterfaceGUID(state.InterfaceGUID) == normalizeProbeLocalTUNEgressInterfaceGUID(candidate.InterfaceGUID) &&
+		strings.EqualFold(strings.TrimSpace(state.NextHop), strings.TrimSpace(candidate.NextHop)) &&
+		strings.EqualFold(strings.TrimSpace(state.Name), strings.TrimSpace(candidate.Name)) &&
+		strings.EqualFold(strings.TrimSpace(state.Description), strings.TrimSpace(candidate.Description))
+}
+
+func describeProbeLocalTUNEgressTarget(target probeRouteWindowsDirectRouteTarget) string {
+	return fmt.Sprintf("if_index=%d luid=%d guid=%s next_hop=%s", target.InterfaceIndex, target.InterfaceLUID, strings.TrimSpace(target.InterfaceGUID), strings.TrimSpace(target.NextHop))
 }

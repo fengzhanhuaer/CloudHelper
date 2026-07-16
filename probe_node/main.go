@@ -251,10 +251,16 @@ func initProbeNodeRuntimeLogger() func() {
 		return func() {}
 	}
 	logPath := filepath.Join(logDir, "probe_node.runtime.log")
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		initProbeLoggerWithStderrMirror()
 		logProbeWarnf("probe runtime log open failed: path=%s err=%v", logPath, err)
+		return func() {}
+	}
+	if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		_ = f.Close()
+		initProbeLoggerWithStderrMirror()
+		logProbeWarnf("probe runtime log seek failed: path=%s err=%v", logPath, err)
 		return func() {}
 	}
 	runtimeLogWriter := newProbeRotatingLogFileWriter(logPath, f, probeLogMaxBytes)
@@ -1229,10 +1235,11 @@ func collectIPs() ([]string, []string) {
 		if err != nil {
 			continue
 		}
-		interfaceID := probeIPReportInterfaceID(iface)
+		interfaceIdentity := resolveProbeIPReportInterfaceIdentity(iface)
+		interfaceIDs := probeIPReportInterfaceIdentityIDs(interfaceIdentity)
 		for _, addr := range addrs {
 			ip := probeReportIPFromAddr(addr)
-			if !shouldIncludeProbeReportInterfaceIP(ip, interfaceID, settings) {
+			if !shouldIncludeProbeReportInterfaceIPByIDs(ip, interfaceIDs, settings) {
 				continue
 			}
 

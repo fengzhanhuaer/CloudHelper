@@ -625,6 +625,7 @@ func ensureProbeRouteWindowsRouteNative(routeDef probeRouteWindowsRouteDef) (boo
 
 	var row probeLocalMIBIPForwardRow2
 	probeLocalProcInitializeIpForwardEntryNet.Call(uintptr(unsafe.Pointer(&row)))
+	row.InterfaceLuid = routeDef.InterfaceLUID
 	row.InterfaceIndex = uint32(routeDef.IfIndex)
 	row.DestinationPrefix.Prefix = prefixAddr
 	row.DestinationPrefix.PrefixLength = uint8(prefixLength)
@@ -660,6 +661,7 @@ func deleteProbeRouteWindowsRouteNative(routeDef probeRouteWindowsRouteDef) erro
 		return err
 	}
 	var row probeLocalMIBIPForwardRow2
+	row.InterfaceLuid = routeDef.InterfaceLUID
 	row.InterfaceIndex = uint32(routeDef.IfIndex)
 	row.DestinationPrefix.Prefix = prefixAddr
 	row.DestinationPrefix.PrefixLength = uint8(prefixLength)
@@ -764,7 +766,12 @@ func selectProbeLocalWindowsPrimaryEgressRouteTarget(rows []probeLocalMIBIPForwa
 			(totalMetric == bestTotalMetric && row.Metric < bestRouteMetric) ||
 			(totalMetric == bestTotalMetric && row.Metric == bestRouteMetric && adapterMetric < bestInterfaceMetric) ||
 			(totalMetric == bestTotalMetric && row.Metric == bestRouteMetric && adapterMetric == bestInterfaceMetric && int(row.InterfaceIndex) < best.InterfaceIndex) {
-			best = probeRouteWindowsDirectRouteTarget{InterfaceIndex: int(row.InterfaceIndex), NextHop: nextHop}
+			best = probeRouteWindowsDirectRouteTarget{
+				InterfaceIndex: int(row.InterfaceIndex),
+				InterfaceLUID:  adapter.InterfaceLUID,
+				InterfaceGUID:  adapter.AdapterGUID,
+				NextHop:        nextHop,
+			}
 			bestTotalMetric = totalMetric
 			bestRouteMetric = row.Metric
 			bestInterfaceMetric = adapterMetric

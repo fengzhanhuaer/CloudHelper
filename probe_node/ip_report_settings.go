@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -87,20 +86,6 @@ func normalizeProbeIPReportInterfaceID(id string) string {
 	return strings.ToLower(strings.TrimSpace(id))
 }
 
-func probeIPReportInterfaceID(iface net.Interface) string {
-	if mac := strings.TrimSpace(iface.HardwareAddr.String()); mac != "" {
-		return normalizeProbeIPReportInterfaceID("mac:" + mac)
-	}
-	name := strings.TrimSpace(iface.Name)
-	if name != "" {
-		return normalizeProbeIPReportInterfaceID("name:" + name)
-	}
-	if iface.Index > 0 {
-		return normalizeProbeIPReportInterfaceID("index:" + strconv.Itoa(iface.Index))
-	}
-	return ""
-}
-
 func loadProbeIPReportSettings() (probeIPReportSettings, error) {
 	path, err := resolveProbeIPReportSettingsPath()
 	if err != nil {
@@ -162,14 +147,23 @@ func probeReportIPIsLAN(ip net.IP) bool {
 }
 
 func shouldIncludeProbeReportInterfaceIP(ip net.IP, interfaceID string, settings probeIPReportSettings) bool {
+	return shouldIncludeProbeReportInterfaceIPByIDs(ip, []string{interfaceID}, settings)
+}
+
+func shouldIncludeProbeReportInterfaceIPByIDs(ip net.IP, interfaceIDs []string, settings probeIPReportSettings) bool {
 	if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
 		return false
 	}
 	if !settings.OnlySelectedLANInterfaces || !probeReportIPIsLAN(ip) {
 		return true
 	}
-	_, ok := selectedProbeIPReportInterfaceIDSet(settings)[normalizeProbeIPReportInterfaceID(interfaceID)]
-	return ok
+	selected := selectedProbeIPReportInterfaceIDSet(settings)
+	for _, interfaceID := range interfaceIDs {
+		if _, ok := selected[normalizeProbeIPReportInterfaceID(interfaceID)]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func listProbeIPReportInterfaces(settings probeIPReportSettings) []probeIPReportInterfaceView {
@@ -183,19 +177,22 @@ func listProbeIPReportInterfaces(settings probeIPReportSettings) []probeIPReport
 		if iface.Flags&net.FlagLoopback != 0 {
 			continue
 		}
-		id := probeIPReportInterfaceID(iface)
-		if id == "" {
+		identity := resolveProbeIPReportInterfaceIdentity(iface)
+		if identity.ID == "" {
 			continue
 		}
 		view := probeIPReportInterfaceView{
-			ID:           id,
+			ID:           identity.ID,
 			Index:        iface.Index,
 			Name:         strings.TrimSpace(iface.Name),
 			HardwareAddr: strings.TrimSpace(iface.HardwareAddr.String()),
 			Flags:        strings.TrimSpace(iface.Flags.String()),
 		}
-		if _, ok := selected[id]; ok {
-			view.Selected = true
+		for _, id := range probeIPReportInterfaceIdentityIDs(identity) {
+			if _, ok := selected[id]; ok {
+				view.Selected = true
+				break
+			}
 		}
 		addrs, err := iface.Addrs()
 		if err == nil {
@@ -216,10 +213,20 @@ func listProbeIPReportInterfaces(settings probeIPReportSettings) []probeIPReport
 		items = append(items, view)
 	}
 	sort.SliceStable(items, func(i, j int) bool {
-		if items[i].Index != items[j].Index {
-			return items[i].Index < items[j].Index
+		if items[i].Selected != items[j].Selected {
+			return items[i].Selected
 		}
-		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
+		leftHasLAN := len(items[i].LANIPs) > 0
+		rightHasLAN := len(items[j].LANIPs) > 0
+		if leftHasLAN != rightHasLAN {
+			return leftHasLAN
+		}
+		leftName := strings.ToLower(items[i].Name)
+		rightName := strings.ToLower(items[j].Name)
+		if leftName != rightName {
+			return leftName < rightName
+		}
+		return items[i].Index < items[j].Index
 	})
 	return items
 }

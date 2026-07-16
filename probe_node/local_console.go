@@ -123,7 +123,11 @@ type probeLocalTUNEgressPersistentState struct {
 	Mode           string `json:"mode,omitempty"`
 	CandidateID    string `json:"candidate_id,omitempty"`
 	InterfaceIndex int    `json:"interface_index,omitempty"`
+	InterfaceLUID  uint64 `json:"interface_luid,omitempty"`
+	InterfaceGUID  string `json:"interface_guid,omitempty"`
 	NextHop        string `json:"next_hop,omitempty"`
+	Name           string `json:"name,omitempty"`
+	Description    string `json:"description,omitempty"`
 	Label          string `json:"label,omitempty"`
 	UpdatedAt      string `json:"updated_at,omitempty"`
 }

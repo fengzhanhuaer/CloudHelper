@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,12 +10,18 @@ import (
 )
 
 func TestProbeRotatingLogFileWriterEnforcesByteLimit(t *testing.T) {
-	t.Skip("disabled: flaky log rotation filesystem timing test is excluded from the default regression suite")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "probe_node.runtime.log")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err := os.WriteFile(path, []byte(strings.Repeat("stale-log-data\n", 128)), 0o644); err != nil {
+		t.Fatalf("seed oversized log file: %v", err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		t.Fatalf("open log file failed: %v", err)
+	}
+	if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		_ = f.Close()
+		t.Fatalf("seek log file end: %v", err)
 	}
 	writer := newProbeRotatingLogFileWriter(path, f, 128)
 	for i := 0; i < 32; i++ {
