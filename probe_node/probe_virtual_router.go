@@ -23,7 +23,11 @@ const (
 	probeVirtualRouterDirectionForward    = "forward"
 	probeVirtualRouterDefaultServicePort  = 12040
 	probeVirtualRouterRecentPacketLimit   = 256
+	probeVirtualRouterRecentPacketQueue   = 4096
 	probeVirtualRouterRecentConnectionTTL = 5 * time.Minute
+	probeVirtualRouterRecentPruneInterval = time.Second
+	probeVirtualRouterRecentFlushTimeout  = 2 * time.Second
+	probeVirtualRouterRecentDropLogPeriod = time.Second
 
 	// vRouter frame header is a stable 12-byte wire protocol boundary:
 	// magic 2 bytes, maintype 2 bytes, subtype 2 bytes,
@@ -159,14 +163,25 @@ var probeVirtualRouterRuntimeStatsState = struct {
 }{items: make(map[string]*probeVirtualRouterRuntimeStats)}
 
 var probeVirtualRouterRecentPacketState = struct {
-	mu     sync.Mutex
-	nextID uint64
-	items  []probeVirtualRouterRecentPacket
+	mu         sync.Mutex
+	nextID     uint64
+	writeIndex int
+	items      []probeVirtualRouterRecentPacket
+}{}
+
+var probeVirtualRouterRecentPacketRecorder = struct {
+	once          sync.Once
+	queue         chan probeVirtualRouterRecentPacketEvent
+	mu            sync.Mutex
+	dropped       uint64
+	droppedTotal  uint64
+	lastDropLogAt time.Time
 }{}
 
 var probeVirtualRouterRecentConnectionState = struct {
-	mu    sync.Mutex
-	items map[string]probeVirtualRouterRecentConnection
+	mu          sync.Mutex
+	items       map[string]probeVirtualRouterRecentConnection
+	lastPruneAt time.Time
 }{items: make(map[string]probeVirtualRouterRecentConnection)}
 
 var probeVirtualRouterICMPPingState = struct {
@@ -294,6 +309,19 @@ type probeVirtualRouterRecentPacket struct {
 	FakeIPExitNode  string   `json:"fake_ip_exit_node,omitempty"`
 	Detail          string   `json:"detail,omitempty"`
 	Error           string   `json:"error,omitempty"`
+}
+
+type probeVirtualRouterRecentPacketEvent struct {
+	source     string
+	action     string
+	routeID    string
+	localNode  string
+	peerNode   string
+	packet     []byte
+	path       []string
+	localMatch bool
+	errorText  string
+	barrier    chan struct{}
 }
 
 type probeVirtualRouterRecentConnection struct {
@@ -1258,7 +1286,59 @@ func probeVirtualRouterFakeIPEntryExpired(item probeVirtualRouterFakeIPEntry, no
 }
 
 func recordProbeVirtualRouterRecentPacket(source string, action string, runtime *probeVirtualRouterRuntime, packet []byte, path []string, localMatch bool, err error) {
-	item := buildProbeVirtualRouterRecentPacket(source, action, runtime, packet, path, localMatch, err)
+	event := probeVirtualRouterRecentPacketEvent{
+		source:     strings.TrimSpace(source),
+		action:     strings.TrimSpace(action),
+		packet:     append([]byte(nil), packet...),
+		path:       append([]string(nil), path...),
+		localMatch: localMatch,
+	}
+	if runtime != nil {
+		event.routeID = probeVirtualRouterRuntimeLogRouteID(runtime)
+		event.localNode = currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)
+		event.peerNode = normalizeProbeRouteNodeID(runtime.cfg.peerNodeID)
+	}
+	if event.localNode == "" {
+		event.localNode = currentProbeVirtualRouterLocalNodeID()
+	}
+	if err != nil {
+		event.errorText = strings.TrimSpace(err.Error())
+	}
+	queue := ensureProbeVirtualRouterRecentPacketRecorder()
+	select {
+	case queue <- event:
+	default:
+		recordProbeVirtualRouterRecentPacketMonitorDrop(len(queue), cap(queue))
+	}
+}
+
+func ensureProbeVirtualRouterRecentPacketRecorder() chan probeVirtualRouterRecentPacketEvent {
+	probeVirtualRouterRecentPacketRecorder.once.Do(func() {
+		probeVirtualRouterRecentPacketRecorder.queue = make(chan probeVirtualRouterRecentPacketEvent, probeVirtualRouterRecentPacketQueue)
+		go runProbeVirtualRouterRecentPacketRecorder(probeVirtualRouterRecentPacketRecorder.queue)
+	})
+	return probeVirtualRouterRecentPacketRecorder.queue
+}
+
+func runProbeVirtualRouterRecentPacketRecorder(queue <-chan probeVirtualRouterRecentPacketEvent) {
+	for event := range queue {
+		if event.barrier != nil {
+			close(event.barrier)
+			continue
+		}
+		storeProbeVirtualRouterRecentPacket(event)
+	}
+}
+
+func storeProbeVirtualRouterRecentPacket(event probeVirtualRouterRecentPacketEvent) {
+	var eventErr error
+	if event.errorText != "" {
+		eventErr = errors.New(event.errorText)
+	}
+	item := buildProbeVirtualRouterRecentPacket(event.source, event.action, nil, event.packet, event.path, event.localMatch, eventErr)
+	item.RouteID = event.routeID
+	item.LocalNodeID = event.localNode
+	item.PeerNodeID = event.peerNode
 	if strings.TrimSpace(item.SourceIP) == "" && strings.TrimSpace(item.DestinationIP) == "" {
 		return
 	}
@@ -1266,14 +1346,56 @@ func recordProbeVirtualRouterRecentPacket(source string, action string, runtime 
 	probeVirtualRouterRecentPacketState.nextID++
 	item.ID = probeVirtualRouterRecentPacketState.nextID
 	item.CapturedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	probeVirtualRouterRecentPacketState.items = append(probeVirtualRouterRecentPacketState.items, item)
-	if len(probeVirtualRouterRecentPacketState.items) > probeVirtualRouterRecentPacketLimit {
-		excess := len(probeVirtualRouterRecentPacketState.items) - probeVirtualRouterRecentPacketLimit
-		copy(probeVirtualRouterRecentPacketState.items, probeVirtualRouterRecentPacketState.items[excess:])
-		probeVirtualRouterRecentPacketState.items = probeVirtualRouterRecentPacketState.items[:probeVirtualRouterRecentPacketLimit]
+	if len(probeVirtualRouterRecentPacketState.items) < probeVirtualRouterRecentPacketLimit {
+		probeVirtualRouterRecentPacketState.items = append(probeVirtualRouterRecentPacketState.items, item)
+	} else {
+		probeVirtualRouterRecentPacketState.items[probeVirtualRouterRecentPacketState.writeIndex] = item
+		probeVirtualRouterRecentPacketState.writeIndex = (probeVirtualRouterRecentPacketState.writeIndex + 1) % probeVirtualRouterRecentPacketLimit
 	}
 	probeVirtualRouterRecentPacketState.mu.Unlock()
 	recordProbeVirtualRouterRecentConnection(item)
+}
+
+func recordProbeVirtualRouterRecentPacketMonitorDrop(depth int, capacity int) {
+	now := time.Now()
+	shouldLog := false
+	dropped := uint64(0)
+	probeVirtualRouterRecentPacketRecorder.mu.Lock()
+	probeVirtualRouterRecentPacketRecorder.dropped++
+	probeVirtualRouterRecentPacketRecorder.droppedTotal++
+	if probeVirtualRouterRecentPacketRecorder.lastDropLogAt.IsZero() || now.Sub(probeVirtualRouterRecentPacketRecorder.lastDropLogAt) >= probeVirtualRouterRecentDropLogPeriod {
+		dropped = probeVirtualRouterRecentPacketRecorder.dropped
+		probeVirtualRouterRecentPacketRecorder.dropped = 0
+		probeVirtualRouterRecentPacketRecorder.lastDropLogAt = now
+		shouldLog = true
+	}
+	probeVirtualRouterRecentPacketRecorder.mu.Unlock()
+	if shouldLog {
+		log.Printf("probe virtual router recent packet monitor queue full: dropped=%d depth=%d capacity=%d", dropped, depth, capacity)
+	}
+}
+
+func probeVirtualRouterRecentPacketMonitorDroppedTotal() uint64 {
+	probeVirtualRouterRecentPacketRecorder.mu.Lock()
+	dropped := probeVirtualRouterRecentPacketRecorder.droppedTotal
+	probeVirtualRouterRecentPacketRecorder.mu.Unlock()
+	return dropped
+}
+
+func flushProbeVirtualRouterRecentPacketEvents() {
+	queue := ensureProbeVirtualRouterRecentPacketRecorder()
+	done := make(chan struct{})
+	timer := time.NewTimer(probeVirtualRouterRecentFlushTimeout)
+	defer timer.Stop()
+	select {
+	case queue <- probeVirtualRouterRecentPacketEvent{barrier: done}:
+	case <-timer.C:
+		return
+	}
+	select {
+	case <-done:
+	case <-timer.C:
+	}
 }
 
 func buildProbeVirtualRouterRecentPacket(source string, action string, runtime *probeVirtualRouterRuntime, packet []byte, path []string, localMatch bool, err error) probeVirtualRouterRecentPacket {
@@ -1353,8 +1475,15 @@ func probeVirtualRouterIPv4ProtocolName(packet []byte) string {
 }
 
 func snapshotProbeVirtualRouterRecentPackets() []probeVirtualRouterRecentPacket {
+	flushProbeVirtualRouterRecentPacketEvents()
 	probeVirtualRouterRecentPacketState.mu.Lock()
-	out := append([]probeVirtualRouterRecentPacket(nil), probeVirtualRouterRecentPacketState.items...)
+	out := make([]probeVirtualRouterRecentPacket, 0, len(probeVirtualRouterRecentPacketState.items))
+	if len(probeVirtualRouterRecentPacketState.items) < probeVirtualRouterRecentPacketLimit || probeVirtualRouterRecentPacketState.writeIndex == 0 {
+		out = append(out, probeVirtualRouterRecentPacketState.items...)
+	} else {
+		out = append(out, probeVirtualRouterRecentPacketState.items[probeVirtualRouterRecentPacketState.writeIndex:]...)
+		out = append(out, probeVirtualRouterRecentPacketState.items[:probeVirtualRouterRecentPacketState.writeIndex]...)
+	}
 	probeVirtualRouterRecentPacketState.mu.Unlock()
 	for i := 0; i < len(out)/2; i++ {
 		j := len(out) - 1 - i
@@ -1364,9 +1493,11 @@ func snapshotProbeVirtualRouterRecentPackets() []probeVirtualRouterRecentPacket 
 }
 
 func snapshotProbeVirtualRouterRecentConnections() []probeVirtualRouterRecentConnection {
+	flushProbeVirtualRouterRecentPacketEvents()
 	now := time.Now()
 	probeVirtualRouterRecentConnectionState.mu.Lock()
 	pruneProbeVirtualRouterRecentConnectionsLocked(now)
+	probeVirtualRouterRecentConnectionState.lastPruneAt = now
 	connections := make([]probeVirtualRouterRecentConnection, 0, len(probeVirtualRouterRecentConnectionState.items))
 	for _, item := range probeVirtualRouterRecentConnectionState.items {
 		connections = append(connections, finalizeProbeVirtualRouterRecentConnection(item))
@@ -1385,7 +1516,7 @@ func recordProbeVirtualRouterRecentConnection(packet probeVirtualRouterRecentPac
 	}
 	now := time.Now()
 	probeVirtualRouterRecentConnectionState.mu.Lock()
-	pruneProbeVirtualRouterRecentConnectionsLocked(now)
+	maybePruneProbeVirtualRouterRecentConnectionsLocked(now)
 	connection, ok := probeVirtualRouterRecentConnectionState.items[key]
 	flags := strings.ToUpper(strings.TrimSpace(packet.TCPFlags))
 	if !ok || (connection.closed && strings.Contains(flags, "SYN") && !strings.Contains(flags, "ACK")) {
@@ -1448,6 +1579,14 @@ func pruneProbeVirtualRouterRecentConnectionsLocked(now time.Time) {
 	}
 }
 
+func maybePruneProbeVirtualRouterRecentConnectionsLocked(now time.Time) {
+	if !probeVirtualRouterRecentConnectionState.lastPruneAt.IsZero() && now.Sub(probeVirtualRouterRecentConnectionState.lastPruneAt) < probeVirtualRouterRecentPruneInterval {
+		return
+	}
+	pruneProbeVirtualRouterRecentConnectionsLocked(now)
+	probeVirtualRouterRecentConnectionState.lastPruneAt = now
+}
+
 func finalizeProbeVirtualRouterRecentConnection(item probeVirtualRouterRecentConnection) probeVirtualRouterRecentConnection {
 	if item.Kind == "dns" {
 		if item.Connected {
@@ -1478,7 +1617,7 @@ func recordProbeVirtualRouterRecentDNSQuery(domain string, action string, exitNo
 	key := "DNS|" + domain
 	probeVirtualRouterRecentConnectionState.mu.Lock()
 	defer probeVirtualRouterRecentConnectionState.mu.Unlock()
-	pruneProbeVirtualRouterRecentConnectionsLocked(now)
+	maybePruneProbeVirtualRouterRecentConnectionsLocked(now)
 	connection, ok := probeVirtualRouterRecentConnectionState.items[key]
 	if !ok || connection.Kind != "dns" {
 		connection = probeVirtualRouterRecentConnection{
@@ -4120,7 +4259,9 @@ func (s *probeVirtualRouterFrameLink) runRXDispatchWorker() {
 				if errors.Is(err, io.ErrClosedPipe) {
 					return
 				}
-				log.Printf("probe virtual router frame rx dispatch enqueue failed: route=%s key=%s path=%s err=%v", probeVirtualRouterRuntimeLogRouteID(s.runtime), s.key, probeVirtualRouterWireFramePathString(frame, s.requestPath), err)
+				if shouldLog, dropped := s.recordRXDispatchDrop(); shouldLog {
+					log.Printf("probe virtual router frame rx dispatch enqueue failed: route=%s key=%s path=%s dropped_since_last=%d err=%v", probeVirtualRouterRuntimeLogRouteID(s.runtime), s.key, probeVirtualRouterWireFramePathString(frame, s.requestPath), dropped, err)
+				}
 				if frame.MainType == probeVirtualRouterFrameMainTypeIP {
 					recordProbeVirtualRouterRecentPacket("frame_rx", "drop", s.runtime, frame.Data, s.requestPath, false, err)
 				}
@@ -4130,6 +4271,24 @@ func (s *probeVirtualRouterFrameLink) runRXDispatchWorker() {
 			return
 		}
 	}
+}
+
+func (s *probeVirtualRouterFrameLink) recordRXDispatchDrop() (bool, uint64) {
+	if s == nil {
+		return false, 0
+	}
+	now := time.Now()
+	s.mu.Lock()
+	s.rxDispatchDrops++
+	if !s.rxDropLastLogAt.IsZero() && now.Sub(s.rxDropLastLogAt) < probeVirtualRouterRXDispatchDropLogPeriod {
+		s.mu.Unlock()
+		return false, 0
+	}
+	dropped := s.rxDispatchDrops
+	s.rxDispatchDrops = 0
+	s.rxDropLastLogAt = now
+	s.mu.Unlock()
+	return true, dropped
 }
 
 func (s *probeVirtualRouterFrameLink) enqueueRXDispatchFrame(frame probeVirtualRouterFrame, shards []chan probeVirtualRouterFrame) error {
@@ -4310,6 +4469,8 @@ func shouldHandleProbeVirtualRouterFrameInRXWorker(runtime *probeVirtualRouterRu
 		return shouldHandleProbeVirtualRouterSpeedFrameInRXWorker(frame.SubType, frame.Data, control.Path, localNodeID)
 	case probeVirtualRouterFrameMainTypeRouteTest:
 		return false
+	case probeVirtualRouterFrameMainTypeFakeIPVerify:
+		return frame.SubType == probeVirtualRouterFakeIPVerifySubTypeResponse
 	default:
 		return false
 	}

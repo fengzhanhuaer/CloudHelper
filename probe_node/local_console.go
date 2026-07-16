@@ -2622,12 +2622,13 @@ func probeLocalVirtualRouterRecentPacketSummaryPayload(items []probeVirtualRoute
 		}
 	}
 	payload := map[string]any{
-		"count":         len(items),
-		"capacity":      probeVirtualRouterRecentPacketLimit,
-		"error_count":   errorCount,
-		"drop_count":    dropCount,
-		"forward_count": forwardCount,
-		"deliver_count": deliverCount,
+		"count":                 len(items),
+		"capacity":              probeVirtualRouterRecentPacketLimit,
+		"error_count":           errorCount,
+		"drop_count":            dropCount,
+		"forward_count":         forwardCount,
+		"deliver_count":         deliverCount,
+		"monitor_dropped_total": probeVirtualRouterRecentPacketMonitorDroppedTotal(),
 	}
 	if latestError.ID != 0 {
 		payload["latest_error"] = latestError

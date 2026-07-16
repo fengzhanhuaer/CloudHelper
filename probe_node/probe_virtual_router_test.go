@@ -294,12 +294,20 @@ func resetProbeVirtualRouterStateForTest() {
 	probeVirtualRouterPathRecoveryState.mu.Lock()
 	probeVirtualRouterPathRecoveryState.inflight = make(map[string]struct{})
 	probeVirtualRouterPathRecoveryState.mu.Unlock()
+	flushProbeVirtualRouterRecentPacketEvents()
 	probeVirtualRouterRecentPacketState.mu.Lock()
 	probeVirtualRouterRecentPacketState.nextID = 0
+	probeVirtualRouterRecentPacketState.writeIndex = 0
 	probeVirtualRouterRecentPacketState.items = nil
 	probeVirtualRouterRecentPacketState.mu.Unlock()
+	probeVirtualRouterRecentPacketRecorder.mu.Lock()
+	probeVirtualRouterRecentPacketRecorder.dropped = 0
+	probeVirtualRouterRecentPacketRecorder.droppedTotal = 0
+	probeVirtualRouterRecentPacketRecorder.lastDropLogAt = time.Time{}
+	probeVirtualRouterRecentPacketRecorder.mu.Unlock()
 	probeVirtualRouterRecentConnectionState.mu.Lock()
 	probeVirtualRouterRecentConnectionState.items = make(map[string]probeVirtualRouterRecentConnection)
+	probeVirtualRouterRecentConnectionState.lastPruneAt = time.Time{}
 	probeVirtualRouterRecentConnectionState.mu.Unlock()
 	probeVirtualRouterControllerState.mu.Lock()
 	probeVirtualRouterControllerState.identity = nodeIdentity{}
@@ -3902,6 +3910,64 @@ func TestProbeVirtualRouterRecentPacketIncludesChecksumSummary(t *testing.T) {
 	}
 	if !strings.Contains(items[0].Detail, "ip_checksum=ok") || !strings.Contains(items[0].Detail, "tcp_checksum=ok") {
 		t.Fatalf("unexpected checksum detail: %+v", items[0])
+	}
+}
+
+func TestProbeVirtualRouterRecentPacketRingKeepsNewestItems(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	packet := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.18", "198.18.0.21", 49152, 8080)
+	total := probeVirtualRouterRecentPacketLimit + 10
+	for i := 0; i < total; i++ {
+		recordProbeVirtualRouterRecentPacket("frame_rx", "deliver", nil, packet, []string{"19", "16"}, true, nil)
+	}
+	items := snapshotProbeVirtualRouterRecentPackets()
+	if len(items) != probeVirtualRouterRecentPacketLimit {
+		t.Fatalf("recent packets=%d, want %d", len(items), probeVirtualRouterRecentPacketLimit)
+	}
+	if items[0].ID != uint64(total) || items[len(items)-1].ID != 11 {
+		t.Fatalf("unexpected ring order: newest=%d oldest=%d", items[0].ID, items[len(items)-1].ID)
+	}
+}
+
+func TestProbeVirtualRouterFrameLinkRXCapacityAndDropLogAggregation(t *testing.T) {
+	link := newProbeVirtualRouterFrameLink("packet|capacity", nil, nil, nil)
+	if cap(link.rx) != probeVirtualRouterFrameLinkRXBufferFrames {
+		t.Fatalf("rx capacity=%d, want %d", cap(link.rx), probeVirtualRouterFrameLinkRXBufferFrames)
+	}
+	if len(link.rxDispatchShards) != probeVirtualRouterFrameLinkRXDispatchShards {
+		t.Fatalf("rx dispatch shards=%d, want %d", len(link.rxDispatchShards), probeVirtualRouterFrameLinkRXDispatchShards)
+	}
+	for shardID, shard := range link.rxDispatchShards {
+		if cap(shard) != probeVirtualRouterFrameLinkRXDispatchShardBufferFrames {
+			t.Fatalf("shard %d capacity=%d, want %d", shardID, cap(shard), probeVirtualRouterFrameLinkRXDispatchShardBufferFrames)
+		}
+	}
+	if shouldLog, dropped := link.recordRXDispatchDrop(); !shouldLog || dropped != 1 {
+		t.Fatalf("first drop log=(%t,%d), want (true,1)", shouldLog, dropped)
+	}
+	if shouldLog, dropped := link.recordRXDispatchDrop(); shouldLog || dropped != 0 {
+		t.Fatalf("rate-limited drop log=(%t,%d), want (false,0)", shouldLog, dropped)
+	}
+	link.mu.Lock()
+	link.rxDropLastLogAt = time.Now().Add(-probeVirtualRouterRXDispatchDropLogPeriod)
+	link.mu.Unlock()
+	if shouldLog, dropped := link.recordRXDispatchDrop(); !shouldLog || dropped != 2 {
+		t.Fatalf("aggregated drop log=(%t,%d), want (true,2)", shouldLog, dropped)
+	}
+}
+
+func TestProbeVirtualRouterFakeIPVerifyResponseHandledInRXWorker(t *testing.T) {
+	runtime := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{identity: nodeIdentity{NodeID: "9"}}}
+	response := probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeFakeIPVerify, SubType: probeVirtualRouterFakeIPVerifySubTypeResponse, Data: []byte(`{"request_id":"verify-1"}`)}
+	if !shouldHandleProbeVirtualRouterFrameInRXWorker(runtime, response, []string{"18", "9"}) {
+		t.Fatal("fake ip verify response should bypass rx dispatch shards")
+	}
+	query := response
+	query.SubType = probeVirtualRouterFakeIPVerifySubTypeQuery
+	if shouldHandleProbeVirtualRouterFrameInRXWorker(runtime, query, []string{"9", "18"}) {
+		t.Fatal("fake ip verify query should remain on the dispatch path")
 	}
 }
 

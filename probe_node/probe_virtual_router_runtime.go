@@ -29,9 +29,10 @@ const (
 	probeVirtualRouterRuntimeRouteLayer                    = "auto"
 	probeVirtualRouterRuntimeRole                          = "virtual_router"
 	probeVirtualRouterFrameLinkTXBufferFrames              = 1024
-	probeVirtualRouterFrameLinkRXBufferFrames              = 1024
+	probeVirtualRouterFrameLinkRXBufferFrames              = 4096
 	probeVirtualRouterFrameLinkRXDispatchShards            = 8
-	probeVirtualRouterFrameLinkRXDispatchShardBufferFrames = probeVirtualRouterFrameLinkRXBufferFrames / probeVirtualRouterFrameLinkRXDispatchShards
+	probeVirtualRouterFrameLinkRXDispatchShardBufferFrames = 1024
+	probeVirtualRouterRXDispatchDropLogPeriod              = time.Second
 )
 
 type probeVirtualRouterRuntimeConfig struct {
@@ -169,6 +170,8 @@ type probeVirtualRouterFrameLink struct {
 	carrierNotify    chan struct{}
 	startOnce        sync.Once
 	closeOnce        sync.Once
+	rxDispatchDrops  uint64
+	rxDropLastLogAt  time.Time
 	mu               sync.Mutex
 }
 
