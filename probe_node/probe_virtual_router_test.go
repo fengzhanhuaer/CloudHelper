@@ -3324,6 +3324,40 @@ func TestProbeVirtualRouterLogThrottleAggregatesSuppressedEntries(t *testing.T) 
 	}
 }
 
+func TestProbeVirtualRouterTransportTUNDropLogThrottleAggregatesByFlow(t *testing.T) {
+	probeVirtualRouterLogThrottleState.mu.Lock()
+	oldItems := probeVirtualRouterLogThrottleState.items
+	probeVirtualRouterLogThrottleState.items = make(map[string]probeVirtualRouterLogThrottleEntry)
+	probeVirtualRouterLogThrottleState.mu.Unlock()
+	t.Cleanup(func() {
+		probeVirtualRouterLogThrottleState.mu.Lock()
+		probeVirtualRouterLogThrottleState.items = oldItems
+		probeVirtualRouterLogThrottleState.mu.Unlock()
+	})
+
+	info := probeVirtualRouterTransportLogInfo{
+		Protocol:        "udp",
+		SourceIP:        "198.18.0.8",
+		SourcePort:      48672,
+		DestinationIP:   "198.18.0.21",
+		DestinationPort: 53006,
+	}
+	startedAt := time.Date(2026, 7, 17, 18, 16, 57, 0, time.UTC)
+	if allowed, suppressed := takeProbeVirtualRouterTransportTUNDropLogThrottle(info, "path_unavailable", startedAt); !allowed || suppressed != 0 {
+		t.Fatalf("first drop allowed=%v suppressed=%d", allowed, suppressed)
+	}
+	if allowed, suppressed := takeProbeVirtualRouterTransportTUNDropLogThrottle(info, "path_unavailable", startedAt.Add(time.Second)); allowed || suppressed != 0 {
+		t.Fatalf("repeated drop allowed=%v suppressed=%d", allowed, suppressed)
+	}
+	if allowed, suppressed := takeProbeVirtualRouterTransportTUNDropLogThrottle(info, "path_unavailable", startedAt.Add(probeVirtualRouterDiagnosticLogPeriod)); !allowed || suppressed != 1 {
+		t.Fatalf("window drop allowed=%v suppressed=%d", allowed, suppressed)
+	}
+	info.DestinationPort++
+	if allowed, suppressed := takeProbeVirtualRouterTransportTUNDropLogThrottle(info, "path_unavailable", startedAt.Add(time.Second)); !allowed || suppressed != 0 {
+		t.Fatalf("different flow allowed=%v suppressed=%d", allowed, suppressed)
+	}
+}
+
 func TestProbeVirtualRouterFinalHopFakeIPMissDropsWithoutSourceSync(t *testing.T) {
 	t.Skip("disabled: final-hop fake-ip miss edge-case test is excluded from the default regression suite")
 	resetProbeVirtualRouterStateForTest()

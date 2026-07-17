@@ -3315,7 +3315,9 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 			log.Printf("probe virtual router icmp tun drop: kind=%s src=%s dst=%s id=%d seq=%d reason=path_unavailable local_node=%s", info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, currentProbeVirtualRouterLocalNodeID())
 		}
 		if info, ok := probeVirtualRouterParseTCPUDPLogInfo(packet); ok {
-			log.Printf("probe virtual router transport tun drop: proto=%s src=%s:%d dst=%s:%d reason=path_unavailable local_node=%s", info.Protocol, info.SourceIP, info.SourcePort, info.DestinationIP, info.DestinationPort, currentProbeVirtualRouterLocalNodeID())
+			if shouldLog, suppressed := takeProbeVirtualRouterTransportTUNDropLogThrottle(info, "path_unavailable", time.Now()); shouldLog {
+				log.Printf("probe virtual router transport tun drop: proto=%s src=%s:%d dst=%s:%d reason=path_unavailable local_node=%s suppressed=%d", info.Protocol, info.SourceIP, info.SourcePort, info.DestinationIP, info.DestinationPort, currentProbeVirtualRouterLocalNodeID(), suppressed)
+			}
 		}
 		recordProbeVirtualRouterRecentPacket("tun_rx", "drop", nil, packet, path, false, errors.New("path unavailable"))
 		return false
@@ -3325,7 +3327,9 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 			log.Printf("probe virtual router icmp tun drop: kind=%s src=%s dst=%s id=%d seq=%d reason=fake_ip_exit_unreachable local_node=%s path=%s err=%v", info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, currentProbeVirtualRouterLocalNodeID(), strings.Join(path, ">"), err)
 		}
 		if info, ok := probeVirtualRouterParseTCPUDPLogInfo(packet); ok {
-			log.Printf("probe virtual router transport tun drop: proto=%s src=%s:%d dst=%s:%d reason=fake_ip_exit_unreachable local_node=%s path=%s err=%v", info.Protocol, info.SourceIP, info.SourcePort, info.DestinationIP, info.DestinationPort, currentProbeVirtualRouterLocalNodeID(), strings.Join(path, ">"), err)
+			if shouldLog, suppressed := takeProbeVirtualRouterTransportTUNDropLogThrottle(info, "fake_ip_exit_unreachable", time.Now()); shouldLog {
+				log.Printf("probe virtual router transport tun drop: proto=%s src=%s:%d dst=%s:%d reason=fake_ip_exit_unreachable local_node=%s path=%s suppressed=%d err=%v", info.Protocol, info.SourceIP, info.SourcePort, info.DestinationIP, info.DestinationPort, currentProbeVirtualRouterLocalNodeID(), strings.Join(path, ">"), suppressed, err)
+			}
 		}
 		recordProbeVirtualRouterRecentPacket("tun_rx", "drop", nil, packet, path, false, err)
 		scheduleProbeVirtualRouterFakeIPVerifyForPacket(packet, path, "exit_unreachable")
@@ -3346,6 +3350,19 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 	}
 	recordProbeVirtualRouterRecentPacket("tun_rx", "forward", nil, packet, path, false, nil)
 	return true
+}
+
+func takeProbeVirtualRouterTransportTUNDropLogThrottle(info probeVirtualRouterTransportLogInfo, reason string, now time.Time) (bool, int) {
+	key := fmt.Sprintf(
+		"transport_tun_drop|%s|%s:%d|%s:%d|%s",
+		strings.ToLower(strings.TrimSpace(info.Protocol)),
+		strings.TrimSpace(info.SourceIP),
+		info.SourcePort,
+		strings.TrimSpace(info.DestinationIP),
+		info.DestinationPort,
+		strings.ToLower(strings.TrimSpace(reason)),
+	)
+	return takeProbeVirtualRouterLogThrottle(key, probeVirtualRouterDiagnosticLogPeriod, now)
 }
 
 func probeVirtualRouterEnsureDirectBypassForOrdinaryTarget(packet []byte, dstIP string) bool {
