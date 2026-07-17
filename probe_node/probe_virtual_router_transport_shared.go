@@ -362,6 +362,9 @@ func applyProbeRouteTCPConnTuningWithContext(conn *net.TCPConn, context string) 
 	effectiveRead := probeRouteTCPConnSocketBufferEffectiveBytes(actualRead)
 	effectiveWrite := probeRouteTCPConnSocketBufferEffectiveBytes(actualWrite)
 	hint := probeRouteTCPConnSocketBufferTuneHint(probeRouteRelayTCPSocketBufferBytes, effectiveRead, effectiveWrite, snapshotErr, forceAttempted, forceReadErr, forceWriteErr)
+	if !probeRouteTCPConnTuningShouldLog(hint, readErr, writeErr, snapshotErr, forceReadErr, forceWriteErr) {
+		return
+	}
 	log.Printf(
 		"probe route tcp socket buffer tuned: context=%s local=%s remote=%s requested_read=%d requested_write=%d actual_read=%d actual_write=%d effective_read=%d effective_write=%d force_attempted=%t force_read_err=%v force_write_err=%v set_read_err=%v set_write_err=%v snapshot_err=%v hint=%q",
 		strings.TrimSpace(context),
@@ -381,6 +384,18 @@ func applyProbeRouteTCPConnTuningWithContext(conn *net.TCPConn, context string) 
 		snapshotErr,
 		hint,
 	)
+}
+
+func probeRouteTCPConnTuningShouldLog(hint string, errs ...error) bool {
+	if !strings.EqualFold(strings.TrimSpace(hint), "ok") {
+		return true
+	}
+	for _, err := range errs {
+		if err != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func probeRouteTCPConnSocketBufferBelowRequested(actualRead int, actualWrite int, requested int) bool {

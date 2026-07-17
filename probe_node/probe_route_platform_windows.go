@@ -157,7 +157,7 @@ func ensureProbeRouteDirectBypass(targetAddr string) error {
 			InterfaceLUID: bypassTarget.InterfaceLUID,
 			IfIndex:       bypassTarget.InterfaceIndex,
 		}
-		created, routeErr := ensureProbeRouteWindowsRoute(routeDef)
+		_, routeErr := ensureProbeRouteWindowsRoute(routeDef)
 		if routeErr != nil {
 			staleTarget := bypassTarget
 			refreshedTarget, refreshErr := resolveProbeRouteWindowsDirectRouteTarget()
@@ -167,7 +167,7 @@ func ensureProbeRouteDirectBypass(targetAddr string) error {
 				routeDef.Gateway = strings.TrimSpace(refreshedTarget.NextHop)
 				routeDef.InterfaceLUID = refreshedTarget.InterfaceLUID
 				routeDef.IfIndex = refreshedTarget.InterfaceIndex
-				created, routeErr = ensureProbeRouteWindowsRoute(routeDef)
+				_, routeErr = ensureProbeRouteWindowsRoute(routeDef)
 				logProbeWarnf("probe route direct route target refreshed after route failure: target=%s old={%s} new={%s} retry_err=%v", strings.TrimSpace(targetAddr), describeProbeLocalTUNEgressTarget(staleTarget), describeProbeLocalTUNEgressTarget(refreshedTarget), routeErr)
 			} else if refreshErr != nil {
 				routeErr = errors.Join(routeErr, refreshErr)
@@ -176,8 +176,6 @@ func ensureProbeRouteDirectBypass(targetAddr string) error {
 		if routeErr != nil {
 			logProbeWarnf("probe route direct route host route failed: target=%s ip=%s gateway=%s if_index=%d interface_luid=%d err=%v", strings.TrimSpace(targetAddr), routeDef.Prefix, routeDef.Gateway, routeDef.IfIndex, routeDef.InterfaceLUID, routeErr)
 			allErr = errors.Join(allErr, routeErr)
-		} else if created {
-			logProbeInfof("probe route direct route host route created: target=%s ip=%s gateway=%s if_index=%d interface_luid=%d", strings.TrimSpace(targetAddr), routeDef.Prefix, routeDef.Gateway, routeDef.IfIndex, routeDef.InterfaceLUID)
 		}
 	}
 	return allErr

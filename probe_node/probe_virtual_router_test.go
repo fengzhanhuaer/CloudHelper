@@ -2693,9 +2693,7 @@ func TestProbeVirtualRouterTUNPacketEnsuresDirectBypassForOrdinaryTarget(t *test
 		},
 	}
 	applyProbeVirtualRouterConfigForNode(config, "16")
-	if _, err := saveProbeVirtualRouterLocalSettings(probeVirtualRouterLocalSettings{VirtualRouterEnabled: true, VirtualDNSEnabled: true}); err != nil {
-		t.Fatalf("save virtual router settings failed: %v", err)
-	}
+	enableProbeVirtualRouterLocalSettingsForTest(true, true)
 
 	oldEnsure := probeVirtualRouterEnsureDirectBypass
 	var targets []string

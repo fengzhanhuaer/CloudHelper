@@ -264,9 +264,7 @@ func TestProbeLocalVirtualRouterStatusHandlerReturnsRuntimeDebugState(t *testing
 	probeVirtualRouterState.nodeToIP = map[string]string{"16": "198.18.0.16", "19": "198.18.0.19"}
 	probeVirtualRouterState.ipToNode = map[string]string{"198.18.0.16": "16", "198.18.0.19": "19"}
 	probeVirtualRouterState.mu.Unlock()
-	if _, err := saveProbeVirtualRouterLocalSettings(probeVirtualRouterLocalSettings{VirtualRouterEnabled: true, VirtualDNSEnabled: true}); err != nil {
-		t.Fatalf("save virtual router settings failed: %v", err)
-	}
+	enableProbeVirtualRouterLocalSettingsForTest(true, true)
 	probeVirtualRouterRuntimeStatsState.mu.Lock()
 	oldStats := probeVirtualRouterRuntimeStatsState.items
 	probeVirtualRouterRuntimeStatsState.items = make(map[string]*probeVirtualRouterRuntimeStats)

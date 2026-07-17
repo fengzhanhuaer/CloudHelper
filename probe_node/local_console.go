@@ -379,6 +379,27 @@ func markProbeLocalTUNInterfaceReady() {
 	}
 }
 
+func markProbeLocalTUNDataPlaneStopped() {
+	if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	probeLocalControl.mu.Lock()
+	installed := probeLocalControl.tun.Installed
+	changed := probeLocalControl.tun.Enabled || probeLocalControl.tun.DataPlane
+	probeLocalControl.tun.Enabled = false
+	probeLocalControl.tun.DataPlane = false
+	probeLocalControl.tun.DataPlaneRX = 0
+	probeLocalControl.tun.DataPlaneBytes = 0
+	probeLocalControl.tun.DataPlaneTX = 0
+	probeLocalControl.tun.DataPlaneTXBytes = 0
+	probeLocalControl.tun.UpdatedAt = now
+	probeLocalControl.mu.Unlock()
+	if changed {
+		persistProbeLocalTUNStateBestEffort(installed, false)
+	}
+}
+
 func persistProbeLocalTUNStateBestEffort(installed, enabled bool) {
 	if err := persistProbeLocalTUNPersistentState(installed, enabled); err != nil {
 		logProbeWarnf("probe local tun persist state failed: installed=%v enabled=%v err=%v", installed, enabled, err)
@@ -760,13 +781,16 @@ func (m *probeLocalControlManager) resetTUNLocked(uninstall bool) (probeLocalTun
 	if settings.VirtualRouterEnabled || settings.VirtualDNSEnabled {
 		settings.VirtualRouterEnabled = false
 		settings.VirtualDNSEnabled = false
-		if _, err := saveProbeVirtualRouterLocalSettingsWithoutProxyReconcile(settings); err != nil {
+		if _, err := saveProbeVirtualRouterLocalSettingsForTUNReset(settings); err != nil {
 			allErr = errors.Join(allErr, fmt.Errorf("disable virtual router settings: %w", err))
 		}
 	}
 	stopProbeVirtualRouterDNSService()
 	if err := probeVirtualRouterRestoreSystemDNS(); err != nil {
 		allErr = errors.Join(allErr, fmt.Errorf("restore system dns: %w", err))
+	}
+	if err := cleanupProbeVirtualRouterPlatformRoutes(); err != nil {
+		allErr = errors.Join(allErr, fmt.Errorf("cleanup virtual router platform routes: %w", err))
 	}
 	if err := stopProbeVirtualRouterTUNDataPlane(); err != nil {
 		allErr = errors.Join(allErr, err)

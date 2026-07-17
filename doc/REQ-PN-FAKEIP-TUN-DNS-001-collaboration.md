@@ -27,6 +27,7 @@
 - REQ-PN-FAKEIP-TUN-DNS-001-R7: TUN 安装/检查成功时，将主出口网卡 DNS 备份到本地文件后改为本地代理 DNS；TUN 重置/卸载时恢复主出口网卡原 DNS。
 - REQ-PN-FAKEIP-TUN-DNS-001-R8: Windows probe node 重启恢复时，TUN installed 状态必须以当前可用性检测为准，不得因历史持久化 installed=true 而显示已安装。
 - REQ-PN-FAKEIP-TUN-DNS-001-R9: 代理组规则支持 `cidr:91.108.4.0/22` 格式；当该组运行态为 tunnel 时，Windows 启用代理需将该 CIDR 路由至 TUN，TUN 数据面收到真实目标 IP 后按该代理组走代理链。
+- REQ-PN-FAKEIP-TUN-DNS-001-R10: 关闭虚拟路由正常成功路径的高频诊断打印；真实 guardian、socket tuning 与路由错误必须保留。
 
 #### 1.1.2 需求范围
 - 修改 Windows 本地代理接管逻辑。
@@ -37,6 +38,7 @@
 - 更新系统设置页与本地 API，支持 TUN 卸载、TUN 重置。
 - 增加 Windows 主出口网卡 DNS 文件备份、应用与恢复流程。
 - 增加代理组 `cidr:` 规则解析、Windows CIDR 路由下发与 TUN 真实 IP CIDR 决策。
+- 减少 guardian、活跃 carrier、socket tuning 与直连 host route 的正常成功日志。
 
 #### 1.1.3 非范围
 - 不新增旧模式与新模式的 UI 切换。
@@ -58,6 +60,7 @@
 - AC10: TUN 重置/卸载会先关闭代理接管与数据面，再恢复已备份主出口网卡 DNS，清理持久 TUN enabled 状态。
 - AC11: 重启恢复时如果当前 TUN 检测为不存在或不可用，界面显示未安装，并写回持久状态 `installed=false, enabled=false`。
 - AC12: 代理组配置 `cidr:91.108.4.0/22` 且该组运行态为 tunnel 时，Windows takeover 创建该 CIDR 到 TUN 的路由；TUN 收到该 CIDR 内真实 IP 目标时按该组 tunnel 链路出站。
+- AC13: 不再打印 guardian completed、活跃 carrier ping delayed、socket buffer tuned hint=ok 与 direct host route created；真实 guardian failed、socket tuning 异常与路由错误继续打印。
 
 #### 1.1.5 风险
 - Windows 系统 DNS 原始配置读取不完整时，local dns 可能无法追加；应降级为仅使用已配置 DNS。
@@ -92,6 +95,7 @@
 | M4 | TUN netstack outbound | 执行 TUN 出站连接，不再维护 direct /32 bypass | route decision | direct/tunnel outbound |
 | M5 | TUN lifecycle control | 提供安装、重置、卸载生命周期控制 | 系统设置 API、Windows 网卡状态 | TUN 状态、DNS 恢复结果 |
 | M6 | CIDR route policy | 解析代理组 `cidr:` 规则，并将 tunnel 组 CIDR 同步到 Windows TUN 路由与数据面决策 | proxy_group、proxy_state、TUN 目标 IP | CIDR route defs、route decision |
+| M7 | Runtime log policy | 静默正常成功路径并保留真实故障日志 | guardian、carrier、socket tuning、route result | 精简运行日志 |
 
 #### 1.2.4 关键接口
 | 接口编号 | 接口名称 | 调用方 | 提供方 | 说明 |
@@ -131,6 +135,7 @@
 | U7 | TUN lifecycle API | M5 | 系统设置页调用重置/卸载 | HTTP request | TUN 状态 JSON |
 | U8 | primary NIC DNS takeover | M5 | 安装/检查成功后设置主出口 DNS | TUN ifIndex、本地 DNS host、原 DNS | DNS backup file、主出口 DNS 修改 |
 | U9 | CIDR tunnel rules | M6 | 支持 `cidr:` 代理组规则；Windows 下发 CIDR 到 TUN 路由，TUN 数据面按真实 IP 命中 CIDR 后走对应代理组 | proxy_group、proxy_state、目标 IP | Windows route defs、route decision |
+| U10 | Runtime diagnostic logging | M7 | 正常成功结果不打印，异常结果保留 | guardian/carrier/tuning/route 状态 | 日志决策 |
 
 #### 1.3.2 单元设计
 ##### U1
@@ -215,7 +220,7 @@
 - 状态: 已完成
 
 #### 1.4.1 执行边界
-- 允许修改: `probe_node/local_proxy_takeover_windows.go`; `probe_node/local_proxy_takeover_windows_test.go`; `probe_node/local_windows_netapi.go`; `probe_node/local_windows_netapi_test.go`; `probe_node/local_dns_service.go`; `probe_node/local_route_decision.go`; `probe_node/local_route_decision_test.go`; `probe_node/local_tun_route.go`; `probe_node/local_tun_route_test.go`; `probe_node/local_tun_stack_windows.go`; `probe_node/local_tun_stack_windows_test.go`; `probe_node/local_console.go`; `probe_node/local_console_test.go`; `probe_node/local_console_methods_test.go`; `probe_node/local_proxy_takeover.go`; `probe_node/local_proxy_takeover_linux.go`; `probe_node/local_tun_install_windows.go`; `probe_node/local_tun_install_windows_test.go`; `probe_node/probe_route_platform_windows_test.go`; `probe_node/probe_virtual_router_dns_service.go`; `probe_node/probe_virtual_router_dns_system_windows.go`; `probe_node/probe_virtual_router_dns_system_windows_test.go`; `probe_node/probe_virtual_router_settings.go`; `probe_node/local_pages/system.html`; `doc/REQ-PN-FAKEIP-TUN-DNS-001-collaboration.md`
+- 允许修改: `probe_node/local_proxy_takeover_windows.go`; `probe_node/local_proxy_takeover_windows_test.go`; `probe_node/local_windows_netapi.go`; `probe_node/local_windows_netapi_test.go`; `probe_node/local_dns_service.go`; `probe_node/local_route_decision.go`; `probe_node/local_route_decision_test.go`; `probe_node/local_tun_route.go`; `probe_node/local_tun_route_test.go`; `probe_node/local_tun_stack_windows.go`; `probe_node/local_tun_stack_windows_test.go`; `probe_node/local_console.go`; `probe_node/local_console_test.go`; `probe_node/local_console_methods_test.go`; `probe_node/local_proxy_takeover.go`; `probe_node/local_proxy_takeover_linux.go`; `probe_node/local_tun_install_windows.go`; `probe_node/local_tun_install_windows_test.go`; `probe_node/probe_route_platform_windows.go`; `probe_node/probe_route_platform_windows_test.go`; `probe_node/probe_virtual_router.go`; `probe_node/probe_virtual_router_test.go`; `probe_node/probe_virtual_router_dns_service.go`; `probe_node/probe_virtual_router_dns_system_windows.go`; `probe_node/probe_virtual_router_dns_system_windows_test.go`; `probe_node/probe_virtual_router_settings.go`; `probe_node/probe_virtual_router_settings_test.go`; `probe_node/probe_virtual_router_transport_shared.go`; `probe_node/probe_virtual_router_transport_shared_test.go`; `probe_node/local_pages/system.html`; `doc/REQ-PN-FAKEIP-TUN-DNS-001-collaboration.md`
 - 禁止修改: 链路协议文件、控制器接口、Linux takeover 行为、C/C++ 文件、第三方依赖文件。
 
 #### 1.4.2 任务清单
@@ -235,7 +240,8 @@
 | T12 | REQ-PN-FAKEIP-TUN-DNS-001-R6,R7 | U7,U8 | `probe_node` 测试 | 修改 | 新增/更新单元测试并保证 `go test ./...` 通过 |
 | T13 | REQ-PN-FAKEIP-TUN-DNS-001-R8 | U7 | `probe_node/local_console.go`; `probe_node/local_console_test.go`; `doc/REQ-PN-FAKEIP-TUN-DNS-001-collaboration.md` | 修改 | 启动恢复不再信任历史 installed=true；当前检测不可用时状态与持久化均变为未安装 |
 | T14 | REQ-PN-FAKEIP-TUN-DNS-001-R9 | U9 | `probe_node/local_proxy_takeover_windows.go`; `probe_node/local_proxy_takeover_windows_test.go`; `probe_node/local_route_decision.go`; `probe_node/local_route_decision_test.go`; `probe_node/local_tun_route.go`; `probe_node/local_tun_route_test.go`; `doc/REQ-PN-FAKEIP-TUN-DNS-001-collaboration.md` | 修改 | 支持 `cidr:` 规则；tunnel 组 CIDR 下发 Windows TUN 路由；真实 IP 命中 CIDR 时走对应 tunnel 链路；单元测试覆盖 route defs 与 route decision |
-| T15 | REQ-PN-FAKEIP-TUN-DNS-001-R6,R7 | U7,U8 | `probe_node/local_windows_netapi.go`; `probe_node/local_windows_netapi_test.go`; `probe_node/local_console.go`; `probe_node/local_console_test.go`; `probe_node/probe_route_platform_windows_test.go`; `probe_node/probe_virtual_router_dns_service.go`; `probe_node/probe_virtual_router_dns_system_windows.go`; `probe_node/probe_virtual_router_dns_system_windows_test.go`; `probe_node/probe_virtual_router_settings.go`; 本文档 | 修改、新增 | 保存 DNS 自动/静态模式；备份缺失且当前仍为本地 DNS 时从网卡持久配置恢复；旧备份缺少模式字段时迁移自动/静态模式；DHCP DNS 恢复使用清除覆盖而非写死服务器；本地 DNS listener 启动失败时不得接管系统 DNS；TUN reset/uninstall 必须停止本地 DNS、恢复网卡 DNS，并持久关闭虚拟路由和虚拟 DNS且不改变并列代理开关；定向、全量和 race 测试通过 |
+| T15 | REQ-PN-FAKEIP-TUN-DNS-001-R5,R6,R7 | U2,U7,U8 | `probe_node/local_windows_netapi.go`; `probe_node/local_windows_netapi_test.go`; `probe_node/local_console.go`; `probe_node/local_console_test.go`; `probe_node/probe_route_platform_windows_test.go`; `probe_node/probe_virtual_router.go`; `probe_node/probe_virtual_router_test.go`; `probe_node/probe_virtual_router_dns_service.go`; `probe_node/probe_virtual_router_dns_system_windows.go`; `probe_node/probe_virtual_router_dns_system_windows_test.go`; `probe_node/probe_virtual_router_settings.go`; `probe_node/probe_virtual_router_settings_test.go`; 本文档 | 修改、新增 | 保存 DNS 自动/静态模式；备份缺失且当前仍为本地 DNS 时从网卡持久配置恢复；旧备份缺少模式字段时迁移自动/静态模式；DHCP DNS 恢复使用清除覆盖而非写死服务器；本地 DNS listener 启动失败时不得接管系统 DNS；关闭虚拟路由开关或执行 TUN reset/uninstall 时必须停止本地 DNS、恢复网卡 DNS、清理路由并停止 TUN，且不改变并列代理开关；关闭后控制台运行态和持久 TUN enabled 必须为 false；异步 interface ensure/retry 或进程启动恢复不得重启 TUN；设置类测试不得操作宿主机 TUN/DNS；定向、全量和 race 测试通过 |
+| T16 | REQ-PN-FAKEIP-TUN-DNS-001-R10 | U10 | `probe_node/probe_virtual_router.go`; `probe_node/probe_virtual_router_test.go`; `probe_node/probe_virtual_router_transport_shared.go`; `probe_node/probe_virtual_router_transport_shared_test.go`; `probe_node/probe_route_platform_windows.go`; 本文档 | 修改、新增 | 静默 guardian completed、活跃 carrier ping delayed、socket tuning hint=ok 与 direct host route created；保留 guardian failed、socket tuning 异常与路由错误；定向、全量和 race 测试通过 |
 
 #### 1.4.3 源码修改规则
 - 必须使用 encoding_tools/README.md 描述的接口。
@@ -269,10 +275,11 @@
 | REQ-PN-FAKEIP-TUN-DNS-001-R2 | 避免动态 /32 bypass 路由 | 1.2 | U6 | T4,T5,T6,T7 | 进行中 | direct 出站直接走系统网络 |
 | REQ-PN-FAKEIP-TUN-DNS-001-R3 | 追加系统原默认 DNS | 1.2 | U3,U4 | T2,T6,T7 | 进行中 | 优先级在已配置 DNS 后 |
 | REQ-PN-FAKEIP-TUN-DNS-001-R4 | 仅代理域名经 fake IP 入 TUN | 1.2 | U5 | T3,T6,T7 | 进行中 | direct 返回真实解析 |
-| REQ-PN-FAKEIP-TUN-DNS-001-R5 | 代理启停不修改网卡属性 | 1.2 | U2 | T9 | 进行中 | 网卡属性移入 TUN 生命周期 |
+| REQ-PN-FAKEIP-TUN-DNS-001-R5 | 代理启停不修改网卡属性 | 1.2 | U2 | T9,T15 | 已完成 | 代理保持独立；虚拟路由关闭时清理路由并停止 TUN |
 | REQ-PN-FAKEIP-TUN-DNS-001-R6 | 系统设置页新增 TUN 卸载/重置 | 1.2 | U7 | T10,T12,T15 | 已完成 | API 与 UI 同步；reset/uninstall 完整关闭虚拟路由与虚拟 DNS并恢复系统 DNS |
 | REQ-PN-FAKEIP-TUN-DNS-001-R7 | TUN 启用时设置主网卡 DNS 与代理 DNS | 1.2 | U8 | T11,T12,T15 | 已完成 | DNS 自动/静态模式、迁移备份重建和 listener 失败保护已覆盖 |
 | REQ-PN-FAKEIP-TUN-DNS-001-R9 | 代理组 CIDR 规则导入 TUN 并走代理 | 1.2 | U9 | T14 | 进行中 | 支持 `cidr:91.108.4.0/22` |
+| REQ-PN-FAKEIP-TUN-DNS-001-R10 | 正常运行诊断日志降噪 | 1.2 | U10 | T16 | 已完成 | 正常成功结果静默，真实故障保留 |
 
 ### 1.6 Architect关键接口跟踪矩阵
 - 状态: 已完成
@@ -312,9 +319,9 @@
 | Code任务反馈已处理 | 通过 | FB-001 | 已处理完成 |
 | 验收标准可测试 | 通过 | AC1-AC10 | 可测试 |
 | 需求任务覆盖完整 | 通过 | T1-T15 | 已覆盖 |
-| 任务自测覆盖完整 | 通过 | TC1-TC16 | 定向、全量与race通过 |
+| 任务自测覆盖完整 | 通过 | TC1-TC18 | 定向、全量与race通过 |
 | 修改文件在允许范围内 | 通过 | 影响文件均位于 1.4.1 允许列表 | 已核对 |
-| 测试失败已记录缺陷 | 通过 | DEF-001 至 DEF-007 | 已记录并关闭 |
+| 测试失败已记录缺陷 | 通过 | DEF-001 至 DEF-008 | 已记录并关闭 |
 | 未执行测试原因完整 | 通过 | 第2.5.7 | 无未执行项 |
 | 遗留风险可接受 | 通过 | 第2.5.8 | 与需求边界一致 |
 
@@ -347,10 +354,11 @@
 | REQ-PN-FAKEIP-TUN-DNS-001-R2 | T4,T5 | `probe_node/local_tun_stack_windows.go`; `probe_node/local_console.go`; 对应测试文件 | 已完成 | 已完成 | direct TCP/UDP 与 bootstrap prewarm 不再写动态 bypass route | 工具函数保留但运行路径不再依赖 |
 | REQ-PN-FAKEIP-TUN-DNS-001-R3 | T2 | `probe_node/local_windows_netapi.go`; `probe_node/local_dns_service.go`; `probe_node/local_proxy_takeover*.go` | 已完成 | 已完成 | 追加系统原默认 DNS，非 Windows 空返回 | 去重后尾部追加 |
 | REQ-PN-FAKEIP-TUN-DNS-001-R4 | T3 | `probe_node/local_dns_service.go`; `probe_node/local_tun_route_test.go` | 已完成 | 已完成 | fake IP 仅用于 tunnel 决策 | direct 域名返回真实解析 |
-| REQ-PN-FAKEIP-TUN-DNS-001-R5 | T9 | `probe_node/local_proxy_takeover_windows.go`; `probe_node/local_proxy_takeover_windows_test.go` | 已完成 | 已完成 | 启用/关闭代理仅加删 fake-ip 路由，不改网卡属性 | 网卡属性仅在安装/检查阶段设置 |
+| REQ-PN-FAKEIP-TUN-DNS-001-R5 | T9,T15 | `probe_node/local_proxy_takeover_windows.go`; `probe_node/probe_virtual_router.go`; `probe_node/probe_virtual_router_settings.go`; 对应测试文件 | 已完成 | 已完成 | 代理开关保持独立；关闭虚拟路由会等待 ensure、清理路由并停止 TUN，异步 retry 不会重启 TUN | HTTP/SOCKS5 代理在虚拟路由关闭时继续运行 |
 | REQ-PN-FAKEIP-TUN-DNS-001-R6 | T10,T12,T15 | `probe_node/local_console.go`; `probe_node/local_console_methods_test.go`; `probe_node/local_console_test.go`; `probe_node/local_pages/system.html` | 已完成 | 已完成 | 系统设置页新增 TUN 重置/卸载按钮；API 完整关闭虚拟路由与虚拟 DNS、恢复系统 DNS且保持代理开关独立 | API 方法保护与生命周期测试覆盖 |
 | REQ-PN-FAKEIP-TUN-DNS-001-R7 | T11,T12,T15 | `probe_node/local_windows_netapi.go`; `probe_node/probe_virtual_router_dns_service.go`; `probe_node/probe_virtual_router_dns_system_windows.go`; 对应测试文件 | 已完成 | 已完成 | 启用时备份并接管 DNS；关闭时恢复静态值或 DHCP 自动模式；备份缺失迁移与 listener 失败均有保护 | 代理启停仍不改网卡属性 |
 | REQ-PN-FAKEIP-TUN-DNS-001-R9 | T14 | `probe_node/local_route_decision.go`; `probe_node/local_tun_route.go`; `probe_node/local_proxy_takeover_windows.go`; 对应测试文件 | 已完成 | 已完成 | 支持 `cidr:91.108.4.0/22`；tunnel 组 CIDR 下发 Windows TUN 路由；真实 IP 命中 CIDR 后走对应代理链 | direct 组 CIDR 不下发 TUN 路由 |
+| REQ-PN-FAKEIP-TUN-DNS-001-R10 | T16 | `probe_node/probe_virtual_router.go`; `probe_node/probe_virtual_router_transport_shared.go`; `probe_node/probe_route_platform_windows.go`; 对应测试文件 | 已完成 | 已完成 | guardian completed、活跃 carrier ping delayed、socket tuning hint=ok、direct host route created 静默 | guardian failed、非 ok tuning 与 route failed 保留 |
 
 ### 2.2 Code关键接口跟踪矩阵
 - 状态: 已完成
@@ -386,6 +394,8 @@
 | TC14 | REQ-PN-FAKEIP-TUN-DNS-001-R9 | T14 | Windows takeover 仅为 tunnel 组 CIDR 下发 TUN 路由 | `go test ./...` | 通过 | `TestProbeLocalTunnelCIDRRulesOnlyIncludesTunnelGroups`; `TestProbeLocalWindowsTakeoverRouteDefsIncludeTunnelCIDRRules` | 无 | direct 组 CIDR 不进入 route defs |
 | TC15 | REQ-PN-FAKEIP-TUN-DNS-001-R7 | T15 | DNS 自动/静态恢复、缺失或旧格式备份迁移与 listener 失败保护 | Go 定向、全量、race | 通过 | `TestApplyProbeVirtualRouterSystemDNSRebuildsMissingAutomaticBackup`; `TestApplyProbeVirtualRouterSystemDNSMigratesLegacyAutomaticBackup`; `TestRestoreProbeVirtualRouterSystemDNSWithoutBackupReturnsToAutomaticDNS`; `TestRestoreProbeVirtualRouterSystemDNSMigratesLegacyAutomaticBackup`; `TestReconcileProbeVirtualRouterDNSDoesNotApplySystemDNSWhenListenerFails` | 无 | 现场 DHCP DNS 为 172.20.10.11/172.20.10.14；v0.3.263 备份无 automatic 字段 |
 | TC16 | REQ-PN-FAKEIP-TUN-DNS-001-R6,R7 | T15 | TUN reset/uninstall 完整关闭虚拟路由与虚拟 DNS、恢复系统 DNS且保持代理开关独立 | Go 定向、全量、race | 通过 | `TestProbeLocalTUNResetAndUninstallHandlers` | 无 | reset 后两个虚拟开关为 false、代理开关保持 true；reset 与 uninstall 均执行 DNS 恢复 |
+| TC17 | REQ-PN-FAKEIP-TUN-DNS-001-R5,R6 | T15 | 关闭虚拟路由开关后停止 TUN且异步 ensure/retry/启动恢复不得重启；代理开关保持独立 | Go 定向、全量、race；本机控制台与 HTTP/SOCKS5 探测 | 通过 | `TestSaveProbeVirtualRouterLocalSettingsDisableStopsTUNAndPreservesProxy`; `TestEnsureProbeVirtualRouterLocalInterfaceIPOnceSkipsWhenEntryDisabled`; `TestReconcileProbeVirtualRouterLocalEntryRuntimeCancelsPendingRetry`; HTTP/SOCKS5 均返回 200 | 无 | v0.3.265 现场复现 reset 后 17-31 秒被旧 ensure 重启；新代码取消并等待 retry、双重拦截 ensure，并持久化 TUN enabled=false |
+| TC18 | REQ-PN-FAKEIP-TUN-DNS-001-R10 | T16 | 正常成功日志静默，真实异常日志保留 | Go 定向、源码字符串核对、全量、race | 通过 | `TestProbeRouteTCPConnTuningShouldLog`; 正常日志字符串在 Go 源码中无匹配；guardian failed 与 route failed 仍有匹配 | 无 | socket tuning 仅 hint=ok 且所有错误为空时静默 |
 | TC11 | REQ-PN-FAKEIP-TUN-DNS-001-R1,R2,R3,R4,R5,R6,R7,R9 | T6,T12,T14 | 模块级回归 | `go test ./...` | 通过 | `ok github.com/cloudhelper/probe_node 9.977s` | 无 | 在 `probe_node` 目录执行 |
 
 ### 2.4 Code缺陷跟踪矩阵
@@ -400,6 +410,7 @@
 | DEF-005 | REQ-PN-FAKEIP-TUN-DNS-001-R7 | TC15 | 本地 DNS listener 启动失败后仍继续接管系统 DNS，可能把网卡指向不可用的 `127.0.0.1` | 高 | 已修复 | listener 启动失败立即返回；保护测试及全量/race通过 | 全量测试曾触发真实原生调用，修复后关闭 |
 | DEF-006 | REQ-PN-FAKEIP-TUN-DNS-001-R6,R7 | TC16 | TUN reset/uninstall 仅停止数据面，不关闭虚拟路由/DNS设置，也不恢复系统 DNS；关闭后可能留下 `127.0.0.1` 导致断网 | 高 | 已修复 | reset/uninstall 持久关闭虚拟路由与虚拟 DNS、停止 listener 并恢复系统 DNS；代理开关不变；定向/全量/race通过 | 现场重新开启后恢复联网，是本地 DNS listener 恢复服务的结果 |
 | DEF-007 | REQ-PN-FAKEIP-TUN-DNS-001-R7 | TC15 | v0.3.263 生成的 DNS 备份没有自动/静态模式字段，新版本若直接读取会把 DHCP 地址固化为静态 DNS | 中 | 已修复 | `automatic` 改为可识别缺失字段；apply/restore 首次读取旧备份时从持久网卡配置迁移模式并重写备份；迁移测试及全量/race通过 | 当前现场旧备份会在升级后首次 reconcile 时自动迁移 |
+| DEF-008 | REQ-PN-FAKEIP-TUN-DNS-001-R5,R6 | TC17 | 虚拟路由开关关闭后仍调度 local interface ensure，且持久 TUN enabled 仍为 true；TUN reset 虽能停止数据面，但延迟 ensure/config update 或下次启动恢复会再次启动 TUN | 高 | 已修复 | 关闭设置取消 retry、等待在途 ensure、清路由并停 TUN；ensure/once 在关闭时直接返回；运行态与持久 TUN enabled 同步为 false；reset 使用无等待持久化路径避免控制锁死锁；定向/全量/race通过 | v0.3.265 现场设置 false 但 TUN running=true，reset 后分别在 31 秒和 17 秒重新启动 |
 
 ### 2.5 Code执行证据
 - 状态: 已完成
@@ -427,6 +438,12 @@
 - `restoreProbeVirtualRouterSystemDNS`
 - `readProbeVirtualRouterPersistentDNS`
 - `saveProbeVirtualRouterLocalSettingsWithoutProxyReconcile`
+- `saveProbeVirtualRouterLocalSettingsForTUNReset`
+- `reconcileProbeVirtualRouterLocalEntryRuntime`
+- `ensureProbeVirtualRouterLocalInterfaceIPOnce`
+- `cancelAndWaitProbeVirtualRouterLocalInterfaceIPRetry`
+- `markProbeLocalTUNDataPlaneStopped`
+- `probeRouteTCPConnTuningShouldLog`
 
 #### 2.5.2 配置文件
 - 新增运行时备份文件 `tun_primary_dns_backup.json`，位于 `PROBE_NODE_DATA_DIR`，用于保存主出口网卡原 DNS。
@@ -448,6 +465,9 @@
 - T15 在发现网卡已是 `127.0.0.1` 但备份缺失时，从接口持久配置的 `NameServer`/`DhcpNameServer` 重建备份；v0.3.263 等旧备份缺少模式字段时也会迁移并重写；关闭时自动模式调用 `SetInterfaceDnsSettings` 清空覆盖，静态模式恢复原服务器列表。
 - 本地 DNS UDP/TCP listener 启动失败时不再继续接管系统 DNS。
 - TUN reset/uninstall 现在持久关闭虚拟路由与虚拟 DNS、停止本地 DNS listener，并在停止数据面或卸载驱动前恢复系统 DNS；并列 HTTP/SOCKS5 代理开关及配置保持不变，也不会因该操作触发代理运行态重配。
+- 关闭虚拟路由开关现在先取消并等待 retry、等待在途 interface ensure 完成，再清理平台路由并停止 TUN；ensure 与 retry 在开关关闭时直接退出，避免旧任务重新启动 TUN。控制台运行态与 `probe_local_tun_state.json` 同步为 enabled=false，阻止下次启动恢复 TUN；reset 使用专用持久化路径，避免持有 TUN 控制锁时等待 ensure 造成死锁。
+- 两处仅验证状态/路由决策的测试改为纯内存设置，不再通过真实 settings save 启动宿主机 DNS/TUN运行态。
+- T16 关闭 guardian completed、活跃 carrier ping delayed、socket tuning hint=ok 与 direct host route created 的成功打印；guardian failed、socket tuning 异常和 route failed 保持原告警语义。
 
 #### 2.5.4 影响文件
 - `probe_node/local_console.go`
@@ -468,27 +488,34 @@
 - `probe_node/local_windows_netapi.go`
 - `probe_node/local_windows_netapi_test.go`
 - `probe_node/probe_route_platform_windows_test.go`
+- `probe_node/probe_route_platform_windows.go`
 - `probe_node/probe_virtual_router_dns_service.go`
 - `probe_node/probe_virtual_router_dns_system_windows.go`
 - `probe_node/probe_virtual_router_dns_system_windows_test.go`
+- `probe_node/probe_virtual_router.go`
+- `probe_node/probe_virtual_router_test.go`
 - `probe_node/probe_virtual_router_settings.go`
+- `probe_node/probe_virtual_router_settings_test.go`
+- `probe_node/probe_virtual_router_transport_shared.go`
+- `probe_node/probe_virtual_router_transport_shared_test.go`
 - `probe_node/local_pages/system.html`
 - `doc/REQ-PN-FAKEIP-TUN-DNS-001-collaboration.md`
 
 #### 2.5.5 测试命令
 - `go test ./...`
-- `go test -count=1 -run "TestProbeLocalTUNResetAndUninstallHandlers|Test(Set|Reset)ProbeLocalWindowsInterfaceDNS|TestApplyProbeVirtualRouterSystemDNS|TestRestoreProbeVirtualRouterSystemDNS|TestReconcileProbeVirtualRouterDNS|TestCurrentProbeLocalSystemDNSServers" .`
+- `go test -count=1 -run "TestSaveProbeVirtualRouterLocalSettingsDisableStopsTUNAndPreservesProxy|TestEnsureProbeVirtualRouterLocalInterfaceIPOnceSkipsWhenEntryDisabled|TestReconcileProbeVirtualRouterLocalEntryRuntimeCancelsPendingRetry|TestProbeLocalTUNResetAndUninstallHandlers|Test(Set|Reset)ProbeLocalWindowsInterfaceDNS|TestApplyProbeVirtualRouterSystemDNS|TestRestoreProbeVirtualRouterSystemDNS|TestReconcileProbeVirtualRouterDNS|TestCurrentProbeLocalSystemDNSServers" .`
+- `go test -count=1 -run "TestProbeRouteTCPConnTuningShouldLog|TestSaveProbeVirtualRouterLocalSettingsDisableStopsTUNAndPreservesProxy|TestReconcileProbeVirtualRouterLocalEntryRuntimeCancelsPendingRetry|TestProbeVirtualRouterGuardNonDirectPaths" .`
 - `go test -count=1 ./...`
 - 临时设置 `CGO_ENABLED=1` 与进程 PATH 后执行 `go test -race -count=1 ./...`；GCC 为 `C:\msys64\ucrt64\bin\gcc.exe`。
 - `go vet ./...`（附加静态检查）。
 
 #### 2.5.6 自测结果
 - `go test ./...` 通过，结果: `ok github.com/cloudhelper/probe_node 9.977s`
-- T15 定向测试通过；最终全量普通测试通过（主包14.456s、mobilecore 0.913s）；最终全量race通过（主包17.486s、mobilecore 2.126s）。
+- T15/T16 定向测试通过；最终全量普通测试通过（主包16.306s、mobilecore 0.922s）；最终全量race通过（主包17.616s、mobilecore 2.312s）。
 - 附加 `go vet ./...` 未通过：既有 `mobilecore` 测试复制含 `sync.Mutex` 的状态结构，以及 Windows 原生调用中的既有 `unsafe.Pointer` 告警；本次新增代码未产生新的 vet 告警。
 
 #### 2.5.7 未执行测试原因
-- 按用户要求未替换或重启 `C:\Tools\probe_node`，未对运行中的 `v0.3.263` 实际切换开关；现场状态仅作只读核对。
+- 按用户要求未替换或重启 `C:\Tools\probe_node`。运行中的 `v0.3.265` 已通过 API 验证：虚拟路由/DNS=false、代理=true、HTTP/SOCKS5 均返回 200；旧版本 reset 后 TUN 会被异步 ensure 重启，需用户升级后才能稳定关闭。
 
 #### 2.5.8 遗留风险
 - fake-ip 最终模式默认无法捕获直接访问 IP 的应用流量；已配置 `cidr:` 且下发到 TUN 的目标网段除外。
@@ -496,13 +523,14 @@
 - 若安装阶段 `post_install_route_target_check` 仍报网卡 IP 不可绑定，问题仍属于安装/网卡状态层，不属于启用代理路径。
 - Windows 真卸载依赖系统 PnP 状态与权限；失败时 API 会保留错误并不错误地清除 installed。
 - 仓库既有 `go vet` 告警仍待独立任务处理，不影响本次 Go 单元测试与 race 通过结论。
+- 当前远端路径 `9>19>15`、`9>19>16` 连续控制超时，而本机 7 条 carrier 在线且队列/近期丢包为 0；该问题位于节点 19 之后，需要远端节点或拓扑单独排查，不属于本机 TUN 关闭修复。
 
 #### 2.5.9 回滚方案
 - 回滚本次修改文件到旧版本即可恢复全局 split default route 模型。
 - 若需要运行时恢复系统网络，可执行 TUN 重置；新路径会关闭虚拟路由/DNS并调用 `restoreProbeVirtualRouterSystemDNS` 恢复主出口 DNS，代理开关保持独立。
 
 #### 2.5.10 结论
-- Code 已按任务包完成实现与测试，满足 AC1-AC12。
+- Code 已按任务包完成实现与测试，满足 AC1-AC13。
 
 ### 2.6 Code任务反馈
 - 状态: 已完成

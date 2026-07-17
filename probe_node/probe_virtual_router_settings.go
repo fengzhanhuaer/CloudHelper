@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +29,9 @@ var probeVirtualRouterLocalSettingsState = struct {
 	loaded   bool
 	settings probeVirtualRouterLocalSettings
 }{}
+
+var probeVirtualRouterCleanupPlatformRoutesForSettings = cleanupProbeVirtualRouterPlatformRoutes
+var probeVirtualRouterStopTUNDataPlaneForSettings = stopProbeVirtualRouterTUNDataPlane
 
 func defaultProbeVirtualRouterLocalSettings() probeVirtualRouterLocalSettings {
 	return probeVirtualRouterLocalSettings{
@@ -103,14 +108,18 @@ func loadProbeVirtualRouterLocalSettings() probeVirtualRouterLocalSettings {
 }
 
 func saveProbeVirtualRouterLocalSettings(settings probeVirtualRouterLocalSettings) (probeVirtualRouterLocalSettings, error) {
-	return saveProbeVirtualRouterLocalSettingsWithProxyReconcile(settings, true)
+	return saveProbeVirtualRouterLocalSettingsWithRuntimeReconcile(settings, true, true)
 }
 
 func saveProbeVirtualRouterLocalSettingsWithoutProxyReconcile(settings probeVirtualRouterLocalSettings) (probeVirtualRouterLocalSettings, error) {
-	return saveProbeVirtualRouterLocalSettingsWithProxyReconcile(settings, false)
+	return saveProbeVirtualRouterLocalSettingsWithRuntimeReconcile(settings, false, true)
 }
 
-func saveProbeVirtualRouterLocalSettingsWithProxyReconcile(settings probeVirtualRouterLocalSettings, reconcileProxy bool) (probeVirtualRouterLocalSettings, error) {
+func saveProbeVirtualRouterLocalSettingsForTUNReset(settings probeVirtualRouterLocalSettings) (probeVirtualRouterLocalSettings, error) {
+	return saveProbeVirtualRouterLocalSettingsWithRuntimeReconcile(settings, false, false)
+}
+
+func saveProbeVirtualRouterLocalSettingsWithRuntimeReconcile(settings probeVirtualRouterLocalSettings, reconcileProxy, reconcileLocalEntry bool) (probeVirtualRouterLocalSettings, error) {
 	previous := loadProbeVirtualRouterLocalSettings()
 	var err error
 	settings, err = sanitizeProbeVRouteProxySettings(settings)
@@ -147,14 +156,32 @@ func saveProbeVirtualRouterLocalSettingsWithProxyReconcile(settings probeVirtual
 	probeVirtualRouterLocalSettingsState.loaded = true
 	probeVirtualRouterLocalSettingsState.mu.Unlock()
 	reconcileProbeVirtualRouterDNSRuntime()
-	if settings.VirtualRouterEnabled {
-		scheduleProbeVirtualRouterLocalInterfaceIPEnsure("local_settings_updated")
-	} else if localIP := currentProbeVirtualRouterLocalIP(); strings.TrimSpace(localIP) != "" {
-		scheduleProbeVirtualRouterLocalInterfaceIPEnsure("local_settings_updated")
-	} else if err := cleanupProbeVirtualRouterPlatformRoutes(); err != nil {
-		logProbeWarnf("cleanup virtual router platform routes after settings update failed: %v", err)
+	if reconcileLocalEntry {
+		if err := reconcileProbeVirtualRouterLocalEntryRuntime(settings); err != nil {
+			return settings, err
+		}
 	}
 	return settings, nil
+}
+
+func reconcileProbeVirtualRouterLocalEntryRuntime(settings probeVirtualRouterLocalSettings) error {
+	if settings.VirtualRouterEnabled {
+		scheduleProbeVirtualRouterLocalInterfaceIPEnsure("local_settings_updated")
+		return nil
+	}
+
+	cancelAndWaitProbeVirtualRouterLocalInterfaceIPRetry()
+	waitProbeVirtualRouterLocalInterfaceIPEnsure()
+	var allErr error
+	if err := probeVirtualRouterCleanupPlatformRoutesForSettings(); err != nil {
+		allErr = errors.Join(allErr, fmt.Errorf("cleanup virtual router platform routes: %w", err))
+	}
+	stopErr := probeVirtualRouterStopTUNDataPlaneForSettings()
+	markProbeLocalTUNDataPlaneStopped()
+	if stopErr != nil {
+		allErr = errors.Join(allErr, fmt.Errorf("stop virtual router tun data plane: %w", stopErr))
+	}
+	return allErr
 }
 
 func probeVirtualRouterLocalEntryEnabled() bool {
