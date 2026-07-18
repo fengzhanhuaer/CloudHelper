@@ -12,7 +12,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\push_with_system_p
 param(
   [string]$Remote = "origin",
   [string]$Branch = "",
-  [string]$Proxy = "http://127.0.0.1:7897",
+  [string]$Proxy = "http://127.0.0.1:18080",
   [switch]$SkipTests
 )
 
