@@ -220,7 +220,7 @@ func scheduleProbeVirtualRouterFakeIPVerify(msg probeVirtualRouterFakeIPVerifyPa
 		}
 		logKey := strings.Join([]string{"fake_ip_verify", strings.Join(msg.Path, ">"), strings.TrimSpace(msg.Reason), outcome}, "|")
 		shouldLog, suppressed := takeProbeVirtualRouterLogThrottle(logKey, probeVirtualRouterFakeIPVerifyLogPeriod, time.Now())
-		if shouldLog {
+		if shouldLog && !response.OK {
 			log.Printf("probe virtual router fake ip verify result: ok=%v domain=%s fake_ip=%s port=%d resolved=%s checked=%s latency_ms=%d path=%s reason=%s consecutive_failures=%d suppressed=%d err=%s", response.OK, msg.Domain, strings.TrimSpace(msg.FakeIP), msg.Port, strings.Join(response.ResolvedIPs, ","), strings.TrimSpace(response.CheckedAddress), response.LatencyMS, strings.Join(msg.Path, ">"), strings.TrimSpace(msg.Reason), failureCount, suppressed, strings.TrimSpace(response.Error))
 		}
 		if shouldLog && len(packetCopy) > 0 {

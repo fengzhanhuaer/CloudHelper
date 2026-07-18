@@ -285,6 +285,9 @@ func resetProbeVirtualRouterStateForTest() {
 	probeVirtualRouterLogThrottleState.mu.Lock()
 	probeVirtualRouterLogThrottleState.items = make(map[string]probeVirtualRouterLogThrottleEntry)
 	probeVirtualRouterLogThrottleState.mu.Unlock()
+	probeVirtualRouterNonDirectPathGuardState.mu.Lock()
+	probeVirtualRouterNonDirectPathGuardState.failedPaths = make(map[string]struct{})
+	probeVirtualRouterNonDirectPathGuardState.mu.Unlock()
 	waitProbeVirtualRouterLocalInterfaceIPEnsure()
 	clearProbeVirtualRouterRouteCache("test reset")
 	probeVirtualRouterDisconnectedCarrierState.mu.Lock()
@@ -3321,6 +3324,27 @@ func TestProbeVirtualRouterLogThrottleAggregatesSuppressedEntries(t *testing.T) 
 	}
 	if allowed, suppressed := takeProbeVirtualRouterLogThrottle("verify|9>17", period, startedAt.Add(period)); !allowed || suppressed != 2 {
 		t.Fatalf("aggregated log=(%t,%d), want (true,2)", allowed, suppressed)
+	}
+}
+
+func TestProbeVirtualRouterNonDirectPathGuardianLogsFailureTransitionOnce(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	pathKey := "9>19>15"
+	if !markProbeVirtualRouterNonDirectPathGuardianFailure(pathKey, true) {
+		t.Fatal("first failure should be logged")
+	}
+	if markProbeVirtualRouterNonDirectPathGuardianFailure(pathKey, true) {
+		t.Fatal("continuous failure should not be logged again")
+	}
+	markProbeVirtualRouterNonDirectPathGuardianFailure(pathKey, false)
+	if !markProbeVirtualRouterNonDirectPathGuardianFailure(pathKey, true) {
+		t.Fatal("failure after recovery should be logged")
+	}
+	pruneProbeVirtualRouterNonDirectPathGuardianFailures(map[string]struct{}{})
+	if !markProbeVirtualRouterNonDirectPathGuardianFailure(pathKey, true) {
+		t.Fatal("failure after path removal should be logged")
 	}
 }
 

@@ -145,9 +145,10 @@ var probeVirtualRouterRouteCacheState = struct {
 }{routes: make(map[string][]string)}
 
 var probeVirtualRouterNonDirectPathGuardState = struct {
-	mu     sync.Mutex
-	stopCh chan struct{}
-}{}
+	mu          sync.Mutex
+	stopCh      chan struct{}
+	failedPaths map[string]struct{}
+}{failedPaths: make(map[string]struct{})}
 
 var probeVirtualRouterDisconnectedCarrierState = struct {
 	mu       sync.RWMutex
@@ -3915,6 +3916,7 @@ func setProbeVirtualRouterNonDirectPathGuardEnabled(enabled bool) {
 	if !enabled {
 		stopCh := probeVirtualRouterNonDirectPathGuardState.stopCh
 		probeVirtualRouterNonDirectPathGuardState.stopCh = nil
+		probeVirtualRouterNonDirectPathGuardState.failedPaths = make(map[string]struct{})
 		probeVirtualRouterNonDirectPathGuardState.mu.Unlock()
 		if stopCh != nil {
 			close(stopCh)
@@ -3924,6 +3926,9 @@ func setProbeVirtualRouterNonDirectPathGuardEnabled(enabled bool) {
 	if probeVirtualRouterNonDirectPathGuardState.stopCh != nil {
 		probeVirtualRouterNonDirectPathGuardState.mu.Unlock()
 		return
+	}
+	if probeVirtualRouterNonDirectPathGuardState.failedPaths == nil {
+		probeVirtualRouterNonDirectPathGuardState.failedPaths = make(map[string]struct{})
 	}
 	stopCh := make(chan struct{})
 	probeVirtualRouterNonDirectPathGuardState.stopCh = stopCh
@@ -3978,16 +3983,17 @@ func probeVirtualRouterGuardNonDirectPaths() int {
 	}
 	sort.Strings(pathKeys)
 	guarded := 0
+	activePathKeys := make(map[string]struct{}, len(pathKeys))
 	for _, key := range pathKeys {
 		path := pathsByKey[key]
+		activePathKeys[key] = struct{}{}
 		guarded++
 		if _, err := probeVirtualRouterQueryPathRTT(path); err != nil {
 			if errors.Is(err, errProbeVirtualRouterAdjacentRTTUnavailable) {
 				recordProbeVirtualRouterPathRTTError(path, err)
 			}
-			logKey := "non_direct_guardian|" + strings.Join(path, ">")
-			if shouldLog, suppressed := takeProbeVirtualRouterLogThrottle(logKey, probeVirtualRouterDiagnosticLogPeriod, time.Now()); shouldLog {
-				log.Printf("probe virtual router non-direct path guardian failed: path=%s suppressed=%d err=%v", strings.Join(path, ">"), suppressed, err)
+			if markProbeVirtualRouterNonDirectPathGuardianFailure(key, true) {
+				log.Printf("probe virtual router non-direct path guardian failed: path=%s err=%v", strings.Join(path, ">"), err)
 			}
 			if probeVirtualRouterPathShouldAvoid(path) {
 				clearProbeVirtualRouterRouteCacheForPath(path, "non-direct path first hop is unavailable")
@@ -3995,9 +4001,41 @@ func probeVirtualRouterGuardNonDirectPaths() int {
 					log.Printf("probe virtual router non-direct path guardian reselected path: old=%s new=%s", strings.Join(path, ">"), strings.Join(replacement, ">"))
 				}
 			}
+		} else {
+			markProbeVirtualRouterNonDirectPathGuardianFailure(key, false)
 		}
 	}
+	pruneProbeVirtualRouterNonDirectPathGuardianFailures(activePathKeys)
 	return guarded
+}
+
+func markProbeVirtualRouterNonDirectPathGuardianFailure(pathKey string, failed bool) bool {
+	pathKey = strings.TrimSpace(pathKey)
+	if pathKey == "" {
+		return false
+	}
+	probeVirtualRouterNonDirectPathGuardState.mu.Lock()
+	defer probeVirtualRouterNonDirectPathGuardState.mu.Unlock()
+	if probeVirtualRouterNonDirectPathGuardState.failedPaths == nil {
+		probeVirtualRouterNonDirectPathGuardState.failedPaths = make(map[string]struct{})
+	}
+	_, wasFailed := probeVirtualRouterNonDirectPathGuardState.failedPaths[pathKey]
+	if !failed {
+		delete(probeVirtualRouterNonDirectPathGuardState.failedPaths, pathKey)
+		return false
+	}
+	probeVirtualRouterNonDirectPathGuardState.failedPaths[pathKey] = struct{}{}
+	return !wasFailed
+}
+
+func pruneProbeVirtualRouterNonDirectPathGuardianFailures(activePathKeys map[string]struct{}) {
+	probeVirtualRouterNonDirectPathGuardState.mu.Lock()
+	defer probeVirtualRouterNonDirectPathGuardState.mu.Unlock()
+	for pathKey := range probeVirtualRouterNonDirectPathGuardState.failedPaths {
+		if _, active := activePathKeys[pathKey]; !active {
+			delete(probeVirtualRouterNonDirectPathGuardState.failedPaths, pathKey)
+		}
+	}
 }
 
 func sameProbeVirtualRouterPath(left []string, right []string) bool {
