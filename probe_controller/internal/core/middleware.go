@@ -31,8 +31,9 @@ func enforceProbeScopeMiddleware(next http.Handler) http.Handler {
 func enforceSensitiveTransportMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimSpace(r.URL.Path)
+		probeProxyPath := path == "/api/probe/proxy" || strings.HasPrefix(path, "/api/probe/proxy/")
 		sensitive := path == "/mng" || strings.HasPrefix(path, "/mng/") ||
-			path == "/api/probe" || strings.HasPrefix(path, "/api/probe/") ||
+			((path == "/api/probe" || strings.HasPrefix(path, "/api/probe/")) && !probeProxyPath) ||
 			path == "/api/controller/migration/script"
 		if sensitive && !isHTTPSRequest(r) && !isLoopbackSocketPeer(r) {
 			writeJSON(w, http.StatusUpgradeRequired, map[string]string{"error": "https is required"})
@@ -129,7 +130,7 @@ func isHTTPSRequest(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
 	}
-	if !isTrustedProxyRequest(r) {
+	if strings.TrimSpace(os.Getenv("PROBE_TRUSTED_PROXY_CIDRS")) != "" && !isTrustedProxyRequest(r) {
 		return false
 	}
 

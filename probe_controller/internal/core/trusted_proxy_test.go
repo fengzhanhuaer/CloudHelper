@@ -6,17 +6,27 @@ import (
 	"testing"
 )
 
-func TestForwardedHeadersIgnoredFromUntrustedPeer(t *testing.T) {
+func TestForwardedProtoCompatibilityDoesNotTrustForwardedClientIP(t *testing.T) {
 	t.Setenv("PROBE_TRUSTED_PROXY_CIDRS", "")
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "198.51.100.20:12345"
 	req.Header.Set("X-Forwarded-Proto", "https")
 	req.Header.Set("X-Forwarded-For", "203.0.113.9")
-	if isHTTPSRequest(req) {
-		t.Fatal("untrusted peer must not assert HTTPS")
+	if !isHTTPSRequest(req) {
+		t.Fatal("forwarded HTTPS marker should remain compatible when no trusted proxy list is configured")
 	}
 	if ip, _ := getClientIP(req); ip != "198.51.100.20" {
 		t.Fatalf("client ip=%q, want socket peer", ip)
+	}
+}
+
+func TestForwardedProtoRejectedOutsideConfiguredTrustedProxy(t *testing.T) {
+	t.Setenv("PROBE_TRUSTED_PROXY_CIDRS", "192.0.2.0/24")
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "198.51.100.20:12345"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	if isHTTPSRequest(req) {
+		t.Fatal("forwarded HTTPS marker from outside the configured trusted proxy list must be rejected")
 	}
 }
 

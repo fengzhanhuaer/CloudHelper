@@ -58,16 +58,79 @@ func TestProbeAuthChallengeBindsRequestPath(t *testing.T) {
 	}
 }
 
-func TestProbeQuerySecretAuthenticationDisabledByDefault(t *testing.T) {
+func TestProbeLegacyHeaderAuthenticationIgnoresNodeClockAndRejectsReplay(t *testing.T) {
+	oldStore := ProbeStore
+	ProbeStore = &probeConfigStore{data: probeConfigData{ProbeSecrets: map[string]string{"7": "node-secret"}}}
+	resetProbeLegacyAuthReplayStoreForTest()
+	t.Cleanup(func() {
+		ProbeStore = oldStore
+		resetProbeLegacyAuthReplayStoreForTest()
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/probe", nil)
+	req.Header.Set("X-Probe-Node-Id", "7")
+	req.Header.Set("X-Probe-Timestamp", "1")
+	req.Header.Set("X-Probe-Rand", "old-probe-random-token")
+	req.Header.Set("X-Probe-Signature", testLegacyProbeRequestSignature("node-secret", "7", "1", "old-probe-random-token"))
+	if nodeID, err := authenticateProbeRequest(req); err != nil || nodeID != "7" {
+		t.Fatalf("authenticate legacy node=%q err=%v", nodeID, err)
+	}
+	if _, err := authenticateProbeRequest(req); err == nil {
+		t.Fatal("replayed legacy random token should be rejected")
+	}
+}
+
+func TestOldProbeWebSocketHandshakeReachesUpgraderBehindUnconfiguredProxy(t *testing.T) {
+	t.Setenv("PROBE_TRUSTED_PROXY_CIDRS", "")
+	oldStore := ProbeStore
+	ProbeStore = &probeConfigStore{data: probeConfigData{ProbeSecrets: map[string]string{"7": "node-secret"}}}
+	resetProbeLegacyAuthReplayStoreForTest()
+	t.Cleanup(func() {
+		ProbeStore = oldStore
+		resetProbeLegacyAuthReplayStoreForTest()
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/probe", nil)
+	req.RemoteAddr = "172.18.0.2:12345"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Probe-Node-Id", "7")
+	req.Header.Set("X-Probe-Timestamp", "1")
+	req.Header.Set("X-Probe-Rand", "old-probe-websocket-random")
+	req.Header.Set("X-Probe-Signature", testLegacyProbeRequestSignature("node-secret", "7", "1", "old-probe-websocket-random"))
+	w := httptest.NewRecorder()
+	enforceSensitiveTransportMiddleware(enforceProbeScopeMiddleware(NewMux())).ServeHTTP(w, req)
+	if w.Code == http.StatusUnauthorized || w.Code == http.StatusUpgradeRequired {
+		t.Fatalf("old probe handshake blocked before websocket upgrade: status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestProbeQuerySecretAuthenticationEnabledByDefault(t *testing.T) {
 	t.Setenv("PROBE_ALLOW_LEGACY_QUERY_AUTH", "")
+	oldStore := ProbeStore
+	ProbeStore = &probeConfigStore{data: probeConfigData{ProbeSecrets: map[string]string{"7": "node-secret"}}}
+	t.Cleanup(func() { ProbeStore = oldStore })
+	req := httptest.NewRequest(http.MethodGet, "/api/probe/route/config?node_id=7&secret=node-secret", nil)
+	if nodeID, err := authenticateProbeRequestOrQuerySecret(req); err != nil || nodeID != "7" {
+		t.Fatalf("default query authentication node=%q err=%v", nodeID, err)
+	}
+}
+
+func TestProbeQuerySecretAuthenticationCanBeExplicitlyDisabled(t *testing.T) {
+	t.Setenv("PROBE_ALLOW_LEGACY_QUERY_AUTH", "false")
 	req := httptest.NewRequest(http.MethodGet, "/api/probe/route/config?node_id=7&secret=node-secret", nil)
 	if _, err := authenticateProbeRequestOrQuerySecret(req); err == nil {
-		t.Fatal("query parameter secret should be rejected by default")
+		t.Fatal("query parameter secret should be rejected when explicitly disabled")
 	}
 }
 
 func testProbeRequestSignature(secret, nodeID, challenge, method, requestPath string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(strings.Join([]string{nodeID, challenge, strings.ToUpper(method), requestPath}, "\n")))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func testLegacyProbeRequestSignature(secret, nodeID, timestamp, randomToken string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(strings.Join([]string{nodeID, timestamp, randomToken}, "\n")))
 	return hex.EncodeToString(mac.Sum(nil))
 }

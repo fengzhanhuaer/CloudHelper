@@ -329,6 +329,25 @@ func TestProbeProxyGitHubLatestHandlerAllowsHTTPAfterProbeAuth(t *testing.T) {
 	}
 }
 
+func TestProbeProxyPathsReachAuthenticatedHandlersThroughHTTPMiddleware(t *testing.T) {
+	t.Setenv("PROBE_ALLOW_LEGACY_QUERY_AUTH", "")
+	withProbeStoreSecretForTest(t, "1", "test-secret")
+
+	for _, requestPath := range []string{
+		"/api/probe/proxy/download?node_id=1&secret=test-secret",
+		"/api/probe/proxy/github/latest?node_id=1&secret=test-secret&repo=bad",
+		"/api/probe/proxy/probe-node/install-script?node_id=1&secret=test-secret&target=linux",
+	} {
+		req := httptest.NewRequest(http.MethodGet, requestPath, nil)
+		req.RemoteAddr = "192.0.2.10:12345"
+		w := httptest.NewRecorder()
+		enforceSensitiveTransportMiddleware(NewMux()).ServeHTTP(w, req)
+		if w.Code == http.StatusUpgradeRequired || w.Code == http.StatusUnauthorized {
+			t.Fatalf("proxy path %q blocked before authenticated handler: status=%d body=%s", requestPath, w.Code, w.Body.String())
+		}
+	}
+}
+
 func withProbeStoreSecretForTest(t *testing.T, nodeID string, secret string) {
 	t.Helper()
 	if ProbeStore == nil {
