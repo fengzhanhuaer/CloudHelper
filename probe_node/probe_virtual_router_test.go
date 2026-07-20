@@ -7,13 +7,11 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -976,27 +974,13 @@ func TestProbeVirtualRouterBridgeResolvesOrdinaryDomainToIP(t *testing.T) {
 	}
 }
 
-func TestProbeRouteRelayTLSUsesPinWithoutSNIForOrdinaryNode(t *testing.T) {
-	routeID := "vrouter-pin-test"
-	spki := []byte("controller-signed-node-spki")
-	sum := sha256.Sum256(spki)
-	rememberProbeRouteTLSPin(routeID, hex.EncodeToString(sum[:]))
-	t.Cleanup(func() { rememberProbeRouteTLSPin(routeID, "") })
-
-	config, err := newProbeRouteRelayTLSConfig(routeID, "203.0.113.9", tls.VersionTLS12, nil)
+func TestProbeRouteRelayTLSOmitsSNIAndDoesNotUseNodeCertificatePin(t *testing.T) {
+	config, err := newProbeRouteRelayTLSConfig("vrouter-no-pin-test", "203.0.113.9", tls.VersionTLS12, nil)
 	if err != nil {
 		t.Fatalf("build tls config: %v", err)
 	}
-	if config.ServerName != "" || !config.InsecureSkipVerify || config.VerifyConnection == nil {
-		t.Fatalf("ordinary relay must omit sni and use pin callback: %+v", config)
-	}
-	state := tls.ConnectionState{PeerCertificates: []*x509.Certificate{{RawSubjectPublicKeyInfo: spki}}}
-	if err := config.VerifyConnection(state); err != nil {
-		t.Fatalf("valid pinned certificate rejected: %v", err)
-	}
-	state.PeerCertificates[0].RawSubjectPublicKeyInfo = []byte("different-spki")
-	if err := config.VerifyConnection(state); err == nil {
-		t.Fatal("mismatched relay public key pin should be rejected")
+	if config.ServerName != "" || !config.InsecureSkipVerify || config.VerifyConnection != nil {
+		t.Fatalf("ordinary relay must omit sni and leave peer authentication to route auth: %+v", config)
 	}
 }
 

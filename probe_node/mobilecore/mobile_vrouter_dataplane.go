@@ -1372,39 +1372,15 @@ func normalizeMobileVRouteTLSSPKI(raw string) string {
 	return value
 }
 
-func mobileVRoutePeerTLSSPKI(plan mobileVRouteForwardPlan) string {
-	if normalizeMobileRouteNodeID(plan.NextNode) == normalizeMobileRouteNodeID(plan.Rule.FromNodeID) {
-		return normalizeMobileVRouteTLSSPKI(plan.Rule.FromTLSSPKISHA256)
-	}
-	if normalizeMobileRouteNodeID(plan.NextNode) == normalizeMobileRouteNodeID(plan.Rule.ToNodeID) {
-		return normalizeMobileVRouteTLSSPKI(plan.Rule.ToTLSSPKISHA256)
-	}
-	return ""
-}
-
-func newMobileVRouteRelayTLSConfig(plan mobileVRouteForwardPlan, candidate mobileVRouteRelayDialCandidate, minVersion uint16, nextProtos []string) (*tls.Config, error) {
+func newMobileVRouteRelayTLSConfig(_ mobileVRouteForwardPlan, candidate mobileVRouteRelayDialCandidate, minVersion uint16, nextProtos []string) (*tls.Config, error) {
 	host := strings.TrimSpace(strings.Trim(candidate.URLHost, "[]"))
 	if host != "" && net.ParseIP(host) == nil && mobileVRouteIsCloudflareCopilotDomain(host) {
 		return &tls.Config{MinVersion: minVersion, NextProtos: append([]string(nil), nextProtos...), ServerName: host}, nil
-	}
-	expected, err := hex.DecodeString(mobileVRoutePeerTLSSPKI(plan))
-	if err != nil || len(expected) != sha256.Size {
-		return nil, fmt.Errorf("vroute tls public key pin is not configured for route %s", strings.TrimSpace(plan.RouteID))
 	}
 	return &tls.Config{
 		MinVersion:         minVersion,
 		NextProtos:         append([]string(nil), nextProtos...),
 		InsecureSkipVerify: true,
-		VerifyConnection: func(state tls.ConnectionState) error {
-			if len(state.PeerCertificates) == 0 {
-				return errors.New("vroute tls peer certificate is missing")
-			}
-			actual := sha256.Sum256(state.PeerCertificates[0].RawSubjectPublicKeyInfo)
-			if !hmac.Equal(expected, actual[:]) {
-				return errors.New("vroute tls public key pin mismatch")
-			}
-			return nil
-		},
 	}, nil
 }
 

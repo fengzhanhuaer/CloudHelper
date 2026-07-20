@@ -1212,6 +1212,21 @@ func TestMobileVRouteExplicitHTTP3IsNotSilentlyDowngraded(t *testing.T) {
 	}
 }
 
+func TestMobileVRouteRelayTLSOmitsSNIAndDoesNotUseNodeCertificatePin(t *testing.T) {
+	config, err := newMobileVRouteRelayTLSConfig(
+		mobileVRouteForwardPlan{RouteID: "vrouter-mobile-no-pin"},
+		mobileVRouteRelayDialCandidate{URLHost: "203.0.113.17", DialHost: "203.0.113.17"},
+		tls.VersionTLS12,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("build mobile relay tls config: %v", err)
+	}
+	if config.ServerName != "" || !config.InsecureSkipVerify || config.VerifyConnection != nil {
+		t.Fatalf("ordinary mobile relay must omit sni and leave peer authentication to route auth: %+v", config)
+	}
+}
+
 func TestMobileVRouteForwardPlanBuildsReverseAdjacentCarrier(t *testing.T) {
 	configDir := t.TempDir()
 	if err := persistMobileVRouteConfig(configDir, mobileVRouteConfig{

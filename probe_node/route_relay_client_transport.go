@@ -2,10 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
 	"crypto/tls"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1735,7 +1732,7 @@ func resolveProbeRouteClientTLSServerName(layer string, dialHost string, hostHea
 	return resolveProbeRouteTLSServerName(layer, dialHost, hostHeader)
 }
 
-func newProbeRouteRelayTLSConfig(routeID string, hostHeader string, minVersion uint16, nextProtos []string) (*tls.Config, error) {
+func newProbeRouteRelayTLSConfig(_ string, hostHeader string, minVersion uint16, nextProtos []string) (*tls.Config, error) {
 	cleanHost := strings.TrimSpace(strings.Trim(hostHeader, "[]"))
 	if cleanHost != "" && net.ParseIP(cleanHost) == nil && isProbeVirtualRouterCloudflareCopilotDomain(cleanHost) {
 		return &tls.Config{
@@ -1744,26 +1741,12 @@ func newProbeRouteRelayTLSConfig(routeID string, hostHeader string, minVersion u
 			ServerName: cleanHost,
 		}, nil
 	}
-	expectedHex := lookupProbeRouteTLSPin(routeID)
-	expected, err := hex.DecodeString(expectedHex)
-	if err != nil || len(expected) != sha256.Size {
-		return nil, fmt.Errorf("relay tls public key pin is not configured for route %s", strings.TrimSpace(routeID))
-	}
 	return &tls.Config{
 		MinVersion: minVersion,
 		NextProtos: append([]string(nil), nextProtos...),
-		// Ordinary relay connections intentionally omit SNI and validate the
-		// controller-signed SPKI pin instead of a hostname.
+		// Ordinary relays intentionally omit SNI. Route HMAC and auth tickets
+		// authenticate the peer above TLS because the service certificate is not
+		// the controller-issued node certificate.
 		InsecureSkipVerify: true,
-		VerifyConnection: func(state tls.ConnectionState) error {
-			if len(state.PeerCertificates) == 0 {
-				return errors.New("relay tls peer certificate is missing")
-			}
-			actual := sha256.Sum256(state.PeerCertificates[0].RawSubjectPublicKeyInfo)
-			if !hmac.Equal(expected, actual[:]) {
-				return errors.New("relay tls public key pin mismatch")
-			}
-			return nil
-		},
 	}, nil
 }

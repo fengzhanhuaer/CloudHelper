@@ -248,7 +248,6 @@ func TestProbeVirtualRouterFakeIPLibraryDoesNotBatchRenewOnMaintenance(t *testin
 }
 
 func TestProbeRouteFakeIPResolveHandlerPersistsLibrary(t *testing.T) {
-	t.Setenv("PROBE_ALLOW_LEGACY_QUERY_AUTH", "true")
 	t.Setenv("PROBE_TRUSTED_PROXY_CIDRS", "192.0.2.0/24")
 	oldRouteStore := ProbeRouteConfigStore
 	oldProbeStore := ProbeStore
@@ -279,8 +278,9 @@ func TestProbeRouteFakeIPResolveHandlerPersistsLibrary(t *testing.T) {
 		},
 	}
 	body := bytes.NewBufferString(`{"domain":"api.reddit.com","rule_id":"rr-1","action":"probe_exit","exit_node_id":"9"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/probe/route/fake_ip/resolve?node_id=1&secret=secret-1", body)
+	req := httptest.NewRequest(http.MethodPost, "/api/probe/route/fake_ip/resolve", body)
 	req.Header.Set("X-Forwarded-Proto", "https")
+	applyProbeChallengeAuthForTest(t, req, "1", "secret-1")
 	rr := httptest.NewRecorder()
 
 	ProbeRouteFakeIPResolveHandler(rr, req)
@@ -296,8 +296,9 @@ func TestProbeRouteFakeIPResolveHandlerPersistsLibrary(t *testing.T) {
 	}
 
 	body = bytes.NewBufferString(`{"domain":"api.reddit.com","rule_id":"rr-1","action":"probe_exit","exit_node_id":"9"}`)
-	req = httptest.NewRequest(http.MethodPost, "/api/probe/route/fake_ip/resolve?node_id=1&secret=secret-1", body)
+	req = httptest.NewRequest(http.MethodPost, "/api/probe/route/fake_ip/resolve", body)
 	req.Header.Set("X-Forwarded-Proto", "https")
+	applyProbeChallengeAuthForTest(t, req, "1", "secret-1")
 	rr = httptest.NewRecorder()
 	ProbeRouteFakeIPResolveHandler(rr, req)
 	if rr.Code != http.StatusOK {
@@ -339,7 +340,6 @@ func TestAuthorizedProbeVirtualRouterFakeIPRuleRejectsClientRuleOverride(t *test
 }
 
 func TestProbeRouteFakeIPRenewHandlerRenewsOnlyReportedDomains(t *testing.T) {
-	t.Setenv("PROBE_ALLOW_LEGACY_QUERY_AUTH", "true")
 	t.Setenv("PROBE_TRUSTED_PROXY_CIDRS", "192.0.2.0/24")
 	oldRouteStore := ProbeRouteConfigStore
 	oldProbeStore := ProbeStore
@@ -382,8 +382,9 @@ func TestProbeRouteFakeIPRenewHandlerRenewsOnlyReportedDomains(t *testing.T) {
 	}
 
 	body := bytes.NewBufferString(`{"domains":["api.reddit.com"]}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/probe/route/fake_ip/renew?node_id=1&secret=secret-1", body)
+	req := httptest.NewRequest(http.MethodPost, "/api/probe/route/fake_ip/renew", body)
 	req.Header.Set("X-Forwarded-Proto", "https")
+	applyProbeChallengeAuthForTest(t, req, "1", "secret-1")
 	rr := httptest.NewRecorder()
 	ProbeRouteFakeIPRenewHandler(rr, req)
 	if rr.Code != http.StatusOK {
@@ -410,7 +411,6 @@ func TestProbeRouteFakeIPRenewHandlerRenewsOnlyReportedDomains(t *testing.T) {
 }
 
 func TestProbeRouteFakeIPResolveHandlerRenewsOnFakeIPLookup(t *testing.T) {
-	t.Setenv("PROBE_ALLOW_LEGACY_QUERY_AUTH", "true")
 	t.Setenv("PROBE_TRUSTED_PROXY_CIDRS", "192.0.2.0/24")
 	oldRouteStore := ProbeRouteConfigStore
 	oldProbeStore := ProbeStore
@@ -457,8 +457,9 @@ func TestProbeRouteFakeIPResolveHandlerRenewsOnFakeIPLookup(t *testing.T) {
 	}
 
 	body := bytes.NewBufferString(`{"fake_ip":"198.18.4.1"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/probe/route/fake_ip/resolve?node_id=1&secret=secret-1", body)
+	req := httptest.NewRequest(http.MethodPost, "/api/probe/route/fake_ip/resolve", body)
 	req.Header.Set("X-Forwarded-Proto", "https")
+	applyProbeChallengeAuthForTest(t, req, "1", "secret-1")
 	rr := httptest.NewRecorder()
 	ProbeRouteFakeIPResolveHandler(rr, req)
 	if rr.Code != http.StatusOK {

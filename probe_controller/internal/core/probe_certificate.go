@@ -680,7 +680,7 @@ func ProbeCertificateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nodeID, err := authenticateProbeRequestOrQuerySecret(r)
+	nodeID, err := authenticateProbeRequest(r)
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 		return

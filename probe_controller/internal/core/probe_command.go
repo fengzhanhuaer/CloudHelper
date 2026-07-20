@@ -217,11 +217,6 @@ var probeSessions = struct {
 	data map[string]*probeSession
 }{data: make(map[string]*probeSession)}
 
-var probeLegacyAuthReplayStore = struct {
-	mu   sync.Mutex
-	seen map[string]time.Time
-}{seen: make(map[string]time.Time)}
-
 var probeLogRequestSeq atomic.Uint64
 
 var probeLogWaiters = struct {
@@ -512,7 +507,7 @@ func ProbeProxyGitHubLatestHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if _, err := authenticateProbeRequestOrQuerySecret(r); err != nil {
+	if _, err := authenticateProbeProxyRequest(r); err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 		return
 	}
@@ -550,7 +545,7 @@ func ProbeProxyDownloadHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if _, err := authenticateProbeRequestOrQuerySecret(r); err != nil {
+	if _, err := authenticateProbeProxyRequest(r); err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 		return
 	}
@@ -1232,7 +1227,6 @@ func controllerBaseURLFromRequest(r *http.Request) string {
 
 func authenticateProbeRequest(r *http.Request) (string, error) {
 	nodeID := normalizeProbeNodeID(r.Header.Get("X-Probe-Node-Id"))
-	timestamp := strings.TrimSpace(r.Header.Get("X-Probe-Timestamp"))
 	challenge := strings.TrimSpace(r.Header.Get("X-Probe-Rand"))
 	signature := strings.TrimSpace(r.Header.Get("X-Probe-Signature"))
 
@@ -1242,15 +1236,6 @@ func authenticateProbeRequest(r *http.Request) (string, error) {
 	secret, ok := resolveProbeSecret(nodeID)
 	if !ok {
 		return "", fmt.Errorf("probe secret is not configured for node")
-	}
-	if timestamp != "" {
-		if !verifyLegacyProbeConnectHMAC(secret, nodeID, timestamp, challenge, signature) {
-			return "", fmt.Errorf("invalid probe signature")
-		}
-		if !checkAndRememberLegacyProbeAuthReplay(nodeID, challenge, time.Now()) {
-			return "", fmt.Errorf("probe auth replay detected")
-		}
-		return nodeID, nil
 	}
 	requestTarget := r.URL.EscapedPath()
 	if strings.TrimSpace(r.URL.RawQuery) != "" {
@@ -1265,7 +1250,7 @@ func authenticateProbeRequest(r *http.Request) (string, error) {
 	return nodeID, nil
 }
 
-func authenticateProbeRequestOrQuerySecret(r *http.Request) (string, error) {
+func authenticateProbeProxyRequest(r *http.Request) (string, error) {
 	queryNodeID := normalizeProbeNodeID(r.URL.Query().Get("node_id"))
 	querySecret := strings.TrimSpace(r.URL.Query().Get("secret"))
 	if queryNodeID != "" || querySecret != "" {
@@ -1327,43 +1312,4 @@ func verifyProbeConnectHMAC(secret, nodeID, challenge, method, requestPath, sign
 		return false
 	}
 	return hmac.Equal(expected, provided)
-}
-
-func verifyLegacyProbeConnectHMAC(secret, nodeID, timestamp, randomToken, signatureHex string) bool {
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte(strings.Join([]string{
-		strings.TrimSpace(nodeID),
-		strings.TrimSpace(timestamp),
-		strings.TrimSpace(randomToken),
-	}, "\n")))
-	provided, err := hex.DecodeString(strings.TrimSpace(signatureHex))
-	if err != nil {
-		return false
-	}
-	return hmac.Equal(mac.Sum(nil), provided)
-}
-
-func checkAndRememberLegacyProbeAuthReplay(nodeID, randomToken string, now time.Time) bool {
-	key := normalizeProbeNodeID(nodeID) + "|" + strings.TrimSpace(randomToken)
-	if key == "|" || strings.HasSuffix(key, "|") {
-		return false
-	}
-	probeLegacyAuthReplayStore.mu.Lock()
-	defer probeLegacyAuthReplayStore.mu.Unlock()
-	for existingKey, seenAt := range probeLegacyAuthReplayStore.seen {
-		if now.Sub(seenAt) > 10*time.Minute {
-			delete(probeLegacyAuthReplayStore.seen, existingKey)
-		}
-	}
-	if _, exists := probeLegacyAuthReplayStore.seen[key]; exists {
-		return false
-	}
-	probeLegacyAuthReplayStore.seen[key] = now
-	return true
-}
-
-func resetProbeLegacyAuthReplayStoreForTest() {
-	probeLegacyAuthReplayStore.mu.Lock()
-	probeLegacyAuthReplayStore.seen = make(map[string]time.Time)
-	probeLegacyAuthReplayStore.mu.Unlock()
 }

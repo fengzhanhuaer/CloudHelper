@@ -32,7 +32,7 @@ func ProbeRouteConfigHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nodeID, err := authenticateProbeRequestOrQuerySecret(r)
+	nodeID, err := authenticateProbeRequest(r)
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 		return
@@ -61,7 +61,7 @@ func ProbeRouteFakeIPResolveHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUpgradeRequired, map[string]string{"error": "https is required"})
 		return
 	}
-	nodeID, err := authenticateProbeRequestOrQuerySecret(r)
+	nodeID, err := authenticateProbeRequest(r)
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 		return
@@ -130,7 +130,7 @@ func ProbeRouteFakeIPRenewHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUpgradeRequired, map[string]string{"error": "https is required"})
 		return
 	}
-	nodeID, err := authenticateProbeRequestOrQuerySecret(r)
+	nodeID, err := authenticateProbeRequest(r)
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 		return
