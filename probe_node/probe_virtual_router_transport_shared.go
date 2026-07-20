@@ -62,7 +62,6 @@ type probeRouteAuthEnvelope struct {
 	Type       string                     `json:"type,omitempty"`
 	APIVersion string                     `json:"api_version,omitempty"`
 	RequestID  string                     `json:"request_id,omitempty"`
-	Timestamp  string                     `json:"timestamp,omitempty"`
 	Auth       *probeRouteAuthPayloadBody `json:"auth,omitempty"`
 	Mode       string                     `json:"mode,omitempty"`
 	RouteID    string                     `json:"route_id,omitempty"`
@@ -70,13 +69,16 @@ type probeRouteAuthEnvelope struct {
 	Signature  string                     `json:"signature,omitempty"`
 	MAC        string                     `json:"mac,omitempty"`
 	AuthTicket string                     `json:"auth_ticket,omitempty"`
+	Method     string                     `json:"method,omitempty"`
+	Path       string                     `json:"path,omitempty"`
+	RelayRole  string                     `json:"relay_role,omitempty"`
+	SourceNode string                     `json:"source_node_id,omitempty"`
 }
 
 type probeRouteAuthPayloadBody struct {
 	Mode       string `json:"mode,omitempty"`
 	RouteID    string `json:"route_id,omitempty"`
 	Nonce      string `json:"nonce,omitempty"`
-	Timestamp  string `json:"timestamp,omitempty"`
 	Signature  string `json:"signature,omitempty"`
 	MAC        string `json:"mac,omitempty"`
 	AuthTicket string `json:"auth_ticket,omitempty"`
@@ -131,11 +133,11 @@ const (
 	probeRouteCodexAuthModeHeader   = "X-Codex-Auth-Mode"
 	probeRouteCodexMACHeader        = "X-Codex-Mac"
 	probeRouteCodexAuthTicketHeader = "X-Codex-User-Auth-Ticket"
-	probeRouteCodexAuthTimeHeader   = "X-Codex-Auth-Timestamp"
 	probeRouteCodexVersionHeader    = "X-Codex-Api-Version"
 	probeRouteCodexRelayModeHeader  = "X-Codex-Relay-Mode"
 	probeRouteCodexRelayRoleHeader  = "X-Codex-Relay-Role"
 	probeRouteCodexConnIDHeader     = "X-Codex-Conn-Id"
+	probeRouteCodexSourceNodeHeader = "X-Codex-Source-Node-Id"
 
 	probeRouteRelayModeBridge     = "bridge"
 	probeRouteRelayModeSpeedDebug = "speed_debug"
@@ -171,6 +173,7 @@ const (
 	probeRouteRelayQUICMaxConnectionWindow     = 1024 * 1024 * 1024
 	probeRouteRelayQUICMaxIncomingStreams      = 1024
 	probeRouteRelayQUICDatagramMaxPayloadBytes = 1200
+	probeRouteAuthReplayFileName               = "probe_vroute_auth_replay.json"
 
 	probeRouteAuthPacketType        = "github_copilot_auth_request"
 	probeRouteAuthPacketVersion     = "2025-03-22"
@@ -178,7 +181,6 @@ const (
 	probeRouteAuthBlacklistTTL      = 5 * time.Hour
 	probeRouteAuthFailureMinDelayMs = 200
 	probeRouteAuthFailureMaxDelayMs = 400
-	probeRouteAuthReplayTTL         = 10 * time.Minute
 )
 
 var probeRouteAuthIPStateMap = struct {
@@ -191,12 +193,16 @@ var probeRouteAuthTicketStore = struct {
 	items map[string]string
 }{items: make(map[string]string)}
 
-var probeRouteAuthTicketNow = time.Now
+var probeRouteTLSPinStore = struct {
+	mu    sync.RWMutex
+	items map[string]string
+}{items: make(map[string]string)}
 
 var probeRouteAuthReplayStore = struct {
-	mu    sync.Mutex
-	items map[string]time.Time
-}{items: make(map[string]time.Time)}
+	mu     sync.Mutex
+	items  map[string]struct{}
+	loaded bool
+}{items: make(map[string]struct{})}
 
 func normalizeProbeRouteRouteLayer(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
@@ -288,7 +294,7 @@ func resolveProbeRouteIDFromRequest(r *http.Request) string {
 	return routeID
 }
 
-func readProbeRouteAuthEnvelopeFromHeaders(headers http.Header, routeID string) (probeRouteAuthEnvelope, error) {
+func readProbeRouteAuthEnvelopeFromHeaders(headers http.Header, routeID string, method string, requestPath string) (probeRouteAuthEnvelope, error) {
 	nonce, err := parseProbeRouteBearerToken(headers.Get("Authorization"))
 	if err != nil {
 		return probeRouteAuthEnvelope{}, err
@@ -296,12 +302,15 @@ func readProbeRouteAuthEnvelopeFromHeaders(headers http.Header, routeID string) 
 	env := probeRouteAuthEnvelope{
 		Type:       probeRouteAuthPacketType,
 		APIVersion: strings.TrimSpace(headers.Get(probeRouteCodexVersionHeader)),
-		Timestamp:  strings.TrimSpace(headers.Get(probeRouteCodexAuthTimeHeader)),
 		Mode:       strings.ToLower(strings.TrimSpace(headers.Get(probeRouteCodexAuthModeHeader))),
 		RouteID:    strings.TrimSpace(routeID),
 		Nonce:      nonce,
 		MAC:        strings.TrimSpace(headers.Get(probeRouteCodexMACHeader)),
 		AuthTicket: strings.TrimSpace(headers.Get(probeRouteCodexAuthTicketHeader)),
+		Method:     strings.ToUpper(strings.TrimSpace(method)),
+		Path:       strings.TrimSpace(requestPath),
+		RelayRole:  normalizeProbeRouteBridgeRole(headers.Get(probeRouteCodexRelayRoleHeader)),
+		SourceNode: normalizeProbeRouteNodeID(headers.Get(probeRouteCodexSourceNodeHeader)),
 	}
 	if env.APIVersion == "" {
 		env.APIVersion = probeRouteAuthPacketVersion
@@ -441,26 +450,89 @@ func newProbeRouteQUICConfig(maxIncomingStreams int64) *quic.Config {
 	}
 }
 
-func recordProbeRouteAuthNonce(routeID string, nonce string) error {
+type probeRouteAuthReplayFile struct {
+	Keys []string `json:"keys"`
+}
+
+func recordProbeRouteAuthNonce(routeID string, authTicket string, nonce string) error {
 	cleanRouteID := strings.TrimSpace(routeID)
+	cleanTicket := strings.TrimSpace(authTicket)
 	cleanNonce := strings.TrimSpace(nonce)
-	if cleanRouteID == "" || cleanNonce == "" {
+	if cleanRouteID == "" || cleanTicket == "" || cleanNonce == "" {
 		return errors.New("auth nonce is required")
 	}
-	key := cleanRouteID + "\n" + cleanNonce
-	now := time.Now()
+	ticketHash := sha256.Sum256([]byte(cleanTicket))
+	nonceHash := sha256.Sum256([]byte(cleanNonce))
+	routePrefix := cleanRouteID + "\n"
+	ticketPrefix := routePrefix + hex.EncodeToString(ticketHash[:]) + "\n"
+	key := ticketPrefix + hex.EncodeToString(nonceHash[:])
 	probeRouteAuthReplayStore.mu.Lock()
 	defer probeRouteAuthReplayStore.mu.Unlock()
-	for itemKey, expiresAt := range probeRouteAuthReplayStore.items {
-		if now.After(expiresAt) {
+	if err := loadProbeRouteAuthReplayStoreLocked(); err != nil {
+		return fmt.Errorf("load auth replay store: %w", err)
+	}
+	if _, exists := probeRouteAuthReplayStore.items[key]; exists {
+		return errors.New("auth nonce replay detected")
+	}
+	for itemKey := range probeRouteAuthReplayStore.items {
+		if strings.HasPrefix(itemKey, routePrefix) && !strings.HasPrefix(itemKey, ticketPrefix) {
 			delete(probeRouteAuthReplayStore.items, itemKey)
 		}
 	}
-	if expiresAt, exists := probeRouteAuthReplayStore.items[key]; exists && expiresAt.After(now) {
-		return errors.New("auth nonce replay detected")
+	probeRouteAuthReplayStore.items[key] = struct{}{}
+	if err := persistProbeRouteAuthReplayStoreLocked(); err != nil {
+		return fmt.Errorf("persist auth replay store: %w", err)
 	}
-	probeRouteAuthReplayStore.items[key] = now.Add(probeRouteAuthReplayTTL)
 	return nil
+}
+
+func loadProbeRouteAuthReplayStoreLocked() error {
+	if probeRouteAuthReplayStore.loaded {
+		return nil
+	}
+	dataDir, err := resolveDataDir()
+	if err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(filepath.Join(dataDir, probeRouteAuthReplayFileName))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			probeRouteAuthReplayStore.loaded = true
+			return nil
+		}
+		return err
+	}
+	var payload probeRouteAuthReplayFile
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return err
+	}
+	for _, key := range payload.Keys {
+		if value := strings.TrimSpace(key); value != "" {
+			probeRouteAuthReplayStore.items[value] = struct{}{}
+		}
+	}
+	probeRouteAuthReplayStore.loaded = true
+	return nil
+}
+
+func persistProbeRouteAuthReplayStoreLocked() error {
+	dataDir, err := resolveDataDir()
+	if err != nil {
+		return err
+	}
+	keys := make([]string, 0, len(probeRouteAuthReplayStore.items))
+	for key := range probeRouteAuthReplayStore.items {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return persistProbeLocalJSONFile(filepath.Join(dataDir, probeRouteAuthReplayFileName), probeRouteAuthReplayFile{Keys: keys})
+}
+
+func resetProbeRouteAuthReplayMemoryForTest() {
+	probeRouteAuthReplayStore.mu.Lock()
+	probeRouteAuthReplayStore.items = make(map[string]struct{})
+	probeRouteAuthReplayStore.loaded = false
+	probeRouteAuthReplayStore.mu.Unlock()
 }
 
 func rememberProbeRouteAuthTicket(routeID string, authTicket string) {
@@ -516,47 +588,68 @@ func applyProbeRouteAuthTicketHeader(headers http.Header, routeID string) {
 type probeRouteUserAuthTicketPayload struct {
 	Version       string `json:"version,omitempty"`
 	RouteID       string `json:"route_id,omitempty"`
+	ClientEntryID string `json:"client_entry_id,omitempty"`
+	UserID        string `json:"user_id,omitempty"`
 	UserPublicKey string `json:"user_public_key,omitempty"`
+	FromNodeID    string `json:"from_node_id,omitempty"`
+	ToNodeID      string `json:"to_node_id,omitempty"`
+	FromTLSSPKI   string `json:"from_tls_spki_sha256,omitempty"`
+	ToTLSSPKI     string `json:"to_tls_spki_sha256,omitempty"`
+	TicketID      string `json:"ticket_id,omitempty"`
 	IssuedAt      string `json:"issued_at,omitempty"`
+	ExpiresAt     string `json:"expires_at,omitempty"`
 }
 
-func verifyProbeRouteAuthTicketIssuedAt(raw string, now time.Time) error {
-	text := strings.TrimSpace(raw)
-	if text == "" {
-		return errors.New("auth_ticket issued_at is required")
+func normalizeProbeRouteTLSSPKI(raw string) string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if len(value) != sha256.Size*2 {
+		return ""
 	}
-	issuedAt, err := time.Parse(time.RFC3339, text)
-	if err != nil {
-		return fmt.Errorf("auth_ticket issued_at invalid: %w", err)
+	if _, err := hex.DecodeString(value); err != nil {
+		return ""
 	}
-	if issuedAt.After(now.Add(5 * time.Minute)) {
-		return errors.New("auth_ticket issued_at is in the future")
-	}
-	if now.Sub(issuedAt) > 35*24*time.Hour {
-		return errors.New("auth_ticket expired")
-	}
-	return nil
+	return value
 }
 
-func buildProbeRouteHMAC(secret string, routeID string, nonce string) string {
+func rememberProbeRouteTLSPin(routeID string, pin string) {
+	routeID = strings.TrimSpace(routeID)
+	pin = normalizeProbeRouteTLSSPKI(pin)
+	if routeID == "" {
+		return
+	}
+	probeRouteTLSPinStore.mu.Lock()
+	if pin == "" {
+		delete(probeRouteTLSPinStore.items, routeID)
+	} else {
+		probeRouteTLSPinStore.items[routeID] = pin
+	}
+	probeRouteTLSPinStore.mu.Unlock()
+}
+
+func lookupProbeRouteTLSPin(routeID string) string {
+	probeRouteTLSPinStore.mu.RLock()
+	pin := probeRouteTLSPinStore.items[strings.TrimSpace(routeID)]
+	probeRouteTLSPinStore.mu.RUnlock()
+	return normalizeProbeRouteTLSSPKI(pin)
+}
+
+func buildProbeRouteHMAC(secret string, routeID string, nonce string, method string, requestPath string, sourceNodeID string, relayRole string) string {
 	mac := hmac.New(sha256.New, []byte(strings.TrimSpace(secret)))
-	_, _ = mac.Write([]byte(strings.TrimSpace(routeID)))
-	_, _ = mac.Write([]byte("\n"))
-	_, _ = mac.Write([]byte(strings.TrimSpace(nonce)))
+	canonical := strings.Join([]string{
+		strings.TrimSpace(routeID),
+		strings.TrimSpace(nonce),
+		strings.ToUpper(strings.TrimSpace(method)),
+		strings.TrimSpace(requestPath),
+		normalizeProbeRouteNodeID(sourceNodeID),
+		normalizeProbeRouteBridgeRole(relayRole),
+	}, "\n")
+	_, _ = mac.Write([]byte(canonical))
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func resolveProbeRouteSourceIPFromRequest(r *http.Request) string {
 	if r == nil {
 		return ""
-	}
-	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); forwarded != "" {
-		parts := strings.Split(forwarded, ",")
-		if len(parts) > 0 {
-			if ip := normalizeProbeRouteIP(strings.TrimSpace(parts[0])); ip != "" {
-				return ip
-			}
-		}
 	}
 	return resolveProbeRouteSourceIPFromAddrString(strings.TrimSpace(r.RemoteAddr))
 }

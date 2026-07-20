@@ -154,6 +154,7 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsDisabledKeepsFakeRout
 	var deleted []probeRouteWindowsRouteDef
 	oldCreateRoute := probeLocalCreateWindowsRouteEntry
 	oldDeleteRoute := probeLocalDeleteWindowsRouteEntry
+	oldUpsertIPv4ByLUID := probeLocalUpsertWindowsInterfaceIPv4ByLUID
 	probeLocalCreateWindowsRouteEntry = func(routeDef probeRouteWindowsRouteDef) (bool, error) {
 		created = append(created, routeDef)
 		return true, nil
@@ -162,9 +163,13 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsDisabledKeepsFakeRout
 		deleted = append(deleted, routeDef)
 		return nil
 	}
+	probeLocalUpsertWindowsInterfaceIPv4ByLUID = func(luid uint64, ifIndex int, ip string, prefixLength int) error {
+		return nil
+	}
 	t.Cleanup(func() {
 		probeLocalCreateWindowsRouteEntry = oldCreateRoute
 		probeLocalDeleteWindowsRouteEntry = oldDeleteRoute
+		probeLocalUpsertWindowsInterfaceIPv4ByLUID = oldUpsertIPv4ByLUID
 	})
 
 	if err := ensureProbeVirtualRouterPlatformInterfaceIP("198.18.0.21"); err != nil {

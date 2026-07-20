@@ -9,17 +9,23 @@ import (
 	"time"
 )
 
-func buildProbeRouteUserAuthTicketForTest(t *testing.T, priv ed25519.PrivateKey, routeID string, rawPublicKey string, issuedAt ...time.Time) string {
+func buildProbeRouteUserAuthTicketForTest(t *testing.T, priv ed25519.PrivateKey, routeID string, rawPublicKey string, fromNodeID string, toNodeID string, issuedAt ...time.Time) string {
 	t.Helper()
 	ts := time.Now().UTC()
 	if len(issuedAt) > 0 {
 		ts = issuedAt[0].UTC()
 	}
 	payload := probeRouteUserAuthTicketPayload{
-		Version:       "route-auth-v1",
+		Version:       "route-auth-v2",
 		RouteID:       strings.TrimSpace(routeID),
+		ClientEntryID: "test-entry",
+		UserID:        "admin",
 		UserPublicKey: strings.TrimSpace(rawPublicKey),
+		FromNodeID:    normalizeProbeRouteNodeID(fromNodeID),
+		ToNodeID:      normalizeProbeRouteNodeID(toNodeID),
+		TicketID:      "test-ticket-id",
 		IssuedAt:      ts.Format(time.RFC3339),
+		ExpiresAt:     ts.Add(24 * time.Hour).Format(time.RFC3339),
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {

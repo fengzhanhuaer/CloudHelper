@@ -82,10 +82,15 @@ func extractCookieByName(rr *httptest.ResponseRecorder, name string) *http.Cooki
 
 func registerAndLoginProbeLocal(t *testing.T, mux *http.ServeMux, username, password string) *http.Cookie {
 	t.Helper()
+	setupToken, err := ensureProbeLocalSetupToken()
+	if err != nil {
+		t.Fatalf("ensure setup token failed: %v", err)
+	}
 	registerResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/auth/register", map[string]any{
 		"username":         username,
 		"password":         password,
 		"confirm_password": password,
+		"setup_token":      setupToken,
 	})
 	if registerResp.Code != http.StatusOK {
 		t.Fatalf("register status=%d body=%s", registerResp.Code, registerResp.Body.String())
@@ -117,10 +122,15 @@ func TestProbeLocalAuthFlowRegisterOnceAndSession(t *testing.T) {
 		t.Fatalf("bootstrap registered=%v ok=%v", bootstrapPayload["registered"], ok)
 	}
 
+	setupToken, err := ensureProbeLocalSetupToken()
+	if err != nil {
+		t.Fatalf("ensure setup token failed: %v", err)
+	}
 	registerResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/auth/register", map[string]any{
 		"username":         "admin",
 		"password":         "secret1234",
 		"confirm_password": "secret1234",
+		"setup_token":      setupToken,
 	})
 	if registerResp.Code != http.StatusOK {
 		t.Fatalf("register status=%d body=%s", registerResp.Code, registerResp.Body.String())
@@ -1264,6 +1274,14 @@ func TestProbeLocalSystemRestartClosesLocalConsoleBeforeRestart(t *testing.T) {
 	case <-restartCalled:
 	case <-time.After(3 * time.Second):
 		t.Fatalf("system/restart did not trigger restart hook")
+	}
+}
+
+func TestProbeLocalConsoleRejectsNonLoopbackPlainHTTPByDefault(t *testing.T) {
+	t.Setenv("PROBE_LOCAL_ALLOW_INSECURE_HTTP", "")
+	if err := startProbeLocalConsoleServer(http.NewServeMux(), "0.0.0.0:16032"); err == nil {
+		cleanupProbeLocalConsoleServerForTest(t)
+		t.Fatal("non-loopback plain HTTP listener should be rejected")
 	}
 }
 

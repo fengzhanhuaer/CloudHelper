@@ -4,11 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
 	"crypto/tls"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -102,11 +99,22 @@ func resetMobileVRouteVPNStateForTest(t *testing.T, configDir string) {
 	})
 }
 
+func serveMobileProbeChallengeForTest(w http.ResponseWriter, r *http.Request) bool {
+	if r.URL.Path != "/api/probe/auth/challenge" {
+		return false
+	}
+	_ = json.NewEncoder(w).Encode(map[string]string{"challenge": "controller-issued-test-challenge"})
+	return true
+}
+
 func TestAndroidVPNFakeIPMigratesToControllerAllocation(t *testing.T) {
 	configDir := t.TempDir()
 	resetMobileVRouteVPNStateForTest(t, configDir)
 	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveMobileProbeChallengeForTest(w, r) {
+			return
+		}
 		if r.URL.Path != mobileVRouteFakeIPResolveAPIPath || r.Method != http.MethodPost {
 			http.NotFound(w, r)
 			return
@@ -1188,11 +1196,13 @@ func TestMobileVRouteExplicitHTTP3IsNotSilentlyDowngraded(t *testing.T) {
 		return nil, errors.New("h3 dial hook")
 	}
 	plan := mobileVRouteForwardPlan{
+		LocalNode: "9",
+		NextNode:  "17",
 		Layer:     "websocket-h3",
 		RouteID:   "vrouter-h3",
 		RelayHost: "203.0.113.17",
 		RelayPort: 12040,
-		Rule:      mobileVRouteTopology{Secret: "secret", AuthTicket: "ticket"},
+		Rule:      mobileVRouteTopology{FromNodeID: "9", ToNodeID: "17", Secret: "secret", AuthTicket: "ticket", ToTLSSPKISHA256: strings.Repeat("ab", 32)},
 	}
 	if _, err := dialMobileVRouteCarrier(plan); err == nil || !strings.Contains(err.Error(), "h3 dial hook") {
 		t.Fatalf("dial h3 err=%v, want hook error", err)
@@ -1549,19 +1559,22 @@ func TestMobileVRouteIPv4PacketTargetParsesPorts(t *testing.T) {
 
 func TestMobileVRouteSecretAuthHeaders(t *testing.T) {
 	headers := http.Header{}
-	if err := applyMobileVRouteSecretAuthHeaders(headers, "route-1", "secret-1", "ticket-1"); err != nil {
+	if err := applyMobileVRouteSecretAuthHeaders(headers, "route-1", "secret-1", "ticket-1", "7", http.MethodGet, mobileVRouteRelayAPIPath, mobileVRouteBridgeRoleToNext); err != nil {
 		t.Fatalf("apply auth headers failed: %v", err)
 	}
 	nonce := strings.TrimPrefix(headers.Get("Authorization"), "Bearer ")
 	if nonce == "" || nonce == headers.Get("Authorization") {
 		t.Fatalf("missing bearer nonce: %q", headers.Get("Authorization"))
 	}
-	expected := buildMobileVRouteTestHMAC("secret-1", "route-1", nonce)
+	expected := buildMobileVRouteHMAC("secret-1", "route-1", nonce, http.MethodGet, mobileVRouteRelayAPIPath, "7", mobileVRouteBridgeRoleToNext)
 	if headers.Get(mobileVRouteCodexMACHeader) != expected {
 		t.Fatalf("mac=%s, want %s", headers.Get(mobileVRouteCodexMACHeader), expected)
 	}
 	if headers.Get(mobileVRouteCodexAuthModeHeader) != "secret_hmac" || headers.Get(mobileVRouteCodexAuthTicketHeader) != "ticket-1" {
 		t.Fatalf("unexpected auth headers: %+v", headers)
+	}
+	if headers.Get(mobileVRouteCodexSourceNodeHeader) != "7" {
+		t.Fatalf("unexpected source node header: %+v", headers)
 	}
 }
 
@@ -1578,19 +1591,14 @@ func buildMobileVRouteTestIPv4Packet(proto uint8, src string, dst string, srcPor
 	return packet
 }
 
-func buildMobileVRouteTestHMAC(secret string, routeID string, nonce string) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte(routeID))
-	_, _ = mac.Write([]byte("\n"))
-	_, _ = mac.Write([]byte(nonce))
-	return hex.EncodeToString(mac.Sum(nil))
-}
-
 func TestMobileVRouteRefreshPersistsConfigAndVPNDecision(t *testing.T) {
 	configDir := t.TempDir()
 	resetMobileVRouteVPNStateForTest(t, configDir)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveMobileProbeChallengeForTest(w, r) {
+			return
+		}
 		if r.URL.Path != mobileVRouteConfigAPIPath {
 			http.NotFound(w, r)
 			return
@@ -1648,6 +1656,9 @@ func TestMobileVRouteRefreshConfigFilesClosesCarriers(t *testing.T) {
 	resetMobileVRouteVPNStateForTest(t, configDir)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveMobileProbeChallengeForTest(w, r) {
+			return
+		}
 		if r.URL.Path != mobileVRouteConfigAPIPath {
 			http.NotFound(w, r)
 			return

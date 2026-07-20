@@ -49,12 +49,12 @@ func TestMngProbeConsoleBridgeDeniedWithoutCookie(t *testing.T) {
 	}
 }
 
-func TestMngProbeConsoleTokenSlidingRenewal(t *testing.T) {
+func TestMngProbeConsoleTokenHasAbsoluteExpiry(t *testing.T) {
 	token := mintMngProbeConsoleToken("7")
 	if token == "" {
 		t.Fatal("expected non-empty token")
 	}
-	// Force the token close to expiry, then an active resolve should renew it.
+	// Force the token close to expiry. Resolving must not extend a leaked bearer.
 	mngProbeConsoleTokens.mu.Lock()
 	rec := mngProbeConsoleTokens.data[token]
 	rec.ExpiresAt = time.Now().Add(2 * time.Second)
@@ -68,8 +68,8 @@ func TestMngProbeConsoleTokenSlidingRenewal(t *testing.T) {
 	mngProbeConsoleTokens.mu.Lock()
 	got := mngProbeConsoleTokens.data[token].ExpiresAt
 	mngProbeConsoleTokens.mu.Unlock()
-	if time.Until(got) < time.Hour {
-		t.Fatalf("expected sliding renewal to extend expiry, remaining=%v", time.Until(got))
+	if time.Until(got) > 3*time.Second {
+		t.Fatalf("expected absolute expiry to remain unchanged, remaining=%v", time.Until(got))
 	}
 }
 
@@ -144,6 +144,9 @@ func TestMngProbeConsoleHeaderFilters(t *testing.T) {
 	if !mngProbeConsoleSkipResponseHeader("Set-Cookie") {
 		t.Fatal("Set-Cookie must be stripped from proxied responses")
 	}
+	if !mngProbeConsoleSkipResponseHeader("Content-Security-Policy") || !mngProbeConsoleSkipResponseHeader("Access-Control-Allow-Origin") {
+		t.Fatal("probe-controlled security and CORS headers must be stripped")
+	}
 	if mngProbeConsoleSkipResponseHeader("Content-Type") {
 		t.Fatal("Content-Type must be returned to the browser")
 	}
@@ -217,6 +220,13 @@ func TestMngProbeConsoleBridgeMarksControllerBridgeResponse(t *testing.T) {
 	}
 	if got := rec.Header().Get("X-Probe-Console-Bridge"); got != "controller" {
 		t.Fatalf("expected controller bridge marker, got %q", got)
+	}
+	csp := rec.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "sandbox allow-scripts") || strings.Contains(csp, "allow-same-origin") || !strings.Contains(csp, "form-action 'none'") {
+		t.Fatalf("expected opaque-origin sandbox CSP, got %q", csp)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "null" {
+		t.Fatalf("expected opaque-origin CORS response, got %q", got)
 	}
 }
 

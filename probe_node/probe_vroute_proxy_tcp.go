@@ -42,7 +42,7 @@ var probeVRouteProxyTCPState = struct {
 	rxBytes  atomic.Uint64
 }{sessions: make(map[string]*probeVRouteProxyTCPSession)}
 
-var probeVRouteProxyExitTCPDial = dialProbeVRouteProxyDirectTCP
+var probeVRouteProxyExitTCPDial = dialProbeVRouteProxyExitTCP
 
 func dialProbeVRouteProxyTCP(targetAddr string) (net.Conn, probeVRouteProxyTargetDecision, error) {
 	decision, err := decideProbeVRouteProxyTarget(targetAddr)
@@ -136,6 +136,13 @@ func handleProbeVRouteProxyTCPOpen(payload []byte, path []string) error {
 	cleanPath := cleanProbeVirtualRouterPath(path)
 	if len(cleanPath) < 2 || normalizeProbeRouteNodeID(cleanPath[len(cleanPath)-1]) != currentProbeVirtualRouterLocalNodeID() {
 		return errors.New("remote proxy tcp open path does not end at local node")
+	}
+	localNodeID := currentProbeVirtualRouterLocalNodeID()
+	if normalizeProbeRouteNodeID(msg.SourceNodeID) != cleanPath[0] || normalizeProbeRouteNodeID(msg.ExitNodeID) != localNodeID {
+		return errors.New("remote proxy tcp open identity does not match path")
+	}
+	if err := authorizeProbeVRouteProxyExitTarget(msg.TargetAddr, cleanPath); err != nil {
+		return err
 	}
 	go openProbeVRouteProxyTCPAtExit(msg, cleanPath)
 	return nil

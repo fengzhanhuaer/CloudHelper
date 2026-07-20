@@ -7,10 +7,13 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -241,7 +244,7 @@ func withProbeVirtualRouterRuleAuthForTest(t *testing.T, rule probeVirtualRouter
 	rule.Secret = "shared-link-secret"
 	rule.UserID = "admin"
 	rule.UserPublicKey = rawPublicKey
-	rule.AuthTicket = buildProbeRouteUserAuthTicketForTest(t, priv, probeVirtualRouterRuntimeRouteID(rule), rawPublicKey)
+	rule.AuthTicket = buildProbeRouteUserAuthTicketForTest(t, priv, probeVirtualRouterRuntimeRouteID(rule), rawPublicKey, rule.FromNodeID, rule.ToNodeID)
 	return rule
 }
 
@@ -552,6 +555,9 @@ func TestVerifyProbeVirtualRouterUserAuthTicket(t *testing.T) {
 		routeID:       routeID,
 		rawPublicKey:  rule.UserPublicKey,
 		userPublicKey: pub,
+		authTicket:    rule.AuthTicket,
+		fromNodeID:    rule.FromNodeID,
+		toNodeID:      rule.ToNodeID,
 	}
 	if err := verifyProbeVirtualRouterUserAuthTicket(cfg, rule.AuthTicket); err != nil {
 		t.Fatalf("verify virtual router auth ticket failed: %v", err)
@@ -966,7 +972,47 @@ func TestProbeVirtualRouterBridgeResolvesOrdinaryDomainToIP(t *testing.T) {
 		t.Fatalf("resolve ordinary host failed: %v", err)
 	}
 	if dialHost != "203.0.113.9" || hostHeader != "203.0.113.9" {
-		t.Fatalf("ordinary host should resolve to ip, dial=%q host=%q", dialHost, hostHeader)
+		t.Fatalf("ordinary host must not leak its domain through host or sni, dial=%q host=%q", dialHost, hostHeader)
+	}
+}
+
+func TestProbeRouteRelayTLSUsesPinWithoutSNIForOrdinaryNode(t *testing.T) {
+	routeID := "vrouter-pin-test"
+	spki := []byte("controller-signed-node-spki")
+	sum := sha256.Sum256(spki)
+	rememberProbeRouteTLSPin(routeID, hex.EncodeToString(sum[:]))
+	t.Cleanup(func() { rememberProbeRouteTLSPin(routeID, "") })
+
+	config, err := newProbeRouteRelayTLSConfig(routeID, "203.0.113.9", tls.VersionTLS12, nil)
+	if err != nil {
+		t.Fatalf("build tls config: %v", err)
+	}
+	if config.ServerName != "" || !config.InsecureSkipVerify || config.VerifyConnection == nil {
+		t.Fatalf("ordinary relay must omit sni and use pin callback: %+v", config)
+	}
+	state := tls.ConnectionState{PeerCertificates: []*x509.Certificate{{RawSubjectPublicKeyInfo: spki}}}
+	if err := config.VerifyConnection(state); err != nil {
+		t.Fatalf("valid pinned certificate rejected: %v", err)
+	}
+	state.PeerCertificates[0].RawSubjectPublicKeyInfo = []byte("different-spki")
+	if err := config.VerifyConnection(state); err == nil {
+		t.Fatal("mismatched relay public key pin should be rejected")
+	}
+}
+
+func TestProbeRouteAuthNonceReplaySurvivesMemoryReset(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeRouteAuthReplayMemoryForTest()
+	t.Cleanup(resetProbeRouteAuthReplayMemoryForTest)
+	if err := recordProbeRouteAuthNonce("route-replay", "current-ticket", "nonce-1"); err != nil {
+		t.Fatalf("record nonce: %v", err)
+	}
+	resetProbeRouteAuthReplayMemoryForTest()
+	if err := recordProbeRouteAuthNonce("route-replay", "current-ticket", "nonce-1"); err == nil {
+		t.Fatal("persisted nonce replay should be rejected after memory reset")
+	}
+	if err := recordProbeRouteAuthNonce("route-replay", "rotated-ticket", "nonce-1"); err != nil {
+		t.Fatalf("rotated ticket should start a new nonce namespace: %v", err)
 	}
 }
 

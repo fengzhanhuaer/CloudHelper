@@ -63,7 +63,10 @@ func (s *probeRouteConfigStore) Save() error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(s.path, content, 0o644); err != nil {
+	if err := os.WriteFile(s.path, content, 0o600); err != nil {
+		return err
+	}
+	if err := os.Chmod(s.path, 0o600); err != nil {
 		return err
 	}
 	triggerAutoBackupControllerDataAsync("probe_route_config_store_save")

@@ -508,8 +508,8 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 			if err != nil {
 				return 0, err
 			}
-			for key, value := range buildProbeAuthHeaders(identity) {
-				req.Header.Set(key, value)
+			if err := applyProbeAuthHeaders(req, identity); err != nil {
+				return 0, err
 			}
 			req.Header.Set("Accept", "application/octet-stream")
 			req.Header.Set("User-Agent", "cloudhelper-probe-node")
@@ -824,8 +824,8 @@ func probeAuthedGet(ctx context.Context, requestURL string, identity nodeIdentit
 	if err != nil {
 		return nil, err
 	}
-	for key, value := range buildProbeAuthHeaders(identity) {
-		req.Header.Set(key, value)
+	if err := applyProbeAuthHeaders(req, identity); err != nil {
+		return nil, err
 	}
 	client, closeClient, err := newProbeResolvedHTTPClientForURL(requestURL, probeResolvedDialDefaultTimeout)
 	if err != nil {

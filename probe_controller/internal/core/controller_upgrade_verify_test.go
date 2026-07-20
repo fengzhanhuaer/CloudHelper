@@ -4,11 +4,35 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+type probeProxyRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn probeProxyRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
+
+func useProbeProxyTestUpstream(t *testing.T, upstream *httptest.Server) {
+	t.Helper()
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: probeProxyRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		clone := req.Clone(req.Context())
+		clone.URL.Scheme = upstreamURL.Scheme
+		clone.URL.Host = upstreamURL.Host
+		clone.Host = upstreamURL.Host
+		return upstream.Client().Transport.RoundTrip(clone)
+	})}
+	t.Cleanup(func() { http.DefaultClient = oldClient })
+}
 
 func TestNormalizeControllerUpgradeVerifyDurationSec(t *testing.T) {
 	tests := []struct {
@@ -157,6 +181,7 @@ func TestDownloadReleaseAssetResume(t *testing.T) {
 }
 
 func TestProbeProxyDownloadHandlerPassesRange(t *testing.T) {
+	t.Setenv("PROBE_ALLOW_LEGACY_QUERY_AUTH", "true")
 	oldToken := os.Getenv("GITHUB_TOKEN")
 	_ = os.Unsetenv("GITHUB_TOKEN")
 	defer func() { _ = os.Setenv("GITHUB_TOKEN", oldToken) }()
@@ -173,11 +198,9 @@ func TestProbeProxyDownloadHandlerPassesRange(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	oldClient := http.DefaultClient
-	http.DefaultClient = upstream.Client()
-	defer func() { http.DefaultClient = oldClient }()
+	useProbeProxyTestUpstream(t, upstream)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/probe/proxy/download?url="+upstream.URL+"&node_id=1&secret=test-secret", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/probe/proxy/download?url=https://github.com/example/releases/download/v1/asset&node_id=1&secret=test-secret", nil)
 	req.Header.Set("X-Forwarded-Proto", "https")
 	req.Header.Set("Range", "bytes=10-")
 	w := httptest.NewRecorder()
@@ -213,6 +236,7 @@ func TestProbeProxyDownloadHandlerPassesRange(t *testing.T) {
 }
 
 func TestProbeProxyDownloadHandlerAcceptsURLHeader(t *testing.T) {
+	t.Setenv("PROBE_ALLOW_LEGACY_QUERY_AUTH", "true")
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/asset" {
 			t.Fatalf("unexpected upstream path: %q", r.URL.Path)
@@ -222,12 +246,10 @@ func TestProbeProxyDownloadHandlerAcceptsURLHeader(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	oldClient := http.DefaultClient
-	http.DefaultClient = upstream.Client()
-	defer func() { http.DefaultClient = oldClient }()
+	useProbeProxyTestUpstream(t, upstream)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/probe/proxy/download?node_id=1&secret=test-secret", nil)
-	req.Header.Set("X-CloudHelper-Download-URL", upstream.URL+"/asset?token=a&name=b")
+	req.Header.Set("X-CloudHelper-Download-URL", "https://github.com/asset?token=a&name=b")
 	w := httptest.NewRecorder()
 	withProbeStoreSecretForTest(t, "1", "test-secret")
 
@@ -244,6 +266,7 @@ func TestProbeProxyDownloadHandlerAcceptsURLHeader(t *testing.T) {
 }
 
 func TestProbeProxyInstallScriptHandlerServesEmbeddedScriptOverHTTP(t *testing.T) {
+	t.Setenv("PROBE_ALLOW_LEGACY_QUERY_AUTH", "true")
 	req := httptest.NewRequest(http.MethodGet, "/api/probe/proxy/probe-node/install-script?node_id=1&secret=test-secret&target=linux", nil)
 	w := httptest.NewRecorder()
 
@@ -279,6 +302,7 @@ func TestProbeProxyInstallScriptHandlerServesEmbeddedScriptOverHTTP(t *testing.T
 }
 
 func TestProbeProxyDownloadHandlerAllowsHTTPAfterProbeAuth(t *testing.T) {
+	t.Setenv("PROBE_ALLOW_LEGACY_QUERY_AUTH", "true")
 	req := httptest.NewRequest(http.MethodGet, "/api/probe/proxy/download?node_id=1&secret=test-secret", nil)
 	w := httptest.NewRecorder()
 	withProbeStoreSecretForTest(t, "1", "test-secret")
@@ -292,6 +316,7 @@ func TestProbeProxyDownloadHandlerAllowsHTTPAfterProbeAuth(t *testing.T) {
 }
 
 func TestProbeProxyGitHubLatestHandlerAllowsHTTPAfterProbeAuth(t *testing.T) {
+	t.Setenv("PROBE_ALLOW_LEGACY_QUERY_AUTH", "true")
 	req := httptest.NewRequest(http.MethodGet, "/api/probe/proxy/github/latest?node_id=1&secret=test-secret&repo=bad", nil)
 	w := httptest.NewRecorder()
 	withProbeStoreSecretForTest(t, "1", "test-secret")

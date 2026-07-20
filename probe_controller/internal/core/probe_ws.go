@@ -107,11 +107,8 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			reportedNodeID := strings.TrimSpace(msg.NodeID)
-			if reportedNodeID == "" {
-				reportedNodeID = nodeID
-			}
-			updateProbeRuntimeReportWithPlatform(reportedNodeID, msg.IPv4, msg.IPv6, msg.System, msg.Version, msg.Platform, msg.OS, msg.Arch, msg.MachineUptimeSeconds, msg.RelayStatus)
+			msg.NodeID = nodeID
+			updateProbeRuntimeReportWithPlatform(nodeID, msg.IPv4, msg.IPv6, msg.System, msg.Version, msg.Platform, msg.OS, msg.Arch, msg.MachineUptimeSeconds, msg.RelayStatus)
 
 			_ = probeSession.writeJSON(probeAckMessage{
 				Type:      "ack",
@@ -123,54 +120,42 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 			if err := json.Unmarshal(raw, &msg); err != nil {
 				continue
 			}
-			if strings.TrimSpace(msg.NodeID) == "" {
-				msg.NodeID = nodeID
-			}
+			msg.NodeID = nodeID
 			consumeProbeLogsResult(msg)
 		case "tcp_debug_result":
 			var msg probeTCPDebugResultMessage
 			if err := json.Unmarshal(raw, &msg); err != nil {
 				continue
 			}
-			if strings.TrimSpace(msg.NodeID) == "" {
-				msg.NodeID = nodeID
-			}
+			msg.NodeID = nodeID
 			consumeProbeTCPDebugResult(msg)
 		case "network_monitor_result":
 			var msg probeNetworkMonitorResultMessage
 			if err := json.Unmarshal(raw, &msg); err != nil {
 				continue
 			}
-			if strings.TrimSpace(msg.NodeID) == "" {
-				msg.NodeID = nodeID
-			}
+			msg.NodeID = nodeID
 			consumeProbeNetworkMonitorResult(msg)
 		case "shell_exec_result":
 			var msg probeShellExecResultMessage
 			if err := json.Unmarshal(raw, &msg); err != nil {
 				continue
 			}
-			if strings.TrimSpace(msg.NodeID) == "" {
-				msg.NodeID = nodeID
-			}
+			msg.NodeID = nodeID
 			consumeProbeShellExecResult(msg)
 		case "shell_session_result":
 			var msg probeShellSessionResultMessage
 			if err := json.Unmarshal(raw, &msg); err != nil {
 				continue
 			}
-			if strings.TrimSpace(msg.NodeID) == "" {
-				msg.NodeID = nodeID
-			}
+			msg.NodeID = nodeID
 			consumeProbeShellSessionResult(msg)
 		case "local_console_bridge_result":
 			var msg probeLocalConsoleBridgeResultMessage
 			if err := json.Unmarshal(raw, &msg); err != nil {
 				continue
 			}
-			if strings.TrimSpace(msg.NodeID) == "" {
-				msg.NodeID = nodeID
-			}
+			msg.NodeID = nodeID
 			consumeProbeLocalConsoleBridgeResult(msg)
 		case "controller_rpc_request":
 			var req probeControllerRPCRequest

@@ -9,3 +9,7 @@ func ensureProbeVirtualRouterPlatformInterfaceIP(_ string) error {
 func cleanupProbeVirtualRouterPlatformRoutes() error {
 	return nil
 }
+
+func cleanupProbeVirtualRouterPlatformTakeoverRoutes() error {
+	return nil
+}

@@ -667,8 +667,10 @@ func sanitizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopologyR
 			Direction:         direction,
 			FromServiceDomain: fromServiceDomain,
 			FromServicePort:   fromServicePort,
+			FromTLSSPKISHA256: normalizeProbeRouteTLSSPKI(item.FromTLSSPKISHA256),
 			ToServiceDomain:   toServiceDomain,
 			ToServicePort:     toServicePort,
+			ToTLSSPKISHA256:   normalizeProbeRouteTLSSPKI(item.ToTLSSPKISHA256),
 			RouteLayer:        normalizeProbeRouteRouteLayer(item.RouteLayer),
 			UserID:            strings.TrimSpace(item.UserID),
 			UserPublicKey:     strings.TrimSpace(item.UserPublicKey),
@@ -815,10 +817,13 @@ func persistProbeRouteConfigCache(config probeVirtualRouterConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(cachePath, append(encoded, '\n'), 0o644)
+	if err := os.WriteFile(cachePath, append(encoded, '\n'), 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(cachePath, 0o600)
 }
 
 func loadProbeRouteConfigCache() (probeVirtualRouterConfig, error) {
@@ -1869,7 +1874,7 @@ func currentProbeVirtualRouterLocalIPForRuntime(runtime *probeVirtualRouterRunti
 }
 
 func ensureProbeVirtualRouterLocalInterfaceIP() {
-	if !probeVirtualRouterLocalEntryEnabled() {
+	if !probeVirtualRouterBaseTransportEnabled() {
 		return
 	}
 	localIP, err := ensureProbeVirtualRouterLocalInterfaceIPOnce()
@@ -1921,7 +1926,7 @@ func waitProbeVirtualRouterLocalInterfaceIPEnsure() {
 }
 
 func ensureProbeVirtualRouterLocalInterfaceIPOnce() (string, error) {
-	if !probeVirtualRouterLocalEntryEnabled() {
+	if !probeVirtualRouterBaseTransportEnabled() {
 		return "", nil
 	}
 	localIP := currentProbeVirtualRouterLocalIP()
@@ -1938,7 +1943,7 @@ func scheduleProbeVirtualRouterLocalInterfaceIPRetry(localIP string, cause error
 	if strings.TrimSpace(localIP) == "" || cause == nil {
 		return
 	}
-	if !probeVirtualRouterLocalEntryEnabled() {
+	if !probeVirtualRouterBaseTransportEnabled() {
 		return
 	}
 	cleanIP := strings.TrimSpace(localIP)
@@ -1982,7 +1987,7 @@ func scheduleProbeVirtualRouterLocalInterfaceIPRetry(localIP string, cause error
 					default:
 					}
 				}
-				log.Printf("probe virtual router local ip retry stopped: ip=%s reason=entry_disabled attempt=%d", cleanIP, attempt+1)
+				log.Printf("probe virtual router local ip retry stopped: ip=%s reason=canceled attempt=%d", cleanIP, attempt+1)
 				return
 			}
 			if probeVirtualRouterLocalInterfaceRetryObsolete(cleanIP, retryGeneration) {
@@ -2009,6 +2014,13 @@ func scheduleProbeVirtualRouterLocalInterfaceIPRetry(localIP string, cause error
 		}
 		log.Printf("warning: probe virtual router local ip retry exhausted: ip=%s attempts=%d", cleanIP, len(delays))
 	}()
+}
+
+func probeVirtualRouterBaseTransportEnabled() bool {
+	probeVirtualRouterState.mu.RLock()
+	enabled := probeVirtualRouterState.config.Enabled && strings.TrimSpace(probeVirtualRouterState.localIP) != ""
+	probeVirtualRouterState.mu.RUnlock()
+	return enabled
 }
 
 func cancelAndWaitProbeVirtualRouterLocalInterfaceIPRetry() {
@@ -5000,6 +5012,11 @@ func handleProbeVirtualRouterFrame(runtime *probeVirtualRouterRuntime, link *pro
 	if err != nil {
 		return err
 	}
+	if runtime != nil {
+		if err := validateProbeVirtualRouterIngressPath(runtime, control.Path); err != nil {
+			return err
+		}
+	}
 	switch frame.MainType {
 	case probeVirtualRouterFrameMainTypeIP:
 		if frame.SubType != probeVirtualRouterIPSubTypeIPv4 {
@@ -5019,6 +5036,9 @@ func handleProbeVirtualRouterBusinessFrame(runtime *probeVirtualRouterRuntime, l
 	}
 	if mainType == probeVirtualRouterFrameMainTypeSpeed && subType == probeVirtualRouterSpeedSubTypeChunk {
 		return handleProbeVirtualRouterSpeedChunk(runtime, payload, framePath)
+	}
+	if mainType == probeVirtualRouterFrameMainTypeDebugLog && !allowProbeVirtualRouterRemoteDebugLogs() {
+		return errors.New("remote virtual router debug logs are disabled")
 	}
 	msg := probeVirtualRouterControlProbePayload{}
 	if err := json.Unmarshal(payload, &msg); err != nil {
@@ -5076,6 +5096,11 @@ func handleProbeVirtualRouterBusinessFrame(runtime *probeVirtualRouterRuntime, l
 	default:
 		return fmt.Errorf("unsupported virtual router business type=%d subtype=%d", mainType, subType)
 	}
+}
+
+func allowProbeVirtualRouterRemoteDebugLogs() bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("PROBE_VROUTE_ALLOW_REMOTE_DEBUG_LOGS")))
+	return value == "1" || value == "true" || value == "yes"
 }
 
 func handleProbeVirtualRouterControlPing(runtime *probeVirtualRouterRuntime, link *probeVirtualRouterFrameLink, msg probeVirtualRouterControlProbePayload) error {
@@ -6082,6 +6107,60 @@ func validateProbeVirtualRouterForwardPath(path []string) error {
 		seen[nodeID] = struct{}{}
 	}
 	return nil
+}
+
+func validateProbeVirtualRouterIngressPath(runtime *probeVirtualRouterRuntime, path []string) error {
+	if runtime == nil {
+		return errors.New("virtual router runtime is required")
+	}
+	cleanPath := cleanProbeVirtualRouterPath(path)
+	if err := validateProbeVirtualRouterForwardPath(cleanPath); err != nil {
+		return err
+	}
+	localNodeID := normalizeProbeRouteNodeID(runtime.cfg.localNodeID)
+	peerNodeID := normalizeProbeRouteNodeID(runtime.cfg.peerNodeID)
+	if localNodeID == "" || peerNodeID == "" {
+		return errors.New("virtual router ingress identity is incomplete")
+	}
+	localIndex := -1
+	for index, nodeID := range cleanPath {
+		if nodeID == localNodeID {
+			localIndex = index
+			break
+		}
+	}
+	if localIndex <= 0 || cleanPath[localIndex-1] != peerNodeID {
+		return fmt.Errorf("virtual router ingress peer mismatch: local=%s peer=%s path=%s", localNodeID, peerNodeID, strings.Join(cleanPath, ">"))
+	}
+
+	probeVirtualRouterState.mu.RLock()
+	defer probeVirtualRouterState.mu.RUnlock()
+	for index := 0; index+1 < len(cleanPath); index++ {
+		if !probeVirtualRouterPathEdgeAuthorizedLocked(cleanPath[index], cleanPath[index+1], runtime.cfg.userID) {
+			return fmt.Errorf("virtual router path edge is unauthorized: %s>%s", cleanPath[index], cleanPath[index+1])
+		}
+	}
+	return nil
+}
+
+func probeVirtualRouterPathEdgeAuthorizedLocked(left string, right string, userID string) bool {
+	left = normalizeProbeRouteNodeID(left)
+	right = normalizeProbeRouteNodeID(right)
+	userID = strings.TrimSpace(userID)
+	for _, rule := range probeVirtualRouterState.config.TopologyRules {
+		if !rule.Enabled {
+			continue
+		}
+		fromNodeID := normalizeProbeRouteNodeID(rule.FromNodeID)
+		toNodeID := normalizeProbeRouteNodeID(rule.ToNodeID)
+		if !((fromNodeID == left && toNodeID == right) || (fromNodeID == right && toNodeID == left)) {
+			continue
+		}
+		if userID == "" || strings.TrimSpace(rule.UserID) == userID {
+			return true
+		}
+	}
+	return false
 }
 
 func probeVirtualRouterPreviousHopInPath(path []string, localNodeID string) string {

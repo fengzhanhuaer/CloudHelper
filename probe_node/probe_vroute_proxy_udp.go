@@ -60,7 +60,7 @@ var probeVRouteProxyUDPState = struct {
 	exitSessions: make(map[string]*probeVRouteProxyUDPExitSession),
 }
 
-var probeVRouteProxyExitUDPDial = dialProbeVRouteProxyDirectUDP
+var probeVRouteProxyExitUDPDial = dialProbeVRouteProxyExitUDP
 
 func registerProbeVRouteProxyUDPAssociation(clientIP string, serverConn *net.UDPConn) (*probeVRouteProxyUDPAssociation, error) {
 	if serverConn == nil {
@@ -148,7 +148,11 @@ func relayProbeVRouteProxyUDP(association *probeVRouteProxyUDPAssociation, targe
 }
 
 func handleProbeVRouteProxyUDPRequest(payload []byte, path []string) error {
-	if _, _, _, err := unmarshalProbeVRouteProxyUDPDatagram(payload); err != nil {
+	_, targetAddr, _, err := unmarshalProbeVRouteProxyUDPDatagram(payload)
+	if err != nil {
+		return err
+	}
+	if err := authorizeProbeVRouteProxyExitTarget(targetAddr, path); err != nil {
 		return err
 	}
 	go processProbeVRouteProxyUDPRequest(append([]byte(nil), payload...), append([]string(nil), path...))

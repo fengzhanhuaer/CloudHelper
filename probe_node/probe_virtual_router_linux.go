@@ -94,6 +94,10 @@ func cleanupProbeVirtualRouterPlatformRoutes() error {
 	return allErr
 }
 
+func cleanupProbeVirtualRouterPlatformTakeoverRoutes() error {
+	return cleanupProbeVirtualRouterLinuxTakeoverRoutes()
+}
+
 func ensureProbeVirtualRouterLinuxFakeIPRoute(dev string, srcIP string) error {
 	routeDef := probeVirtualRouterLinuxRouteDef{
 		Prefix: strings.TrimSpace(currentProbeVirtualRouterFakeIPCIDR()),

@@ -37,10 +37,18 @@ func TestFetchProbeRouteConfigUsesRouteEndpoint(t *testing.T) {
 	var requestedPath string
 	var requestedNodeID string
 	var requestedSecret string
+	var requestedAuthNodeID string
+	var requestedSignature string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/probe/auth/challenge" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"challenge": "controller-issued-test-challenge"})
+			return
+		}
 		requestedPath = r.URL.Path
 		requestedNodeID = r.URL.Query().Get("node_id")
 		requestedSecret = r.URL.Query().Get("secret")
+		requestedAuthNodeID = r.Header.Get("X-Probe-Node-Id")
+		requestedSignature = r.Header.Get("X-Probe-Signature")
 		if r.URL.Path != probeRouteConfigAPIPath {
 			http.NotFound(w, r)
 			return
@@ -74,8 +82,11 @@ func TestFetchProbeRouteConfigUsesRouteEndpoint(t *testing.T) {
 	if requestedPath != probeRouteConfigAPIPath {
 		t.Fatalf("requested path=%q, want %q", requestedPath, probeRouteConfigAPIPath)
 	}
-	if requestedNodeID != "7" || requestedSecret != "secret-7" {
-		t.Fatalf("unexpected auth query node_id=%q secret=%q", requestedNodeID, requestedSecret)
+	if requestedNodeID != "" || requestedSecret != "" {
+		t.Fatalf("node credentials must not appear in query: node_id=%q secret=%q", requestedNodeID, requestedSecret)
+	}
+	if requestedAuthNodeID != "7" || requestedSignature == "" {
+		t.Fatalf("missing challenge auth headers: node_id=%q signature=%q", requestedAuthNodeID, requestedSignature)
 	}
 	if len(config.TopologyRules) != 1 || len(config.RouteRules) != 1 {
 		t.Fatalf("unexpected route config: %+v", config)

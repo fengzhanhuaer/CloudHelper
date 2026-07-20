@@ -35,7 +35,7 @@ func Run() {
 	triggerAutoBackupControllerDataAsync("startup")
 
 	mux := NewMux()
-	handler := enforceProbeScopeMiddleware(mux)
+	handler := enforceSensitiveTransportMiddleware(enforceProbeScopeMiddleware(mux))
 
 	logControllerInfof("CloudHelper Probe Controller is running at http://%s", listenAddr)
 	if err := http.ListenAndServe(listenAddr, handler); err != nil {
@@ -52,6 +52,7 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("/api/probe/proxy/github/latest", ProbeProxyGitHubLatestHandler)
 	mux.HandleFunc("/api/probe/proxy/download", ProbeProxyDownloadHandler)
 	mux.HandleFunc("/api/probe/proxy/probe-node/install-script", ProbeProxyInstallScriptHandler)
+	mux.HandleFunc("/api/probe/auth/challenge", ProbeAuthChallengeHandler)
 	mux.HandleFunc("/api/probe/route/config", ProbeRouteConfigHandler)
 	mux.HandleFunc("/api/probe/route/fake_ip/resolve", ProbeRouteFakeIPResolveHandler)
 	mux.HandleFunc("/api/probe/route/fake_ip/renew", ProbeRouteFakeIPRenewHandler)

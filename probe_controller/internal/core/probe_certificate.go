@@ -7,9 +7,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -641,6 +643,19 @@ func isProbeCertificateUsable(notAfter time.Time, minRemain time.Duration) bool 
 		return false
 	}
 	return time.Now().Add(minRemain).Before(notAfter)
+}
+
+func probeIssuedCertificateSPKISHA256(cert probeIssuedCertificate) string {
+	block, _ := pem.Decode(cert.CertPEM)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return ""
+	}
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
+	return hex.EncodeToString(sum[:])
 }
 
 func selectDNS01Challenge(authz *acme.Authorization) (*acme.Challenge, error) {

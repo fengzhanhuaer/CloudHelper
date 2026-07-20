@@ -140,7 +140,7 @@ const (
 	mngProbeConsoleCookieName     = "mng_probe_console"
 	mngProbeConsoleNodeCookieName = "mng_probe_console_node"
 	mngProbeConsoleSessionPrefix  = "/mng/probe-console/session/"
-	mngProbeConsoleTokenTTL       = 2 * time.Hour
+	mngProbeConsoleTokenTTL       = 30 * time.Minute
 )
 
 type mngProbeConsoleToken struct {
@@ -206,11 +206,6 @@ func resolveMngProbeConsoleTokenRecord(token string) (mngProbeConsoleToken, bool
 		delete(mngProbeConsoleTokens.data, token)
 		return mngProbeConsoleToken{}, false
 	}
-	// Sliding expiration: an actively-used console (the pages poll every few
-	// seconds) keeps renewing and never expires mid-session; only an idle console
-	// lapses after the TTL.
-	rec.ExpiresAt = now.Add(mngProbeConsoleTokenTTL)
-	mngProbeConsoleTokens.data[token] = rec
 	return rec, true
 }
 
@@ -269,6 +264,11 @@ func mngProbeConsoleBridgeHandler(w http.ResponseWriter, r *http.Request) {
 		mngProbeConsoleBridgeDenied(w, r)
 		return
 	}
+	setMngProbeConsoleBridgeCORSHeaders(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	tokenRecord := route.TokenRecord
 	nodeID := tokenRecord.NodeID
 
@@ -317,6 +317,7 @@ func mngProbeConsoleBridgeHandler(w http.ResponseWriter, r *http.Request) {
 			w.Header().Add(canonical, value)
 		}
 	}
+	setMngProbeConsoleBridgeSecurityHeaders(w, result.Headers)
 	w.Header().Set("X-Probe-Console-Bridge", "controller")
 	status := result.StatusCode
 	if status == 0 {
@@ -324,6 +325,38 @@ func mngProbeConsoleBridgeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(status)
 	_, _ = w.Write(decoded)
+}
+
+func setMngProbeConsoleBridgeCORSHeaders(w http.ResponseWriter) {
+	w.Header().Set("Access-Control-Allow-Origin", "null")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Accept, Range")
+	w.Header().Set("Access-Control-Max-Age", "600")
+	w.Header().Add("Vary", "Origin")
+}
+
+func setMngProbeConsoleBridgeSecurityHeaders(w http.ResponseWriter, responseHeaders map[string][]string) {
+	setMngProbeConsoleBridgeCORSHeaders(w)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+	if !mngProbeConsoleLooksLikeHTML(responseHeaders) {
+		return
+	}
+	w.Header().Set("Content-Security-Policy", strings.Join([]string{
+		"sandbox allow-scripts allow-modals allow-downloads",
+		"default-src 'self' data: blob:",
+		"script-src 'self' 'unsafe-inline'",
+		"style-src 'self' 'unsafe-inline'",
+		"img-src 'self' data: blob:",
+		"connect-src http: https:",
+		"object-src 'none'",
+		"frame-src 'none'",
+		"frame-ancestors 'none'",
+		"form-action 'none'",
+		"base-uri 'none'",
+	}, "; "))
 }
 
 func resolveMngProbeConsoleBridgeRoute(r *http.Request) (mngProbeConsoleBridgeRoute, bool) {
@@ -490,7 +523,13 @@ func mngProbeConsoleSkipRequestHeader(canonical string) bool {
 func mngProbeConsoleSkipResponseHeader(canonical string) bool {
 	switch canonical {
 	case "Connection", "Keep-Alive", "Te", "Trailer", "Transfer-Encoding",
-		"Upgrade", "Content-Length", "Set-Cookie":
+		"Upgrade", "Content-Length", "Set-Cookie", "Content-Security-Policy",
+		"Content-Security-Policy-Report-Only", "Access-Control-Allow-Origin",
+		"Access-Control-Allow-Credentials", "Access-Control-Allow-Headers",
+		"Access-Control-Allow-Methods", "Access-Control-Max-Age",
+		"Cross-Origin-Embedder-Policy", "Cross-Origin-Opener-Policy",
+		"Cross-Origin-Resource-Policy", "Origin-Agent-Cluster", "Permissions-Policy",
+		"Referrer-Policy", "X-Content-Type-Options", "X-Frame-Options":
 		return true
 	default:
 		return false

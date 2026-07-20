@@ -36,10 +36,10 @@ const (
 	mobileVRouteCodexAuthModeHeader   = "X-Codex-Auth-Mode"
 	mobileVRouteCodexMACHeader        = "X-Codex-Mac"
 	mobileVRouteCodexAuthTicketHeader = "X-Codex-User-Auth-Ticket"
-	mobileVRouteCodexAuthTimeHeader   = "X-Codex-Auth-Timestamp"
 	mobileVRouteCodexVersionHeader    = "X-Codex-Api-Version"
 	mobileVRouteCodexRelayModeHeader  = "X-Codex-Relay-Mode"
 	mobileVRouteCodexRelayRoleHeader  = "X-Codex-Relay-Role"
+	mobileVRouteCodexSourceNodeHeader = "X-Codex-Source-Node-Id"
 
 	mobileVRouteAuthPacketVersion = "2025-03-22"
 	mobileVRouteRelayModeBridge   = "bridge"
@@ -1069,7 +1069,7 @@ func dialMobileVRouteWebSocketCarrier(plan mobileVRouteForwardPlan) (net.Conn, e
 	header.Set(mobileVRouteCodexVersionHeader, mobileVRouteAuthPacketVersion)
 	header.Set(mobileVRouteCodexRelayModeHeader, mobileVRouteRelayModeBridge)
 	header.Set(mobileVRouteCodexRelayRoleHeader, plan.BridgeRole)
-	if err := applyMobileVRouteSecretAuthHeaders(header, plan.RouteID, plan.Rule.Secret, plan.Rule.AuthTicket); err != nil {
+	if err := applyMobileVRouteSecretAuthHeaders(header, plan.RouteID, plan.Rule.Secret, plan.Rule.AuthTicket, plan.LocalNode, http.MethodGet, mobileVRouteRelayAPIPath, plan.BridgeRole); err != nil {
 		return nil, err
 	}
 	candidates, err := mobileVRouteRelayDialCandidates(plan.RelayHost)
@@ -1112,12 +1112,12 @@ func dialMobileVRouteWebSocketCarrierCandidate(plan mobileVRouteForwardPlan, hea
 			netDialer := &net.Dialer{Timeout: mobileVRouteCarrierDialTimeout}
 			return netDialer.DialContext(ctx, dialNetwork, dialHostPort)
 		},
-		TLSClientConfig: &tls.Config{
-			MinVersion:         tls.VersionTLS12,
-			ServerName:         strings.TrimSpace(candidate.URLHost),
-			InsecureSkipVerify: true,
-		},
 	}
+	tlsConfig, err := newMobileVRouteRelayTLSConfig(plan, candidate, tls.VersionTLS12, nil)
+	if err != nil {
+		return nil, err
+	}
+	dialer.TLSClientConfig = tlsConfig
 	ws, resp, err := dialer.Dial(relayURL, header)
 	if err != nil {
 		if resp != nil && resp.Body != nil {
@@ -1157,11 +1157,9 @@ func dialMobileVRouteH3CarrierCandidate(plan mobileVRouteForwardPlan, candidate 
 		return nil, err
 	}
 	dialHostPort := net.JoinHostPort(candidate.DialHost, strconv.Itoa(plan.RelayPort))
-	tlsConf := &tls.Config{
-		MinVersion:         tls.VersionTLS13,
-		NextProtos:         []string{http3.NextProtoH3},
-		ServerName:         strings.TrimSpace(candidate.URLHost),
-		InsecureSkipVerify: true,
+	tlsConf, err := newMobileVRouteRelayTLSConfig(plan, candidate, tls.VersionTLS13, []string{http3.NextProtoH3})
+	if err != nil {
+		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), mobileVRouteCarrierDialTimeout)
 	defer cancel()
@@ -1204,7 +1202,7 @@ func dialMobileVRouteH3CarrierCandidate(plan mobileVRouteForwardPlan, candidate 
 	request.Header.Set(mobileVRouteCodexVersionHeader, mobileVRouteAuthPacketVersion)
 	request.Header.Set(mobileVRouteCodexRelayModeHeader, mobileVRouteRelayModeBridge)
 	request.Header.Set(mobileVRouteCodexRelayRoleHeader, plan.BridgeRole)
-	if err := applyMobileVRouteSecretAuthHeaders(request.Header, plan.RouteID, plan.Rule.Secret, plan.Rule.AuthTicket); err != nil {
+	if err := applyMobileVRouteSecretAuthHeaders(request.Header, plan.RouteID, plan.Rule.Secret, plan.Rule.AuthTicket, plan.LocalNode, http.MethodConnect, mobileVRouteRelayAPIPath, plan.BridgeRole); err != nil {
 		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
 		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
 		_ = quicConn.CloseWithError(0, "mobile vroute h3 auth failed")
@@ -1262,7 +1260,7 @@ func mobileVRouteQUICConfig() *quic.Config {
 	}
 }
 
-func applyMobileVRouteSecretAuthHeaders(headers http.Header, routeID string, secret string, authTicket string) error {
+func applyMobileVRouteSecretAuthHeaders(headers http.Header, routeID string, secret string, authTicket string, sourceNodeID string, method string, requestPath string, relayRole string) error {
 	cleanRouteID := strings.TrimSpace(routeID)
 	cleanSecret := strings.TrimSpace(secret)
 	if cleanRouteID == "" {
@@ -1271,22 +1269,32 @@ func applyMobileVRouteSecretAuthHeaders(headers http.Header, routeID string, sec
 	if cleanSecret == "" {
 		return errors.New("route_secret is required")
 	}
+	cleanSourceNodeID := normalizeMobileRouteNodeID(sourceNodeID)
+	if cleanSourceNodeID == "" {
+		return errors.New("source_node_id is required")
+	}
 	nonce := randomHexToken(16)
 	headers.Set("Authorization", "Bearer "+nonce)
 	headers.Set(mobileVRouteCodexAuthModeHeader, "secret_hmac")
-	headers.Set(mobileVRouteCodexAuthTimeHeader, time.Now().UTC().Format(time.RFC3339Nano))
-	headers.Set(mobileVRouteCodexMACHeader, buildMobileVRouteHMAC(cleanSecret, cleanRouteID, nonce))
+	headers.Set(mobileVRouteCodexSourceNodeHeader, cleanSourceNodeID)
+	headers.Set(mobileVRouteCodexMACHeader, buildMobileVRouteHMAC(cleanSecret, cleanRouteID, nonce, method, requestPath, cleanSourceNodeID, relayRole))
 	if strings.TrimSpace(authTicket) != "" {
 		headers.Set(mobileVRouteCodexAuthTicketHeader, strings.TrimSpace(authTicket))
 	}
 	return nil
 }
 
-func buildMobileVRouteHMAC(secret string, routeID string, nonce string) string {
+func buildMobileVRouteHMAC(secret string, routeID string, nonce string, method string, requestPath string, sourceNodeID string, relayRole string) string {
 	h := hmac.New(sha256.New, []byte(strings.TrimSpace(secret)))
-	_, _ = h.Write([]byte(strings.TrimSpace(routeID)))
-	_, _ = h.Write([]byte("\n"))
-	_, _ = h.Write([]byte(strings.TrimSpace(nonce)))
+	canonical := strings.Join([]string{
+		strings.TrimSpace(routeID),
+		strings.TrimSpace(nonce),
+		strings.ToUpper(strings.TrimSpace(method)),
+		strings.TrimSpace(requestPath),
+		normalizeMobileRouteNodeID(sourceNodeID),
+		strings.ToLower(strings.TrimSpace(relayRole)),
+	}, "\n")
+	_, _ = h.Write([]byte(canonical))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -1351,6 +1359,53 @@ func mobileVRouteRelayDialCandidates(host string) ([]mobileVRouteRelayDialCandid
 		return nil, errors.New("resolve vroute relay host failed: no ip")
 	}
 	return candidates, nil
+}
+
+func normalizeMobileVRouteTLSSPKI(raw string) string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if len(value) != sha256.Size*2 {
+		return ""
+	}
+	if _, err := hex.DecodeString(value); err != nil {
+		return ""
+	}
+	return value
+}
+
+func mobileVRoutePeerTLSSPKI(plan mobileVRouteForwardPlan) string {
+	if normalizeMobileRouteNodeID(plan.NextNode) == normalizeMobileRouteNodeID(plan.Rule.FromNodeID) {
+		return normalizeMobileVRouteTLSSPKI(plan.Rule.FromTLSSPKISHA256)
+	}
+	if normalizeMobileRouteNodeID(plan.NextNode) == normalizeMobileRouteNodeID(plan.Rule.ToNodeID) {
+		return normalizeMobileVRouteTLSSPKI(plan.Rule.ToTLSSPKISHA256)
+	}
+	return ""
+}
+
+func newMobileVRouteRelayTLSConfig(plan mobileVRouteForwardPlan, candidate mobileVRouteRelayDialCandidate, minVersion uint16, nextProtos []string) (*tls.Config, error) {
+	host := strings.TrimSpace(strings.Trim(candidate.URLHost, "[]"))
+	if host != "" && net.ParseIP(host) == nil && mobileVRouteIsCloudflareCopilotDomain(host) {
+		return &tls.Config{MinVersion: minVersion, NextProtos: append([]string(nil), nextProtos...), ServerName: host}, nil
+	}
+	expected, err := hex.DecodeString(mobileVRoutePeerTLSSPKI(plan))
+	if err != nil || len(expected) != sha256.Size {
+		return nil, fmt.Errorf("vroute tls public key pin is not configured for route %s", strings.TrimSpace(plan.RouteID))
+	}
+	return &tls.Config{
+		MinVersion:         minVersion,
+		NextProtos:         append([]string(nil), nextProtos...),
+		InsecureSkipVerify: true,
+		VerifyConnection: func(state tls.ConnectionState) error {
+			if len(state.PeerCertificates) == 0 {
+				return errors.New("vroute tls peer certificate is missing")
+			}
+			actual := sha256.Sum256(state.PeerCertificates[0].RawSubjectPublicKeyInfo)
+			if !hmac.Equal(expected, actual[:]) {
+				return errors.New("vroute tls public key pin mismatch")
+			}
+			return nil
+		},
+	}, nil
 }
 
 func lookupMobileVRouteRelayIPs(host string) ([]net.IP, error) {

@@ -227,7 +227,7 @@ func createControllerMigrationPackage() (controllerMigrationPackage, error) {
 	return pkg, nil
 }
 
-func resolveControllerMigrationPackage(token string) (controllerMigrationPackage, bool) {
+func consumeControllerMigrationPackage(token string) (controllerMigrationPackage, bool) {
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return controllerMigrationPackage{}, false
@@ -244,6 +244,7 @@ func resolveControllerMigrationPackage(token string) (controllerMigrationPackage
 		}
 		return controllerMigrationPackage{}, false
 	}
+	delete(controllerMigrationPackages.items, token)
 	return pkg, true
 }
 
@@ -322,11 +323,14 @@ func serveControllerMigrationScript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := strings.TrimSpace(r.URL.Query().Get("token"))
-	pkg, ok := resolveControllerMigrationPackage(token)
+	pkg, ok := consumeControllerMigrationPackage(token)
 	if !ok {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or expired migration token"})
 		return
 	}
+	defer os.RemoveAll(filepath.Dir(pkg.Path))
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, sanitizeFilename(pkg.FileName)))
 	http.ServeFile(w, r, pkg.Path)

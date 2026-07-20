@@ -1,14 +1,16 @@
 package core
 
 import (
+	"net"
 	"net/http"
+	"net/netip"
+	"os"
 	"strings"
 )
 
 func enforceProbeScopeMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hasProbeHeaders := strings.TrimSpace(r.Header.Get("X-Probe-Node-Id")) != "" ||
-			strings.TrimSpace(r.Header.Get("X-Probe-Timestamp")) != "" ||
 			strings.TrimSpace(r.Header.Get("X-Probe-Rand")) != "" ||
 			strings.TrimSpace(r.Header.Get("X-Probe-Signature")) != ""
 
@@ -26,11 +28,33 @@ func enforceProbeScopeMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func enforceSensitiveTransportMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimSpace(r.URL.Path)
+		sensitive := path == "/mng" || strings.HasPrefix(path, "/mng/") ||
+			path == "/api/probe" || strings.HasPrefix(path, "/api/probe/") ||
+			path == "/api/controller/migration/script"
+		if sensitive && !isHTTPSRequest(r) && !isLoopbackSocketPeer(r) {
+			writeJSON(w, http.StatusUpgradeRequired, map[string]string{"error": "https is required"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, CF-Connecting-IP, X-Forwarded-For, X-Real-IP")
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if origin != "" {
+			if !isAllowedCORSOrigin(r, origin) {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "origin is not allowed"})
+				return
+			}
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Add("Vary", "Origin")
+		}
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, Accept, Cache-Control, X-Requested-With")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
 
 		if r.Method == http.MethodOptions {
@@ -39,6 +63,26 @@ func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+func isAllowedCORSOrigin(r *http.Request, origin string) bool {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return true
+	}
+	scheme := "http"
+	if isHTTPSRequest(r) {
+		scheme = "https"
+	}
+	if strings.EqualFold(origin, scheme+"://"+strings.TrimSpace(r.Host)) {
+		return true
+	}
+	for _, configured := range strings.Split(os.Getenv("PROBE_ALLOWED_ORIGINS"), ",") {
+		if strings.EqualFold(origin, strings.TrimSpace(configured)) {
+			return true
+		}
+	}
+	return false
 }
 
 func authRequiredMiddleware(next http.HandlerFunc) http.HandlerFunc {
@@ -85,6 +129,9 @@ func isHTTPSRequest(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
 	}
+	if !isTrustedProxyRequest(r) {
+		return false
+	}
 
 	xfp := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto"))
 	if xfp != "" {
@@ -100,4 +147,46 @@ func isHTTPSRequest(r *http.Request) bool {
 
 	forwarded := strings.ToLower(strings.TrimSpace(r.Header.Get("Forwarded")))
 	return strings.Contains(forwarded, "proto=https")
+}
+
+func isTrustedProxyRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err != nil {
+		host = strings.TrimSpace(r.RemoteAddr)
+	}
+	remote, err := netip.ParseAddr(strings.Trim(host, "[]"))
+	if err != nil {
+		return false
+	}
+	if remote.IsLoopback() {
+		return true
+	}
+	for _, raw := range strings.Split(os.Getenv("PROBE_TRUSTED_PROXY_CIDRS"), ",") {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			continue
+		}
+		if addr, err := netip.ParseAddr(value); err == nil && addr == remote {
+			return true
+		}
+		if prefix, err := netip.ParsePrefix(value); err == nil && prefix.Contains(remote) {
+			return true
+		}
+	}
+	return false
+}
+
+func isLoopbackSocketPeer(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err != nil {
+		host = strings.TrimSpace(r.RemoteAddr)
+	}
+	remote, err := netip.ParseAddr(strings.Trim(host, "[]"))
+	return err == nil && remote.IsLoopback()
 }

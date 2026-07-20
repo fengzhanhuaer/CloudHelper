@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log"
 	"net"
+	"net/http"
 	"runtime"
 	"strings"
 	"sync"
@@ -88,7 +89,10 @@ func runLoop(cancel <-chan struct{}, wsURL string, nodeID string, nodeSecret str
 
 func runSession(cancel <-chan struct{}, wsURL string, nodeID string, nodeSecret string) error {
 	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
-	headers := buildAuthHeaders(nodeID, nodeSecret)
+	headers, err := buildAuthHeaders(wsURL, nodeID, nodeSecret, http.MethodGet)
+	if err != nil {
+		return err
+	}
 	wsConn, _, err := dialer.Dial(wsURL, headers)
 	if err != nil {
 		return err

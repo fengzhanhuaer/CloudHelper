@@ -2,6 +2,7 @@ package mobilecore
 
 import (
 	"bufio"
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -747,37 +748,102 @@ func resolveWebSocketURL(controllerURL string) (string, error) {
 	return u.String(), nil
 }
 
-func buildAuthHeaders(nodeID string, secret string) http.Header {
-	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
-	randomToken := randomHexToken(16)
-	signature := signConnect(secret, nodeID, timestamp, randomToken)
+func buildAuthHeaders(targetURL string, nodeID string, secret string, method string) (http.Header, error) {
+	challenge, requestPath, err := fetchProbeAuthChallenge(targetURL, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	signature := signConnect(secret, nodeID, challenge, method, requestPath)
 	headers := http.Header{}
 	headers.Set("X-Probe-Node-Id", strings.TrimSpace(nodeID))
-	headers.Set("X-Probe-Timestamp", timestamp)
-	headers.Set("X-Probe-Rand", randomToken)
+	headers.Set("X-Probe-Rand", challenge)
 	headers.Set("X-Probe-Signature", signature)
-	return headers
+	return headers, nil
 }
 
-func applyAuthHeaders(req *http.Request, nodeID string, secret string) {
-	for key, values := range buildAuthHeaders(nodeID, secret) {
+func applyAuthHeaders(req *http.Request, nodeID string, secret string) error {
+	if req == nil || req.URL == nil {
+		return errors.New("probe auth request url is required")
+	}
+	headers, err := buildAuthHeaders(req.URL.String(), nodeID, secret, req.Method)
+	if err != nil {
+		return err
+	}
+	for key, values := range headers {
 		for _, value := range values {
 			req.Header.Add(key, value)
 		}
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "cloudhelper-probe-node-android")
-	req.Header.Set("X-Forwarded-Proto", "https")
+	return nil
 }
 
-func signConnect(secret, nodeID, timestamp, randomToken string) string {
+func signConnect(secret, nodeID, challenge, method, requestPath string) string {
 	mac := hmac.New(sha256.New, []byte(strings.TrimSpace(secret)))
-	_, _ = mac.Write([]byte(strings.TrimSpace(nodeID)))
-	_, _ = mac.Write([]byte("\n"))
-	_, _ = mac.Write([]byte(strings.TrimSpace(timestamp)))
-	_, _ = mac.Write([]byte("\n"))
-	_, _ = mac.Write([]byte(strings.TrimSpace(randomToken)))
+	canonical := strings.Join([]string{
+		strings.TrimSpace(nodeID),
+		strings.TrimSpace(challenge),
+		strings.ToUpper(strings.TrimSpace(method)),
+		strings.TrimSpace(requestPath),
+	}, "\n")
+	_, _ = mac.Write([]byte(canonical))
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func fetchProbeAuthChallenge(targetURL string, nodeID string) (string, string, error) {
+	target, err := url.Parse(strings.TrimSpace(targetURL))
+	if err != nil {
+		return "", "", err
+	}
+	switch strings.ToLower(strings.TrimSpace(target.Scheme)) {
+	case "ws":
+		target.Scheme = "http"
+	case "wss":
+		target.Scheme = "https"
+	case "http", "https":
+	default:
+		return "", "", fmt.Errorf("unsupported probe auth target scheme: %s", target.Scheme)
+	}
+	requestPath := target.EscapedPath()
+	if requestPath == "" {
+		requestPath = "/"
+	}
+	if strings.TrimSpace(target.RawQuery) != "" {
+		requestPath += "?" + target.RawQuery
+	}
+	target.Path = "/api/probe/auth/challenge"
+	target.RawPath = ""
+	query := url.Values{}
+	query.Set("node_id", strings.TrimSpace(nodeID))
+	target.RawQuery = query.Encode()
+	target.Fragment = ""
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return "", "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return "", "", fmt.Errorf("probe auth challenge failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var payload struct {
+		Challenge string `json:"challenge"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&payload); err != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(payload.Challenge) == "" {
+		return "", "", errors.New("probe auth challenge is empty")
+	}
+	return strings.TrimSpace(payload.Challenge), requestPath, nil
 }
 
 func randomHexToken(size int) string {

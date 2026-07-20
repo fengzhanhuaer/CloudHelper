@@ -357,4 +357,5 @@ func ResetMngAuthManagerForTest() {
 	mngAuthInitMu.Lock()
 	mngAuthInstance = nil
 	mngAuthInitMu.Unlock()
+	resetMngSetupTokenForTest()
 }

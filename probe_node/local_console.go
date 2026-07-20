@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 const (
@@ -30,7 +32,9 @@ const (
 
 	probeLocalAuthStoreFile      = "probe_local_auth.json"
 	probeLocalSessionCookieName  = "probe_local_session"
-	probeLocalSessionTTL         = 30 * 24 * time.Hour
+	probeLocalSessionTTL         = 8 * time.Hour
+	probeLocalLoginFailThreshold = 5
+	probeLocalLoginFreezeTTL     = 5 * time.Minute
 	probeLocalMinPasswordLength  = 8
 	probeLocalMaxPasswordLength  = 128
 	probeLocalMaxUsernameLength  = 64
@@ -47,6 +51,7 @@ type probeLocalAuthState struct {
 	Username     string `json:"username,omitempty"`
 	PasswordHash string `json:"password_hash,omitempty"`
 	PasswordSalt string `json:"password_salt,omitempty"`
+	PasswordType string `json:"password_type,omitempty"`
 	UpdatedAt    string `json:"updated_at,omitempty"`
 	// ListenIP / ListenPort configure the local console (本地界面) listen address.
 	// They are read at startup; defaults are written into probe_local_auth.json so
@@ -64,8 +69,10 @@ type probeLocalSessionState struct {
 type probeLocalAuthManager struct {
 	mu sync.RWMutex
 
-	state    probeLocalAuthState
-	sessions map[string]probeLocalSessionState
+	state       probeLocalAuthState
+	sessions    map[string]probeLocalSessionState
+	loginFailed map[string]int
+	loginFrozen map[string]time.Time
 }
 
 type probeLocalHTTPError struct {
@@ -878,8 +885,10 @@ func ensureProbeLocalAuthManager() (*probeLocalAuthManager, error) {
 	}
 
 	probeLocalAuthInstance = &probeLocalAuthManager{
-		state:    state,
-		sessions: make(map[string]probeLocalSessionState),
+		state:       state,
+		sessions:    make(map[string]probeLocalSessionState),
+		loginFailed: make(map[string]int),
+		loginFrozen: make(map[string]time.Time),
 	}
 	return probeLocalAuthInstance, nil
 }
@@ -911,11 +920,12 @@ func loadProbeLocalAuthState() (probeLocalAuthState, error) {
 	state.Username = strings.TrimSpace(state.Username)
 	state.PasswordHash = strings.TrimSpace(state.PasswordHash)
 	state.PasswordSalt = strings.TrimSpace(state.PasswordSalt)
+	state.PasswordType = strings.TrimSpace(state.PasswordType)
 	state.UpdatedAt = strings.TrimSpace(state.UpdatedAt)
 	if !state.Registered {
 		return probeLocalAuthState{}, nil
 	}
-	if state.Username == "" || state.PasswordHash == "" || state.PasswordSalt == "" {
+	if state.Username == "" || state.PasswordHash == "" || (state.PasswordType == "" && state.PasswordSalt == "") {
 		return probeLocalAuthState{}, errors.New("invalid probe local auth data")
 	}
 	return state, nil
@@ -931,7 +941,10 @@ func persistProbeLocalAuthState(state probeLocalAuthState) error {
 		return err
 	}
 	payload = append(payload, '\n')
-	return os.WriteFile(path, payload, 0o600)
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }
 
 // loadProbeLocalAuthStateRaw reads the full persisted state WITHOUT the registration
@@ -1035,8 +1048,15 @@ func (m *probeLocalAuthManager) bootstrap() map[string]any {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return map[string]any{
-		"registered": m.state.Registered,
+		"registered":           m.state.Registered,
+		"setup_token_required": !m.state.Registered,
 	}
+}
+
+func (m *probeLocalAuthManager) registered() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.state.Registered
 }
 
 func (m *probeLocalAuthManager) register(username, password, confirmPassword string) error {
@@ -1067,12 +1087,15 @@ func (m *probeLocalAuthManager) register(username, password, confirmPassword str
 		return &probeLocalHTTPError{Status: http.StatusForbidden, Message: "registration is closed"}
 	}
 
-	salt := randomHexToken(16)
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
 	next := probeLocalAuthState{
 		Registered:   true,
 		Username:     username,
-		PasswordSalt: salt,
-		PasswordHash: hashProbeLocalPassword(password, salt),
+		PasswordHash: string(passwordHash),
+		PasswordType: "bcrypt",
 		UpdatedAt:    time.Now().UTC().Format(time.RFC3339),
 	}
 	// Preserve the local console listen config that lives in the same file.
@@ -1088,7 +1111,7 @@ func (m *probeLocalAuthManager) register(username, password, confirmPassword str
 	return nil
 }
 
-func (m *probeLocalAuthManager) login(username, password string) (string, probeLocalSessionState, error) {
+func (m *probeLocalAuthManager) login(clientIP, username, password string) (string, probeLocalSessionState, error) {
 	username = normalizeProbeLocalUsername(username)
 	if username == "" || strings.TrimSpace(password) == "" {
 		return "", probeLocalSessionState{}, &probeLocalHTTPError{Status: http.StatusBadRequest, Message: "username and password are required"}
@@ -1096,23 +1119,63 @@ func (m *probeLocalAuthManager) login(username, password string) (string, probeL
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	now := time.Now()
+	loginKey := strings.TrimSpace(clientIP)
+	if loginKey == "" {
+		loginKey = "unknown"
+	}
+	if frozenUntil := m.loginFrozen[loginKey]; frozenUntil.After(now) {
+		return "", probeLocalSessionState{}, &probeLocalHTTPError{Status: http.StatusTooManyRequests, Message: "too many failed attempts, try again later"}
+	}
+	delete(m.loginFrozen, loginKey)
+	recordFailure := func() {
+		m.loginFailed[loginKey]++
+		if m.loginFailed[loginKey] >= probeLocalLoginFailThreshold {
+			delete(m.loginFailed, loginKey)
+			m.loginFrozen[loginKey] = now.Add(probeLocalLoginFreezeTTL)
+		}
+	}
 
 	if !m.state.Registered {
 		return "", probeLocalSessionState{}, &probeLocalHTTPError{Status: http.StatusForbidden, Message: "account is not registered"}
 	}
 
 	if !strings.EqualFold(username, m.state.Username) {
+		recordFailure()
 		return "", probeLocalSessionState{}, &probeLocalHTTPError{Status: http.StatusUnauthorized, Message: "invalid username or password"}
 	}
-	givenHash := hashProbeLocalPassword(password, m.state.PasswordSalt)
-	if !hmac.Equal([]byte(strings.ToLower(givenHash)), []byte(strings.ToLower(m.state.PasswordHash))) {
+	validPassword := false
+	legacyPassword := m.state.PasswordType == ""
+	if legacyPassword {
+		givenHash := hashProbeLocalPassword(password, m.state.PasswordSalt)
+		validPassword = hmac.Equal([]byte(strings.ToLower(givenHash)), []byte(strings.ToLower(m.state.PasswordHash)))
+	} else if m.state.PasswordType == "bcrypt" {
+		validPassword = bcrypt.CompareHashAndPassword([]byte(m.state.PasswordHash), []byte(password)) == nil
+	}
+	if !validPassword {
+		recordFailure()
 		return "", probeLocalSessionState{}, &probeLocalHTTPError{Status: http.StatusUnauthorized, Message: "invalid username or password"}
+	}
+	delete(m.loginFailed, loginKey)
+	delete(m.loginFrozen, loginKey)
+	if legacyPassword {
+		passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if err != nil {
+			return "", probeLocalSessionState{}, err
+		}
+		m.state.PasswordHash = string(passwordHash)
+		m.state.PasswordSalt = ""
+		m.state.PasswordType = "bcrypt"
+		m.state.UpdatedAt = now.UTC().Format(time.RFC3339)
+		if err := persistProbeLocalAuthState(m.state); err != nil {
+			return "", probeLocalSessionState{}, err
+		}
 	}
 
 	token := randomHexToken(32)
 	session := probeLocalSessionState{
 		Username:  m.state.Username,
-		ExpiresAt: time.Now().Add(probeLocalSessionTTL),
+		ExpiresAt: now.Add(probeLocalSessionTTL),
 	}
 	m.sessions[token] = session
 	m.cleanupExpiredLocked(time.Now())
@@ -1200,13 +1263,14 @@ func requireProbeLocalSession(w http.ResponseWriter, r *http.Request) (probeLoca
 	return session, true
 }
 
-func setProbeLocalSessionCookie(w http.ResponseWriter, token string, expiresAt time.Time) {
+func setProbeLocalSessionCookie(w http.ResponseWriter, r *http.Request, token string, expiresAt time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     probeLocalSessionCookieName,
 		Value:    strings.TrimSpace(token),
 		Path:     "/local",
 		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+		SameSite: http.SameSiteStrictMode,
+		Secure:   r != nil && r.TLS != nil,
 		Expires:  expiresAt,
 	})
 }
@@ -1324,10 +1388,13 @@ func persistProbeLocalJSONFile(path string, payload any) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(encoded, '\n'), 0o644)
+	if err := os.WriteFile(path, append(encoded, '\n'), 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
 }
 
 func defaultProbeLocalTUNStateFile() probeLocalTUNStateFile {
@@ -1584,7 +1651,10 @@ func startProbeLocalConsoleServer(handler http.Handler, explicitListen string) e
 	}
 	addr := resolveProbeLocalListenAddr(explicitListen)
 	if host, _, splitErr := net.SplitHostPort(addr); splitErr == nil && !isProbeLocalLoopbackHost(host) {
-		logProbeWarnf("probe local console binding to a non-loopback address (%s): the local UI will be reachable from the network — make sure a strong local password is set", addr)
+		if !strings.EqualFold(strings.TrimSpace(os.Getenv("PROBE_LOCAL_ALLOW_INSECURE_HTTP")), "true") {
+			return fmt.Errorf("refusing insecure local console HTTP on non-loopback address %s; use a TLS reverse proxy or explicitly set PROBE_LOCAL_ALLOW_INSECURE_HTTP=true", addr)
+		}
+		logProbeWarnf("probe local console insecure HTTP explicitly enabled on non-loopback address: %s", addr)
 	}
 
 	probeLocalConsoleState.mu.Lock()
@@ -1709,6 +1779,7 @@ type probeLocalRegisterRequest struct {
 	Username        string `json:"username"`
 	Password        string `json:"password"`
 	ConfirmPassword string `json:"confirm_password"`
+	SetupToken      string `json:"setup_token"`
 }
 
 type probeLocalLoginRequest struct {
@@ -1854,6 +1925,12 @@ func probeLocalAuthBootstrapHandler(w http.ResponseWriter, r *http.Request) {
 		writeProbeLocalError(w, err)
 		return
 	}
+	if !mgr.registered() {
+		if _, err := ensureProbeLocalSetupToken(); err != nil {
+			writeProbeLocalError(w, err)
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, mgr.bootstrap())
 }
 
@@ -1874,10 +1951,19 @@ func probeLocalAuthRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
+	if mgr.registered() {
+		writeProbeLocalError(w, &probeLocalHTTPError{Status: http.StatusForbidden, Message: "registration is closed"})
+		return
+	}
+	if err := verifyProbeLocalSetupToken(req.SetupToken); err != nil {
+		writeProbeLocalError(w, err)
+		return
+	}
 	if err := mgr.register(req.Username, req.Password, req.ConfirmPassword); err != nil {
 		writeProbeLocalError(w, err)
 		return
 	}
+	consumeProbeLocalSetupToken()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "registered": true})
 }
 
@@ -1898,12 +1984,13 @@ func probeLocalAuthLoginHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
-	token, session, err := mgr.login(req.Username, req.Password)
+	clientIP := resolveProbeRouteSourceIPFromAddrString(r.RemoteAddr)
+	token, session, err := mgr.login(clientIP, req.Username, req.Password)
 	if err != nil {
 		writeProbeLocalError(w, err)
 		return
 	}
-	setProbeLocalSessionCookie(w, token, session.ExpiresAt)
+	setProbeLocalSessionCookie(w, r, token, session.ExpiresAt)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         true,
 		"username":   session.Username,
@@ -3457,6 +3544,7 @@ func resetProbeLocalAuthManagerForTest() {
 	probeLocalAuthInitMu.Lock()
 	probeLocalAuthInstance = nil
 	probeLocalAuthInitMu.Unlock()
+	resetProbeLocalSetupTokenForTest()
 }
 
 func resetProbeLocalControlStateForTest() {

@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -69,8 +68,10 @@ type probeVirtualRouterTopologyRule struct {
 	Direction         string `json:"direction"`
 	FromServiceDomain string `json:"from_service_domain,omitempty"`
 	FromServicePort   int    `json:"from_service_port,omitempty"`
+	FromTLSSPKISHA256 string `json:"from_tls_spki_sha256,omitempty"`
 	ToServiceDomain   string `json:"to_service_domain,omitempty"`
 	ToServicePort     int    `json:"to_service_port,omitempty"`
+	ToTLSSPKISHA256   string `json:"to_tls_spki_sha256,omitempty"`
 	RouteLayer        string `json:"route_layer,omitempty"`
 	UserID            string `json:"user_id,omitempty"`
 	UserPublicKey     string `json:"user_public_key,omitempty"`
@@ -192,16 +193,15 @@ func requestProbeRouteConfig(ctx context.Context, controllerBaseURL string, iden
 		return probeVirtualRouterConfig{}, errors.New("node identity is missing node id or secret")
 	}
 
-	query := url.Values{}
-	query.Set("node_id", nodeID)
-	query.Set("secret", secret)
-	configURL := baseURL + probeRouteConfigAPIPath + "?" + query.Encode()
+	configURL := baseURL + probeRouteConfigAPIPath
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, configURL, nil)
 	if err != nil {
 		return probeVirtualRouterConfig{}, err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("X-Forwarded-Proto", "https")
+	if err := applyProbeAuthHeaders(req, identity); err != nil {
+		return probeVirtualRouterConfig{}, err
+	}
 
 	client, closeClient, err := newProbeResolvedHTTPClientForURL(configURL, probeRouteConfigSyncFetchTimeout)
 	if err != nil {
@@ -259,17 +259,16 @@ func requestProbeRouteFakeIPItem(ctx context.Context, controllerBaseURL string, 
 	if nodeID == "" || secret == "" {
 		return probeVirtualRouterFakeIPEntry{}, errors.New("node identity is missing node id or secret")
 	}
-	query := url.Values{}
-	query.Set("node_id", nodeID)
-	query.Set("secret", secret)
-	endpoint := baseURL + probeRouteFakeIPResolveAPIPath + "?" + query.Encode()
+	endpoint := baseURL + probeRouteFakeIPResolveAPIPath
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(body)))
 	if err != nil {
 		return probeVirtualRouterFakeIPEntry{}, err
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Forwarded-Proto", "https")
+	if err := applyProbeAuthHeaders(req, identity); err != nil {
+		return probeVirtualRouterFakeIPEntry{}, err
+	}
 	client, closeClient, err := newProbeResolvedHTTPClientForURL(endpoint, probeRouteConfigSyncFetchTimeout)
 	if err != nil {
 		return probeVirtualRouterFakeIPEntry{}, err

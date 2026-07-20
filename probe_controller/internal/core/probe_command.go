@@ -11,7 +11,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"strconv"
@@ -217,11 +216,6 @@ var probeSessions = struct {
 	mu   sync.RWMutex
 	data map[string]*probeSession
 }{data: make(map[string]*probeSession)}
-
-var probeAuthReplayStore = struct {
-	mu   sync.Mutex
-	seen map[string]time.Time
-}{seen: make(map[string]time.Time)}
 
 var probeLogRequestSeq atomic.Uint64
 
@@ -564,15 +558,15 @@ func ProbeProxyDownloadHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "url query parameter is required"})
 		return
 	}
-	targetURL, err := url.Parse(rawURL)
-	if err != nil || targetURL == nil || targetURL.Scheme != "https" {
+	targetURL, err := parseProbeProxyDownloadURL(rawURL)
+	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid download url"})
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
 	defer cancel()
-	proxyReq, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL.String(), nil)
+	proxyReq, err := newProbeProxyDownloadRequest(ctx, targetURL.String())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -582,11 +576,7 @@ func ProbeProxyDownloadHandler(w http.ResponseWriter, r *http.Request) {
 	if rangeHeader := strings.TrimSpace(r.Header.Get("Range")); rangeHeader != "" {
 		proxyReq.Header.Set("Range", rangeHeader)
 	}
-	if token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); token != "" {
-		proxyReq.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	resp, err := http.DefaultClient.Do(proxyReq)
+	resp, err := doProbeProxyDownload(proxyReq)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("proxy download failed: %v", err)})
 		return
@@ -1237,22 +1227,25 @@ func controllerBaseURLFromRequest(r *http.Request) string {
 
 func authenticateProbeRequest(r *http.Request) (string, error) {
 	nodeID := normalizeProbeNodeID(r.Header.Get("X-Probe-Node-Id"))
-	timestamp := strings.TrimSpace(r.Header.Get("X-Probe-Timestamp"))
-	randomToken := strings.TrimSpace(r.Header.Get("X-Probe-Rand"))
+	challenge := strings.TrimSpace(r.Header.Get("X-Probe-Rand"))
 	signature := strings.TrimSpace(r.Header.Get("X-Probe-Signature"))
 
-	if nodeID == "" || timestamp == "" || randomToken == "" || signature == "" {
+	if nodeID == "" || challenge == "" || signature == "" {
 		return "", fmt.Errorf("missing probe auth headers")
 	}
 	secret, ok := resolveProbeSecret(nodeID)
 	if !ok {
 		return "", fmt.Errorf("probe secret is not configured for node")
 	}
-	if !verifyProbeConnectHMAC(secret, nodeID, timestamp, randomToken, signature) {
+	requestTarget := r.URL.EscapedPath()
+	if strings.TrimSpace(r.URL.RawQuery) != "" {
+		requestTarget += "?" + r.URL.RawQuery
+	}
+	if !verifyProbeConnectHMAC(secret, nodeID, challenge, r.Method, requestTarget, signature) {
 		return "", fmt.Errorf("invalid probe signature")
 	}
-	if !checkAndRememberProbeAuthReplay(nodeID, timestamp, randomToken) {
-		return "", fmt.Errorf("probe auth replay detected")
+	if err := verifyAndConsumeProbeAuthChallenge(nodeID, challenge, time.Now()); err != nil {
+		return "", err
 	}
 	return nodeID, nil
 }
@@ -1261,6 +1254,9 @@ func authenticateProbeRequestOrQuerySecret(r *http.Request) (string, error) {
 	queryNodeID := normalizeProbeNodeID(r.URL.Query().Get("node_id"))
 	querySecret := strings.TrimSpace(r.URL.Query().Get("secret"))
 	if queryNodeID != "" || querySecret != "" {
+		if !strings.EqualFold(strings.TrimSpace(os.Getenv("PROBE_ALLOW_LEGACY_QUERY_AUTH")), "true") {
+			return "", fmt.Errorf("query parameter probe authentication is disabled")
+		}
 		if queryNodeID == "" || querySecret == "" {
 			return "", fmt.Errorf("node_id and secret query parameters are required")
 		}
@@ -1292,49 +1288,19 @@ func resolveProbeSecret(nodeID string) (string, bool) {
 	return strings.TrimSpace(v), true
 }
 
-func verifyProbeConnectHMAC(secret, nodeID, timestamp, randomToken, signatureHex string) bool {
+func verifyProbeConnectHMAC(secret, nodeID, challenge, method, requestPath, signatureHex string) bool {
 	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte(strings.TrimSpace(nodeID)))
-	_, _ = mac.Write([]byte("\n"))
-	_, _ = mac.Write([]byte(strings.TrimSpace(timestamp)))
-	_, _ = mac.Write([]byte("\n"))
-	_, _ = mac.Write([]byte(strings.TrimSpace(randomToken)))
+	canonical := strings.Join([]string{
+		strings.TrimSpace(nodeID),
+		strings.TrimSpace(challenge),
+		strings.ToUpper(strings.TrimSpace(method)),
+		strings.TrimSpace(requestPath),
+	}, "\n")
+	_, _ = mac.Write([]byte(canonical))
 	expected := mac.Sum(nil)
 	provided, err := hex.DecodeString(strings.TrimSpace(signatureHex))
 	if err != nil {
 		return false
 	}
 	return hmac.Equal(expected, provided)
-}
-
-func checkAndRememberProbeAuthReplay(nodeID, timestamp, randomToken string) bool {
-	tsInt, err := strconv.ParseInt(strings.TrimSpace(timestamp), 10, 64)
-	if err != nil {
-		return false
-	}
-	now := time.Now()
-	ts := time.Unix(tsInt, 0)
-	if ts.Before(now.Add(-2*time.Minute)) || ts.After(now.Add(2*time.Minute)) {
-		return false
-	}
-
-	key := strings.TrimSpace(nodeID) + "|" + strings.TrimSpace(randomToken)
-	if key == "|" || strings.HasSuffix(key, "|") {
-		return false
-	}
-
-	probeAuthReplayStore.mu.Lock()
-	defer probeAuthReplayStore.mu.Unlock()
-
-	for k, seenAt := range probeAuthReplayStore.seen {
-		if now.Sub(seenAt) > 10*time.Minute {
-			delete(probeAuthReplayStore.seen, k)
-		}
-	}
-
-	if _, exists := probeAuthReplayStore.seen[key]; exists {
-		return false
-	}
-	probeAuthReplayStore.seen[key] = now
-	return true
 }

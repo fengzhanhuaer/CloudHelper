@@ -76,8 +76,10 @@ type probeVirtualRouterTopologyRule struct {
 	Direction         string `json:"direction"`
 	FromServiceDomain string `json:"from_service_domain,omitempty"`
 	FromServicePort   int    `json:"from_service_port,omitempty"`
+	FromTLSSPKISHA256 string `json:"from_tls_spki_sha256,omitempty"`
 	ToServiceDomain   string `json:"to_service_domain,omitempty"`
 	ToServicePort     int    `json:"to_service_port,omitempty"`
+	ToTLSSPKISHA256   string `json:"to_tls_spki_sha256,omitempty"`
 	RouteLayer        string `json:"route_layer,omitempty"`
 	UserID            string `json:"user_id,omitempty"`
 	UserPublicKey     string `json:"user_public_key,omitempty"`
@@ -181,13 +183,68 @@ func buildProbeVirtualRouterConfigForNodeLocked(nodeID string) probeVirtualRoute
 	if ProbeRouteConfigStore == nil {
 		return defaultProbeVirtualRouterConfig()
 	}
-	config := enrichProbeVirtualRouterAuthTickets(ensureProbeVirtualRouterAuthFields(ensureProbeVirtualRouterProbeIPsForKnownNodes(normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter))))
+	config := ensureProbeVirtualRouterAuthFields(ensureProbeVirtualRouterProbeIPsForKnownNodes(normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter)))
+	config = enrichProbeVirtualRouterTLSFingerprints(config)
+	config = enrichProbeVirtualRouterAuthTickets(config)
 	config = enrichProbeVirtualRouterProbeIPDisplayNames(config)
+	config = scopeProbeVirtualRouterCredentialsForNode(config, nodeID)
 	config.FakeIPLibrary = probeVirtualRouterFakeIPLibrary{}
 	if !config.Enabled {
 		config.ProbeIPs = []probeVirtualRouterProbeIP{}
 		config.TopologyRules = []probeVirtualRouterTopologyRule{}
 		return config
+	}
+	return config
+}
+
+func scopeProbeVirtualRouterCredentialsForNode(config probeVirtualRouterConfig, nodeID string) probeVirtualRouterConfig {
+	localNodeID := normalizeProbeNodeID(nodeID)
+	for index := range config.TopologyRules {
+		rule := &config.TopologyRules[index]
+		fromNodeID := normalizeProbeNodeID(rule.FromNodeID)
+		toNodeID := normalizeProbeNodeID(rule.ToNodeID)
+		if localNodeID != "" && (fromNodeID == localNodeID || toNodeID == localNodeID) {
+			continue
+		}
+		rule.Secret = ""
+		rule.AuthTicket = ""
+	}
+	return config
+}
+
+func normalizeProbeVirtualRouterTLSSPKI(raw string) string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if len(value) != sha256.Size*2 {
+		return ""
+	}
+	if _, err := hex.DecodeString(value); err != nil {
+		return ""
+	}
+	return value
+}
+
+func enrichProbeVirtualRouterTLSFingerprints(config probeVirtualRouterConfig) probeVirtualRouterConfig {
+	mgr, err := getProbeCertificateManager()
+	if err != nil || mgr == nil {
+		return config
+	}
+	cache := make(map[string]string)
+	fingerprintForNode := func(nodeID string) string {
+		nodeID = normalizeProbeNodeID(nodeID)
+		if value, ok := cache[nodeID]; ok {
+			return value
+		}
+		value := ""
+		if cert, readErr := mgr.readStoredNodeCertificate(nodeID); readErr == nil {
+			value = probeIssuedCertificateSPKISHA256(cert)
+		}
+		cache[nodeID] = value
+		return value
+	}
+	for index := range config.TopologyRules {
+		rule := &config.TopologyRules[index]
+		rule.FromTLSSPKISHA256 = fingerprintForNode(rule.FromNodeID)
+		rule.ToTLSSPKISHA256 = fingerprintForNode(rule.ToNodeID)
 	}
 	return config
 }
@@ -436,8 +493,10 @@ func normalizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopology
 			Direction:         direction,
 			FromServiceDomain: fromServiceDomain,
 			FromServicePort:   fromServicePort,
+			FromTLSSPKISHA256: normalizeProbeVirtualRouterTLSSPKI(item.FromTLSSPKISHA256),
 			ToServiceDomain:   toServiceDomain,
 			ToServicePort:     toServicePort,
+			ToTLSSPKISHA256:   normalizeProbeVirtualRouterTLSSPKI(item.ToTLSSPKISHA256),
 			RouteLayer:        normalizeProbeVirtualRouterRouteLayer(item.RouteLayer),
 			UserID:            strings.TrimSpace(item.UserID),
 			UserPublicKey:     strings.TrimSpace(item.UserPublicKey),

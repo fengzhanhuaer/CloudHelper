@@ -57,6 +57,10 @@ func cleanupProbeVirtualRouterPlatformRoutes() error {
 	return cleanupProbeVirtualRouterWindowsRoutes()
 }
 
+func cleanupProbeVirtualRouterPlatformTakeoverRoutes() error {
+	return cleanupProbeVirtualRouterWindowsTakeoverRoutes()
+}
+
 func ensureProbeVirtualRouterWindowsRoutes(interfaceLUID uint64, ifIndex int) error {
 	if ifIndex <= 0 {
 		return nil

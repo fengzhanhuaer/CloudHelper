@@ -2,14 +2,16 @@ package core
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 )
 
-const probeVirtualRouterAuthTicketVersion = "route-auth-v1"
+const probeVirtualRouterAuthTicketVersion = "route-auth-v2"
 
 var probeVirtualRouterAuthTicketNow = time.Now
 
@@ -19,7 +21,13 @@ type probeVirtualRouterAuthTicketPayload struct {
 	ClientEntryID string `json:"client_entry_id,omitempty"`
 	UserID        string `json:"user_id"`
 	UserPublicKey string `json:"user_public_key"`
+	FromNodeID    string `json:"from_node_id"`
+	ToNodeID      string `json:"to_node_id"`
+	FromTLSSPKI   string `json:"from_tls_spki_sha256"`
+	ToTLSSPKI     string `json:"to_tls_spki_sha256"`
+	TicketID      string `json:"ticket_id"`
 	IssuedAt      string `json:"issued_at"`
+	ExpiresAt     string `json:"expires_at"`
 }
 
 func buildProbeVirtualRouterAuthTicket(rule probeVirtualRouterTopologyRule, priv ed25519.PrivateKey) (string, error) {
@@ -38,13 +46,23 @@ func buildProbeVirtualRouterAuthTicket(rule probeVirtualRouterTopologyRule, priv
 	if clientEntryID == "" {
 		clientEntryID = routeID
 	}
+	issuedAt := probeVirtualRouterMonthlyAuthTicketIssuedAt(probeVirtualRouterAuthTicketNow())
+	issuedTime, _ := time.Parse(time.RFC3339, issuedAt)
+	ticketSeed := strings.Join([]string{routeID, clientEntryID, strings.TrimSpace(rule.FromNodeID), strings.TrimSpace(rule.ToNodeID), strings.TrimSpace(rule.Secret), rule.FromTLSSPKISHA256, rule.ToTLSSPKISHA256, issuedAt}, "\n")
+	ticketSum := sha256.Sum256([]byte(ticketSeed))
 	payload := probeVirtualRouterAuthTicketPayload{
 		Version:       probeVirtualRouterAuthTicketVersion,
 		RouteID:       routeID,
 		ClientEntryID: clientEntryID,
 		UserID:        strings.TrimSpace(rule.UserID),
 		UserPublicKey: userPublicKey,
-		IssuedAt:      probeVirtualRouterMonthlyAuthTicketIssuedAt(probeVirtualRouterAuthTicketNow()),
+		FromNodeID:    normalizeProbeNodeID(rule.FromNodeID),
+		ToNodeID:      normalizeProbeNodeID(rule.ToNodeID),
+		FromTLSSPKI:   normalizeProbeVirtualRouterTLSSPKI(rule.FromTLSSPKISHA256),
+		ToTLSSPKI:     normalizeProbeVirtualRouterTLSSPKI(rule.ToTLSSPKISHA256),
+		TicketID:      hex.EncodeToString(ticketSum[:16]),
+		IssuedAt:      issuedAt,
+		ExpiresAt:     issuedTime.Add(35 * 24 * time.Hour).Format(time.RFC3339),
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {

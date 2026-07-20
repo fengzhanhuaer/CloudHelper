@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-func TestBuildProbeVirtualRouterConfigForNodeReturnsFullVirtualTopology(t *testing.T) {
+func TestBuildProbeVirtualRouterConfigForNodeScopesCredentialsToAdjacentEdges(t *testing.T) {
 	oldStore := ProbeRouteConfigStore
 	t.Cleanup(func() { ProbeRouteConfigStore = oldStore })
 	setProbeVirtualRouterTestProbeStore(t, probeConfigData{
@@ -52,6 +52,15 @@ func TestBuildProbeVirtualRouterConfigForNodeReturnsFullVirtualTopology(t *testi
 	}
 	if len(config.TopologyRules) != 3 {
 		t.Fatalf("topology rules=%+v, want full virtual topology", config.TopologyRules)
+	}
+	for _, rule := range config.TopologyRules {
+		adjacent := rule.FromNodeID == "1" || rule.ToNodeID == "1"
+		if adjacent && strings.TrimSpace(rule.Secret) == "" {
+			t.Fatalf("adjacent rule credentials missing: %+v", rule)
+		}
+		if !adjacent && (strings.TrimSpace(rule.Secret) != "" || strings.TrimSpace(rule.AuthTicket) != "") {
+			t.Fatalf("unrelated rule credentials leaked: %+v", rule)
+		}
 	}
 	if config.ProbeIPs[0].ServicePort != probeVirtualRouterDefaultServicePort {
 		t.Fatalf("default probe service port=%d, want %d", config.ProbeIPs[0].ServicePort, probeVirtualRouterDefaultServicePort)
@@ -209,6 +218,9 @@ func TestProbeVirtualRouterFakeIPLibraryDoesNotBatchRenewOnMaintenance(t *testin
 			VirtualRouter: probeVirtualRouterConfig{
 				Enabled:    true,
 				FakeIPCIDR: probeVirtualRouterDefaultCIDR,
+				RouteRules: []probeVirtualRouterRouteRule{{
+					ID: "rr-1", Name: "reddit", Action: probeVirtualRouterRouteRuleActionExit, ExitNodeID: "9", Entries: []string{"domain_suffix:reddit.com"},
+				}},
 			},
 			VirtualRouterFakeIP: probeVirtualRouterFakeIPLibrary{
 				Version:   7,
@@ -236,6 +248,8 @@ func TestProbeVirtualRouterFakeIPLibraryDoesNotBatchRenewOnMaintenance(t *testin
 }
 
 func TestProbeRouteFakeIPResolveHandlerPersistsLibrary(t *testing.T) {
+	t.Setenv("PROBE_ALLOW_LEGACY_QUERY_AUTH", "true")
+	t.Setenv("PROBE_TRUSTED_PROXY_CIDRS", "192.0.2.0/24")
 	oldRouteStore := ProbeRouteConfigStore
 	oldProbeStore := ProbeStore
 	t.Cleanup(func() {
@@ -253,6 +267,13 @@ func TestProbeRouteFakeIPResolveHandlerPersistsLibrary(t *testing.T) {
 			VirtualRouter: probeVirtualRouterConfig{
 				Enabled:    true,
 				FakeIPCIDR: probeVirtualRouterDefaultCIDR,
+				RouteRules: []probeVirtualRouterRouteRule{{
+					ID:         "rr-1",
+					Name:       "reddit",
+					Action:     probeVirtualRouterRouteRuleActionExit,
+					ExitNodeID: "9",
+					Entries:    []string{"domain_suffix:reddit.com"},
+				}},
 			},
 			VirtualRouterFakeIP: defaultProbeVirtualRouterFakeIPLibrary(),
 		},
@@ -294,7 +315,32 @@ func TestProbeRouteFakeIPResolveHandlerPersistsLibrary(t *testing.T) {
 	}
 }
 
+func TestAuthorizedProbeVirtualRouterFakeIPRuleRejectsClientRuleOverride(t *testing.T) {
+	oldRouteStore := ProbeRouteConfigStore
+	ProbeRouteConfigStore = &probeRouteConfigStore{data: probeRouteConfigStoreData{
+		VirtualRouter: probeVirtualRouterConfig{
+			Enabled: true,
+			RouteRules: []probeVirtualRouterRouteRule{{
+				ID: "rr-1", Name: "reddit", Action: probeVirtualRouterRouteRuleActionExit, ExitNodeID: "9", Entries: []string{"domain_suffix:reddit.com"},
+			}},
+		},
+	}}
+	t.Cleanup(func() { ProbeRouteConfigStore = oldRouteStore })
+
+	if _, err := authorizedProbeVirtualRouterFakeIPRule("api.reddit.com", "rr-other", "probe_exit", "9"); err == nil {
+		t.Fatal("client-supplied rule override should be rejected")
+	}
+	if _, err := authorizedProbeVirtualRouterFakeIPRule("api.reddit.com", "rr-1", "probe_exit", "8"); err == nil {
+		t.Fatal("client-supplied exit override should be rejected")
+	}
+	if _, err := authorizedProbeVirtualRouterFakeIPRule("api.reddit.com", "rr-1", "probe_exit", "9"); err != nil {
+		t.Fatalf("matching stored rule rejected: %v", err)
+	}
+}
+
 func TestProbeRouteFakeIPRenewHandlerRenewsOnlyReportedDomains(t *testing.T) {
+	t.Setenv("PROBE_ALLOW_LEGACY_QUERY_AUTH", "true")
+	t.Setenv("PROBE_TRUSTED_PROXY_CIDRS", "192.0.2.0/24")
 	oldRouteStore := ProbeRouteConfigStore
 	oldProbeStore := ProbeStore
 	t.Cleanup(func() {
@@ -335,7 +381,7 @@ func TestProbeRouteFakeIPRenewHandlerRenewsOnlyReportedDomains(t *testing.T) {
 		},
 	}
 
-	body := bytes.NewBufferString(`{"domains":["api.reddit.com","old.example.com"]}`)
+	body := bytes.NewBufferString(`{"domains":["api.reddit.com"]}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/probe/route/fake_ip/renew?node_id=1&secret=secret-1", body)
 	req.Header.Set("X-Forwarded-Proto", "https")
 	rr := httptest.NewRecorder()
@@ -364,6 +410,8 @@ func TestProbeRouteFakeIPRenewHandlerRenewsOnlyReportedDomains(t *testing.T) {
 }
 
 func TestProbeRouteFakeIPResolveHandlerRenewsOnFakeIPLookup(t *testing.T) {
+	t.Setenv("PROBE_ALLOW_LEGACY_QUERY_AUTH", "true")
+	t.Setenv("PROBE_TRUSTED_PROXY_CIDRS", "192.0.2.0/24")
 	oldRouteStore := ProbeRouteConfigStore
 	oldProbeStore := ProbeStore
 	t.Cleanup(func() {

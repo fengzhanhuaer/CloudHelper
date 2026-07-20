@@ -14,6 +14,7 @@ type mngRegisterRequest struct {
 	Username        string `json:"username"`
 	Password        string `json:"password"`
 	ConfirmPassword string `json:"confirm_password"`
+	SetupToken      string `json:"setup_token"`
 }
 
 type mngLoginRequest struct {
@@ -117,7 +118,14 @@ func mngBootstrapHandler(w http.ResponseWriter, r *http.Request) {
 		writeMngError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"registered": mgr.registered()})
+	registered := mgr.registered()
+	if !registered {
+		if _, err := ensureMngSetupToken(); err != nil {
+			writeMngError(w, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"registered": registered, "setup_token_required": !registered})
 }
 
 func mngRegisterHandler(w http.ResponseWriter, r *http.Request) {
@@ -131,16 +139,27 @@ func mngRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		writeMngError(w, err)
 		return
 	}
+	if mgr.registered() {
+		writeMngError(w, &mngHTTPError{Status: http.StatusForbidden, Message: "registration is closed"})
+		return
+	}
 
 	var req mngRegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	body := http.MaxBytesReader(w, r.Body, 64*1024)
+	defer body.Close()
+	if err := json.NewDecoder(body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+	if err := verifyMngSetupToken(req.SetupToken); err != nil {
+		writeMngError(w, err)
 		return
 	}
 	if err := mgr.register(req.Username, req.Password, req.ConfirmPassword); err != nil {
 		writeMngError(w, err)
 		return
 	}
+	consumeMngSetupToken()
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"registered": true,
 	})
@@ -159,7 +178,9 @@ func mngLoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req mngLoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	body := http.MaxBytesReader(w, r.Body, 64*1024)
+	defer body.Close()
+	if err := json.NewDecoder(body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
 		return
 	}

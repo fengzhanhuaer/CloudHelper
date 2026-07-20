@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1101,11 +1104,11 @@ func openProbeRouteRelayWebSocketNetConn(routeID string, secret string, relayHos
 	header.Set(probeRouteLegacyRouteIDHeader, strings.TrimSpace(routeID))
 	header.Set(probeRouteCodexRouteIDHeader, strings.TrimSpace(routeID))
 	header.Set(probeRouteCodexVersionHeader, probeRouteAuthPacketVersion)
-	if err := applyProbeRouteSecretAuthHeaders(header, routeID, secret); err != nil {
-		return nil, err
-	}
 	header.Set(probeRouteCodexRelayModeHeader, firstNonEmpty(strings.TrimSpace(relayMode), probeRouteRelayModeBridge))
 	header.Set(probeRouteCodexRelayRoleHeader, normalizeProbeRouteBridgeRole(bridgeRole))
+	if err := applyProbeRouteSecretAuthHeaders(header, routeID, secret, currentProbeVirtualRouterLocalNodeID(), http.MethodGet, probeRouteRelayAPIPath, bridgeRole); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(connToken) != "" {
 		header.Set(probeRouteCodexConnIDHeader, strings.TrimSpace(connToken))
 	}
@@ -1128,12 +1131,12 @@ func openProbeRouteRelayWebSocketNetConn(routeID string, secret string, relayHos
 			}
 			return conn, err
 		},
-		TLSClientConfig: &tls.Config{
-			MinVersion:         tls.VersionTLS12,
-			ServerName:         resolveProbeRouteClientTLSServerName("websocket", relayDialHost, relayHostHeader),
-			InsecureSkipVerify: true,
-		},
 	}
+	tlsConfig, err := newProbeRouteRelayTLSConfig(routeID, relayHostHeader, tls.VersionTLS12, nil)
+	if err != nil {
+		return nil, err
+	}
+	dialer.TLSClientConfig = tlsConfig
 	logProbeRouteRelayDialAttempt("websocket", routeID, "websocket", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, openTimeout)
 	ws, response, err := dialer.Dial(relayURL, header)
 	if err != nil {
@@ -1165,11 +1168,9 @@ func openProbeRouteRelayHTTP3WebSocketNetConn(routeID string, secret string, rel
 		return nil, err
 	}
 	dialHostPort := net.JoinHostPort(relayDialHost, strconv.Itoa(relayPort))
-	tlsConf := &tls.Config{
-		MinVersion:         tls.VersionTLS13,
-		NextProtos:         []string{http3.NextProtoH3},
-		ServerName:         resolveProbeRouteClientTLSServerName("websocket-h3", relayDialHost, relayHostHeader),
-		InsecureSkipVerify: true,
+	tlsConf, err := newProbeRouteRelayTLSConfig(routeID, relayHostHeader, tls.VersionTLS13, []string{http3.NextProtoH3})
+	if err != nil {
+		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	openTimer := time.AfterFunc(openTimeout, cancel)
@@ -1242,7 +1243,7 @@ func openProbeRouteRelayHTTP3WebSocketNetConn(routeID string, secret string, rel
 	request.Header.Set(probeRouteLegacyRouteIDHeader, strings.TrimSpace(routeID))
 	request.Header.Set(probeRouteCodexRouteIDHeader, strings.TrimSpace(routeID))
 	request.Header.Set(probeRouteCodexVersionHeader, probeRouteAuthPacketVersion)
-	if err := applyProbeRouteSecretAuthHeaders(request.Header, routeID, secret); err != nil {
+	if err := applyProbeRouteSecretAuthHeaders(request.Header, routeID, secret, currentProbeVirtualRouterLocalNodeID(), http.MethodConnect, probeRouteRelayAPIPath, bridgeRole); err != nil {
 		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
 		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
 		_ = quicConn.CloseWithError(0, "h3 websocket auth failed")
@@ -1506,7 +1507,7 @@ func (c *probeRouteHTTP3StreamNetConn) SetWriteDeadline(t time.Time) error {
 	return c.stream.SetWriteDeadline(t)
 }
 
-func applyProbeRouteSecretAuthHeaders(headers http.Header, routeID string, secret string) error {
+func applyProbeRouteSecretAuthHeaders(headers http.Header, routeID string, secret string, sourceNodeID string, method string, requestPath string, relayRole string) error {
 	cleanRouteID := strings.TrimSpace(routeID)
 	cleanSecret := strings.TrimSpace(secret)
 	if cleanRouteID == "" {
@@ -1515,11 +1516,15 @@ func applyProbeRouteSecretAuthHeaders(headers http.Header, routeID string, secre
 	if cleanSecret == "" {
 		return errors.New("route_secret is required")
 	}
+	cleanSourceNodeID := normalizeProbeRouteNodeID(sourceNodeID)
+	if cleanSourceNodeID == "" {
+		return errors.New("source_node_id is required")
+	}
 	nonce := randomHexToken(16)
 	headers.Set("Authorization", "Bearer "+nonce)
 	headers.Set(probeRouteCodexAuthModeHeader, "secret_hmac")
-	headers.Set(probeRouteCodexAuthTimeHeader, time.Now().UTC().Format(time.RFC3339Nano))
-	headers.Set(probeRouteCodexMACHeader, buildProbeRouteHMAC(cleanSecret, cleanRouteID, nonce))
+	headers.Set(probeRouteCodexSourceNodeHeader, cleanSourceNodeID)
+	headers.Set(probeRouteCodexMACHeader, buildProbeRouteHMAC(cleanSecret, cleanRouteID, nonce, method, requestPath, cleanSourceNodeID, relayRole))
 	applyProbeRouteAuthTicketHeader(headers, cleanRouteID)
 	return nil
 }
@@ -1728,4 +1733,37 @@ func selectProbeRoutePreferredDialIP(ips []net.IP) net.IP {
 
 func resolveProbeRouteClientTLSServerName(layer string, dialHost string, hostHeader string) string {
 	return resolveProbeRouteTLSServerName(layer, dialHost, hostHeader)
+}
+
+func newProbeRouteRelayTLSConfig(routeID string, hostHeader string, minVersion uint16, nextProtos []string) (*tls.Config, error) {
+	cleanHost := strings.TrimSpace(strings.Trim(hostHeader, "[]"))
+	if cleanHost != "" && net.ParseIP(cleanHost) == nil && isProbeVirtualRouterCloudflareCopilotDomain(cleanHost) {
+		return &tls.Config{
+			MinVersion: minVersion,
+			NextProtos: append([]string(nil), nextProtos...),
+			ServerName: cleanHost,
+		}, nil
+	}
+	expectedHex := lookupProbeRouteTLSPin(routeID)
+	expected, err := hex.DecodeString(expectedHex)
+	if err != nil || len(expected) != sha256.Size {
+		return nil, fmt.Errorf("relay tls public key pin is not configured for route %s", strings.TrimSpace(routeID))
+	}
+	return &tls.Config{
+		MinVersion: minVersion,
+		NextProtos: append([]string(nil), nextProtos...),
+		// Ordinary relay connections intentionally omit SNI and validate the
+		// controller-signed SPKI pin instead of a hostname.
+		InsecureSkipVerify: true,
+		VerifyConnection: func(state tls.ConnectionState) error {
+			if len(state.PeerCertificates) == 0 {
+				return errors.New("relay tls peer certificate is missing")
+			}
+			actual := sha256.Sum256(state.PeerCertificates[0].RawSubjectPublicKeyInfo)
+			if !hmac.Equal(expected, actual[:]) {
+				return errors.New("relay tls public key pin mismatch")
+			}
+			return nil
+		},
+	}, nil
 }

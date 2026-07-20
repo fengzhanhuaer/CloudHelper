@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -161,4 +163,87 @@ func dialProbeVRouteProxyDirectUDP(targetAddr string) (net.Conn, error) {
 		return nil, err
 	}
 	return conn, nil
+}
+
+func dialProbeVRouteProxyExitTCP(targetAddr string) (net.Conn, error) {
+	resolved, err := resolveProbeVRouteProxyExitTarget(targetAddr)
+	if err != nil {
+		return nil, err
+	}
+	return dialProbeVRouteProxyDirectTCP(resolved)
+}
+
+func dialProbeVRouteProxyExitUDP(targetAddr string) (net.Conn, error) {
+	resolved, err := resolveProbeVRouteProxyExitTarget(targetAddr)
+	if err != nil {
+		return nil, err
+	}
+	return dialProbeVRouteProxyDirectUDP(resolved)
+}
+
+func authorizeProbeVRouteProxyExitTarget(targetAddr string, path []string) error {
+	cleanPath := cleanProbeVirtualRouterPath(path)
+	localNodeID := currentProbeVirtualRouterLocalNodeID()
+	if len(cleanPath) < 2 || localNodeID == "" || cleanPath[len(cleanPath)-1] != localNodeID {
+		return errors.New("remote proxy target path is unauthorized")
+	}
+	decision, err := decideProbeVRouteProxyTarget(targetAddr)
+	if err != nil {
+		return err
+	}
+	if decision.Action != "probe_exit" || normalizeProbeRouteNodeID(decision.ExitNodeID) != localNodeID {
+		return errors.New("remote proxy target is not assigned to this exit node")
+	}
+	_, err = resolveProbeVRouteProxyExitTarget(decision.TargetAddr)
+	return err
+}
+
+func resolveProbeVRouteProxyExitTarget(targetAddr string) (string, error) {
+	target := strings.TrimSpace(targetAddr)
+	host, port, err := net.SplitHostPort(target)
+	if err != nil {
+		return "", fmt.Errorf("invalid proxy exit target: %w", err)
+	}
+	portNumber, err := strconv.Atoi(strings.TrimSpace(port))
+	if err != nil || portNumber <= 0 || portNumber > 65535 {
+		return "", errors.New("invalid proxy exit target port")
+	}
+	if allowProbeVRouteProxyPrivateTargets() {
+		return target, nil
+	}
+	cleanHost := strings.TrimSpace(strings.Trim(host, "[]"))
+	if cleanHost == "" {
+		return "", errors.New("proxy exit target host is required")
+	}
+	if ip := net.ParseIP(cleanHost); ip != nil {
+		if probeVRouteProxyExitIPDenied(ip) {
+			return "", errors.New("proxy exit target address is not allowed")
+		}
+		return net.JoinHostPort(ip.String(), port), nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, cleanHost)
+	if err != nil {
+		return "", fmt.Errorf("resolve proxy exit target failed: %w", err)
+	}
+	if len(addresses) == 0 {
+		return "", errors.New("resolve proxy exit target failed: no addresses")
+	}
+	for _, address := range addresses {
+		if address.IP == nil || probeVRouteProxyExitIPDenied(address.IP) {
+			continue
+		}
+		return net.JoinHostPort(address.IP.String(), port), nil
+	}
+	return "", errors.New("proxy exit target resolved only to disallowed addresses")
+}
+
+func probeVRouteProxyExitIPDenied(ip net.IP) bool {
+	return ip == nil || ip.IsUnspecified() || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsMulticast()
+}
+
+func allowProbeVRouteProxyPrivateTargets() bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("PROBE_VROUTE_PROXY_ALLOW_PRIVATE_TARGETS")))
+	return value == "1" || value == "true" || value == "yes"
 }

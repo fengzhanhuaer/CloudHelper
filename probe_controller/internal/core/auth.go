@@ -1035,25 +1035,27 @@ func randomToken(byteLen int) (string, error) {
 }
 
 func getClientIP(r *http.Request) (string, netip.Addr) {
-	if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
-		if addr, err := netip.ParseAddr(cf); err == nil {
-			return addr.String(), addr
-		}
-	}
-
-	if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
-		items := strings.Split(xff, ",")
-		if len(items) > 0 {
-			candidate := strings.TrimSpace(items[0])
-			if addr, err := netip.ParseAddr(candidate); err == nil {
+	if isTrustedProxyRequest(r) {
+		if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
+			if addr, err := netip.ParseAddr(cf); err == nil {
 				return addr.String(), addr
 			}
 		}
-	}
 
-	if xrip := strings.TrimSpace(r.Header.Get("X-Real-IP")); xrip != "" {
-		if addr, err := netip.ParseAddr(xrip); err == nil {
-			return addr.String(), addr
+		if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+			items := strings.Split(xff, ",")
+			if len(items) > 0 {
+				candidate := strings.TrimSpace(items[0])
+				if addr, err := netip.ParseAddr(candidate); err == nil {
+					return addr.String(), addr
+				}
+			}
+		}
+
+		if xrip := strings.TrimSpace(r.Header.Get("X-Real-IP")); xrip != "" {
+			if addr, err := netip.ParseAddr(xrip); err == nil {
+				return addr.String(), addr
+			}
 		}
 	}
 

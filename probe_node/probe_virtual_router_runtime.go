@@ -50,6 +50,9 @@ type probeVirtualRouterRuntimeConfig struct {
 	toNodeID      string
 	localNodeID   string
 	peerNodeID    string
+	fromTLSSPKI   string
+	toTLSSPKI     string
+	peerTLSSPKI   string
 	peerName      string
 	localIP       string
 	peerIP        string
@@ -779,16 +782,26 @@ func verifyProbeVirtualRouterRelayRequestAuth(rt *probeVirtualRouterRuntime, r *
 	if rt == nil {
 		return errors.New("virtual router runtime is nil")
 	}
-	env, err := readProbeRouteAuthEnvelopeFromHeaders(r.Header, routeID)
-	if err != nil {
+	sourceIP := resolveProbeRouteSourceIPFromRequest(r)
+	if blacklisted, until := isProbeRouteAuthIPBlacklisted(sourceIP); blacklisted {
+		if until.IsZero() {
+			return errors.New("source ip is blacklisted")
+		}
+		return fmt.Errorf("source ip is blacklisted until %s", until.UTC().Format(time.RFC3339))
+	}
+	fail := func(err error) error {
+		recordProbeRouteAuthFailure(sourceIP)
 		delayProbeRouteAuthFailure()
 		return err
+	}
+	env, err := readProbeRouteAuthEnvelopeFromHeaders(r.Header, routeID, r.Method, r.URL.Path)
+	if err != nil {
+		return fail(err)
 	}
 	if err := verifyProbeVirtualRouterInboundAuth(rt.cfg, env); err != nil {
-		delayProbeRouteAuthFailure()
-		return err
+		return fail(err)
 	}
-	resetProbeRouteAuthFailure(resolveProbeRouteSourceIPFromRequest(r))
+	resetProbeRouteAuthFailure(sourceIP)
 	return nil
 }
 
@@ -800,8 +813,20 @@ func verifyProbeVirtualRouterInboundAuth(cfg probeVirtualRouterRuntimeConfig, en
 		return fmt.Errorf("nonce is required")
 	}
 	mode := strings.ToLower(strings.TrimSpace(env.Mode))
-	if mode != "" && mode != "secret_hmac" && mode != "hmac" {
+	if mode != "secret_hmac" {
 		return fmt.Errorf("unsupported auth mode")
+	}
+	if env.Method != http.MethodGet && env.Method != http.MethodConnect {
+		return fmt.Errorf("unsupported relay method")
+	}
+	if env.Path != probeRouteRelayAPIPath {
+		return fmt.Errorf("relay path mismatch")
+	}
+	if env.RelayRole != probeRouteBridgeRoleToNext && env.RelayRole != probeRouteBridgeRoleToPrev {
+		return fmt.Errorf("relay role mismatch")
+	}
+	if normalizeProbeRouteNodeID(env.SourceNode) == "" || normalizeProbeRouteNodeID(env.SourceNode) != normalizeProbeRouteNodeID(cfg.peerNodeID) {
+		return fmt.Errorf("relay source node mismatch")
 	}
 	if strings.TrimSpace(cfg.secret) == "" {
 		return fmt.Errorf("secret is not configured")
@@ -809,14 +834,14 @@ func verifyProbeVirtualRouterInboundAuth(cfg probeVirtualRouterRuntimeConfig, en
 	if env.MAC == "" {
 		return fmt.Errorf("mac is required")
 	}
-	expected := buildProbeRouteHMAC(cfg.secret, cfg.routeID, env.Nonce)
+	expected := buildProbeRouteHMAC(cfg.secret, cfg.routeID, env.Nonce, env.Method, env.Path, env.SourceNode, env.RelayRole)
 	if !hmac.Equal([]byte(strings.ToLower(env.MAC)), []byte(strings.ToLower(expected))) {
 		return fmt.Errorf("authentication failed")
 	}
 	if err := verifyProbeVirtualRouterUserAuthTicket(cfg, env.AuthTicket); err != nil {
 		return err
 	}
-	if err := recordProbeRouteAuthNonce(cfg.routeID, env.Nonce); err != nil {
+	if err := recordProbeRouteAuthNonce(cfg.routeID, cfg.authTicket, env.Nonce); err != nil {
 		return err
 	}
 	return nil
@@ -826,6 +851,9 @@ func verifyProbeVirtualRouterUserAuthTicket(cfg probeVirtualRouterRuntimeConfig,
 	ticket := strings.TrimSpace(rawTicket)
 	if ticket == "" {
 		return fmt.Errorf("user auth ticket is required")
+	}
+	if configured := strings.TrimSpace(cfg.authTicket); configured == "" || !hmac.Equal([]byte(configured), []byte(ticket)) {
+		return fmt.Errorf("user auth ticket is not current")
 	}
 	if len(cfg.userPublicKey) != ed25519.PublicKeySize {
 		return fmt.Errorf("user public key is not configured")
@@ -849,7 +877,7 @@ func verifyProbeVirtualRouterUserAuthTicket(cfg probeVirtualRouterRuntimeConfig,
 	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
 		return fmt.Errorf("invalid user auth ticket payload json")
 	}
-	if strings.TrimSpace(payload.Version) != "route-auth-v1" {
+	if strings.TrimSpace(payload.Version) != "route-auth-v2" {
 		return fmt.Errorf("unsupported user auth ticket version")
 	}
 	if strings.TrimSpace(payload.RouteID) != strings.TrimSpace(cfg.routeID) {
@@ -858,8 +886,17 @@ func verifyProbeVirtualRouterUserAuthTicket(cfg probeVirtualRouterRuntimeConfig,
 	if strings.TrimSpace(payload.UserPublicKey) != strings.TrimSpace(cfg.rawPublicKey) {
 		return fmt.Errorf("user auth ticket public key mismatch")
 	}
-	if err := verifyProbeRouteAuthTicketIssuedAt(payload.IssuedAt, probeRouteAuthTicketNow()); err != nil {
-		return err
+	if strings.TrimSpace(payload.ClientEntryID) == "" || strings.TrimSpace(payload.TicketID) == "" {
+		return fmt.Errorf("user auth ticket identity is incomplete")
+	}
+	fromNodeID := normalizeProbeRouteNodeID(payload.FromNodeID)
+	toNodeID := normalizeProbeRouteNodeID(payload.ToNodeID)
+	if fromNodeID != normalizeProbeRouteNodeID(cfg.fromNodeID) || toNodeID != normalizeProbeRouteNodeID(cfg.toNodeID) {
+		return fmt.Errorf("user auth ticket endpoint mismatch")
+	}
+	if normalizeProbeRouteTLSSPKI(payload.FromTLSSPKI) != normalizeProbeRouteTLSSPKI(cfg.fromTLSSPKI) ||
+		normalizeProbeRouteTLSSPKI(payload.ToTLSSPKI) != normalizeProbeRouteTLSSPKI(cfg.toTLSSPKI) {
+		return fmt.Errorf("user auth ticket tls identity mismatch")
 	}
 	return nil
 }
@@ -1067,6 +1104,7 @@ func buildProbeVirtualRouterRuntimeConfigForRule(config probeVirtualRouterConfig
 		return probeVirtualRouterRuntimeConfig{}, false
 	}
 	peerNodeID := toNodeID
+	peerTLSSPKI := normalizeProbeRouteTLSSPKI(rule.ToTLSSPKISHA256)
 	peerDomain := strings.TrimSpace(rule.ToServiceDomain)
 	listenerPort := probeVirtualRouterServicePortForNode(config, toNodeID, rule.ToServicePort)
 	peerPort := listenerPort
@@ -1076,6 +1114,7 @@ func buildProbeVirtualRouterRuntimeConfigForRule(config probeVirtualRouterConfig
 	localPort := 0
 	if localIsTo {
 		peerNodeID = fromNodeID
+		peerTLSSPKI = normalizeProbeRouteTLSSPKI(rule.FromTLSSPKISHA256)
 		localPort = listenerPort
 	}
 
@@ -1111,6 +1150,9 @@ func buildProbeVirtualRouterRuntimeConfigForRule(config probeVirtualRouterConfig
 		toNodeID:      toNodeID,
 		localNodeID:   localNodeID,
 		peerNodeID:    peerNodeID,
+		fromTLSSPKI:   normalizeProbeRouteTLSSPKI(rule.FromTLSSPKISHA256),
+		toTLSSPKI:     normalizeProbeRouteTLSSPKI(rule.ToTLSSPKISHA256),
+		peerTLSSPKI:   peerTLSSPKI,
 		peerName:      probeVirtualRouterDisplayNameForNode(config, peerNodeID),
 		localIP:       currentProbeVirtualRouterIPForNode(localNodeID),
 		peerIP:        currentProbeVirtualRouterIPForNode(peerNodeID),
@@ -1121,6 +1163,7 @@ func buildProbeVirtualRouterRuntimeConfigForRule(config probeVirtualRouterConfig
 		controllerURL: resolveProbeControllerBaseURL(strings.TrimSpace(controllerBaseURL), ""),
 	}
 	if cfg.dialer {
+		rememberProbeRouteTLSPin(cfg.routeID, cfg.peerTLSSPKI)
 		cfg.peerHost = peerDomain
 		cfg.peerPort = peerPort
 	}

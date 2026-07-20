@@ -83,7 +83,9 @@ func requestMobileVRouteControllerFakeIP(domain string, route androidRouteDecisi
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
-	applyAuthHeaders(req, nodeID, nodeSecret)
+	if err := applyAuthHeaders(req, nodeID, nodeSecret); err != nil {
+		return "", true, err
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", true, err
@@ -145,8 +147,10 @@ type mobileVRouteTopology struct {
 	Direction         string `json:"direction"`
 	FromServiceDomain string `json:"from_service_domain,omitempty"`
 	FromServicePort   int    `json:"from_service_port,omitempty"`
+	FromTLSSPKISHA256 string `json:"from_tls_spki_sha256,omitempty"`
 	ToServiceDomain   string `json:"to_service_domain,omitempty"`
 	ToServicePort     int    `json:"to_service_port,omitempty"`
+	ToTLSSPKISHA256   string `json:"to_tls_spki_sha256,omitempty"`
 	RouteLayer        string `json:"route_layer,omitempty"`
 	UserID            string `json:"user_id,omitempty"`
 	UserPublicKey     string `json:"user_public_key,omitempty"`
@@ -205,7 +209,9 @@ func fetchMobileVRouteConfig(ctx context.Context, controllerURL string, nodeID s
 	if err != nil {
 		return mobileVRouteConfig{}, err
 	}
-	applyAuthHeaders(req, nodeID, nodeSecret)
+	if err := applyAuthHeaders(req, nodeID, nodeSecret); err != nil {
+		return mobileVRouteConfig{}, err
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return mobileVRouteConfig{}, err
@@ -304,6 +310,8 @@ func sanitizeMobileVRouteConfig(input mobileVRouteConfig) mobileVRouteConfig {
 		item.Direction = strings.TrimSpace(item.Direction)
 		item.FromServiceDomain = strings.TrimSpace(item.FromServiceDomain)
 		item.ToServiceDomain = strings.TrimSpace(item.ToServiceDomain)
+		item.FromTLSSPKISHA256 = normalizeMobileVRouteTLSSPKI(item.FromTLSSPKISHA256)
+		item.ToTLSSPKISHA256 = normalizeMobileVRouteTLSSPKI(item.ToTLSSPKISHA256)
 		item.RouteLayer = strings.TrimSpace(item.RouteLayer)
 		item.UserID = strings.TrimSpace(item.UserID)
 		item.UserPublicKey = strings.TrimSpace(item.UserPublicKey)

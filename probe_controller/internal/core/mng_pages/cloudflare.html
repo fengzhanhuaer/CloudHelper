@@ -163,6 +163,15 @@
       return Number.isNaN(dt.getTime()) ? text : dt.toLocaleString();
     }
 
+    function escapeHTML(value) {
+      return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
     function bindTabs() {
       const tabs = Array.from(document.querySelectorAll('.tab'));
       tabs.forEach((button) => {
@@ -192,11 +201,11 @@
       }
       body.innerHTML = state.ddnsRecords.map((item) => {
         return `<tr>
-          <td>${item.node_name || item.node_id || '-'}</td>
-          <td>${item.record_name || '-'}</td>
-          <td>${item.record_type || '-'}</td>
-          <td>${item.content_ip || '-'}</td>
-          <td>${formatTime(item.updated_at)}</td>
+          <td>${escapeHTML(item.node_name || item.node_id || '-')}</td>
+          <td>${escapeHTML(item.record_name || '-')}</td>
+          <td>${escapeHTML(item.record_type || '-')}</td>
+          <td>${escapeHTML(item.content_ip || '-')}</td>
+          <td>${escapeHTML(formatTime(item.updated_at))}</td>
         </tr>`;
       }).join('');
     }

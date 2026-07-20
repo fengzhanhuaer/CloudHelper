@@ -83,6 +83,10 @@
     <section id="registerCard" class="card hidden">
       <h2>首次注册</h2>
       <form id="registerForm">
+        <div class="field">
+          <label for="registerSetupToken">初始化令牌</label>
+          <input id="registerSetupToken" name="setup_token" type="password" required autocomplete="off" />
+        </div>
         <div class="row">
           <label for="registerUsername">用户名</label>
           <input id="registerUsername" name="username" required maxlength="64" />
@@ -173,6 +177,7 @@
           username: document.getElementById('registerUsername').value,
           password: document.getElementById('registerPassword').value,
           confirm_password: document.getElementById('registerConfirmPassword').value,
+          setup_token: document.getElementById('registerSetupToken').value,
         };
         await requestJSON('/local/api/auth/register', {
           method: 'POST',

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -414,6 +415,10 @@ func TestDownloadProbeAssetStreamsThroughController(t *testing.T) {
 	var gotNodeID string
 	var gotURL string
 	controller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/probe/auth/challenge" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"challenge": "controller-issued-test-challenge"})
+			return
+		}
 		gotPath = r.URL.Path
 		gotRange = r.Header.Get("Range")
 		gotNodeID = r.Header.Get("X-Probe-Node-Id")

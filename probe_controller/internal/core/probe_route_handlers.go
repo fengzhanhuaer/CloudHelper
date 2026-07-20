@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 )
@@ -82,6 +83,10 @@ func ProbeRouteFakeIPResolveHandler(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "fake ip mapping not found"})
 			return
 		}
+		if _, err := authorizedProbeVirtualRouterFakeIPRule(item.Domain, item.RuleID, item.Action, item.ExitNodeID); err != nil {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+			return
+		}
 		if changed {
 			if err := ProbeRouteConfigStore.Save(); err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -94,12 +99,12 @@ func ProbeRouteFakeIPResolveHandler(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	item, _, changed, err := allocateProbeVirtualRouterFakeIPForDomain(req.Domain, probeVirtualRouterRouteRule{
-		ID:         strings.TrimSpace(req.RuleID),
-		Name:       strings.TrimSpace(req.RuleID),
-		Action:     strings.TrimSpace(req.Action),
-		ExitNodeID: strings.TrimSpace(req.ExitNodeID),
-	})
+	rule, err := authorizedProbeVirtualRouterFakeIPRule(req.Domain, req.RuleID, req.Action, req.ExitNodeID)
+	if err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+		return
+	}
+	item, _, changed, err := allocateProbeVirtualRouterFakeIPForDomain(req.Domain, rule)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -137,6 +142,12 @@ func ProbeRouteFakeIPRenewHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
 		return
 	}
+	for _, domain := range req.Domains {
+		if _, err := authorizedProbeVirtualRouterFakeIPRule(domain, "", "", ""); err != nil {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+			return
+		}
+	}
 	items, _, changed, err := renewProbeVirtualRouterFakeIPDomains(req.Domains)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -152,4 +163,34 @@ func ProbeRouteFakeIPRenewHandler(w http.ResponseWriter, r *http.Request) {
 		NodeID: nodeID,
 		Items:  items,
 	})
+}
+
+func authorizedProbeVirtualRouterFakeIPRule(domain string, requestedRuleID string, requestedAction string, requestedExitNodeID string) (probeVirtualRouterRouteRule, error) {
+	if ProbeRouteConfigStore == nil {
+		return probeVirtualRouterRouteRule{}, fmt.Errorf("route config store not initialized")
+	}
+	ProbeRouteConfigStore.mu.RLock()
+	config := normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter)
+	ProbeRouteConfigStore.mu.RUnlock()
+	if !config.Enabled {
+		return probeVirtualRouterRouteRule{}, fmt.Errorf("virtual router is disabled")
+	}
+	rule, ok := probeVirtualRouterRouteRuleForFakeIPDomain(config.RouteRules, domain)
+	if !ok || normalizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) != probeVirtualRouterRouteRuleActionExit {
+		return probeVirtualRouterRouteRule{}, fmt.Errorf("domain is not assigned to a probe exit rule")
+	}
+	exitNodeID := normalizeProbeNodeID(rule.ExitNodeID)
+	if exitNodeID == "" {
+		return probeVirtualRouterRouteRule{}, fmt.Errorf("probe exit is not configured")
+	}
+	if value := strings.TrimSpace(requestedRuleID); value != "" && value != strings.TrimSpace(rule.ID) {
+		return probeVirtualRouterRouteRule{}, fmt.Errorf("route rule does not match controller configuration")
+	}
+	if value := normalizeProbeVirtualRouterRouteRuleAction(requestedAction, requestedExitNodeID); strings.TrimSpace(requestedAction) != "" && value != probeVirtualRouterRouteRuleActionExit {
+		return probeVirtualRouterRouteRule{}, fmt.Errorf("route action does not match controller configuration")
+	}
+	if value := normalizeProbeNodeID(requestedExitNodeID); value != "" && value != exitNodeID {
+		return probeVirtualRouterRouteRule{}, fmt.Errorf("exit node does not match controller configuration")
+	}
+	return rule, nil
 }

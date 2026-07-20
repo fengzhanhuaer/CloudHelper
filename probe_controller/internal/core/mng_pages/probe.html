@@ -604,7 +604,7 @@
         const ip = String(value || '').trim();
         if (!ip) return '';
         const encoded = encodeURIComponent(ip);
-        return `<button class="ip-copy-btn mono" type="button" data-action="copy-ip" data-ip="${encoded}" title="点击复制">${ip}</button>`;
+        return `<button class="ip-copy-btn mono" type="button" data-action="copy-ip" data-ip="${encoded}" title="点击复制">${escapeHTML(ip)}</button>`;
       }).filter(Boolean).join('');
       if (!lines) return `<div class="muted">${family}: -</div>`;
       return `<div class="muted">${family}:</div><div class="ip-list">${lines}</div>`;
@@ -612,7 +612,7 @@
 
 
     function renderNodeSelect() {
-      const options = state.nodes.map((node) => `<option value="${node.node_no}">${node.node_no} - ${node.node_name}</option>`).join('');
+      const options = state.nodes.map((node) => `<option value="${escapeHTML(node.node_no)}">${escapeHTML(node.node_no)} - ${escapeHTML(node.node_name)}</option>`).join('');
       document.getElementById('logs-node-id').innerHTML = options || '<option value="">(无节点)</option>';
       document.getElementById('shell-node-id').innerHTML = options || '<option value="">(无节点)</option>';
     }
@@ -643,9 +643,9 @@
         const checked = selected.has(nodeID) ? 'checked' : '';
         const disabled = state.networkRunning ? 'disabled' : '';
         return `<div class="probe-check-item">
-          <label title="${node.node_name || ''}">
-            <input type="checkbox" data-network-node-id="${nodeID}" ${checked} ${disabled} />
-            <span class="name">#${node.node_no} ${node.node_name || '-'}</span>
+          <label title="${escapeHTML(node.node_name || '')}">
+            <input type="checkbox" data-network-node-id="${escapeHTML(nodeID)}" ${checked} ${disabled} />
+            <span class="name">#${escapeHTML(node.node_no)} ${escapeHTML(node.node_name || '-')}</span>
           </label>
           <span class="pill ${online ? 'online' : 'offline'}">${online ? '在线' : '离线'}</span>
         </div>`;
@@ -691,11 +691,11 @@
       } else {
         deletedBody.innerHTML = state.deletedNodes.map((item) => {
           return `<tr>
-            <td>${item.node_no}</td>
-            <td>${item.node_name}</td>
-            <td>${item.target_system || '-'}</td>
-            <td>${formatTime(item.updated_at)}</td>
-            <td><button class="btn" type="button" data-action="node-restore" data-node-no="${item.node_no}">恢复</button></td>
+            <td>${escapeHTML(item.node_no)}</td>
+            <td>${escapeHTML(item.node_name)}</td>
+            <td>${escapeHTML(item.target_system || '-')}</td>
+            <td>${escapeHTML(formatTime(item.updated_at))}</td>
+            <td><button class="btn" type="button" data-action="node-restore" data-node-no="${escapeHTML(item.node_no)}">恢复</button></td>
           </tr>`;
         }).join('');
       }
@@ -727,17 +727,17 @@
         const diskUsed = formatBytes(metrics.disk_used_bytes);
         const diskTotal = formatBytes(metrics.disk_total_bytes);
         return `<tr>
-          <td>${item.node_no || '-'}</td>
-          <td>${item.node_name || '-'}</td>
+          <td>${escapeHTML(item.node_no || '-')}</td>
+          <td>${escapeHTML(item.node_name || '-')}</td>
           <td><span class="pill ${online ? 'online' : 'offline'}">${online ? '在线' : '离线'}</span></td>
           <td>
             <div class="status-time-lines">
-              <div><span class="label">最近上报</span><span>${formatTime(rt.last_seen)}</span></div>
-              <div><span class="label">到期时间</span><span>${formatTime(item.expire_at)}</span></div>
-              <div><span class="label">剩余时间</span><span class="${remainingClass(item.expire_at)}">${formatRemainingTime(item.expire_at)}</span></div>
+              <div><span class="label">最近上报</span><span>${escapeHTML(formatTime(rt.last_seen))}</span></div>
+              <div><span class="label">到期时间</span><span>${escapeHTML(formatTime(item.expire_at))}</span></div>
+              <div><span class="label">剩余时间</span><span class="${remainingClass(item.expire_at)}">${escapeHTML(formatRemainingTime(item.expire_at))}</span></div>
             </div>
           </td>
-          <td>${rt.version || '-'}</td>
+          <td>${escapeHTML(rt.version || '-')}</td>
           <td>${ips4Html}${ips6Html}</td>
           <td class="mono">
             <div>CPU：相对 ${cpuPercent} / 绝对 -</div>
@@ -761,7 +761,7 @@
         const command = String(item.command || '');
         const encodedCommand = encodeURIComponent(command);
         const encodedName = encodeURIComponent(name);
-        return `<li><span class="mono">${name}</span> → <span class="muted">${command}</span>
+        return `<li><span class="mono">${escapeHTML(name)}</span> → <span class="muted">${escapeHTML(command)}</span>
           <button class="btn" type="button" data-action="shortcut-run" data-command="${encodedCommand}">执行</button>
           <button class="btn warn" type="button" data-action="shortcut-delete" data-name="${encodedName}">删除</button>
         </li>`;
@@ -941,7 +941,7 @@
       }));
       const rows = [];
       for (const report of items) {
-        const nodeLabel = `#${report.node_no || report.node_id || '-'} ${report.node_name || ''}`.trim();
+        const nodeLabel = escapeHTML(`#${report.node_no || report.node_id || '-'} ${report.node_name || ''}`.trim());
         const taskID = String(report.task_id || '').trim();
         const taskName = String(report.task_name || '').trim() || taskNameByID.get(taskID) || taskID || '-';
         const taskLabel = `${escapeHTML(taskName)}<br><span class="muted mono">${escapeHTML(taskID || '-')}</span>`;
@@ -955,7 +955,7 @@
             <td>-</td>
             <td>-</td>
             <td>-</td>
-            <td class="text-err">${report.error || '上报失败'}<br><span class="muted">${formatTime(report.timestamp)}</span></td>
+            <td class="text-err">${escapeHTML(report.error || '上报失败')}<br><span class="muted">${escapeHTML(formatTime(report.timestamp))}</span></td>
           </tr>`);
           continue;
         }
@@ -967,11 +967,11 @@
             <td>${taskLabel}</td>
             <td>${nodeLabel}</td>
             <td class="mono">${escapeHTML(result.target || '-')}</td>
-            <td>${result.ip_family || '-'}</td>
-            <td>${result.sent || 0} / ${result.received || 0}</td>
-            <td>${lossText}</td>
-            <td>${formatLatencyResult(result)}</td>
-            <td class="${ok ? 'text-ok' : 'text-warn'}">${ok ? 'ok' : (result.error || '全部丢包')}<br><span class="muted">${formatTime(report.timestamp)}</span></td>
+            <td>${escapeHTML(result.ip_family || '-')}</td>
+            <td>${escapeHTML(result.sent || 0)} / ${escapeHTML(result.received || 0)}</td>
+            <td>${escapeHTML(lossText)}</td>
+            <td>${escapeHTML(formatLatencyResult(result))}</td>
+            <td class="${ok ? 'text-ok' : 'text-warn'}">${escapeHTML(ok ? 'ok' : (result.error || '全部丢包'))}<br><span class="muted">${escapeHTML(formatTime(report.timestamp))}</span></td>
           </tr>`);
         }
       }
@@ -993,9 +993,9 @@
         const cycleMin = Math.max(1, Math.round(Number(task.cycle_sec || 0) / 60));
         return `<tr>
           <td>${escapeHTML(taskName)}<br><span class="muted mono">${escapeHTML(task.id || '-')}</span></td>
-          <td>${nodeText}</td>
+          <td>${escapeHTML(nodeText)}</td>
           <td class="mono">${targetText}</td>
-          <td>次数 ${task.count || '-'} / 超时 ${task.timeout_ms || '-'}ms / 周期 ${cycleMin}min</td>
+          <td>次数 ${escapeHTML(task.count || '-')} / 超时 ${escapeHTML(task.timeout_ms || '-')}ms / 周期 ${escapeHTML(cycleMin)}min</td>
           <td><span class="pill ${task.enabled ? 'online' : 'offline'}">${task.enabled ? '启用' : '停用'}</span></td>
           <td>
             <button class="btn" type="button" data-action="network-edit" data-task-id="${encodeURIComponent(task.id || '')}">编辑</button>

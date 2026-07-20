@@ -30,8 +30,8 @@ var probeVirtualRouterLocalSettingsState = struct {
 	settings probeVirtualRouterLocalSettings
 }{}
 
-var probeVirtualRouterCleanupPlatformRoutesForSettings = cleanupProbeVirtualRouterPlatformRoutes
-var probeVirtualRouterStopTUNDataPlaneForSettings = stopProbeVirtualRouterTUNDataPlane
+var probeVirtualRouterCleanupTakeoverRoutesForSettings = cleanupProbeVirtualRouterPlatformTakeoverRoutes
+var probeVirtualRouterEnsureBaseTransportForSettings = ensureProbeVirtualRouterLocalInterfaceIPOnce
 
 func defaultProbeVirtualRouterLocalSettings() probeVirtualRouterLocalSettings {
 	return probeVirtualRouterLocalSettings{
@@ -131,7 +131,7 @@ func saveProbeVirtualRouterLocalSettingsWithRuntimeReconcile(settings probeVirtu
 	if err != nil {
 		return settings, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return settings, err
 	}
 	raw, err := json.MarshalIndent(settings, "", "  ")
@@ -143,7 +143,15 @@ func saveProbeVirtualRouterLocalSettingsWithRuntimeReconcile(settings probeVirtu
 			return settings, err
 		}
 	}
-	if err := os.WriteFile(path, raw, 0o644); err != nil {
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		if reconcileProxy {
+			if rollbackErr := reconcileProbeVRouteProxyRuntime(previous); rollbackErr != nil {
+				logProbeWarnf("probe vroute proxy settings rollback failed: err=%v", rollbackErr)
+			}
+		}
+		return settings, err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
 		if reconcileProxy {
 			if rollbackErr := reconcileProbeVRouteProxyRuntime(previous); rollbackErr != nil {
 				logProbeWarnf("probe vroute proxy settings rollback failed: err=%v", rollbackErr)
@@ -170,16 +178,19 @@ func reconcileProbeVirtualRouterLocalEntryRuntime(settings probeVirtualRouterLoc
 		return nil
 	}
 
-	cancelAndWaitProbeVirtualRouterLocalInterfaceIPRetry()
 	waitProbeVirtualRouterLocalInterfaceIPEnsure()
+	cancelAndWaitProbeVirtualRouterLocalInterfaceIPRetry()
 	var allErr error
-	if err := probeVirtualRouterCleanupPlatformRoutesForSettings(); err != nil {
-		allErr = errors.Join(allErr, fmt.Errorf("cleanup virtual router platform routes: %w", err))
+	if err := probeVirtualRouterCleanupTakeoverRoutesForSettings(); err != nil {
+		allErr = errors.Join(allErr, fmt.Errorf("cleanup virtual router takeover routes: %w", err))
 	}
-	stopErr := probeVirtualRouterStopTUNDataPlaneForSettings()
-	markProbeLocalTUNDataPlaneStopped()
-	if stopErr != nil {
-		allErr = errors.Join(allErr, fmt.Errorf("stop virtual router tun data plane: %w", stopErr))
+	localIP, err := probeVirtualRouterEnsureBaseTransportForSettings()
+	if err != nil {
+		scheduleProbeVirtualRouterLocalInterfaceIPRetry(localIP, err)
+		allErr = errors.Join(allErr, fmt.Errorf("ensure virtual router base transport: %w", err))
+	} else if localIP != "" {
+		markProbeVirtualRouterLocalInterfaceEnsured(localIP)
+		markProbeLocalTUNInterfaceReady()
 	}
 	return allErr
 }

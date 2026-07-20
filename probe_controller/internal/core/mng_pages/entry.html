@@ -27,6 +27,7 @@
     <section id="register-box" class="hidden">
       <h2>注册</h2>
       <form id="register-form" method="post" action="/mng/api/register" autocomplete="on">
+        <label>初始化令牌<input id="reg-setup-token" name="setup_token" type="password" required autocomplete="off" /></label>
         <div class="field"><label for="reg-username">用户名</label><input id="reg-username" name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false"></div>
         <div class="field"><label for="reg-password">密码</label><input id="reg-password" name="new-password" type="password" autocomplete="new-password"></div>
         <div class="field"><label for="reg-confirm">确认密码</label><input id="reg-confirm" name="confirm-password" type="password" autocomplete="new-password"></div>
@@ -69,6 +70,7 @@
         username: document.getElementById('reg-username').value,
         password: document.getElementById('reg-password').value,
         confirm_password: document.getElementById('reg-confirm').value,
+        setup_token: document.getElementById('reg-setup-token').value,
       };
       const res = await fetch('/mng/api/register', {
         method: 'POST',

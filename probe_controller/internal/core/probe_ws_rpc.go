@@ -5,9 +5,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
-	"os"
 	"strings"
 	"time"
 )
@@ -57,11 +54,6 @@ func handleProbeControllerProxyDownloadChunk(resp probeControllerRPCResponse, re
 		resp.Error = "url is required"
 		return resp
 	}
-	targetURL, err := url.Parse(rawURL)
-	if err != nil || targetURL == nil || targetURL.Scheme != "https" {
-		resp.Error = "invalid download url"
-		return resp
-	}
 	limit := req.Limit
 	if limit <= 0 {
 		limit = 512 * 1024
@@ -76,19 +68,15 @@ func handleProbeControllerProxyDownloadChunk(resp probeControllerRPCResponse, re
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	proxyReq, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL.String(), nil)
+	proxyReq, err := newProbeProxyDownloadRequest(ctx, rawURL)
 	if err != nil {
-		resp.Error = err.Error()
+		resp.Error = "invalid download url: " + err.Error()
 		return resp
 	}
 	proxyReq.Header.Set("User-Agent", "cloudhelper-probe-proxy-download")
 	proxyReq.Header.Set("Accept", "application/octet-stream")
 	proxyReq.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, offset+int64(limit)-1))
-	if token := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); token != "" {
-		proxyReq.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	upstreamResp, err := http.DefaultClient.Do(proxyReq)
+	upstreamResp, err := doProbeProxyDownload(proxyReq)
 	if err != nil {
 		resp.Error = fmt.Sprintf("proxy download failed: %v", err)
 		return resp

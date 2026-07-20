@@ -152,6 +152,7 @@ func TestProbeVRouteProxyRemoteTCPSourceFlow(t *testing.T) {
 }
 
 func TestProbeVRouteProxyListenersWorkWithoutTUN(t *testing.T) {
+	t.Setenv("PROBE_VROUTE_PROXY_ALLOW_PRIVATE_TARGETS", "true")
 	resetProbeVRouteProxyRuntimeForTest()
 	t.Cleanup(resetProbeVRouteProxyRuntimeForTest)
 	tcpEchoAddr, closeTCPEcho := startProbeVRouteProxyTCPEcho(t)

@@ -2,10 +2,13 @@ package core
 
 import (
 	"archive/zip"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestZipControllerUserDataDirSkipsRuntimeAndBackupArtifacts(t *testing.T) {
@@ -63,6 +66,39 @@ func TestZipControllerUserDataDirSkipsRuntimeAndBackupArtifacts(t *testing.T) {
 		if strings.HasPrefix(lower, backupDirName+"/") || strings.HasPrefix(lower, ".cache/") || strings.HasPrefix(lower, "task_history/") || strings.HasSuffix(lower, ".log") || strings.HasSuffix(lower, ".tmp") {
 			t.Fatalf("runtime artifact %s should not be archived; names=%v", name, names)
 		}
+	}
+}
+
+func TestControllerMigrationDownloadTokenIsOneTime(t *testing.T) {
+	pkgDir := filepath.Join(t.TempDir(), "package")
+	if err := os.MkdirAll(pkgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(pkgDir, "migration.sh")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	token := "one-time-token"
+	controllerMigrationPackages.mu.Lock()
+	controllerMigrationPackages.items[token] = controllerMigrationPackage{
+		Token: token, Path: path, FileName: "migration.sh", ExpiresAt: time.Now().Add(time.Minute),
+	}
+	controllerMigrationPackages.mu.Unlock()
+	t.Cleanup(func() {
+		controllerMigrationPackages.mu.Lock()
+		delete(controllerMigrationPackages.items, token)
+		controllerMigrationPackages.mu.Unlock()
+	})
+
+	first := httptest.NewRecorder()
+	serveControllerMigrationScript(first, httptest.NewRequest(http.MethodGet, "/api/controller/migration/script?token="+token, nil))
+	if first.Code != http.StatusOK {
+		t.Fatalf("first download status=%d body=%s", first.Code, first.Body.String())
+	}
+	second := httptest.NewRecorder()
+	serveControllerMigrationScript(second, httptest.NewRequest(http.MethodGet, "/api/controller/migration/script?token="+token, nil))
+	if second.Code != http.StatusUnauthorized {
+		t.Fatalf("second download status=%d, want unauthorized", second.Code)
 	}
 }
 
