@@ -2472,7 +2472,7 @@ func recordProbeVirtualRouterPathRTTSuccess(path []string, latency time.Duration
 	}
 	probeVirtualRouterPathRTTState.mu.Unlock()
 	if shouldClearRouteCache {
-		clearProbeVirtualRouterRouteCache("path rtt query success")
+		clearProbeVirtualRouterRouteCache("")
 	}
 }
 
