@@ -17,7 +17,6 @@ import java.net.URL
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import java.util.Locale
-import java.security.SecureRandom
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
@@ -491,25 +490,50 @@ object AndroidUpgrade {
     }
 
     private fun applyProbeAuthHeaders(conn: HttpURLConnection, config: ProbeNodeConfig) {
-        val timestamp = (System.currentTimeMillis() / 1000L).toString()
-        val randomToken = randomHex(16)
+        val challenge = fetchProbeAuthChallenge(config)
+        val requestUri = conn.url.toURI()
+        val requestPath = buildString {
+            append(requestUri.rawPath?.ifBlank { "/" } ?: "/")
+            if (!requestUri.rawQuery.isNullOrBlank()) {
+                append('?')
+                append(requestUri.rawQuery)
+            }
+        }
         conn.setRequestProperty("X-Probe-Node-Id", config.nodeId.trim())
-        conn.setRequestProperty("X-Probe-Timestamp", timestamp)
-        conn.setRequestProperty("X-Probe-Rand", randomToken)
-        conn.setRequestProperty("X-Probe-Signature", signConnect(config.nodeSecret, config.nodeId, timestamp, randomToken))
+        conn.setRequestProperty("X-Probe-Rand", challenge)
+        conn.setRequestProperty(
+            "X-Probe-Signature",
+            signConnect(config.nodeSecret, config.nodeId, challenge, conn.requestMethod, requestPath),
+        )
     }
 
-    private fun signConnect(secret: String, nodeId: String, timestamp: String, randomToken: String): String {
+    private fun fetchProbeAuthChallenge(config: ProbeNodeConfig): String {
+        val challengeUrl = "${config.controllerUrl.trimEnd('/')}/api/probe/auth/challenge?node_id=${urlEncode(config.nodeId.trim())}"
+        val conn = URL(challengeUrl).openConnection() as HttpURLConnection
+        conn.requestMethod = "GET"
+        conn.setRequestProperty("Accept", "application/json")
+        conn.setRequestProperty("User-Agent", "cloudhelper-probe-node-android")
+        conn.connectTimeout = 15000
+        conn.readTimeout = 15000
+        try {
+            if (conn.responseCode !in 200..299) {
+                error("probe auth challenge status=${conn.responseCode}: ${readErrorText(conn)}")
+            }
+            val payload = responseStream(conn).bufferedReader().use { JSONObject(it.readText()) }
+            return payload.optString("challenge", "").trim().ifBlank {
+                error("probe auth challenge is empty")
+            }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    private fun signConnect(secret: String, nodeId: String, challenge: String, method: String, requestPath: String): String {
         val mac = Mac.getInstance("HmacSHA256")
         mac.init(SecretKeySpec(secret.trim().toByteArray(Charsets.UTF_8), "HmacSHA256"))
-        return mac.doFinal("${nodeId.trim()}\n${timestamp.trim()}\n${randomToken.trim()}".toByteArray(Charsets.UTF_8))
+        val canonical = listOf(nodeId.trim(), challenge.trim(), method.trim().uppercase(Locale.ROOT), requestPath.trim()).joinToString("\n")
+        return mac.doFinal(canonical.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
-    }
-
-    private fun randomHex(size: Int): String {
-        val bytes = ByteArray(size)
-        SecureRandom().nextBytes(bytes)
-        return bytes.joinToString("") { "%02x".format(it) }
     }
 
     private fun urlEncode(value: String): String {
