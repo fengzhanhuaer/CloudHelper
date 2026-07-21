@@ -44,6 +44,14 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPLinuxAddsDNSAndNodeIP(t *tes
 	calls := make([]string, 0, 3)
 	probeLocalLinuxRunCommand = func(timeout time.Duration, name string, args ...string) (string, error) {
 		calls = append(calls, name+" "+strings.Join(args, " "))
+		if strings.Join(args, " ") == "-o -4 addr show dev probe0" {
+			return strings.Join([]string{
+				"7: probe0    inet 198.18.0.2/15 scope global probe0",
+				"7: probe0    inet 198.18.0.11/15 scope global secondary probe0",
+				"7: probe0    inet 198.18.0.21/15 scope global secondary probe0",
+				"7: probe0    inet 10.20.30.40/24 scope global probe0",
+			}, "\n"), nil
+		}
 		return "", nil
 	}
 	probeVirtualRouterLinuxNewTUNDataPlaneRunner = func(dev string) (probeVirtualRouterTUNDataPlane, error) {
@@ -58,11 +66,22 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPLinuxAddsDNSAndNodeIP(t *tes
 		"ip link set dev probe0 up",
 		"ip -4 addr replace 198.18.0.2/15 dev probe0",
 		"ip -4 route replace 198.18.0.0/15 dev probe0 src 198.18.0.2",
+		"ip -o -4 addr show dev probe0",
+		"ip -4 addr del 198.18.0.21/15 dev probe0",
 		"ip -4 addr replace 198.18.0.11/15 dev probe0",
 		"ip -4 route replace 198.18.0.0/15 dev probe0 src 198.18.0.11",
 	} {
 		if !hasProbeVirtualRouterLinuxCommand(calls, want) {
 			t.Fatalf("missing command %q calls=%v", want, calls)
+		}
+	}
+	for _, unwanted := range []string{
+		"ip -4 addr del 198.18.0.2/15 dev probe0",
+		"ip -4 addr del 198.18.0.11/15 dev probe0",
+		"ip -4 addr del 10.20.30.40/24 dev probe0",
+	} {
+		if hasProbeVirtualRouterLinuxCommand(calls, unwanted) {
+			t.Fatalf("unexpected command %q calls=%v", unwanted, calls)
 		}
 	}
 }

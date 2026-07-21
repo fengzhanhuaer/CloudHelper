@@ -50,6 +50,9 @@ func ensureProbeVirtualRouterPlatformInterfaceIP(ip string) error {
 		return err
 	}
 	if cleanIP != probeLocalTUNInterfaceIPv4 {
+		if err := cleanupProbeVirtualRouterLinuxStaleInterfaceIPs(dev, cleanIP); err != nil {
+			return err
+		}
 		if err := ensureProbeLocalLinuxInterfaceIPv4(dev, cleanIP); err != nil {
 			return err
 		}
@@ -68,6 +71,71 @@ func ensureProbeVirtualRouterPlatformInterfaceIP(ip string) error {
 		return err
 	}
 	return nil
+}
+
+func cleanupProbeVirtualRouterLinuxStaleInterfaceIPs(dev string, currentIP string) error {
+	cleanDev := strings.TrimSpace(dev)
+	cleanCurrentIP := strings.TrimSpace(currentIP)
+	if cleanDev == "" || cleanCurrentIP == "" {
+		return nil
+	}
+	output, err := probeLocalLinuxRunCommand(5*time.Second, "ip", "-o", "-4", "addr", "show", "dev", cleanDev)
+	if err != nil {
+		return fmt.Errorf("inspect linux virtual router ipv4 addresses failed: dev=%s: %w", cleanDev, err)
+	}
+	managedNetworks := make([]*net.IPNet, 0, 2)
+	for _, cidr := range []string{probeLocalLinuxVirtualRouteCIDR, currentProbeVirtualRouterFakeIPCIDR()} {
+		_, network, parseErr := net.ParseCIDR(strings.TrimSpace(cidr))
+		if parseErr == nil && network != nil {
+			managedNetworks = append(managedNetworks, network)
+		}
+	}
+	for _, addressCIDR := range probeVirtualRouterLinuxInterfaceIPv4CIDRs(output) {
+		addressIP, _, parseErr := net.ParseCIDR(addressCIDR)
+		if parseErr != nil || addressIP == nil {
+			continue
+		}
+		address := addressIP.String()
+		if address == probeLocalTUNInterfaceIPv4 || address == cleanCurrentIP {
+			continue
+		}
+		managed := false
+		for _, network := range managedNetworks {
+			if network.Contains(addressIP) {
+				managed = true
+				break
+			}
+		}
+		if !managed {
+			continue
+		}
+		if _, err := probeLocalLinuxRunCommand(5*time.Second, "ip", "-4", "addr", "del", addressCIDR, "dev", cleanDev); err != nil {
+			return fmt.Errorf("delete stale linux virtual router ipv4 failed: dev=%s ip=%s: %w", cleanDev, addressCIDR, err)
+		}
+	}
+	return nil
+}
+
+func probeVirtualRouterLinuxInterfaceIPv4CIDRs(output string) []string {
+	items := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		for index := 0; index+1 < len(fields); index++ {
+			if fields[index] != "inet" {
+				continue
+			}
+			cidr := strings.TrimSpace(fields[index+1])
+			if _, _, err := net.ParseCIDR(cidr); err == nil {
+				if _, exists := seen[cidr]; !exists {
+					seen[cidr] = struct{}{}
+					items = append(items, cidr)
+				}
+			}
+			break
+		}
+	}
+	return items
 }
 
 func cleanupProbeVirtualRouterPlatformRoutes() error {
