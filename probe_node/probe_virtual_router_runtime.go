@@ -33,6 +33,7 @@ const (
 	probeVirtualRouterFrameLinkTXBulkBufferFrames          = 64
 	probeVirtualRouterFrameLinkTXBusinessQuantum           = 8
 	probeVirtualRouterFrameLinkTXBatchBytes                = 64 * 1024
+	probeVirtualRouterFrameLinkTXCoalesceWindow            = 200 * time.Microsecond
 	probeVirtualRouterFrameLinkRXBufferFrames              = 4096
 	probeVirtualRouterFrameLinkRXDispatchShards            = 8
 	probeVirtualRouterFrameLinkRXDispatchShardBufferFrames = 1024

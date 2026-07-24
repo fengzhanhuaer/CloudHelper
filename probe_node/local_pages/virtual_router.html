@@ -1038,10 +1038,9 @@
       runtimes.forEach((item) => {
         const nodeID = String(item && item.peer_node_id || '').trim();
         if (!nodeID || nodeID === localNodeID) return;
-        const ip = String(item && item.peer_ip || '').trim();
-        const route = String(item && item.route_id || '').trim();
+        const name = String(item && item.peer_node_name || '').trim();
         const status = item && item.last_error ? '异常' : '可达';
-        nodes.set(nodeID, [nodeID, ip, route, status].filter(Boolean).join(' / '));
+        nodes.set(nodeID, [name || ('节点 ' + nodeID), status].join(' / '));
       });
       populateVirtualRouterNodeSelect('routeSpeedTargetNode', nodes);
       populateVirtualRouterNodeSelect('debugLogTargetNode', nodes);

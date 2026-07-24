@@ -1147,6 +1147,25 @@ func TestMobileVRouteCarrierTXWorkerBatchesQueuedFrames(t *testing.T) {
 	}
 }
 
+func TestMobileVRouteCarrierTXCoalesceWaitsForNextFrame(t *testing.T) {
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+	carrier := newMobileVRouteCarrier("coalesce-wait", mobileVRouteForwardPlan{}, left)
+	if carrier == nil {
+		t.Fatal("carrier is nil")
+	}
+	want := mobileVRouteFrame{MainType: mobileVRouteFrameMainTypeIP, Data: []byte{0x45}}
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		carrier.tx <- want
+	}()
+	got, ok := carrier.waitNextTXFrameUntil(time.Now().Add(time.Second))
+	if !ok || got.MainType != want.MainType || !bytes.Equal(got.Data, want.Data) {
+		t.Fatalf("coalesced frame=%+v ok=%v, want %+v", got, ok, want)
+	}
+}
+
 type mobileVRouteWriteCountingConn struct {
 	net.Conn
 	mu         sync.Mutex

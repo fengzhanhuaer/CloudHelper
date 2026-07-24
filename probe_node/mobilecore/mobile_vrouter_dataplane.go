@@ -68,6 +68,7 @@ const (
 	mobileVRouteCarrierTXBufferFrames               = 256
 	mobileVRouteCarrierTXControlBufferFrames        = 32
 	mobileVRouteCarrierTXBatchBytes                 = 64 * 1024
+	mobileVRouteCarrierTXCoalesceWindow             = 200 * time.Microsecond
 	mobileVRouteCarrierRXBufferFrames               = 512
 	mobileVRouteMaxHops                             = 3
 	mobileVRouteRelayResolveTimeout                 = 5 * time.Second
@@ -536,8 +537,15 @@ func (c *mobileVRouteCarrier) runTXWorker() {
 		}
 		frames := []mobileVRouteFrame{frame}
 		batchBytes := mobileVRouteFrameEnvelopeHeaderSize + len(frame.Control) + len(frame.Data)
+		coalesceDeadline := time.Time{}
+		if mobileVRouteFrameIsIP(frame) {
+			coalesceDeadline = time.Now().Add(mobileVRouteCarrierTXCoalesceWindow)
+		}
 		for batchBytes < mobileVRouteCarrierTXBatchBytes {
 			next, available := c.tryNextTXFrame()
+			if !available && !coalesceDeadline.IsZero() {
+				next, available = c.waitNextTXFrameUntil(coalesceDeadline)
+			}
 			if !available {
 				break
 			}
@@ -625,6 +633,31 @@ func (c *mobileVRouteCarrier) tryNextTXFrame() (mobileVRouteFrame, bool) {
 	case frame := <-c.tx:
 		return frame, true
 	default:
+		return mobileVRouteFrame{}, false
+	}
+}
+
+func (c *mobileVRouteCarrier) waitNextTXFrameUntil(deadline time.Time) (mobileVRouteFrame, bool) {
+	if c == nil || c.done == nil {
+		return mobileVRouteFrame{}, false
+	}
+	if frame, ok := c.tryNextTXFrame(); ok {
+		return frame, true
+	}
+	wait := time.Until(deadline)
+	if wait <= 0 {
+		return mobileVRouteFrame{}, false
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case frame := <-c.txControl:
+		return frame, true
+	case frame := <-c.tx:
+		return frame, true
+	case <-c.done:
+		return mobileVRouteFrame{}, false
+	case <-timer.C:
 		return mobileVRouteFrame{}, false
 	}
 }

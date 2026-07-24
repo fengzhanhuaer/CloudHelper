@@ -2313,6 +2313,21 @@ func TestProbeVirtualRouterFrameLinkTXWorkerBatchesQueuedFrames(t *testing.T) {
 	}
 }
 
+func TestProbeVirtualRouterFrameLinkTXCoalesceWaitsForNextFrame(t *testing.T) {
+	link := newProbeVirtualRouterFrameLink("test-coalesce-link", nil, nil, nil)
+	defer stopProbeVirtualRouterFrameLink(link)
+	want := probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeIP, Data: []byte{0x45}}
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		link.tx <- want
+	}()
+	businessSinceBulk := 0
+	got, ok := link.waitNextTXFrameUntil(&businessSinceBulk, time.Now().Add(time.Second))
+	if !ok || got.MainType != want.MainType || !reflect.DeepEqual(got.Data, want.Data) {
+		t.Fatalf("coalesced frame=%+v ok=%v, want %+v", got, ok, want)
+	}
+}
+
 type probeVirtualRouterWriteCountingConn struct {
 	net.Conn
 	mu         sync.Mutex

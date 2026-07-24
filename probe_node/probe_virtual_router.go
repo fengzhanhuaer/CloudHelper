@@ -4355,8 +4355,15 @@ func (s *probeVirtualRouterFrameLink) runTXWorker() {
 		frame = appendProbeVirtualRouterWireFrameICMPTrace(frame, s.runtime, s.requestPath, "carrier_tx")
 		frames := []probeVirtualRouterFrame{frame}
 		batchBytes := probeVirtualRouterFrameEnvelopeHeaderSize + len(frame.Control) + len(frame.Data)
+		coalesceDeadline := time.Time{}
+		if _, queueName := s.txQueueForFrame(frame); queueName != "control" {
+			coalesceDeadline = time.Now().Add(probeVirtualRouterFrameLinkTXCoalesceWindow)
+		}
 		for batchBytes < probeVirtualRouterFrameLinkTXBatchBytes {
 			next, available := s.tryNextTXFrame(&businessSinceBulk)
+			if !available && !coalesceDeadline.IsZero() {
+				next, available = s.waitNextTXFrameUntil(&businessSinceBulk, coalesceDeadline)
+			}
 			if !available {
 				break
 			}
@@ -4497,6 +4504,37 @@ func (s *probeVirtualRouterFrameLink) tryNextTXFrame(businessSinceBulk *int) (pr
 		*businessSinceBulk = 0
 		return frame, true
 	default:
+		return probeVirtualRouterFrame{}, false
+	}
+}
+
+func (s *probeVirtualRouterFrameLink) waitNextTXFrameUntil(businessSinceBulk *int, deadline time.Time) (probeVirtualRouterFrame, bool) {
+	if s == nil || businessSinceBulk == nil || s.done == nil {
+		return probeVirtualRouterFrame{}, false
+	}
+	if frame, ok := s.tryNextTXFrame(businessSinceBulk); ok {
+		return frame, true
+	}
+	wait := time.Until(deadline)
+	if wait <= 0 {
+		return probeVirtualRouterFrame{}, false
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case frame := <-s.txControl:
+		return frame, true
+	case frame := <-s.tx:
+		if *businessSinceBulk < probeVirtualRouterFrameLinkTXBusinessQuantum {
+			(*businessSinceBulk)++
+		}
+		return frame, true
+	case frame := <-s.txBulk:
+		*businessSinceBulk = 0
+		return frame, true
+	case <-s.done:
+		return probeVirtualRouterFrame{}, false
+	case <-timer.C:
 		return probeVirtualRouterFrame{}, false
 	}
 }
