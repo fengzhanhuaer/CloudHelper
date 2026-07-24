@@ -4920,8 +4920,10 @@ func TestProbeVirtualRouterFrameLinkTXSchedulingPrioritizesControlAndBoundsBulk(
 func TestProbeVirtualRouterSpeedBackpressureUsesBoundedBulkQueue(t *testing.T) {
 	link := newProbeVirtualRouterFrameLink("speed-backpressure", &probeVirtualRouterRuntime{}, nil, nil)
 	t.Cleanup(func() { stopProbeVirtualRouterFrameLink(link) })
-	high := cap(link.txBulk) * probeVirtualRouterSpeedTestTXHighWatermarkPercent / 100
-	low := cap(link.txBulk) * probeVirtualRouterSpeedTestTXLowWatermarkPercent / 100
+	high, low := probeVirtualRouterSpeedTXWatermarks(cap(link.txBulk))
+	if high != 96 || low != 32 {
+		t.Fatalf("speed tx watermarks high=%d low=%d, want high=96 low=32", high, low)
+	}
 	for i := 0; i < high; i++ {
 		link.txBulk <- probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeSpeed, Data: []byte{1}}
 	}

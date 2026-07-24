@@ -30,7 +30,7 @@ const (
 	probeVirtualRouterRuntimeRole                          = "virtual_router"
 	probeVirtualRouterFrameLinkTXBufferFrames              = 256
 	probeVirtualRouterFrameLinkTXControlBufferFrames       = 32
-	probeVirtualRouterFrameLinkTXBulkBufferFrames          = 64
+	probeVirtualRouterFrameLinkTXBulkBufferFrames          = 128
 	probeVirtualRouterFrameLinkTXBusinessQuantum           = 8
 	probeVirtualRouterFrameLinkTXBatchBytes                = 64 * 1024
 	probeVirtualRouterFrameLinkTXCoalesceWindow            = 200 * time.Microsecond

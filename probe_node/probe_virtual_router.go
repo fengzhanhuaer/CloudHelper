@@ -78,9 +78,11 @@ const (
 	probeVirtualRouterPingPongBytes                               = 64
 	probeVirtualRouterSpeedTestMaxBytes                           = 128 * 1024 * 1024
 	probeVirtualRouterSpeedTestMaxDuration                        = 10 * time.Second
-	probeVirtualRouterSpeedTestChunkBytes                         = 16 * 1024
+	probeVirtualRouterSpeedTestChunkBytes                         = 1024
 	probeVirtualRouterSpeedTestTXHighWatermarkPercent             = 75
 	probeVirtualRouterSpeedTestTXLowWatermarkPercent              = 25
+	probeVirtualRouterSpeedTestTXHighWatermarkBytes               = 192 * 1024
+	probeVirtualRouterSpeedTestTXLowWatermarkBytes                = 64 * 1024
 	probeVirtualRouterSpeedReceiveCompletedTTL                    = 2 * time.Minute
 	probeVirtualRouterCarrierStalePingFailures                    = 4
 	probeVirtualRouterCarrierStaleRXGrace                         = 2 * probeVirtualRouterPingPongInterval
@@ -6061,14 +6063,7 @@ func waitProbeVirtualRouterSpeedTXBackpressure(link *probeVirtualRouterFrameLink
 	if capacity <= 0 {
 		return nil
 	}
-	high := capacity * probeVirtualRouterSpeedTestTXHighWatermarkPercent / 100
-	low := capacity * probeVirtualRouterSpeedTestTXLowWatermarkPercent / 100
-	if high <= 0 {
-		high = capacity
-	}
-	if low < 0 {
-		low = 0
-	}
+	high, low := probeVirtualRouterSpeedTXWatermarks(capacity)
 	if len(link.txBulk) < high {
 		return nil
 	}
@@ -6103,6 +6098,36 @@ func waitProbeVirtualRouterSpeedTXBackpressure(link *probeVirtualRouterFrameLink
 			return os.ErrDeadlineExceeded
 		}
 	}
+}
+
+func probeVirtualRouterSpeedTXWatermarks(capacity int) (high int, low int) {
+	if capacity <= 0 {
+		return 0, 0
+	}
+	high = capacity * probeVirtualRouterSpeedTestTXHighWatermarkPercent / 100
+	if high <= 0 {
+		high = capacity
+	}
+	low = capacity * probeVirtualRouterSpeedTestTXLowWatermarkPercent / 100
+	if low < 0 {
+		low = 0
+	}
+	framesForBytes := func(bytes int) int {
+		return (bytes + probeVirtualRouterSpeedTestChunkBytes - 1) / probeVirtualRouterSpeedTestChunkBytes
+	}
+	if byteHigh := framesForBytes(probeVirtualRouterSpeedTestTXHighWatermarkBytes); byteHigh < high {
+		high = byteHigh
+	}
+	if byteLow := framesForBytes(probeVirtualRouterSpeedTestTXLowWatermarkBytes); byteLow < low {
+		low = byteLow
+	}
+	if high < 1 {
+		high = 1
+	}
+	if low >= high {
+		low = high - 1
+	}
+	return high, low
 }
 
 func normalizeProbeVirtualRouterSpeedMaxBytes(value int64) int64 {
