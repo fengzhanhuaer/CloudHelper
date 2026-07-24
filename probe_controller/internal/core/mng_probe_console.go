@@ -330,7 +330,7 @@ func mngProbeConsoleBridgeHandler(w http.ResponseWriter, r *http.Request) {
 func setMngProbeConsoleBridgeCORSHeaders(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "null")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Accept, Range")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Accept, Range, X-CloudHelper-Page-Version")
 	w.Header().Set("Access-Control-Max-Age", "600")
 	w.Header().Add("Vary", "Origin")
 }

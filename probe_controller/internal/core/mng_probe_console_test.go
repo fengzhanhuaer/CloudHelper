@@ -102,6 +102,30 @@ func TestMngProbeConsoleSessionRouteSupportsMultipleProbeTabs(t *testing.T) {
 	}
 }
 
+func TestMngProbeConsoleBridgeAllowsPageVersionPreflight(t *testing.T) {
+	token := mintMngProbeConsoleToken("7", "node-a")
+	if token == "" {
+		t.Fatal("expected non-empty token")
+	}
+	req := httptest.NewRequest(http.MethodOptions, mngProbeConsoleSessionPrefix+token+"/local/api/virtual_router/status", nil)
+	req.Header.Set("Origin", "null")
+	req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	req.Header.Set("Access-Control-Request-Headers", "x-cloudhelper-page-version")
+	rec := httptest.NewRecorder()
+
+	mngProbeConsoleBridgeHandler(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 preflight response, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "null" {
+		t.Fatalf("expected opaque sandbox origin to be allowed, got %q", got)
+	}
+	if got := strings.ToLower(rec.Header().Get("Access-Control-Allow-Headers")); !strings.Contains(got, "x-cloudhelper-page-version") {
+		t.Fatalf("expected page version header to be allowed, got %q", got)
+	}
+}
+
 func TestRewriteMngProbeConsoleHTMLLinksUsesSessionPrefix(t *testing.T) {
 	headers := map[string][]string{"Content-Type": {"text/html; charset=utf-8"}}
 	prefix := mngProbeConsoleSessionPrefix + "abc123"
