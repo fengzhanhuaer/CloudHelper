@@ -630,6 +630,7 @@ func probeVirtualRouterRouteSpeedQueueSnapshot() map[string]any {
 	}
 	return map[string]any{
 		"updated_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"version":    strings.TrimSpace(BuildVersion),
 		"tun": map[string]any{
 			"running":                      tunStats.Running,
 			"inbound_queue_depth":          tunStats.InboundQueueDepth,

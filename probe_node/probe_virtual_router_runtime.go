@@ -28,13 +28,13 @@ const (
 	probeVirtualRouterRuntimeRouteIDPrefix                 = "vrouter-"
 	probeVirtualRouterRuntimeRouteLayer                    = "auto"
 	probeVirtualRouterRuntimeRole                          = "virtual_router"
-	probeVirtualRouterFrameLinkTXBufferFrames              = 128
-	probeVirtualRouterFrameLinkTXControlBufferFrames       = 16
-	probeVirtualRouterFrameLinkTXBulkBufferFrames          = 16
+	probeVirtualRouterFrameLinkTXBufferFrames              = 256
+	probeVirtualRouterFrameLinkTXControlBufferFrames       = 32
+	probeVirtualRouterFrameLinkTXBulkBufferFrames          = 64
 	probeVirtualRouterFrameLinkTXBusinessQuantum           = 8
-	probeVirtualRouterFrameLinkRXBufferFrames              = 512
+	probeVirtualRouterFrameLinkRXBufferFrames              = 4096
 	probeVirtualRouterFrameLinkRXDispatchShards            = 8
-	probeVirtualRouterFrameLinkRXDispatchShardBufferFrames = 128
+	probeVirtualRouterFrameLinkRXDispatchShardBufferFrames = 1024
 	probeVirtualRouterRXDispatchDropLogPeriod              = time.Second
 )
 

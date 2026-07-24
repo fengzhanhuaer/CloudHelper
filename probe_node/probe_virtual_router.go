@@ -79,15 +79,8 @@ const (
 	probeVirtualRouterSpeedTestMaxBytes                           = 128 * 1024 * 1024
 	probeVirtualRouterSpeedTestMaxDuration                        = 10 * time.Second
 	probeVirtualRouterSpeedTestChunkBytes                         = 1024
-	probeVirtualRouterSpeedTestTXHighWatermarkPercent             = 25
-	probeVirtualRouterSpeedTestTXLowWatermarkPercent              = 10
-	probeVirtualRouterSpeedTestPaceInitialMbps                    = 1.0
-	probeVirtualRouterSpeedTestPaceMinMbps                        = 0.5
-	probeVirtualRouterSpeedTestPaceMaxMbps                        = 128.0
-	probeVirtualRouterSpeedTestPaceIncreaseInterval               = 250 * time.Millisecond
-	probeVirtualRouterSpeedTestPaceIncreaseFactor                 = 1.5
-	probeVirtualRouterSpeedTestPaceDecreaseFactor                 = 0.5
-	probeVirtualRouterSpeedTestSlowWriteThreshold                 = 100 * time.Millisecond
+	probeVirtualRouterSpeedTestTXHighWatermarkPercent             = 75
+	probeVirtualRouterSpeedTestTXLowWatermarkPercent              = 25
 	probeVirtualRouterSpeedReceiveCompletedTTL                    = 2 * time.Minute
 	probeVirtualRouterCarrierStalePingFailures                    = 4
 	probeVirtualRouterCarrierStaleRXGrace                         = 2 * probeVirtualRouterPingPongInterval
@@ -5904,7 +5897,6 @@ func runProbeVirtualRouterOneWaySpeedSender(path []string, msg probeVirtualRoute
 		return err
 	}
 	deadline := time.Now().Add(maxDuration)
-	pacer := newProbeVirtualRouterSpeedPacer(time.Now())
 	var sentBytes int64
 	var frames int64
 	lastLogAt := time.Now()
@@ -5929,13 +5921,6 @@ func runProbeVirtualRouterOneWaySpeedSender(path []string, msg probeVirtualRoute
 		size := int64(probeVirtualRouterSpeedTestChunkBytes)
 		if remain := msg.MaxBytes - sentBytes; remain < size {
 			size = remain
-		}
-		if err := pacer.wait(link, int(size), deadline); err != nil {
-			if errors.Is(err, os.ErrDeadlineExceeded) {
-				log.Printf("probe virtual router speed sender deadline while pacing: request_id=%s direction=%s route=%s bytes=%d frames=%d path=%s %s", strings.TrimSpace(msg.RequestID), strings.TrimSpace(msg.Direction), probeVirtualRouterRuntimeLogRouteID(rt), sentBytes, frames, strings.Join(cleanPath, ">"), probeVirtualRouterFrameLinkDebugState(link))
-				break
-			}
-			return err
 		}
 		payload := buildProbeVirtualRouterSpeedChunkPayload(msg.RequestID, int(size))
 		if err := enqueueProbeVirtualRouterBusinessFrameUntil(link, probeVirtualRouterFrameMainTypeSpeed, probeVirtualRouterSpeedSubTypeChunk, payload, cleanPath, deadline); err != nil {
@@ -6031,85 +6016,6 @@ func waitProbeVirtualRouterSpeedTXBackpressure(link *probeVirtualRouterFrameLink
 			return os.ErrDeadlineExceeded
 		}
 	}
-}
-
-type probeVirtualRouterSpeedPacer struct {
-	rateMbps       float64
-	nextSendAt     time.Time
-	lastAdjustedAt time.Time
-}
-
-func newProbeVirtualRouterSpeedPacer(now time.Time) *probeVirtualRouterSpeedPacer {
-	return &probeVirtualRouterSpeedPacer{
-		rateMbps:       probeVirtualRouterSpeedTestPaceInitialMbps,
-		nextSendAt:     now,
-		lastAdjustedAt: now,
-	}
-}
-
-func (p *probeVirtualRouterSpeedPacer) wait(link *probeVirtualRouterFrameLink, payloadBytes int, deadline time.Time) error {
-	if p == nil || payloadBytes <= 0 {
-		return nil
-	}
-	now := time.Now()
-	p.adjust(link, now)
-	if p.rateMbps < probeVirtualRouterSpeedTestPaceMinMbps {
-		p.rateMbps = probeVirtualRouterSpeedTestPaceMinMbps
-	}
-	if p.rateMbps > probeVirtualRouterSpeedTestPaceMaxMbps {
-		p.rateMbps = probeVirtualRouterSpeedTestPaceMaxMbps
-	}
-	if p.nextSendAt.Before(now) {
-		p.nextSendAt = now
-	}
-	bits := float64(payloadBytes * 8)
-	interval := time.Duration(bits / (p.rateMbps * 1000 * 1000) * float64(time.Second))
-	p.nextSendAt = p.nextSendAt.Add(interval)
-	wait := time.Until(p.nextSendAt)
-	if wait <= 0 {
-		return nil
-	}
-	if !deadline.IsZero() && time.Now().Add(wait).After(deadline) {
-		return os.ErrDeadlineExceeded
-	}
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
-	if link == nil || link.done == nil {
-		<-timer.C
-		return nil
-	}
-	select {
-	case <-timer.C:
-		return nil
-	case <-link.done:
-		return io.ErrClosedPipe
-	}
-}
-
-func (p *probeVirtualRouterSpeedPacer) adjust(link *probeVirtualRouterFrameLink, now time.Time) {
-	if p == nil || link == nil || now.Sub(p.lastAdjustedAt) < probeVirtualRouterSpeedTestPaceIncreaseInterval {
-		return
-	}
-	_, _, _, _, _, _, bulkDepth, bulkCapacity := link.txQueueSnapshot()
-	lastWrite, writeEMA := link.txWriteDurationSnapshot()
-	high := bulkCapacity * probeVirtualRouterSpeedTestTXHighWatermarkPercent / 100
-	low := bulkCapacity * probeVirtualRouterSpeedTestTXLowWatermarkPercent / 100
-	if high <= 0 {
-		high = bulkCapacity
-	}
-	congested := (high > 0 && bulkDepth >= high) || lastWrite >= probeVirtualRouterSpeedTestSlowWriteThreshold || writeEMA >= probeVirtualRouterSpeedTestSlowWriteThreshold
-	if congested {
-		p.rateMbps *= probeVirtualRouterSpeedTestPaceDecreaseFactor
-		if p.rateMbps < probeVirtualRouterSpeedTestPaceMinMbps {
-			p.rateMbps = probeVirtualRouterSpeedTestPaceMinMbps
-		}
-	} else if bulkDepth <= low {
-		p.rateMbps *= probeVirtualRouterSpeedTestPaceIncreaseFactor
-		if p.rateMbps > probeVirtualRouterSpeedTestPaceMaxMbps {
-			p.rateMbps = probeVirtualRouterSpeedTestPaceMaxMbps
-		}
-	}
-	p.lastAdjustedAt = now
 }
 
 func normalizeProbeVirtualRouterSpeedMaxBytes(value int64) int64 {

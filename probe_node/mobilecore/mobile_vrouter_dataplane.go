@@ -65,9 +65,9 @@ const (
 	mobileVRouteFrameWriteTimeout                   = 15 * time.Second
 	mobileVRouteCarrierDialTimeout                  = 12 * time.Second
 	mobileVRouteCarrierRetryMax                     = 30 * time.Second
-	mobileVRouteCarrierTXBufferFrames               = 128
-	mobileVRouteCarrierTXControlBufferFrames        = 16
-	mobileVRouteCarrierRXBufferFrames               = 256
+	mobileVRouteCarrierTXBufferFrames               = 256
+	mobileVRouteCarrierTXControlBufferFrames        = 32
+	mobileVRouteCarrierRXBufferFrames               = 512
 	mobileVRouteMaxHops                             = 3
 	mobileVRouteRelayResolveTimeout                 = 5 * time.Second
 	mobileVRouteH3StreamOpenTimeout                 = 6 * time.Second

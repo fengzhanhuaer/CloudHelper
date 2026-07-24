@@ -4826,22 +4826,34 @@ func TestProbeVirtualRouterFrameLinkTXSchedulingPrioritizesControlAndBoundsBulk(
 	}
 }
 
-func TestProbeVirtualRouterSpeedPacerAdjustsToBulkQueuePressure(t *testing.T) {
-	link := newProbeVirtualRouterFrameLink("speed-pacer", &probeVirtualRouterRuntime{}, nil, nil)
+func TestProbeVirtualRouterSpeedBackpressureUsesBoundedBulkQueue(t *testing.T) {
+	link := newProbeVirtualRouterFrameLink("speed-backpressure", &probeVirtualRouterRuntime{}, nil, nil)
 	t.Cleanup(func() { stopProbeVirtualRouterFrameLink(link) })
-	now := time.Now()
-	pacer := newProbeVirtualRouterSpeedPacer(now)
-	pacer.adjust(link, now.Add(probeVirtualRouterSpeedTestPaceIncreaseInterval))
-	if got, want := pacer.rateMbps, probeVirtualRouterSpeedTestPaceInitialMbps*probeVirtualRouterSpeedTestPaceIncreaseFactor; got != want {
-		t.Fatalf("uncongested rate=%v, want %v", got, want)
-	}
 	high := cap(link.txBulk) * probeVirtualRouterSpeedTestTXHighWatermarkPercent / 100
+	low := cap(link.txBulk) * probeVirtualRouterSpeedTestTXLowWatermarkPercent / 100
 	for i := 0; i < high; i++ {
 		link.txBulk <- probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeSpeed, Data: []byte{1}}
 	}
-	pacer.adjust(link, now.Add(2*probeVirtualRouterSpeedTestPaceIncreaseInterval))
-	if got, want := pacer.rateMbps, probeVirtualRouterSpeedTestPaceInitialMbps*probeVirtualRouterSpeedTestPaceIncreaseFactor*probeVirtualRouterSpeedTestPaceDecreaseFactor; got != want {
-		t.Fatalf("congested rate=%v, want %v", got, want)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- waitProbeVirtualRouterSpeedTXBackpressure(link, time.Now().Add(time.Second))
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("backpressure returned before bulk queue drained: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	for len(link.txBulk) > low {
+		<-link.txBulk
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("backpressure returned error after drain: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("backpressure did not release after bulk queue reached low watermark")
 	}
 }
 
