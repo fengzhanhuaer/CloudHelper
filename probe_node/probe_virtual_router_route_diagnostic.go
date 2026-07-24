@@ -583,7 +583,7 @@ func probeVirtualRouterRouteSpeedQueueSnapshot() map[string]any {
 	linkItems := make([]map[string]any, 0, len(links))
 	for _, link := range links {
 		txDepth, txCap, txControlDepth, txControlCap, txBusinessDepth, txBusinessCap, txBulkDepth, txBulkCap := link.txQueueSnapshot()
-		txLastWrite, txWriteEMA := link.txWriteDurationSnapshot()
+		txLastWrite, txWriteEMA, txLastBatchFrames, txLastBatchBytes := link.txWriteSnapshot()
 		rxEntryDepth, rxEntryCap, rxDispatchDepth, rxDispatchCap, rxWorkers := link.rxQueueSnapshot()
 		link.mu.Lock()
 		key := strings.TrimSpace(link.key)
@@ -621,6 +621,8 @@ func probeVirtualRouterRouteSpeedQueueSnapshot() map[string]any {
 			"tx_bulk_capacity":     txBulkCap,
 			"tx_last_write_ms":     probeDurationMilliseconds(txLastWrite),
 			"tx_write_ema_ms":      probeDurationMilliseconds(txWriteEMA),
+			"tx_last_batch_frames": txLastBatchFrames,
+			"tx_last_batch_bytes":  txLastBatchBytes,
 			"rx_entry_queue":       rxEntryDepth,
 			"rx_entry_capacity":    rxEntryCap,
 			"rx_dispatch_queue":    rxDispatchDepth,

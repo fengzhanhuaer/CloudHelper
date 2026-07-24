@@ -67,6 +67,7 @@ const (
 	mobileVRouteCarrierRetryMax                     = 30 * time.Second
 	mobileVRouteCarrierTXBufferFrames               = 256
 	mobileVRouteCarrierTXControlBufferFrames        = 32
+	mobileVRouteCarrierTXBatchBytes                 = 64 * 1024
 	mobileVRouteCarrierRXBufferFrames               = 512
 	mobileVRouteMaxHops                             = 3
 	mobileVRouteRelayResolveTimeout                 = 5 * time.Second
@@ -114,6 +115,8 @@ type mobileVRouteCarrier struct {
 	txDropped       atomic.Int64
 	txLastWriteNS   atomic.Int64
 	txWriteEMANS    atomic.Int64
+	txBatchFrames   atomic.Int64
+	txBatchBytes    atomic.Int64
 	rxFrames        atomic.Int64
 	rxBytes         atomic.Int64
 	rxIPFrames      atomic.Int64
@@ -531,14 +534,24 @@ func (c *mobileVRouteCarrier) runTXWorker() {
 		if !ok {
 			return
 		}
-		payload, err := encodeMobileVRouteFrame(frame)
+		frames := []mobileVRouteFrame{frame}
+		batchBytes := mobileVRouteFrameEnvelopeHeaderSize + len(frame.Control) + len(frame.Data)
+		for batchBytes < mobileVRouteCarrierTXBatchBytes {
+			next, available := c.tryNextTXFrame()
+			if !available {
+				break
+			}
+			frames = append(frames, next)
+			batchBytes += mobileVRouteFrameEnvelopeHeaderSize + len(next.Control) + len(next.Data)
+		}
+		payload, err := encodeMobileVRouteFrames(frames)
 		if err == nil && mobileVRouteFrameWriteTimeout > 0 {
 			_ = c.conn.SetWriteDeadline(time.Now().Add(mobileVRouteFrameWriteTimeout))
 		}
 		if err == nil {
 			writeStartedAt := time.Now()
 			err = writeMobileVRouteAll(c.conn, payload)
-			c.recordTXWriteDuration(time.Since(writeStartedAt))
+			c.recordTXWriteBatch(time.Since(writeStartedAt), len(frames), len(payload))
 		}
 		if mobileVRouteFrameWriteTimeout > 0 {
 			_ = c.conn.SetWriteDeadline(time.Time{})
@@ -551,13 +564,15 @@ func (c *mobileVRouteCarrier) runTXWorker() {
 			c.close()
 			return
 		}
-		c.txFrames.Add(1)
-		c.txBytes.Add(int64(len(frame.Data)))
-		if mobileVRouteFrameIsIP(frame) {
-			c.txIPFrames.Add(1)
-			c.txIPBytes.Add(int64(len(frame.Data)))
-		} else {
-			c.txControlFrames.Add(1)
+		for _, sentFrame := range frames {
+			c.txFrames.Add(1)
+			c.txBytes.Add(int64(len(sentFrame.Data)))
+			if mobileVRouteFrameIsIP(sentFrame) {
+				c.txIPFrames.Add(1)
+				c.txIPBytes.Add(int64(len(sentFrame.Data)))
+			} else {
+				c.txControlFrames.Add(1)
+			}
 		}
 		c.markActivity()
 	}
@@ -597,12 +612,31 @@ func (c *mobileVRouteCarrier) nextTXFrame() (mobileVRouteFrame, bool) {
 	}
 }
 
-func (c *mobileVRouteCarrier) recordTXWriteDuration(value time.Duration) {
+func (c *mobileVRouteCarrier) tryNextTXFrame() (mobileVRouteFrame, bool) {
+	if c == nil {
+		return mobileVRouteFrame{}, false
+	}
+	select {
+	case frame := <-c.txControl:
+		return frame, true
+	default:
+	}
+	select {
+	case frame := <-c.tx:
+		return frame, true
+	default:
+		return mobileVRouteFrame{}, false
+	}
+}
+
+func (c *mobileVRouteCarrier) recordTXWriteBatch(value time.Duration, frames int, bytes int) {
 	if c == nil || value < 0 {
 		return
 	}
 	nanoseconds := int64(value)
 	c.txLastWriteNS.Store(nanoseconds)
+	c.txBatchFrames.Store(int64(frames))
+	c.txBatchBytes.Store(int64(bytes))
 	for {
 		current := c.txWriteEMANS.Load()
 		next := nanoseconds
@@ -1069,7 +1103,7 @@ func snapshotMobileVRouteCarriers() map[string]any {
 		itemLastError := item.lastError
 		itemLastErrorUnixNS := item.lastErrorUnixNS
 		item.lastErrorMu.Unlock()
-		carriers = append(carriers, map[string]any{
+		carrier := map[string]any{
 			"route_id":            item.plan.RouteID,
 			"path":                append([]string(nil), item.plan.Path...),
 			"next_node":           item.plan.NextNode,
@@ -1103,7 +1137,10 @@ func snapshotMobileVRouteCarriers() map[string]any {
 			"last_activity_at":    mobileVRouteUnixNanoRFC3339(item.lastActivityNS.Load()),
 			"last_error":          itemLastError,
 			"last_error_at":       mobileVRouteUnixNanoRFC3339(itemLastErrorUnixNS),
-		})
+		}
+		carrier["tx_last_batch_frames"] = item.txBatchFrames.Load()
+		carrier["tx_last_batch_bytes"] = item.txBatchBytes.Load()
+		carriers = append(carriers, carrier)
 	}
 	return map[string]any{
 		"active":        len(carriers),
@@ -1589,6 +1626,27 @@ func encodeMobileVRouteFrame(frame mobileVRouteFrame) ([]byte, error) {
 	copy(out[mobileVRouteFrameEnvelopeHeaderSize+controlLen:], frame.Data)
 	binary.BigEndian.PutUint16(out[10:12], mobileVRouteFrameChecksum(out[:10], frame.Control, frame.Data))
 	return out, nil
+}
+
+func encodeMobileVRouteFrames(frames []mobileVRouteFrame) ([]byte, error) {
+	if len(frames) == 0 {
+		return nil, nil
+	}
+	totalBytes := 0
+	encoded := make([][]byte, 0, len(frames))
+	for _, frame := range frames {
+		payload, err := encodeMobileVRouteFrame(frame)
+		if err != nil {
+			return nil, err
+		}
+		encoded = append(encoded, payload)
+		totalBytes += len(payload)
+	}
+	payload := make([]byte, 0, totalBytes)
+	for _, framePayload := range encoded {
+		payload = append(payload, framePayload...)
+	}
+	return payload, nil
 }
 
 func readMobileVRouteFrame(reader *bufio.Reader) (mobileVRouteFrame, error) {

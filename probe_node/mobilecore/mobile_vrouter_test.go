@@ -1080,6 +1080,92 @@ func TestMobileVRouteCarrierReservesControlQueueAndPrioritizesIt(t *testing.T) {
 	}
 }
 
+func TestMobileVRouteCarrierTXWorkerBatchesQueuedFrames(t *testing.T) {
+	left, right := net.Pipe()
+	countedLeft := &mobileVRouteWriteCountingConn{Conn: left}
+	defer right.Close()
+	carrier := newMobileVRouteCarrier("batched-writes", mobileVRouteForwardPlan{RouteID: "vrouter-mobile-batched"}, countedLeft)
+	if carrier == nil {
+		t.Fatal("carrier is nil")
+	}
+	defer carrier.close()
+	for _, marker := range []byte{0x01, 0x02} {
+		frame := mobileVRouteFrame{
+			MainType: mobileVRouteFrameMainTypeIP,
+			SubType:  mobileVRouteIPSubTypeIPv4,
+			Data:     []byte{0x45, 0x00, 0x00, 0x14, marker},
+		}
+		if err := carrier.enqueueFrame(frame); err != nil {
+			t.Fatalf("enqueue frame failed: %v", err)
+		}
+	}
+
+	type result struct {
+		frames []mobileVRouteFrame
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		reader := bufio.NewReader(right)
+		frames := make([]mobileVRouteFrame, 0, 2)
+		for range 2 {
+			frame, err := readMobileVRouteFrame(reader)
+			if err != nil {
+				done <- result{err: err}
+				return
+			}
+			frames = append(frames, frame)
+		}
+		done <- result{frames: frames}
+	}()
+	go carrier.runTXWorker()
+
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("read batched frames failed: %v", got.err)
+		}
+		if len(got.frames) != 2 || got.frames[0].Data[4] != 0x01 || got.frames[1].Data[4] != 0x02 {
+			t.Fatalf("batched frames=%+v", got.frames)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for batched frames")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && carrier.txFrames.Load() != 2 {
+		time.Sleep(time.Millisecond)
+	}
+	if writes := countedLeft.WriteCalls(); writes != 1 {
+		t.Fatalf("carrier write calls=%d, want 1 for two queued frames", writes)
+	}
+	if got := carrier.txBatchFrames.Load(); got != 2 {
+		t.Fatalf("last batch frames=%d, want 2", got)
+	}
+	if got := carrier.txFrames.Load(); got != 2 {
+		t.Fatalf("tx frames=%d, want 2", got)
+	}
+}
+
+type mobileVRouteWriteCountingConn struct {
+	net.Conn
+	mu         sync.Mutex
+	writeCalls int
+}
+
+func (c *mobileVRouteWriteCountingConn) Write(payload []byte) (int, error) {
+	c.mu.Lock()
+	c.writeCalls++
+	c.mu.Unlock()
+	return c.Conn.Write(payload)
+}
+
+func (c *mobileVRouteWriteCountingConn) WriteCalls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.writeCalls
+}
+
 func TestMobileVRouteCarrierBuffersAreBounded(t *testing.T) {
 	left, right := net.Pipe()
 	defer left.Close()

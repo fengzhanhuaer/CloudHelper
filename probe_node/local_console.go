@@ -2641,7 +2641,7 @@ func probeLocalVirtualRouterFrameLinkStatusPayload(link *probeVirtualRouterFrame
 	}
 	now := time.Now()
 	txDepth, txCap, txControlDepth, txControlCap, txBusinessDepth, txBusinessCap, txBulkDepth, txBulkCap := link.txQueueSnapshot()
-	txLastWrite, txWriteEMA := link.txWriteDurationSnapshot()
+	txLastWrite, txWriteEMA, txLastBatchFrames, txLastBatchBytes := link.txWriteSnapshot()
 	rxDepth, rxCap := 0, 0
 	rxEntryDepth, rxEntryCap, rxDispatchDepth, rxDispatchCap, rxDispatchWorkers := link.rxQueueSnapshot()
 	rxDepth = rxEntryDepth + rxDispatchDepth
@@ -2676,6 +2676,8 @@ func probeLocalVirtualRouterFrameLinkStatusPayload(link *probeVirtualRouterFrame
 		"tx_bulk_capacity":     txBulkCap,
 		"tx_last_write_ms":     probeDurationMilliseconds(txLastWrite),
 		"tx_write_ema_ms":      probeDurationMilliseconds(txWriteEMA),
+		"tx_last_batch_frames": txLastBatchFrames,
+		"tx_last_batch_bytes":  txLastBatchBytes,
 		"rx_queue":             rxDepth,
 		"rx_capacity":          rxCap,
 		"rx_entry_queue":       rxEntryDepth,

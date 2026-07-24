@@ -32,6 +32,7 @@ const (
 	probeVirtualRouterFrameLinkTXControlBufferFrames       = 32
 	probeVirtualRouterFrameLinkTXBulkBufferFrames          = 64
 	probeVirtualRouterFrameLinkTXBusinessQuantum           = 8
+	probeVirtualRouterFrameLinkTXBatchBytes                = 64 * 1024
 	probeVirtualRouterFrameLinkRXBufferFrames              = 4096
 	probeVirtualRouterFrameLinkRXDispatchShards            = 8
 	probeVirtualRouterFrameLinkRXDispatchShardBufferFrames = 1024
@@ -163,26 +164,28 @@ func (c *probeVirtualRouterH3Conn) SetWriteDeadline(t time.Time) error {
 }
 
 type probeVirtualRouterFrameLink struct {
-	key              string
-	runtime          *probeVirtualRouterRuntime
-	carrier          *probeVirtualRouterPhysicalCarrier
-	requestPath      []string
-	openedAt         time.Time
-	lastUsed         time.Time
-	tx               chan probeVirtualRouterFrame
-	txControl        chan probeVirtualRouterFrame
-	txBulk           chan probeVirtualRouterFrame
-	rx               chan probeVirtualRouterFrame
-	rxDispatchShards []chan probeVirtualRouterFrame
-	done             chan struct{}
-	carrierNotify    chan struct{}
-	startOnce        sync.Once
-	closeOnce        sync.Once
-	rxDispatchDrops  uint64
-	rxDropLastLogAt  time.Time
-	txLastWriteTime  time.Duration
-	txWriteTimeEMA   time.Duration
-	mu               sync.Mutex
+	key               string
+	runtime           *probeVirtualRouterRuntime
+	carrier           *probeVirtualRouterPhysicalCarrier
+	requestPath       []string
+	openedAt          time.Time
+	lastUsed          time.Time
+	tx                chan probeVirtualRouterFrame
+	txControl         chan probeVirtualRouterFrame
+	txBulk            chan probeVirtualRouterFrame
+	rx                chan probeVirtualRouterFrame
+	rxDispatchShards  []chan probeVirtualRouterFrame
+	done              chan struct{}
+	carrierNotify     chan struct{}
+	startOnce         sync.Once
+	closeOnce         sync.Once
+	rxDispatchDrops   uint64
+	rxDropLastLogAt   time.Time
+	txLastWriteTime   time.Duration
+	txWriteTimeEMA    time.Duration
+	txLastBatchFrames int
+	txLastBatchBytes  int
+	mu                sync.Mutex
 }
 
 type probeVirtualRouterPhysicalCarrier struct {

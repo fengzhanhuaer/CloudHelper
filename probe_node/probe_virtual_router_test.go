@@ -2256,6 +2256,82 @@ func TestProbeVirtualRouterFrameLinkTXWorkerWritesBufferedFrame(t *testing.T) {
 	}
 }
 
+func TestProbeVirtualRouterFrameLinkTXWorkerBatchesQueuedFrames(t *testing.T) {
+	left, right := net.Pipe()
+	countedLeft := &probeVirtualRouterWriteCountingConn{Conn: left}
+	defer right.Close()
+
+	link := newProbeVirtualRouterFrameLink("test-batched-link", nil, countedLeft, nil)
+	defer stopProbeVirtualRouterFrameLink(link)
+	wantPath := []string{"16", "19"}
+	for _, packet := range [][]byte{
+		{0x45, 0x00, 0x00, 0x14, 0x01},
+		{0x45, 0x00, 0x00, 0x14, 0x02},
+	} {
+		frame, err := buildProbeVirtualRouterIPFrame(packet, wantPath, nil)
+		if err != nil {
+			t.Fatalf("build frame failed: %v", err)
+		}
+		if err := link.EnqueueProbeVirtualRouterFrame(frame); err != nil {
+			t.Fatalf("enqueue frame failed: %v", err)
+		}
+	}
+
+	type result struct {
+		frames []probeVirtualRouterFrame
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		reader := bufio.NewReader(right)
+		frames := make([]probeVirtualRouterFrame, 0, 2)
+		for range 2 {
+			frame, err := readProbeVirtualRouterWireFrame(reader)
+			if err != nil {
+				done <- result{err: err}
+				return
+			}
+			frames = append(frames, frame)
+		}
+		done <- result{frames: frames}
+	}()
+	link.Start()
+
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("read batched frames failed: %v", got.err)
+		}
+		if len(got.frames) != 2 || got.frames[0].Data[4] != 0x01 || got.frames[1].Data[4] != 0x02 {
+			t.Fatalf("batched frames=%+v", got.frames)
+		}
+		if writes := countedLeft.WriteCalls(); writes != 1 {
+			t.Fatalf("carrier write calls=%d, want 1 for two queued frames", writes)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for batched tx worker frames")
+	}
+}
+
+type probeVirtualRouterWriteCountingConn struct {
+	net.Conn
+	mu         sync.Mutex
+	writeCalls int
+}
+
+func (c *probeVirtualRouterWriteCountingConn) Write(payload []byte) (int, error) {
+	c.mu.Lock()
+	c.writeCalls++
+	c.mu.Unlock()
+	return c.Conn.Write(payload)
+}
+
+func (c *probeVirtualRouterWriteCountingConn) WriteCalls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.writeCalls
+}
+
 func TestProbeVirtualRouterFrameTXSuccessClearsRecoveredTransportError(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
