@@ -41,6 +41,10 @@
     .pill { display:inline-block; border:1px solid #30363d; border-radius:999px; padding:2px 8px; font-size:12px; }
     .pill.online { color:#7ee787; border-color:#2ea043; }
     .pill.offline { color:#ff7b72; border-color:#b54b4b; }
+    .pill.version-current { color:#7ee787; border-color:#2ea043; }
+    .pill.version-upgrade { color:#f2cc60; border-color:#9e6a03; }
+    .pill.version-unknown { color:#8b949e; border-color:#484f58; }
+    .version-cell { display:flex; flex-direction:column; align-items:flex-start; gap:4px; min-width:112px; }
     pre { background:#0d1117; border:1px solid #30363d; border-radius:8px; padding:10px; max-height:420px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
     .split { display:grid; grid-template-columns:2fr 1fr; gap:10px; }
     .card { border:1px solid #30363d; border-radius:10px; padding:10px; background:#0d1117; }
@@ -341,6 +345,10 @@
       nodes: [],
       deletedNodes: [],
       statusItems: [],
+      latestProbeVersion: '',
+      probeVersionCheckCompleted: false,
+      probeVersionCheckError: '',
+      probeVersionCheckPromise: null,
       shellSessionID: '',
       statusTimer: null,
       shellShortcuts: [],
@@ -425,6 +433,55 @@
       const n = Number(value);
       if (!Number.isFinite(n)) return '-';
       return `${n.toFixed(1)}%`;
+    }
+
+    function normalizeVersion(value) {
+      return String(value || '').trim().toLowerCase().replace(/^v/, '');
+    }
+
+    function renderProbeVersion(version, online) {
+      const current = String(version || '').trim();
+      const currentHTML = `<span class="mono">${escapeHTML(current || '-')}</span>`;
+      if (!current) {
+        return `<div class="version-cell">${currentHTML}<span class="pill version-unknown">版本未知</span></div>`;
+      }
+      if (!state.probeVersionCheckCompleted) {
+        return `<div class="version-cell">${currentHTML}<span class="pill version-unknown">检查中</span></div>`;
+      }
+      if (state.probeVersionCheckError || !state.latestProbeVersion) {
+        const detail = state.probeVersionCheckError || '最新版本不可用';
+        return `<div class="version-cell">${currentHTML}<span class="pill version-unknown" title="${escapeHTML(detail)}">升级状态未知</span></div>`;
+      }
+      const latest = String(state.latestProbeVersion || '').trim();
+      if (normalizeVersion(current) === normalizeVersion(latest)) {
+        return `<div class="version-cell">${currentHTML}<span class="pill version-current">已是最新</span></div>`;
+      }
+      const label = online ? '可升级' : '有新版本';
+      const offlineHint = online ? '' : '<span class="muted">当前离线</span>';
+      return `<div class="version-cell">${currentHTML}<span class="pill version-upgrade">${label}至 ${escapeHTML(latest)}</span>${offlineHint}</div>`;
+    }
+
+    async function refreshProbeLatestVersion(force) {
+      if (!force && state.probeVersionCheckCompleted) return;
+      if (state.probeVersionCheckPromise) return state.probeVersionCheckPromise;
+      state.probeVersionCheckCompleted = false;
+      state.probeVersionCheckError = '';
+      state.probeVersionCheckPromise = (async () => {
+        try {
+          const payload = await requestJSON('/mng/api/system/version');
+          state.latestProbeVersion = String(payload.latest_version || '').trim();
+          if (!state.latestProbeVersion) {
+            state.probeVersionCheckError = String(payload.message || '未取得最新版本').trim();
+          }
+        } catch (err) {
+          state.latestProbeVersion = '';
+          state.probeVersionCheckError = String(err && err.message ? err.message : err || '版本检查失败');
+        } finally {
+          state.probeVersionCheckCompleted = true;
+          state.probeVersionCheckPromise = null;
+        }
+      })();
+      return state.probeVersionCheckPromise;
     }
 
     function parseExpireAt(value) {
@@ -664,7 +721,8 @@
           const status = statusByNodeNo.get(Number(item.node_no));
           const runtime = status && status.runtime ? status.runtime : {};
           const fallbackRuntime = item && item.runtime ? item.runtime : {};
-          const version = (runtime && runtime.version) || (fallbackRuntime && fallbackRuntime.version) || '-';
+          const version = (runtime && runtime.version) || (fallbackRuntime && fallbackRuntime.version) || '';
+          const online = (runtime && runtime.online === true) || (fallbackRuntime && fallbackRuntime.online === true);
           const remark = escapeHTML(item.remark || '-');
           const ddns = escapeHTML(item.ddns || '-');
           const vendor = formatVendorLink(item.vendor_name, item.vendor_url);
@@ -673,7 +731,7 @@
             <td>${escapeHTML(item.node_name || '-')}</td>
             <td>${escapeHTML(item.target_system || '-')}<br><span class="muted">${item.direct_connect ? '直连' : '主控转发'} / 本机控制台${item.local_console_enabled ? '启用' : '关闭'}</span></td>
             <td>${remark}<br><span class="muted">${ddns}</span><br><span class="muted">厂家：${vendor}</span></td>
-            <td>${escapeHTML(version)}<br><span class="muted">${escapeHTML(formatTime(item.updated_at))}</span></td>
+            <td>${renderProbeVersion(version, online)}<span class="muted">${escapeHTML(formatTime(item.updated_at))}</span></td>
             <td>
               <button class="btn" type="button" data-action="node-edit" data-node-no="${item.node_no}">编辑</button>
               <button class="btn" type="button" data-action="node-upgrade" data-node-no="${item.node_no}">升级</button>
@@ -737,7 +795,7 @@
               <div><span class="label">剩余时间</span><span class="${remainingClass(item.expire_at)}">${escapeHTML(formatRemainingTime(item.expire_at))}</span></div>
             </div>
           </td>
-          <td>${escapeHTML(rt.version || '-')}</td>
+          <td>${renderProbeVersion(rt.version, online)}</td>
           <td>${ips4Html}${ips6Html}</td>
           <td class="mono">
             <div>CPU：相对 ${cpuPercent} / 绝对 -</div>
@@ -768,17 +826,23 @@
       }).join('');
     }
 
-    async function refreshNodes(silent) {
+    async function refreshNodes(silent, checkVersion = false) {
+      const versionPromise = checkVersion ? refreshProbeLatestVersion(true) : Promise.resolve();
       const payload = await requestJSON('/mng/api/probe/nodes');
       state.nodes = Array.isArray(payload.nodes) ? payload.nodes : [];
       state.deletedNodes = Array.isArray(payload.deleted_nodes) ? payload.deleted_nodes : [];
       renderNodes();
+      await versionPromise;
+      renderNodes();
       if (!silent) setStatus(`已刷新探针列表：活跃 ${state.nodes.length}，已删除 ${state.deletedNodes.length}`, 'ok');
     }
 
-    async function refreshStatus(silent) {
+    async function refreshStatus(silent, checkVersion = false) {
+      const versionPromise = checkVersion ? refreshProbeLatestVersion(true) : Promise.resolve();
       const payload = await requestJSON('/mng/api/probe/status');
       state.statusItems = Array.isArray(payload.items) ? payload.items : [];
+      renderStatus();
+      await versionPromise;
       renderStatus();
       renderNodes();
       if (!silent) setStatus(`已刷新探针状态：${state.statusItems.length} 条`, 'ok');
@@ -1448,7 +1512,7 @@
         state.statusTimer = null;
       }
       if (tab === 'status') {
-        void refreshStatus(true);
+        void refreshStatus(true, !state.probeVersionCheckCompleted);
         state.statusTimer = window.setInterval(() => {
           void refreshStatus(true);
         }, 2000);
@@ -1475,9 +1539,9 @@
     });
 
     document.getElementById('btn-create-node').addEventListener('click', () => { createNode().catch((err) => setStatus(`创建失败：${err.message || err}`, 'err')); });
-    document.getElementById('btn-refresh-nodes').addEventListener('click', () => { refreshNodes(false).catch((err) => setStatus(`刷新失败：${err.message || err}`, 'err')); });
+    document.getElementById('btn-refresh-nodes').addEventListener('click', () => { refreshNodes(false, true).catch((err) => setStatus(`刷新失败：${err.message || err}`, 'err')); });
     document.getElementById('btn-upgrade-all').addEventListener('click', () => { upgradeAllNodes().catch((err) => setStatus(`一键升级失败：${err.message || err}`, 'err')); });
-    document.getElementById('btn-refresh-status').addEventListener('click', () => { refreshStatus(false).catch((err) => setStatus(`状态刷新失败：${err.message || err}`, 'err')); });
+    document.getElementById('btn-refresh-status').addEventListener('click', () => { refreshStatus(false, true).catch((err) => setStatus(`状态刷新失败：${err.message || err}`, 'err')); });
     document.getElementById('btn-network-select-online').addEventListener('click', () => { selectNetworkNodes('online'); });
     document.getElementById('btn-network-select-all').addEventListener('click', () => { selectNetworkNodes('all'); });
     document.getElementById('btn-network-clear').addEventListener('click', () => { selectNetworkNodes('none'); });
@@ -1608,7 +1672,7 @@
       try {
         const ok = await ensureSession();
         if (!ok) return;
-        await refreshNodes(true);
+        await refreshNodes(true, true);
         setStatus('探针管理页面已就绪', 'ok');
       } catch (err) {
         setStatus(`初始化失败：${err && err.message ? err.message : err}`, 'err');
