@@ -492,6 +492,9 @@ func TestProbeLocalVirtualRouterRouteTestHandlerReturnsExitReachability(t *testi
 	if payload["exit_node_id"] != "16" || payload["fake_ip"] != "198.18.2.1" {
 		t.Fatalf("unexpected route test identity: %+v", payload)
 	}
+	if _, exists := payload["samples"]; exists {
+		t.Fatalf("ordinary route test exposed detailed diagnostic fields: %+v", payload)
+	}
 	items, ok := payload["results"].([]any)
 	if !ok || len(items) < 2 {
 		t.Fatalf("route test results=%T %v", payload["results"], payload["results"])
@@ -590,6 +593,93 @@ func TestProbeLocalVirtualRouterRouteTestHandlerReturnsCurlResult(t *testing.T) 
 	argsText := strings.Join(capturedArgs, " ")
 	if !strings.Contains(argsText, "--location") || !strings.Contains(argsText, "--noproxy *") || !strings.Contains(argsText, "https://localhost:") {
 		t.Fatalf("unexpected curl args: %v", capturedArgs)
+	}
+}
+
+func TestProbeLocalVirtualRouterDiagnosticHandlerReturnsRemoteTimingsAndState(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+
+	probeVirtualRouterState.mu.Lock()
+	probeVirtualRouterState.config = probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "16", IP: "198.18.0.16", ServicePort: 12040},
+		},
+		RouteRules: []probeVirtualRouterRouteRule{{
+			ID:         "rr-google",
+			Name:       "Google",
+			Action:     "probe_exit",
+			ExitNodeID: "16",
+			Entries:    []string{"domain_suffix:google.com"},
+		}},
+	}
+	probeVirtualRouterState.localNodeID = "16"
+	probeVirtualRouterState.localIP = "198.18.0.16"
+	probeVirtualRouterState.nodeToIP = map[string]string{"16": "198.18.0.16"}
+	probeVirtualRouterState.ipToNode = map[string]string{"198.18.0.16": "16"}
+	probeVirtualRouterState.mu.Unlock()
+
+	oldRunner := probeVirtualRouterRouteDiagnosticHTTPRun
+	probeVirtualRouterRouteDiagnosticHTTPRun = func(msg probeVirtualRouterRouteTestPayload, index int, timeout time.Duration) probeVirtualRouterRouteDiagnosticSample {
+		if msg.Domain != "mail.google.com" || msg.ExitNodeID != "16" {
+			t.Fatalf("unexpected diagnostic message: %+v", msg)
+		}
+		if timeout != 2*time.Second {
+			t.Fatalf("sample timeout=%s, want 2s", timeout)
+		}
+		return probeVirtualRouterRouteDiagnosticSample{
+			Index:               index,
+			OK:                  true,
+			ResolvedIPs:         []string{"142.250.72.69"},
+			CheckedAddress:      "142.250.72.69:443",
+			HTTPStatus:          http.StatusMovedPermanently,
+			HTTPProtocol:        "HTTP/2.0",
+			DNSMS:               12,
+			TCPConnectMS:        145,
+			TLSHandshakeMS:      180,
+			FirstResponseByteMS: 410,
+			TotalMS:             425,
+			BodyBytes:           1024,
+		}
+	}
+	t.Cleanup(func() { probeVirtualRouterRouteDiagnosticHTTPRun = oldRunner })
+
+	resp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/virtual_router/diagnostic", map[string]any{
+		"target":     "mail.google.com",
+		"port":       443,
+		"timeout_ms": 5000,
+		"samples":    2,
+	}, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("diagnostic status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	if payload["ok"] != true || payload["detailed"] != true || payload["samples"] != float64(2) {
+		t.Fatalf("unexpected diagnostic payload: %+v", payload)
+	}
+	items, ok := payload["results"].([]any)
+	if !ok || len(items) < 2 {
+		t.Fatalf("diagnostic results=%T %v", payload["results"], payload["results"])
+	}
+	last, ok := items[len(items)-1].(map[string]any)
+	if !ok || last["stage"] != "exit_diagnostic" || last["ok"] != true {
+		t.Fatalf("unexpected diagnostic final result: %+v", last)
+	}
+	samples, ok := last["diagnostic_samples"].([]any)
+	if !ok || len(samples) != 2 {
+		t.Fatalf("unexpected diagnostic samples: %+v", last["diagnostic_samples"])
+	}
+	first, _ := samples[0].(map[string]any)
+	if first["dns_ms"] != float64(12) || first["tcp_connect_ms"] != float64(145) || first["tls_handshake_ms"] != float64(180) || first["first_response_byte_ms"] != float64(410) {
+		t.Fatalf("unexpected timing sample: %+v", first)
+	}
+	remoteState, ok := last["remote_state"].(map[string]any)
+	if !ok || remoteState["node_id"] != "16" {
+		t.Fatalf("unexpected remote state: %+v", last["remote_state"])
 	}
 }
 

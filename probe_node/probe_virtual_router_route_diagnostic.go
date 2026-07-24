@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"os/exec"
 	"runtime"
@@ -39,26 +43,47 @@ type probeVirtualRouterRouteTestPayload struct {
 	Path              []string                           `json:"path,omitempty"`
 	Result            *probeVirtualRouterRouteTestResult `json:"result,omitempty"`
 	Final             bool                               `json:"final,omitempty"`
+	Detailed          bool                               `json:"detailed,omitempty"`
+	Samples           int                                `json:"samples,omitempty"`
+	SampleTimeoutMS   int64                              `json:"sample_timeout_ms,omitempty"`
 	CreatedAtUnixNano int64                              `json:"created_at_unix_nano,omitempty"`
 }
 
+type probeVirtualRouterRouteDiagnosticSample struct {
+	Index               int      `json:"index"`
+	OK                  bool     `json:"ok"`
+	Error               string   `json:"error,omitempty"`
+	ResolvedIPs         []string `json:"resolved_ips,omitempty"`
+	CheckedAddress      string   `json:"checked_address,omitempty"`
+	HTTPStatus          int      `json:"http_status,omitempty"`
+	HTTPProtocol        string   `json:"http_protocol,omitempty"`
+	DNSMS               int64    `json:"dns_ms,omitempty"`
+	TCPConnectMS        int64    `json:"tcp_connect_ms,omitempty"`
+	TLSHandshakeMS      int64    `json:"tls_handshake_ms,omitempty"`
+	FirstResponseByteMS int64    `json:"first_response_byte_ms,omitempty"`
+	TotalMS             int64    `json:"total_ms,omitempty"`
+	BodyBytes           int64    `json:"body_bytes,omitempty"`
+}
+
 type probeVirtualRouterRouteTestResult struct {
-	NodeID         string   `json:"node_id,omitempty"`
-	Stage          string   `json:"stage,omitempty"`
-	OK             bool     `json:"ok"`
-	Message        string   `json:"message,omitempty"`
-	Error          string   `json:"error,omitempty"`
-	RuntimeRouteID string   `json:"runtime_route_id,omitempty"`
-	PeerNodeID     string   `json:"peer_node_id,omitempty"`
-	Path           []string `json:"path,omitempty"`
-	ResolvedIPs    []string `json:"resolved_ips,omitempty"`
-	CheckedAddress string   `json:"checked_address,omitempty"`
-	CurlURL        string   `json:"curl_url,omitempty"`
-	HTTPStatus     int      `json:"http_status,omitempty"`
-	Output         string   `json:"output,omitempty"`
-	LatencyMS      int64    `json:"latency_ms,omitempty"`
-	Final          bool     `json:"final,omitempty"`
-	UnixNano       int64    `json:"unix_nano,omitempty"`
+	NodeID            string                                    `json:"node_id,omitempty"`
+	Stage             string                                    `json:"stage,omitempty"`
+	OK                bool                                      `json:"ok"`
+	Message           string                                    `json:"message,omitempty"`
+	Error             string                                    `json:"error,omitempty"`
+	RuntimeRouteID    string                                    `json:"runtime_route_id,omitempty"`
+	PeerNodeID        string                                    `json:"peer_node_id,omitempty"`
+	Path              []string                                  `json:"path,omitempty"`
+	ResolvedIPs       []string                                  `json:"resolved_ips,omitempty"`
+	CheckedAddress    string                                    `json:"checked_address,omitempty"`
+	CurlURL           string                                    `json:"curl_url,omitempty"`
+	HTTPStatus        int                                       `json:"http_status,omitempty"`
+	Output            string                                    `json:"output,omitempty"`
+	LatencyMS         int64                                     `json:"latency_ms,omitempty"`
+	DiagnosticSamples []probeVirtualRouterRouteDiagnosticSample `json:"diagnostic_samples,omitempty"`
+	RemoteState       map[string]any                            `json:"remote_state,omitempty"`
+	Final             bool                                      `json:"final,omitempty"`
+	UnixNano          int64                                     `json:"unix_nano,omitempty"`
 }
 
 type probeVirtualRouterRouteTestRunResult struct {
@@ -78,6 +103,11 @@ type probeVirtualRouterRouteTestRunResult struct {
 	OK              bool                                `json:"ok"`
 	Error           string                              `json:"error,omitempty"`
 	Final           bool                                `json:"final"`
+	Detailed        bool                                `json:"detailed,omitempty"`
+	Samples         int                                 `json:"samples,omitempty"`
+	PathRTTMS       int64                               `json:"path_rtt_ms,omitempty"`
+	PathRTTError    string                              `json:"path_rtt_error,omitempty"`
+	SourceState     map[string]any                      `json:"source_state,omitempty"`
 	Results         []probeVirtualRouterRouteTestResult `json:"results,omitempty"`
 	StartedAt       string                              `json:"started_at,omitempty"`
 	FinishedAt      string                              `json:"finished_at,omitempty"`
@@ -130,10 +160,11 @@ var (
 	probeVirtualRouterRouteTestLookPath       = exec.LookPath
 	probeVirtualRouterRouteTestRunCurlCommand = runProbeVirtualRouterRouteTestCurlCommand
 	probeVirtualRouterRouteSpeedDownloadRun   = runProbeVirtualRouterReverseSpeedTest
+	probeVirtualRouterRouteDiagnosticHTTPRun  = runProbeVirtualRouterRouteDiagnosticHTTPSample
 )
 
 func runProbeVirtualRouterRouteTest(target string, port int, timeout time.Duration) probeVirtualRouterRouteTestRunResult {
-	return runProbeVirtualRouterRouteTestWithProgress(target, port, timeout, "", nil, false)
+	return runProbeVirtualRouterRouteTestWithProgress(target, port, timeout, "", nil, false, false, 0)
 }
 
 func startProbeVirtualRouterRouteTest(target string, port int, timeout time.Duration) probeVirtualRouterRouteTestRunResult {
@@ -141,7 +172,11 @@ func startProbeVirtualRouterRouteTest(target string, port int, timeout time.Dura
 }
 
 func runProbeVirtualRouterRouteTestWithCurl(target string, port int, timeout time.Duration, withCurl bool) probeVirtualRouterRouteTestRunResult {
-	return runProbeVirtualRouterRouteTestWithProgress(target, port, timeout, "", nil, withCurl)
+	return runProbeVirtualRouterRouteTestWithProgress(target, port, timeout, "", nil, withCurl, false, 0)
+}
+
+func runProbeVirtualRouterRouteDiagnostic(target string, port int, timeout time.Duration, samples int) probeVirtualRouterRouteTestRunResult {
+	return runProbeVirtualRouterRouteTestWithProgress(target, port, timeout, "", nil, false, true, samples)
 }
 
 func startProbeVirtualRouterRouteTestWithCurl(target string, port int, timeout time.Duration, withCurl bool) probeVirtualRouterRouteTestRunResult {
@@ -158,7 +193,28 @@ func startProbeVirtualRouterRouteTestWithCurl(target string, port int, timeout t
 		StartedAt:    time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	storeProbeVirtualRouterRouteTestRun(initial)
-	go runProbeVirtualRouterRouteTestWithProgress(target, port, timeout, requestID, storeProbeVirtualRouterRouteTestRun, withCurl)
+	go runProbeVirtualRouterRouteTestWithProgress(target, port, timeout, requestID, storeProbeVirtualRouterRouteTestRun, withCurl, false, 0)
+	return initial
+}
+
+func startProbeVirtualRouterRouteDiagnostic(target string, port int, timeout time.Duration, samples int) probeVirtualRouterRouteTestRunResult {
+	requestID := newProbeTCPDebugFlowID("vrouter_route_diagnostic", target)
+	samples = normalizeProbeVirtualRouterRouteDiagnosticSamples(samples)
+	if timeout <= 0 || timeout > 60*time.Second {
+		timeout = 45 * time.Second
+	}
+	initial := probeVirtualRouterRouteTestRunResult{
+		RequestID:    requestID,
+		Target:       strings.TrimSpace(target),
+		Port:         normalizeProbeVirtualRouterRouteTestPort(port),
+		Protocol:     "tcp",
+		SourceNodeID: currentProbeVirtualRouterLocalNodeID(),
+		Detailed:     true,
+		Samples:      samples,
+		StartedAt:    time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	storeProbeVirtualRouterRouteTestRun(initial)
+	go runProbeVirtualRouterRouteTestWithProgress(target, port, timeout, requestID, storeProbeVirtualRouterRouteTestRun, false, true, samples)
 	return initial
 }
 
@@ -245,7 +301,7 @@ func runProbeVirtualRouterRouteSpeedTestWithProgress(targetNodeID string, maxByt
 	return finish(err == nil, firstProbeVirtualRouterRouteTestError("", errorString(err)))
 }
 
-func runProbeVirtualRouterRouteTestWithProgress(target string, port int, timeout time.Duration, requestID string, onUpdate func(probeVirtualRouterRouteTestRunResult), withCurl bool) probeVirtualRouterRouteTestRunResult {
+func runProbeVirtualRouterRouteTestWithProgress(target string, port int, timeout time.Duration, requestID string, onUpdate func(probeVirtualRouterRouteTestRunResult), withCurl bool, detailed bool, samples int) probeVirtualRouterRouteTestRunResult {
 	started := time.Now()
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
@@ -258,7 +314,11 @@ func runProbeVirtualRouterRouteTestWithProgress(target string, port int, timeout
 		Port:         normalizeProbeVirtualRouterRouteTestPort(port),
 		Protocol:     "tcp",
 		SourceNodeID: localNodeID,
+		Detailed:     detailed,
 		StartedAt:    started.UTC().Format(time.RFC3339Nano),
+	}
+	if detailed {
+		result.Samples = normalizeProbeVirtualRouterRouteDiagnosticSamples(samples)
 	}
 	add := func(item probeVirtualRouterRouteTestResult) {
 		item.NodeID = normalizeProbeRouteNodeID(item.NodeID)
@@ -306,6 +366,21 @@ func runProbeVirtualRouterRouteTestWithProgress(target string, port int, timeout
 	result.RouteRuleName = plan.RouteRuleName
 	result.RouteRuleAction = plan.RouteRuleAction
 	result.Path = append([]string(nil), plan.Path...)
+	if detailed {
+		result.SourceState = probeVirtualRouterRouteDiagnosticState(nil)
+		if len(plan.Path) > 1 {
+			pathRTT, pathErr := probeVirtualRouterQueryPathRTT(plan.Path)
+			if pathErr != nil {
+				result.PathRTTError = strings.TrimSpace(pathErr.Error())
+			} else {
+				result.PathRTTMS = probeDurationMilliseconds(pathRTT)
+			}
+		}
+	}
+	diagnosticSampleTimeoutMS := int64(0)
+	if detailed {
+		diagnosticSampleTimeoutMS = probeVirtualRouterRouteDiagnosticSampleTimeout(timeout, result.Samples).Milliseconds()
+	}
 	add(probeVirtualRouterRouteTestResult{
 		Stage:   "source",
 		OK:      true,
@@ -313,7 +388,7 @@ func runProbeVirtualRouterRouteTestWithProgress(target string, port int, timeout
 		Path:    append([]string(nil), plan.Path...),
 	})
 	if len(plan.Path) == 1 && plan.Path[0] == localNodeID {
-		exit := probeVirtualRouterRouteTestExitCheck(probeVirtualRouterRouteTestPayload{
+		localMessage := probeVirtualRouterRouteTestPayload{
 			RequestID:       requestID,
 			SourceNodeID:    localNodeID,
 			ExitNodeID:      plan.ExitNodeID,
@@ -327,7 +402,14 @@ func runProbeVirtualRouterRouteTestWithProgress(target string, port int, timeout
 			RouteRuleName:   plan.RouteRuleName,
 			RouteRuleAction: plan.RouteRuleAction,
 			Path:            plan.Path,
-		}, nil)
+			Detailed:        detailed,
+			Samples:         result.Samples,
+			SampleTimeoutMS: diagnosticSampleTimeoutMS,
+		}
+		exit := probeVirtualRouterRouteTestExitCheck(localMessage, nil)
+		if detailed {
+			exit = probeVirtualRouterRouteDiagnosticExitCheck(localMessage, nil)
+		}
 		exit.Final = true
 		add(exit)
 		if withCurl {
@@ -354,6 +436,9 @@ func runProbeVirtualRouterRouteTestWithProgress(target string, port int, timeout
 		RouteRuleName:     plan.RouteRuleName,
 		RouteRuleAction:   plan.RouteRuleAction,
 		Path:              plan.Path,
+		Detailed:          detailed,
+		Samples:           result.Samples,
+		SampleTimeoutMS:   diagnosticSampleTimeoutMS,
 		CreatedAtUnixNano: started.UnixNano(),
 	}
 	payload, err := json.Marshal(msg)
@@ -397,10 +482,16 @@ func runProbeVirtualRouterRouteTestWithProgress(target string, port int, timeout
 func cloneProbeVirtualRouterRouteTestRunResult(in probeVirtualRouterRouteTestRunResult) probeVirtualRouterRouteTestRunResult {
 	out := in
 	out.Path = append([]string(nil), in.Path...)
+	out.SourceState = cloneProbeVirtualRouterRouteSpeedQueueSnapshot(in.SourceState)
 	out.Results = append([]probeVirtualRouterRouteTestResult(nil), in.Results...)
 	for index := range out.Results {
 		out.Results[index].Path = append([]string(nil), in.Results[index].Path...)
 		out.Results[index].ResolvedIPs = append([]string(nil), in.Results[index].ResolvedIPs...)
+		out.Results[index].RemoteState = cloneProbeVirtualRouterRouteSpeedQueueSnapshot(in.Results[index].RemoteState)
+		out.Results[index].DiagnosticSamples = append([]probeVirtualRouterRouteDiagnosticSample(nil), in.Results[index].DiagnosticSamples...)
+		for sampleIndex := range out.Results[index].DiagnosticSamples {
+			out.Results[index].DiagnosticSamples[sampleIndex].ResolvedIPs = append([]string(nil), in.Results[index].DiagnosticSamples[sampleIndex].ResolvedIPs...)
+		}
 	}
 	return out
 }
@@ -1000,6 +1091,9 @@ func handleProbeVirtualRouterRouteTestFrame(runtime *probeVirtualRouterRuntime, 
 		_ = sendProbeVirtualRouterRouteTestReport(msg, hop, false)
 		if localNodeID == normalizeProbeRouteNodeID(msg.ExitNodeID) || localNodeID == msg.Path[len(msg.Path)-1] {
 			exit := probeVirtualRouterRouteTestExitCheck(msg, runtime)
+			if msg.Detailed {
+				exit = probeVirtualRouterRouteDiagnosticExitCheck(msg, runtime)
+			}
 			exit.Final = true
 			return sendProbeVirtualRouterRouteTestReport(msg, exit, true)
 		}
@@ -1104,6 +1198,255 @@ func probeVirtualRouterRouteTestExitCheck(msg probeVirtualRouterRouteTestPayload
 	_ = conn.Close()
 	result.Message = "出口 TCP 可达"
 	return result
+}
+
+func normalizeProbeVirtualRouterRouteDiagnosticSamples(samples int) int {
+	if samples <= 0 {
+		return 3
+	}
+	if samples > 5 {
+		return 5
+	}
+	return samples
+}
+
+func probeVirtualRouterRouteDiagnosticSampleTimeout(total time.Duration, samples int) time.Duration {
+	if total <= 0 || total > 60*time.Second {
+		total = 45 * time.Second
+	}
+	samples = normalizeProbeVirtualRouterRouteDiagnosticSamples(samples)
+	perSample := total/time.Duration(samples) - 500*time.Millisecond
+	if perSample < time.Second {
+		perSample = time.Second
+	}
+	if perSample > 15*time.Second {
+		perSample = 15 * time.Second
+	}
+	return perSample
+}
+
+func probeVirtualRouterRouteDiagnosticExitCheck(msg probeVirtualRouterRouteTestPayload, runtime *probeVirtualRouterRuntime) probeVirtualRouterRouteTestResult {
+	started := time.Now()
+	result := probeVirtualRouterRouteTestHopResult(runtime, msg, "exit_diagnostic", true, "出口节点分阶段诊断完成", "")
+	samples := normalizeProbeVirtualRouterRouteDiagnosticSamples(msg.Samples)
+	sampleTimeout := time.Duration(msg.SampleTimeoutMS) * time.Millisecond
+	if sampleTimeout <= 0 || sampleTimeout > 15*time.Second {
+		sampleTimeout = 15 * time.Second
+	}
+	result.DiagnosticSamples = make([]probeVirtualRouterRouteDiagnosticSample, 0, samples)
+	if strings.TrimSpace(msg.RouteRuleAction) == "virtual_ip" {
+		result.Message = "远端虚拟节点状态已拉取"
+		result.RemoteState = probeVirtualRouterRouteDiagnosticState(runtime)
+		result.LatencyMS = probeDurationMilliseconds(time.Since(started))
+		return result
+	}
+	domain := normalizeProbeVirtualRouterDomain(msg.Domain)
+	rule, ruleOK := currentProbeVirtualRouterRouteRuleForDomain(domain)
+	localNodeID := currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)
+	if !ruleOK || sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) != "probe_exit" || normalizeProbeRouteNodeID(rule.ExitNodeID) != localNodeID {
+		result.OK = false
+		result.Error = "remote diagnostic target is not assigned to this exit node"
+		result.RemoteState = probeVirtualRouterRouteDiagnosticState(runtime)
+		result.LatencyMS = probeDurationMilliseconds(time.Since(started))
+		return result
+	}
+	for index := 1; index <= samples; index++ {
+		sample := probeVirtualRouterRouteDiagnosticSample{Index: index}
+		if probeVirtualRouterRouteDiagnosticHTTPRun == nil {
+			sample.Error = "remote diagnostic http runner is unavailable"
+		} else {
+			sample = probeVirtualRouterRouteDiagnosticHTTPRun(msg, index, sampleTimeout)
+			sample.Index = index
+		}
+		result.DiagnosticSamples = append(result.DiagnosticSamples, sample)
+		result.ResolvedIPs = appendUniqueProbeVirtualRouterDiagnosticStrings(result.ResolvedIPs, sample.ResolvedIPs...)
+		if sample.CheckedAddress != "" {
+			result.CheckedAddress = sample.CheckedAddress
+		}
+		if sample.HTTPStatus > 0 {
+			result.HTTPStatus = sample.HTTPStatus
+		}
+		if !sample.OK {
+			result.OK = false
+			if result.Error == "" {
+				result.Error = strings.TrimSpace(sample.Error)
+			}
+		}
+	}
+	result.RemoteState = probeVirtualRouterRouteDiagnosticState(runtime)
+	result.LatencyMS = probeDurationMilliseconds(time.Since(started))
+	return result
+}
+
+func appendUniqueProbeVirtualRouterDiagnosticStrings(items []string, values ...string) []string {
+	seen := make(map[string]struct{}, len(items)+len(values))
+	for _, item := range items {
+		if clean := strings.TrimSpace(item); clean != "" {
+			seen[strings.ToLower(clean)] = struct{}{}
+		}
+	}
+	for _, value := range values {
+		clean := strings.TrimSpace(value)
+		if clean == "" {
+			continue
+		}
+		key := strings.ToLower(clean)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		items = append(items, clean)
+	}
+	return items
+}
+
+func probeVirtualRouterRouteDiagnosticState(rt *probeVirtualRouterRuntime) map[string]any {
+	state := probeVirtualRouterRouteSpeedQueueSnapshot()
+	state["node_id"] = currentProbeVirtualRouterLocalNodeIDForRuntime(rt)
+	state["goos"] = runtime.GOOS
+	if rt != nil {
+		routeID := strings.TrimSpace(rt.cfg.routeID)
+		state["runtime_route_id"] = routeID
+		state["runtime_peer_node_id"] = strings.TrimSpace(rt.cfg.peerNodeID)
+		if stats := snapshotProbeVirtualRouterRuntimeStats(routeID); stats != nil {
+			state["runtime"] = stats
+		}
+	}
+	return state
+}
+
+func runProbeVirtualRouterRouteDiagnosticHTTPSample(msg probeVirtualRouterRouteTestPayload, index int, timeout time.Duration) probeVirtualRouterRouteDiagnosticSample {
+	started := time.Now()
+	sample := probeVirtualRouterRouteDiagnosticSample{Index: index}
+	finish := func(err error) probeVirtualRouterRouteDiagnosticSample {
+		sample.TotalMS = probeDurationMilliseconds(time.Since(started))
+		if err != nil {
+			sample.Error = strings.TrimSpace(err.Error())
+			return sample
+		}
+		sample.OK = true
+		return sample
+	}
+	domain := normalizeProbeVirtualRouterDomain(msg.Domain)
+	if domain == "" {
+		return finish(errors.New("remote HTTP diagnostic requires a domain target"))
+	}
+	dnsStarted := time.Now()
+	ips, err := resolveProbeVirtualRouterFakeIPExitRealIPs(domain)
+	sample.DNSMS = probeDurationMilliseconds(time.Since(dnsStarted))
+	if err != nil {
+		return finish(err)
+	}
+	ips = filterProbeLocalIPv4StringsFromList(ips)
+	sample.ResolvedIPs = append([]string(nil), ips...)
+	port := normalizeProbeVirtualRouterRouteTestPort(msg.Port)
+	targets := buildProbeLocalTunnelRouteTargetCandidates(ips, strconv.Itoa(port))
+	if len(targets) == 0 {
+		return finish(errors.New("remote HTTP diagnostic has no usable target address"))
+	}
+	if timeout <= 0 || timeout > 15*time.Second {
+		timeout = 15 * time.Second
+	}
+	scheme := "https"
+	if port == 80 {
+		scheme = "http"
+	}
+	hostPort := domain
+	if (scheme == "https" && port != 443) || (scheme == "http" && port != 80) {
+		hostPort = net.JoinHostPort(domain, strconv.Itoa(port))
+	}
+	requestURL := (&url.URL{Scheme: scheme, Host: hostPort, Path: "/"}).String()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	var timingMu sync.Mutex
+	var tlsStarted time.Time
+	var firstResponseByte time.Time
+	trace := &httptrace.ClientTrace{
+		TLSHandshakeStart: func() {
+			timingMu.Lock()
+			tlsStarted = time.Now()
+			timingMu.Unlock()
+		},
+		TLSHandshakeDone: func(_ tls.ConnectionState, _ error) {
+			timingMu.Lock()
+			if !tlsStarted.IsZero() {
+				sample.TLSHandshakeMS = probeDurationMilliseconds(time.Since(tlsStarted))
+			}
+			timingMu.Unlock()
+		},
+		GotFirstResponseByte: func() {
+			timingMu.Lock()
+			firstResponseByte = time.Now()
+			timingMu.Unlock()
+		},
+	}
+	dialContext := func(ctx context.Context, _, _ string) (net.Conn, error) {
+		connectStarted := time.Now()
+		var lastErr error
+		for _, target := range probeVirtualRouterExitTargetCandidates(targets) {
+			if err := probeVirtualRouterEnsureDirectBypass(target); err != nil {
+				logProbeWarnf("probe virtual router diagnostic direct bypass failed: target=%s err=%v", target, err)
+			}
+			dialer := applyProbeRouteEgressDialer(&net.Dialer{Timeout: timeout})
+			conn, err := dialer.DialContext(ctx, probeRouteEgressDialNetwork("tcp", target), target)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			tuneProbeRouteNetConn(conn)
+			timingMu.Lock()
+			sample.TCPConnectMS = probeDurationMilliseconds(time.Since(connectStarted))
+			sample.CheckedAddress = strings.TrimSpace(conn.RemoteAddr().String())
+			timingMu.Unlock()
+			return conn, nil
+		}
+		if lastErr != nil {
+			return nil, lastErr
+		}
+		return nil, errors.New("remote HTTP diagnostic target is empty")
+	}
+	transport := &http.Transport{
+		Proxy:             nil,
+		DialContext:       dialContext,
+		ForceAttemptHTTP2: true,
+		DisableKeepAlives: true,
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			ServerName: domain,
+		},
+	}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   timeout,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodGet, requestURL, nil)
+	if err != nil {
+		return finish(err)
+	}
+	req.Header.Set("User-Agent", "cloudhelper-probe-node-diagnostic/1")
+	resp, err := client.Do(req)
+	if err != nil {
+		return finish(err)
+	}
+	defer resp.Body.Close()
+	sample.HTTPStatus = resp.StatusCode
+	sample.HTTPProtocol = strings.TrimSpace(resp.Proto)
+	timingMu.Lock()
+	if !firstResponseByte.IsZero() {
+		sample.FirstResponseByteMS = probeDurationMilliseconds(firstResponseByte.Sub(started))
+	}
+	timingMu.Unlock()
+	readBytes, readErr := io.Copy(io.Discard, io.LimitReader(resp.Body, 256*1024))
+	sample.BodyBytes = readBytes
+	if readErr != nil {
+		return finish(readErr)
+	}
+	return finish(nil)
 }
 
 func sendProbeVirtualRouterRouteTestReport(msg probeVirtualRouterRouteTestPayload, result probeVirtualRouterRouteTestResult, final bool) error {

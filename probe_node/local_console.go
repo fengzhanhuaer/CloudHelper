@@ -1758,6 +1758,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/virtual_router/route_test", probeLocalVirtualRouterRouteTestHandler)
 	mux.HandleFunc("/local/api/virtual_router/route_test/curl", probeLocalVirtualRouterRouteTestCurlHandler)
 	mux.HandleFunc("/local/api/virtual_router/route_test/speed", probeLocalVirtualRouterRouteTestSpeedHandler)
+	mux.HandleFunc("/local/api/virtual_router/diagnostic", probeLocalVirtualRouterDiagnosticHandler)
 	mux.HandleFunc("/local/api/system/upgrade", probeLocalSystemUpgradeHandler)
 	mux.HandleFunc("/local/api/system/upgrade/check", probeLocalSystemUpgradeCheckHandler)
 	mux.HandleFunc("/local/api/system/upgrade/status", probeLocalSystemUpgradeStatusHandler)
@@ -2891,6 +2892,62 @@ func probeLocalVirtualRouterRouteTestSpeedHandler(w http.ResponseWriter, r *http
 		return
 	}
 	result := runProbeVirtualRouterRouteSpeedTest(targetNodeID, req.MaxBytes, req.MaxSeconds)
+	writeJSON(w, http.StatusOK, result)
+}
+
+func probeLocalVirtualRouterDiagnosticHandler(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	if r.Method == http.MethodGet {
+		requestID := strings.TrimSpace(r.URL.Query().Get("request_id"))
+		if requestID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "request_id is required"})
+			return
+		}
+		result, ok := getProbeVirtualRouterRouteTestRun(requestID)
+		if !ok || !result.Detailed {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "virtual router diagnostic not found"})
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Target    string `json:"target"`
+		Port      int    `json:"port,omitempty"`
+		TimeoutMS int    `json:"timeout_ms,omitempty"`
+		Samples   int    `json:"samples,omitempty"`
+		Async     bool   `json:"async,omitempty"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if strings.TrimSpace(req.Target) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "target is required"})
+		return
+	}
+	samples := normalizeProbeVirtualRouterRouteDiagnosticSamples(req.Samples)
+	timeout := time.Duration(req.TimeoutMS) * time.Millisecond
+	if timeout <= 0 {
+		timeout = 45 * time.Second
+	}
+	if timeout > 60*time.Second {
+		timeout = 60 * time.Second
+	}
+	if req.Async {
+		result := startProbeVirtualRouterRouteDiagnostic(req.Target, req.Port, timeout, samples)
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	result := runProbeVirtualRouterRouteDiagnostic(req.Target, req.Port, timeout, samples)
 	writeJSON(w, http.StatusOK, result)
 }
 
