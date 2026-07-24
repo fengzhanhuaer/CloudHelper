@@ -46,30 +46,31 @@ const (
 	mobileVRouteBridgeRoleToNext  = "to_next"
 	mobileVRouteBridgeRoleToPrev  = "to_prev"
 
-	mobileVRouteFrameEnvelopeMagic      uint16 = 0x5652
-	mobileVRouteFrameEnvelopeHeaderSize        = 12
-	mobileVRouteFrameMaxControlBytes           = 8096
-	mobileVRouteFrameMaxDataBytes              = 65535
-	mobileVRouteFrameMaxBytes                  = mobileVRouteFrameEnvelopeHeaderSize + mobileVRouteFrameMaxControlBytes + mobileVRouteFrameMaxDataBytes
-	mobileVRouteFrameMainTypeIP         uint16 = 1
-	mobileVRouteIPSubTypeIPv4           uint16 = 1
-	mobileVRouteFrameMainTypePingPong   uint16 = 2
-	mobileVRoutePingPongSubTypePing     uint16 = 1
-	mobileVRoutePingPongSubTypePong     uint16 = 2
-	mobileVRouteFrameMainTypePathRTT    uint16 = 3
-	mobileVRoutePathRTTSubTypeQuery     uint16 = 1
-	mobileVRoutePathRTTSubTypeResponse  uint16 = 2
-	mobileVRouteFrameMainTypeDebugLog   uint16 = 7
-	mobileVRouteDebugLogSubTypeQuery    uint16 = 1
-	mobileVRouteDebugLogSubTypeResponse uint16 = 2
-	mobileVRouteFrameWriteTimeout              = 5 * time.Second
-	mobileVRouteCarrierDialTimeout             = 12 * time.Second
-	mobileVRouteCarrierRetryMax                = 30 * time.Second
-	mobileVRouteCarrierTXBufferFrames          = 1024
-	mobileVRouteCarrierRXBufferFrames          = 1024
-	mobileVRouteMaxHops                        = 3
-	mobileVRouteRelayResolveTimeout            = 5 * time.Second
-	mobileVRouteH3StreamOpenTimeout            = 6 * time.Second
+	mobileVRouteFrameEnvelopeMagic           uint16 = 0x5652
+	mobileVRouteFrameEnvelopeHeaderSize             = 12
+	mobileVRouteFrameMaxControlBytes                = 8096
+	mobileVRouteFrameMaxDataBytes                   = 65535
+	mobileVRouteFrameMaxBytes                       = mobileVRouteFrameEnvelopeHeaderSize + mobileVRouteFrameMaxControlBytes + mobileVRouteFrameMaxDataBytes
+	mobileVRouteFrameMainTypeIP              uint16 = 1
+	mobileVRouteIPSubTypeIPv4                uint16 = 1
+	mobileVRouteFrameMainTypePingPong        uint16 = 2
+	mobileVRoutePingPongSubTypePing          uint16 = 1
+	mobileVRoutePingPongSubTypePong          uint16 = 2
+	mobileVRouteFrameMainTypePathRTT         uint16 = 3
+	mobileVRoutePathRTTSubTypeQuery          uint16 = 1
+	mobileVRoutePathRTTSubTypeResponse       uint16 = 2
+	mobileVRouteFrameMainTypeDebugLog        uint16 = 7
+	mobileVRouteDebugLogSubTypeQuery         uint16 = 1
+	mobileVRouteDebugLogSubTypeResponse      uint16 = 2
+	mobileVRouteFrameWriteTimeout                   = 15 * time.Second
+	mobileVRouteCarrierDialTimeout                  = 12 * time.Second
+	mobileVRouteCarrierRetryMax                     = 30 * time.Second
+	mobileVRouteCarrierTXBufferFrames               = 128
+	mobileVRouteCarrierTXControlBufferFrames        = 16
+	mobileVRouteCarrierRXBufferFrames               = 256
+	mobileVRouteMaxHops                             = 3
+	mobileVRouteRelayResolveTimeout                 = 5 * time.Second
+	mobileVRouteH3StreamOpenTimeout                 = 6 * time.Second
 )
 
 type mobileVRouteFrame struct {
@@ -111,6 +112,8 @@ type mobileVRouteCarrier struct {
 	txIPBytes       atomic.Int64
 	txControlFrames atomic.Int64
 	txDropped       atomic.Int64
+	txLastWriteNS   atomic.Int64
+	txWriteEMANS    atomic.Int64
 	rxFrames        atomic.Int64
 	rxBytes         atomic.Int64
 	rxIPFrames      atomic.Int64
@@ -125,6 +128,7 @@ type mobileVRouteCarrier struct {
 	writeBackMu     sync.RWMutex
 	writeBack       func([]byte) error
 	tx              chan mobileVRouteFrame
+	txControl       chan mobileVRouteFrame
 	rx              chan mobileVRouteFrame
 	done            chan struct{}
 }
@@ -473,16 +477,17 @@ func newMobileVRouteCarrier(key string, plan mobileVRouteForwardPlan, conn net.C
 		key:           key,
 		plan:          plan,
 		conn:          conn,
-		reader:        bufio.NewReaderSize(conn, 256*1024),
+		reader:        bufio.NewReaderSize(conn, 128*1024),
 		createdUnixNS: time.Now().UnixNano(),
 		tx:            make(chan mobileVRouteFrame, mobileVRouteCarrierTXBufferFrames),
+		txControl:     make(chan mobileVRouteFrame, mobileVRouteCarrierTXControlBufferFrames),
 		rx:            make(chan mobileVRouteFrame, mobileVRouteCarrierRXBufferFrames),
 		done:          make(chan struct{}),
 	}
 }
 
 func (c *mobileVRouteCarrier) start() {
-	if c == nil || c.conn == nil || c.tx == nil || c.rx == nil || c.done == nil {
+	if c == nil || c.conn == nil || c.tx == nil || c.txControl == nil || c.rx == nil || c.done == nil {
 		return
 	}
 	go c.runTXWorker()
@@ -502,55 +507,109 @@ func (c *mobileVRouteCarrier) writeIPPacket(packet []byte, path []string) error 
 }
 
 func (c *mobileVRouteCarrier) enqueueFrame(frame mobileVRouteFrame) error {
-	if c.tx == nil || c.done == nil {
+	queue, queueName := c.txQueueForFrame(frame)
+	if queue == nil || c.done == nil {
 		return io.ErrClosedPipe
 	}
 	select {
-	case c.tx <- frame:
+	case queue <- frame:
 		return nil
 	case <-c.done:
 		return io.ErrClosedPipe
 	default:
 		c.txDropped.Add(1)
-		return fmt.Errorf("mobile vroute tx queue full: route=%s depth=%d capacity=%d", strings.TrimSpace(c.plan.RouteID), len(c.tx), cap(c.tx))
+		return fmt.Errorf("mobile vroute tx queue full: route=%s queue=%s depth=%d capacity=%d", strings.TrimSpace(c.plan.RouteID), queueName, len(queue), cap(queue))
 	}
 }
 
 func (c *mobileVRouteCarrier) runTXWorker() {
-	if c == nil || c.tx == nil || c.done == nil {
+	if c == nil || c.tx == nil || c.txControl == nil || c.done == nil {
 		return
 	}
 	for {
-		select {
-		case frame := <-c.tx:
-			payload, err := encodeMobileVRouteFrame(frame)
-			if err == nil && mobileVRouteFrameWriteTimeout > 0 {
-				_ = c.conn.SetWriteDeadline(time.Now().Add(mobileVRouteFrameWriteTimeout))
-			}
-			if err == nil {
-				err = writeMobileVRouteAll(c.conn, payload)
-			}
-			if mobileVRouteFrameWriteTimeout > 0 {
-				_ = c.conn.SetWriteDeadline(time.Time{})
-			}
-			if err != nil {
-				c.markError(err)
-				recordMobileVRouteCarrierStateError(err)
-				failMobileVRouteTrackedFlowsForCarrier(c.plan, "carrier_write_failed", err)
-				androidLogStore.add("vpn", "warn", "vroute carrier write failed: "+err.Error())
-				c.close()
-				return
-			}
-			c.txFrames.Add(1)
-			c.txBytes.Add(int64(len(frame.Data)))
-			if mobileVRouteFrameIsIP(frame) {
-				c.txIPFrames.Add(1)
-				c.txIPBytes.Add(int64(len(frame.Data)))
-			} else {
-				c.txControlFrames.Add(1)
-			}
-			c.markActivity()
-		case <-c.done:
+		frame, ok := c.nextTXFrame()
+		if !ok {
+			return
+		}
+		payload, err := encodeMobileVRouteFrame(frame)
+		if err == nil && mobileVRouteFrameWriteTimeout > 0 {
+			_ = c.conn.SetWriteDeadline(time.Now().Add(mobileVRouteFrameWriteTimeout))
+		}
+		if err == nil {
+			writeStartedAt := time.Now()
+			err = writeMobileVRouteAll(c.conn, payload)
+			c.recordTXWriteDuration(time.Since(writeStartedAt))
+		}
+		if mobileVRouteFrameWriteTimeout > 0 {
+			_ = c.conn.SetWriteDeadline(time.Time{})
+		}
+		if err != nil {
+			c.markError(err)
+			recordMobileVRouteCarrierStateError(err)
+			failMobileVRouteTrackedFlowsForCarrier(c.plan, "carrier_write_failed", err)
+			androidLogStore.add("vpn", "warn", "vroute carrier write failed: "+err.Error())
+			c.close()
+			return
+		}
+		c.txFrames.Add(1)
+		c.txBytes.Add(int64(len(frame.Data)))
+		if mobileVRouteFrameIsIP(frame) {
+			c.txIPFrames.Add(1)
+			c.txIPBytes.Add(int64(len(frame.Data)))
+		} else {
+			c.txControlFrames.Add(1)
+		}
+		c.markActivity()
+	}
+}
+
+func (c *mobileVRouteCarrier) txQueueForFrame(frame mobileVRouteFrame) (chan mobileVRouteFrame, string) {
+	if c == nil {
+		return nil, ""
+	}
+	if mobileVRouteFrameIsIP(frame) {
+		return c.tx, "ip"
+	}
+	return c.txControl, "control"
+}
+
+func (c *mobileVRouteCarrier) nextTXFrame() (mobileVRouteFrame, bool) {
+	if c == nil || c.done == nil {
+		return mobileVRouteFrame{}, false
+	}
+	select {
+	case <-c.done:
+		return mobileVRouteFrame{}, false
+	default:
+	}
+	select {
+	case frame := <-c.txControl:
+		return frame, true
+	default:
+	}
+	select {
+	case frame := <-c.txControl:
+		return frame, true
+	case frame := <-c.tx:
+		return frame, true
+	case <-c.done:
+		return mobileVRouteFrame{}, false
+	}
+}
+
+func (c *mobileVRouteCarrier) recordTXWriteDuration(value time.Duration) {
+	if c == nil || value < 0 {
+		return
+	}
+	nanoseconds := int64(value)
+	c.txLastWriteNS.Store(nanoseconds)
+	for {
+		current := c.txWriteEMANS.Load()
+		next := nanoseconds
+		if current > 0 {
+			next = (current*7 + nanoseconds) / 8
+		}
+		if c.txWriteEMANS.CompareAndSwap(current, next) {
 			return
 		}
 	}
@@ -1011,29 +1070,39 @@ func snapshotMobileVRouteCarriers() map[string]any {
 		itemLastErrorUnixNS := item.lastErrorUnixNS
 		item.lastErrorMu.Unlock()
 		carriers = append(carriers, map[string]any{
-			"route_id":          item.plan.RouteID,
-			"path":              append([]string(nil), item.plan.Path...),
-			"next_node":         item.plan.NextNode,
-			"exit_node":         item.plan.ExitNode,
-			"relay":             net.JoinHostPort(item.plan.RelayHost, strconv.Itoa(item.plan.RelayPort)),
-			"bridge_role":       item.plan.BridgeRole,
-			"layer":             item.plan.Layer,
-			"tx_frames":         item.txFrames.Load(),
-			"tx_bytes":          item.txBytes.Load(),
-			"tx_ip_frames":      item.txIPFrames.Load(),
-			"tx_ip_bytes":       item.txIPBytes.Load(),
-			"tx_control_frames": item.txControlFrames.Load(),
-			"rx_frames":         item.rxFrames.Load(),
-			"rx_bytes":          item.rxBytes.Load(),
-			"rx_ip_frames":      item.rxIPFrames.Load(),
-			"rx_ip_bytes":       item.rxIPBytes.Load(),
-			"rx_control_frames": item.rxControlFrames.Load(),
-			"tun_write_frames":  item.tunWriteFrames.Load(),
-			"tun_write_bytes":   item.tunWriteBytes.Load(),
-			"created_at":        mobileVRouteUnixNanoRFC3339(item.createdUnixNS),
-			"last_activity_at":  mobileVRouteUnixNanoRFC3339(item.lastActivityNS.Load()),
-			"last_error":        itemLastError,
-			"last_error_at":     mobileVRouteUnixNanoRFC3339(itemLastErrorUnixNS),
+			"route_id":            item.plan.RouteID,
+			"path":                append([]string(nil), item.plan.Path...),
+			"next_node":           item.plan.NextNode,
+			"exit_node":           item.plan.ExitNode,
+			"relay":               net.JoinHostPort(item.plan.RelayHost, strconv.Itoa(item.plan.RelayPort)),
+			"bridge_role":         item.plan.BridgeRole,
+			"layer":               item.plan.Layer,
+			"tx_frames":           item.txFrames.Load(),
+			"tx_bytes":            item.txBytes.Load(),
+			"tx_ip_frames":        item.txIPFrames.Load(),
+			"tx_ip_bytes":         item.txIPBytes.Load(),
+			"tx_control_frames":   item.txControlFrames.Load(),
+			"tx_queue":            len(item.tx) + len(item.txControl),
+			"tx_capacity":         cap(item.tx) + cap(item.txControl),
+			"tx_ip_queue":         len(item.tx),
+			"tx_ip_capacity":      cap(item.tx),
+			"tx_control_queue":    len(item.txControl),
+			"tx_control_capacity": cap(item.txControl),
+			"tx_last_write_ms":    time.Duration(item.txLastWriteNS.Load()).Milliseconds(),
+			"tx_write_ema_ms":     time.Duration(item.txWriteEMANS.Load()).Milliseconds(),
+			"rx_queue":            len(item.rx),
+			"rx_capacity":         cap(item.rx),
+			"rx_frames":           item.rxFrames.Load(),
+			"rx_bytes":            item.rxBytes.Load(),
+			"rx_ip_frames":        item.rxIPFrames.Load(),
+			"rx_ip_bytes":         item.rxIPBytes.Load(),
+			"rx_control_frames":   item.rxControlFrames.Load(),
+			"tun_write_frames":    item.tunWriteFrames.Load(),
+			"tun_write_bytes":     item.tunWriteBytes.Load(),
+			"created_at":          mobileVRouteUnixNanoRFC3339(item.createdUnixNS),
+			"last_activity_at":    mobileVRouteUnixNanoRFC3339(item.lastActivityNS.Load()),
+			"last_error":          itemLastError,
+			"last_error_at":       mobileVRouteUnixNanoRFC3339(itemLastErrorUnixNS),
 		})
 	}
 	return map[string]any{
@@ -1101,8 +1170,8 @@ func dialMobileVRouteWebSocketCarrierCandidate(plan mobileVRouteForwardPlan, hea
 	dialer := websocket.Dialer{
 		HandshakeTimeout:  mobileVRouteCarrierDialTimeout,
 		Proxy:             nil,
-		ReadBufferSize:    512 * 1024,
-		WriteBufferSize:   512 * 1024,
+		ReadBufferSize:    64 * 1024,
+		WriteBufferSize:   64 * 1024,
 		EnableCompression: false,
 		NetDialContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
 			dialNetwork := strings.TrimSpace(candidate.Network)
@@ -1252,10 +1321,10 @@ func dialMobileVRouteH3CarrierCandidate(plan mobileVRouteForwardPlan, candidate 
 
 func mobileVRouteQUICConfig() *quic.Config {
 	return &quic.Config{
-		InitialStreamReceiveWindow:     128 * 1024 * 1024,
-		MaxStreamReceiveWindow:         512 * 1024 * 1024,
-		InitialConnectionReceiveWindow: 512 * 1024 * 1024,
-		MaxConnectionReceiveWindow:     1024 * 1024 * 1024,
+		InitialStreamReceiveWindow:     512 * 1024,
+		MaxStreamReceiveWindow:         4 * 1024 * 1024,
+		InitialConnectionReceiveWindow: 1024 * 1024,
+		MaxConnectionReceiveWindow:     8 * 1024 * 1024,
 		EnableDatagrams:                true,
 	}
 }

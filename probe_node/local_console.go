@@ -2640,11 +2640,8 @@ func probeLocalVirtualRouterFrameLinkStatusPayload(link *probeVirtualRouterFrame
 		return map[string]any{}
 	}
 	now := time.Now()
-	txDepth, txCap := 0, 0
-	if link.tx != nil {
-		txDepth = len(link.tx)
-		txCap = cap(link.tx)
-	}
+	txDepth, txCap, txControlDepth, txControlCap, txBusinessDepth, txBusinessCap, txBulkDepth, txBulkCap := link.txQueueSnapshot()
+	txLastWrite, txWriteEMA := link.txWriteDurationSnapshot()
 	rxDepth, rxCap := 0, 0
 	rxEntryDepth, rxEntryCap, rxDispatchDepth, rxDispatchCap, rxDispatchWorkers := link.rxQueueSnapshot()
 	rxDepth = rxEntryDepth + rxDispatchDepth
@@ -2671,6 +2668,14 @@ func probeLocalVirtualRouterFrameLinkStatusPayload(link *probeVirtualRouterFrame
 		"carrier":              false,
 		"tx_queue":             txDepth,
 		"tx_capacity":          txCap,
+		"tx_control_queue":     txControlDepth,
+		"tx_control_capacity":  txControlCap,
+		"tx_business_queue":    txBusinessDepth,
+		"tx_business_capacity": txBusinessCap,
+		"tx_bulk_queue":        txBulkDepth,
+		"tx_bulk_capacity":     txBulkCap,
+		"tx_last_write_ms":     probeDurationMilliseconds(txLastWrite),
+		"tx_write_ema_ms":      probeDurationMilliseconds(txWriteEMA),
 		"rx_queue":             rxDepth,
 		"rx_capacity":          rxCap,
 		"rx_entry_queue":       rxEntryDepth,

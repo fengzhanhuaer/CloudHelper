@@ -28,10 +28,13 @@ const (
 	probeVirtualRouterRuntimeRouteIDPrefix                 = "vrouter-"
 	probeVirtualRouterRuntimeRouteLayer                    = "auto"
 	probeVirtualRouterRuntimeRole                          = "virtual_router"
-	probeVirtualRouterFrameLinkTXBufferFrames              = 1024
-	probeVirtualRouterFrameLinkRXBufferFrames              = 4096
+	probeVirtualRouterFrameLinkTXBufferFrames              = 128
+	probeVirtualRouterFrameLinkTXControlBufferFrames       = 16
+	probeVirtualRouterFrameLinkTXBulkBufferFrames          = 16
+	probeVirtualRouterFrameLinkTXBusinessQuantum           = 8
+	probeVirtualRouterFrameLinkRXBufferFrames              = 512
 	probeVirtualRouterFrameLinkRXDispatchShards            = 8
-	probeVirtualRouterFrameLinkRXDispatchShardBufferFrames = 1024
+	probeVirtualRouterFrameLinkRXDispatchShardBufferFrames = 128
 	probeVirtualRouterRXDispatchDropLogPeriod              = time.Second
 )
 
@@ -167,6 +170,8 @@ type probeVirtualRouterFrameLink struct {
 	openedAt         time.Time
 	lastUsed         time.Time
 	tx               chan probeVirtualRouterFrame
+	txControl        chan probeVirtualRouterFrame
+	txBulk           chan probeVirtualRouterFrame
 	rx               chan probeVirtualRouterFrame
 	rxDispatchShards []chan probeVirtualRouterFrame
 	done             chan struct{}
@@ -175,6 +180,8 @@ type probeVirtualRouterFrameLink struct {
 	closeOnce        sync.Once
 	rxDispatchDrops  uint64
 	rxDropLastLogAt  time.Time
+	txLastWriteTime  time.Duration
+	txWriteTimeEMA   time.Duration
 	mu               sync.Mutex
 }
 

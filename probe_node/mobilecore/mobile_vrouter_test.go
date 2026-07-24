@@ -1058,6 +1058,45 @@ func TestMobileVRouteCarrierSeparatesControlIPAndTUNWritebackStats(t *testing.T)
 	}
 }
 
+func TestMobileVRouteCarrierReservesControlQueueAndPrioritizesIt(t *testing.T) {
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+	carrier := newMobileVRouteCarrier("queue-priority", mobileVRouteForwardPlan{RouteID: "vrouter-mobile-queue"}, left)
+	if carrier == nil {
+		t.Fatal("carrier is nil")
+	}
+	ipFrame := mobileVRouteFrame{MainType: mobileVRouteFrameMainTypeIP, SubType: mobileVRouteIPSubTypeIPv4, Data: []byte{0x45}}
+	for i := 0; i < cap(carrier.tx); i++ {
+		carrier.tx <- ipFrame
+	}
+	controlFrame := mobileVRouteFrame{MainType: mobileVRouteFrameMainTypePingPong, SubType: mobileVRoutePingPongSubTypePing, Data: []byte{1}}
+	if err := carrier.enqueueFrame(controlFrame); err != nil {
+		t.Fatalf("control enqueue should use reserved queue: %v", err)
+	}
+	frame, ok := carrier.nextTXFrame()
+	if !ok || frame.MainType != mobileVRouteFrameMainTypePingPong {
+		t.Fatalf("first frame=%+v ok=%v, want control", frame, ok)
+	}
+}
+
+func TestMobileVRouteCarrierBuffersAreBounded(t *testing.T) {
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+	carrier := newMobileVRouteCarrier("bounded-buffers", mobileVRouteForwardPlan{}, left)
+	if carrier == nil {
+		t.Fatal("carrier is nil")
+	}
+	if cap(carrier.tx) != mobileVRouteCarrierTXBufferFrames || cap(carrier.txControl) != mobileVRouteCarrierTXControlBufferFrames || cap(carrier.rx) != mobileVRouteCarrierRXBufferFrames {
+		t.Fatalf("unexpected queue capacities: ip=%d control=%d rx=%d", cap(carrier.tx), cap(carrier.txControl), cap(carrier.rx))
+	}
+	quicConfig := mobileVRouteQUICConfig()
+	if quicConfig.MaxStreamReceiveWindow > 4*1024*1024 || quicConfig.MaxConnectionReceiveWindow > 8*1024*1024 {
+		t.Fatalf("mobile h3 receive windows are too large: stream=%d connection=%d", quicConfig.MaxStreamReceiveWindow, quicConfig.MaxConnectionReceiveWindow)
+	}
+}
+
 func TestMobileVRouteRelayReportMatchesProbeNodeStatusShape(t *testing.T) {
 	configDir := t.TempDir()
 	resetMobileVRouteVPNStateForTest(t, configDir)
@@ -1343,7 +1382,7 @@ func TestMobileVRouteRespondsToPeerDebugLogPull(t *testing.T) {
 	}
 
 	select {
-	case frame := <-carrier.tx:
+	case frame := <-carrier.txControl:
 		if frame.MainType != mobileVRouteFrameMainTypeDebugLog || frame.SubType != mobileVRouteDebugLogSubTypeResponse {
 			t.Fatalf("unexpected response frame: %+v", frame)
 		}
@@ -1415,7 +1454,7 @@ func TestMobileVRouteRespondsToPingAndPathRTT(t *testing.T) {
 			}
 
 			select {
-			case frame := <-carrier.tx:
+			case frame := <-carrier.txControl:
 				if frame.MainType != test.mainType || frame.SubType != test.responseSubType {
 					t.Fatalf("response frame=%d/%d, want %d/%d", frame.MainType, frame.SubType, test.mainType, test.responseSubType)
 				}

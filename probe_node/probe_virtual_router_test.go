@@ -1743,7 +1743,7 @@ func TestProbeVirtualRouterPathRTTSupportsAdjacentDirectPath(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		select {
-		case frame := <-link.tx:
+		case frame := <-link.txControl:
 			if frame.MainType != probeVirtualRouterFrameMainTypePingPong || frame.SubType != probeVirtualRouterPingPongSubTypePing {
 				done <- fmt.Errorf("frame type=%d/%d, want ping", frame.MainType, frame.SubType)
 				return
@@ -1866,7 +1866,7 @@ func TestStartProbeVirtualRouterRuntimeCreatesFrameLinkWorkers(t *testing.T) {
 	if rt.frameLink != link {
 		t.Fatalf("runtime frame link mismatch")
 	}
-	if link.tx == nil || link.rx == nil || link.done == nil || link.carrierNotify == nil {
+	if link.tx == nil || link.txControl == nil || link.txBulk == nil || link.rx == nil || link.done == nil || link.carrierNotify == nil {
 		t.Fatalf("frame link worker channels should be initialized")
 	}
 	select {
@@ -2017,8 +2017,8 @@ func TestProbeVirtualRouterKeepAliveDialerWakesConnectWithoutCarrier(t *testing.
 	if got := len(rt.bridgeWakeCh); got != 1 {
 		t.Fatalf("bridge wake queue=%d, want 1", got)
 	}
-	if got := len(link.tx); got != 0 {
-		t.Fatalf("keepalive should not enqueue ping without carrier, tx=%d", got)
+	if depth, _, _, _, _, _, _, _ := link.txQueueSnapshot(); depth != 0 {
+		t.Fatalf("keepalive should not enqueue ping without carrier, tx=%d", depth)
 	}
 }
 
@@ -2049,8 +2049,8 @@ func TestProbeVirtualRouterKeepAliveServerSkipsActivePingWithCarrier(t *testing.
 	if got := len(rt.bridgeWakeCh); got != 0 {
 		t.Fatalf("server should not wake dialer, wake queue=%d", got)
 	}
-	if got := len(link.tx); got != 0 {
-		t.Fatalf("server keepalive should not enqueue active ping even with carrier, tx=%d", got)
+	if depth, _, _, _, _, _, _, _ := link.txQueueSnapshot(); depth != 0 {
+		t.Fatalf("server keepalive should not enqueue active ping even with carrier, tx=%d", depth)
 	}
 }
 
@@ -2078,8 +2078,8 @@ func TestProbeVirtualRouterAdjacentRTTServerSkipsActivePing(t *testing.T) {
 
 	probeVirtualRouterQueryAdjacentRTTRuntime(rt)
 
-	if got := len(link.tx); got != 0 {
-		t.Fatalf("server adjacent rtt should not enqueue active ping, tx=%d", got)
+	if depth, _, _, _, _, _, _, _ := link.txQueueSnapshot(); depth != 0 {
+		t.Fatalf("server adjacent rtt should not enqueue active ping, tx=%d", depth)
 	}
 	stats := snapshotProbeVirtualRouterRuntimeStats(rt.cfg.routeID)
 	if stats == nil || strings.TrimSpace(stats.LastRemoteRTTError) == "" {
@@ -4775,6 +4775,76 @@ func TestProbeVirtualRouterFrameLinkTXQueueFullReturnsImmediately(t *testing.T) 
 	}
 }
 
+func TestProbeVirtualRouterFrameLinkTXQueuesReserveControlCapacity(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	link := newProbeVirtualRouterFrameLink("queue-classes", &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-queue-classes"}}, nil, nil)
+	t.Cleanup(func() { stopProbeVirtualRouterFrameLink(link) })
+	ipFrame, err := buildProbeVirtualRouterIPFrame(buildProbeVirtualRouterTestIPv4Packet(t, "198.18.0.1", "198.18.0.2"), []string{"1", "2"}, nil)
+	if err != nil {
+		t.Fatalf("build ip frame failed: %v", err)
+	}
+	for i := 0; i < cap(link.tx); i++ {
+		link.tx <- ipFrame
+	}
+	controlFrame := probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypePingPong, SubType: probeVirtualRouterPingPongSubTypePing, Data: []byte{1}}
+	if err := link.EnqueueProbeVirtualRouterFrame(controlFrame); err != nil {
+		t.Fatalf("control enqueue should use reserved queue: %v", err)
+	}
+	if got := len(link.txControl); got != 1 {
+		t.Fatalf("control queue depth=%d, want 1", got)
+	}
+}
+
+func TestProbeVirtualRouterFrameLinkTXSchedulingPrioritizesControlAndBoundsBulk(t *testing.T) {
+	link := newProbeVirtualRouterFrameLink("queue-priority", &probeVirtualRouterRuntime{}, nil, nil)
+	t.Cleanup(func() { stopProbeVirtualRouterFrameLink(link) })
+	business := probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeIP, Data: []byte{1}}
+	control := probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypePingPong, Data: []byte{2}}
+	bulk := probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeSpeed, Data: []byte{3}}
+	for i := 0; i < probeVirtualRouterFrameLinkTXBusinessQuantum+1; i++ {
+		link.tx <- business
+	}
+	link.txControl <- control
+	link.txBulk <- bulk
+
+	businessSinceBulk := 0
+	frame, ok := link.nextTXFrame(&businessSinceBulk)
+	if !ok || frame.MainType != probeVirtualRouterFrameMainTypePingPong {
+		t.Fatalf("first frame=%+v ok=%v, want control", frame, ok)
+	}
+	for i := 0; i < probeVirtualRouterFrameLinkTXBusinessQuantum; i++ {
+		frame, ok = link.nextTXFrame(&businessSinceBulk)
+		if !ok || frame.MainType != probeVirtualRouterFrameMainTypeIP {
+			t.Fatalf("frame %d=%+v ok=%v, want business", i, frame, ok)
+		}
+	}
+	frame, ok = link.nextTXFrame(&businessSinceBulk)
+	if !ok || frame.MainType != probeVirtualRouterFrameMainTypeSpeed {
+		t.Fatalf("frame after business quantum=%+v ok=%v, want bulk", frame, ok)
+	}
+}
+
+func TestProbeVirtualRouterSpeedPacerAdjustsToBulkQueuePressure(t *testing.T) {
+	link := newProbeVirtualRouterFrameLink("speed-pacer", &probeVirtualRouterRuntime{}, nil, nil)
+	t.Cleanup(func() { stopProbeVirtualRouterFrameLink(link) })
+	now := time.Now()
+	pacer := newProbeVirtualRouterSpeedPacer(now)
+	pacer.adjust(link, now.Add(probeVirtualRouterSpeedTestPaceIncreaseInterval))
+	if got, want := pacer.rateMbps, probeVirtualRouterSpeedTestPaceInitialMbps*probeVirtualRouterSpeedTestPaceIncreaseFactor; got != want {
+		t.Fatalf("uncongested rate=%v, want %v", got, want)
+	}
+	high := cap(link.txBulk) * probeVirtualRouterSpeedTestTXHighWatermarkPercent / 100
+	for i := 0; i < high; i++ {
+		link.txBulk <- probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeSpeed, Data: []byte{1}}
+	}
+	pacer.adjust(link, now.Add(2*probeVirtualRouterSpeedTestPaceIncreaseInterval))
+	if got, want := pacer.rateMbps, probeVirtualRouterSpeedTestPaceInitialMbps*probeVirtualRouterSpeedTestPaceIncreaseFactor*probeVirtualRouterSpeedTestPaceDecreaseFactor; got != want {
+		t.Fatalf("congested rate=%v, want %v", got, want)
+	}
+}
+
 func TestProbeVirtualRouterFrameRXDispatchShardKeepsTCPFlowTogether(t *testing.T) {
 	forward := probeVirtualRouterFrame{
 		MainType: probeVirtualRouterFrameMainTypeIP,
@@ -4841,14 +4911,16 @@ func TestProbeVirtualRouterFrameLinkAttachClearsBufferedFrames(t *testing.T) {
 		t.Fatalf("build ip frame failed: %v", err)
 	}
 	link.tx <- frame
+	link.txControl <- probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypePingPong, Data: []byte{1}}
+	link.txBulk <- probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeSpeed, Data: []byte{1}}
 	link.rx <- frame
 	link.rxDispatchShards[0] <- frame
 
 	if token := link.AttachCarrier(left, "carrier-attach-clear", "pipe"); token == nil {
 		t.Fatalf("carrier should attach")
 	}
-	if len(link.tx) != 0 || len(link.rx) != 0 || len(link.rxDispatchShards[0]) != 0 {
-		t.Fatalf("attach should clear buffered frames, tx=%d rx=%d rx_dispatch=%d", len(link.tx), len(link.rx), len(link.rxDispatchShards[0]))
+	if txDepth, _, _, _, _, _, _, _ := link.txQueueSnapshot(); txDepth != 0 || len(link.rx) != 0 || len(link.rxDispatchShards[0]) != 0 {
+		t.Fatalf("attach should clear buffered frames, tx=%d rx=%d rx_dispatch=%d", txDepth, len(link.rx), len(link.rxDispatchShards[0]))
 	}
 }
 
@@ -4869,13 +4941,15 @@ func TestProbeVirtualRouterFrameLinkDetachClearsBufferedFrames(t *testing.T) {
 		t.Fatalf("build ip frame failed: %v", err)
 	}
 	link.tx <- frame
+	link.txControl <- probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypePingPong, Data: []byte{1}}
+	link.txBulk <- probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeSpeed, Data: []byte{1}}
 	link.rx <- frame
 	link.rxDispatchShards[0] <- frame
 
 	link.detachCarrier(token)
 
-	if len(link.tx) != 0 || len(link.rx) != 0 || len(link.rxDispatchShards[0]) != 0 {
-		t.Fatalf("detach should clear buffered frames, tx=%d rx=%d rx_dispatch=%d", len(link.tx), len(link.rx), len(link.rxDispatchShards[0]))
+	if txDepth, _, _, _, _, _, _, _ := link.txQueueSnapshot(); txDepth != 0 || len(link.rx) != 0 || len(link.rxDispatchShards[0]) != 0 {
+		t.Fatalf("detach should clear buffered frames, tx=%d rx=%d rx_dispatch=%d", txDepth, len(link.rx), len(link.rxDispatchShards[0]))
 	}
 }
 

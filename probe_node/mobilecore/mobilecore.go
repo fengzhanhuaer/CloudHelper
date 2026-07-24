@@ -26,11 +26,11 @@ import (
 
 const defaultReportIntervalSec = 60
 const androidLogMaxEntries = 1000
-const mobileWebSocketWriteBatchBytes = 1024 * 1024
-const mobileWebSocketWriteQueueDepth = 64
-const mobileRelayTCPSocketBufferBytes = 8 * 1024 * 1024
+const mobileWebSocketWriteBatchBytes = 128 * 1024
+const mobileWebSocketWriteQueueDepth = 8
+const mobileRelayTCPSocketBufferBytes = 512 * 1024
 const mobileRelayTCPKeepAlivePeriod = 30 * time.Second
-const mobileRelayIOCopyBufferBytes = 1024 * 1024
+const mobileRelayIOCopyBufferBytes = 64 * 1024
 
 var manager = &coreManager{}
 var androidLogStore = &androidLogBuffer{}
@@ -904,7 +904,27 @@ func configureMobileWebSocketConn(ws *websocket.Conn) {
 }
 
 func tuneMobileRelayNetConn(conn net.Conn) {
-	tcpConn, ok := conn.(*net.TCPConn)
+	base := conn
+	for depth := 0; depth < 4 && base != nil; depth++ {
+		if unwrap, ok := base.(interface{ NetConn() net.Conn }); ok {
+			next := unwrap.NetConn()
+			if next == nil || next == base {
+				break
+			}
+			base = next
+			continue
+		}
+		if unwrap, ok := base.(interface{ UnderlyingConn() net.Conn }); ok {
+			next := unwrap.UnderlyingConn()
+			if next == nil || next == base {
+				break
+			}
+			base = next
+			continue
+		}
+		break
+	}
+	tcpConn, ok := base.(*net.TCPConn)
 	if !ok {
 		return
 	}
