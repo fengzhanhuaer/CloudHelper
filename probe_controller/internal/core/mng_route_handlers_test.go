@@ -371,7 +371,7 @@ func TestMngLinkVirtualRouterHandlerSaveAndGet(t *testing.T) {
 		t.Fatalf("topology rules=%+v", payload.Item.TopologyRules)
 	}
 	first := payload.Item.TopologyRules[0]
-	if first.FromServiceDomain != "" || first.FromServicePort != 0 || first.ToServiceDomain != "edge-b.internal.lan" || first.ToServicePort != 0 {
+	if first.FromServiceDomain != "edge-a.example.com" || first.FromServicePort != 443 || first.ToServiceDomain != "edge-b.internal.lan" || first.ToServicePort != 0 {
 		t.Fatalf("service config not persisted: %+v", first)
 	}
 	if first.RouteLayer != "http3" || payload.Item.TopologyRules[1].RouteLayer != "auto" {
@@ -380,8 +380,8 @@ func TestMngLinkVirtualRouterHandlerSaveAndGet(t *testing.T) {
 	if strings.TrimSpace(first.Secret) == "" {
 		t.Fatalf("virtual router rule secret should be generated")
 	}
-	if payload.Item.TopologyRules[1].FromServicePort != 0 || payload.Item.TopologyRules[1].ToServicePort != 0 {
-		t.Fatalf("topology rule ports should be omitted: %+v", payload.Item.TopologyRules)
+	if payload.Item.TopologyRules[1].FromServicePort != 443 || payload.Item.TopologyRules[1].ToServicePort != 0 {
+		t.Fatalf("topology rule ports were not normalized: %+v", payload.Item.TopologyRules)
 	}
 
 	raw, err := os.ReadFile(filepath.Join(tmpDir, "probe_route_config.json"))
