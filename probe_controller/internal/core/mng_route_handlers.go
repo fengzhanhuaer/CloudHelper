@@ -55,6 +55,14 @@ func mngRouteVirtualRouterRouteRulesHandler(w http.ResponseWriter, r *http.Reque
 		}
 		result, err := upsertMngProbeVirtualRouterRouteRules(payload, controllerBaseURLFromRequest(r))
 		writeMngRouteResult(w, result, err)
+	case http.MethodPatch:
+		payload, err := readMngRawJSONPayload(r)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+			return
+		}
+		result, err := upsertMngProbeVirtualRouterRouteRule(payload, controllerBaseURLFromRequest(r))
+		writeMngRouteResult(w, result, err)
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}

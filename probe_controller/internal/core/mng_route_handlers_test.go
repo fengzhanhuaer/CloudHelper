@@ -714,6 +714,117 @@ func TestMngLinkVirtualRouterRouteRulesHandlerSaveSortsAndTopologySavePreserves(
 	}
 }
 
+func TestMngLinkVirtualRouterRouteRulesHandlerPatchSavesOnlyOneGroup(t *testing.T) {
+	oldStore := ProbeRouteConfigStore
+	oldProbeStore := ProbeStore
+	t.Cleanup(func() {
+		ProbeRouteConfigStore = oldStore
+		ProbeStore = oldProbeStore
+	})
+
+	tmpDir := t.TempDir()
+	ProbeRouteConfigStore = &probeRouteConfigStore{
+		path: filepath.Join(tmpDir, "probe_route_config.json"),
+		data: probeRouteConfigStoreData{
+			VirtualRouter: probeVirtualRouterConfig{
+				Enabled:    true,
+				FakeIPCIDR: probeVirtualRouterDefaultCIDR,
+				RouteRules: []probeVirtualRouterRouteRule{
+					{
+						ID:      "rr-alpha",
+						Name:    "alpha",
+						Action:  probeVirtualRouterRouteRuleActionDirect,
+						Entries: []string{"domain_suffix:alpha.example"},
+					},
+					{
+						ID:         "rr-beta",
+						Name:       "beta",
+						Action:     probeVirtualRouterRouteRuleActionExit,
+						ExitNodeID: "2",
+						Entries:    []string{"domain_suffix:beta.example"},
+					},
+				},
+			},
+		},
+	}
+	ProbeStore = &probeConfigStore{
+		data: probeConfigData{
+			ProbeNodes: []probeNodeRecord{
+				{NodeNo: 1, NodeName: "node-1"},
+				{NodeNo: 2, NodeName: "node-2"},
+			},
+			ProbeSecrets: map[string]string{},
+		},
+	}
+
+	updateBody := []byte(`{
+  "item": {
+    "id": "rr-beta",
+    "name": "beta-updated",
+    "action": "reject",
+    "entries": ["domain_suffix:updated.example"]
+  }
+}`)
+	updateReq := httptest.NewRequest(http.MethodPatch, "/mng/api/route/virtual_router/route_rules", bytes.NewReader(updateBody))
+	updateRR := httptest.NewRecorder()
+	mngRouteVirtualRouterRouteRulesHandler(updateRR, updateReq)
+	if updateRR.Code != http.StatusOK {
+		t.Fatalf("patch status=%d body=%s", updateRR.Code, updateRR.Body.String())
+	}
+	var updatePayload struct {
+		Item probeVirtualRouterRouteRule `json:"item"`
+	}
+	if err := json.Unmarshal(updateRR.Body.Bytes(), &updatePayload); err != nil {
+		t.Fatalf("decode patch payload failed: %v", err)
+	}
+	if updatePayload.Item.ID != "rr-beta" || updatePayload.Item.Name != "beta-updated" || updatePayload.Item.Action != probeVirtualRouterRouteRuleActionReject {
+		t.Fatalf("patched item=%+v", updatePayload.Item)
+	}
+
+	ProbeRouteConfigStore.mu.RLock()
+	rulesAfterUpdate := normalizeProbeVirtualRouterRouteRules(ProbeRouteConfigStore.data.VirtualRouter.RouteRules)
+	ProbeRouteConfigStore.mu.RUnlock()
+	if len(rulesAfterUpdate) != 2 {
+		t.Fatalf("rules after patch=%+v", rulesAfterUpdate)
+	}
+	if rulesAfterUpdate[0].ID != "rr-alpha" || strings.Join(rulesAfterUpdate[0].Entries, "\n") != "domain_suffix:alpha.example" {
+		t.Fatalf("unpatched rule changed: %+v", rulesAfterUpdate[0])
+	}
+
+	createBody := []byte(`{
+  "item": {
+    "name": "gamma",
+    "action": "direct",
+    "entries": ["domain_suffix:gamma.example"]
+  }
+}`)
+	createReq := httptest.NewRequest(http.MethodPatch, "/mng/api/route/virtual_router/route_rules", bytes.NewReader(createBody))
+	createRR := httptest.NewRecorder()
+	mngRouteVirtualRouterRouteRulesHandler(createRR, createReq)
+	if createRR.Code != http.StatusOK {
+		t.Fatalf("create patch status=%d body=%s", createRR.Code, createRR.Body.String())
+	}
+	var createPayload struct {
+		Item probeVirtualRouterRouteRule `json:"item"`
+	}
+	if err := json.Unmarshal(createRR.Body.Bytes(), &createPayload); err != nil {
+		t.Fatalf("decode create payload failed: %v", err)
+	}
+	if createPayload.Item.ID == "" || createPayload.Item.Name != "gamma" {
+		t.Fatalf("created item=%+v", createPayload.Item)
+	}
+
+	ProbeRouteConfigStore.mu.RLock()
+	rulesAfterCreate := normalizeProbeVirtualRouterRouteRules(ProbeRouteConfigStore.data.VirtualRouter.RouteRules)
+	ProbeRouteConfigStore.mu.RUnlock()
+	if len(rulesAfterCreate) != 3 {
+		t.Fatalf("rules after create=%+v", rulesAfterCreate)
+	}
+	if rulesAfterCreate[0].ID != "rr-alpha" || rulesAfterCreate[1].ID != "rr-beta" {
+		t.Fatalf("existing rules changed while creating one group: %+v", rulesAfterCreate)
+	}
+}
+
 func TestMngLinkVirtualRouterRouteRulesHandlerUpdatesFakeIPExit(t *testing.T) {
 	oldStore := ProbeRouteConfigStore
 	oldProbeStore := ProbeStore

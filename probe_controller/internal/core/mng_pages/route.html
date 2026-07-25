@@ -72,6 +72,7 @@
     .endpoint-hint { padding-left:64px; color:#8b949e; font-size:12px; line-height:1.4; }
     .name-input { min-width:220px; width:100%; box-sizing:border-box; }
     .rule-editor { min-width:360px; }
+    .route-rule-actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
   </style>
 </head>
 <body>
@@ -165,7 +166,7 @@
               <th style="width:260px;">路由规则</th>
               <th style="width:220px;">处理方式</th>
               <th>条目</th>
-              <th style="width:96px;">操作</th>
+              <th style="width:150px;">操作</th>
             </tr>
           </thead>
           <tbody id="route-rules-body"></tbody>
@@ -912,7 +913,12 @@
           <td class="rule-editor">
             <textarea data-route-rule-entries="${idx}" class="mono" spellcheck="false">${escapeHTML(routeRuleEntriesText(rule))}</textarea>
           </td>
-          <td><button class="btn" data-route-rule-remove="${idx}" type="button">删除</button></td>
+          <td>
+            <div class="route-rule-actions">
+              <button class="btn primary" data-route-rule-save="${idx}" type="button">保存</button>
+              <button class="btn" data-route-rule-remove="${idx}" type="button">删除</button>
+            </div>
+          </td>
         </tr>
       `).join('');
       bindRouteRuleEvents();
@@ -1026,6 +1032,13 @@
           }
         });
       });
+      document.querySelectorAll('[data-route-rule-save]').forEach((el) => {
+        el.addEventListener('click', () => {
+          const idx = Number.parseInt(el.getAttribute('data-route-rule-save') || '-1', 10);
+          if (idx < 0 || idx >= state.routeRules.length) return;
+          saveRouteRule(idx).catch((err) => setStatus(`保存路由规则失败：${err.message || err}`, 'err'));
+        });
+      });
       document.querySelectorAll('[data-route-rule-remove]').forEach((el) => {
         el.addEventListener('click', () => {
           const idx = Number.parseInt(el.getAttribute('data-route-rule-remove') || '-1', 10);
@@ -1055,15 +1068,44 @@
       renderRouteRules();
     }
 
-    async function saveRouteRules() {
-      const items = (Array.isArray(state.routeRules) ? state.routeRules : []).map((rule) => ({
+    function routeRulePayload(rule) {
+      return {
         id: String(rule.id || '').trim(),
         name: String(rule.name || '').trim(),
         action: routeRuleAction(rule),
         exit_node_id: routeRuleAction(rule) === 'probe_exit' ? normalizeNodeID(rule.exit_node_id) : '',
         entries: Array.isArray(rule.entries) ? rule.entries.map((item) => String(item || '').trim()).filter(Boolean) : [],
         note: String(rule.note || '').trim(),
-      })).filter((rule) => rule.name);
+      };
+    }
+
+    function setRouteRuleSaveStatus(message, sync) {
+      const current = sync || {};
+      const dispatched = Number(current.dispatched || 0);
+      const offline = Number(current.offline || 0);
+      const failed = Number(current.failed || 0);
+      const total = Number(current.total || 0);
+      const syncText = total > 0 ? `，已通知在线探针 ${dispatched}/${total}，离线 ${offline}，失败 ${failed}` : '';
+      setStatus(`${message}${syncText}`, failed > 0 ? 'warn' : 'ok');
+    }
+
+    async function saveRouteRule(index) {
+      if (index < 0 || index >= state.routeRules.length) throw new Error('路由规则不存在');
+      const result = await requestJSON('/mng/api/route/virtual_router/route_rules', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ item: routeRulePayload(state.routeRules[index]) }),
+      });
+      if (!result.item || !String(result.item.id || '').trim()) throw new Error('服务端未返回已保存的路由规则');
+      state.routeRules[index] = result.item;
+      state.virtualRouter.route_rules = state.routeRules;
+      renderRouteRules();
+      renderFakeIPLibrary();
+      setRouteRuleSaveStatus(`路由规则“${result.item.name || result.item.id}”已保存`, result.sync);
+    }
+
+    async function saveRouteRules() {
+      const items = (Array.isArray(state.routeRules) ? state.routeRules : []).map(routeRulePayload).filter((rule) => rule.name);
       const result = await requestJSON('/mng/api/route/virtual_router/route_rules', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1073,13 +1115,7 @@
       state.virtualRouter.route_rules = state.routeRules;
       renderRouteRules();
       renderFakeIPLibrary();
-      const sync = result.sync || {};
-      const dispatched = Number(sync.dispatched || 0);
-      const offline = Number(sync.offline || 0);
-      const failed = Number(sync.failed || 0);
-      const total = Number(sync.total || 0);
-      const syncText = total > 0 ? `，已通知在线探针 ${dispatched}/${total}，离线 ${offline}，失败 ${failed}` : '';
-      setStatus(`路由规则已保存并排序${syncText}`, failed > 0 ? 'warn' : 'ok');
+      setRouteRuleSaveStatus('路由规则已保存并排序', result.sync);
     }
 
     async function triggerVirtualRouterLatencyProbe() {

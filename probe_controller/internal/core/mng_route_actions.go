@@ -113,6 +113,34 @@ func getMngProbeVirtualRouterRouteRules() (map[string]interface{}, error) {
 	}, nil
 }
 
+func validateMngProbeVirtualRouterRouteRule(item probeVirtualRouterRouteRule, index int) error {
+	if strings.TrimSpace(item.Name) == "" {
+		return fmt.Errorf("route_rules[%d].name is required", index)
+	}
+	action := normalizeProbeVirtualRouterRouteRuleAction(item.Action, item.ExitNodeID)
+	if action == "" {
+		return fmt.Errorf("route_rules[%d].action is invalid", index)
+	}
+	if action == probeVirtualRouterRouteRuleActionExit {
+		exitNodeID := normalizeProbeNodeID(item.ExitNodeID)
+		if exitNodeID == "" {
+			return fmt.Errorf("route_rules[%d].exit_node_id is required", index)
+		}
+		if !isProbeVirtualRouterKnownNodeID(exitNodeID) {
+			return fmt.Errorf("route_rules[%d].exit_node_id is unknown", index)
+		}
+	}
+	if len(item.Entries) > probeVirtualRouterMaxRouteRuleEntries {
+		return fmt.Errorf("route_rules[%d].entries exceeded limit (%d)", index, probeVirtualRouterMaxRouteRuleEntries)
+	}
+	for entryIndex, entry := range item.Entries {
+		if _, ok := normalizeProbeVirtualRouterRouteRuleEntry(entry); !ok {
+			return fmt.Errorf("route_rules[%d].entries[%d] %q is invalid", index, entryIndex, entry)
+		}
+	}
+	return nil
+}
+
 func upsertMngProbeVirtualRouterRouteRules(payload json.RawMessage, controllerBaseURL string) (map[string]interface{}, error) {
 	if ProbeRouteConfigStore == nil {
 		return nil, fmt.Errorf("probe route config store is not initialized")
@@ -124,29 +152,8 @@ func upsertMngProbeVirtualRouterRouteRules(payload json.RawMessage, controllerBa
 		return nil, fmt.Errorf("invalid payload")
 	}
 	for index, item := range req.Items {
-		if strings.TrimSpace(item.Name) == "" {
-			return nil, fmt.Errorf("route_rules[%d].name is required", index)
-		}
-		action := normalizeProbeVirtualRouterRouteRuleAction(item.Action, item.ExitNodeID)
-		if action == "" {
-			return nil, fmt.Errorf("route_rules[%d].action is invalid", index)
-		}
-		if action == probeVirtualRouterRouteRuleActionExit {
-			exitNodeID := normalizeProbeNodeID(item.ExitNodeID)
-			if exitNodeID == "" {
-				return nil, fmt.Errorf("route_rules[%d].exit_node_id is required", index)
-			}
-			if !isProbeVirtualRouterKnownNodeID(exitNodeID) {
-				return nil, fmt.Errorf("route_rules[%d].exit_node_id is unknown", index)
-			}
-		}
-		if len(item.Entries) > probeVirtualRouterMaxRouteRuleEntries {
-			return nil, fmt.Errorf("route_rules[%d].entries exceeded limit (%d)", index, probeVirtualRouterMaxRouteRuleEntries)
-		}
-		for entryIndex, entry := range item.Entries {
-			if _, ok := normalizeProbeVirtualRouterRouteRuleEntry(entry); !ok {
-				return nil, fmt.Errorf("route_rules[%d].entries[%d] %q is invalid", index, entryIndex, entry)
-			}
+		if err := validateMngProbeVirtualRouterRouteRule(item, index); err != nil {
+			return nil, err
 		}
 	}
 	if len(req.Items) > probeVirtualRouterMaxRouteRules {
@@ -169,5 +176,79 @@ func upsertMngProbeVirtualRouterRouteRules(payload json.RawMessage, controllerBa
 		"ok":    true,
 		"items": rules,
 		"sync":  syncResult,
+	}, nil
+}
+
+func upsertMngProbeVirtualRouterRouteRule(payload json.RawMessage, controllerBaseURL string) (map[string]interface{}, error) {
+	if ProbeRouteConfigStore == nil {
+		return nil, fmt.Errorf("probe route config store is not initialized")
+	}
+	var req struct {
+		Item probeVirtualRouterRouteRule `json:"item"`
+	}
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, fmt.Errorf("invalid payload")
+	}
+	if err := validateMngProbeVirtualRouterRouteRule(req.Item, 0); err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	item := req.Item
+	item.ID = strings.TrimSpace(item.ID)
+	item.UpdatedAt = now.Format(time.RFC3339)
+
+	ProbeRouteConfigStore.mu.Lock()
+	config := normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter)
+	rules := append([]probeVirtualRouterRouteRule(nil), config.RouteRules...)
+	if item.ID == "" {
+		if len(rules) >= probeVirtualRouterMaxRouteRules {
+			ProbeRouteConfigStore.mu.Unlock()
+			return nil, fmt.Errorf("route_rules exceeded limit (%d)", probeVirtualRouterMaxRouteRules)
+		}
+		seen := collectProbeVirtualRouterReservedRouteRuleIDs(rules)
+		item.ID, _ = allocateProbeVirtualRouterRouteRuleID(seen, seen, 1)
+		rules = append(rules, item)
+	} else {
+		found := false
+		for index := range rules {
+			if strings.TrimSpace(rules[index].ID) != item.ID {
+				continue
+			}
+			rules[index] = item
+			found = true
+			break
+		}
+		if !found {
+			ProbeRouteConfigStore.mu.Unlock()
+			return nil, fmt.Errorf("route rule %q not found", item.ID)
+		}
+	}
+
+	rules = normalizeProbeVirtualRouterRouteRules(rules)
+	var saved probeVirtualRouterRouteRule
+	for _, rule := range rules {
+		if rule.ID == item.ID {
+			saved = rule
+			break
+		}
+	}
+	if saved.ID == "" {
+		ProbeRouteConfigStore.mu.Unlock()
+		return nil, fmt.Errorf("route rule could not be saved")
+	}
+	config.RouteRules = rules
+	config.UpdatedAt = now.Format(time.RFC3339)
+	ProbeRouteConfigStore.data.VirtualRouter = config
+	reconcileProbeVirtualRouterFakeIPLibraryWithRouteRulesLocked(rules, now)
+	ProbeRouteConfigStore.mu.Unlock()
+	if err := ProbeRouteConfigStore.Save(); err != nil {
+		return nil, err
+	}
+	syncResult := dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURL)
+	return map[string]interface{}{
+		"ok":   true,
+		"item": saved,
+		"sync": syncResult,
 	}, nil
 }
