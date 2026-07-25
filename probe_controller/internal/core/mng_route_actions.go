@@ -69,6 +69,129 @@ func upsertMngProbeVirtualRouterConfig(payload json.RawMessage, controllerBaseUR
 	}, nil
 }
 
+func validateMngProbeVirtualRouterTopologyRule(item probeVirtualRouterTopologyRule, index int) error {
+	fromNodeID := normalizeProbeNodeID(item.FromNodeID)
+	toNodeID := normalizeProbeNodeID(item.ToNodeID)
+	if fromNodeID == "" {
+		return fmt.Errorf("topology_rules[%d].from_node_id is required", index)
+	}
+	if toNodeID == "" {
+		return fmt.Errorf("topology_rules[%d].to_node_id is required", index)
+	}
+	if fromNodeID == toNodeID {
+		return fmt.Errorf("topology_rules[%d] endpoints must be different", index)
+	}
+	return nil
+}
+
+func preserveMngProbeVirtualRouterTopologyRulePrivateFields(item probeVirtualRouterTopologyRule, existing probeVirtualRouterTopologyRule) probeVirtualRouterTopologyRule {
+	if strings.TrimSpace(item.Name) == "" {
+		item.Name = existing.Name
+	}
+	if strings.TrimSpace(item.FromTLSSPKISHA256) == "" {
+		item.FromTLSSPKISHA256 = existing.FromTLSSPKISHA256
+	}
+	if strings.TrimSpace(item.ToTLSSPKISHA256) == "" {
+		item.ToTLSSPKISHA256 = existing.ToTLSSPKISHA256
+	}
+	if strings.TrimSpace(item.UserID) == "" {
+		item.UserID = existing.UserID
+	}
+	if strings.TrimSpace(item.UserPublicKey) == "" {
+		item.UserPublicKey = existing.UserPublicKey
+	}
+	if strings.TrimSpace(item.Secret) == "" {
+		item.Secret = existing.Secret
+	}
+	if strings.TrimSpace(item.AuthTicket) == "" {
+		item.AuthTicket = existing.AuthTicket
+	}
+	return item
+}
+
+func upsertMngProbeVirtualRouterTopologyRule(payload json.RawMessage, controllerBaseURL string) (map[string]interface{}, error) {
+	if ProbeRouteConfigStore == nil {
+		return nil, fmt.Errorf("probe route config store is not initialized")
+	}
+	var req struct {
+		Item probeVirtualRouterTopologyRule `json:"item"`
+	}
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, fmt.Errorf("invalid payload")
+	}
+	if err := validateMngProbeVirtualRouterTopologyRule(req.Item, 0); err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	item := req.Item
+	item.ID = strings.TrimSpace(item.ID)
+	item.UpdatedAt = now
+
+	ProbeRouteConfigStore.mu.Lock()
+	config := normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter)
+	rules := append([]probeVirtualRouterTopologyRule(nil), config.TopologyRules...)
+	if item.ID == "" {
+		if len(rules) >= probeVirtualRouterMaxTopologyRules {
+			ProbeRouteConfigStore.mu.Unlock()
+			return nil, fmt.Errorf("topology_rules exceeded limit (%d)", probeVirtualRouterMaxTopologyRules)
+		}
+		rules = append(rules, item)
+	} else {
+		found := false
+		for index := range rules {
+			if strings.TrimSpace(rules[index].ID) != item.ID {
+				continue
+			}
+			item = preserveMngProbeVirtualRouterTopologyRulePrivateFields(item, rules[index])
+			rules[index] = item
+			found = true
+			break
+		}
+		if !found {
+			ProbeRouteConfigStore.mu.Unlock()
+			return nil, fmt.Errorf("topology rule %q not found", item.ID)
+		}
+	}
+
+	rules = normalizeProbeVirtualRouterTopologyRules(rules)
+	var saved probeVirtualRouterTopologyRule
+	if item.ID == "" && len(rules) > 0 {
+		saved = rules[len(rules)-1]
+	} else {
+		for _, rule := range rules {
+			if strings.TrimSpace(rule.ID) == item.ID {
+				saved = rule
+				break
+			}
+		}
+	}
+	if strings.TrimSpace(saved.ID) == "" {
+		ProbeRouteConfigStore.mu.Unlock()
+		return nil, fmt.Errorf("topology rule could not be saved")
+	}
+	config.TopologyRules = rules
+	config.UpdatedAt = now
+	config = enrichProbeVirtualRouterAuthTickets(ensureProbeVirtualRouterAuthFields(config))
+	for _, rule := range config.TopologyRules {
+		if rule.ID == saved.ID {
+			saved = rule
+			break
+		}
+	}
+	ProbeRouteConfigStore.data.VirtualRouter = config
+	ProbeRouteConfigStore.mu.Unlock()
+	if err := ProbeRouteConfigStore.Save(); err != nil {
+		return nil, err
+	}
+	syncResult := dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURL)
+	return map[string]interface{}{
+		"ok":   true,
+		"item": saved,
+		"sync": syncResult,
+	}, nil
+}
+
 func listMngProbeVirtualRouterCFDomains() []mngProbeVirtualRouterCFDomain {
 	zoneName := normalizeCloudflareZoneName(getCloudflareZone().ZoneName)
 	if zoneName == "" {

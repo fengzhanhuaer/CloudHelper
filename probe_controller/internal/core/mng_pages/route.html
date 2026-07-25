@@ -549,7 +549,12 @@
                 <div class="endpoint-row"><span class="label">监听域名</span>${virtualRouterDomainSelect(rule, idx, 'to')}</div>
               </div>
             </td>
-            <td><button class="btn danger" data-vr-rule-remove="${idx}" type="button">删除</button></td>
+            <td>
+              <div class="route-rule-actions">
+                <button class="btn primary" data-vr-rule-save="${idx}" type="button">保存</button>
+                <button class="btn danger" data-vr-rule-remove="${idx}" type="button">删除</button>
+              </div>
+            </td>
           </tr>
         `).join('');
       }
@@ -608,6 +613,12 @@
           if (idx >= 0 && idx < rules.length) rules[idx].route_layer = normalizeVirtualRouterRouteLayer(el.value);
         });
       });
+      document.querySelectorAll('[data-vr-rule-save]').forEach((el) => {
+        el.addEventListener('click', () => {
+          const idx = Number.parseInt(el.getAttribute('data-vr-rule-save') || '-1', 10);
+          saveVirtualRouterRule(idx).catch((err) => setStatus(`保存拓扑规则失败：${err.message || err}`, 'err'));
+        });
+      });
       document.querySelectorAll('[data-vr-rule-remove]').forEach((el) => {
         el.addEventListener('click', () => {
           const idx = Number.parseInt(el.getAttribute('data-vr-rule-remove') || '-1', 10);
@@ -652,6 +663,43 @@
         enabled: true,
       });
       renderVirtualRouter();
+    }
+
+    function virtualRouterRulePayload(rule) {
+      return {
+        id: String(rule.id || '').trim(),
+        name: String(rule.name || '').trim(),
+        from_node_id: normalizeNodeID(rule.from_node_id),
+        to_node_id: normalizeNodeID(rule.to_node_id),
+        direction: 'forward',
+        from_service_domain: '',
+        from_service_port: 0,
+        from_tls_spki_sha256: String(rule.from_tls_spki_sha256 || '').trim(),
+        to_service_domain: String(rule.to_service_domain || '').trim(),
+        to_service_port: 0,
+        to_tls_spki_sha256: String(rule.to_tls_spki_sha256 || '').trim(),
+        route_layer: normalizeVirtualRouterRouteLayer(rule.route_layer),
+        user_id: String(rule.user_id || '').trim(),
+        user_public_key: String(rule.user_public_key || '').trim(),
+        secret: String(rule.secret || '').trim(),
+        auth_ticket: String(rule.auth_ticket || '').trim(),
+        enabled: rule.enabled !== false,
+        note: String(rule.note || '').trim(),
+      };
+    }
+
+    async function saveVirtualRouterRule(index) {
+      const rules = state.virtualRouter.topology_rules || [];
+      if (index < 0 || index >= rules.length) throw new Error('拓扑规则不存在');
+      const result = await requestJSON('/mng/api/route/virtual_router/topology_rules', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ item: virtualRouterRulePayload(rules[index]) }),
+      });
+      if (!result.item || !String(result.item.id || '').trim()) throw new Error('服务端未返回已保存的拓扑规则');
+      rules[index] = result.item;
+      renderVirtualRouter();
+      setRuleSaveStatus(`拓扑规则“${result.item.id}”已保存`, result.sync);
     }
 
     async function saveVirtualRouter() {
@@ -1079,7 +1127,7 @@
       };
     }
 
-    function setRouteRuleSaveStatus(message, sync) {
+    function setRuleSaveStatus(message, sync) {
       const current = sync || {};
       const dispatched = Number(current.dispatched || 0);
       const offline = Number(current.offline || 0);
@@ -1101,7 +1149,7 @@
       state.virtualRouter.route_rules = state.routeRules;
       renderRouteRules();
       renderFakeIPLibrary();
-      setRouteRuleSaveStatus(`路由规则“${result.item.name || result.item.id}”已保存`, result.sync);
+      setRuleSaveStatus(`路由规则“${result.item.name || result.item.id}”已保存`, result.sync);
     }
 
     async function saveRouteRules() {
@@ -1115,7 +1163,7 @@
       state.virtualRouter.route_rules = state.routeRules;
       renderRouteRules();
       renderFakeIPLibrary();
-      setRouteRuleSaveStatus('路由规则已保存并排序', result.sync);
+      setRuleSaveStatus('路由规则已保存并排序', result.sync);
     }
 
     async function triggerVirtualRouterLatencyProbe() {

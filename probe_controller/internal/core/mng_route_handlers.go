@@ -42,6 +42,20 @@ func mngRouteVirtualRouterHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func mngRouteVirtualRouterTopologyRulesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	payload, err := readMngRawJSONPayload(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+	result, err := upsertMngProbeVirtualRouterTopologyRule(payload, controllerBaseURLFromRequest(r))
+	writeMngRouteResult(w, result, err)
+}
+
 func mngRouteVirtualRouterRouteRulesHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:

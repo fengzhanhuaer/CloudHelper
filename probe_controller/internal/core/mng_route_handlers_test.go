@@ -825,6 +825,95 @@ func TestMngLinkVirtualRouterRouteRulesHandlerPatchSavesOnlyOneGroup(t *testing.
 	}
 }
 
+func TestMngLinkVirtualRouterTopologyRulesHandlerPatchSavesOnlyOneRule(t *testing.T) {
+	oldStore := ProbeRouteConfigStore
+	oldProbeStore := ProbeStore
+	t.Cleanup(func() {
+		ProbeRouteConfigStore = oldStore
+		ProbeStore = oldProbeStore
+	})
+
+	tmpDir := t.TempDir()
+	ProbeRouteConfigStore = &probeRouteConfigStore{
+		path: filepath.Join(tmpDir, "probe_route_config.json"),
+		data: probeRouteConfigStoreData{
+			VirtualRouter: probeVirtualRouterConfig{
+				Enabled:    true,
+				FakeIPCIDR: probeVirtualRouterDefaultCIDR,
+				ProbeIPs: []probeVirtualRouterProbeIP{
+					{NodeID: "1", IP: "198.18.0.3"},
+					{NodeID: "2", IP: "198.18.0.4"},
+					{NodeID: "3", IP: "198.18.0.5"},
+				},
+				TopologyRules: []probeVirtualRouterTopologyRule{
+					{ID: "vr-a", FromNodeID: "1", ToNodeID: "2", Direction: probeVirtualRouterDirectionForward, RouteLayer: "auto", Secret: "secret-a", Enabled: true},
+					{ID: "vr-b", FromNodeID: "2", ToNodeID: "3", Direction: probeVirtualRouterDirectionForward, RouteLayer: "websocket", Secret: "secret-b", AuthTicket: "ticket-b", Enabled: true},
+				},
+				RouteRules: []probeVirtualRouterRouteRule{{
+					ID: "rr-direct", Name: "direct", Action: probeVirtualRouterRouteRuleActionDirect, Entries: []string{"domain_suffix:example.com"},
+				}},
+			},
+		},
+	}
+	ProbeStore = &probeConfigStore{data: probeConfigData{
+		ProbeNodes: []probeNodeRecord{{NodeNo: 1}, {NodeNo: 2}, {NodeNo: 3}},
+	}}
+
+	updateBody := []byte(`{"item":{"id":"vr-b","from_node_id":"1","to_node_id":"3","direction":"forward","to_service_domain":"node-3.example.com","route_layer":"http3","enabled":true}}`)
+	updateReq := httptest.NewRequest(http.MethodPatch, "/mng/api/route/virtual_router/topology_rules", bytes.NewReader(updateBody))
+	updateRR := httptest.NewRecorder()
+	mngRouteVirtualRouterTopologyRulesHandler(updateRR, updateReq)
+	if updateRR.Code != http.StatusOK {
+		t.Fatalf("patch status=%d body=%s", updateRR.Code, updateRR.Body.String())
+	}
+	var updatePayload struct {
+		Item probeVirtualRouterTopologyRule `json:"item"`
+	}
+	if err := json.Unmarshal(updateRR.Body.Bytes(), &updatePayload); err != nil {
+		t.Fatalf("decode patch payload failed: %v", err)
+	}
+	if updatePayload.Item.ID != "vr-b" || updatePayload.Item.FromNodeID != "1" || updatePayload.Item.ToNodeID != "3" || updatePayload.Item.RouteLayer != "http3" {
+		t.Fatalf("patched item=%+v", updatePayload.Item)
+	}
+	if updatePayload.Item.Secret != "secret-b" || updatePayload.Item.AuthTicket != "ticket-b" {
+		t.Fatalf("private identity fields were not preserved: %+v", updatePayload.Item)
+	}
+
+	ProbeRouteConfigStore.mu.RLock()
+	configAfterUpdate := normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter)
+	ProbeRouteConfigStore.mu.RUnlock()
+	if len(configAfterUpdate.TopologyRules) != 2 || configAfterUpdate.TopologyRules[0].ID != "vr-a" || configAfterUpdate.TopologyRules[0].Secret != "secret-a" {
+		t.Fatalf("unpatched topology rule changed: %+v", configAfterUpdate.TopologyRules)
+	}
+	if len(configAfterUpdate.RouteRules) != 1 || configAfterUpdate.RouteRules[0].ID != "rr-direct" {
+		t.Fatalf("route rules changed while saving topology rule: %+v", configAfterUpdate.RouteRules)
+	}
+
+	createBody := []byte(`{"item":{"from_node_id":"3","to_node_id":"1","direction":"forward","route_layer":"auto","enabled":true}}`)
+	createReq := httptest.NewRequest(http.MethodPatch, "/mng/api/route/virtual_router/topology_rules", bytes.NewReader(createBody))
+	createRR := httptest.NewRecorder()
+	mngRouteVirtualRouterTopologyRulesHandler(createRR, createReq)
+	if createRR.Code != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", createRR.Code, createRR.Body.String())
+	}
+	var createPayload struct {
+		Item probeVirtualRouterTopologyRule `json:"item"`
+	}
+	if err := json.Unmarshal(createRR.Body.Bytes(), &createPayload); err != nil {
+		t.Fatalf("decode create payload failed: %v", err)
+	}
+	if strings.TrimSpace(createPayload.Item.ID) == "" || createPayload.Item.FromNodeID != "3" || createPayload.Item.ToNodeID != "1" {
+		t.Fatalf("created item=%+v", createPayload.Item)
+	}
+
+	ProbeRouteConfigStore.mu.RLock()
+	configAfterCreate := normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter)
+	ProbeRouteConfigStore.mu.RUnlock()
+	if len(configAfterCreate.TopologyRules) != 3 || configAfterCreate.TopologyRules[0].ID != "vr-a" || configAfterCreate.TopologyRules[1].ID != "vr-b" {
+		t.Fatalf("existing topology rules changed while creating one: %+v", configAfterCreate.TopologyRules)
+	}
+}
+
 func TestMngLinkVirtualRouterRouteRulesHandlerUpdatesFakeIPExit(t *testing.T) {
 	oldStore := ProbeRouteConfigStore
 	oldProbeStore := ProbeStore
