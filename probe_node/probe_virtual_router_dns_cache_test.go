@@ -63,6 +63,14 @@ func TestProbeLocalDNSFakeIPSkipsVirtualRouterProbeReserve(t *testing.T) {
 	}
 }
 
+func TestNormalizeProbeLocalDNSResponseTTL(t *testing.T) {
+	packet := buildDNSResponseWithTTLForTest(t, 37)
+	normalized := normalizeProbeLocalDNSResponseTTL(packet)
+	if ttl := dnsResponseFirstAnswerTTLForTest(t, normalized); ttl != 600 {
+		t.Fatalf("normalized desktop dns ttl=%d, want 600", ttl)
+	}
+}
+
 func TestProbeVirtualRouterLocalSettingsMissingFieldKeepsDefaultDisabled(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeVirtualRouterLocalSettingsForTest()
@@ -135,6 +143,9 @@ func TestResolveProbeVirtualRouterDNSResponseUsesControllerFakeIPForExitRule(t *
 	}
 	if got := strings.Join(extractProbeLocalDNSResponseIPsBestEffort(result.Response), ","); got != "198.18.4.9" {
 		t.Fatalf("response fake ip=%q", got)
+	}
+	if ttl := dnsResponseFirstAnswerTTLForTest(t, result.Response); ttl != uint32((10*time.Minute)/time.Second) {
+		t.Fatalf("response ttl=%d, want 600", ttl)
 	}
 	if item, ok := currentProbeVirtualRouterFakeIPEntryByDomain("www.reddit.com"); !ok || item.FakeIP != "198.18.4.9" {
 		t.Fatalf("cached fake ip entry=%+v ok=%v", item, ok)
@@ -277,4 +288,45 @@ func dnsResponseRCodeForTest(t *testing.T, packet []byte) dnsmessage.RCode {
 		t.Fatalf("parse dns response failed: %v", err)
 	}
 	return header.RCode
+}
+
+func dnsResponseFirstAnswerTTLForTest(t *testing.T, packet []byte) uint32 {
+	t.Helper()
+	parser := dnsmessage.Parser{}
+	if _, err := parser.Start(packet); err != nil {
+		t.Fatalf("parse dns response failed: %v", err)
+	}
+	if err := parser.SkipAllQuestions(); err != nil {
+		t.Fatalf("skip dns questions failed: %v", err)
+	}
+	header, err := parser.AnswerHeader()
+	if err != nil {
+		t.Fatalf("read dns answer header failed: %v", err)
+	}
+	return header.TTL
+}
+
+func buildDNSResponseWithTTLForTest(t *testing.T, ttl uint32) []byte {
+	t.Helper()
+	name, err := dnsmessage.NewName("example.com.")
+	if err != nil {
+		t.Fatalf("build dns name failed: %v", err)
+	}
+	message := dnsmessage.Message{
+		Header: dnsmessage.Header{ID: 7, Response: true, RCode: dnsmessage.RCodeSuccess},
+		Questions: []dnsmessage.Question{{
+			Name:  name,
+			Type:  dnsmessage.TypeA,
+			Class: dnsmessage.ClassINET,
+		}},
+		Answers: []dnsmessage.Resource{{
+			Header: dnsmessage.ResourceHeader{Name: name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: ttl},
+			Body:   &dnsmessage.AResource{A: [4]byte{203, 0, 113, 10}},
+		}},
+	}
+	packet, err := message.Pack()
+	if err != nil {
+		t.Fatalf("pack dns response failed: %v", err)
+	}
+	return packet
 }

@@ -27,7 +27,7 @@ const (
 	probeLocalDNSReadBufferSize                = 4096
 	probeLocalDNSUpstreamTimeout               = 5 * time.Second
 	probeLocalDNSDoHReadLimit                  = 64 * 1024
-	probeLocalDNSCacheTTL                      = 15 * 24 * time.Hour
+	probeLocalDNSCacheTTL                      = 10 * time.Minute
 	probeLocalDNSCachePersistInterval          = 5 * time.Second
 	probeLocalDNSCacheDBFileName               = "dns_cache.db"
 	probeLocalFakeIPDefaultCIDR                = "198.18.0.0/15"
@@ -263,6 +263,7 @@ func resolveProbeVirtualRouterDNSUpstreamResponse(packet []byte, domain string, 
 			lastErr = errors.New("empty dns response payload")
 			continue
 		}
+		response = normalizeProbeLocalDNSResponseTTL(response)
 		ips, _ := extractProbeLocalDNSResponseIPs(response)
 		realIPs := filterProbeLocalIPv4StringsFromList(ips)
 		storeProbeLocalDNSInternalRealIPv4s(domain, realIPs, decision)
@@ -272,6 +273,33 @@ func resolveProbeVirtualRouterDNSUpstreamResponse(packet []byte, domain string, 
 		lastErr = errors.New("dns upstream resolve failed")
 	}
 	return nil, nil, lastErr
+}
+
+func normalizeProbeLocalDNSResponseTTL(packet []byte) []byte {
+	var message dnsmessage.Message
+	if err := message.Unpack(packet); err != nil {
+		return packet
+	}
+	ttl := uint32(probeLocalDNSCacheTTL / time.Second)
+	normalize := func(resources []dnsmessage.Resource) {
+		for index := range resources {
+			if resources[index].Header.Type == dnsmessage.TypeOPT {
+				continue
+			}
+			resources[index].Header.TTL = ttl
+			if soa, ok := resources[index].Body.(*dnsmessage.SOAResource); ok {
+				soa.MinTTL = ttl
+			}
+		}
+	}
+	normalize(message.Answers)
+	normalize(message.Authorities)
+	normalize(message.Additionals)
+	normalized, err := message.Pack()
+	if err != nil {
+		return packet
+	}
+	return normalized
 }
 
 func resolveProbeLocalDNSRealIPsForRouteDomain(domain string, decision probeLocalDNSRouteDecision) []string {

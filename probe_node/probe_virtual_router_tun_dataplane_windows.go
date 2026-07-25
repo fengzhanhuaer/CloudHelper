@@ -25,7 +25,9 @@ const (
 	probeLocalTUNOutboundQueueFrames    = 4096
 	probeLocalTUNPooledPacketCapacity   = 2048
 	probeLocalTUNSlowWriteThreshold     = 10 * time.Millisecond
-	probeLocalTUNSlowWriteLogInterval   = time.Second
+	probeLocalTUNAbnormalWriteThreshold = 100 * time.Millisecond
+	probeLocalTUNSlowWriteLogInterval   = 5 * time.Second
+	probeLocalTUNAbnormalQueuePercent   = 75
 )
 
 var (
@@ -286,11 +288,12 @@ type probeVirtualRouterTUNDataPlaneRunner struct {
 	onPacket func([]byte)
 	logf     func(string, ...any)
 
-	inboundCh       chan []byte
-	inboundDispatch []chan []byte
-	outboundCh      chan *probeVirtualRouterTUNOutboundPacket
-	writeMu         sync.Mutex
-	slowWrite       probeVirtualRouterTUNSlowWriteSummary
+	inboundCh        chan []byte
+	inboundDispatch  []chan []byte
+	outboundCh       chan *probeVirtualRouterTUNOutboundPacket
+	writeMu          sync.Mutex
+	slowWrite        probeVirtualRouterTUNSlowWriteSummary
+	slowWriteEpisode bool
 
 	stopCh      chan struct{}
 	doneCh      chan struct{}
@@ -575,14 +578,28 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) recordSlowWriteSummary(packetByte
 func (r *probeVirtualRouterTUNDataPlaneRunner) flushSlowWriteSummary() {
 	summary := r.slowWrite
 	if summary.packets == 0 {
+		r.slowWriteEpisode = false
 		return
 	}
 	r.slowWrite = probeVirtualRouterTUNSlowWriteSummary{}
+	queueCapacity := cap(r.outboundCh)
+	queueAbnormal := queueCapacity > 0 && summary.maxQueueDepth*100 >= queueCapacity*probeLocalTUNAbnormalQueuePercent
+	abnormal := summary.maxWrite >= probeLocalTUNAbnormalWriteThreshold ||
+		summary.maxQueueWait >= probeLocalTUNAbnormalWriteThreshold ||
+		queueAbnormal
+	if !abnormal {
+		r.slowWriteEpisode = false
+		return
+	}
+	if r.slowWriteEpisode {
+		return
+	}
+	r.slowWriteEpisode = true
 	if r.logf == nil {
 		return
 	}
 	r.logf(
-		"probe local tun outbound slow summary: packets=%d write_slow=%d queue_slow=%d write_max_ms=%d queue_wait_max_ms=%d lock_wait_max_us=%d allocate_max_us=%d copy_max_us=%d send_max_us=%d bytes_max=%d queue_max=%d/%d",
+		"probe local tun outbound stall detected: packets=%d write_slow=%d queue_slow=%d write_max_ms=%d queue_wait_max_ms=%d lock_wait_max_us=%d allocate_max_us=%d copy_max_us=%d send_max_us=%d bytes_max=%d queue_max=%d/%d",
 		summary.packets,
 		summary.writeSlow,
 		summary.queueSlow,
@@ -594,7 +611,7 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) flushSlowWriteSummary() {
 		probeTUNDurationUnits(summary.maxSend, time.Microsecond),
 		summary.maxBytes,
 		summary.maxQueueDepth,
-		cap(r.outboundCh),
+		queueCapacity,
 	)
 }
 

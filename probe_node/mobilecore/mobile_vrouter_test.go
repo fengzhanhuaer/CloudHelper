@@ -220,6 +220,31 @@ func TestAndroidVPNFakeIPRequiresControllerAllocation(t *testing.T) {
 	}
 }
 
+func TestNormalizeAndroidVPNDNSResponseTTL(t *testing.T) {
+	name, err := dnsmessage.NewName("example.com.")
+	if err != nil {
+		t.Fatalf("build dns name failed: %v", err)
+	}
+	message := dnsmessage.Message{
+		Header: dnsmessage.Header{ID: 9, Response: true, RCode: dnsmessage.RCodeSuccess},
+		Questions: []dnsmessage.Question{{
+			Name: name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET,
+		}},
+		Answers: []dnsmessage.Resource{{
+			Header: dnsmessage.ResourceHeader{Name: name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: 37},
+			Body:   &dnsmessage.AResource{A: [4]byte{203, 0, 113, 10}},
+		}},
+	}
+	packet, err := message.Pack()
+	if err != nil {
+		t.Fatalf("pack dns response failed: %v", err)
+	}
+	normalized := normalizeAndroidVPNDNSResponseTTL(packet)
+	if ttl := androidVPNDNSFirstAnswerTTLForTest(t, normalized); ttl != 600 {
+		t.Fatalf("normalized android dns ttl=%d, want 600", ttl)
+	}
+}
+
 func TestAndroidVPNUsesReservedGatewayAndTUNAddresses(t *testing.T) {
 	if got := vpnIPv4DNSAddress.String(); got != "198.18.0.1" {
 		t.Fatalf("android vpn dns address=%q, want 198.18.0.1", got)
@@ -351,6 +376,32 @@ func TestMobileVRouteFlowAppearsInConnectionMonitor(t *testing.T) {
 	snapshot = globalandroidRouteConnectionState.snapshot()
 	if snapshot.ActiveCount != 0 || snapshot.CompletedCount != 2 || snapshot.FailureCount != 1 {
 		t.Fatalf("failed carrier snapshot=%+v", snapshot)
+	}
+	if len(snapshot.Failures) != 1 || snapshot.Failures[0].Target != route.TargetAddr || snapshot.Failures[0].RouteTarget != route.TargetAddr {
+		t.Fatalf("carrier failure should keep user target: %+v", snapshot.Failures)
+	}
+	if snapshot.Failures[0].FlowID != mobileVRouteFlowKey(6, "198.18.0.2", 42620, "198.18.4.9", 443) {
+		t.Fatalf("carrier failure should be attached to user flow: %+v", snapshot.Failures[0])
+	}
+}
+
+func TestMobileVRouteCarrierFailureWithoutUserFlowIsNotConnection(t *testing.T) {
+	oldConnections := globalandroidRouteConnectionState
+	globalandroidRouteConnectionState = newandroidRouteConnectionState()
+	t.Cleanup(func() {
+		closeMobileVRouteTrackedFlows("test_cleanup")
+		globalandroidRouteConnectionState = oldConnections
+	})
+
+	failMobileVRouteTrackedFlowsForCarrier(
+		mobileVRouteForwardPlan{RouteID: "vrouter-15-19", RelayHost: "203.0.113.19", RelayPort: 30010},
+		"carrier_write_failed",
+		errors.New("test carrier write failed"),
+	)
+
+	snapshot := globalandroidRouteConnectionState.snapshot()
+	if snapshot.ActiveCount != 0 || snapshot.CompletedCount != 0 || snapshot.FailureCount != 0 {
+		t.Fatalf("probe carrier must not appear as a user connection: %+v", snapshot)
 	}
 }
 
@@ -1889,6 +1940,76 @@ func TestMobileVRouteRefreshConfigFilesClosesCarriers(t *testing.T) {
 	}
 }
 
+func TestMobileVRouteConfigSyncUpdatesExistingFakeIPRouteWithoutSlidingTTL(t *testing.T) {
+	configDir := t.TempDir()
+	resetMobileVRouteVPNStateForTest(t, configDir)
+	expiresAt := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
+	vpnDNSState.mu.Lock()
+	vpnDNSState.fakeDomainToIP["mail.google.com"] = "198.18.4.9"
+	vpnDNSState.fakeIPToEntry["198.18.4.9"] = androidVPNDNSFakeEntry{
+		Domain:          "mail.google.com",
+		Group:           "Google old",
+		SelectedRouteID: "vroute:17",
+		ExpiresAt:       expiresAt,
+	}
+	vpnDNSState.mu.Unlock()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveMobileProbeChallengeForTest(w, r) {
+			return
+		}
+		if r.URL.Path != mobileVRouteConfigAPIPath {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(mobileVRouteConfigResponse{
+			NodeID: "9",
+			VirtualRouter: mobileVRouteConfig{
+				LocalNodeID: "9",
+				Enabled:     true,
+				ProbeIPs: []mobileVRouteProbeIP{
+					{NodeID: "9", IP: "198.18.0.9"},
+					{NodeID: "18", IP: "198.18.0.18"},
+				},
+				RouteRules: []mobileVRouteRouteRule{{
+					ID:         "rr-google",
+					Name:       "Google new",
+					Action:     "probe_exit",
+					ExitNodeID: "18",
+					Entries:    []string{"domain_suffix:google.com"},
+				}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	raw, err := json.Marshal(routeConfigSyncControlMessage{
+		Type:              "route_config_sync",
+		ControllerBaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatalf("marshal route config sync: %v", err)
+	}
+	processControlMessage(raw, nil, nil, mobileNodeIdentity{NodeID: "9", Secret: "secret-9"})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		vpnDNSState.mu.Lock()
+		entry := vpnDNSState.fakeIPToEntry["198.18.4.9"]
+		vpnDNSState.mu.Unlock()
+		if entry.SelectedRouteID == "vroute:18" {
+			if entry.Group != "Google new" || !entry.ExpiresAt.Equal(expiresAt) {
+				t.Fatalf("updated fake ip route=%+v, want new group with unchanged ttl %s", entry, expiresAt)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("route config sync did not update fake ip route: %+v", entry)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestMobileVRouteDNSReturnsFakeIPForProbeExitDomain(t *testing.T) {
 	configDir := t.TempDir()
 	resetMobileVRouteVPNStateForTest(t, configDir)
@@ -1923,6 +2044,9 @@ func TestMobileVRouteDNSReturnsFakeIPForProbeExitDomain(t *testing.T) {
 	if len(ips) != 1 || net.ParseIP(ips[0]).To4() == nil || !strings.HasPrefix(ips[0], "198.18.") {
 		t.Fatalf("dns ips=%v, want one 198.18 fake ip", ips)
 	}
+	if ttl := androidVPNDNSFirstAnswerTTLForTest(t, response); ttl != uint32(vpnDNSCacheTTL/time.Second) {
+		t.Fatalf("android dns ttl=%d, want 600", ttl)
+	}
 	route, err := decideVPNRouteForTarget(net.JoinHostPort(ips[0], "443"))
 	if err != nil {
 		t.Fatalf("decide fake ip route failed: %v", err)
@@ -1930,6 +2054,22 @@ func TestMobileVRouteDNSReturnsFakeIPForProbeExitDomain(t *testing.T) {
 	if route.SelectedRouteID != "vroute:1" || route.Group != "AI" || route.TargetAddr != "chatgpt.com:443" {
 		t.Fatalf("unexpected fake ip route: %+v", route)
 	}
+}
+
+func androidVPNDNSFirstAnswerTTLForTest(t *testing.T, packet []byte) uint32 {
+	t.Helper()
+	parser := dnsmessage.Parser{}
+	if _, err := parser.Start(packet); err != nil {
+		t.Fatalf("parse android dns response failed: %v", err)
+	}
+	if err := parser.SkipAllQuestions(); err != nil {
+		t.Fatalf("skip android dns questions failed: %v", err)
+	}
+	header, err := parser.AnswerHeader()
+	if err != nil {
+		t.Fatalf("read android dns answer header failed: %v", err)
+	}
+	return header.TTL
 }
 
 func TestAndroidVPNDNSSuppressesAAAAWhenIPv6Disabled(t *testing.T) {

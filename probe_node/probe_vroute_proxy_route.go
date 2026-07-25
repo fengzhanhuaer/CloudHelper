@@ -93,19 +93,19 @@ func decideProbeVRouteProxyTarget(targetAddr string) (probeVRouteProxyTargetDeci
 		return decision, nil
 	case "probe_exit":
 		if decision.ExitNodeID == "" {
-			return probeVRouteProxyTargetDecision{}, errors.New("proxy exit node is missing")
+			return decision, errors.New("proxy exit node is missing")
 		}
 		localNodeID := currentProbeVirtualRouterLocalNodeID()
 		if localNodeID == "" {
-			return probeVRouteProxyTargetDecision{}, errors.New("local virtual router node id is empty")
+			return decision, errors.New("local virtual router node id is empty")
 		}
 		decision.Path = currentProbeVirtualRouterPathBetweenNodes(localNodeID, decision.ExitNodeID)
 		if len(decision.Path) == 0 {
-			return probeVRouteProxyTargetDecision{}, fmt.Errorf("virtual router proxy path is unavailable: %s>%s", localNodeID, decision.ExitNodeID)
+			return decision, fmt.Errorf("virtual router proxy path is unavailable: %s>%s", localNodeID, decision.ExitNodeID)
 		}
 		return decision, nil
 	default:
-		return probeVRouteProxyTargetDecision{}, fmt.Errorf("unsupported proxy route action: %s", decision.Action)
+		return decision, fmt.Errorf("unsupported proxy route action: %s", decision.Action)
 	}
 }
 

@@ -2,7 +2,6 @@ package mobilecore
 
 import (
 	"errors"
-	"net"
 	"strconv"
 	"strings"
 	"sync"
@@ -139,32 +138,34 @@ func closeMobileVRouteTrackedFlows(reason string) {
 
 func failMobileVRouteTrackedFlowsForCarrier(plan mobileVRouteForwardPlan, kind string, err error) {
 	routeID := strings.TrimSpace(plan.RouteID)
-	recordMobileVRouteConnectionFailure(
-		kind,
-		netJoinMobileVRouteRelay(plan),
-		routeID,
-		strings.TrimSpace(plan.Rule.Name),
-		"stream",
-		err,
-	)
+	if err == nil {
+		err = errors.New(firstNonEmptyString(strings.TrimSpace(kind), "carrier_failed"))
+	}
 	mobileVRouteTrackedFlowState.mu.Lock()
-	keys := make([]string, 0)
+	flows := make(map[string]*androidRouteConnectionRelay)
 	for key, flow := range mobileVRouteTrackedFlowState.flows {
 		if flow != nil && flow.relay != nil && strings.TrimSpace(flow.relay.routeID) == routeID {
-			keys = append(keys, key)
+			flows[key] = flow.relay
 		}
 	}
 	mobileVRouteTrackedFlowState.mu.Unlock()
-	for _, key := range keys {
+	for key, relay := range flows {
+		relay.markCloseReason(classifyandroidRouteConnectionError(kind, err))
+		globalandroidRouteConnectionState.recordFailure(kind, androidRouteConnectionOptions{
+			Scope:     relay.scope,
+			FlowID:    relay.flowID,
+			Side:      relay.side,
+			Target:    relay.target,
+			Transport: relay.transport,
+			Route: androidRouteConnectionRoute{
+				Direct:          relay.direct,
+				TargetAddr:      relay.routeTarget,
+				Group:           relay.group,
+				SelectedRouteID: relay.routeID,
+			},
+		}, err)
 		finishMobileVRouteTrackedFlow(key, kind)
 	}
-}
-
-func netJoinMobileVRouteRelay(plan mobileVRouteForwardPlan) string {
-	if strings.TrimSpace(plan.RelayHost) == "" || plan.RelayPort <= 0 {
-		return strings.TrimSpace(plan.NextNode)
-	}
-	return net.JoinHostPort(strings.TrimSpace(plan.RelayHost), strconv.Itoa(plan.RelayPort))
 }
 
 func finishMobileVRouteTrackedFlow(key string, reason string) {

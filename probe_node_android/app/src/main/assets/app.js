@@ -951,6 +951,7 @@ function renderConnections(vpnData) {
   const active = Array.isArray(connectionData.active) ? connectionData.active : [];
   const completed = Array.isArray(connectionData.completed) ? connectionData.completed : [];
   const failures = Array.isArray(connectionData.failures) ? connectionData.failures : [];
+  const rows = buildConnectionRows(active, completed, failures);
   const runtimeText = [
     isVPNRunning(vpnData) ? "VPN 运行中" : (isVPNStarting(vpnData) ? "VPN 启动中" : "VPN 未启动"),
     connectionData.fetched_at ? `刷新 ${formatCompactTime(connectionData.fetched_at)}` : ""
@@ -963,130 +964,130 @@ function renderConnections(vpnData) {
     list.appendChild(item);
     return;
   }
-  if (!active.length && !completed.length && !failures.length) {
+  if (!rows.length) {
     const empty = document.createElement("div");
     empty.className = "status-box";
     empty.textContent = "暂无活动 VPN 连接。";
     list.appendChild(empty);
     return;
   }
-  const tcpActive = active.filter((item) => String(item.transport || "").toLowerCase() !== "udp" && String(item.scope || "").toLowerCase() !== "vpn_udp");
-  const udpActive = active.filter((item) => String(item.transport || "").toLowerCase() === "udp" || String(item.scope || "").toLowerCase() === "vpn_udp");
-  appendConnectionSection(list, "TCP Relay", tcpActive, "暂无 TCP relay 连接");
-  appendConnectionSection(list, "UDP Bridge", udpActive, "暂无 UDP bridge 连接");
-  if (completed.length) {
-    appendConnectionSection(list, "最近完成", completed.slice(0, 8), "暂无完成记录", false, true);
-  }
-  if (failures.length) {
-    appendConnectionSection(list, "最近失败", failures.slice(0, 8), "暂无失败记录", true, false);
-  }
+  const table = document.createElement("div");
+  table.className = "connection-table";
+  table.setAttribute("role", "table");
+  table.appendChild(renderConnectionHeader());
+  rows.slice(0, 64).forEach((item) => table.appendChild(renderConnectionRow(item)));
+  list.appendChild(table);
 }
 
-function appendConnectionSection(list, title, items, emptyText, isFailure, isCompleted) {
-  const heading = document.createElement("div");
-  heading.className = "connection-section-title";
-  heading.textContent = `${title} (${items.length})`;
-  list.appendChild(heading);
-  if (!items.length) {
-    const empty = document.createElement("div");
-    empty.className = "connection-empty";
-    empty.textContent = emptyText;
-    list.appendChild(empty);
-    return;
-  }
-  items.forEach((item) => list.appendChild(renderConnectionItem(item, !!isFailure, !!isCompleted)));
-}
-
-function renderConnectionItem(item, isFailure, isCompleted) {
-  const card = document.createElement("article");
-  card.className = "connection-card";
-  card.classList.toggle("error", !!isFailure);
-  card.classList.toggle("completed", !!isCompleted);
-
-  const title = document.createElement("div");
-  title.className = "connection-title";
-  const name = document.createElement("span");
-  name.textContent = item.flow_id || item.id || "-";
-  const badge = document.createElement("span");
-  badge.className = isFailure ? "connection-badge error" : "connection-badge";
-  badge.textContent = isFailure ? (item.reason || "失败") : (isCompleted ? (item.close_reason || "closed") : (item.transport || "stream"));
-  title.append(name, badge);
-
-  const meta = document.createElement("div");
-  meta.className = "connection-meta";
-  meta.textContent = [
-    item.scope || "-",
-    item.side || "-",
-    item.direct ? "direct" : (item.group || "tunnel"),
-    item.chain_id ? `chain ${item.chain_id}` : ""
-  ].filter(Boolean).join(" · ");
-
-  const path = document.createElement("div");
-  path.className = "connection-path";
-  path.textContent = `${item.target || "-"} -> ${item.route_target || item.target || "-"}`;
-
-  const grid = document.createElement("div");
-  grid.className = "connection-grid";
-  if (isFailure) {
-    appendConnectionMetric(grid, "类型", item.kind || "-");
-    appendConnectionMetric(grid, "错误", item.error || item.reason || "-");
-    appendConnectionMetric(grid, "链路", item.direct ? "direct" : (item.chain_id || item.group || "-"));
-    appendConnectionMetric(grid, "时间", formatCompactTime(item.last_seen) || "-");
-  } else {
-    appendConnectionMetric(grid, "上行", formatBytes(item.bytes_up));
-    appendConnectionMetric(grid, "下行", formatBytes(item.bytes_down));
-    appendConnectionMetric(grid, "写次数", `${Number(item.writes_up || 0)}/${Number(item.writes_down || 0)}`);
-    appendConnectionMetric(grid, isCompleted ? "持续" : "空闲", isCompleted ? formatDurationSeconds(item.duration_ms) : formatDurationSeconds(item.idle_ms));
-    appendConnectionMetric(grid, "阻塞", formatConnectionBlock(item));
-    appendConnectionMetric(grid, "最近阻塞", formatLastConnectionBlock(item));
-    if (isCompleted) {
-      appendConnectionMetric(grid, "结束", [item.close_reason || "-", formatCompactTime(item.closed_at)].filter(Boolean).join(" "));
+function buildConnectionRows(active, completed, failures) {
+  const rows = new Map();
+  const add = (item, state, index) => {
+    const value = item || {};
+    const target = value.target || value.route_target || "-";
+    const key = value.flow_id || value.id || `${state}|${target}|${value.last_seen || value.closed_at || value.opened_at || index}`;
+    const previous = rows.get(key) || {};
+    if (state === "active") {
+      rows.set(key, { ...value, error: "", reason: "", connection_state: state });
+      return;
     }
-  }
-  card.append(title, meta, path, grid);
-  return card;
+    const clearedFailure = state === "completed" ? { error: "", reason: "" } : {};
+    rows.set(key, { ...previous, ...value, ...clearedFailure, connection_state: state });
+  };
+  const historical = [
+    ...completed.slice(0, 32).map((item, index) => ({ item, state: "completed", index, order: 0 })),
+    ...failures.slice(0, 32).map((item, index) => ({ item, state: "failed", index, order: 1 }))
+  ];
+  historical.sort((left, right) => {
+    const timeOrder = connectionTimestamp(left.item) - connectionTimestamp(right.item);
+    return timeOrder !== 0 ? timeOrder : left.order - right.order;
+  });
+  historical.forEach((entry) => add(entry.item, entry.state, entry.index));
+  active.forEach((item, index) => add(item, "active", index));
+  const priority = { active: 0, failed: 1, completed: 2 };
+  return Array.from(rows.values()).sort((left, right) => {
+    const stateOrder = Number(priority[left.connection_state] || 0) - Number(priority[right.connection_state] || 0);
+    if (stateOrder !== 0) return stateOrder;
+    return connectionTimestamp(right) - connectionTimestamp(left);
+  });
 }
 
-function appendConnectionMetric(parent, label, value) {
-  const box = document.createElement("div");
-  box.className = "connection-metric";
-  const key = document.createElement("span");
-  key.textContent = label;
-  const val = document.createElement("strong");
-  val.textContent = value || "-";
-  box.append(key, val);
-  parent.appendChild(box);
+function connectionTimestamp(item) {
+  const value = item.last_seen || item.closed_at || item.last_active || item.opened_at || "";
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
-function formatDurationSeconds(value) {
-  const ms = Number(value || 0);
-  if (!Number.isFinite(ms) || ms <= 0) {
-    return "-";
-  }
-  return `${Math.round(ms / 1000)}s`;
+function renderConnectionHeader() {
+  const row = document.createElement("div");
+  row.className = "connection-row connection-header";
+  row.setAttribute("role", "row");
+  ["域名", "上行", "下行", "路由", "状态"].forEach((label) => {
+    const cell = document.createElement("div");
+    cell.setAttribute("role", "columnheader");
+    cell.textContent = label;
+    row.appendChild(cell);
+  });
+  return row;
 }
 
-function formatConnectionBlock(item) {
-  const blockedUp = Number(item.blocked_writes_up || 0);
-  const blockedDown = Number(item.blocked_writes_down || 0);
-  const maxBlock = Math.max(Number(item.max_write_block_ms_up || 0), Number(item.max_write_block_ms_down || 0));
-  const totalBlock = Number(item.write_block_ms_up || 0) + Number(item.write_block_ms_down || 0);
-  if (!blockedUp && !blockedDown && !maxBlock) {
-    return "-";
-  }
-  return `${blockedUp}/${blockedDown} max ${formatDurationText(maxBlock)} total ${formatDurationText(totalBlock)}`;
+function renderConnectionRow(item) {
+  const row = document.createElement("div");
+  row.className = `connection-row ${item.connection_state || ""}`.trim();
+  row.setAttribute("role", "row");
+
+  const domainCell = document.createElement("div");
+  domainCell.className = "connection-domain";
+  domainCell.setAttribute("role", "cell");
+  const domain = document.createElement("strong");
+  domain.textContent = connectionTargetHost(item.target || item.route_target || "-");
+  const detail = document.createElement("span");
+  detail.textContent = connectionRowDetail(item);
+  domainCell.append(domain, detail);
+
+  row.append(
+    domainCell,
+    renderConnectionValue(formatBytes(item.bytes_up)),
+    renderConnectionValue(formatBytes(item.bytes_down)),
+    renderConnectionValue(item.direct ? "直连" : "代理", "connection-route"),
+    renderConnectionValue(connectionStateLabel(item.connection_state), `connection-state ${item.connection_state || ""}`)
+  );
+  return row;
 }
 
-function formatLastConnectionBlock(item) {
-  const side = String(item.last_congestion_side || "").trim();
-  const at = formatCompactTime(item.last_write_blocked_at || "");
-  const up = Number(item.last_write_block_ms_up || 0);
-  const down = Number(item.last_write_block_ms_down || 0);
-  const last = Math.max(up, down);
-  if (!side && !at && !last) {
-    return "-";
+function renderConnectionValue(value, className) {
+  const cell = document.createElement("div");
+  cell.className = className || "connection-value";
+  cell.setAttribute("role", "cell");
+  cell.textContent = value || "-";
+  return cell;
+}
+
+function connectionTargetHost(target) {
+  const value = String(target || "").trim();
+  if (!value) return "-";
+  if (value.startsWith("[")) {
+    const end = value.indexOf("]");
+    return end > 0 ? value.slice(1, end) : value;
   }
-  return [side || "-", formatDurationText(last), at].filter(Boolean).join(" ");
+  const firstColon = value.indexOf(":");
+  const lastColon = value.lastIndexOf(":");
+  return firstColon > 0 && firstColon === lastColon ? value.slice(0, firstColon) : value;
+}
+
+function connectionRowDetail(item) {
+  const target = String(item.target || item.route_target || "").trim();
+  const host = connectionTargetHost(target);
+  const error = String(item.error || item.reason || "").trim();
+  return [
+    target && target !== host ? target : "",
+    String(item.transport || "").toUpperCase(),
+    error
+  ].filter(Boolean).join(" · ") || "-";
+}
+
+function connectionStateLabel(state) {
+  const labels = { active: "活动", completed: "完成", failed: "失败" };
+  return labels[String(state || "").trim()] || "-";
 }
 
 function refreshLogs() {

@@ -600,6 +600,15 @@
       <section class="card">
         <h2>最近连接与 DNS</h2>
         <div class="packet-controls">
+          <div class="field" style="flex:0 1 220px; min-width:180px;">
+            <label for="connectionTypeSelect">类型</label>
+            <select id="connectionTypeSelect">
+              <option value="all">全部</option>
+              <option value="dns">DNS 查询</option>
+              <option value="proxy_failure">代理失败</option>
+              <option value="direct_failure">直连失败</option>
+            </select>
+          </div>
           <div class="field">
             <label for="connectionFilterInput">模糊搜索</label>
             <input id="connectionFilterInput" class="mono" placeholder="IP / 端口 / 协议 / 域名 / 节点 / 路径 / 状态" />
@@ -621,7 +630,7 @@
                 <th>网络活动</th>
                 <th>路由 / 路径</th>
                 <th>状态</th>
-                <th>Fake IP</th>
+                <th>域名 / 出口</th>
                 <th>最近事件</th>
               </tr>
             </thead>
@@ -767,6 +776,7 @@
     let routeSpeedActiveRequestID = '';
     let connectionAutoRefreshPaused = false;
     let connectionFilterText = '';
+    let connectionType = 'all';
     let connectionSnapshot = { items: [] };
     let packetAutoRefreshPaused = false;
     let packetFilterText = '';
@@ -1221,7 +1231,9 @@
         local_icmp: '本机 ICMP',
         drop: '丢弃',
         bypass: '旁路',
-        direct: 'DNS 直连解析',
+        direct: '直连',
+        direct_error: '直连失败',
+        proxy_error: '代理失败',
         fake_ip: '分配 Fake IP',
         reject: 'DNS 拒绝',
         connected: '已建立连接',
@@ -1233,6 +1245,8 @@
       const value = String(source || '').trim();
       if (value === 'tun_rx') return 'TUN';
       if (value === 'frame_rx') return 'vRouter';
+      if (value === 'frame_tx') return 'vRouter 发送';
+      if (value === 'proxy') return '本机代理';
       if (value === 'dns') return 'DNS';
       return value || '-';
     }
@@ -1339,9 +1353,17 @@
       return labels[value] || value || '-';
     }
 
+    function connectionTrafficTypeLabel(type) {
+      const value = String(type || '').trim();
+      const labels = { dns: 'DNS', proxy: '代理', direct: '直连' };
+      return labels[value] || value || '-';
+    }
+
     function connectionSearchText(item) {
       return [
         item.kind,
+        item.traffic_type,
+        connectionTrafficTypeLabel(item.traffic_type),
         item.protocol,
         item.domain,
         item.endpoint_a,
@@ -1366,8 +1388,17 @@
 
     function filterConnections(items) {
       const terms = String(connectionFilterText || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
-      if (!terms.length) return items;
-      return items.filter((item) => terms.every((term) => connectionSearchText(item || {}).includes(term)));
+      return items.filter((item) => {
+        const value = item || {};
+        const typeMatched = connectionType === 'dns'
+          ? value.kind === 'dns'
+          : connectionType === 'proxy_failure'
+            ? value.traffic_type === 'proxy' && value.status === 'error'
+            : connectionType === 'direct_failure'
+              ? value.traffic_type === 'direct' && value.status === 'error'
+              : true;
+        return typeMatched && terms.every((term) => connectionSearchText(value).includes(term));
+      });
     }
 
     function renderConnections(data) {
@@ -1379,7 +1410,8 @@
         const autoText = connectionAutoRefreshPaused ? '自动刷新已停止' : '自动刷新中';
         const retentionSeconds = Number(data && data.retention_seconds || 0);
         const historyText = retentionSeconds > 0 ? `保留 ${Math.round(retentionSeconds / 60)} 分钟` : '保留最近活动';
-        summary.textContent = connectionFilterText ? `显示 ${items.length}/${allItems.length} 条，${historyText}，${autoText}` : `${allItems.length} 条，${historyText}，${autoText}`;
+        const filtered = connectionFilterText || connectionType !== 'all';
+        summary.textContent = filtered ? `显示 ${items.length}/${allItems.length} 条，${historyText}，${autoText}` : `${allItems.length} 条，${historyText}，${autoText}`;
       }
       if (!items.length) {
         rows.innerHTML = `<tr><td colspan="9" class="hint">${allItems.length ? '没有匹配的连接' : '-'}</td></tr>`;
@@ -1397,7 +1429,8 @@
         if (Number(item.dropped || 0) > 0) activity.push(`丢弃 ${formatNumber(item.dropped)}`);
         if (Number(item.errors || 0) > 0) activity.push(`错误 ${formatNumber(item.errors)}`);
         const routeParts = [item.route_id, item.path_text].filter(Boolean);
-        const fakeParts = [item.fake_ip_domain, item.fake_ip_exit_node ? `出口 ${item.fake_ip_exit_node}` : ''].filter(Boolean);
+        const domain = item.domain || item.fake_ip_domain || '';
+        const fakeParts = [domain, item.fake_ip_exit_node ? `出口 ${item.fake_ip_exit_node}` : ''].filter(Boolean);
         const eventParts = [
           item.last_source ? packetSourceLabel(item.last_source) : '',
           item.last_action ? packetActionLabel(item.last_action) : '',
@@ -1410,7 +1443,7 @@
           <td class="mono">${escapeHTML(packetTime(item.first_seen))}<br><span class="hint">${escapeHTML(packetTime(item.last_seen))}</span></td>
           <td class="mono">${escapeHTML(item.endpoint_a || '-')}</td>
           <td class="mono">${escapeHTML(item.endpoint_b || '-')}</td>
-          <td class="mono">${escapeHTML(item.protocol || '-')}</td>
+          <td class="mono">${escapeHTML(item.protocol || '-')}<br><span class="hint">${escapeHTML(connectionTrafficTypeLabel(item.traffic_type))}</span></td>
           <td>${escapeHTML(activity.join(' / '))}</td>
           <td class="mono">${escapeHTML(routeParts.join(' / ') || '-')}</td>
           <td><span class="packet-badge">${escapeHTML(connectionStatusLabel(item.status))}</span></td>
@@ -1975,6 +2008,10 @@
     });
     document.getElementById('connectionFilterInput').addEventListener('input', (event) => {
       connectionFilterText = String(event.target.value || '').trim();
+      renderConnections(connectionSnapshot);
+    });
+    document.getElementById('connectionTypeSelect').addEventListener('change', (event) => {
+      connectionType = String(event.target.value || 'all');
       renderConnections(connectionSnapshot);
     });
     document.getElementById('packetRefreshBtn').addEventListener('click', () => {

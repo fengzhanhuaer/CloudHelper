@@ -539,6 +539,7 @@ func TestProbeVirtualRouterTUNDataPlaneRunnerAggregatesSlowWriteLogs(t *testing.
 		t.Fatalf("logs=%v, want one aggregate log", logs)
 	}
 	for _, want := range []string{
+		"outbound stall detected",
 		"packets=2",
 		"write_slow=2",
 		"queue_slow=2",
@@ -555,5 +556,48 @@ func TestProbeVirtualRouterTUNDataPlaneRunnerAggregatesSlowWriteLogs(t *testing.
 	runner.flushSlowWriteSummary()
 	if len(logs) != 1 {
 		t.Fatalf("empty summary emitted another log: %v", logs)
+	}
+}
+
+func TestProbeVirtualRouterTUNDataPlaneRunnerSuppressesNormalSchedulingJitter(t *testing.T) {
+	var logs []string
+	runner := &probeVirtualRouterTUNDataPlaneRunner{
+		outboundCh: make(chan *probeVirtualRouterTUNOutboundPacket, 4096),
+		logf: func(format string, args ...any) {
+			logs = append(logs, fmt.Sprintf(format, args...))
+		},
+	}
+	runner.recordSlowWriteSummary(1464, 19, 46*time.Millisecond, probeVirtualRouterTUNWriteTiming{
+		total:    39 * time.Millisecond,
+		allocate: 38 * time.Millisecond,
+		send:     35 * time.Millisecond,
+	}, true, true)
+	runner.flushSlowWriteSummary()
+	if len(logs) != 0 {
+		t.Fatalf("normal scheduling jitter should stay silent: %v", logs)
+	}
+}
+
+func TestProbeVirtualRouterTUNDataPlaneRunnerLogsStallOncePerEpisode(t *testing.T) {
+	var logs []string
+	runner := &probeVirtualRouterTUNDataPlaneRunner{
+		outboundCh: make(chan *probeVirtualRouterTUNOutboundPacket, 4096),
+		logf: func(format string, args ...any) {
+			logs = append(logs, fmt.Sprintf(format, args...))
+		},
+	}
+	recordStall := func() {
+		runner.recordSlowWriteSummary(1464, 32, 120*time.Millisecond, probeVirtualRouterTUNWriteTiming{total: 150 * time.Millisecond}, true, true)
+		runner.flushSlowWriteSummary()
+	}
+	recordStall()
+	recordStall()
+	if len(logs) != 1 {
+		t.Fatalf("persistent stall logs=%v, want one per episode", logs)
+	}
+	runner.flushSlowWriteSummary()
+	recordStall()
+	if len(logs) != 2 {
+		t.Fatalf("stall after quiet interval logs=%v, want a new episode", logs)
 	}
 }

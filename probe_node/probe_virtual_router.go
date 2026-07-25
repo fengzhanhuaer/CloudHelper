@@ -349,35 +349,37 @@ type probeVirtualRouterRecentPacketEvent struct {
 }
 
 type probeVirtualRouterRecentConnection struct {
-	Kind           string `json:"kind,omitempty"`
-	FirstSeen      string `json:"first_seen"`
-	LastSeen       string `json:"last_seen"`
-	Protocol       string `json:"protocol,omitempty"`
-	Domain         string `json:"domain,omitempty"`
-	EndpointA      string `json:"endpoint_a"`
-	EndpointB      string `json:"endpoint_b"`
-	RouteID        string `json:"route_id,omitempty"`
-	LocalNodeID    string `json:"local_node_id,omitempty"`
-	PeerNodeID     string `json:"peer_node_id,omitempty"`
-	PathText       string `json:"path_text,omitempty"`
-	Events         int    `json:"events"`
-	Bytes          int64  `json:"bytes"`
-	TUNEvents      int    `json:"tun_events"`
-	FrameEvents    int    `json:"frame_events"`
-	Forwarded      int    `json:"forwarded"`
-	Delivered      int    `json:"delivered"`
-	Dropped        int    `json:"dropped"`
-	Errors         int    `json:"errors"`
-	DNSQueries     int    `json:"dns_queries"`
-	Connected      bool   `json:"connected,omitempty"`
-	Status         string `json:"status"`
-	LastSource     string `json:"last_source,omitempty"`
-	LastAction     string `json:"last_action,omitempty"`
-	LastTCPFlags   string `json:"last_tcp_flags,omitempty"`
-	LastDetail     string `json:"last_detail,omitempty"`
-	LastError      string `json:"last_error,omitempty"`
-	FakeIPDomain   string `json:"fake_ip_domain,omitempty"`
-	FakeIPExitNode string `json:"fake_ip_exit_node,omitempty"`
+	Kind           string   `json:"kind,omitempty"`
+	TrafficType    string   `json:"traffic_type,omitempty"`
+	FirstSeen      string   `json:"first_seen"`
+	LastSeen       string   `json:"last_seen"`
+	Protocol       string   `json:"protocol,omitempty"`
+	Domain         string   `json:"domain,omitempty"`
+	EndpointA      string   `json:"endpoint_a"`
+	EndpointB      string   `json:"endpoint_b"`
+	RouteID        string   `json:"route_id,omitempty"`
+	LocalNodeID    string   `json:"local_node_id,omitempty"`
+	PeerNodeID     string   `json:"peer_node_id,omitempty"`
+	PathText       string   `json:"path_text,omitempty"`
+	Events         int      `json:"events"`
+	Bytes          int64    `json:"bytes"`
+	TUNEvents      int      `json:"tun_events"`
+	FrameEvents    int      `json:"frame_events"`
+	Forwarded      int      `json:"forwarded"`
+	Delivered      int      `json:"delivered"`
+	Dropped        int      `json:"dropped"`
+	Errors         int      `json:"errors"`
+	DNSQueries     int      `json:"dns_queries"`
+	Connected      bool     `json:"connected,omitempty"`
+	Status         string   `json:"status"`
+	LastSource     string   `json:"last_source,omitempty"`
+	LastAction     string   `json:"last_action,omitempty"`
+	LastTCPFlags   string   `json:"last_tcp_flags,omitempty"`
+	LastDetail     string   `json:"last_detail,omitempty"`
+	LastError      string   `json:"last_error,omitempty"`
+	FakeIPDomain   string   `json:"fake_ip_domain,omitempty"`
+	FakeIPExitNode string   `json:"fake_ip_exit_node,omitempty"`
+	ResolvedIPs    []string `json:"resolved_ips,omitempty"`
 
 	closed bool
 	lastAt time.Time
@@ -425,8 +427,6 @@ type probeVirtualRouterSpeedReceiveSession struct {
 	LastAt        time.Time
 	Bytes         int64
 	Frames        int64
-	LastLogAt     time.Time
-	LastLogBytes  int64
 }
 
 type probeVirtualRouterTransportLogInfo struct {
@@ -1543,6 +1543,9 @@ func snapshotProbeVirtualRouterRecentConnections() []probeVirtualRouterRecentCon
 }
 
 func recordProbeVirtualRouterRecentConnection(packet probeVirtualRouterRecentPacket) {
+	if strings.TrimSpace(packet.Source) == "fake_verify" || probeVirtualRouterRecentPacketIsProbeP2P(packet) {
+		return
+	}
 	key, endpointA, endpointB := probeVirtualRouterRecentConnectionKey(packet)
 	if key == "" {
 		return
@@ -1554,18 +1557,22 @@ func recordProbeVirtualRouterRecentConnection(packet probeVirtualRouterRecentPac
 	flags := strings.ToUpper(strings.TrimSpace(packet.TCPFlags))
 	if !ok || (connection.closed && strings.Contains(flags, "SYN") && !strings.Contains(flags, "ACK")) {
 		connection = probeVirtualRouterRecentConnection{
-			Kind:      "connection",
-			FirstSeen: packet.CapturedAt,
-			Protocol:  strings.ToUpper(strings.TrimSpace(packet.Protocol)),
-			EndpointA: endpointA,
-			EndpointB: endpointB,
+			Kind:        "connection",
+			TrafficType: probeVirtualRouterRecentPacketTrafficType(packet),
+			FirstSeen:   packet.CapturedAt,
+			Protocol:    strings.ToUpper(strings.TrimSpace(packet.Protocol)),
+			EndpointA:   endpointA,
+			EndpointB:   endpointB,
 		}
+	}
+	if connection.TrafficType == "" {
+		connection.TrafficType = probeVirtualRouterRecentPacketTrafficType(packet)
 	}
 	connection.Events++
 	connection.Bytes += int64(packet.Length)
 	if packet.Source == "tun_rx" {
 		connection.TUNEvents++
-	} else if packet.Source == "frame_rx" {
+	} else if packet.Source == "frame_rx" || packet.Source == "frame_tx" {
 		connection.FrameEvents++
 	}
 	switch strings.TrimSpace(packet.Action) {
@@ -1576,7 +1583,8 @@ func recordProbeVirtualRouterRecentConnection(packet probeVirtualRouterRecentPac
 	case "drop":
 		connection.Dropped++
 	}
-	if strings.TrimSpace(packet.Error) != "" || strings.Contains(strings.TrimSpace(packet.Action), "error") {
+	eventFailed := strings.TrimSpace(packet.Error) != "" || strings.Contains(strings.TrimSpace(packet.Action), "error")
+	if eventFailed {
 		connection.Errors++
 	}
 	connection.LastSeen = packet.CapturedAt
@@ -1585,14 +1593,19 @@ func recordProbeVirtualRouterRecentConnection(packet probeVirtualRouterRecentPac
 	connection.LocalNodeID = strings.TrimSpace(packet.LocalNodeID)
 	connection.PeerNodeID = strings.TrimSpace(packet.PeerNodeID)
 	connection.PathText = strings.TrimSpace(packet.PathText)
-	connection.LastSource = strings.TrimSpace(packet.Source)
-	connection.LastAction = strings.TrimSpace(packet.Action)
-	connection.LastTCPFlags = strings.TrimSpace(packet.TCPFlags)
-	connection.LastDetail = strings.TrimSpace(packet.Detail)
-	connection.LastError = strings.TrimSpace(packet.Error)
+	if eventFailed || connection.Errors == 0 {
+		connection.LastSource = strings.TrimSpace(packet.Source)
+		connection.LastAction = strings.TrimSpace(packet.Action)
+		connection.LastTCPFlags = strings.TrimSpace(packet.TCPFlags)
+		connection.LastDetail = strings.TrimSpace(packet.Detail)
+		connection.LastError = strings.TrimSpace(packet.Error)
+	}
 	if strings.TrimSpace(packet.FakeIPDomain) != "" {
+		connection.Domain = strings.TrimSpace(packet.FakeIPDomain)
 		connection.FakeIPDomain = strings.TrimSpace(packet.FakeIPDomain)
 		connection.FakeIPExitNode = strings.TrimSpace(packet.FakeIPExitNode)
+	} else if connection.Domain == "" && connection.TrafficType == "direct" {
+		connection.Domain = probeVirtualRouterRecentDNSDomainForPacketLocked(packet)
 	}
 	if strings.Contains(flags, "FIN") || strings.Contains(flags, "RST") {
 		connection.closed = true
@@ -1654,12 +1667,13 @@ func recordProbeVirtualRouterRecentDNSQuery(domain string, action string, exitNo
 	connection, ok := probeVirtualRouterRecentConnectionState.items[key]
 	if !ok || connection.Kind != "dns" {
 		connection = probeVirtualRouterRecentConnection{
-			Kind:      "dns",
-			FirstSeen: now.UTC().Format(time.RFC3339Nano),
-			Protocol:  "DNS",
-			Domain:    domain,
-			EndpointA: "DNS",
-			EndpointB: domain,
+			Kind:        "dns",
+			TrafficType: "dns",
+			FirstSeen:   now.UTC().Format(time.RFC3339Nano),
+			Protocol:    "DNS",
+			Domain:      domain,
+			EndpointA:   "DNS",
+			EndpointB:   domain,
 		}
 	}
 	connection.Events++
@@ -1674,7 +1688,8 @@ func recordProbeVirtualRouterRecentDNSQuery(domain string, action string, exitNo
 		connection.FakeIPExitNode = normalizeProbeRouteNodeID(exitNodeID)
 		connection.LastDetail = "Fake IP " + strings.TrimSpace(fakeIP)
 	} else if len(realIPs) > 0 {
-		connection.LastDetail = "A " + strings.Join(realIPs, ", ")
+		connection.ResolvedIPs = sanitizeProbeVirtualRouterRecentResolvedIPs(realIPs)
+		connection.LastDetail = "A " + strings.Join(connection.ResolvedIPs, ", ")
 	}
 	if err != nil {
 		connection.Errors++
@@ -1683,6 +1698,123 @@ func recordProbeVirtualRouterRecentDNSQuery(domain string, action string, exitNo
 		connection.LastError = ""
 	}
 	probeVirtualRouterRecentConnectionState.items[key] = connection
+}
+
+func recordProbeVirtualRouterRecentDialFailure(targetAddr string, decision probeVRouteProxyTargetDecision, err error) {
+	if err == nil {
+		return
+	}
+	now := time.Now()
+	target := firstNonEmpty(strings.TrimSpace(decision.OriginalTarget), strings.TrimSpace(decision.TargetAddr), strings.TrimSpace(targetAddr))
+	if target == "" {
+		return
+	}
+	trafficType := "direct"
+	if decision.Action == "probe_exit" && !decision.Direct() {
+		trafficType = "proxy"
+	}
+	domain := normalizeProbeVirtualRouterDomain(decision.Domain)
+	if domain == "" {
+		host, _, splitErr := net.SplitHostPort(target)
+		if splitErr == nil && net.ParseIP(strings.TrimSpace(strings.Trim(host, "[]"))) == nil {
+			domain = normalizeProbeVirtualRouterDomain(host)
+		}
+	}
+	key := strings.Join([]string{"DIAL", "TCP", trafficType, strings.ToLower(target)}, "|")
+	probeVirtualRouterRecentConnectionState.mu.Lock()
+	defer probeVirtualRouterRecentConnectionState.mu.Unlock()
+	maybePruneProbeVirtualRouterRecentConnectionsLocked(now)
+	connection, ok := probeVirtualRouterRecentConnectionState.items[key]
+	if !ok {
+		connection = probeVirtualRouterRecentConnection{
+			Kind:        "connection",
+			TrafficType: trafficType,
+			FirstSeen:   now.UTC().Format(time.RFC3339Nano),
+			Protocol:    "TCP",
+			Domain:      domain,
+			EndpointA:   "local-proxy",
+			EndpointB:   target,
+		}
+	}
+	connection.Events++
+	connection.Errors++
+	connection.LastSeen = now.UTC().Format(time.RFC3339Nano)
+	connection.lastAt = now
+	connection.RouteID = strings.TrimSpace(decision.RuleID)
+	connection.PeerNodeID = normalizeProbeRouteNodeID(decision.ExitNodeID)
+	connection.PathText = strings.Join(cleanProbeVirtualRouterPath(decision.Path), ">")
+	connection.LastSource = "proxy"
+	connection.LastAction = trafficType + "_error"
+	connection.LastDetail = strings.TrimSpace(decision.TargetAddr)
+	connection.LastError = strings.TrimSpace(err.Error())
+	if trafficType == "proxy" {
+		connection.FakeIPDomain = domain
+		connection.FakeIPExitNode = normalizeProbeRouteNodeID(decision.ExitNodeID)
+	}
+	probeVirtualRouterRecentConnectionState.items[key] = connection
+}
+
+func probeVirtualRouterRecentPacketIsProbeP2P(packet probeVirtualRouterRecentPacket) bool {
+	sourceIP := net.ParseIP(strings.TrimSpace(packet.SourceIP)).To4()
+	destinationIP := net.ParseIP(strings.TrimSpace(packet.DestinationIP)).To4()
+	if sourceIP == nil || destinationIP == nil {
+		return false
+	}
+	probeVirtualRouterState.mu.RLock()
+	_, sourceIsProbe := probeVirtualRouterState.ipToNode[sourceIP.String()]
+	_, destinationIsProbe := probeVirtualRouterState.ipToNode[destinationIP.String()]
+	probeVirtualRouterState.mu.RUnlock()
+	return sourceIsProbe && destinationIsProbe
+}
+
+func probeVirtualRouterRecentPacketTrafficType(packet probeVirtualRouterRecentPacket) string {
+	if packet.FakeIP || strings.TrimSpace(packet.FakeIPDomain) != "" || len(cleanProbeVirtualRouterPath(packet.Path)) >= 2 || strings.TrimSpace(packet.Source) == "frame_rx" {
+		return "proxy"
+	}
+	return "direct"
+}
+
+func sanitizeProbeVirtualRouterRecentResolvedIPs(items []string) []string {
+	seen := make(map[string]struct{}, len(items))
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		ip := net.ParseIP(strings.TrimSpace(item))
+		if ip == nil {
+			continue
+		}
+		value := ip.String()
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func probeVirtualRouterRecentDNSDomainForPacketLocked(packet probeVirtualRouterRecentPacket) string {
+	bestDomain := ""
+	bestAt := time.Time{}
+	for _, ipText := range []string{packet.DestinationIP, packet.SourceIP} {
+		ip := net.ParseIP(strings.TrimSpace(ipText))
+		if ip == nil {
+			continue
+		}
+		value := ip.String()
+		for _, item := range probeVirtualRouterRecentConnectionState.items {
+			if item.Kind != "dns" || item.Domain == "" || item.lastAt.Before(bestAt) {
+				continue
+			}
+			for _, resolvedIP := range item.ResolvedIPs {
+				if resolvedIP == value {
+					bestDomain = item.Domain
+					bestAt = item.lastAt
+					break
+				}
+			}
+		}
+	}
+	return bestDomain
 }
 
 func markProbeVirtualRouterRecentDNSConnection(domain string, packet probeVirtualRouterRecentPacket) {
@@ -1796,8 +1928,12 @@ func probeVirtualRouterFakeIPEntryWithMemoryTTL(item probeVirtualRouterFakeIPEnt
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	item.ExpiresAt = now.Add(probeVirtualRouterFakeIPMemoryTTL).Format(time.RFC3339)
-	item.UpdatedAt = now.Format(time.RFC3339)
+	maxExpiresAt := now.Add(probeVirtualRouterFakeIPMemoryTTL)
+	expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(item.ExpiresAt))
+	if err != nil || expiresAt.IsZero() || expiresAt.After(maxExpiresAt) {
+		item.ExpiresAt = maxExpiresAt.Format(time.RFC3339)
+		item.UpdatedAt = now.Format(time.RFC3339)
+	}
 	return item
 }
 
@@ -3339,8 +3475,12 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 		log.Printf("probe virtual router icmp tun rx: trace_code=icmp-trace-v2 kind=%s src=%s dst=%s id=%d seq=%d local_node=%s path=%s bytes=%d", info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, currentProbeVirtualRouterLocalNodeID(), strings.Join(path, ">"), len(packet))
 	}
 	if len(path) < 2 {
-		if probeVirtualRouterEnsureDirectBypassForOrdinaryTarget(packet, dstIP) {
-			recordProbeVirtualRouterRecentPacket("tun_rx", "bypass", nil, packet, path, false, nil)
+		if handled, directErr := probeVirtualRouterEnsureDirectBypassForOrdinaryTarget(packet, dstIP); handled {
+			action := "direct"
+			if directErr != nil {
+				action = "direct_error"
+			}
+			recordProbeVirtualRouterRecentPacket("tun_rx", action, nil, packet, path, false, directErr)
 			return false
 		}
 		if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
@@ -3397,31 +3537,32 @@ func takeProbeVirtualRouterTransportTUNDropLogThrottle(info probeVirtualRouterTr
 	return takeProbeVirtualRouterLogThrottle(key, probeVirtualRouterDiagnosticLogPeriod, now)
 }
 
-func probeVirtualRouterEnsureDirectBypassForOrdinaryTarget(packet []byte, dstIP string) bool {
+func probeVirtualRouterEnsureDirectBypassForOrdinaryTarget(packet []byte, dstIP string) (bool, error) {
 	if !probeVirtualRouterLocalEntryEnabled() || probeVirtualRouterIPInCurrentFakeCIDR(dstIP) {
-		return false
+		return false, nil
 	}
 	targetIP := net.ParseIP(strings.TrimSpace(dstIP)).To4()
 	if targetIP == nil {
-		return false
+		return false, nil
 	}
 	probeVirtualRouterState.mu.RLock()
 	_, isVirtualNodeIP := probeVirtualRouterState.ipToNode[targetIP.String()]
 	probeVirtualRouterState.mu.RUnlock()
 	if isVirtualNodeIP {
-		return false
+		return false, nil
 	}
 	if rule, ok := currentProbeVirtualRouterRouteRuleForIP(targetIP.String()); ok && sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) == "probe_exit" {
-		return false
+		return false, nil
 	}
 	targetAddr := probeVirtualRouterDirectBypassTargetAddr(packet, targetIP.String())
 	if targetAddr == "" {
-		return false
+		return false, nil
 	}
 	if err := probeVirtualRouterEnsureDirectBypass(targetAddr); err != nil {
 		log.Printf("probe virtual router direct bypass route failed: dst=%s target=%s err=%v", targetIP.String(), targetAddr, err)
+		return true, err
 	}
-	return true
+	return true, nil
 }
 
 func probeVirtualRouterDirectBypassTargetAddr(packet []byte, dstIP string) string {
@@ -4352,6 +4493,7 @@ func (s *probeVirtualRouterFrameLink) runTXWorker() {
 		token, err := s.currentCarrier()
 		if err != nil {
 			log.Printf("probe virtual router frame tx drop: route=%s key=%s frame=%s err=%v", probeVirtualRouterRuntimeLogRouteID(s.runtime), s.key, probeVirtualRouterFrameDebugLabel(frame, s.requestPath), err)
+			recordProbeVirtualRouterTXFrameFailure(s, frame, err)
 			continue
 		}
 		frame = appendProbeVirtualRouterWireFrameICMPTrace(frame, s.runtime, s.requestPath, "carrier_tx")
@@ -4386,8 +4528,18 @@ func (s *probeVirtualRouterFrameLink) runTXWorker() {
 			continue
 		}
 		log.Printf("probe virtual router frame tx carrier failed: route=%s key=%s frames=%d bytes=%d first_frame=%s err=%v %s", probeVirtualRouterRuntimeLogRouteID(s.runtime), s.key, len(frames), batchBytes, probeVirtualRouterFrameDebugLabel(frame, s.requestPath), err, probeVirtualRouterFrameLinkCarrierStateString(s, token))
+		for _, failedFrame := range frames {
+			recordProbeVirtualRouterTXFrameFailure(s, failedFrame, err)
+		}
 		s.detachCarrierWithReason(token, "tx_write_error", err)
 	}
+}
+
+func recordProbeVirtualRouterTXFrameFailure(link *probeVirtualRouterFrameLink, frame probeVirtualRouterFrame, err error) {
+	if link == nil || frame.MainType != probeVirtualRouterFrameMainTypeIP || len(frame.Data) == 0 || err == nil {
+		return
+	}
+	recordProbeVirtualRouterRecentPacket("frame_tx", "proxy_error", link.runtime, frame.Data, link.requestPath, false, err)
 }
 
 func (s *probeVirtualRouterFrameLink) txQueueForFrame(frame probeVirtualRouterFrame) (chan probeVirtualRouterFrame, string) {
@@ -5455,9 +5607,8 @@ func handleProbeVirtualRouterSpeedFrame(runtime *probeVirtualRouterRuntime, subT
 		if localNodeID != msg.Path[len(msg.Path)-1] {
 			return forwardProbeVirtualRouterSpeedAlongPath(subType, msg, msg.Path)
 		}
-		log.Printf("probe virtual router speed remote sender request received: request_id=%s direction=%s local=%s source=%s target=%s result_node=%s path=%s max_bytes=%d max_duration_ms=%d", strings.TrimSpace(msg.RequestID), strings.TrimSpace(msg.Direction), localNodeID, normalizeProbeRouteNodeID(msg.SourceNodeID), normalizeProbeRouteNodeID(msg.TargetNodeID), normalizeProbeRouteNodeID(msg.ResultNodeID), strings.Join(msg.Path, ">"), msg.MaxBytes, msg.MaxDurationMS)
 		go func() {
-			if err := runProbeVirtualRouterOneWaySpeedSender(probeVirtualRouterReversePath(msg.Path), msg, probeVirtualRouterSpeedTestMaxDuration); err != nil {
+			if err := runProbeVirtualRouterOneWaySpeedSender(probeVirtualRouterReversePath(msg.Path), msg, normalizeProbeVirtualRouterSpeedDuration(msg.MaxDurationMS)); err != nil {
 				response := msg
 				response.OK = false
 				response.Error = strings.TrimSpace(err.Error())
@@ -5525,7 +5676,6 @@ func startProbeVirtualRouterSpeedReceive(msg probeVirtualRouterSpeedTestResultPa
 	delete(probeVirtualRouterSpeedReceiveState.completed, session.RequestID)
 	probeVirtualRouterSpeedReceiveState.sessions[session.RequestID] = session
 	probeVirtualRouterSpeedReceiveState.mu.Unlock()
-	log.Printf("probe virtual router speed receiver start: request_id=%s direction=%s route=%s local=%s source=%s target=%s result_node=%s path=%s max_duration_ms=%d", session.RequestID, session.Direction, strings.TrimSpace(routeID), normalizeProbeRouteNodeID(localNodeID), session.SourceNodeID, session.TargetNodeID, session.ResultNodeID, strings.Join(session.Path, ">"), session.MaxDurationMS)
 }
 
 func recordProbeVirtualRouterSpeedChunk(requestID string, bytes int64) {
@@ -5553,24 +5703,7 @@ func recordProbeVirtualRouterSpeedChunk(requestID string, bytes int64) {
 	session.LastAt = now
 	session.Bytes += bytes
 	session.Frames++
-	shouldLogProgress := session.Frames == 1 || session.Bytes-session.LastLogBytes >= 1024*1024 || now.Sub(session.LastLogAt) >= time.Second
-	if shouldLogProgress {
-		session.LastLogAt = now
-		session.LastLogBytes = session.Bytes
-	}
-	logRequestID := session.RequestID
-	logDirection := session.Direction
-	logRouteID := session.RouteID
-	logLocalNodeID := session.LocalNodeID
-	logSourceNodeID := session.SourceNodeID
-	logTargetNodeID := session.TargetNodeID
-	logPath := strings.Join(session.Path, ">")
-	logBytes := session.Bytes
-	logFrames := session.Frames
-	maxDuration := time.Duration(session.MaxDurationMS) * time.Millisecond
-	if maxDuration <= 0 || maxDuration > probeVirtualRouterSpeedTestMaxDuration {
-		maxDuration = probeVirtualRouterSpeedTestMaxDuration
-	}
+	maxDuration := normalizeProbeVirtualRouterSpeedDuration(session.MaxDurationMS)
 	localNodeID := session.LocalNodeID
 	if localNodeID == "" {
 		localNodeID = currentProbeVirtualRouterLocalNodeID()
@@ -5580,9 +5713,6 @@ func recordProbeVirtualRouterSpeedChunk(requestID string, bytes int64) {
 		go completeProbeVirtualRouterSpeedReceiveAfter(requestID, localNodeID, maxDuration+500*time.Millisecond)
 	}
 	probeVirtualRouterSpeedReceiveState.mu.Unlock()
-	if shouldLogProgress {
-		log.Printf("probe virtual router speed receiver progress: request_id=%s direction=%s route=%s local=%s source=%s target=%s bytes=%d frames=%d path=%s", logRequestID, logDirection, logRouteID, normalizeProbeRouteNodeID(logLocalNodeID), logSourceNodeID, logTargetNodeID, logBytes, logFrames, logPath)
-	}
 }
 
 func finishProbeVirtualRouterSpeedReceive(msg probeVirtualRouterSpeedTestResultPayload, localNodeID string) (probeVirtualRouterSpeedTestResultPayload, bool) {
@@ -5594,6 +5724,8 @@ func finalizeProbeVirtualRouterSpeedReceive(requestID string, localNodeID string
 	now := time.Now()
 	requestID = strings.TrimSpace(requestID)
 	probeVirtualRouterSpeedReceiveState.mu.Lock()
+	cleanupProbeVirtualRouterSpeedReceiveCompletedLocked(now)
+	_, alreadyCompleted := probeVirtualRouterSpeedReceiveState.completed[requestID]
 	session := probeVirtualRouterSpeedReceiveState.sessions[requestID]
 	if session != nil {
 		delete(probeVirtualRouterSpeedReceiveState.sessions, requestID)
@@ -5601,7 +5733,9 @@ func finalizeProbeVirtualRouterSpeedReceive(requestID string, localNodeID string
 	markProbeVirtualRouterSpeedReceiveCompletedLocked(requestID, now)
 	probeVirtualRouterSpeedReceiveState.mu.Unlock()
 	if session == nil {
-		log.Printf("probe virtual router speed receiver finalize missing session: request_id=%s local=%s fallback_direction=%s fallback_path=%s", requestID, normalizeProbeRouteNodeID(localNodeID), strings.TrimSpace(fallback.Direction), strings.Join(cleanProbeVirtualRouterPath(fallback.Path), ">"))
+		if !alreadyCompleted {
+			log.Printf("probe virtual router speed receiver finish without start: request_id=%s local=%s fallback_direction=%s fallback_path=%s", requestID, normalizeProbeRouteNodeID(localNodeID), strings.TrimSpace(fallback.Direction), strings.Join(cleanProbeVirtualRouterPath(fallback.Path), ">"))
+		}
 		return probeVirtualRouterSpeedTestResultPayload{}, false
 	}
 	result := fallback
@@ -5639,7 +5773,6 @@ func finalizeProbeVirtualRouterSpeedReceive(requestID string, localNodeID string
 	if result.ResultNodeID == "" {
 		result.ResultNodeID = normalizeProbeRouteNodeID(firstNonEmpty(fallback.ResultNodeID, fallback.SourceNodeID))
 	}
-	log.Printf("probe virtual router speed receiver finalize: request_id=%s direction=%s route=%s local=%s source=%s target=%s result_node=%s bytes=%d frames=%d duration_ms=%d mbps=%.2f path=%s", requestID, strings.TrimSpace(result.Direction), strings.TrimSpace(session.RouteID), normalizeProbeRouteNodeID(localNodeID), normalizeProbeRouteNodeID(result.SourceNodeID), normalizeProbeRouteNodeID(result.TargetNodeID), normalizeProbeRouteNodeID(result.ResultNodeID), result.Bytes, result.Frames, result.DurationMS, result.Mbps, strings.Join(cleanProbeVirtualRouterPath(result.Path), ">"))
 	return result, true
 }
 
@@ -5678,7 +5811,6 @@ func completeProbeVirtualRouterSpeedReceiveAfter(requestID string, localNodeID s
 	if !ok {
 		return
 	}
-	log.Printf("probe virtual router speed receiver timed finalize: request_id=%s direction=%s local=%s result_node=%s bytes=%d frames=%d duration_ms=%d path=%s", strings.TrimSpace(result.RequestID), strings.TrimSpace(result.Direction), normalizeProbeRouteNodeID(localNodeID), normalizeProbeRouteNodeID(result.ResultNodeID), result.Bytes, result.Frames, result.DurationMS, strings.Join(cleanProbeVirtualRouterPath(result.Path), ">"))
 	if normalizeProbeRouteNodeID(result.ResultNodeID) == normalizeProbeRouteNodeID(localNodeID) {
 		recordProbeVirtualRouterRuntimeSpeedTestReceive(result.RuntimeRouteID, result)
 		completeProbeVirtualRouterSpeedResponse(result)
@@ -5867,6 +5999,11 @@ func runProbeVirtualRouterSpeedTest(sourceNodeID string, targetNodeID string, ma
 		}
 	}
 	recordProbeVirtualRouterRuntimeSpeedTest(routeID, sourceNodeID, targetNodeID, pathText, up, down, err)
+	errText := ""
+	if err != nil {
+		errText = strings.TrimSpace(err.Error())
+	}
+	log.Printf("probe virtual router speed test summary: source=%s target=%s path=%s max_bytes=%d max_duration_ms=%d up_ok=%v up_bytes=%d up_duration_ms=%d up_mbps=%.2f up_error=%q down_ok=%v down_bytes=%d down_duration_ms=%d down_mbps=%.2f down_error=%q err=%q", sourceNodeID, targetNodeID, pathText, maxBytes, probeDurationMilliseconds(maxDuration), up.OK, up.Bytes, up.DurationMS, up.Mbps, strings.TrimSpace(up.Error), down.OK, down.Bytes, down.DurationMS, down.Mbps, strings.TrimSpace(down.Error), errText)
 	return up, down, pathText, err
 }
 
@@ -5885,7 +6022,6 @@ func runProbeVirtualRouterOneWaySpeedTest(path []string, directionName string, s
 		MaxDurationMS:     probeDurationMilliseconds(maxDuration),
 		CreatedAtUnixNano: time.Now().UnixNano(),
 	}
-	log.Printf("probe virtual router speed test start: request_id=%s direction=%s source=%s target=%s path=%s max_bytes=%d max_duration_ms=%d", requestID, directionName, sourceNodeID, targetNodeID, strings.Join(path, ">"), maxBytes, probeDurationMilliseconds(maxDuration))
 	if err := runProbeVirtualRouterOneWaySpeedSender(path, msg, maxDuration); err != nil {
 		log.Printf("probe virtual router speed test send failed: request_id=%s direction=%s source=%s target=%s path=%s err=%v", requestID, directionName, sourceNodeID, targetNodeID, strings.Join(path, ">"), err)
 		return probeVirtualRouterSpeedTestResult{OK: false, Error: err.Error()}, err
@@ -5906,7 +6042,6 @@ func runProbeVirtualRouterOneWaySpeedTest(path []string, directionName string, s
 	if !response.OK && result.Error == "" {
 		result.Error = "virtual router speed test failed"
 	}
-	log.Printf("probe virtual router speed test done: request_id=%s direction=%s source=%s target=%s path=%s ok=%v bytes=%d frames=%d duration_ms=%d mbps=%.2f err=%s responder=%s", requestID, directionName, sourceNodeID, targetNodeID, strings.Join(path, ">"), result.OK, result.Bytes, result.Frames, result.DurationMS, result.Mbps, strings.TrimSpace(result.Error), strings.TrimSpace(response.Responder))
 	return result, nil
 }
 
@@ -5925,7 +6060,6 @@ func runProbeVirtualRouterReverseSpeedTest(path []string, sourceNodeID string, t
 		MaxDurationMS:     probeDurationMilliseconds(maxDuration),
 		CreatedAtUnixNano: time.Now().UnixNano(),
 	}
-	log.Printf("probe virtual router speed test request remote sender: request_id=%s direction=down source=%s target=%s path=%s max_bytes=%d max_duration_ms=%d", requestID, sourceNodeID, targetNodeID, strings.Join(path, ">"), maxBytes, probeDurationMilliseconds(maxDuration))
 	if err := forwardProbeVirtualRouterSpeedAlongPath(probeVirtualRouterSpeedSubTypeSend, msg, path); err != nil {
 		log.Printf("probe virtual router speed test remote sender request failed: request_id=%s direction=down source=%s target=%s path=%s err=%v", requestID, sourceNodeID, targetNodeID, strings.Join(path, ">"), err)
 		return probeVirtualRouterSpeedTestResult{OK: false, Error: err.Error()}, err
@@ -5946,8 +6080,14 @@ func runProbeVirtualRouterReverseSpeedTest(path []string, sourceNodeID string, t
 	if !response.OK && result.Error == "" {
 		result.Error = "virtual router speed test failed"
 	}
-	log.Printf("probe virtual router speed test done: request_id=%s direction=down source=%s target=%s path=%s ok=%v bytes=%d frames=%d duration_ms=%d mbps=%.2f err=%s responder=%s", requestID, sourceNodeID, targetNodeID, strings.Join(path, ">"), result.OK, result.Bytes, result.Frames, result.DurationMS, result.Mbps, strings.TrimSpace(result.Error), strings.TrimSpace(response.Responder))
 	return result, nil
+}
+
+func normalizeProbeVirtualRouterSpeedDuration(maxDurationMS int64) time.Duration {
+	if maxDurationMS <= 0 || maxDurationMS > probeDurationMilliseconds(probeVirtualRouterSpeedTestMaxDuration) {
+		return probeVirtualRouterSpeedTestMaxDuration
+	}
+	return time.Duration(maxDurationMS) * time.Millisecond
 }
 
 func runProbeVirtualRouterOneWaySpeedSender(path []string, msg probeVirtualRouterSpeedTestResultPayload, maxDuration time.Duration) error {
@@ -5980,7 +6120,6 @@ func runProbeVirtualRouterOneWaySpeedSender(path []string, msg probeVirtualRoute
 	if err != nil {
 		return err
 	}
-	log.Printf("probe virtual router speed sender start: request_id=%s direction=%s route=%s local=%s next=%s target=%s path=%s max_bytes=%d max_duration_ms=%d %s", strings.TrimSpace(msg.RequestID), strings.TrimSpace(msg.Direction), probeVirtualRouterRuntimeLogRouteID(rt), localNodeID, nextNodeID, normalizeProbeRouteNodeID(msg.TargetNodeID), strings.Join(cleanPath, ">"), msg.MaxBytes, msg.MaxDurationMS, probeVirtualRouterFrameLinkDebugState(link))
 	if err := enqueueProbeVirtualRouterBusinessFrameUntil(link, probeVirtualRouterFrameMainTypeSpeed, probeVirtualRouterSpeedSubTypeStart, startPayload, cleanPath, time.Now().Add(2*time.Second)); err != nil {
 		log.Printf("probe virtual router speed sender start frame failed: request_id=%s direction=%s route=%s path=%s err=%v %s", strings.TrimSpace(msg.RequestID), strings.TrimSpace(msg.Direction), probeVirtualRouterRuntimeLogRouteID(rt), strings.Join(cleanPath, ">"), err, probeVirtualRouterFrameLinkDebugState(link))
 		return err
@@ -5988,8 +6127,6 @@ func runProbeVirtualRouterOneWaySpeedSender(path []string, msg probeVirtualRoute
 	deadline := time.Now().Add(maxDuration)
 	var sentBytes int64
 	var frames int64
-	lastLogAt := time.Now()
-	var lastLogBytes int64
 	for sentBytes < msg.MaxBytes && time.Now().Before(deadline) {
 		if err := probeVirtualRouterSpeedCarrierAvailable(link); err != nil {
 			log.Printf("probe virtual router speed sender carrier unavailable: request_id=%s direction=%s route=%s bytes=%d frames=%d path=%s err=%v %s", strings.TrimSpace(msg.RequestID), strings.TrimSpace(msg.Direction), probeVirtualRouterRuntimeLogRouteID(rt), sentBytes, frames, strings.Join(cleanPath, ">"), err, probeVirtualRouterFrameLinkDebugState(link))
@@ -5997,7 +6134,6 @@ func runProbeVirtualRouterOneWaySpeedSender(path []string, msg probeVirtualRoute
 		}
 		if err := waitProbeVirtualRouterSpeedTXBackpressure(link, deadline); err != nil {
 			if errors.Is(err, os.ErrDeadlineExceeded) {
-				log.Printf("probe virtual router speed sender deadline while waiting tx: request_id=%s direction=%s route=%s bytes=%d frames=%d path=%s %s", strings.TrimSpace(msg.RequestID), strings.TrimSpace(msg.Direction), probeVirtualRouterRuntimeLogRouteID(rt), sentBytes, frames, strings.Join(cleanPath, ">"), probeVirtualRouterFrameLinkDebugState(link))
 				break
 			}
 			log.Printf("probe virtual router speed sender tx wait failed: request_id=%s direction=%s route=%s bytes=%d frames=%d path=%s err=%v %s", strings.TrimSpace(msg.RequestID), strings.TrimSpace(msg.Direction), probeVirtualRouterRuntimeLogRouteID(rt), sentBytes, frames, strings.Join(cleanPath, ">"), err, probeVirtualRouterFrameLinkDebugState(link))
@@ -6014,7 +6150,6 @@ func runProbeVirtualRouterOneWaySpeedSender(path []string, msg probeVirtualRoute
 		payload := buildProbeVirtualRouterSpeedChunkPayload(msg.RequestID, int(size))
 		if err := enqueueProbeVirtualRouterBusinessFrameUntil(link, probeVirtualRouterFrameMainTypeSpeed, probeVirtualRouterSpeedSubTypeChunk, payload, cleanPath, deadline); err != nil {
 			if errors.Is(err, os.ErrDeadlineExceeded) {
-				log.Printf("probe virtual router speed sender deadline while enqueue chunk: request_id=%s direction=%s route=%s bytes=%d frames=%d path=%s %s", strings.TrimSpace(msg.RequestID), strings.TrimSpace(msg.Direction), probeVirtualRouterRuntimeLogRouteID(rt), sentBytes, frames, strings.Join(cleanPath, ">"), probeVirtualRouterFrameLinkDebugState(link))
 				break
 			}
 			log.Printf("probe virtual router speed sender chunk enqueue failed: request_id=%s direction=%s route=%s bytes=%d frames=%d path=%s err=%v %s", strings.TrimSpace(msg.RequestID), strings.TrimSpace(msg.Direction), probeVirtualRouterRuntimeLogRouteID(rt), sentBytes, frames, strings.Join(cleanPath, ">"), err, probeVirtualRouterFrameLinkDebugState(link))
@@ -6022,11 +6157,6 @@ func runProbeVirtualRouterOneWaySpeedSender(path []string, msg probeVirtualRoute
 		}
 		sentBytes += int64(len(payload))
 		frames++
-		if sentBytes-lastLogBytes >= 1024*1024 || time.Since(lastLogAt) >= time.Second {
-			log.Printf("probe virtual router speed sender progress: request_id=%s direction=%s route=%s bytes=%d frames=%d path=%s %s", strings.TrimSpace(msg.RequestID), strings.TrimSpace(msg.Direction), probeVirtualRouterRuntimeLogRouteID(rt), sentBytes, frames, strings.Join(cleanPath, ">"), probeVirtualRouterFrameLinkDebugState(link))
-			lastLogBytes = sentBytes
-			lastLogAt = time.Now()
-		}
 	}
 	msg.Bytes = sentBytes
 	msg.Frames = frames
@@ -6043,7 +6173,6 @@ func runProbeVirtualRouterOneWaySpeedSender(path []string, msg probeVirtualRoute
 		log.Printf("probe virtual router speed sender finish frame failed: request_id=%s direction=%s route=%s bytes=%d frames=%d path=%s err=%v %s", strings.TrimSpace(msg.RequestID), strings.TrimSpace(msg.Direction), probeVirtualRouterRuntimeLogRouteID(rt), sentBytes, frames, strings.Join(cleanPath, ">"), err, probeVirtualRouterFrameLinkDebugState(link))
 		return err
 	}
-	log.Printf("probe virtual router speed sender finish: request_id=%s direction=%s route=%s bytes=%d frames=%d path=%s %s", strings.TrimSpace(msg.RequestID), strings.TrimSpace(msg.Direction), probeVirtualRouterRuntimeLogRouteID(rt), sentBytes, frames, strings.Join(cleanPath, ">"), probeVirtualRouterFrameLinkDebugState(link))
 	return nil
 }
 

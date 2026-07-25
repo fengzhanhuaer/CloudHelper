@@ -51,6 +51,11 @@ type logsControlMessage struct {
 	MinLevel     string `json:"min_level,omitempty"`
 }
 
+type routeConfigSyncControlMessage struct {
+	Type              string `json:"type"`
+	ControllerBaseURL string `json:"controller_base_url"`
+}
+
 type logsControlResult struct {
 	Type         string            `json:"type"`
 	RequestID    string            `json:"request_id"`
@@ -114,6 +119,7 @@ func runSession(cancel <-chan struct{}, wsURL string, nodeID string, nodeSecret 
 	decoder := json.NewDecoder(stream)
 
 	writeMu := &sync.Mutex{}
+	identity := mobileNodeIdentity{NodeID: nodeID, Secret: nodeSecret}
 	ackCh := make(chan error, 1)
 	readErrCh := make(chan error, 1)
 	go func() {
@@ -132,18 +138,7 @@ func runSession(cancel <-chan struct{}, wsURL string, nodeID string, nodeSecret 
 					continue
 				}
 			}
-			var envelope controlEnvelope
-			if err := json.Unmarshal(raw, &envelope); err != nil {
-				continue
-			}
-			switch strings.ToLower(strings.TrimSpace(envelope.Type)) {
-			case "logs_get":
-				var msg logsControlMessage
-				if err := json.Unmarshal(raw, &msg); err != nil {
-					continue
-				}
-				sendLogsControlResult(stream, writeMu, buildLogsControlResult(msg, nodeID))
-			}
+			processControlMessage(raw, stream, writeMu, identity)
 		}
 	}()
 	if err := sendReport(stream, encoder, writeMu, nodeID); err != nil {
@@ -216,6 +211,26 @@ func processControlMessage(raw json.RawMessage, stream net.Conn, writeMu *sync.M
 			return
 		}
 		sendLogsControlResult(stream, writeMu, buildLogsControlResult(msg, identity.NodeID))
+	case "route_config_sync":
+		var msg routeConfigSyncControlMessage
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			return
+		}
+		go runMobileRouteConfigSyncControl(msg, identity)
+	}
+}
+
+func runMobileRouteConfigSyncControl(msg routeConfigSyncControlMessage, identity mobileNodeIdentity) {
+	controllerBaseURL := strings.TrimSpace(msg.ControllerBaseURL)
+	if controllerBaseURL == "" {
+		controllerBaseURL, _, _ = currentMobileVRouteControllerIdentity()
+	}
+	if controllerBaseURL == "" {
+		androidLogStore.add("route", "warn", "android vroute config sync skipped: controller base url is empty")
+		return
+	}
+	if _, err := refreshConfigFiles(controllerBaseURL, identity.NodeID, identity.Secret, currentAndroidVPNConfigDir()); err != nil {
+		androidLogStore.add("route", "error", "android vroute config sync failed: "+err.Error())
 	}
 }
 

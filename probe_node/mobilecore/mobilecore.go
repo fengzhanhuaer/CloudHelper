@@ -34,6 +34,7 @@ const mobileRelayIOCopyBufferBytes = 64 * 1024
 
 var manager = &coreManager{}
 var androidLogStore = &androidLogBuffer{}
+var mobileConfigRefreshMu sync.Mutex
 
 var mobileRelayCopyBufferPool = sync.Pool{
 	New: func() any {
@@ -238,6 +239,9 @@ func currentVersionLocked() string {
 }
 
 func refreshConfigFiles(controllerURL string, nodeID string, nodeSecret string, configDir string) (configRefreshSummary, error) {
+	mobileConfigRefreshMu.Lock()
+	defer mobileConfigRefreshMu.Unlock()
+
 	if _, err := normalizeControllerBaseURL(controllerURL); err != nil {
 		return configRefreshSummary{}, err
 	}
@@ -258,6 +262,7 @@ func refreshConfigFiles(controllerURL string, nodeID string, nodeSecret string, 
 	if err != nil {
 		return configRefreshSummary{}, err
 	}
+	reconcileAndroidVPNDNSRoutes(vrouteConfig, time.Now().UTC())
 	stopMobileVRouteCarrierWorkers()
 	closeMobileVRouteCarriers()
 	startMobileVRouteCarrierWorkers(vrouteConfig)

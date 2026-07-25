@@ -1360,8 +1360,36 @@ func resolveAndroidVPNDNSPacket(packet []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	response = normalizeAndroidVPNDNSResponseTTL(response)
 	storeAndroidVPNDNSRouteHints(domain, response, route)
 	return response, nil
+}
+
+func normalizeAndroidVPNDNSResponseTTL(packet []byte) []byte {
+	var message dnsmessage.Message
+	if err := message.Unpack(packet); err != nil {
+		return packet
+	}
+	ttl := uint32(vpnDNSCacheTTL / time.Second)
+	normalize := func(resources []dnsmessage.Resource) {
+		for index := range resources {
+			if resources[index].Header.Type == dnsmessage.TypeOPT {
+				continue
+			}
+			resources[index].Header.TTL = ttl
+			if soa, ok := resources[index].Body.(*dnsmessage.SOAResource); ok {
+				soa.MinTTL = ttl
+			}
+		}
+	}
+	normalize(message.Answers)
+	normalize(message.Authorities)
+	normalize(message.Additionals)
+	normalized, err := message.Pack()
+	if err != nil {
+		return packet
+	}
+	return normalized
 }
 
 func parseAndroidVPNDNSQuestion(packet []byte) (string, dnsmessage.Type, error) {
@@ -2212,6 +2240,50 @@ func androidVPNFakeIPExpiresAt(now time.Time) time.Time {
 		now = time.Now().UTC()
 	}
 	return now.UTC().Add(vpnDNSFakeIPTTL)
+}
+
+func reconcileAndroidVPNDNSRoutes(config mobileVRouteConfig, now time.Time) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	vpnDNSState.mu.Lock()
+	defer vpnDNSState.mu.Unlock()
+	pruneAndroidVPNDNSFakeLocked(now)
+	for ip, entry := range vpnDNSState.fakeIPToEntry {
+		decision, matched := decideMobileVRouteForDomain(config, entry.Domain, "443")
+		if !config.Enabled || !matched {
+			entry.Group = "direct"
+			entry.Direct = true
+			entry.Reject = false
+			entry.SelectedRouteID = ""
+		} else {
+			entry.Group = firstNonEmptyString(strings.TrimSpace(decision.Group), "vroute")
+			entry.Direct = decision.Direct
+			entry.Reject = decision.Reject
+			entry.SelectedRouteID = mobileVRouteRouteIDForDecision(decision)
+		}
+		vpnDNSState.fakeIPToEntry[ip] = entry
+	}
+	for key, entry := range vpnDNSState.realIPToFake {
+		decision, matched := decideMobileVRouteForDomain(config, entry.Domain, entry.Port)
+		if !config.Enabled || !matched || decision.Direct || decision.Reject {
+			delete(vpnDNSState.realIPToFake, key)
+			continue
+		}
+		entry.Group = firstNonEmptyString(strings.TrimSpace(decision.Group), "vroute")
+		entry.SelectedRouteID = mobileVRouteRouteIDForDecision(decision)
+		vpnDNSState.realIPToFake[key] = entry
+	}
+	for key, entry := range vpnDNSState.fakeFlowToReal {
+		decision, matched := decideMobileVRouteForDomain(config, entry.Domain, entry.Port)
+		if !config.Enabled || !matched || decision.Direct || decision.Reject {
+			delete(vpnDNSState.fakeFlowToReal, key)
+			continue
+		}
+		entry.Group = firstNonEmptyString(strings.TrimSpace(decision.Group), "vroute")
+		entry.SelectedRouteID = mobileVRouteRouteIDForDecision(decision)
+		vpnDNSState.fakeFlowToReal[key] = entry
+	}
 }
 
 func pruneAndroidVPNDNSFakeLocked(now time.Time) {

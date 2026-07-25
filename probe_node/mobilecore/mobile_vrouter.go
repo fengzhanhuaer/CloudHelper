@@ -54,6 +54,12 @@ func setMobileVRouteControllerIdentity(controllerURL string, nodeID string, node
 	mobileVRouteControllerState.mu.Unlock()
 }
 
+func currentMobileVRouteControllerIdentity() (string, string, string) {
+	mobileVRouteControllerState.mu.RLock()
+	defer mobileVRouteControllerState.mu.RUnlock()
+	return mobileVRouteControllerState.baseURL, mobileVRouteControllerState.nodeID, mobileVRouteControllerState.nodeSecret
+}
+
 func requestMobileVRouteControllerFakeIP(domain string, route androidRouteDecision) (string, bool, error) {
 	mobileVRouteControllerState.mu.RLock()
 	baseURL := mobileVRouteControllerState.baseURL

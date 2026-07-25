@@ -424,6 +424,34 @@ func TestProbeVirtualRouterSpeedReceiveDropsLateAndOrphanChunks(t *testing.T) {
 	if !completed {
 		t.Fatalf("completed speed request should be retained for late chunk suppression")
 	}
+	if _, ok := finishProbeVirtualRouterSpeedReceive(probeVirtualRouterSpeedTestResultPayload{
+		RequestID: requestID,
+		Direction: "down",
+		Path:      []string{"19", "9"},
+	}, "9"); ok {
+		t.Fatalf("late finish should not finalize a completed speed session again")
+	}
+}
+
+func TestNormalizeProbeVirtualRouterSpeedDuration(t *testing.T) {
+	tests := []struct {
+		name string
+		ms   int64
+		want time.Duration
+	}{
+		{name: "requested", ms: 8000, want: 8 * time.Second},
+		{name: "maximum", ms: 10000, want: probeVirtualRouterSpeedTestMaxDuration},
+		{name: "missing", ms: 0, want: probeVirtualRouterSpeedTestMaxDuration},
+		{name: "negative", ms: -1, want: probeVirtualRouterSpeedTestMaxDuration},
+		{name: "above maximum", ms: 10001, want: probeVirtualRouterSpeedTestMaxDuration},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := normalizeProbeVirtualRouterSpeedDuration(test.ms); got != test.want {
+				t.Fatalf("duration=%s, want %s", got, test.want)
+			}
+		})
+	}
 }
 
 func TestProbeVirtualRouterICMPTraceUsesLocalNodeWhenRuntimeNil(t *testing.T) {
@@ -2852,12 +2880,48 @@ func TestProbeVirtualRouterTUNPacketEnsuresDirectBypassForOrdinaryTarget(t *test
 	}}
 	applyProbeVirtualRouterConfigForNode(config, "16")
 	tgPacket := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.18", "149.154.167.51", 49154, 443)
-	if probeVirtualRouterEnsureDirectBypassForOrdinaryTarget(tgPacket, "149.154.167.51") {
-		t.Fatalf("virtual-router route rule target should not be released to direct bypass")
+	if handled, err := probeVirtualRouterEnsureDirectBypassForOrdinaryTarget(tgPacket, "149.154.167.51"); handled || err != nil {
+		t.Fatalf("virtual-router route rule target direct bypass handled=%t err=%v, want false nil", handled, err)
 	}
 	if len(targets) != 1 {
 		t.Fatalf("route rule target should not add direct bypass target, got %v", targets)
 	}
+}
+
+func TestProbeVirtualRouterTUNPacketRecordsDirectBypassFailure(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeVirtualRouterStateForTest()
+	resetProbeVirtualRouterLocalSettingsForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(resetProbeVirtualRouterLocalSettingsForTest)
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "16", IP: "198.18.0.16"},
+		},
+	}, "16")
+	enableProbeVirtualRouterLocalSettingsForTest(true, true)
+
+	oldEnsure := probeVirtualRouterEnsureDirectBypass
+	probeVirtualRouterEnsureDirectBypass = func(string) error { return errors.New("route create failed") }
+	t.Cleanup(func() { probeVirtualRouterEnsureDirectBypass = oldEnsure })
+	recordProbeVirtualRouterRecentDNSQuery("direct.example.com", "direct", "", "", []string{"203.0.113.10"}, nil)
+	packet := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.16", "203.0.113.10", 49152, 443)
+	if handleProbeVirtualRouterTUNPacket(packet) {
+		t.Fatal("ordinary direct traffic should leave the virtual router after bypass failure")
+	}
+
+	connections := snapshotProbeVirtualRouterRecentConnections()
+	for _, connection := range connections {
+		if connection.TrafficType == "direct" && connection.Status == "error" {
+			if connection.Domain != "direct.example.com" || !strings.Contains(connection.LastError, "route create failed") {
+				t.Fatalf("unexpected direct failure: %+v", connection)
+			}
+			return
+		}
+	}
+	t.Fatalf("direct failure was not recorded: %+v", connections)
 }
 
 func TestProbeVirtualRouterTUNPacketDropsFakeIPWhenExitCarrierUnavailable(t *testing.T) {
@@ -3110,6 +3174,156 @@ func TestProbeVirtualRouterRecentConnectionsAggregateBidirectionalTraffic(t *tes
 	probeVirtualRouterRecentConnectionState.mu.Unlock()
 	if expired := snapshotProbeVirtualRouterRecentConnections(); len(expired) != 0 {
 		t.Fatalf("expired connections=%d, want 0: %+v", len(expired), expired)
+	}
+}
+
+func TestProbeVirtualRouterRecentConnectionsExcludeProbeP2PTraffic(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	probeVirtualRouterState.mu.Lock()
+	probeVirtualRouterState.ipToNode = map[string]string{
+		"198.18.0.16": "16",
+		"198.18.0.19": "19",
+	}
+	probeVirtualRouterState.mu.Unlock()
+
+	packet := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.16", "198.18.0.19", 49152, 12040)
+	recordProbeVirtualRouterRecentPacket("tun_rx", "forward", nil, packet, []string{"16", "19"}, false, nil)
+	if connections := snapshotProbeVirtualRouterRecentConnections(); len(connections) != 0 {
+		t.Fatalf("probe p2p connections=%d, want 0: %+v", len(connections), connections)
+	}
+	if packets := snapshotProbeVirtualRouterRecentPackets(); len(packets) != 1 {
+		t.Fatalf("recent packet diagnostics=%d, want packet retained independently", len(packets))
+	}
+}
+
+func TestProbeVirtualRouterRecentConnectionsClassifyDirectAndProxyFailures(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	recordProbeVirtualRouterRecentDNSQuery("direct.example.com", "direct", "", "", []string{"203.0.113.10"}, nil)
+	recordProbeVirtualRouterRecentConnection(probeVirtualRouterRecentPacket{
+		CapturedAt:      now,
+		Source:          "tun_rx",
+		Action:          "direct_error",
+		Protocol:        "TCP",
+		SourceIP:        "198.18.0.16",
+		DestinationIP:   "203.0.113.10",
+		SourcePort:      49152,
+		DestinationPort: 443,
+		Length:          60,
+		Error:           "direct route failed",
+	})
+	recordProbeVirtualRouterRecentConnection(probeVirtualRouterRecentPacket{
+		CapturedAt:      now,
+		Source:          "tun_rx",
+		Action:          "forward_error",
+		Protocol:        "TCP",
+		SourceIP:        "198.18.0.16",
+		DestinationIP:   "198.18.4.9",
+		SourcePort:      49153,
+		DestinationPort: 443,
+		Length:          60,
+		Path:            []string{"16", "19"},
+		FakeIP:          true,
+		FakeIPDomain:    "proxy.example.com",
+		FakeIPExitNode:  "19",
+		Error:           "proxy carrier unavailable",
+	})
+
+	connections := snapshotProbeVirtualRouterRecentConnections()
+	var directFailure, proxyFailure probeVirtualRouterRecentConnection
+	for _, connection := range connections {
+		if connection.TrafficType == "direct" && connection.Status == "error" {
+			directFailure = connection
+		}
+		if connection.TrafficType == "proxy" && connection.Status == "error" {
+			proxyFailure = connection
+		}
+	}
+	if directFailure.Domain != "direct.example.com" || directFailure.LastAction != "direct_error" {
+		t.Fatalf("unexpected direct failure: %+v", directFailure)
+	}
+	if proxyFailure.Domain != "proxy.example.com" || proxyFailure.FakeIPExitNode != "19" || proxyFailure.LastAction != "forward_error" {
+		t.Fatalf("unexpected proxy failure: %+v", proxyFailure)
+	}
+}
+
+func TestProbeVirtualRouterRecentConnectionsRecordProxyDialFailures(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	recordProbeVirtualRouterRecentDialFailure("direct.example.com:443", probeVRouteProxyTargetDecision{
+		OriginalTarget: "direct.example.com:443",
+		TargetAddr:     "direct.example.com:443",
+		Domain:         "direct.example.com",
+		Action:         "direct",
+	}, errors.New("direct dial timeout"))
+	recordProbeVirtualRouterRecentDialFailure("proxy.example.com:443", probeVRouteProxyTargetDecision{
+		OriginalTarget: "proxy.example.com:443",
+		TargetAddr:     "proxy.example.com:443",
+		Domain:         "proxy.example.com",
+		Action:         "probe_exit",
+		RuleID:         "proxy-rule",
+		ExitNodeID:     "19",
+		Path:           []string{"16", "19"},
+	}, errors.New("proxy open timeout"))
+
+	connections := snapshotProbeVirtualRouterRecentConnections()
+	if len(connections) != 2 {
+		t.Fatalf("dial failures=%d, want 2: %+v", len(connections), connections)
+	}
+	for _, connection := range connections {
+		if connection.Status != "error" || connection.Errors != 1 || connection.Domain == "" {
+			t.Fatalf("unexpected dial failure: %+v", connection)
+		}
+	}
+}
+
+func TestProbeVirtualRouterRecentConnectionsRecordCarrierWriteFailure(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	probeVirtualRouterState.mu.Lock()
+	probeVirtualRouterState.config = probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		FakeIPLibrary: probeVirtualRouterFakeIPLibrary{Items: []probeVirtualRouterFakeIPEntry{{
+			Domain: "api.example.com", FakeIP: "198.18.4.9", Action: "probe_exit", ExitNodeID: "19",
+		}}},
+	}
+	probeVirtualRouterState.mu.Unlock()
+	packet := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.16", "198.18.4.9", 49152, 443)
+	link := &probeVirtualRouterFrameLink{
+		runtime:     &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-16-19", peerNodeID: "19"}},
+		requestPath: []string{"16", "19"},
+	}
+	recordProbeVirtualRouterTXFrameFailure(link, probeVirtualRouterFrame{
+		MainType: probeVirtualRouterFrameMainTypeIP,
+		Data:     packet,
+	}, errors.New("carrier write failed"))
+	recordProbeVirtualRouterTXFrameFailure(link, probeVirtualRouterFrame{
+		MainType: probeVirtualRouterFrameMainTypePingPong,
+		Data:     []byte{1},
+	}, errors.New("control write failed"))
+	flushProbeVirtualRouterRecentPacketEvents()
+	recordProbeVirtualRouterRecentConnection(probeVirtualRouterRecentPacket{
+		CapturedAt:      time.Now().UTC().Format(time.RFC3339Nano),
+		Source:          "tun_rx",
+		Action:          "forward",
+		Protocol:        "TCP",
+		SourceIP:        "198.18.0.16",
+		DestinationIP:   "198.18.4.9",
+		SourcePort:      49152,
+		DestinationPort: 443,
+		Length:          len(packet),
+		Path:            []string{"16", "19"},
+		FakeIP:          true,
+		FakeIPDomain:    "api.example.com",
+		FakeIPExitNode:  "19",
+	})
+
+	connections := snapshotProbeVirtualRouterRecentConnections()
+	if len(connections) != 1 || connections[0].TrafficType != "proxy" || connections[0].Status != "error" || connections[0].Domain != "api.example.com" || connections[0].LastAction != "proxy_error" || !strings.Contains(connections[0].LastError, "carrier write failed") {
+		t.Fatalf("unexpected carrier write failure: %+v", connections)
 	}
 }
 
@@ -3673,6 +3887,33 @@ func TestProbeVirtualRouterFakeIPExitTargetsRefreshMissingMappingItemFromControl
 	case <-requestCh:
 		t.Fatalf("cached fake ip item should not request controller again")
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestProbeVirtualRouterFakeIPMemoryTTLDoesNotSlideOnConfigSync(t *testing.T) {
+	now := time.Date(2026, 7, 26, 8, 0, 0, 0, time.UTC)
+	expiresAt := now.Add(24 * time.Hour).Format(time.RFC3339)
+	updatedAt := now.Add(-time.Hour).Format(time.RFC3339)
+	entry := probeVirtualRouterFakeIPEntry{
+		Domain:     "api.example.com",
+		FakeIP:     "198.18.4.9",
+		Action:     "probe_exit",
+		ExitNodeID: "19",
+		ExpiresAt:  expiresAt,
+		UpdatedAt:  updatedAt,
+	}
+
+	got := probeVirtualRouterFakeIPEntryWithMemoryTTL(entry, now.Add(time.Hour))
+	if got.ExpiresAt != expiresAt || got.UpdatedAt != updatedAt {
+		t.Fatalf("config sync slid fake ip ttl: got=%+v want expires_at=%s updated_at=%s", got, expiresAt, updatedAt)
+	}
+
+	controllerEntry := entry
+	controllerEntry.ExpiresAt = now.Add(30 * 24 * time.Hour).Format(time.RFC3339)
+	got = probeVirtualRouterFakeIPEntryWithMemoryTTL(controllerEntry, now)
+	wantExpiresAt := now.Add(probeVirtualRouterFakeIPMemoryTTL).Format(time.RFC3339)
+	if got.ExpiresAt != wantExpiresAt {
+		t.Fatalf("controller fake ip ttl=%s, want clamped %s", got.ExpiresAt, wantExpiresAt)
 	}
 }
 

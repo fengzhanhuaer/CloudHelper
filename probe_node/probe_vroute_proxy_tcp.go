@@ -47,13 +47,20 @@ var probeVRouteProxyExitTCPDial = dialProbeVRouteProxyExitTCP
 func dialProbeVRouteProxyTCP(targetAddr string) (net.Conn, probeVRouteProxyTargetDecision, error) {
 	decision, err := decideProbeVRouteProxyTarget(targetAddr)
 	if err != nil {
+		recordProbeVirtualRouterRecentDialFailure(targetAddr, decision, err)
 		return nil, decision, err
 	}
 	if decision.Direct() {
 		conn, dialErr := dialProbeVRouteProxyDirectTCP(decision.TargetAddr)
+		if dialErr != nil {
+			recordProbeVirtualRouterRecentDialFailure(targetAddr, decision, dialErr)
+		}
 		return conn, decision, dialErr
 	}
 	conn, err := openProbeVRouteProxyRemoteTCP(decision)
+	if err != nil {
+		recordProbeVirtualRouterRecentDialFailure(targetAddr, decision, err)
+	}
 	return conn, decision, err
 }
 
