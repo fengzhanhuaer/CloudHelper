@@ -93,9 +93,9 @@ class ProbeNodeVpnService : VpnService() {
                 val builder = Builder()
                     .setSession("CloudHelper Probe Node")
                     .setMtu(1500)
-                    .addAddress("10.111.0.2", 32)
+                    .addAddress("198.18.0.2", 15)
                     .addRoute("0.0.0.0", 0)
-                    .addDnsServer("10.111.0.1")
+                    .addDnsServer("198.18.0.1")
                 AndroidLogStore.add("vpn", "VPN IPv6 disabled: current Android VRoute data plane is IPv4-only")
                 try {
                     builder.addDisallowedApplication(packageName)

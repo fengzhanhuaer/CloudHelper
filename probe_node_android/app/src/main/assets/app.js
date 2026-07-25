@@ -1273,7 +1273,7 @@ function renderVPNDiagnostics(data) {
     data.last_error ? `错误：${data.last_error}` : "",
     data.android_error ? `Android：${data.android_error}` : ""
   ].filter(Boolean).join("；") || "-");
-  setText("summaryDns", dns.enabled ? `${dns.listen || "10.111.0.2:53"}；${dns.fake_ip_cidr || "198.18.0.0/15"}` : "未接管");
+  setText("summaryDns", dns.enabled ? `${dns.listen || "198.18.0.1:53"}；${dns.fake_ip_cidr || "198.18.0.0/15"}` : "未接管");
   setText("summaryDnsCache", `Fake ${Number(dns.fake_ip_count || 0)} / Hint ${Number(dns.route_hint_count || 0)} / NAT ${Number(dns.real_nat_count || 0)}`);
   setText("summaryVpnSelfCheck", formatVPNSelfCheck(selfCheck));
 }
