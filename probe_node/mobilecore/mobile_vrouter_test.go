@@ -442,6 +442,31 @@ func TestMobileVRouteLocalExitIsDirect(t *testing.T) {
 	}
 }
 
+func TestMobileVRouteRuleEntryMatchesDomainPrefixAndKeywordBoundaries(t *testing.T) {
+	tests := []struct {
+		name   string
+		domain string
+		entry  string
+		want   bool
+	}{
+		{name: "prefix apex", domain: "google.com", entry: "domain_prefix:google.", want: true},
+		{name: "prefix multi label tld", domain: "google.co.uk", entry: "domain_prefix:google.", want: true},
+		{name: "prefix excludes subdomain", domain: "mail.google.com", entry: "domain_prefix:google.", want: false},
+		{name: "prefix excludes adjacent label", domain: "googleapis.com", entry: "domain_prefix:google.", want: false},
+		{name: "keyword subdomain", domain: "mail.google.com", entry: "domain_keyword:.google.", want: true},
+		{name: "keyword deep subdomain", domain: "api.mail.google.co.uk", entry: "domain_keyword:.google.", want: true},
+		{name: "keyword excludes apex", domain: "google.com", entry: "domain_keyword:.google.", want: false},
+		{name: "keyword excludes adjacent label", domain: "mail.notgoogle.com", entry: "domain_keyword:.google.", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := mobileVRouteRuleEntryMatchesDomain(tt.domain, tt.entry); got != tt.want {
+				t.Fatalf("match domain %q against %q=%t, want %t", tt.domain, tt.entry, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMobileVRouteCIDRRuleSelectsRemoteProbeExit(t *testing.T) {
 	configDir := t.TempDir()
 	resetMobileVRouteVPNStateForTest(t, configDir)

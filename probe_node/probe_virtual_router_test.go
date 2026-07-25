@@ -3226,6 +3226,7 @@ func TestProbeVirtualRouterRecentConnectionsClassifyDirectAndProxyFailures(t *te
 		Length:          60,
 		Path:            []string{"16", "19"},
 		FakeIP:          true,
+		FakeIPSide:      "dst",
 		FakeIPDomain:    "proxy.example.com",
 		FakeIPExitNode:  "19",
 		Error:           "proxy carrier unavailable",
@@ -3241,11 +3242,46 @@ func TestProbeVirtualRouterRecentConnectionsClassifyDirectAndProxyFailures(t *te
 			proxyFailure = connection
 		}
 	}
-	if directFailure.Domain != "direct.example.com" || directFailure.LastAction != "direct_error" {
+	if directFailure.Domain != "direct.example.com" || directFailure.EndpointADomain != "" || directFailure.EndpointBDomain != "direct.example.com" || directFailure.LastAction != "direct_error" {
 		t.Fatalf("unexpected direct failure: %+v", directFailure)
 	}
-	if proxyFailure.Domain != "proxy.example.com" || proxyFailure.FakeIPExitNode != "19" || proxyFailure.LastAction != "forward_error" {
+	if proxyFailure.Domain != "proxy.example.com" || proxyFailure.EndpointADomain != "" || proxyFailure.EndpointBDomain != "proxy.example.com" || proxyFailure.FakeIPExitNode != "19" || proxyFailure.LastAction != "forward_error" {
 		t.Fatalf("unexpected proxy failure: %+v", proxyFailure)
+	}
+}
+
+func TestProbeVirtualRouterRecentConnectionEndpointDomainFollowsSortedEndpoint(t *testing.T) {
+	tests := []struct {
+		name        string
+		connection  probeVirtualRouterRecentConnection
+		packet      probeVirtualRouterRecentPacket
+		side        string
+		wantADomain string
+		wantBDomain string
+	}{
+		{
+			name:        "destination sorts to endpoint a",
+			connection:  probeVirtualRouterRecentConnection{EndpointA: "10.0.0.8:443", EndpointB: "198.18.0.16:49152"},
+			packet:      probeVirtualRouterRecentPacket{SourceIP: "198.18.0.16", SourcePort: 49152, DestinationIP: "10.0.0.8", DestinationPort: 443},
+			side:        "dst",
+			wantADomain: "a.example.com",
+		},
+		{
+			name:        "destination sorts to endpoint b",
+			connection:  probeVirtualRouterRecentConnection{EndpointA: "198.18.0.16:49152", EndpointB: "203.0.113.8:443"},
+			packet:      probeVirtualRouterRecentPacket{SourceIP: "198.18.0.16", SourcePort: 49152, DestinationIP: "203.0.113.8", DestinationPort: 443},
+			side:        "dst",
+			wantBDomain: "b.example.com",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			domain := firstNonEmpty(tt.wantADomain, tt.wantBDomain)
+			applyProbeVirtualRouterRecentConnectionEndpointDomain(&tt.connection, tt.packet, domain, tt.side)
+			if tt.connection.EndpointADomain != tt.wantADomain || tt.connection.EndpointBDomain != tt.wantBDomain {
+				t.Fatalf("endpoint domains=(%q,%q), want (%q,%q)", tt.connection.EndpointADomain, tt.connection.EndpointBDomain, tt.wantADomain, tt.wantBDomain)
+			}
+		})
 	}
 }
 
@@ -5016,6 +5052,31 @@ func TestProbeVirtualRouterPersistentPingErrorClearsRouteCacheOnlyAtThreshold(t 
 	recordProbeVirtualRouterRuntimePingError(rt, probeRouteBridgeRoleToNext, errors.New("virtual router control response timeout"))
 	if got := cachedProbeVirtualRouterRoutePath("1", "3"); !reflect.DeepEqual(got, []string{"1", "2", "3"}) {
 		t.Fatalf("route cache should not be repeatedly cleared after threshold, got=%v", got)
+	}
+}
+
+func TestProbeVirtualRouterRouteRulePrefixAndKeywordPreserveDomainBoundaries(t *testing.T) {
+	tests := []struct {
+		name   string
+		domain string
+		entry  string
+		want   bool
+	}{
+		{name: "prefix apex", domain: "google.com", entry: "domain_prefix:google.", want: true},
+		{name: "prefix multi label tld", domain: "google.co.uk", entry: "domain_prefix:google.", want: true},
+		{name: "prefix excludes subdomain", domain: "mail.google.com", entry: "domain_prefix:google.", want: false},
+		{name: "prefix excludes adjacent label", domain: "googleapis.com", entry: "domain_prefix:google.", want: false},
+		{name: "keyword subdomain", domain: "mail.google.com", entry: "domain_keyword:.google.", want: true},
+		{name: "keyword deep subdomain", domain: "api.mail.google.co.uk", entry: "domain_keyword:.google.", want: true},
+		{name: "keyword excludes apex", domain: "google.com", entry: "domain_keyword:.google.", want: false},
+		{name: "keyword excludes adjacent label", domain: "mail.notgoogle.com", entry: "domain_keyword:.google.", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := probeVirtualRouterRouteRuleEntryMatchesDomain(tt.domain, tt.entry); got != tt.want {
+				t.Fatalf("match domain %q against %q=%t, want %t", tt.domain, tt.entry, got, tt.want)
+			}
+		})
 	}
 }
 

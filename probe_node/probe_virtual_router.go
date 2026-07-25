@@ -349,37 +349,39 @@ type probeVirtualRouterRecentPacketEvent struct {
 }
 
 type probeVirtualRouterRecentConnection struct {
-	Kind           string   `json:"kind,omitempty"`
-	TrafficType    string   `json:"traffic_type,omitempty"`
-	FirstSeen      string   `json:"first_seen"`
-	LastSeen       string   `json:"last_seen"`
-	Protocol       string   `json:"protocol,omitempty"`
-	Domain         string   `json:"domain,omitempty"`
-	EndpointA      string   `json:"endpoint_a"`
-	EndpointB      string   `json:"endpoint_b"`
-	RouteID        string   `json:"route_id,omitempty"`
-	LocalNodeID    string   `json:"local_node_id,omitempty"`
-	PeerNodeID     string   `json:"peer_node_id,omitempty"`
-	PathText       string   `json:"path_text,omitempty"`
-	Events         int      `json:"events"`
-	Bytes          int64    `json:"bytes"`
-	TUNEvents      int      `json:"tun_events"`
-	FrameEvents    int      `json:"frame_events"`
-	Forwarded      int      `json:"forwarded"`
-	Delivered      int      `json:"delivered"`
-	Dropped        int      `json:"dropped"`
-	Errors         int      `json:"errors"`
-	DNSQueries     int      `json:"dns_queries"`
-	Connected      bool     `json:"connected,omitempty"`
-	Status         string   `json:"status"`
-	LastSource     string   `json:"last_source,omitempty"`
-	LastAction     string   `json:"last_action,omitempty"`
-	LastTCPFlags   string   `json:"last_tcp_flags,omitempty"`
-	LastDetail     string   `json:"last_detail,omitempty"`
-	LastError      string   `json:"last_error,omitempty"`
-	FakeIPDomain   string   `json:"fake_ip_domain,omitempty"`
-	FakeIPExitNode string   `json:"fake_ip_exit_node,omitempty"`
-	ResolvedIPs    []string `json:"resolved_ips,omitempty"`
+	Kind            string   `json:"kind,omitempty"`
+	TrafficType     string   `json:"traffic_type,omitempty"`
+	FirstSeen       string   `json:"first_seen"`
+	LastSeen        string   `json:"last_seen"`
+	Protocol        string   `json:"protocol,omitempty"`
+	Domain          string   `json:"domain,omitempty"`
+	EndpointA       string   `json:"endpoint_a"`
+	EndpointB       string   `json:"endpoint_b"`
+	EndpointADomain string   `json:"endpoint_a_domain,omitempty"`
+	EndpointBDomain string   `json:"endpoint_b_domain,omitempty"`
+	RouteID         string   `json:"route_id,omitempty"`
+	LocalNodeID     string   `json:"local_node_id,omitempty"`
+	PeerNodeID      string   `json:"peer_node_id,omitempty"`
+	PathText        string   `json:"path_text,omitempty"`
+	Events          int      `json:"events"`
+	Bytes           int64    `json:"bytes"`
+	TUNEvents       int      `json:"tun_events"`
+	FrameEvents     int      `json:"frame_events"`
+	Forwarded       int      `json:"forwarded"`
+	Delivered       int      `json:"delivered"`
+	Dropped         int      `json:"dropped"`
+	Errors          int      `json:"errors"`
+	DNSQueries      int      `json:"dns_queries"`
+	Connected       bool     `json:"connected,omitempty"`
+	Status          string   `json:"status"`
+	LastSource      string   `json:"last_source,omitempty"`
+	LastAction      string   `json:"last_action,omitempty"`
+	LastTCPFlags    string   `json:"last_tcp_flags,omitempty"`
+	LastDetail      string   `json:"last_detail,omitempty"`
+	LastError       string   `json:"last_error,omitempty"`
+	FakeIPDomain    string   `json:"fake_ip_domain,omitempty"`
+	FakeIPExitNode  string   `json:"fake_ip_exit_node,omitempty"`
+	ResolvedIPs     []string `json:"resolved_ips,omitempty"`
 
 	closed bool
 	lastAt time.Time
@@ -1604,8 +1606,11 @@ func recordProbeVirtualRouterRecentConnection(packet probeVirtualRouterRecentPac
 		connection.Domain = strings.TrimSpace(packet.FakeIPDomain)
 		connection.FakeIPDomain = strings.TrimSpace(packet.FakeIPDomain)
 		connection.FakeIPExitNode = strings.TrimSpace(packet.FakeIPExitNode)
+		applyProbeVirtualRouterRecentConnectionEndpointDomain(&connection, packet, connection.Domain, packet.FakeIPSide)
 	} else if connection.Domain == "" && connection.TrafficType == "direct" {
-		connection.Domain = probeVirtualRouterRecentDNSDomainForPacketLocked(packet)
+		domain, side := probeVirtualRouterRecentDNSDomainForPacketLocked(packet)
+		connection.Domain = domain
+		applyProbeVirtualRouterRecentConnectionEndpointDomain(&connection, packet, domain, side)
 	}
 	if strings.Contains(flags, "FIN") || strings.Contains(flags, "RST") {
 		connection.closed = true
@@ -1667,13 +1672,14 @@ func recordProbeVirtualRouterRecentDNSQuery(domain string, action string, exitNo
 	connection, ok := probeVirtualRouterRecentConnectionState.items[key]
 	if !ok || connection.Kind != "dns" {
 		connection = probeVirtualRouterRecentConnection{
-			Kind:        "dns",
-			TrafficType: "dns",
-			FirstSeen:   now.UTC().Format(time.RFC3339Nano),
-			Protocol:    "DNS",
-			Domain:      domain,
-			EndpointA:   "DNS",
-			EndpointB:   domain,
+			Kind:            "dns",
+			TrafficType:     "dns",
+			FirstSeen:       now.UTC().Format(time.RFC3339Nano),
+			Protocol:        "DNS",
+			Domain:          domain,
+			EndpointA:       "DNS",
+			EndpointB:       domain,
+			EndpointBDomain: domain,
 		}
 	}
 	connection.Events++
@@ -1727,13 +1733,14 @@ func recordProbeVirtualRouterRecentDialFailure(targetAddr string, decision probe
 	connection, ok := probeVirtualRouterRecentConnectionState.items[key]
 	if !ok {
 		connection = probeVirtualRouterRecentConnection{
-			Kind:        "connection",
-			TrafficType: trafficType,
-			FirstSeen:   now.UTC().Format(time.RFC3339Nano),
-			Protocol:    "TCP",
-			Domain:      domain,
-			EndpointA:   "local-proxy",
-			EndpointB:   target,
+			Kind:            "connection",
+			TrafficType:     trafficType,
+			FirstSeen:       now.UTC().Format(time.RFC3339Nano),
+			Protocol:        "TCP",
+			Domain:          domain,
+			EndpointA:       "local-proxy",
+			EndpointB:       target,
+			EndpointBDomain: domain,
 		}
 	}
 	connection.Events++
@@ -1792,11 +1799,18 @@ func sanitizeProbeVirtualRouterRecentResolvedIPs(items []string) []string {
 	return out
 }
 
-func probeVirtualRouterRecentDNSDomainForPacketLocked(packet probeVirtualRouterRecentPacket) string {
+func probeVirtualRouterRecentDNSDomainForPacketLocked(packet probeVirtualRouterRecentPacket) (string, string) {
 	bestDomain := ""
+	bestSide := ""
 	bestAt := time.Time{}
-	for _, ipText := range []string{packet.DestinationIP, packet.SourceIP} {
-		ip := net.ParseIP(strings.TrimSpace(ipText))
+	for _, candidate := range []struct {
+		ip   string
+		side string
+	}{
+		{ip: packet.DestinationIP, side: "dst"},
+		{ip: packet.SourceIP, side: "src"},
+	} {
+		ip := net.ParseIP(strings.TrimSpace(candidate.ip))
 		if ip == nil {
 			continue
 		}
@@ -1808,13 +1822,39 @@ func probeVirtualRouterRecentDNSDomainForPacketLocked(packet probeVirtualRouterR
 			for _, resolvedIP := range item.ResolvedIPs {
 				if resolvedIP == value {
 					bestDomain = item.Domain
+					bestSide = candidate.side
 					bestAt = item.lastAt
 					break
 				}
 			}
 		}
 	}
-	return bestDomain
+	return bestDomain, bestSide
+}
+
+func applyProbeVirtualRouterRecentConnectionEndpointDomain(connection *probeVirtualRouterRecentConnection, packet probeVirtualRouterRecentPacket, domain string, side string) {
+	if connection == nil {
+		return
+	}
+	domain = normalizeProbeVirtualRouterDomain(domain)
+	if domain == "" {
+		return
+	}
+	var endpoint string
+	switch strings.ToLower(strings.TrimSpace(side)) {
+	case "src", "source":
+		endpoint = probeVirtualRouterRecentConnectionEndpoint(packet.SourceIP, packet.SourcePort)
+	case "dst", "destination":
+		endpoint = probeVirtualRouterRecentConnectionEndpoint(packet.DestinationIP, packet.DestinationPort)
+	default:
+		return
+	}
+	if endpoint == connection.EndpointA {
+		connection.EndpointADomain = domain
+	}
+	if endpoint == connection.EndpointB {
+		connection.EndpointBDomain = domain
+	}
 }
 
 func markProbeVirtualRouterRecentDNSConnection(domain string, packet probeVirtualRouterRecentPacket) {

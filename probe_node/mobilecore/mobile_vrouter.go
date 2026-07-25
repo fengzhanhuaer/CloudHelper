@@ -464,16 +464,30 @@ func mobileVRouteRuleEntryMatchesDomain(domain string, entry string) bool {
 		return false
 	}
 	key = strings.ToLower(strings.TrimSpace(key))
-	value = normalizeMobileVRouteDomain(value)
-	if value == "" {
-		return false
-	}
 	switch key {
 	case "domain", "host":
+		value = normalizeMobileVRouteDomain(value)
+		if value == "" {
+			return false
+		}
 		return domain == value
 	case "domain_suffix", "domain-suffix", "suffix":
+		value = normalizeMobileVRouteDomain(value)
+		if value == "" {
+			return false
+		}
 		return domain == value || strings.HasSuffix(domain, "."+value)
+	case "domain_prefix", "domain-prefix", "prefix":
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" {
+			return false
+		}
+		return strings.HasPrefix(domain, value)
 	case "domain_keyword", "domain-keyword", "keyword":
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" {
+			return false
+		}
 		return strings.Contains(domain, value)
 	default:
 		return false

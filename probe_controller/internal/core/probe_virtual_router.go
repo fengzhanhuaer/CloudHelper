@@ -1152,11 +1152,80 @@ func normalizeProbeVirtualRouterRouteRuleEntry(raw string) (string, bool) {
 	if entry, ok := normalizeProbeVirtualRouterCommaRouteRuleEntry(trimmed); ok {
 		return entry, true
 	}
+	if entry, ok := normalizeProbeVirtualRouterBareRouteRuleEntry(trimmed); ok {
+		return entry, true
+	}
 	key, value, ok := strings.Cut(trimmed, ":")
 	if !ok {
 		return "", false
 	}
 	return normalizeProbeVirtualRouterColonRouteRuleEntry(key, value)
+}
+
+func normalizeProbeVirtualRouterBareRouteRuleEntry(raw string) (string, bool) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", false
+	}
+	if prefix, err := netip.ParsePrefix(value); err == nil && prefix.IsValid() && prefix.Addr().Zone() == "" {
+		return "cidr:" + prefix.Masked().String(), true
+	}
+	if address, err := netip.ParseAddr(value); err == nil && address.IsValid() && address.Zone() == "" {
+		address = address.Unmap()
+		return "cidr:" + netip.PrefixFrom(address, address.BitLen()).String(), true
+	}
+	domain := strings.ToLower(strings.TrimSpace(value))
+	if strings.HasPrefix(domain, "*.") && strings.HasSuffix(domain, ".*") {
+		middle := strings.TrimSuffix(strings.TrimPrefix(domain, "*."), ".*")
+		if !isProbeVirtualRouterBareRouteRuleDomain(middle) {
+			return "", false
+		}
+		return "domain_keyword:." + middle + ".", true
+	}
+	if strings.HasSuffix(domain, ".*") {
+		prefix := strings.TrimSuffix(domain, "*")
+		if !isProbeVirtualRouterBareRouteRuleDomain(strings.TrimSuffix(prefix, ".")) {
+			return "", false
+		}
+		return "domain_prefix:" + prefix, true
+	}
+	domain = strings.TrimSuffix(domain, ".")
+	domain = strings.TrimPrefix(domain, "*.")
+	domain = strings.TrimLeft(domain, ".")
+	if !isProbeVirtualRouterBareRouteRuleDomain(domain) {
+		return "", false
+	}
+	return "domain_suffix:" + domain, true
+}
+
+func isProbeVirtualRouterBareRouteRuleDomain(value string) bool {
+	if value == "" || len(value) > 253 || strings.ContainsAny(value, "/:, \t\r\n") {
+		return false
+	}
+	onlyDigitsAndDots := true
+	for _, char := range value {
+		if (char < '0' || char > '9') && char != '.' {
+			onlyDigitsAndDots = false
+			break
+		}
+	}
+	if onlyDigitsAndDots {
+		return false
+	}
+	for _, label := range strings.Split(value, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, char := range label {
+			if (char >= 'a' && char <= 'z') ||
+				(char >= '0' && char <= '9') ||
+				char == '-' || char == '_' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeProbeVirtualRouterCommaRouteRuleEntry(raw string) (string, bool) {

@@ -619,6 +619,11 @@ func TestMngLinkVirtualRouterRouteRulesHandlerSaveSortsAndTopologySavePreserves(
         "\"domain_suffix:.Reddit.COM\",",
         "\"cidr:91.108.4.9/22\",",
         "domain_keyword:API.AAAA,",
+        "Example.NET",
+        "Google.*",
+        "*.YouTube.*",
+        "203.0.113.9/24",
+        "198.51.100.7",
         "\"domain_suffix:reddit.com\"",
         "- DOMAIN-SUFFIX,githubusercontent.com,Github",
         "- 'DOMAIN-SUFFIX,cdn-telegram.org,Telegram'",
@@ -655,10 +660,15 @@ func TestMngLinkVirtualRouterRouteRulesHandlerSaveSortsAndTopologySavePreserves(
 		t.Fatalf("media action=%q exit=%q, want probe_exit node 2", media.Action, media.ExitNodeID)
 	}
 	wantEntries := []string{
+		"cidr:198.51.100.7/32",
+		"cidr:203.0.113.0/24",
 		"cidr:91.108.4.0/22",
 		"cidr:91.108.8.0/22",
+		"domain_keyword:.youtube.",
 		"domain_keyword:api.aaaa",
+		"domain_prefix:google.",
 		"domain_suffix:cdn-telegram.org",
+		"domain_suffix:example.net",
 		"domain_suffix:githubusercontent.com",
 		"domain_suffix:reddit.com",
 	}

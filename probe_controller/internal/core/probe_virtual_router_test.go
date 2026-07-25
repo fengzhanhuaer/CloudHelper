@@ -656,3 +656,62 @@ func TestNormalizeProbeVirtualRouterTopologyRulesInitializesRuleIDsBySequence(t 
 		t.Fatalf("rule ids should be initialized once by sequence: %+v", config.TopologyRules)
 	}
 }
+
+func TestNormalizeProbeVirtualRouterRouteRuleEntryInfersBareValues(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+		ok    bool
+	}{
+		{name: "domain", input: "Example.COM", want: "domain_suffix:example.com", ok: true},
+		{name: "wildcard domain", input: "*.Example.COM.", want: "domain_suffix:example.com", ok: true},
+		{name: "top level wildcard", input: "Google.*", want: "domain_prefix:google.", ok: true},
+		{name: "subdomain and top level wildcard", input: "*.Google.*", want: "domain_keyword:.google.", ok: true},
+		{name: "ipv4 cidr", input: "91.108.4.9/22", want: "cidr:91.108.4.0/22", ok: true},
+		{name: "ipv4 address", input: "203.0.113.9", want: "cidr:203.0.113.9/32", ok: true},
+		{name: "ipv6 cidr", input: "2001:db8::9/64", want: "cidr:2001:db8::/64", ok: true},
+		{name: "ipv6 address", input: "2001:db8::9", want: "cidr:2001:db8::9/128", ok: true},
+		{name: "explicit domain", input: "domain_keyword:API", want: "domain_keyword:api", ok: true},
+		{name: "clash domain", input: "DOMAIN-SUFFIX,Example.COM,Proxy", want: "domain_suffix:example.com", ok: true},
+		{name: "invalid ipv4", input: "999.1.1.1", ok: false},
+		{name: "url is not domain", input: "https://example.com", ok: false},
+		{name: "domain with port", input: "example.com:443", ok: false},
+		{name: "invalid label", input: "bad/domain", ok: false},
+		{name: "wildcard only", input: "*.*", ok: false},
+		{name: "middle wildcard", input: "google.*.com", ok: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := normalizeProbeVirtualRouterRouteRuleEntry(tt.input)
+			if ok != tt.ok || got != tt.want {
+				t.Fatalf("normalize %q=(%q,%t), want (%q,%t)", tt.input, got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+func TestProbeVirtualRouterRouteRuleWildcardConversionsPreserveDomainBoundaries(t *testing.T) {
+	tests := []struct {
+		name   string
+		domain string
+		entry  string
+		want   bool
+	}{
+		{name: "prefix apex", domain: "google.com", entry: "domain_prefix:google.", want: true},
+		{name: "prefix multi label tld", domain: "google.co.uk", entry: "domain_prefix:google.", want: true},
+		{name: "prefix excludes subdomain", domain: "mail.google.com", entry: "domain_prefix:google.", want: false},
+		{name: "prefix excludes adjacent label", domain: "googleapis.com", entry: "domain_prefix:google.", want: false},
+		{name: "keyword subdomain", domain: "mail.google.com", entry: "domain_keyword:.google.", want: true},
+		{name: "keyword deep subdomain", domain: "api.mail.google.co.uk", entry: "domain_keyword:.google.", want: true},
+		{name: "keyword excludes apex", domain: "google.com", entry: "domain_keyword:.google.", want: false},
+		{name: "keyword excludes adjacent label", domain: "mail.notgoogle.com", entry: "domain_keyword:.google.", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := probeVirtualRouterRouteRuleEntryMatchesFakeIPDomain(tt.domain, tt.entry); got != tt.want {
+				t.Fatalf("match domain %q against %q=%t, want %t", tt.domain, tt.entry, got, tt.want)
+			}
+		})
+	}
+}

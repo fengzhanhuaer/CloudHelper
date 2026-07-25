@@ -145,7 +145,7 @@ func upsertMngProbeVirtualRouterRouteRules(payload json.RawMessage, controllerBa
 		}
 		for entryIndex, entry := range item.Entries {
 			if _, ok := normalizeProbeVirtualRouterRouteRuleEntry(entry); !ok {
-				return nil, fmt.Errorf("route_rules[%d].entries[%d] is invalid", index, entryIndex)
+				return nil, fmt.Errorf("route_rules[%d].entries[%d] %q is invalid", index, entryIndex, entry)
 			}
 		}
 	}

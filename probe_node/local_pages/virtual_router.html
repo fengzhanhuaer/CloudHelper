@@ -161,6 +161,24 @@
     }
     tr.packet-error td { color: var(--danger); }
     .mono { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace; }
+    .connection-endpoint-copy {
+      max-width: 100%;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      font-weight: 400;
+      text-align: left;
+      white-space: nowrap;
+    }
+    .connection-endpoint-copy:hover,
+    .connection-endpoint-copy:focus-visible {
+      color: var(--accent);
+      text-decoration: underline;
+      outline: none;
+    }
     .packet-badge {
       display: inline-flex;
       align-items: center;
@@ -1401,6 +1419,42 @@
       });
     }
 
+    function connectionEndpointDisplay(endpoint, domain) {
+      const rawEndpoint = String(endpoint || '').trim();
+      const cleanDomain = String(domain || '').trim();
+      if (!cleanDomain) return rawEndpoint || '-';
+      const portMatch = rawEndpoint.match(/:(\d+)$/);
+      return portMatch ? `${cleanDomain}:${portMatch[1]}` : cleanDomain;
+    }
+
+    function connectionEndpointHTML(item, side) {
+      const key = side === 'a' ? 'endpoint_a' : 'endpoint_b';
+      const domainKey = side === 'a' ? 'endpoint_a_domain' : 'endpoint_b_domain';
+      const display = connectionEndpointDisplay(item && item[key], item && item[domainKey]);
+      return `<button class="connection-endpoint-copy mono" type="button" data-copy-endpoint="${escapeHTML(display)}" title="点击复制">${escapeHTML(display)}</button>`;
+    }
+
+    async function copyConnectionEndpoint(value) {
+      const text = String(value || '').trim();
+      if (!text || text === '-') return false;
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        try {
+          await navigator.clipboard.writeText(text);
+          return true;
+        } catch (_) {}
+      }
+      const input = document.createElement('textarea');
+      input.value = text;
+      input.setAttribute('readonly', '');
+      input.style.position = 'fixed';
+      input.style.opacity = '0';
+      document.body.appendChild(input);
+      input.select();
+      const copied = document.execCommand('copy');
+      input.remove();
+      return copied;
+    }
+
     function renderConnections(data) {
       const rows = document.getElementById('connectionRows');
       const allItems = Array.isArray(data && data.items) ? data.items : [];
@@ -1441,8 +1495,8 @@
         const rowClass = item.status === 'error' ? ' class="packet-error"' : '';
         return `<tr${rowClass}>
           <td class="mono">${escapeHTML(packetTime(item.first_seen))}<br><span class="hint">${escapeHTML(packetTime(item.last_seen))}</span></td>
-          <td class="mono">${escapeHTML(item.endpoint_a || '-')}</td>
-          <td class="mono">${escapeHTML(item.endpoint_b || '-')}</td>
+          <td class="mono">${connectionEndpointHTML(item, 'a')}</td>
+          <td class="mono">${connectionEndpointHTML(item, 'b')}</td>
           <td class="mono">${escapeHTML(item.protocol || '-')}<br><span class="hint">${escapeHTML(connectionTrafficTypeLabel(item.traffic_type))}</span></td>
           <td>${escapeHTML(activity.join(' / '))}</td>
           <td class="mono">${escapeHTML(routeParts.join(' / ') || '-')}</td>
@@ -2013,6 +2067,14 @@
     document.getElementById('connectionTypeSelect').addEventListener('change', (event) => {
       connectionType = String(event.target.value || 'all');
       renderConnections(connectionSnapshot);
+    });
+    document.getElementById('connectionRows').addEventListener('click', (event) => {
+      const button = event.target.closest('[data-copy-endpoint]');
+      if (!button) return;
+      const value = String(button.dataset.copyEndpoint || '').trim();
+      copyConnectionEndpoint(value)
+        .then((copied) => setMessage(copied ? `已复制：${value}` : '复制失败', copied ? 'success' : 'error'))
+        .catch((err) => setMessage('复制失败：' + err.message, 'error'));
     });
     document.getElementById('packetRefreshBtn').addEventListener('click', () => {
       loadPackets().then(() => setMessage('最近报文已刷新', 'success')).catch((err) => setMessage('读取最近报文失败：' + err.message, 'error'));
