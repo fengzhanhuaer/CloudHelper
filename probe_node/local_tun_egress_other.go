@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !linux
 
 package main
 
@@ -16,7 +16,7 @@ func probeLocalTUNEgressSnapshot() (probeLocalTUNEgressStatus, error) {
 }
 
 func probeLocalTUNEgressUpdate(req probeLocalTUNEgressUpdateRequest) (probeLocalTUNEgressStatus, error) {
-	return probeLocalTUNEgressStatus{}, &probeLocalHTTPError{Status: 501, Message: "manual egress selection is only supported on windows"}
+	return probeLocalTUNEgressStatus{}, &probeLocalHTTPError{Status: 501, Message: "manual egress selection is not supported on this platform"}
 }
 
 func applyProbeLocalTUNEgressPersistentState(state probeLocalTUNEgressPersistentState) {

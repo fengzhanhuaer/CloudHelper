@@ -254,21 +254,7 @@ func cleanupProbeVirtualRouterLinuxTakeoverRoutes() error {
 }
 
 func resolveProbeVirtualRouterLinuxPrimaryEgressRoute(excludedDev string) (probeVirtualRouterLinuxRouteTarget, error) {
-	output, err := probeLocalLinuxRunCommand(5*time.Second, "ip", "-4", "route", "show", "default")
-	if err != nil {
-		return probeVirtualRouterLinuxRouteTarget{}, fmt.Errorf("resolve linux virtual router default route failed: %w", err)
-	}
-	for _, line := range strings.Split(output, "\n") {
-		target, ok := parseProbeVirtualRouterLinuxDefaultRouteLine(line)
-		if !ok {
-			continue
-		}
-		if strings.TrimSpace(excludedDev) != "" && target.Dev == strings.TrimSpace(excludedDev) {
-			continue
-		}
-		return target, nil
-	}
-	return probeVirtualRouterLinuxRouteTarget{}, errors.New("usable linux virtual router ipv4 default route not found")
+	return resolveProbeRouteLinuxSelectedEgressRoute(excludedDev)
 }
 
 func parseProbeVirtualRouterLinuxDefaultRouteLine(line string) (probeVirtualRouterLinuxRouteTarget, bool) {
