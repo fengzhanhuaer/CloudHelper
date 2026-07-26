@@ -1,6 +1,8 @@
 package core
 
 import (
+	"bufio"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net"
@@ -123,6 +125,43 @@ func TestMngProbeConsoleBridgeAllowsPageVersionPreflight(t *testing.T) {
 	}
 	if got := strings.ToLower(rec.Header().Get("Access-Control-Allow-Headers")); !strings.Contains(got, "x-cloudhelper-page-version") {
 		t.Fatalf("expected page version header to be allowed, got %q", got)
+	}
+}
+
+func TestMngProbeConsoleInfoBoxEventsStayOnController(t *testing.T) {
+	token := mintMngProbeConsoleToken("7", "node-a")
+	if token == "" {
+		t.Fatal("expected non-empty token")
+	}
+	server := httptest.NewServer(http.HandlerFunc(mngProbeConsoleBridgeHandler))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+mngProbeConsoleSessionPrefix+token+"/local/api/info_box/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("open info box events: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("unexpected response: status=%d content_type=%q", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+
+	revision := "2026-07-26T12:00:00Z"
+	publishControllerProbeInfoBoxChanged(probeInfoBoxChangedCommand{Type: "info_box_changed", UpdatedAt: revision})
+	scanner := bufio.NewScanner(resp.Body)
+	found := false
+	for scanner.Scan() {
+		if strings.Contains(scanner.Text(), revision) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("event stream missing revision, err=%v", scanner.Err())
 	}
 }
 

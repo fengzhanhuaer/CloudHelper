@@ -52,6 +52,7 @@
     .row { display: grid; grid-template-columns: minmax(0, 1fr) 128px; gap: 12px; align-items: end; margin-top: 12px; }
     .actions { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
     .nav-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+    .nav-actions .active { border-color: #58a6ff; background: #1f6feb; color: #fff; }
     .status { min-height: 20px; color: #8b949e; font-size: 13px; margin: 8px 0 0; }
     .status.error { color: #ff938d; }
     .status.ok { color: #7ee787; }
@@ -87,8 +88,13 @@
         <p class="sub" id="shell-subtitle">本机命令执行，Windows 节点使用 PowerShell</p>
       </div>
       <div class="nav-actions">
-        <a class="btn" href="/local/panel">返回面板</a>
+        <a class="btn" href="/local/panel">首页</a>
+        <a class="btn" href="/local/logs">运行日志</a>
         <a class="btn" href="/local/virtual-router">虚拟路由</a>
+        <a class="btn" href="/local/system">系统设置</a>
+        <a class="btn" href="/local/sync">通用同步</a>
+        <a class="btn active" href="/local/shell">Shell</a>
+        <a class="btn" href="/local/information">信息框</a>
       </div>
     </div>
 

@@ -460,6 +460,94 @@ select {
   font-size: 14px;
   line-height: 1.45;
 }
+.info-box-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  max-width: 760px;
+}
+.info-box-heading .page-subtitle {
+  margin-bottom: 0;
+}
+.info-box-top-actions {
+  display: flex;
+  gap: 8px;
+}
+.info-box-top-actions .command {
+  min-width: 72px;
+  min-height: 38px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+.info-box-page {
+  display: grid;
+  grid-template-rows: auto minmax(260px, 1fr) auto;
+  min-height: calc(100dvh - 130px);
+}
+.info-box-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 260px;
+  max-height: calc(100dvh - 250px);
+  margin-top: 8px;
+  padding: 10px 2px;
+  overflow: auto;
+  border-top: 1px solid #d7d3ca;
+  border-bottom: 1px solid #d7d3ca;
+  scroll-behavior: smooth;
+}
+.info-box-item {
+  width: min(94%, 620px);
+  border: 1px solid #d7d3ca;
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: #fff;
+  color: #1c1917;
+  text-align: left;
+}
+.info-box-item:active {
+  border-color: #0f766e;
+  background: #f0fdfa;
+}
+.info-box-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: #78716c;
+  font-size: 11px;
+}
+.info-box-meta strong {
+  color: #0f766e;
+}
+.info-box-message {
+  margin-top: 5px;
+  color: #1c1917;
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.info-box-empty {
+  display: grid;
+  min-height: 100%;
+  place-items: center;
+  color: #78716c;
+  font-size: 13px;
+}
+.info-box-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  margin-top: 10px;
+}
+.info-box-composer input {
+  min-width: 0;
+}
+.info-box-composer .command {
+  min-width: 78px;
+}
 .vroute-summary-grid,
 .vroute-card-grid,
 .vroute-capability-grid {
@@ -681,7 +769,7 @@ select {
     display: none;
   }
   nav {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 6px;
   }
   .nav-button {
@@ -707,5 +795,18 @@ select {
   }
   .route-control {
     align-items: flex-start;
+  }
+  .info-box-heading {
+    align-items: center;
+  }
+  .info-box-top-actions .command {
+    min-width: 64px;
+    padding: 0 9px;
+  }
+  .info-box-page {
+    min-height: calc(100dvh - 170px - env(safe-area-inset-bottom, 0px));
+  }
+  .info-box-list {
+    max-height: calc(100dvh - 286px - env(safe-area-inset-bottom, 0px));
   }
 }

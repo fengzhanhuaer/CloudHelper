@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>共享信息框</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body { margin:0; min-height:100vh; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif; background:#0d1117; color:#c9d1d9; }
+    .wrap { width:min(980px, calc(100vw - 32px)); min-height:100vh; margin:0 auto; padding:28px 0; display:grid; grid-template-rows:auto auto minmax(360px, 1fr) auto; gap:14px; }
+    .topbar { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .title-block { min-width:0; }
+    h1 { margin:0; color:#f0f6fc; font-size:22px; letter-spacing:0; }
+    .subtitle { margin:5px 0 0; color:#8b949e; font-size:12px; }
+    .top-actions { display:flex; gap:8px; }
+    .nav { display:flex; gap:8px; flex-wrap:wrap; }
+    .nav a { min-height:38px; display:inline-flex; align-items:center; padding:0 12px; border:1px solid #30363d; border-radius:6px; background:#21262d; color:#c9d1d9; text-decoration:none; font-weight:600; }
+    .nav a:hover { border-color:#58a6ff; }
+    .nav a.active { border-color:#1f6feb; background:#1f6feb; color:#fff; }
+    .btn { min-height:38px; padding:0 12px; border:1px solid #30363d; border-radius:6px; background:#21262d; color:#c9d1d9; cursor:pointer; font-weight:600; }
+    .btn:hover { border-color:#58a6ff; }
+    .btn.primary { border-color:#1f6feb; background:#1f6feb; color:#fff; }
+    .btn.danger { color:#ffb3ad; }
+    .btn:disabled { opacity:.55; cursor:wait; }
+    .feed { min-height:0; overflow:auto; padding:14px 4px; border-top:1px solid #21262d; border-bottom:1px solid #21262d; scroll-behavior:smooth; }
+    .feed-list { display:flex; flex-direction:column; gap:10px; }
+    .message { width:min(680px, 92%); padding:11px 13px; border:1px solid #30363d; border-radius:6px; background:#161b22; color:#c9d1d9; text-align:left; cursor:pointer; }
+    .message:hover { border-color:#58a6ff; background:#1b222c; }
+    .message-meta { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:6px; color:#8b949e; font-size:11px; }
+    .message-author { color:#58a6ff; font-weight:700; }
+    .message-text { white-space:pre-wrap; overflow-wrap:anywhere; font-size:14px; line-height:1.5; }
+    .empty { display:grid; min-height:100%; place-items:center; color:#6e7681; font-size:13px; }
+    .composer { display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:8px; align-items:center; }
+    .composer input { width:100%; min-width:0; height:44px; border:1px solid #30363d; border-radius:6px; padding:0 12px; background:#161b22; color:#f0f6fc; font-size:14px; outline:none; }
+    .composer input:focus { border-color:#58a6ff; box-shadow:0 0 0 3px rgba(88,166,255,.12); }
+    .feedback { grid-column:1 / -1; min-height:18px; color:#8b949e; font-size:12px; }
+    .feedback.error { color:#ff7b72; }
+    @media (max-width:600px) {
+      .wrap { width:calc(100vw - 24px); padding:16px 0; }
+      .topbar { align-items:flex-start; }
+      .top-actions { flex-wrap:wrap; justify-content:flex-end; }
+      .message { width:96%; }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header class="topbar">
+      <div class="title-block">
+        <h1>共享信息框</h1>
+        <p class="subtitle" id="summary">正在连接主控...</p>
+      </div>
+      <div class="top-actions">
+        <button id="btn-refresh" class="btn" type="button">刷新</button>
+        <button id="btn-clear" class="btn danger" type="button">清空</button>
+      </div>
+    </header>
+
+    <nav class="nav" aria-label="本地控制台导航">
+      <a href="/local/panel">首页</a>
+      <a href="/local/logs">运行日志</a>
+      <a href="/local/virtual-router">虚拟路由</a>
+      <a href="/local/system">系统设置</a>
+      <a href="/local/sync">通用同步</a>
+      <a href="/local/shell">Shell</a>
+      <a href="/local/information" class="active">信息框</a>
+    </nav>
+
+    <section id="feed" class="feed" aria-live="polite">
+      <div id="feed-list" class="feed-list"></div>
+    </section>
+
+    <form id="composer" class="composer">
+      <input id="message-input" maxlength="4000" autocomplete="off" placeholder="输入信息" aria-label="信息内容" />
+      <button id="btn-send" class="btn primary" type="submit">发送</button>
+      <div id="feedback" class="feedback" role="status"></div>
+    </form>
+  </main>
+
+  <script>
+    const state = { items: [], busy: false, refreshing: false, pendingRefresh: false };
+    const feed = document.getElementById('feed');
+    const list = document.getElementById('feed-list');
+    const input = document.getElementById('message-input');
+    const sendButton = document.getElementById('btn-send');
+    const refreshButton = document.getElementById('btn-refresh');
+    const clearButton = document.getElementById('btn-clear');
+
+    async function requestJSON(url, options = {}) {
+      const response = await fetch(url, { credentials:'same-origin', ...options });
+      let payload = {};
+      try { payload = await response.json(); } catch (_) {}
+      if (!response.ok) {
+        const error = new Error(payload.error || `HTTP ${response.status}`);
+        error.status = response.status;
+        throw error;
+      }
+      return payload;
+    }
+
+    function setBusy(busy) {
+      state.busy = busy;
+      sendButton.disabled = busy;
+      refreshButton.disabled = busy;
+      clearButton.disabled = busy;
+      input.disabled = busy;
+    }
+
+    function setFeedback(text, error) {
+      const element = document.getElementById('feedback');
+      element.textContent = text || '';
+      element.className = 'feedback' + (error ? ' error' : '');
+    }
+
+    function formatTime(value) {
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? String(value || '') : date.toLocaleString();
+    }
+
+    function authorText(item) {
+      const name = String(item.node_name || '').trim();
+      return name ? `#${item.node_id} ${name}` : `#${item.node_id || '-'}`;
+    }
+
+    async function copyText(text) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+      const area = document.createElement('textarea');
+      area.value = text;
+      area.style.position = 'fixed';
+      area.style.opacity = '0';
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand('copy');
+      area.remove();
+    }
+
+    function render(payload, scrollToEnd) {
+      state.items = Array.isArray(payload.items) ? payload.items : [];
+      document.getElementById('summary').textContent = `全部探针共享 · ${state.items.length} 条`;
+      list.innerHTML = '';
+      if (!state.items.length) {
+        list.innerHTML = '<div class="empty">暂无信息</div>';
+        return;
+      }
+      state.items.forEach((item) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'message';
+        button.title = '点击复制';
+        const meta = document.createElement('div');
+        meta.className = 'message-meta';
+        const author = document.createElement('span');
+        author.className = 'message-author';
+        author.textContent = authorText(item);
+        const time = document.createElement('span');
+        time.textContent = formatTime(item.created_at);
+        const body = document.createElement('div');
+        body.className = 'message-text';
+        body.textContent = item.message || '';
+        meta.append(author, time);
+        button.append(meta, body);
+        button.addEventListener('click', async () => {
+          try { await copyText(item.message || ''); setFeedback('已复制', false); }
+          catch (error) { setFeedback('复制失败：' + error.message, true); }
+        });
+        list.appendChild(button);
+      });
+      if (scrollToEnd) feed.scrollTop = feed.scrollHeight;
+    }
+
+    async function refresh(silent) {
+      if (state.busy || state.refreshing) {
+        state.pendingRefresh = true;
+        return;
+      }
+      state.refreshing = true;
+      if (!silent) setBusy(true);
+      try {
+        const payload = await requestJSON('/local/api/info_box', { method:'GET' });
+        render(payload, !silent);
+        if (!silent) setFeedback('', false);
+      } catch (error) {
+        if (error.status === 401) { location.href = '/local/login'; return; }
+        setFeedback('刷新失败：' + error.message, true);
+      } finally {
+        state.refreshing = false;
+        if (!silent) setBusy(false);
+        drainPendingRefresh();
+      }
+    }
+
+    function requestAutomaticRefresh() {
+      if (document.visibilityState !== 'visible') {
+        state.pendingRefresh = true;
+        return;
+      }
+      if (state.busy || state.refreshing) {
+        state.pendingRefresh = true;
+        return;
+      }
+      refresh(true);
+    }
+
+    function drainPendingRefresh() {
+      if (!state.pendingRefresh || state.busy || state.refreshing || document.visibilityState !== 'visible') return;
+      state.pendingRefresh = false;
+      window.setTimeout(() => refresh(true), 0);
+    }
+
+    document.getElementById('composer').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const message = input.value.trim();
+      if (!message || state.busy) return;
+      setBusy(true);
+      setFeedback('正在发送...', false);
+      try {
+        const payload = await requestJSON('/local/api/info_box', {
+          method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({message}),
+        });
+        input.value = '';
+        render(payload, true);
+        setFeedback('已发送', false);
+      } catch (error) {
+        setFeedback('发送失败：' + error.message, true);
+      } finally { setBusy(false); input.focus(); drainPendingRefresh(); }
+    });
+
+    refreshButton.addEventListener('click', () => refresh(false));
+    clearButton.addEventListener('click', async () => {
+      if (state.busy || !confirm('确定清空全部探针共享信息？')) return;
+      setBusy(true);
+      try {
+        const payload = await requestJSON('/local/api/info_box', { method:'DELETE' });
+        render(payload, false);
+        setFeedback('已清空', false);
+      } catch (error) { setFeedback('清空失败：' + error.message, true); }
+      finally { setBusy(false); drainPendingRefresh(); }
+    });
+    if (window.EventSource) {
+      const events = new EventSource('/local/api/info_box/events');
+      events.addEventListener('info_box_changed', requestAutomaticRefresh);
+      window.addEventListener('beforeunload', () => events.close(), { once:true });
+    }
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') requestAutomaticRefresh();
+    });
+    refresh(false);
+    window.setInterval(requestAutomaticRefresh, 60000);
+  </script>
+</body>
+</html>

@@ -162,6 +162,7 @@ type probeControlMessage struct {
 	ConsoleHeaders      map[string][]string              `json:"console_headers,omitempty"`
 	ConsoleBody         string                           `json:"console_body,omitempty"`
 	LocalConsole        bool                             `json:"local_console,omitempty"`
+	UpdatedAt           string                           `json:"updated_at,omitempty"`
 	Timestamp           string                           `json:"timestamp"`
 }
 
@@ -727,6 +728,10 @@ func probeRuntimePlatform() string {
 
 func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex) {
 	typeName := strings.TrimSpace(strings.ToLower(msg.Type))
+	if typeName == "info_box_changed" {
+		publishProbeInfoBoxChanged(msg.UpdatedAt)
+		return
+	}
 	if typeName == "report_interval" {
 		if sec := normalizeReportInterval(msg.IntervalSec); sec > 0 {
 			reportIntervalSec.Store(int64(sec))

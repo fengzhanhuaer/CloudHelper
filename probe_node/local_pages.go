@@ -23,4 +23,7 @@ var (
 
 	//go:embed local_pages/shell.html
 	probeLocalShellPageHTML string
+
+	//go:embed local_pages/information.html
+	probeLocalInformationPageHTML string
 )

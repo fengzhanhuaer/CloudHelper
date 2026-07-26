@@ -121,6 +121,38 @@ object MobileCoreBridge {
         )
     }
 
+    fun infoBoxList(config: ProbeNodeConfig): String {
+        return callString(
+            methodName = "infoBoxList",
+            parameterTypes = arrayOf(String::class.java, String::class.java, String::class.java),
+            args = arrayOf(config.controllerUrl, config.nodeId, config.nodeSecret),
+        )
+    }
+
+    fun infoBoxSend(config: ProbeNodeConfig, message: String): String {
+        return callString(
+            methodName = "infoBoxSend",
+            parameterTypes = arrayOf(String::class.java, String::class.java, String::class.java, String::class.java),
+            args = arrayOf(config.controllerUrl, config.nodeId, config.nodeSecret, message),
+        )
+    }
+
+    fun infoBoxClear(config: ProbeNodeConfig): String {
+        return callString(
+            methodName = "infoBoxClear",
+            parameterTypes = arrayOf(String::class.java, String::class.java, String::class.java),
+            args = arrayOf(config.controllerUrl, config.nodeId, config.nodeSecret),
+        )
+    }
+
+    fun infoBoxRevision(): String {
+        return callString(
+            methodName = "infoBoxRevision",
+            parameterTypes = emptyArray<Class<*>>(),
+            args = emptyArray(),
+        )
+    }
+
     fun vpnSelfCheck(context: Context): String {
         return recordResult("mobilecore", callString(
             methodName = "vpnSelfCheck",

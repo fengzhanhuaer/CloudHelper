@@ -2,6 +2,9 @@ package xyz.cloudhelper.probenode
 
 import android.Manifest
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -14,6 +17,8 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import org.json.JSONObject
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
@@ -27,6 +32,10 @@ class MainActivity : Activity() {
         .toString()
     private val statusRefreshRunning = AtomicBoolean(false)
     private val linkRefreshRunning = AtomicBoolean(false)
+    private val infoBoxRevisionExecutor = Executors.newSingleThreadScheduledExecutor()
+    @Volatile private var infoBoxLastRevision = ""
+    @Volatile private var activityVisible = false
+    @Volatile private var activityDestroyed = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -60,6 +69,24 @@ class MainActivity : Activity() {
         requestNotificationPermissionIfNeeded()
         startReportServiceIfConfigured()
         refreshCachedStatusAsync()
+        startInfoBoxRevisionMonitor()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        activityVisible = true
+    }
+
+    override fun onStop() {
+        activityVisible = false
+        super.onStop()
+    }
+
+    override fun onDestroy() {
+        activityDestroyed = true
+        infoBoxRevisionExecutor.shutdownNow()
+        webView.destroy()
+        super.onDestroy()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -111,10 +138,36 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun evaluatePageScript(script: String) {
+    private fun emitInfoBox(payload: String) {
+        AndroidLogStore.add("info", payload, if (payload.contains("\"ok\":false")) "error" else "info")
         runOnUiThread {
-            webView.evaluateJavascript(script, null)
+            webView.evaluateJavascript(
+                "window.CloudHelperUI && window.CloudHelperUI.setInfoBox(${JSONObject.quote(payload)});",
+                null,
+            )
         }
+    }
+
+    private fun evaluatePageScript(script: String) {
+        if (activityDestroyed) return
+        runOnUiThread {
+            if (!activityDestroyed) webView.evaluateJavascript(script, null)
+        }
+    }
+
+    private fun startInfoBoxRevisionMonitor() {
+        infoBoxLastRevision = MobileCoreBridge.infoBoxRevision()
+        infoBoxRevisionExecutor.scheduleWithFixedDelay({
+            if (activityDestroyed) return@scheduleWithFixedDelay
+            val revision = MobileCoreBridge.infoBoxRevision().trim()
+            if (revision.isEmpty() || revision == infoBoxLastRevision || !activityVisible) {
+                return@scheduleWithFixedDelay
+            }
+            infoBoxLastRevision = revision
+            evaluatePageScript(
+                "window.CloudHelperUI && window.CloudHelperUI.infoBoxChanged(${JSONObject.quote(revision)});",
+            )
+        }, 1, 1, TimeUnit.SECONDS)
     }
 
     private fun refreshCachedStatusAsync() {
@@ -287,6 +340,40 @@ class MainActivity : Activity() {
                 emitVRouteRTT(MobileCoreBridge.vRoutePathRTT(targetNodeID))
             }
             return "RTT 测量已开始"
+        }
+
+        @JavascriptInterface
+        fun infoBoxRefresh(): String {
+            val config = ProbeNodeConfig.load(this@MainActivity)
+            thread(name = "cloudhelper-android-info-list") {
+                emitInfoBox(MobileCoreBridge.infoBoxList(config))
+            }
+            return "正在刷新"
+        }
+
+        @JavascriptInterface
+        fun infoBoxSend(message: String): String {
+            val config = ProbeNodeConfig.load(this@MainActivity)
+            thread(name = "cloudhelper-android-info-send") {
+                emitInfoBox(MobileCoreBridge.infoBoxSend(config, message))
+            }
+            return "正在发送"
+        }
+
+        @JavascriptInterface
+        fun infoBoxClear(): String {
+            val config = ProbeNodeConfig.load(this@MainActivity)
+            thread(name = "cloudhelper-android-info-clear") {
+                emitInfoBox(MobileCoreBridge.infoBoxClear(config))
+            }
+            return "正在清空"
+        }
+
+        @JavascriptInterface
+        fun copyText(text: String): String {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(ClipData.newPlainText("CloudHelper info", text))
+            return "已复制"
         }
 
         @JavascriptInterface

@@ -1736,6 +1736,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/virtual-router", probeLocalVirtualRouterPageHandler)
 	mux.HandleFunc("/local/sync", probeLocalSyncPageHandler)
 	mux.HandleFunc("/local/shell", probeLocalShellPageHandler)
+	mux.HandleFunc("/local/information", probeLocalInformationPageHandler)
 	mux.HandleFunc("/local/api/auth/bootstrap", probeLocalAuthBootstrapHandler)
 	mux.HandleFunc("/local/api/auth/register", probeLocalAuthRegisterHandler)
 	mux.HandleFunc("/local/api/auth/login", probeLocalAuthLoginHandler)
@@ -1774,6 +1775,8 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/sync/google/auth/start", probeLocalSyncGoogleAuthStartHandler)
 	mux.HandleFunc("/local/api/sync/google/auth/poll", probeLocalSyncGoogleAuthPollHandler)
 	mux.HandleFunc("/local/api/sync/google/disconnect", probeLocalSyncGoogleDisconnectHandler)
+	mux.HandleFunc("/local/api/info_box", probeLocalInfoBoxHandler)
+	mux.HandleFunc("/local/api/info_box/events", probeLocalInfoBoxEventsHandler)
 }
 
 type probeLocalRegisterRequest struct {
@@ -1894,6 +1897,40 @@ func probeLocalSyncPageHandler(w http.ResponseWriter, r *http.Request) {
 
 func probeLocalShellPageHandler(w http.ResponseWriter, r *http.Request) {
 	serveProbeLocalHTMLPage(w, r, "/local/shell", probeLocalShellPageHTML)
+}
+
+func probeLocalInformationPageHandler(w http.ResponseWriter, r *http.Request) {
+	serveProbeLocalHTMLPage(w, r, "/local/information", probeLocalInformationPageHTML)
+}
+
+func probeLocalInfoBoxHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	message := ""
+	if r.Method == http.MethodPost {
+		var request struct {
+			Message string `json:"message"`
+		}
+		raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<10))
+		if err != nil || decodeProbeLocalJSONStrict(raw, &request) != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+			return
+		}
+		message = request.Message
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), probeInfoBoxRequestTimeout)
+	defer cancel()
+	payload, err := probeLocalRequestInfoBox(ctx, currentprobeLocalRouteRuntimeContext(), r.Method, message)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func serveProbeLocalHTMLPage(w http.ResponseWriter, r *http.Request, expectedPath string, pageHTML string) {

@@ -257,6 +257,7 @@ func registerProbeSession(nodeID string, stream net.Conn) *probeSession {
 			"interval_sec": currentProbeReportIntervalSec(),
 			"server_utc":   time.Now().UTC().Format(time.RFC3339),
 		})
+		dispatchCurrentProbeInfoBoxRevision(s)
 		dispatchProbeNetworkMonitorTasksForNode(nodeID)
 	}()
 	return s

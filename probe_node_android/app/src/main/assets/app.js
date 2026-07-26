@@ -1,11 +1,16 @@
 let saveFeedbackTimer = 0;
 let toastTimer = 0;
 let upgradeStatusTimer = 0;
+let infoBoxPollTimer = 0;
+let infoBoxPendingAction = "";
+let infoBoxRefreshPending = false;
+let infoBoxLastRevision = "";
 let bootErrorLogged = false;
 
 const pages = {
   status: ["状态", "当前 Android 节点配置与运行状态。"],
   route: ["路由", "通过 Android VPN 启用或关闭本机路由能力。"],
+  information: ["信息框", "全部探针共享的信息流。"],
   settings: ["设置", "配置主控与节点密钥，并执行直连或主控代理升级。"]
 };
 
@@ -42,6 +47,15 @@ window.CloudHelperUI = {
       button.textContent = "测量 RTT";
     }
     refreshLogsIfVisible();
+  },
+  setInfoBox(payload) {
+    completeInfoBoxRequest(parseJSON(payload || "{}"));
+  },
+  infoBoxChanged(revision) {
+    const nextRevision = String(revision || "").trim();
+    if (nextRevision && nextRevision === infoBoxLastRevision) return;
+    infoBoxLastRevision = nextRevision;
+    requestInfoBoxRefresh();
   }
 };
 
@@ -1262,6 +1276,169 @@ function setRouteEnabled(enabled) {
   }
 }
 
+function setupInfoBox() {
+  const composer = byId("infoBoxComposer");
+  const refreshButton = byId("infoBoxRefreshButton");
+  const clearButton = byId("infoBoxClearButton");
+  if (!composer || !refreshButton || !clearButton) {
+    return;
+  }
+  composer.addEventListener("submit", (event) => {
+    event.preventDefault();
+    sendInfoBoxMessage();
+  });
+  refreshButton.addEventListener("click", () => refreshInfoBox(false));
+  clearButton.addEventListener("click", clearInfoBox);
+  refreshInfoBox(false);
+  infoBoxPollTimer = window.setInterval(() => {
+    requestInfoBoxRefresh();
+  }, 60000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") requestInfoBoxRefresh();
+  });
+}
+
+function setInfoBoxBusy(busy) {
+  ["infoBoxRefreshButton", "infoBoxClearButton", "infoBoxSendButton", "infoBoxInput"].forEach((id) => {
+    const element = byId(id);
+    if (element) element.disabled = Boolean(busy);
+  });
+}
+
+function setInfoBoxStatus(message, isError) {
+  const status = byId("infoBoxStatus");
+  if (!status) return;
+  status.textContent = message || "";
+  status.classList.toggle("error", Boolean(isError));
+}
+
+function refreshInfoBox(silent) {
+  if (!hasCloudHelper("infoBoxRefresh") || infoBoxPendingAction) {
+    if (!silent && !hasCloudHelper("infoBoxRefresh")) setInfoBoxStatus("信息框不可用。", true);
+    return;
+  }
+  infoBoxPendingAction = silent ? "silent-refresh" : "refresh";
+  if (!silent) {
+    setInfoBoxBusy(true);
+    setInfoBoxStatus("正在刷新...", false);
+  }
+  window.CloudHelper.infoBoxRefresh();
+}
+
+function requestInfoBoxRefresh() {
+  if (!document.body || document.body.dataset.page !== "information") return;
+  if (document.visibilityState !== "visible" || infoBoxPendingAction) {
+    infoBoxRefreshPending = true;
+    return;
+  }
+  infoBoxRefreshPending = false;
+  refreshInfoBox(true);
+}
+
+function drainInfoBoxRefresh() {
+  if (!infoBoxRefreshPending || infoBoxPendingAction || document.visibilityState !== "visible") return;
+  infoBoxRefreshPending = false;
+  window.setTimeout(() => refreshInfoBox(true), 0);
+}
+
+function sendInfoBoxMessage() {
+  const input = byId("infoBoxInput");
+  const message = input ? input.value.trim() : "";
+  if (!message || infoBoxPendingAction || !hasCloudHelper("infoBoxSend")) return;
+  infoBoxPendingAction = "send";
+  setInfoBoxBusy(true);
+  setInfoBoxStatus("正在发送...", false);
+  window.CloudHelper.infoBoxSend(message);
+}
+
+function clearInfoBox() {
+  if (infoBoxPendingAction || !hasCloudHelper("infoBoxClear")) return;
+  if (!window.confirm("确定清空全部探针共享信息？")) return;
+  infoBoxPendingAction = "clear";
+  setInfoBoxBusy(true);
+  setInfoBoxStatus("正在清空...", false);
+  window.CloudHelper.infoBoxClear();
+}
+
+function completeInfoBoxRequest(data) {
+  const action = infoBoxPendingAction;
+  infoBoxPendingAction = "";
+  setInfoBoxBusy(false);
+  if (!data || data.ok !== true) {
+    setInfoBoxStatus(`操作失败：${data && data.error ? data.error : "未知错误"}`, true);
+    drainInfoBoxRefresh();
+    return;
+  }
+  renderInfoBox(data);
+  if (action === "send") {
+    const input = byId("infoBoxInput");
+    if (input) {
+      input.value = "";
+      input.focus();
+    }
+    setInfoBoxStatus("已发送", false);
+  } else if (action === "clear") {
+    setInfoBoxStatus("已清空", false);
+  } else if (action !== "silent-refresh") {
+    setInfoBoxStatus(`已刷新 ${Array.isArray(data.items) ? data.items.length : 0} 条`, false);
+  }
+  drainInfoBoxRefresh();
+}
+
+function renderInfoBox(data) {
+  const list = byId("infoBoxList");
+  if (!list) return;
+  const items = Array.isArray(data && data.items) ? data.items : [];
+  list.innerHTML = "";
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "info-box-empty";
+    empty.textContent = "暂无信息";
+    list.appendChild(empty);
+    return;
+  }
+  items.forEach((item) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "info-box-item";
+    button.title = "点击复制";
+    const meta = document.createElement("div");
+    meta.className = "info-box-meta";
+    const author = document.createElement("strong");
+    author.textContent = item.node_name ? `#${item.node_id} ${item.node_name}` : `#${item.node_id || "-"}`;
+    const time = document.createElement("span");
+    time.textContent = formatInfoBoxTime(item.created_at);
+    const message = document.createElement("div");
+    message.className = "info-box-message";
+    message.textContent = item.message || "";
+    meta.append(author, time);
+    button.append(meta, message);
+    button.addEventListener("click", () => copyInfoBoxText(item.message || ""));
+    list.appendChild(button);
+  });
+  list.scrollTop = list.scrollHeight;
+}
+
+function formatInfoBoxTime(value) {
+  const date = new Date(value || "");
+  return Number.isNaN(date.getTime()) ? String(value || "") : date.toLocaleString();
+}
+
+async function copyInfoBoxText(text) {
+  try {
+    if (hasCloudHelper("copyText")) {
+      window.CloudHelper.copyText(text);
+    } else if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      throw new Error("clipboard unavailable");
+    }
+    showToast("已复制", false);
+  } catch (error) {
+    showToast(`复制失败：${error && error.message ? error.message : error}`, true);
+  }
+}
+
 function renderVPNDiagnostics(data) {
   const vpnRunning = isVPNRunning(data);
   const vpnStarting = isVPNStarting(data);
@@ -1512,6 +1689,9 @@ function initPage() {
   if (page === "route") {
     setupRouteControl();
   }
+  if (page === "information") {
+    setupInfoBox();
+  }
   if (page === "settings") {
     setupSettingsTabs();
   }
@@ -1539,7 +1719,7 @@ function handleBootFailure(error) {
   if (!bootErrorLogged) {
     bootErrorLogged = true;
   }
-  const status = byId("status") || byId("runtimeStatus") || byId("settingsStatus") || byId("linkStatus");
+  const status = byId("status") || byId("runtimeStatus") || byId("settingsStatus") || byId("linkStatus") || byId("infoBoxStatus");
   if (status) {
     status.textContent = `启动失败：${message}`;
   }

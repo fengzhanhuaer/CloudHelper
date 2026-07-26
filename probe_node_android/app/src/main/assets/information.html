@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>CloudHelper Probe Node</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body data-page="information">
+  <div class="shell">
+    <aside>
+      <h1 class="brand">CloudHelper<br>Probe Node</h1>
+      <nav>
+        <a class="nav-button" data-page="status" href="status.html">状态</a>
+        <a class="nav-button" data-page="route" href="route.html">路由</a>
+        <a class="nav-button" data-page="information" href="information.html">信息框</a>
+        <a class="nav-button" data-page="settings" href="settings.html">设置</a>
+      </nav>
+    </aside>
+    <main>
+      <div class="info-box-heading">
+        <div>
+          <h2 id="pageTitle" class="page-title">信息框</h2>
+          <p id="pageSubtitle" class="page-subtitle"></p>
+        </div>
+        <div class="info-box-top-actions">
+          <button id="infoBoxRefreshButton" class="command secondary" type="button">刷新</button>
+          <button id="infoBoxClearButton" class="command neutral" type="button">清空</button>
+        </div>
+      </div>
+      <section class="page info-box-page">
+        <div id="infoBoxStatus" class="inline-feedback" aria-live="polite"></div>
+        <div id="infoBoxList" class="info-box-list" aria-live="polite"></div>
+        <form id="infoBoxComposer" class="info-box-composer">
+          <input id="infoBoxInput" maxlength="4000" autocomplete="off" placeholder="输入信息" aria-label="信息内容">
+          <button id="infoBoxSendButton" class="command" type="submit">发送</button>
+        </form>
+      </section>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>

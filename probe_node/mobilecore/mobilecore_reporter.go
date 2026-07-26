@@ -56,6 +56,11 @@ type routeConfigSyncControlMessage struct {
 	ControllerBaseURL string `json:"controller_base_url"`
 }
 
+type infoBoxChangedControlMessage struct {
+	Type      string `json:"type"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
 type logsControlResult struct {
 	Type         string            `json:"type"`
 	RequestID    string            `json:"request_id"`
@@ -205,6 +210,12 @@ func processControlMessage(raw json.RawMessage, stream net.Conn, writeMu *sync.M
 		return
 	}
 	switch strings.ToLower(strings.TrimSpace(envelope.Type)) {
+	case "info_box_changed":
+		var msg infoBoxChangedControlMessage
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			return
+		}
+		markMobileInfoBoxChanged()
 	case "logs_get":
 		var msg logsControlMessage
 		if err := json.Unmarshal(raw, &msg); err != nil {

@@ -271,6 +271,10 @@ func mngProbeConsoleBridgeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	tokenRecord := route.TokenRecord
 	nodeID := tokenRecord.NodeID
+	if route.ConsolePath == "/local/api/info_box/events" {
+		serveMngProbeInfoBoxEvents(w, r, tokenRecord.ExpiresAt)
+		return
+	}
 
 	path := route.ConsolePath
 	if r.URL.RawQuery != "" {
