@@ -5469,9 +5469,6 @@ func handleProbeVirtualRouterBusinessFrame(runtime *probeVirtualRouterRuntime, l
 	if mainType == probeVirtualRouterFrameMainTypeSpeed && subType == probeVirtualRouterSpeedSubTypeChunk {
 		return handleProbeVirtualRouterSpeedChunk(runtime, payload, framePath)
 	}
-	if mainType == probeVirtualRouterFrameMainTypeDebugLog && !allowProbeVirtualRouterRemoteDebugLogs() {
-		return errors.New("remote virtual router debug logs are disabled")
-	}
 	msg := probeVirtualRouterControlProbePayload{}
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		return err
@@ -5528,11 +5525,6 @@ func handleProbeVirtualRouterBusinessFrame(runtime *probeVirtualRouterRuntime, l
 	default:
 		return fmt.Errorf("unsupported virtual router business type=%d subtype=%d", mainType, subType)
 	}
-}
-
-func allowProbeVirtualRouterRemoteDebugLogs() bool {
-	value := strings.ToLower(strings.TrimSpace(os.Getenv("PROBE_VROUTE_ALLOW_REMOTE_DEBUG_LOGS")))
-	return value == "1" || value == "true" || value == "yes"
 }
 
 func handleProbeVirtualRouterControlPing(runtime *probeVirtualRouterRuntime, link *probeVirtualRouterFrameLink, msg probeVirtualRouterControlProbePayload) error {

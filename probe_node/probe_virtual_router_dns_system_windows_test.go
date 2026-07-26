@@ -34,7 +34,7 @@ func TestApplyProbeVirtualRouterSystemDNSRebuildsMissingAutomaticBackup(t *testi
 		return windowsAdapterInfo{
 			AdapterGUID:    probeVirtualRouterTestDNSAdapterGUID,
 			InterfaceIndex: 15,
-			DNSServers:     []string{"127.0.0.1"},
+			DNSServers:     []string{"198.18.0.2"},
 		}, nil
 	}
 	probeVirtualRouterReadPersistentDNS = func(string) (probeVirtualRouterPersistentDNS, error) {
@@ -66,7 +66,7 @@ func TestApplyProbeVirtualRouterSystemDNSMigratesLegacyAutomaticBackup(t *testin
 		InterfaceGUID:  probeVirtualRouterTestDNSAdapterGUID,
 		InterfaceIndex: 15,
 		DNSServers:     []string{"172.20.10.11", "172.20.10.14"},
-		AppliedDNS:     []string{"127.0.0.1"},
+		AppliedDNS:     []string{"198.18.0.2"},
 	}
 	if err := persistProbeVirtualRouterDNSBackup(legacy); err != nil {
 		t.Fatalf("persist legacy DNS backup: %v", err)
@@ -75,7 +75,7 @@ func TestApplyProbeVirtualRouterSystemDNSMigratesLegacyAutomaticBackup(t *testin
 		return windowsAdapterInfo{
 			AdapterGUID:    probeVirtualRouterTestDNSAdapterGUID,
 			InterfaceIndex: 15,
-			DNSServers:     []string{"127.0.0.1"},
+			DNSServers:     []string{"198.18.0.2"},
 		}, nil
 	}
 	probeVirtualRouterReadPersistentDNS = func(string) (probeVirtualRouterPersistentDNS, error) {
@@ -137,7 +137,7 @@ func TestRestoreProbeVirtualRouterSystemDNSWithoutBackupReturnsToAutomaticDNS(t 
 		return windowsAdapterInfo{
 			AdapterGUID:    probeVirtualRouterTestDNSAdapterGUID,
 			InterfaceIndex: 15,
-			DNSServers:     []string{"127.0.0.1"},
+			DNSServers:     []string{"198.18.0.2"},
 		}, nil
 	}
 	probeVirtualRouterReadPersistentDNS = func(string) (probeVirtualRouterPersistentDNS, error) {
@@ -207,7 +207,7 @@ func TestRestoreProbeVirtualRouterSystemDNSMigratesLegacyAutomaticBackup(t *test
 		InterfaceGUID:  probeVirtualRouterTestDNSAdapterGUID,
 		InterfaceIndex: 15,
 		DNSServers:     []string{"172.20.10.11", "172.20.10.14"},
-		AppliedDNS:     []string{"127.0.0.1"},
+		AppliedDNS:     []string{"198.18.0.2"},
 	}
 	if err := persistProbeVirtualRouterDNSBackup(legacy); err != nil {
 		t.Fatalf("persist legacy DNS backup: %v", err)
@@ -243,7 +243,7 @@ func TestRestoreProbeVirtualRouterSystemDNSPreservesStaticBackup(t *testing.T) {
 		InterfaceGUID:  probeVirtualRouterTestDNSAdapterGUID,
 		InterfaceIndex: 15,
 		DNSServers:     []string{"8.8.8.8", "1.1.1.1"},
-		AppliedDNS:     []string{"127.0.0.1"},
+		AppliedDNS:     []string{"198.18.0.2"},
 		Automatic:      &automatic,
 	}
 	if err := persistProbeVirtualRouterDNSBackup(backup); err != nil {

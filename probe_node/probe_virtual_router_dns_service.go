@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	probeVirtualRouterDNSListenHost     = "127.0.0.1"
+	probeVirtualRouterDNSListenHost     = probeLocalTUNInterfaceIPv4
 	probeVirtualRouterDNSListenPort     = 53
 	probeVirtualRouterDNSReadBufferSize = 4096
 	probeVirtualRouterDNSHandlerLimit   = 64
@@ -49,6 +49,7 @@ var probeVirtualRouterDNSListenPacket = net.ListenPacket
 var probeVirtualRouterDNSListen = net.Listen
 var probeVirtualRouterApplySystemDNS = applyProbeVirtualRouterSystemDNS
 var probeVirtualRouterRestoreSystemDNS = restoreProbeVirtualRouterSystemDNS
+var probeVirtualRouterDNSAfterTUNReady = ensureProbeVirtualRouterDNSRuntime
 
 func ensureProbeVirtualRouterDNSRuntime() {
 	reconcileProbeVirtualRouterDNSRuntime()

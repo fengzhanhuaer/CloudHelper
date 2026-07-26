@@ -91,6 +91,7 @@ func startProbeVirtualRouterTUNDataPlane() error {
 	probeLocalLinuxTUNDataPlaneState.mu.Unlock()
 
 	logProbeInfof("probe local linux tun data plane started: dev=%s", dev)
+	probeVirtualRouterDNSAfterTUNReady()
 	return nil
 }
 
@@ -142,6 +143,7 @@ func handleProbeVirtualRouterTUNInboundPacket(packet []byte) {
 
 func resetProbeVirtualRouterTUNDataPlaneHooksForTest() {
 	probeVirtualRouterLinuxNewTUNDataPlaneRunner = nil
+	probeVirtualRouterDNSAfterTUNReady = func() {}
 	_ = stopProbeVirtualRouterTUNDataPlane()
 }
 

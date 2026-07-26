@@ -13,6 +13,11 @@ func TestProbePageDockerComposeIncludesLinuxTUNRequirements(t *testing.T) {
 		"devices:",
 		"/dev/net/tun:/dev/net/tun",
 		"./:/opt/cloudhelper/probe_node",
+		"PROBE_NODE_DOCKER_HOST_DNS: 'true'",
+		"PROBE_NODE_HOST_DBUS_SOCKET: '/host/run/dbus/system_bus_socket'",
+		"PROBE_NODE_HOST_RESOLV_CONF: '/host/etc/resolv.conf'",
+		"/run/dbus:/host/run/dbus:ro",
+		"/etc/resolv.conf:/host/etc/resolv.conf",
 	}
 	for _, item := range required {
 		if !strings.Contains(mngProbePageHTML, item) {

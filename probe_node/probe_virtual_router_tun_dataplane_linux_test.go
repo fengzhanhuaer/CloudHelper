@@ -37,6 +37,8 @@ func TestStartProbeVirtualRouterTUNDataPlaneLinuxStartsRunner(t *testing.T) {
 
 	fake := &fakeProbeVirtualRouterLinuxTUNDataPlane{stats: probeVirtualRouterTUNDataPlaneStats{Running: true, RXPackets: 7, RXBytes: 99, TXPackets: 3, TXBytes: 33}}
 	starts := 0
+	dnsReadyCalls := 0
+	probeVirtualRouterDNSAfterTUNReady = func() { dnsReadyCalls++ }
 	probeVirtualRouterLinuxNewTUNDataPlaneRunner = func(dev string) (probeVirtualRouterTUNDataPlane, error) {
 		starts++
 		if dev != probeLocalLinuxDefaultTUNDeviceName {
@@ -53,6 +55,9 @@ func TestStartProbeVirtualRouterTUNDataPlaneLinuxStartsRunner(t *testing.T) {
 	}
 	if starts != 1 {
 		t.Fatalf("runner starts=%d want 1", starts)
+	}
+	if dnsReadyCalls != 1 {
+		t.Fatalf("dns ready calls=%d want 1", dnsReadyCalls)
 	}
 	stats := probeVirtualRouterTUNDataPlaneStatsSnapshot()
 	if !stats.Running || stats.RXPackets != 7 || stats.RXBytes != 99 || stats.TXPackets != 3 || stats.TXBytes != 33 {

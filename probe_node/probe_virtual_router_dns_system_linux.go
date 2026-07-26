@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -19,7 +18,6 @@ const (
 	probeVirtualRouterLinuxDNSModeResolved   = "systemd_resolved"
 	probeVirtualRouterLinuxDNSModeResolvConf = "resolv_conf"
 	probeVirtualRouterLinuxResolvConfPath    = "/etc/resolv.conf"
-	probeVirtualRouterLinuxResolvedLink      = "lo"
 )
 
 type probeVirtualRouterLinuxDNSBackup struct {
@@ -34,8 +32,8 @@ type probeVirtualRouterLinuxDNSBackup struct {
 }
 
 var (
-	probeVirtualRouterLinuxDNSLookPath  = exec.LookPath
-	probeVirtualRouterLinuxDNSRun       = runProbeLocalCommand
+	probeVirtualRouterLinuxDNSLookPath  = probeVirtualRouterLinuxDNSCommandLookPath
+	probeVirtualRouterLinuxDNSRun       = runProbeVirtualRouterLinuxDNSCommand
 	probeVirtualRouterLinuxDNSReadFile  = os.ReadFile
 	probeVirtualRouterLinuxDNSWriteFile = func(path string, data []byte, mode os.FileMode) error {
 		return os.WriteFile(path, data, mode)
@@ -47,9 +45,15 @@ var (
 func applyProbeVirtualRouterSystemDNS() error {
 	backup, ok := loadProbeVirtualRouterLinuxDNSBackupBestEffort()
 	if ok {
+		var err error
+		backup, err = migrateProbeVirtualRouterLinuxDNSBackupForRuntime(backup)
+		if err != nil {
+			return err
+		}
 		return ensureProbeVirtualRouterLinuxDNSApplied(backup)
 	}
 
+	dnsLink := probeRouteLinuxTUNDeviceName()
 	target, err := resolveProbeRouteLinuxSelectedEgressRoute(probeRouteLinuxTUNDeviceName())
 	if err != nil {
 		return fmt.Errorf("resolve linux dns egress interface: %w", err)
@@ -58,10 +62,10 @@ func applyProbeVirtualRouterSystemDNS() error {
 		return errors.New("linux dns egress interface is empty")
 	}
 
-	if probeVirtualRouterLinuxResolvedAvailable(probeVirtualRouterLinuxResolvedLink) {
+	if probeVirtualRouterLinuxResolvedAvailable(dnsLink) {
 		backup = probeVirtualRouterLinuxDNSBackup{
 			Mode:             probeVirtualRouterLinuxDNSModeResolved,
-			Interface:        probeVirtualRouterLinuxResolvedLink,
+			Interface:        dnsLink,
 			UpstreamServers:  currentProbeVirtualRouterLinuxDNSUpstreams(target.Dev),
 			AppliedDNSServer: probeVirtualRouterDNSListenHost,
 		}
@@ -75,7 +79,7 @@ func applyProbeVirtualRouterSystemDNS() error {
 		return nil
 	}
 
-	path := probeVirtualRouterLinuxResolvConfPath
+	path := currentProbeVirtualRouterLinuxResolvConfPath()
 	raw, err := probeVirtualRouterLinuxDNSReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read linux resolv.conf: %w", err)
@@ -102,6 +106,52 @@ func applyProbeVirtualRouterSystemDNS() error {
 	return nil
 }
 
+func migrateProbeVirtualRouterLinuxDNSBackupForRuntime(backup probeVirtualRouterLinuxDNSBackup) (probeVirtualRouterLinuxDNSBackup, error) {
+	changed := false
+	desired := strings.TrimSpace(probeVirtualRouterDNSListenHost)
+	if strings.TrimSpace(backup.AppliedDNSServer) != desired {
+		backup.AppliedDNSServer = desired
+		changed = true
+	}
+
+	switch backup.Mode {
+	case probeVirtualRouterLinuxDNSModeResolved:
+		dnsLink := strings.TrimSpace(probeRouteLinuxTUNDeviceName())
+		if dnsLink == "" {
+			return backup, errors.New("linux dns tun interface is empty")
+		}
+		if !strings.EqualFold(strings.TrimSpace(backup.Interface), dnsLink) {
+			backup.Interface = dnsLink
+			changed = true
+		}
+	case probeVirtualRouterLinuxDNSModeResolvConf:
+		currentPath := currentProbeVirtualRouterLinuxResolvConfPath()
+		backupPath := strings.TrimSpace(backup.ResolvConfPath)
+		if backupPath == "" || filepath.Clean(backupPath) != filepath.Clean(currentPath) {
+			raw, err := probeVirtualRouterLinuxDNSReadFile(currentPath)
+			if err != nil {
+				return backup, fmt.Errorf("read current linux resolv.conf during migration: %w", err)
+			}
+			mode := os.FileMode(0o644)
+			if info, statErr := probeVirtualRouterLinuxDNSStat(currentPath); statErr == nil {
+				mode = info.Mode().Perm()
+			}
+			backup.ResolvConfPath = currentPath
+			backup.ResolvConf = append([]byte(nil), raw...)
+			backup.ResolvConfMode = uint32(mode.Perm())
+			backup.UpstreamServers = parseProbeVirtualRouterLinuxDNSServers(raw)
+			changed = true
+		}
+	}
+
+	if changed {
+		if err := persistProbeVirtualRouterLinuxDNSBackup(backup); err != nil {
+			return backup, err
+		}
+	}
+	return backup, nil
+}
+
 func restoreProbeVirtualRouterSystemDNS() error {
 	backup, ok := loadProbeVirtualRouterLinuxDNSBackupBestEffort()
 	if !ok {
@@ -119,7 +169,7 @@ func restoreProbeVirtualRouterSystemDNS() error {
 			_, _ = probeVirtualRouterLinuxDNSRun(5*time.Second, "resolvectl", "flush-caches")
 		}
 	case probeVirtualRouterLinuxDNSModeResolvConf:
-		path := firstNonEmpty(strings.TrimSpace(backup.ResolvConfPath), probeVirtualRouterLinuxResolvConfPath)
+		path := firstNonEmpty(strings.TrimSpace(backup.ResolvConfPath), currentProbeVirtualRouterLinuxResolvConfPath())
 		mode := os.FileMode(backup.ResolvConfMode).Perm()
 		if mode == 0 {
 			mode = 0o644
@@ -152,7 +202,7 @@ func ensureProbeVirtualRouterLinuxDNSApplied(backup probeVirtualRouterLinuxDNSBa
 		_, _ = probeVirtualRouterLinuxDNSRun(5*time.Second, "resolvectl", "flush-caches")
 		return nil
 	case probeVirtualRouterLinuxDNSModeResolvConf:
-		path := firstNonEmpty(strings.TrimSpace(backup.ResolvConfPath), probeVirtualRouterLinuxResolvConfPath)
+		path := firstNonEmpty(strings.TrimSpace(backup.ResolvConfPath), currentProbeVirtualRouterLinuxResolvConfPath())
 		mode := os.FileMode(backup.ResolvConfMode).Perm()
 		if mode == 0 {
 			mode = 0o644
@@ -186,13 +236,17 @@ func probeVirtualRouterLinuxResolvedAvailable(dev string) bool {
 }
 
 func probeVirtualRouterLinuxSystemResolverUsesResolved() bool {
-	if target, err := probeVirtualRouterLinuxDNSReadlink(probeVirtualRouterLinuxResolvConfPath); err == nil {
+	if probeVirtualRouterLinuxDockerHostDNSEnabled() {
+		return probeVirtualRouterLinuxResolvedDBusAvailable() == nil
+	}
+	resolvConfPath := currentProbeVirtualRouterLinuxResolvConfPath()
+	if target, err := probeVirtualRouterLinuxDNSReadlink(resolvConfPath); err == nil {
 		cleanTarget := strings.ToLower(strings.TrimSpace(target))
 		if strings.Contains(cleanTarget, "systemd/resolve") {
 			return true
 		}
 	}
-	if raw, err := probeVirtualRouterLinuxDNSReadFile(probeVirtualRouterLinuxResolvConfPath); err == nil {
+	if raw, err := probeVirtualRouterLinuxDNSReadFile(resolvConfPath); err == nil {
 		for _, server := range parseProbeVirtualRouterLinuxDNSServers(raw) {
 			if server == "127.0.0.53" || server == "127.0.0.54" {
 				return true
@@ -214,9 +268,17 @@ func currentProbeLocalSystemDNSServers() []string {
 }
 
 func currentProbeVirtualRouterLinuxDNSUpstreams(dev string) []string {
-	paths := []string{probeVirtualRouterLinuxResolvConfPath}
+	resolvConfPath := currentProbeVirtualRouterLinuxResolvConfPath()
+	paths := []string{resolvConfPath}
 	if probeVirtualRouterLinuxSystemResolverUsesResolved() {
-		paths = []string{"/run/systemd/resolve/resolv.conf", probeVirtualRouterLinuxResolvConfPath}
+		if probeVirtualRouterLinuxDockerHostDNSEnabled() && strings.TrimSpace(dev) != "" {
+			if output, err := probeVirtualRouterLinuxDNSRun(5*time.Second, "resolvectl", "dns", strings.TrimSpace(dev)); err == nil {
+				if servers := filterProbeVirtualRouterLinuxDNSUpstreams(parseProbeVirtualRouterLinuxDNSWords(output)); len(servers) > 0 {
+					return servers
+				}
+			}
+		}
+		paths = []string{"/run/systemd/resolve/resolv.conf", resolvConfPath}
 	}
 	for _, path := range paths {
 		if raw, err := probeVirtualRouterLinuxDNSReadFile(path); err == nil {
@@ -259,9 +321,10 @@ func parseProbeVirtualRouterLinuxDNSWords(raw string) []string {
 func filterProbeVirtualRouterLinuxDNSUpstreams(items []string) []string {
 	seen := make(map[string]struct{}, len(items))
 	out := make([]string, 0, len(items))
+	desired := net.ParseIP(strings.TrimSpace(probeVirtualRouterDNSListenHost)).To4()
 	for _, raw := range items {
 		ip4 := net.ParseIP(strings.TrimSpace(raw)).To4()
-		if ip4 == nil || ip4[0] == 127 {
+		if ip4 == nil || ip4[0] == 127 || (desired != nil && ip4.Equal(desired)) {
 			continue
 		}
 		value := ip4.String()

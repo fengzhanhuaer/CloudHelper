@@ -583,8 +583,13 @@
         `      PROBE_NODE_SECRET: ${quoteBashLiteral(secret)}`,
         `      PROBE_CONTROLLER_URL: ${quoteBashLiteral(baseURL)}`,
         directConnect ? '' : `      PROBE_PROXY_BASE_URL: ${quoteBashLiteral(proxyBaseURL)}`,
+        `      PROBE_NODE_DOCKER_HOST_DNS: 'true'`,
+        `      PROBE_NODE_HOST_DBUS_SOCKET: '/host/run/dbus/system_bus_socket'`,
+        `      PROBE_NODE_HOST_RESOLV_CONF: '/host/etc/resolv.conf'`,
         '    volumes:',
         '      - ./:/opt/cloudhelper/probe_node',
+        '      - /run/dbus:/host/run/dbus:ro',
+        '      - /etc/resolv.conf:/host/etc/resolv.conf',
       ].filter(Boolean).join('\n');
     }
 

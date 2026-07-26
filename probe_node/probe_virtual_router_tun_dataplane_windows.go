@@ -161,6 +161,7 @@ func startProbeVirtualRouterTUNDataPlane() error {
 
 	stats := dataPlane.Stats()
 	logProbeInfof("probe virtual router tun data plane started: running=%v rx_packets=%d rx_bytes=%d tx_packets=%d tx_bytes=%d if_index=%d if_luid=%d gateway=%s", stats.Running, stats.RXPackets, stats.RXBytes, stats.TXPackets, stats.TXBytes, routeTarget.InterfaceIndex, routeTarget.InterfaceLUID, strings.TrimSpace(routeTarget.Gateway))
+	probeVirtualRouterDNSAfterTUNReady()
 	return nil
 }
 
@@ -265,6 +266,7 @@ func resetProbeVirtualRouterTUNDataPlaneHooksForTest() {
 	probeLocalCloseWintunAdapterForDataPlane = closeProbeLocalWintunAdapter
 	probeVirtualRouterNewTUNDataPlaneRunner = newProbeVirtualRouterTUNDataPlaneRunner
 	probeLocalTUNInboundPacketHandler = nil
+	probeVirtualRouterDNSAfterTUNReady = func() {}
 	_ = stopProbeVirtualRouterTUNDataPlane()
 }
 

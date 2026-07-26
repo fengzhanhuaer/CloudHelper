@@ -4,10 +4,19 @@ services:
     container_name: cloudhelper-probe-node
     restart: unless-stopped
     network_mode: host
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
     environment:
       PROBE_NODE_ID: "1"
       PROBE_NODE_SECRET: "your-node-secret"
       PROBE_CONTROLLER_URL: "https://controller.example.com"
       PROBE_PROXY_BASE_URL: "https://controller.example.com/api/probe/proxy"
+      PROBE_NODE_DOCKER_HOST_DNS: "true"
+      PROBE_NODE_HOST_DBUS_SOCKET: "/host/run/dbus/system_bus_socket"
+      PROBE_NODE_HOST_RESOLV_CONF: "/host/etc/resolv.conf"
     volumes:
       - ./:/opt/cloudhelper/probe_node
+      - /run/dbus:/host/run/dbus:ro
+      - /etc/resolv.conf:/host/etc/resolv.conf

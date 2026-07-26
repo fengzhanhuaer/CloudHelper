@@ -90,7 +90,9 @@ func TestProbeVirtualRouterTUNDataPlaneStartStopLifecycle(t *testing.T) {
 	createCalls := 0
 	closeAdapterCalls := 0
 	runnerCreateCalls := 0
+	dnsReadyCalls := 0
 	fake := &fakeProbeVirtualRouterTUNDataPlane{stats: probeVirtualRouterTUNDataPlaneStats{Running: true, RXPackets: 1, RXBytes: 10}}
+	probeVirtualRouterDNSAfterTUNReady = func() { dnsReadyCalls++ }
 
 	probeLocalWindowsRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
 		if name == "powershell" {
@@ -131,6 +133,9 @@ func TestProbeVirtualRouterTUNDataPlaneStartStopLifecycle(t *testing.T) {
 	}
 	if runnerCreateCalls != 1 {
 		t.Fatalf("runner create calls=%d, want 1", runnerCreateCalls)
+	}
+	if dnsReadyCalls != 1 {
+		t.Fatalf("dns ready calls=%d, want 1", dnsReadyCalls)
 	}
 	stats := probeVirtualRouterTUNDataPlaneStatsSnapshot()
 	if !stats.Running {

@@ -3555,6 +3555,26 @@ func TestProbeVirtualRouterDebugLogResponseCompletesAtSource(t *testing.T) {
 	}
 }
 
+func TestProbeVirtualRouterRemoteDebugLogDoesNotRequireEnvironmentOptIn(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Setenv("PROBE_VROUTE_ALLOW_REMOTE_DEBUG_LOGS", "")
+
+	payload, err := json.Marshal(probeVirtualRouterDebugLogPayload{
+		RequestID:    "debug-log-no-opt-in",
+		SourceNodeID: "16",
+		TargetNodeID: "18",
+		Path:         []string{"16", "18"},
+	})
+	if err != nil {
+		t.Fatalf("marshal debug log query: %v", err)
+	}
+	err = handleProbeVirtualRouterBusinessFrame(nil, nil, probeVirtualRouterFrameMainTypeDebugLog, probeVirtualRouterDebugLogSubTypeQuery, payload, []string{"16", "18"})
+	if err == nil || !strings.Contains(err.Error(), "frame is incomplete") {
+		t.Fatalf("debug log query did not reach normal handler: err=%v", err)
+	}
+}
+
 func TestProbeVirtualRouterFakeIPVerifySYNRetransmitSchedulesSourceVerify(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)

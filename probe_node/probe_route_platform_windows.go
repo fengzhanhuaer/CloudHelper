@@ -355,7 +355,7 @@ func filterProbeLocalSystemDNSUpstreamServers(dnsServers []string) []string {
 	}
 	for _, raw := range dnsServers {
 		ip4 := net.ParseIP(strings.TrimSpace(raw)).To4()
-		if ip4 == nil {
+		if ip4 == nil || ip4[0] == 127 {
 			continue
 		}
 		value := ip4.String()
