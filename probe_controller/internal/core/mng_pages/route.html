@@ -42,6 +42,7 @@
     .muted { color:#8b949e; }
     .small { font-size:12px; }
     .stack { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    .stack > .box { min-width:0; }
     @media (max-width: 1080px) { .stack { grid-template-columns:1fr; } }
     .box { border:1px solid #30363d; border-radius:10px; padding:12px; background:#111820; }
     .toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
@@ -52,6 +53,10 @@
     @media (max-width: 820px) { .toolbar { align-items:flex-start; flex-direction:column; } .config-grid { grid-template-columns:1fr; } }
     .box-title { display:flex; align-items:center; justify-content:space-between; gap:8px; color:#c9d1d9; font-weight:600; }
     .box-title::before { content:""; width:8px; height:8px; border-radius:999px; background:#2ea043; box-shadow:0 0 0 4px rgba(46,160,67,.12); }
+    .box-title.filterable { justify-content:flex-start; flex-wrap:wrap; }
+    .filter-control { display:flex; align-items:center; gap:8px; margin-left:auto; color:#8b949e; font-size:12px; font-weight:400; }
+    .filter-control > span { flex:0 0 auto; white-space:nowrap; }
+    .filter-control select { flex:1; min-width:180px; }
     .table-shell { overflow:auto; margin-top:8px; border:1px solid #30363d; border-radius:10px; }
     .table-shell table { margin-top:0; }
     .table-shell th { background:#0d1117; position:sticky; top:0; z-index:1; }
@@ -73,6 +78,11 @@
     .name-input { min-width:220px; width:100%; box-sizing:border-box; }
     .rule-editor { min-width:360px; }
     .route-rule-actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+    @media (max-width: 620px) {
+      .box-title.filterable { align-items:flex-start; flex-direction:column; }
+      .filter-control { width:100%; margin-left:0; }
+      .filter-control select { width:auto; min-width:0; box-sizing:border-box; }
+    }
   </style>
 </head>
 <body>
@@ -135,7 +145,15 @@
             </div>
           </div>
           <div class="box">
-            <div class="box-title"><span>拓扑规则</span></div>
+            <div class="box-title filterable">
+              <span>拓扑规则</span>
+              <label class="filter-control" for="vr-rule-node-filter">
+                <span>筛选探针</span>
+                <select id="vr-rule-node-filter" class="small">
+                  <option value="">全部探针</option>
+                </select>
+              </label>
+            </div>
             <div class="table-shell">
               <table>
                 <thead>
@@ -203,6 +221,10 @@
         <div class="row">
           <button id="btn-vr-status-refresh" class="btn" type="button">刷新路由状态</button>
           <button id="btn-vr-latency-probe" class="btn primary" type="button">立即延迟探测</button>
+          <label for="vr-status-node-filter">筛选探针</label>
+          <select id="vr-status-node-filter" class="small">
+            <option value="">全部探针</option>
+          </select>
           <label for="vr-speed-source">源节点</label>
           <select id="vr-speed-source"></select>
           <label for="vr-speed-target">目的节点</label>
@@ -239,6 +261,8 @@
       virtualRouterStatus: [],
       routeRules: [],
       fakeIPSearch: '',
+      virtualRouterRuleNodeFilterID: '',
+      virtualRouterStatusNodeFilterID: '',
       virtualRouterSpeedSourceID: '',
       virtualRouterSpeedTargetID: '',
       virtualRouter: {
@@ -509,6 +533,19 @@
       target.innerHTML = options(state.virtualRouterSpeedTargetID);
     }
 
+    function refreshVirtualRouterNodeFilter(controlID, stateKey) {
+      const control = document.getElementById(controlID);
+      if (!control) return;
+      const ids = virtualRouterSpeedNodeIDs();
+      const current = normalizeNodeID(state[stateKey]);
+      state[stateKey] = current && ids.includes(current) ? current : '';
+      control.innerHTML = [
+        '<option value="">全部探针</option>',
+        ...ids.map((id) => `<option value="${escapeHTML(id)}">${escapeHTML(nodeLabel(id))}</option>`),
+      ].join('');
+      control.value = state[stateKey];
+    }
+
     function renderVirtualRouter() {
       const cfg = state.virtualRouter || {};
       document.getElementById('vr-enabled').value = cfg.enabled === false ? 'false' : 'true';
@@ -530,10 +567,19 @@
 
       const rules = Array.isArray(cfg.topology_rules) ? cfg.topology_rules : [];
       const ruleBody = document.getElementById('vr-rule-body');
+      refreshVirtualRouterNodeFilter('vr-rule-node-filter', 'virtualRouterRuleNodeFilterID');
+      const ruleNodeFilterID = normalizeNodeID(state.virtualRouterRuleNodeFilterID);
+      const visibleRules = rules.map((rule, idx) => ({ rule, idx })).filter(({ rule }) => {
+        if (!ruleNodeFilterID) return true;
+        return normalizeNodeID(rule && rule.from_node_id) === ruleNodeFilterID
+          || normalizeNodeID(rule && rule.to_node_id) === ruleNodeFilterID;
+      });
       if (!rules.length) {
         ruleBody.innerHTML = '<tr><td colspan="4" class="muted">暂无拓扑规则。</td></tr>';
+      } else if (!visibleRules.length) {
+        ruleBody.innerHTML = `<tr><td colspan="4" class="muted">没有与“${escapeHTML(nodeLabel(ruleNodeFilterID))}”相关的拓扑规则。</td></tr>`;
       } else {
-        ruleBody.innerHTML = rules.map((rule, idx) => `
+        ruleBody.innerHTML = visibleRules.map(({ rule, idx }) => `
           <tr>
             <td class="check-cell"><input data-vr-rule-enabled="${idx}" type="checkbox" ${rule.enabled === false ? '' : 'checked'} /></td>
             <td>
@@ -559,7 +605,8 @@
         `).join('');
       }
       bindVirtualRouterEvents();
-      document.getElementById('vr-summary').textContent = `探针 IP ${ips.length} 个，拓扑规则 ${rules.length} 条`;
+      const ruleCountText = ruleNodeFilterID ? `${visibleRules.length}/${rules.length}` : String(rules.length);
+      document.getElementById('vr-summary').textContent = `探针 IP ${ips.length} 个，拓扑规则 ${ruleCountText} 条`;
       refreshVirtualRouterSpeedControls();
     }
 
@@ -880,14 +927,26 @@
       const body = document.getElementById('vr-status-body');
       const summary = document.getElementById('vr-status-summary');
       const items = Array.isArray(state.virtualRouterStatus) ? state.virtualRouterStatus : [];
-      const ready = items.filter((item) => String(item.status || '') === 'ready').length;
-      summary.textContent = items.length ? `规则 ${items.length} 条，就绪 ${ready} 条` : '暂无状态';
+      refreshVirtualRouterNodeFilter('vr-status-node-filter', 'virtualRouterStatusNodeFilterID');
+      const statusNodeFilterID = normalizeNodeID(state.virtualRouterStatusNodeFilterID);
+      const visibleItems = items.filter((item) => {
+        if (!statusNodeFilterID) return true;
+        return normalizeNodeID(item && item.from_node_id) === statusNodeFilterID
+          || normalizeNodeID(item && item.to_node_id) === statusNodeFilterID;
+      });
+      const ready = visibleItems.filter((item) => String(item.status || '') === 'ready').length;
+      const statusCountText = statusNodeFilterID ? `${visibleItems.length}/${items.length}` : String(items.length);
+      summary.textContent = items.length ? `规则 ${statusCountText} 条，就绪 ${ready} 条` : '暂无状态';
       refreshVirtualRouterSpeedControls();
       if (!items.length) {
         body.innerHTML = '<tr><td colspan="7" class="muted">暂无路由状态。需要先配置拓扑规则，并等待探针完成一次状态上报。</td></tr>';
         return;
       }
-      body.innerHTML = items.map((item) => {
+      if (!visibleItems.length) {
+        body.innerHTML = `<tr><td colspan="7" class="muted">没有与“${escapeHTML(nodeLabel(statusNodeFilterID))}”相关的路由状态。</td></tr>`;
+        return;
+      }
+      body.innerHTML = visibleItems.map((item) => {
         const fromName = `${nodeLabel(item.from_node_id)}${item.from_ip ? ` / ${item.from_ip}` : ''}`;
         const toName = `${nodeLabel(item.to_node_id)}${item.to_ip ? ` / ${item.to_ip}` : ''}`;
         const latency = Number(item.last_latency_ms || 0);
@@ -1246,6 +1305,10 @@
         Promise.all([loadCloudflareDDNSRecords(), loadVirtualRouter(false)]).catch((err) => setStatus(`刷新拓扑规则失败：${err.message || err}`, 'err'));
       });
       document.getElementById('btn-vr-add-rule').addEventListener('click', addVirtualRouterRule);
+      document.getElementById('vr-rule-node-filter').addEventListener('change', (event) => {
+        state.virtualRouterRuleNodeFilterID = normalizeNodeID(event.target.value);
+        renderVirtualRouter();
+      });
       document.getElementById('btn-vr-save').addEventListener('click', () => {
         saveVirtualRouter().catch((err) => setStatus(`保存拓扑规则失败：${err.message || err}`, 'err'));
       });
@@ -1273,6 +1336,10 @@
       });
       document.getElementById('btn-vr-latency-probe').addEventListener('click', () => {
         triggerVirtualRouterLatencyProbe().catch((err) => setStatus(`延迟探测下发失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('vr-status-node-filter').addEventListener('change', (event) => {
+        state.virtualRouterStatusNodeFilterID = normalizeNodeID(event.target.value);
+        renderVirtualRouterStatus();
       });
       document.getElementById('vr-speed-source').addEventListener('change', (event) => {
         state.virtualRouterSpeedSourceID = normalizeNodeID(event.target.value);
