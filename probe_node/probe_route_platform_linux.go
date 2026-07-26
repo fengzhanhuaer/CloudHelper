@@ -195,10 +195,6 @@ func isProbeLocalLinuxDeviceMissingErr(err error) bool {
 		strings.Contains(text, "no such file or directory")
 }
 
-func currentProbeLocalSystemDNSServers() []string {
-	return nil
-}
-
 func uninstallProbeLocalTUNDriver() error {
 	dev, err := resolveProbeLocalLinuxTUNDeviceName()
 	if err != nil {

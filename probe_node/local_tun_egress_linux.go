@@ -88,6 +88,11 @@ func probeLocalTUNEgressUpdate(req probeLocalTUNEgressUpdateRequest) (probeLocal
 	if err := refreshProbeRouteLinuxSelectedEgress(); err != nil {
 		return probeLocalTUNEgressStatus{}, err
 	}
+	if probeVirtualRouterLocalDNSEnabled() {
+		if err := applyProbeVirtualRouterSystemDNS(); err != nil {
+			return probeLocalTUNEgressStatus{}, err
+		}
+	}
 	return probeLocalTUNEgressSnapshot()
 }
 

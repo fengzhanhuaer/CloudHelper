@@ -354,6 +354,10 @@ func runProbeNode(options probeLaunchOptions) error {
 	<-stopSignal
 	signal.Stop(stopSignal)
 	stopProbeVRouteProxyRuntime()
+	stopProbeVirtualRouterDNSService()
+	if err := restoreProbeVirtualRouterSystemDNS(); err != nil {
+		logProbeWarnf("probe virtual router system dns shutdown restore failed: %v", err)
+	}
 	return nil
 }
 
