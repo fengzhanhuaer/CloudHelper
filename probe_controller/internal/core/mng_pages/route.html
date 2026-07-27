@@ -65,6 +65,18 @@
     .check-cell input { min-width:0; width:18px; height:18px; accent-color:#2ea043; }
     .fake-ip-toolbar { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; margin-top:12px; }
     .fake-ip-scroll { max-height:260px; overflow:auto; }
+    .doh-config { display:grid; grid-template-columns:120px minmax(0, 1fr); gap:10px; align-items:center; }
+    .doh-config label { color:#8b949e; font-size:13px; }
+    .doh-config input[type="checkbox"] { min-width:0; width:18px; height:18px; accent-color:#2ea043; }
+    .doh-config input[type="text"] { width:100%; min-width:0; box-sizing:border-box; }
+    .doh-endpoint { display:flex; align-items:center; gap:8px; min-width:0; }
+    .doh-endpoint input { flex:1; cursor:pointer; }
+    .doh-record-scroll { max-height:480px; overflow:auto; }
+    .doh-answer { max-width:360px; white-space:normal; overflow-wrap:anywhere; }
+    .doh-status { display:inline-block; font-size:12px; border-radius:999px; padding:2px 8px; border:1px solid #30363d; }
+    .doh-status.ok { color:#7ee787; border-color:#238636; }
+    .doh-status.rejected { color:#f2cc60; border-color:#9e6a03; }
+    .doh-status.error { color:#ff7b72; border-color:#da3633; }
     .route-state { display:inline-block; font-size:12px; border-radius:999px; padding:2px 8px; border:1px solid #30363d; }
     .route-state.ok { color:#7ee787; border-color:#238636; }
     .route-state.warn { color:#f2cc60; border-color:#9e6a03; }
@@ -82,6 +94,8 @@
       .box-title.filterable { align-items:flex-start; flex-direction:column; }
       .filter-control { width:100%; margin-left:0; }
       .filter-control select { width:auto; min-width:0; box-sizing:border-box; }
+      .doh-config { grid-template-columns:1fr; }
+      .doh-endpoint { align-items:stretch; flex-direction:column; }
     }
   </style>
 </head>
@@ -104,6 +118,7 @@
       <button class="tab active" data-tab="topology" type="button">拓扑规则</button>
       <button class="tab" data-tab="route-rules" type="button">路由规则</button>
       <button class="tab" data-tab="fake-ip" type="button">Fake IP</button>
+      <button class="tab" data-tab="doh" type="button">DoH</button>
       <button class="tab" data-tab="route" type="button">路由状态</button>
     </div>
 
@@ -217,6 +232,67 @@
         </div>
       </section>
 
+      <section id="section-doh" class="section">
+        <div class="toolbar">
+          <div class="toolbar-actions">
+            <button id="btn-doh-refresh" class="btn" type="button">刷新</button>
+            <button id="btn-doh-save" class="btn primary" type="button">保存配置</button>
+            <button id="btn-doh-rotate-token" class="btn danger" type="button">轮换令牌</button>
+          </div>
+          <span id="doh-service-summary" class="summary-pill small">未加载</span>
+        </div>
+        <div class="box" style="margin-bottom:12px;">
+          <div class="doh-config">
+            <label for="doh-enabled">启用 DoH</label>
+            <input id="doh-enabled" type="checkbox" />
+            <label for="doh-upstream">直连上游</label>
+            <input id="doh-upstream" type="text" class="mono" placeholder="https://dns.alidns.com/dns-query" autocomplete="off" />
+            <label for="doh-endpoint">DoH 端点</label>
+            <div class="doh-endpoint">
+              <input id="doh-endpoint" type="text" class="mono" readonly title="点击复制 DoH 端点" />
+              <button id="btn-doh-copy" class="btn" type="button">复制端点</button>
+            </div>
+          </div>
+        </div>
+        <div class="toolbar">
+          <div class="toolbar-actions">
+            <button id="btn-doh-query-refresh" class="btn" type="button">刷新记录</button>
+            <button id="btn-doh-query-clear" class="btn danger" type="button">清空记录</button>
+            <input id="doh-query-search" class="wide" type="search" placeholder="域名 / 客户端 / 应答 / 规则 / 出口" autocomplete="off" />
+            <select id="doh-query-action" class="small">
+              <option value="">全部动作</option>
+              <option value="fake_ip">Fake IP</option>
+              <option value="direct">直连</option>
+              <option value="reject">拒绝</option>
+            </select>
+            <select id="doh-query-status" class="small">
+              <option value="">全部状态</option>
+              <option value="ok">成功</option>
+              <option value="rejected">已拒绝</option>
+              <option value="error">失败</option>
+            </select>
+          </div>
+          <span id="doh-query-summary" class="summary-pill small">暂无记录</span>
+        </div>
+        <div class="table-shell doh-record-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>客户端</th>
+                <th>域名</th>
+                <th>类型</th>
+                <th>动作</th>
+                <th>应答 / 出口</th>
+                <th>状态</th>
+                <th>耗时</th>
+              </tr>
+            </thead>
+            <tbody id="doh-query-body"></tbody>
+          </table>
+        </div>
+      </section>
+
       <section id="section-route" class="section">
         <div class="row">
           <button id="btn-vr-status-refresh" class="btn" type="button">刷新路由状态</button>
@@ -261,6 +337,13 @@
       virtualRouterStatus: [],
       routeRules: [],
       fakeIPSearch: '',
+      doh: { enabled: false, upstream: '', endpoint_path: '', updated_at: '' },
+      dohQueries: [],
+      dohQuerySummary: {},
+      dohQuerySearch: '',
+      dohQueryAction: '',
+      dohQueryStatus: '',
+      dohRefreshTimer: 0,
       virtualRouterRuleNodeFilterID: '',
       virtualRouterStatusNodeFilterID: '',
       virtualRouterSpeedSourceID: '',
@@ -400,6 +483,148 @@
       renderRouteRules();
       renderFakeIPLibrary();
       if (!silent) setStatus(`路由规则已刷新：${state.routeRules.length} 个`, 'ok');
+    }
+
+    async function loadDoHSettings(silent) {
+      const payload = await requestJSON('/mng/api/route/doh');
+      state.doh = payload.item || { enabled: false, upstream: '', endpoint_path: '', updated_at: '' };
+      renderDoHSettings();
+      if (!silent) setStatus('DoH 配置已刷新', 'ok');
+    }
+
+    async function loadDoHQueries(silent) {
+      const payload = await requestJSON('/mng/api/route/doh/queries?limit=500');
+      state.dohQueries = Array.isArray(payload.items) ? payload.items : [];
+      state.dohQuerySummary = payload.summary || {};
+      renderDoHQueries();
+      if (!silent) setStatus(`DoH 查询记录已刷新：${state.dohQueries.length} 条`, 'ok');
+    }
+
+    function renderDoHSettings() {
+      const item = state.doh || {};
+      document.getElementById('doh-enabled').checked = !!item.enabled;
+      document.getElementById('doh-upstream').value = String(item.upstream || '');
+      const endpointPath = String(item.endpoint_path || '').trim();
+      const endpoint = endpointPath ? `${location.origin}${endpointPath}` : '';
+      document.getElementById('doh-endpoint').value = endpoint;
+      const summary = document.getElementById('doh-service-summary');
+      summary.textContent = item.enabled ? '服务已启用' : '服务已停用';
+      summary.style.color = item.enabled ? '#7ee787' : '#8b949e';
+    }
+
+    function formatDoHTimestamp(value) {
+      const date = new Date(String(value || ''));
+      if (Number.isNaN(date.getTime())) return String(value || '-');
+      return date.toLocaleString('zh-CN', { hour12: false });
+    }
+
+    function dohActionLabel(value) {
+      const labels = { fake_ip: 'Fake IP', direct: '直连', reject: '拒绝' };
+      return labels[String(value || '')] || String(value || '-');
+    }
+
+    function dohStatusLabel(value) {
+      const labels = { ok: '成功', rejected: '已拒绝', error: '失败' };
+      return labels[String(value || '')] || String(value || '-');
+    }
+
+    function renderDoHQueries() {
+      const search = String(state.dohQuerySearch || '').trim().toLowerCase();
+      const action = String(state.dohQueryAction || '');
+      const status = String(state.dohQueryStatus || '');
+      const filtered = (Array.isArray(state.dohQueries) ? state.dohQueries : []).filter((item) => {
+        if (action && String(item.action || '') !== action) return false;
+        if (status && String(item.status || '') !== status) return false;
+        if (!search) return true;
+        const haystack = [
+          item.client_ip,
+          item.domain,
+          item.query_type,
+          item.action,
+          item.rule_id,
+          item.rule_name,
+          item.exit_node_id,
+          item.status,
+          item.error,
+          ...(Array.isArray(item.answers) ? item.answers : []),
+        ].join(' ').toLowerCase();
+        return haystack.includes(search);
+      });
+      const body = document.getElementById('doh-query-body');
+      if (!filtered.length) {
+        body.innerHTML = `<tr><td colspan="8" class="muted">${state.dohQueries.length ? '没有匹配的 DoH 查询记录。' : '暂无 DoH 查询记录。'}</td></tr>`;
+      } else {
+        body.innerHTML = filtered.map((item) => {
+          const answers = Array.isArray(item.answers) && item.answers.length ? item.answers.join(', ') : '-';
+          const exit = item.exit_node_id ? nodeLabel(item.exit_node_id) : '';
+          const rule = item.rule_name || item.rule_id || '';
+          const answerDetails = [answers, exit ? `出口 ${exit}` : '', rule ? `规则 ${rule}` : ''].filter(Boolean);
+          const error = item.error ? `<div class="route-error small">${escapeHTML(item.error)}</div>` : '';
+          return `<tr>
+            <td class="mono small">${escapeHTML(formatDoHTimestamp(item.timestamp))}</td>
+            <td class="mono">${escapeHTML(item.client_ip || '-')}</td>
+            <td><span class="mono" data-doh-copy="${escapeHTML(item.domain || '')}" title="点击复制域名">${escapeHTML(item.domain || '-')}</span></td>
+            <td class="mono">${escapeHTML(item.query_type || '-')}</td>
+            <td>${escapeHTML(dohActionLabel(item.action))}</td>
+            <td class="doh-answer">${answerDetails.map((value) => `<div>${escapeHTML(value)}</div>`).join('')}</td>
+            <td><span class="doh-status ${escapeHTML(item.status || '')}">${escapeHTML(dohStatusLabel(item.status))}</span>${error}</td>
+            <td class="mono">${escapeHTML(String(Number(item.latency_ms || 0)))} ms</td>
+          </tr>`;
+        }).join('');
+      }
+      const summary = state.dohQuerySummary || {};
+      document.getElementById('doh-query-summary').textContent = `显示 ${filtered.length}/${Number(summary.total || state.dohQueries.length || 0)} · Fake IP ${Number(summary.fake_ip || 0)} · 直连 ${Number(summary.direct || 0)} · 拒绝 ${Number(summary.reject || 0)} · 失败 ${Number(summary.error || 0)}`;
+    }
+
+    async function saveDoHSettings(rotateToken) {
+      const enabled = document.getElementById('doh-enabled').checked;
+      const upstream = String(document.getElementById('doh-upstream').value || '').trim();
+      const payload = await requestJSON('/mng/api/route/doh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled, upstream, rotate_token: !!rotateToken }),
+      });
+      state.doh = payload.item || state.doh;
+      renderDoHSettings();
+      setStatus(rotateToken ? 'DoH 访问令牌已轮换，旧端点已失效' : 'DoH 配置已保存', 'ok');
+    }
+
+    async function clearDoHQueries() {
+      if (!window.confirm('确认清空全部 DoH 查询记录？此操作不会影响 DoH 配置和 Fake IP 映射。')) return;
+      const payload = await requestJSON('/mng/api/route/doh/queries', { method: 'DELETE' });
+      state.dohQueries = Array.isArray(payload.items) ? payload.items : [];
+      state.dohQuerySummary = payload.summary || {};
+      renderDoHQueries();
+      setStatus('DoH 查询记录已清空', 'ok');
+    }
+
+    async function copyDoHValue(value, label) {
+      const text = String(value || '').trim();
+      if (!text) throw new Error('没有可复制的内容');
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        textarea.remove();
+      }
+      setStatus(`${label || '内容'}已复制`, 'ok');
+    }
+
+    function updateDoHRefreshTimer() {
+      if (state.dohRefreshTimer) {
+        window.clearInterval(state.dohRefreshTimer);
+        state.dohRefreshTimer = 0;
+      }
+      if (state.activeTab !== 'doh') return;
+      state.dohRefreshTimer = window.setInterval(() => {
+        loadDoHQueries(true).catch((err) => setStatus(`刷新 DoH 查询记录失败：${err.message || err}`, 'err'));
+      }, 3000);
     }
 
     function nodeLabel(nodeID) {
@@ -1291,9 +1516,15 @@
           if (state.activeTab === 'fake-ip') {
             loadVirtualRouter(true).catch((err) => setStatus(`刷新 Fake IP 失败：${err.message || err}`, 'err'));
           }
+          if (state.activeTab === 'doh') {
+            Promise.all([loadDoHSettings(true), loadDoHQueries(true)])
+              .then(() => setStatus('DoH 配置与查询记录已刷新', 'ok'))
+              .catch((err) => setStatus(`刷新 DoH 失败：${err.message || err}`, 'err'));
+          }
           if (state.activeTab === 'route') {
             loadVirtualRouterStatus(true).catch((err) => setStatus(`刷新路由状态失败：${err.message || err}`, 'err'));
           }
+          updateDoHRefreshTimer();
         });
       });
     }
@@ -1331,6 +1562,47 @@
         state.fakeIPSearch = String(event.target.value || '');
         renderFakeIPLibrary();
       });
+      document.getElementById('btn-doh-refresh').addEventListener('click', () => {
+        Promise.all([loadDoHSettings(true), loadDoHQueries(true)])
+          .then(() => setStatus('DoH 配置与查询记录已刷新', 'ok'))
+          .catch((err) => setStatus(`刷新 DoH 失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('btn-doh-save').addEventListener('click', () => {
+        saveDoHSettings(false).catch((err) => setStatus(`保存 DoH 配置失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('btn-doh-rotate-token').addEventListener('click', () => {
+        if (!window.confirm('确认轮换 DoH 访问令牌？所有使用旧端点的设备会立即停止解析。')) return;
+        saveDoHSettings(true).catch((err) => setStatus(`轮换 DoH 令牌失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('btn-doh-copy').addEventListener('click', () => {
+        copyDoHValue(document.getElementById('doh-endpoint').value, 'DoH 端点').catch((err) => setStatus(err.message || String(err), 'err'));
+      });
+      document.getElementById('doh-endpoint').addEventListener('click', (event) => {
+        copyDoHValue(event.currentTarget.value, 'DoH 端点').catch((err) => setStatus(err.message || String(err), 'err'));
+      });
+      document.getElementById('btn-doh-query-refresh').addEventListener('click', () => {
+        loadDoHQueries(false).catch((err) => setStatus(`刷新 DoH 查询记录失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('btn-doh-query-clear').addEventListener('click', () => {
+        clearDoHQueries().catch((err) => setStatus(`清空 DoH 查询记录失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('doh-query-search').addEventListener('input', (event) => {
+        state.dohQuerySearch = String(event.target.value || '');
+        renderDoHQueries();
+      });
+      document.getElementById('doh-query-action').addEventListener('change', (event) => {
+        state.dohQueryAction = String(event.target.value || '');
+        renderDoHQueries();
+      });
+      document.getElementById('doh-query-status').addEventListener('change', (event) => {
+        state.dohQueryStatus = String(event.target.value || '');
+        renderDoHQueries();
+      });
+      document.getElementById('doh-query-body').addEventListener('click', (event) => {
+        const target = event.target.closest('[data-doh-copy]');
+        if (!target) return;
+        copyDoHValue(target.dataset.dohCopy, '域名').catch((err) => setStatus(err.message || String(err), 'err'));
+      });
       document.getElementById('btn-vr-status-refresh').addEventListener('click', () => {
         refreshVirtualRouterStatusWithReport().catch((err) => setStatus(`刷新路由状态失败：${err.message || err}`, 'err'));
       });
@@ -1367,6 +1639,10 @@
       await loadVirtualRouterStatus(true).catch(() => {});
       setStatus('路由管理页面初始化完成', 'ok');
     }
+
+    window.addEventListener('beforeunload', () => {
+      if (state.dohRefreshTimer) window.clearInterval(state.dohRefreshTimer);
+    });
 
     bootstrap().catch((err) => {
       setStatus(`初始化失败：${err && err.message ? err.message : err}`, 'err');

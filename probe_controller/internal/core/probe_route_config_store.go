@@ -18,6 +18,7 @@ type probeRouteConfigStore struct {
 type probeRouteConfigStoreData struct {
 	VirtualRouter       probeVirtualRouterConfig        `json:"virtual_router,omitempty"`
 	VirtualRouterFakeIP probeVirtualRouterFakeIPLibrary `json:"virtual_router_fake_ip,omitempty"`
+	DoH                 probeControllerDoHConfig        `json:"doh,omitempty"`
 }
 
 var ProbeRouteConfigStore *probeRouteConfigStore
@@ -29,6 +30,7 @@ func initProbeRouteConfigStore() {
 		data: probeRouteConfigStoreData{
 			VirtualRouter:       defaultProbeVirtualRouterConfig(),
 			VirtualRouterFakeIP: defaultProbeVirtualRouterFakeIPLibrary(),
+			DoH:                 defaultProbeControllerDoHConfig(),
 		},
 	}
 
@@ -44,6 +46,7 @@ func initProbeRouteConfigStore() {
 			}
 			ProbeRouteConfigStore.data.VirtualRouter = normalizeProbeVirtualRouterConfig(raw.VirtualRouter)
 			ProbeRouteConfigStore.data.VirtualRouterFakeIP = normalizeProbeVirtualRouterFakeIPLibrary(raw.VirtualRouterFakeIP)
+			ProbeRouteConfigStore.data.DoH = normalizeProbeControllerDoHConfig(raw.DoH)
 		}
 	} else if os.IsNotExist(err) {
 		if saveErr := ProbeRouteConfigStore.Save(); saveErr != nil {
@@ -57,6 +60,14 @@ func initProbeRouteConfigStore() {
 }
 
 func (s *probeRouteConfigStore) Save() error {
+	return s.save(true)
+}
+
+func (s *probeRouteConfigStore) SaveWithoutAutoBackup() error {
+	return s.save(false)
+}
+
+func (s *probeRouteConfigStore) save(triggerBackup bool) error {
 	s.mu.RLock()
 	content, err := json.MarshalIndent(s.data, "", "  ")
 	s.mu.RUnlock()
@@ -69,6 +80,8 @@ func (s *probeRouteConfigStore) Save() error {
 	if err := os.Chmod(s.path, 0o600); err != nil {
 		return err
 	}
-	triggerAutoBackupControllerDataAsync("probe_route_config_store_save")
+	if triggerBackup {
+		triggerAutoBackupControllerDataAsync("probe_route_config_store_save")
+	}
 	return nil
 }
