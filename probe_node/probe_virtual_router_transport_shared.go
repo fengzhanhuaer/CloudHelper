@@ -193,6 +193,8 @@ var probeRouteAuthTicketStore = struct {
 	items map[string]string
 }{items: make(map[string]string)}
 
+var probeRouteAuthTicketNow = time.Now
+
 var probeRouteTLSPinStore = struct {
 	mu    sync.RWMutex
 	items map[string]string

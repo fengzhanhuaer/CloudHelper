@@ -852,7 +852,7 @@ func verifyProbeVirtualRouterInboundAuth(cfg probeVirtualRouterRuntimeConfig, en
 	if err := verifyProbeVirtualRouterUserAuthTicket(cfg, env.AuthTicket); err != nil {
 		return err
 	}
-	if err := recordProbeRouteAuthNonce(cfg.routeID, cfg.authTicket, env.Nonce); err != nil {
+	if err := recordProbeRouteAuthNonce(cfg.routeID, env.AuthTicket, env.Nonce); err != nil {
 		return err
 	}
 	return nil
@@ -862,9 +862,6 @@ func verifyProbeVirtualRouterUserAuthTicket(cfg probeVirtualRouterRuntimeConfig,
 	ticket := strings.TrimSpace(rawTicket)
 	if ticket == "" {
 		return fmt.Errorf("user auth ticket is required")
-	}
-	if configured := strings.TrimSpace(cfg.authTicket); configured == "" || !hmac.Equal([]byte(configured), []byte(ticket)) {
-		return fmt.Errorf("user auth ticket is not current")
 	}
 	if len(cfg.userPublicKey) != ed25519.PublicKeySize {
 		return fmt.Errorf("user public key is not configured")
@@ -888,7 +885,8 @@ func verifyProbeVirtualRouterUserAuthTicket(cfg probeVirtualRouterRuntimeConfig,
 	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
 		return fmt.Errorf("invalid user auth ticket payload json")
 	}
-	if strings.TrimSpace(payload.Version) != "route-auth-v2" {
+	version := strings.TrimSpace(payload.Version)
+	if version != "route-auth-v2" && version != "route-auth-v3" {
 		return fmt.Errorf("unsupported user auth ticket version")
 	}
 	if strings.TrimSpace(payload.RouteID) != strings.TrimSpace(cfg.routeID) {
@@ -905,9 +903,20 @@ func verifyProbeVirtualRouterUserAuthTicket(cfg probeVirtualRouterRuntimeConfig,
 	if fromNodeID != normalizeProbeRouteNodeID(cfg.fromNodeID) || toNodeID != normalizeProbeRouteNodeID(cfg.toNodeID) {
 		return fmt.Errorf("user auth ticket endpoint mismatch")
 	}
-	if normalizeProbeRouteTLSSPKI(payload.FromTLSSPKI) != normalizeProbeRouteTLSSPKI(cfg.fromTLSSPKI) ||
-		normalizeProbeRouteTLSSPKI(payload.ToTLSSPKI) != normalizeProbeRouteTLSSPKI(cfg.toTLSSPKI) {
-		return fmt.Errorf("user auth ticket tls identity mismatch")
+	issuedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(payload.IssuedAt))
+	if err != nil {
+		return fmt.Errorf("invalid user auth ticket issued_at")
+	}
+	expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(payload.ExpiresAt))
+	if err != nil {
+		return fmt.Errorf("invalid user auth ticket expires_at")
+	}
+	now := probeRouteAuthTicketNow().UTC()
+	if issuedAt.After(now.Add(5 * time.Minute)) {
+		return fmt.Errorf("user auth ticket is not active")
+	}
+	if !expiresAt.After(now) {
+		return fmt.Errorf("user auth ticket is expired")
 	}
 	return nil
 }

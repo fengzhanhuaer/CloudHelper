@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -41,5 +42,22 @@ func TestIsProbeCertificateUsable(t *testing.T) {
 	}
 	if isProbeCertificateUsable(time.Now().Add(2*time.Minute), 5*time.Minute) {
 		t.Fatalf("expected near-expired certificate to be unusable")
+	}
+}
+
+func TestExpectedProbeServerCertificateSPKIUsesLocalTopologySide(t *testing.T) {
+	config := probeVirtualRouterConfig{TopologyRules: []probeVirtualRouterTopologyRule{
+		{FromNodeID: "9", ToNodeID: "17", FromTLSSPKISHA256: "AA", ToTLSSPKISHA256: "BB"},
+	}}
+	if got := expectedProbeServerCertificateSPKI(config, "9"); got != "" {
+		t.Fatalf("invalid short SPKI should be rejected, got=%q", got)
+	}
+	config.TopologyRules[0].FromTLSSPKISHA256 = strings.Repeat("a", 64)
+	config.TopologyRules[0].ToTLSSPKISHA256 = strings.Repeat("b", 64)
+	if got := expectedProbeServerCertificateSPKI(config, "9"); got != strings.Repeat("a", 64) {
+		t.Fatalf("from SPKI=%q", got)
+	}
+	if got := expectedProbeServerCertificateSPKI(config, "17"); got != strings.Repeat("b", 64) {
+		t.Fatalf("to SPKI=%q", got)
 	}
 }

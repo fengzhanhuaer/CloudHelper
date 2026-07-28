@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -143,6 +144,7 @@ type probeControlMessage struct {
 	TimeoutSec          int                              `json:"timeout_sec"`
 	ReleaseRepo         string                           `json:"release_repo"`
 	ControllerBaseURL   string                           `json:"controller_base_url"`
+	CertificateVersion  string                           `json:"certificate_version,omitempty"`
 	IntervalSec         int                              `json:"interval_sec"`
 	RequestID           string                           `json:"request_id"`
 	Lines               int                              `json:"lines"`
@@ -771,6 +773,10 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 		go runProbeRouteConfigSyncControl(msg, identity)
 		return
 	}
+	if typeName == "certificate_sync" {
+		go runProbeCertificateSyncControl(msg, identity)
+		return
+	}
 	if typeName == "report_once" {
 		go runProbeReportOnceControl(identity, stream, encoder, writeMu)
 		return
@@ -942,6 +948,41 @@ func runProbeRouteConfigSyncControl(msg probeControlMessage, identity nodeIdenti
 	if err := syncProbeRouteConfig(identity, controllerBaseURL); err != nil {
 		logProbeWarnf("probe route config sync failed: err=%v", err)
 	}
+}
+
+func runProbeCertificateSyncControl(msg probeControlMessage, identity nodeIdentity) {
+	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(msg.ControllerBaseURL), "")
+	if strings.TrimSpace(controllerBaseURL) == "" {
+		controllerBaseURL = strings.TrimSpace(currentprobeLocalRouteRuntimeContext().ControllerBaseURL)
+	}
+	if strings.TrimSpace(controllerBaseURL) == "" {
+		logProbeWarnf("probe certificate sync skipped: controller base url is empty")
+		return
+	}
+	dataDir, err := resolveDataDir()
+	if err != nil {
+		logProbeWarnf("probe certificate sync failed: resolve data dir: %v", err)
+		return
+	}
+	certPath := filepath.Join(dataDir, probeTLSCertFile)
+	previous, _ := os.ReadFile(certPath)
+	if _, err := refreshProbeServerCertificate(identity, controllerBaseURL); err != nil {
+		logProbeWarnf("probe certificate sync failed: version=%s err=%v", strings.TrimSpace(msg.CertificateVersion), err)
+		return
+	}
+	current, err := os.ReadFile(certPath)
+	if err != nil {
+		logProbeWarnf("probe certificate sync failed: read applied certificate: %v", err)
+		return
+	}
+	if bytes.Equal(previous, current) {
+		logProbeInfof("probe certificate sync already current: version=%s", strings.TrimSpace(msg.CertificateVersion))
+		return
+	}
+	config := currentProbeVirtualRouterConfig()
+	stopProbeVirtualRouterRuntimesExcept(map[string]struct{}{}, "probe tls certificate updated")
+	applyProbeVirtualRouterConfigForNode(config, identity.NodeID)
+	logProbeInfof("probe certificate sync applied: version=%s", strings.TrimSpace(msg.CertificateVersion))
 }
 
 func runProbeReportOnceControl(identity nodeIdentity, stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex) {

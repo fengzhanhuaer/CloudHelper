@@ -590,6 +590,78 @@ func TestVerifyProbeVirtualRouterUserAuthTicket(t *testing.T) {
 	}
 }
 
+func TestVerifyProbeVirtualRouterUserAuthTicketAllowsValidRotation(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate auth key: %v", err)
+	}
+	rawPublicKey := base64.StdEncoding.EncodeToString(pub)
+	routeID := "vrouter-ticket-rotation"
+	previous := buildProbeRouteUserAuthTicketForTest(t, priv, routeID, rawPublicKey, "1", "2", time.Now().UTC().Add(-time.Hour))
+	current := buildProbeRouteUserAuthTicketForTest(t, priv, routeID, rawPublicKey, "1", "2")
+	cfg := probeVirtualRouterRuntimeConfig{
+		routeID:       routeID,
+		rawPublicKey:  rawPublicKey,
+		userPublicKey: pub,
+		authTicket:    current,
+		fromNodeID:    "1",
+		toNodeID:      "2",
+	}
+	if err := verifyProbeVirtualRouterUserAuthTicket(cfg, previous); err != nil {
+		t.Fatalf("valid previous ticket should remain accepted during rotation: %v", err)
+	}
+}
+
+func TestVerifyProbeVirtualRouterUserAuthTicketRejectsExpired(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate auth key: %v", err)
+	}
+	rawPublicKey := base64.StdEncoding.EncodeToString(pub)
+	routeID := "vrouter-ticket-expired"
+	expired := buildProbeRouteUserAuthTicketForTest(t, priv, routeID, rawPublicKey, "1", "2", time.Now().UTC().Add(-48*time.Hour))
+	cfg := probeVirtualRouterRuntimeConfig{routeID: routeID, rawPublicKey: rawPublicKey, userPublicKey: pub, fromNodeID: "1", toNodeID: "2"}
+	if err := verifyProbeVirtualRouterUserAuthTicket(cfg, expired); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expired ticket err=%v", err)
+	}
+}
+
+func TestVerifyProbeVirtualRouterUserAuthTicketV2DoesNotBindTLSCertificate(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate auth key: %v", err)
+	}
+	rawPublicKey := base64.StdEncoding.EncodeToString(pub)
+	now := time.Now().UTC()
+	payload := probeRouteUserAuthTicketPayload{
+		Version:       "route-auth-v2",
+		RouteID:       "vrouter-v2-compat",
+		ClientEntryID: "entry-v2",
+		UserID:        "admin",
+		UserPublicKey: rawPublicKey,
+		FromNodeID:    "1",
+		ToNodeID:      "2",
+		FromTLSSPKI:   strings.Repeat("a", 64),
+		ToTLSSPKI:     strings.Repeat("b", 64),
+		TicketID:      "ticket-v2",
+		IssuedAt:      now.Add(-time.Hour).Format(time.RFC3339),
+		ExpiresAt:     now.Add(time.Hour).Format(time.RFC3339),
+	}
+	ticket := signProbeRouteUserAuthTicketForTest(t, priv, payload)
+	cfg := probeVirtualRouterRuntimeConfig{
+		routeID:       payload.RouteID,
+		rawPublicKey:  rawPublicKey,
+		userPublicKey: pub,
+		fromNodeID:    "1",
+		toNodeID:      "2",
+		fromTLSSPKI:   strings.Repeat("c", 64),
+		toTLSSPKI:     strings.Repeat("d", 64),
+	}
+	if err := verifyProbeVirtualRouterUserAuthTicket(cfg, ticket); err != nil {
+		t.Fatalf("valid v2 ticket should not be coupled to renewable TLS certificate: %v", err)
+	}
+}
+
 func TestProbeVirtualRouterCurrentLocalPathToIP(t *testing.T) {
 	config := probeVirtualRouterConfig{
 		Enabled: true,

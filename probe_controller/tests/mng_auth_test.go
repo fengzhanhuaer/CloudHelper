@@ -14,8 +14,11 @@ import (
 	"github.com/cloudhelper/probe_controller/internal/core"
 )
 
+const mngSetupTokenForTest = "test-setup-token-2026"
+
 func setupMngTestState(t *testing.T) {
 	t.Helper()
+	t.Setenv("PROBE_CONTROLLER_SETUP_TOKEN", mngSetupTokenForTest)
 
 	oldStore := core.Store
 	storePath := filepath.Join(t.TempDir(), "cloudhelper.json")
@@ -74,7 +77,7 @@ func TestMngBootstrapRegisterLoginLogoutFlow(t *testing.T) {
 		t.Fatalf("expected initial registered=false, got payload=%+v", bootstrapPayload)
 	}
 
-	registerBody := []byte(`{"username":"mng-admin","password":"Passw0rd!","confirm_password":"Passw0rd!"}`)
+	registerBody := []byte(`{"username":"mng-admin","password":"Passw0rd!","confirm_password":"Passw0rd!","setup_token":"test-setup-token-2026"}`)
 	registerReq := httptest.NewRequest(http.MethodPost, "/mng/api/register", bytes.NewReader(registerBody))
 	registerReq.Header.Set("Content-Type", "application/json")
 	registerRR := httptest.NewRecorder()
@@ -259,7 +262,7 @@ func TestMngPanelProtectionAndSummary(t *testing.T) {
 		t.Fatalf("expected /mng/api/probe/nodes without cookie to return 401, got %d body=%s", probeNodesRRWithoutCookie.Code, probeNodesRRWithoutCookie.Body.String())
 	}
 
-	registerBody := []byte(`{"username":"panel-admin","password":"Passw0rd!","confirm_password":"Passw0rd!"}`)
+	registerBody := []byte(`{"username":"panel-admin","password":"Passw0rd!","confirm_password":"Passw0rd!","setup_token":"test-setup-token-2026"}`)
 	registerReq := httptest.NewRequest(http.MethodPost, "/mng/api/register", bytes.NewReader(registerBody))
 	registerReq.Header.Set("Content-Type", "application/json")
 	registerRR := httptest.NewRecorder()
@@ -516,7 +519,7 @@ func TestMngSystemBlacklistCRUD(t *testing.T) {
 	}
 	core.SetAuthManagerForTest(authMgr)
 
-	registerBody := []byte(`{"username":"system-admin","password":"Passw0rd!","confirm_password":"Passw0rd!"}`)
+	registerBody := []byte(`{"username":"system-admin","password":"Passw0rd!","confirm_password":"Passw0rd!","setup_token":"test-setup-token-2026"}`)
 	registerReq := httptest.NewRequest(http.MethodPost, "/mng/api/register", bytes.NewReader(registerBody))
 	registerReq.Header.Set("Content-Type", "application/json")
 	registerRR := httptest.NewRecorder()
@@ -579,7 +582,7 @@ func TestMngCloudflareAPIErrorBranches(t *testing.T) {
 	setupMngTestState(t)
 	mux := core.NewMux()
 
-	registerBody := []byte(`{"username":"cf-admin","password":"Passw0rd!","confirm_password":"Passw0rd!"}`)
+	registerBody := []byte(`{"username":"cf-admin","password":"Passw0rd!","confirm_password":"Passw0rd!","setup_token":"test-setup-token-2026"}`)
 	registerReq := httptest.NewRequest(http.MethodPost, "/mng/api/register", bytes.NewReader(registerBody))
 	registerReq.Header.Set("Content-Type", "application/json")
 	registerRR := httptest.NewRecorder()

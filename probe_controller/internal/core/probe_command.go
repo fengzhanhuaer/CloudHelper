@@ -64,6 +64,13 @@ type probeRouteConfigSyncCommand struct {
 	Timestamp         string `json:"timestamp"`
 }
 
+type probeCertificateSyncCommand struct {
+	Type               string `json:"type"`
+	ControllerBaseURL  string `json:"controller_base_url,omitempty"`
+	CertificateVersion string `json:"certificate_version,omitempty"`
+	Timestamp          string `json:"timestamp"`
+}
+
 type probeReportOnceCommand struct {
 	Type      string `json:"type"`
 	Timestamp string `json:"timestamp"`
@@ -298,6 +305,28 @@ func (s *probeSession) writeJSON(v interface{}) error {
 
 func dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURL string) probeRouteConfigSyncDispatchResult {
 	return dispatchProbeRouteConfigSyncToNodes(listProbeVirtualRouterKnownNodeIDs(), controllerBaseURL)
+}
+
+func dispatchProbeCertificateSyncToNode(nodeID string, controllerBaseURL string, certificateVersion string) error {
+	nodeID = normalizeProbeNodeID(nodeID)
+	if nodeID == "" {
+		return errors.New("node_id is required")
+	}
+	session, ok := getProbeSession(nodeID)
+	if !ok {
+		return errors.New("probe is offline")
+	}
+	command := probeCertificateSyncCommand{
+		Type:               "certificate_sync",
+		ControllerBaseURL:  strings.TrimSpace(controllerBaseURL),
+		CertificateVersion: strings.TrimSpace(certificateVersion),
+		Timestamp:          time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := session.writeJSON(command); err != nil {
+		unregisterProbeSession(nodeID, session)
+		return err
+	}
+	return nil
 }
 
 func dispatchProbeReportOnceToKnownNodes() probeRouteConfigSyncDispatchResult {

@@ -242,7 +242,18 @@ func (m *probeCertificateManager) issueAndPersistNodeCertificate(ctx context.Con
 		return probeIssuedCertificate{}, err
 	}
 	log.Printf("probe certificate ready: node_id=%s domain=%s expires=%s", nodeID, domain, issued.NotAfter.Format(time.RFC3339))
+	go notifyProbeCertificateRotation(issued)
 	return issued, nil
+}
+
+func notifyProbeCertificateRotation(cert probeIssuedCertificate) {
+	version := cert.RenewedAt.UTC().Format(time.RFC3339Nano)
+	if err := dispatchProbeCertificateSyncToNode(cert.NodeID, "", version); err != nil {
+		log.Printf("probe certificate sync notification deferred: node_id=%s version=%s err=%v", cert.NodeID, version, err)
+		return
+	}
+	time.Sleep(3 * time.Second)
+	dispatchProbeRouteConfigSyncToKnownNodes("")
 }
 
 func (m *probeCertificateManager) readStoredNodeCertificate(nodeID string) (probeIssuedCertificate, error) {

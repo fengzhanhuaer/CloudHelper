@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"log"
@@ -113,6 +116,114 @@ func prepareProbeServerCertificate(identity nodeIdentity, controllerBaseURL stri
 		Domain:   strings.TrimSpace(strings.ToLower(response.Domain)),
 		NotAfter: leaf.NotAfter.UTC(),
 	}, nil
+}
+
+func refreshProbeServerCertificate(identity nodeIdentity, controllerBaseURL string) (probeServerCertificate, error) {
+	dataDir, err := resolveDataDir()
+	if err != nil {
+		return probeServerCertificate{}, err
+	}
+	controllerBaseURL = strings.TrimSpace(controllerBaseURL)
+	if controllerBaseURL == "" {
+		return probeServerCertificate{}, errors.New("controller base url is required to refresh probe tls certificate")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), probeTLSPullTimeout)
+	defer cancel()
+	response, err := pullProbeCertificateFromController(ctx, controllerBaseURL, identity)
+	if err != nil {
+		return probeServerCertificate{}, err
+	}
+	leaf, err := parseProbeCertificateLeaf([]byte(response.CertPEM), []byte(response.KeyPEM))
+	if err != nil {
+		return probeServerCertificate{}, err
+	}
+	if !isProbeCertificateUsable(leaf.NotAfter.UTC(), probeTLSMinValidity) {
+		return probeServerCertificate{}, fmt.Errorf("controller returned unusable probe certificate: expires=%s", leaf.NotAfter.UTC().Format(time.RFC3339))
+	}
+	certPath := filepath.Join(dataDir, probeTLSCertFile)
+	keyPath := filepath.Join(dataDir, probeTLSKeyFile)
+	metaPath := filepath.Join(dataDir, probeTLSMetaFile)
+	if err := persistProbeServerCertificateFiles(certPath, keyPath, metaPath, response, leaf); err != nil {
+		return probeServerCertificate{}, err
+	}
+	return probeServerCertificate{CertPath: certPath, KeyPath: keyPath, Domain: strings.TrimSpace(strings.ToLower(response.Domain)), NotAfter: leaf.NotAfter.UTC()}, nil
+}
+
+func refreshProbeServerCertificateIfConfigMismatch(identity nodeIdentity, controllerBaseURL string, config probeVirtualRouterConfig) (bool, error) {
+	expected := expectedProbeServerCertificateSPKI(config, identity.NodeID)
+	if expected == "" {
+		return false, nil
+	}
+	dataDir, err := resolveDataDir()
+	if err != nil {
+		return false, err
+	}
+	certPath := filepath.Join(dataDir, probeTLSCertFile)
+	current := probeCertificateFileSPKI(certPath)
+	if current == expected {
+		return false, nil
+	}
+	if _, err := refreshProbeServerCertificate(identity, controllerBaseURL); err != nil {
+		return false, err
+	}
+	actual := probeCertificateFileSPKI(certPath)
+	if actual != expected {
+		return false, fmt.Errorf("refreshed probe tls identity mismatch: expected=%s actual=%s", expected, actual)
+	}
+	return true, nil
+}
+
+func expectedProbeServerCertificateSPKI(config probeVirtualRouterConfig, nodeID string) string {
+	nodeID = normalizeProbeRouteNodeID(nodeID)
+	for _, rule := range config.TopologyRules {
+		if normalizeProbeRouteNodeID(rule.FromNodeID) == nodeID {
+			if value := normalizeProbeRouteTLSSPKI(rule.FromTLSSPKISHA256); value != "" {
+				return value
+			}
+		}
+		if normalizeProbeRouteNodeID(rule.ToNodeID) == nodeID {
+			if value := normalizeProbeRouteTLSSPKI(rule.ToTLSSPKISHA256); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func probeCertificateFileSPKI(path string) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return ""
+	}
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
+	return hex.EncodeToString(sum[:])
+}
+
+func persistProbeServerCertificateFiles(certPath string, keyPath string, metaPath string, response probeControllerCertificateResponse, leaf *x509.Certificate) error {
+	if leaf == nil {
+		return errors.New("probe certificate leaf is required")
+	}
+	if err := os.WriteFile(certPath, []byte(response.CertPEM), 0o600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(keyPath, []byte(response.KeyPEM), 0o600); err != nil {
+		return err
+	}
+	meta := probeLocalCertificateMeta{NodeID: strings.TrimSpace(response.NodeID), Domain: strings.TrimSpace(strings.ToLower(response.Domain)), NotBefore: leaf.NotBefore.UTC().Format(time.RFC3339), NotAfter: leaf.NotAfter.UTC().Format(time.RFC3339), RenewedAt: strings.TrimSpace(response.RenewedAt)}
+	raw, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return err
+	}
+	raw = append(raw, '\n')
+	return os.WriteFile(metaPath, raw, 0o600)
 }
 
 func loadLocalProbeServerCertificate(certPath string, keyPath string, metaPath string) (probeServerCertificate, bool) {

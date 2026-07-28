@@ -148,6 +148,14 @@ func syncProbeRouteConfig(identity nodeIdentity, controllerBaseURL string) error
 	if err := persistProbeRouteConfigCache(config); err != nil {
 		log.Printf("warning: persist probe route config cache failed: %v", err)
 	}
+	certificateChanged, certificateErr := refreshProbeServerCertificateIfConfigMismatch(identity, controllerBaseURL, config)
+	if certificateErr != nil {
+		log.Printf("warning: probe tls certificate proactive sync failed: %v", certificateErr)
+	}
+	if certificateChanged {
+		stopProbeVirtualRouterRuntimesExcept(map[string]struct{}{}, "probe tls certificate proactively updated")
+		log.Printf("probe tls certificate proactively updated: node_id=%s", strings.TrimSpace(identity.NodeID))
+	}
 	applyProbeVirtualRouterConfigForNode(config, identity.NodeID)
 	applyProbeVirtualRouterRuntimesForNode(identity, controllerBaseURL, config)
 	return nil

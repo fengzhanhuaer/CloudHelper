@@ -16,7 +16,7 @@ func buildProbeRouteUserAuthTicketForTest(t *testing.T, priv ed25519.PrivateKey,
 		ts = issuedAt[0].UTC()
 	}
 	payload := probeRouteUserAuthTicketPayload{
-		Version:       "route-auth-v2",
+		Version:       "route-auth-v3",
 		RouteID:       strings.TrimSpace(routeID),
 		ClientEntryID: "test-entry",
 		UserID:        "admin",
@@ -27,6 +27,11 @@ func buildProbeRouteUserAuthTicketForTest(t *testing.T, priv ed25519.PrivateKey,
 		IssuedAt:      ts.Format(time.RFC3339),
 		ExpiresAt:     ts.Add(24 * time.Hour).Format(time.RFC3339),
 	}
+	return signProbeRouteUserAuthTicketForTest(t, priv, payload)
+}
+
+func signProbeRouteUserAuthTicketForTest(t *testing.T, priv ed25519.PrivateKey, payload probeRouteUserAuthTicketPayload) string {
+	t.Helper()
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal ticket payload: %v", err)

@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const probeVirtualRouterAuthTicketVersion = "route-auth-v2"
+const probeVirtualRouterAuthTicketVersion = "route-auth-v3"
 
 var probeVirtualRouterAuthTicketNow = time.Now
 
@@ -23,8 +23,6 @@ type probeVirtualRouterAuthTicketPayload struct {
 	UserPublicKey string `json:"user_public_key"`
 	FromNodeID    string `json:"from_node_id"`
 	ToNodeID      string `json:"to_node_id"`
-	FromTLSSPKI   string `json:"from_tls_spki_sha256"`
-	ToTLSSPKI     string `json:"to_tls_spki_sha256"`
 	TicketID      string `json:"ticket_id"`
 	IssuedAt      string `json:"issued_at"`
 	ExpiresAt     string `json:"expires_at"`
@@ -48,7 +46,7 @@ func buildProbeVirtualRouterAuthTicket(rule probeVirtualRouterTopologyRule, priv
 	}
 	issuedAt := probeVirtualRouterMonthlyAuthTicketIssuedAt(probeVirtualRouterAuthTicketNow())
 	issuedTime, _ := time.Parse(time.RFC3339, issuedAt)
-	ticketSeed := strings.Join([]string{routeID, clientEntryID, strings.TrimSpace(rule.FromNodeID), strings.TrimSpace(rule.ToNodeID), strings.TrimSpace(rule.Secret), rule.FromTLSSPKISHA256, rule.ToTLSSPKISHA256, issuedAt}, "\n")
+	ticketSeed := strings.Join([]string{routeID, clientEntryID, strings.TrimSpace(rule.FromNodeID), strings.TrimSpace(rule.ToNodeID), strings.TrimSpace(rule.Secret), issuedAt}, "\n")
 	ticketSum := sha256.Sum256([]byte(ticketSeed))
 	payload := probeVirtualRouterAuthTicketPayload{
 		Version:       probeVirtualRouterAuthTicketVersion,
@@ -58,8 +56,6 @@ func buildProbeVirtualRouterAuthTicket(rule probeVirtualRouterTopologyRule, priv
 		UserPublicKey: userPublicKey,
 		FromNodeID:    normalizeProbeNodeID(rule.FromNodeID),
 		ToNodeID:      normalizeProbeNodeID(rule.ToNodeID),
-		FromTLSSPKI:   normalizeProbeVirtualRouterTLSSPKI(rule.FromTLSSPKISHA256),
-		ToTLSSPKI:     normalizeProbeVirtualRouterTLSSPKI(rule.ToTLSSPKISHA256),
 		TicketID:      hex.EncodeToString(ticketSum[:16]),
 		IssuedAt:      issuedAt,
 		ExpiresAt:     issuedTime.Add(35 * 24 * time.Hour).Format(time.RFC3339),
