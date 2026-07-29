@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -371,6 +372,60 @@ func TestEnsureProbeDDNSCertificateRenewsInsideWindowAndPreservesOnFailure(t *te
 	}
 	if !renewed.NotAfter.After(oldCert.NotAfter) {
 		t.Fatalf("certificate was not renewed: old=%s new=%s", oldCert.NotAfter, renewed.NotAfter)
+	}
+}
+
+func TestWaitProbeDDNSCertificateTXTPollsUntilExpectedValue(t *testing.T) {
+	oldLookup := probeDDNSCertificateTXTLookup
+	oldTimeout := probeDDNSCertificateDNSPropagationTimeout
+	oldInterval := probeDDNSCertificateDNSPropagationInterval
+	t.Cleanup(func() {
+		probeDDNSCertificateTXTLookup = oldLookup
+		probeDDNSCertificateDNSPropagationTimeout = oldTimeout
+		probeDDNSCertificateDNSPropagationInterval = oldInterval
+	})
+
+	calls := 0
+	probeDDNSCertificateTXTLookup = func(context.Context, string) ([]string, error) {
+		calls++
+		if calls < 3 {
+			return []string{"not-ready"}, nil
+		}
+		return []string{`"challenge-value"`}, nil
+	}
+	probeDDNSCertificateDNSPropagationTimeout = time.Second
+	probeDDNSCertificateDNSPropagationInterval = time.Millisecond
+	if err := waitProbeDDNSCertificateTXT(context.Background(), "_acme-challenge.example.com", "challenge-value"); err != nil {
+		t.Fatalf("wait TXT: %v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("lookup calls=%d, want 3", calls)
+	}
+}
+
+func TestWaitProbeDDNSCertificateTXTReportsPropagationTimeout(t *testing.T) {
+	oldLookup := probeDDNSCertificateTXTLookup
+	oldTimeout := probeDDNSCertificateDNSPropagationTimeout
+	oldInterval := probeDDNSCertificateDNSPropagationInterval
+	t.Cleanup(func() {
+		probeDDNSCertificateTXTLookup = oldLookup
+		probeDDNSCertificateDNSPropagationTimeout = oldTimeout
+		probeDDNSCertificateDNSPropagationInterval = oldInterval
+	})
+
+	probeDDNSCertificateTXTLookup = func(context.Context, string) ([]string, error) {
+		return nil, &net.DNSError{Err: "no such host", Name: "_acme-challenge.example.com"}
+	}
+	probeDDNSCertificateDNSPropagationTimeout = 10 * time.Millisecond
+	probeDDNSCertificateDNSPropagationInterval = time.Millisecond
+	err := waitProbeDDNSCertificateTXT(context.Background(), "_acme-challenge.example.com", "challenge-value")
+	if err == nil {
+		t.Fatal("expected propagation timeout")
+	}
+	for _, part := range []string{"propagation timeout", "_acme-challenge.example.com", "challenge-value", "no such host"} {
+		if !strings.Contains(err.Error(), part) {
+			t.Fatalf("error %q does not contain %q", err, part)
+		}
 	}
 }
 

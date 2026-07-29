@@ -4,9 +4,9 @@
 - 后续工作传递声明: 本文档必须传递给后续阶段与后续角色。
 - 需求编号: REQ-PN-DDNS-001
 - 需求前缀: REQ-PN-DDNS-001
-- 当前阶段: Architect最终门禁
+- 当前阶段: 最终门禁
 - 最近更新角色: Architect
-- 最近更新时间: 2026-07-29T09:15:00+08:00
+- 最近更新时间: 2026-07-29T10:56:20+08:00
 - 工作依据文档: `doc/ai-coding-collaboration.md`、用户提出的独立新需求“探针DDNS功能”及后续裁定、`probe_node/local_pages/system.html`、`probe_node/local_console.go`、`probe_node/ip_report_settings.go`、`probe_node/public_ip.go`、`probe_node/main.go`、`probe_controller/internal/core/cloudflare_assistant.go`、`probe_controller/internal/core/probe_certificate.go`
 - 状态: 已完成
 
@@ -174,6 +174,7 @@
 | T-004 | REQ-PN-DDNS-001 | U-007 | `probe_node/probe_ddns.go`、`probe_node/main.go` | 新增/修改 | 启动、10分钟周期、6小时续期与触发合并测试通过 |
 | T-005 | REQ-PN-DDNS-001 | U-008 | `probe_node/local_console.go`、`probe_node/local_pages/system.html`、`probe_node/probe_ddns_test.go` | 修改 | 登录保护、GET/POST、Token不回显和系统设置交互测试通过 |
 | T-006 | REQ-PN-DDNS-001 | U-001至U-008 | 本任务包全部允许文件、本文档 | 修改/验证 | gofmt、定向测试、probe_node全量测试和diff检查通过，证据回填本文档 |
+| T-007 | REQ-PN-DDNS-001 | U-006 | `probe_node/probe_ddns_certificate.go`、`probe_node/probe_ddns_test.go`、本文档 | 修改/验证 | DNS-01在公网TXT目标值可见后才Accept；轮询成功、超时和全量测试通过 |
 
 #### 1.4.3 源码修改规则
 - 修改源代码时必须注意可能存在的 GBK 编码并保持原文件编码，避免乱码或误转码。
@@ -183,7 +184,7 @@
 
 #### 1.4.5 门禁输入
 - 用户确认的功能与产品规则。
-- 1.1验收标准、1.2架构、1.3单元设计和T-001至T-006。
+- 1.1验收标准、1.2架构、1.3单元设计和T-001至T-007。
 
 #### 1.4.6 结论
 - 任务包文件范围、操作类型和可测试验收标准完整，可进入Code阶段。
@@ -193,7 +194,7 @@
 
 | 需求编号 | 需求描述 | 架构章节 | 单元设计章节 | Code任务章节 | 状态 | 备注 |
 |---|---|---|---|---|---|---|
-| REQ-PN-DDNS-001 | 探针侧两类DDNS与Let's Encrypt证书 | 1.2 | 1.3 | 1.4 | 已完成 | T-001至T-006覆盖 |
+| REQ-PN-DDNS-001 | 探针侧两类DDNS与Let's Encrypt证书 | 1.2 | 1.3 | 1.4 | 已完成 | T-001至T-007覆盖 |
 
 ### 1.6 Architect关键接口跟踪矩阵
 - 状态: 已完成
@@ -229,10 +230,10 @@
 | Code证据完整 | 通过 | 第2.5节 | 修改接口、配置、报告、文件、测试、风险与回滚均完整 |
 | Code任务反馈已处理 | 通过 | 第2.6节 | 无未处理反馈 |
 | 验收标准可测试 | 通过 | AC-001至AC-012 | 无 |
-| 需求任务覆盖完整 | 通过 | T-001至T-006 | 无 |
-| 任务自测覆盖完整 | 通过 | TEST-001至TEST-009 | 定向、重复、全量与UI验证完整 |
+| 需求任务覆盖完整 | 通过 | T-001至T-007 | 无 |
+| 任务自测覆盖完整 | 通过 | TEST-001至TEST-010 | 定向、重复、全量与UI验证完整 |
 | 修改文件在允许范围内 | 通过 | Git状态与第1.4.1节逐项核对 | 无越界文件 |
-| 测试失败已记录缺陷 | 通过 | DEF-001至DEF-005 | 本需求缺陷均修复，既有vet告警单独记录 |
+| 测试失败已记录缺陷 | 通过 | DEF-001至DEF-006 | DNS传播缺陷已修复，既有vet告警单独记录 |
 | 未执行测试原因完整 | 通过 | 第2.5.7节 | 真实外部写入、race与第二实例原因完整 |
 | 遗留风险可接受 | 通过 | 第2.5.8节 | 仅真实凭据权限/网络与既有vet告警 |
 
@@ -267,6 +268,7 @@
 | REQ-PN-DDNS-001 | T-004 | `probe_node/probe_ddns.go`、`probe_node/main.go` | 已完成 | 已完成 | 合并调度测试与全量测试通过 | 无 |
 | REQ-PN-DDNS-001 | T-005 | `probe_node/local_console.go`、`probe_node/local_pages/system.html` | 已完成 | 已完成 | API测试及Playwright桌面/手机测试通过 | 无 |
 | REQ-PN-DDNS-001 | T-006 | 本需求全部允许文件 | 已完成 | 已完成 | 定向重复测试、全量测试、diff检查通过 | 无 |
+| REQ-PN-DDNS-001 | T-007 | `probe_node/probe_ddns_certificate.go`、`probe_node/probe_ddns_test.go` | 已完成 | 已完成 | 公网TXT轮询成功与超时测试、重复测试、全量测试通过 | DEF-006已关闭 |
 
 ### 2.2 Code关键接口跟踪矩阵
 - 状态: 已完成
@@ -293,6 +295,7 @@
 | TEST-007 | REQ-PN-DDNS-001 | T-005 | 系统设置页面渲染与交互 | Playwright桌面1440x1000、手机390x844 | 已完成 | 页面身份、非空、无错误、保存交互、Token清空、无横向溢出均通过 | 无 | Browser插件不可用，使用本机Chrome |
 | TEST-008 | REQ-PN-DDNS-001 | T-006 | probe_node全量回归 | `go test ./...` | 已完成 | `probe_node`与`mobilecore`通过 | 无 | 无 |
 | TEST-009 | REQ-PN-DDNS-001 | T-006 | 新增测试稳定性 | `go test -count=3 -run "Test.*ProbeDDNS" .` | 已完成 | 连续三次通过 | 无 | 无 |
+| TEST-010 | REQ-PN-DDNS-001 | T-007 | DNS-01等待公网TXT精确值且超时不提交 | 注入TXT查询结果的Go定向测试 | 已完成 | `TestWaitProbeDDNSCertificateTXTPollsUntilExpectedValue`、`TestWaitProbeDDNSCertificateTXTReportsPropagationTimeout`通过 | 无 | 系统DNS、1.1.1.1、8.8.8.8并行查询 |
 
 ### 2.4 Code缺陷跟踪矩阵
 - 状态: 已完成
@@ -304,6 +307,7 @@
 | DEF-003 | REQ-PN-DDNS-001 | TEST-003 | 同名同值人工记录可能被误登记 | 高 | 已完成 | Cloudflare comment所有权标记及隔离测试通过 | 无 |
 | DEF-004 | REQ-PN-DDNS-001 | TEST-008 | Windows临时替换回退存在旧文件丢失风险 | 中 | 已完成 | 改为仓库既有受限权限JSON写入模式 | 无 |
 | DEF-005 | REQ-PN-DDNS-001 | TEST-008 | `go vet ./...`报告既有mobilecore锁复制与Windows unsafe.Pointer告警 | 低 | 待整改 | 告警文件均不在本任务修改范围 | 不阻塞本需求测试门禁 |
+| DEF-006 | REQ-PN-DDNS-001 | TEST-010 | 固定等待20秒后直接Accept，TXT尚未公网可见时Let's Encrypt返回unauthorized | 高 | 已完成 | 改为最多3分钟轮询系统DNS、1.1.1.1、8.8.8.8，精确值可见后才Accept；成功和超时测试通过 | T-007完成 |
 
 ### 2.5 Code执行证据
 - 状态: 已完成
@@ -321,6 +325,7 @@
 - 两类DDNS、全部IPv4/IPv6、多域名SAN证书、10分钟同步、30天续期窗口和6小时证书检查均已实现。
 - 删除配置域名或停用功能不删除远端记录；当前配置域名的地址集合减少时，仅删除带本功能所有权标记且已登记的旧地址记录。
 - 系统设置页面完成桌面与手机渲染、保存交互和Token脱敏验证。
+- DNS-01不再固定等待20秒后提交；TXT创建后并行查询系统DNS、Cloudflare DNS与Google DNS，最多等待3分钟，任一解析器返回精确挑战值后才调用ACME Accept，超时保留完整诊断且不提交无效挑战。
 
 #### 2.5.4 影响文件
 - `probe_node/probe_ddns.go`
@@ -346,6 +351,7 @@
 - `probe_node go test ./...`通过，`mobilecore`通过。
 - Playwright系统Chrome验证通过，桌面和390px手机端无横向溢出、控制台错误或交互失败。
 - `git diff --check`通过，仅有Git换行符提示。
+- DNS-01传播轮询成功与超时测试通过；DDNS测试连续三次通过，全量回归通过。
 
 #### 2.5.7 未执行测试原因
 - 未调用真实Cloudflare或Let's Encrypt生产API，避免修改用户DNS和触发真实签发；通过模拟HTTP与可替换签发器验证协议和状态机。
@@ -353,21 +359,21 @@
 - 未直接启动第二个探针实例；现有Windows全局启动门禁被运行中的探针占用，未停止现有服务，页面改用Playwright拦截API验证。
 
 #### 2.5.8 遗留风险
-- 首次真实使用仍依赖用户API Token对所有域名所属Zone具备DNS Write权限，以及公网可访问Cloudflare与Let's Encrypt。
+- 首次真实使用仍依赖用户API Token对所有域名所属Zone具备DNS Write权限，以及公网可访问Cloudflare、公共DNS与Let's Encrypt；超过3分钟仍未传播时本轮签发会安全失败并由后续调度重试。
 - `go vet`既有告警与本需求无文件交集，但仓库后续应单独整改。
 
 #### 2.5.9 回滚方案
 - 回滚本节2.5.4列出的源代码修改；保留或备份`data/ddns`后停止调度即可。由于配置移除本来就不删除远端记录，回滚不会额外删除Cloudflare记录。
 
 #### 2.5.10 结论
-- T-001至T-006已完成并通过可执行验收；提交Architect最终门禁。
+- T-001至T-007已完成并通过可执行验收；DEF-006已关闭，Architect最终门禁通过。
 
 ### 2.6 Code任务反馈
 - 状态: 已完成
 
 | 反馈编号 | 任务编号 | 反馈类型 | 反馈描述 | 阻塞影响 | Code建议 | Architect处理状态 | Architect处理结论 |
 |---|---|---|---|---|---|---|---|
-| 无 | T-001至T-006 | 无 | 无 | 无 | 无 | 已完成 | 无 |
+| 无 | T-001至T-007 | 无 | 无 | 无 | 无 | 已完成 | 无 |
 
 #### 2.6.1 结论
 - 无未处理Code任务反馈。

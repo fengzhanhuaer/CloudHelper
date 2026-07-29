@@ -14,6 +14,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -27,7 +28,9 @@ import (
 const (
 	probeDDNSACMEDirectoryURL       = "https://acme-v02.api.letsencrypt.org/directory"
 	probeDDNSCertificateRenewBefore = 30 * 24 * time.Hour
-	probeDDNSDNSPropagationWait     = 20 * time.Second
+	probeDDNSDNSPropagationTimeout  = 3 * time.Minute
+	probeDDNSDNSPropagationInterval = 3 * time.Second
+	probeDDNSDNSLookupTimeout       = 5 * time.Second
 	probeDDNSAccountKeyFileName     = "acme_account.key.pem"
 	probeDDNSCertificateFileName    = "tls.crt.pem"
 	probeDDNSPrivateKeyFileName     = "tls.key.pem"
@@ -51,7 +54,9 @@ type probeDDNSIssuedCertificate struct {
 }
 
 var probeDDNSCertificateIssuer = issueProbeDDNSCertificate
-var probeDDNSCertificateDNSWait = probeDDNSDNSPropagationWait
+var probeDDNSCertificateTXTLookup = lookupProbeDDNSPublicTXT
+var probeDDNSCertificateDNSPropagationTimeout = probeDDNSDNSPropagationTimeout
+var probeDDNSCertificateDNSPropagationInterval = probeDDNSDNSPropagationInterval
 
 func ensureProbeDDNSCertificate(ctx context.Context) error {
 	config, err := loadProbeDDNSConfig()
@@ -175,14 +180,9 @@ func issueProbeDDNSCertificate(ctx context.Context, token string, domains []stri
 			return probeDDNSIssuedCertificate{}, fmt.Errorf("create acme txt record: %w", err)
 		}
 		created = append(created, challengeRecord{zoneID: zone.ID, recordID: recordID})
-		if probeDDNSCertificateDNSWait > 0 {
-			timer := time.NewTimer(probeDDNSCertificateDNSWait)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return probeDDNSIssuedCertificate{}, ctx.Err()
-			case <-timer.C:
-			}
+		recordName := "_acme-challenge." + domain
+		if err := waitProbeDDNSCertificateTXT(ctx, recordName, value); err != nil {
+			return probeDDNSIssuedCertificate{}, err
 		}
 		if _, err := client.Accept(ctx, challenge); err != nil {
 			return probeDDNSIssuedCertificate{}, fmt.Errorf("acme accept challenge: %w", err)
@@ -228,6 +228,83 @@ func issueProbeDDNSCertificate(ctx context.Context, token string, domains []stri
 		CertPEM: certBuffer.Bytes(), KeyPEM: keyPEM, Domains: domains,
 		NotBefore: leaf.NotBefore.UTC(), NotAfter: leaf.NotAfter.UTC(), RenewedAt: time.Now().UTC(),
 	}, nil
+}
+
+func waitProbeDDNSCertificateTXT(ctx context.Context, recordName, expectedValue string) error {
+	waitCtx, cancel := context.WithTimeout(ctx, probeDDNSCertificateDNSPropagationTimeout)
+	defer cancel()
+
+	var lastResult string
+	for {
+		values, err := probeDDNSCertificateTXTLookup(waitCtx, recordName)
+		if err != nil {
+			lastResult = "lookup error: " + err.Error()
+		} else {
+			lastResult = fmt.Sprintf("TXT values: %q", values)
+			for _, value := range values {
+				if normalizeProbeDDNSTXTValue(value) == normalizeProbeDDNSTXTValue(expectedValue) {
+					return nil
+				}
+			}
+		}
+
+		timer := time.NewTimer(probeDDNSCertificateDNSPropagationInterval)
+		select {
+		case <-waitCtx.Done():
+			timer.Stop()
+			return fmt.Errorf("acme dns challenge TXT propagation timeout for %s: expected %q; last %s: %w", recordName, expectedValue, lastResult, waitCtx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+func normalizeProbeDDNSTXTValue(value string) string {
+	return strings.Trim(strings.TrimSpace(value), `"`)
+}
+
+func lookupProbeDDNSPublicTXT(ctx context.Context, recordName string) ([]string, error) {
+	type lookupResult struct {
+		values []string
+		err    error
+	}
+	resolvers := []*net.Resolver{
+		net.DefaultResolver,
+		newProbeDDNSResolver("1.1.1.1:53"),
+		newProbeDDNSResolver("8.8.8.8:53"),
+	}
+	results := make(chan lookupResult, len(resolvers))
+	for _, resolver := range resolvers {
+		go func(resolver *net.Resolver) {
+			lookupCtx, cancel := context.WithTimeout(ctx, probeDDNSDNSLookupTimeout)
+			defer cancel()
+			values, err := resolver.LookupTXT(lookupCtx, recordName)
+			results <- lookupResult{values: values, err: err}
+		}(resolver)
+	}
+
+	var values []string
+	var lookupErrors []error
+	for range resolvers {
+		result := <-results
+		values = append(values, result.values...)
+		if result.err != nil {
+			lookupErrors = append(lookupErrors, result.err)
+		}
+	}
+	if len(values) > 0 || len(lookupErrors) < len(resolvers) {
+		return values, nil
+	}
+	return nil, errors.Join(lookupErrors...)
+}
+
+func newProbeDDNSResolver(address string) *net.Resolver {
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var dialer net.Dialer
+			return dialer.DialContext(ctx, "udp", address)
+		},
+	}
 }
 
 func selectProbeDDNSDNS01Challenge(authz *acme.Authorization) (*acme.Challenge, error) {
