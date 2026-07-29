@@ -65,7 +65,7 @@
     .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin: 10px 0 12px; }
     .field { display: flex; flex-direction: column; gap: 6px; min-width: 240px; flex: 1 1 240px; }
     .field label { font-size: 12px; color: var(--muted); }
-    input, textarea {
+    input, textarea, select {
       width: 100%;
       box-sizing: border-box;
       padding: 8px;
@@ -80,6 +80,9 @@
       font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
       line-height: 1.5;
     }
+    select { min-height: 36px; }
+    .toggle-row { display: flex; align-items: center; gap: 8px; }
+    .toggle-row input { width: 16px; height: 16px; margin: 0; accent-color: var(--ok); }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
     button {
       padding: 8px 12px;
@@ -225,6 +228,35 @@
           <button id="ipReportRefreshBtn" class="secondary">刷新网卡</button>
         </div>
       </section>
+
+      <section class="card">
+        <h2>DDNS</h2>
+        <div class="toolbar">
+          <label class="toggle-row"><input id="ddnsEnabledInput" type="checkbox" />启用 DDNS 与证书自动续期</label>
+        </div>
+        <div class="kv">
+          <div>特定网卡</div>
+          <div><select id="ddnsInterfaceSelect"><option value="">请选择网卡</option></select></div>
+          <div>网卡域名</div>
+          <div><textarea id="ddnsInterfaceDomainsInput" spellcheck="false" placeholder="每行一个完整域名"></textarea></div>
+          <div>公网出口域名</div>
+          <div><textarea id="ddnsPublicDomainsInput" spellcheck="false" placeholder="每行一个完整域名"></textarea></div>
+          <div>Cloudflare API Token</div>
+          <div><input id="ddnsAPITokenInput" type="password" autocomplete="new-password" placeholder="留空表示保留已保存的 Token" /></div>
+          <div>Token 状态</div><div id="ddnsTokenStatusText">-</div>
+          <div>最近同步</div><div id="ddnsLastSyncText">-</div>
+          <div>同步结果</div><div id="ddnsSyncStatusText">-</div>
+          <div>同步错误</div><div id="ddnsSyncErrorText">-</div>
+          <div>证书域名</div><div id="ddnsCertificateDomainsText">-</div>
+          <div>证书有效期</div><div id="ddnsCertificateNotAfterText">-</div>
+          <div>证书结果</div><div id="ddnsCertificateStatusText">-</div>
+          <div>证书错误</div><div id="ddnsCertificateErrorText">-</div>
+        </div>
+        <div class="actions">
+          <button id="ddnsSaveBtn">保存 DDNS 设置</button>
+          <button id="ddnsRefreshBtn" class="secondary">刷新状态</button>
+        </div>
+      </section>
     </div>
 
     <p id="message" class="msg"></p>
@@ -234,6 +266,7 @@
     const messageEl = document.getElementById('message');
     const ipReportInterfacesEl = document.getElementById('ipReportInterfaces');
     const routeAuthBlacklistContentEl = document.getElementById('routeAuthBlacklistContent');
+    const ddnsInterfaceSelectEl = document.getElementById('ddnsInterfaceSelect');
     let ipReportSavedSelection = new Set();
     let upgradeStatusPollingTimer = null;
 
@@ -405,6 +438,59 @@
       setMessage('IP 上送设置已保存', 'success');
     }
 
+    function ddnsDomainsFromTextarea(id) {
+      return String(document.getElementById(id).value || '').split(/\r?\n/)
+        .map((item) => item.trim()).filter(Boolean);
+    }
+
+    function renderDDNSSettings(data) {
+      const config = data && typeof data.config === 'object' ? data.config : {};
+      const state = data && typeof data.state === 'object' ? data.state : {};
+      const interfaces = Array.isArray(data && data.interfaces) ? data.interfaces : [];
+      document.getElementById('ddnsEnabledInput').checked = !!config.enabled;
+      document.getElementById('ddnsInterfaceDomainsInput').value = Array.isArray(config.interface_domains) ? config.interface_domains.join('\n') : '';
+      document.getElementById('ddnsPublicDomainsInput').value = Array.isArray(config.public_domains) ? config.public_domains.join('\n') : '';
+      document.getElementById('ddnsAPITokenInput').value = '';
+      ddnsInterfaceSelectEl.innerHTML = '<option value="">请选择网卡</option>';
+      interfaces.forEach((item) => {
+        const id = String(item && item.id || '').trim();
+        if (!id) return;
+        const option = document.createElement('option');
+        option.value = id;
+        option.textContent = formatIPReportInterface(item);
+        option.selected = id === String(config.selected_interface_id || '');
+        ddnsInterfaceSelectEl.appendChild(option);
+      });
+      setText('ddnsTokenStatusText', config.api_token_configured ? '已配置' : '未配置');
+      setText('ddnsLastSyncText', state.last_sync_at || state.last_sync_started_at || '-');
+      setText('ddnsSyncStatusText', state.last_sync_status || '-');
+      setText('ddnsSyncErrorText', state.last_sync_error || '-');
+      setText('ddnsCertificateDomainsText', Array.isArray(state.certificate_domains) && state.certificate_domains.length ? state.certificate_domains.join(', ') : '-');
+      setText('ddnsCertificateNotAfterText', state.certificate_not_after || '-');
+      setText('ddnsCertificateStatusText', state.last_certificate_status || '-');
+      setText('ddnsCertificateErrorText', state.last_certificate_error || '-');
+    }
+
+    async function loadDDNSSettings() {
+      const data = await requestJSON('/local/api/system/ddns', { method: 'GET' });
+      renderDDNSSettings(data || {});
+    }
+
+    async function saveDDNSSettings() {
+      const data = await requestJSON('/local/api/system/ddns', {
+        method: 'POST',
+        body: JSON.stringify({
+          enabled: document.getElementById('ddnsEnabledInput').checked,
+          selected_interface_id: ddnsInterfaceSelectEl.value,
+          interface_domains: ddnsDomainsFromTextarea('ddnsInterfaceDomainsInput'),
+          public_domains: ddnsDomainsFromTextarea('ddnsPublicDomainsInput'),
+          api_token: document.getElementById('ddnsAPITokenInput').value,
+        }),
+      });
+      renderDDNSSettings(data || {});
+      setMessage('DDNS 设置已保存，后台同步已触发', 'success');
+    }
+
     function formatBytes(value) {
       let n = Number(value);
       if (!Number.isFinite(n) || n <= 0) return '-';
@@ -519,6 +605,7 @@
       const ok = await ensureSession();
       if (!ok) return;
       await loadIPReportSettings();
+      await loadDDNSSettings();
       await loadUpgradeStatus();
       await loadRouteAuthBlacklist();
     }
@@ -544,6 +631,8 @@
     document.getElementById('ipReportRefreshBtn').addEventListener('click', () => loadIPReportSettings().then(() => setMessage('网卡已刷新', 'success')).catch((err) => setMessage('刷新网卡失败：' + err.message, 'error')));
     document.getElementById('ipReportSelectAllBtn').addEventListener('click', () => setAllIPReportInterfacesSelected(true));
     document.getElementById('ipReportClearBtn').addEventListener('click', () => setAllIPReportInterfacesSelected(false));
+    document.getElementById('ddnsSaveBtn').addEventListener('click', () => saveDDNSSettings().catch((err) => setMessage('保存 DDNS 设置失败：' + err.message, 'error')));
+    document.getElementById('ddnsRefreshBtn').addEventListener('click', () => loadDDNSSettings().then(() => setMessage('DDNS 状态已刷新', 'success')).catch((err) => setMessage('刷新 DDNS 状态失败：' + err.message, 'error')));
     document.getElementById('routeAuthBlacklistSaveBtn').addEventListener('click', () => saveRouteAuthBlacklist().catch((err) => setMessage('保存路由认证黑名单失败：' + err.message, 'error')));
     document.getElementById('routeAuthBlacklistRefreshBtn').addEventListener('click', () => loadRouteAuthBlacklist().then(() => setMessage('路由认证黑名单已刷新', 'success')).catch((err) => setMessage('刷新路由认证黑名单失败：' + err.message, 'error')));
 

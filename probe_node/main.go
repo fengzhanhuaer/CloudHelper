@@ -349,6 +349,7 @@ func runProbeNode(options probeLaunchOptions) error {
 	}
 	startProbeRouteConfigSyncLoop(identity, controllerBaseURL)
 	startProbeSyncScheduler(identity)
+	startProbeDDNSScheduler()
 
 	logProbeInfof("probe node started: node_id=%s version=%s", identity.NodeID, BuildVersion)
 	startProbeLocalTUNStartupRecoveryAsync()
