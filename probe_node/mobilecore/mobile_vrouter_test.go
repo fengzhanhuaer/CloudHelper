@@ -768,6 +768,43 @@ func TestMobileVRouteRuntimeStatusDeclaresMobileCapabilityBoundary(t *testing.T)
 	}
 }
 
+func TestMobileVRouteRuntimeStatusIncludesTopologyLinks(t *testing.T) {
+	configDir := t.TempDir()
+	if err := persistMobileVRouteConfig(configDir, mobileVRouteConfig{
+		LocalNodeID: "9",
+		Enabled:     true,
+		ProbeIPs: []mobileVRouteProbeIP{
+			{NodeID: "9", IP: "198.18.0.9", ServicePort: 12040},
+			{NodeID: "17", IP: "198.18.0.17", ServicePort: 12041},
+		},
+		TopologyRules: []mobileVRouteTopology{{
+			ID:              "route-9-17",
+			Name:            "9 to 17",
+			FromNodeID:      "9",
+			ToNodeID:        "17",
+			ToServiceDomain: "node17.example.test",
+			ToServicePort:   12041,
+			RouteLayer:      "websocket",
+			Enabled:         true,
+		}},
+	}); err != nil {
+		t.Fatalf("persist mobile vroute config: %v", err)
+	}
+
+	status := mobileVRouteRuntimeStatusPayload(configDir)
+	links, ok := status["links"].([]mobileProbeRouteRelayReportItem)
+	if !ok || len(links) != 1 {
+		t.Fatalf("topology links=%T %+v, want one item", status["links"], status["links"])
+	}
+	wantRouteID := mobileVRouteRuntimeRouteID(mobileVRouteTopology{ID: "route-9-17"})
+	if links[0].RouteID != wantRouteID || links[0].NextNodeID != "17" {
+		t.Fatalf("topology link=%+v, want route-9-17 to node 17", links[0])
+	}
+	if links[0].NextState != nil || links[0].BridgeStatus != nil {
+		t.Fatalf("inactive topology link unexpectedly connected: %+v", links[0])
+	}
+}
+
 func TestMobileVRouteStatusPayloadIncludesExitNodeEndpoint(t *testing.T) {
 	configDir := t.TempDir()
 	if err := persistMobileVRouteConfig(configDir, mobileVRouteConfig{

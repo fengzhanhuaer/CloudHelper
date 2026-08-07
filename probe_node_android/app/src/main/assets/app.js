@@ -34,7 +34,7 @@ window.CloudHelperUI = {
       button.disabled = false;
       button.textContent = "VPN 自检";
     }
-    renderRouteControl();
+    refreshRouteControl();
     refreshVRouteIfVisible();
     refreshConnectionsIfVisible();
     refreshLogsIfVisible();
@@ -584,14 +584,6 @@ function setupStatusTabs() {
   if (refreshConnectionsButton) {
     refreshConnectionsButton.onclick = refreshConnections;
   }
-  const refreshVRouteButton = byId("refreshVRouteButton");
-  if (refreshVRouteButton) {
-    refreshVRouteButton.onclick = refreshVRoute;
-  }
-  const vrouteRTTButton = byId("vrouteRTTButton");
-  if (vrouteRTTButton) {
-    vrouteRTTButton.onclick = runVRouteRTT;
-  }
   const selfCheck = byId("vpnSelfCheckButton");
   if (selfCheck) {
     selfCheck.onclick = runVPNSelfCheck;
@@ -601,30 +593,23 @@ function setupStatusTabs() {
 }
 
 function activateStatusTab(tab) {
-  const clean = ["logs", "connections", "vroute"].includes(tab) ? tab : "overview";
+  const clean = ["logs", "connections"].includes(tab) ? tab : "overview";
   document.querySelectorAll("[data-status-tab]").forEach((button) => {
     const active = button.dataset.statusTab === clean;
     button.classList.toggle("active", active);
     button.setAttribute("aria-selected", active ? "true" : "false");
   });
   const overview = byId("statusOverviewPanel");
-  const vroute = byId("statusVRoutePanel");
   const connections = byId("statusConnectionsPanel");
   const logs = byId("statusLogsPanel");
   if (overview) {
     overview.hidden = clean !== "overview";
-  }
-  if (vroute) {
-    vroute.hidden = clean !== "vroute";
   }
   if (connections) {
     connections.hidden = clean !== "connections";
   }
   if (logs) {
     logs.hidden = clean !== "logs";
-  }
-  if (clean === "vroute") {
-    refreshVRoute();
   }
   if (clean === "connections") {
     refreshConnections();
@@ -636,7 +621,7 @@ function activateStatusTab(tab) {
 
 function refreshVRouteIfVisible() {
   const panel = byId("statusVRoutePanel");
-  if (panel && !panel.hidden) {
+  if (byId("vrouteStatus") && (!panel || !panel.hidden)) {
     refreshVRoute();
   }
 }
@@ -660,7 +645,7 @@ function refreshVRoute() {
     return;
   }
   try {
-    const vpnData = parseJSON(window.CloudHelper.vpnStatus ? window.CloudHelper.vpnStatus() : "{}");
+    const vpnData = parseJSON(hasCloudHelper("vpnStatus") ? window.CloudHelper.vpnStatus() : "{}");
     renderVRouteStatus(vpnData);
   } catch (error) {
     setText("vrouteStatus", `读取虚拟路由失败：${error && error.message ? error.message : error}`);
@@ -673,19 +658,23 @@ function renderVRouteStatus(vpnData) {
   const carriers = vroute.carriers || {};
   const capabilities = vroute.capabilities || {};
   const carrierItems = Array.isArray(carriers.items) ? carriers.items : [];
+  const links = Array.isArray(vroute.links) ? vroute.links : [];
   const exitNodes = Array.isArray(config.exit_node_items) ? config.exit_node_items : [];
+  const connectedLinks = links.filter(vrouteLinkConnected).length;
   const enabled = !!config.enabled;
   const error = String(config.error || carriers.last_error || "").trim();
   setText("vrouteStatus", [
     enabled ? "虚拟路由已启用" : "虚拟路由未启用",
     `拓扑 ${Number(config.topology_rules || 0)}`,
     `规则 ${Number(config.route_rules || 0)}`,
+    `节点连接 ${connectedLinks}/${links.length}`,
     `Carrier ${Number(carriers.active || carrierItems.length || 0)}`,
     error ? `错误：${error}` : ""
   ].filter(Boolean).join("；"));
   renderVRouteHealth(enabled, error, config.updated_at, carriers.last_error_at);
-  renderVRouteSummary(config, carriers);
+  renderVRouteSummary(config, carriers, links);
   renderVRouteRTTTargets(config);
+  renderVRouteLinks(links);
   renderVRouteExitNodes(exitNodes, config.exit_nodes);
   renderVRouteCarriers(carrierItems);
   renderVRouteCapabilities(capabilities);
@@ -785,7 +774,7 @@ function renderVRouteHealth(enabled, error, updatedAt, lastErrorAt) {
   target.appendChild(state);
 }
 
-function renderVRouteSummary(config, carriers) {
+function renderVRouteSummary(config, carriers, links) {
   const target = byId("vrouteSummary");
   if (!target) {
     return;
@@ -796,8 +785,72 @@ function renderVRouteSummary(config, carriers) {
   const exitNodes = Array.isArray(config.exit_nodes) ? config.exit_nodes : [];
   appendVRouteMetric(target, "Fake IP", [config.fake_ip_cidr || "-", `出口 ${exitNodes.length}`].join(" / "));
   appendVRouteMetric(target, "更新时间", formatCompactTime(config.updated_at) || "-");
+  appendVRouteMetric(target, "节点连接", `${links.filter(vrouteLinkConnected).length} / ${links.length}`);
   appendVRouteMetric(target, "Carrier", `${Number(carriers.active || 0)} 活动`);
   appendVRouteMetric(target, "最近错误", carriers.last_error || config.error || "-");
+}
+
+function vrouteLinkConnected(item) {
+  const bridge = (item && item.bridge_status) || {};
+  const sessions = Array.isArray(item && item.bridge_sessions) ? item.bridge_sessions : [];
+  return !!(item && item.next_state) ||
+    Number(bridge.upstream_active || 0) > 0 ||
+    Number(bridge.downstream_active || 0) > 0 ||
+    sessions.some((session) => !session.closed);
+}
+
+function renderVRouteLinks(items) {
+  const target = byId("vrouteLinks");
+  if (!target) {
+    return;
+  }
+  target.innerHTML = "";
+  appendVRouteSectionTitle(target, `节点连接 (${items.length})`);
+  if (!items.length) {
+    appendVRouteEmpty(target, "当前没有与本机相连的虚拟路由拓扑节点。");
+    return;
+  }
+  items.forEach((item) => {
+    const runtime = item.virtual_router || {};
+    const bridge = item.bridge_status || {};
+    const sessions = Array.isArray(item.bridge_sessions) ? item.bridge_sessions : [];
+    const session = sessions.find((value) => !value.closed) || sessions[0] || {};
+    const nextState = item.next_state || {};
+    const peerNode = String(item.next_node_id || item.prev_node_id || "-").trim();
+    const connected = vrouteLinkConnected(item);
+    const error = String(runtime.last_open_error || "").trim();
+    const stateLabel = error ? "异常" : (connected ? "已连接" : "待连接");
+    const endpoint = String(nextState.endpoint || session.remote_addr || "").trim();
+    const protocol = vrouteProtocolLabel(nextState.selected_protocol || item.route_layer || "auto");
+    const direction = item.next_node_id ? `本机 → 节点 ${peerNode}` : `节点 ${peerNode} → 本机`;
+    const activityAt = session.last_frame_received_at || session.last_frame_sent_at || nextState.updated_at || bridge.updated_at;
+
+    const card = document.createElement("article");
+    card.className = `vroute-card ${error ? "error" : (connected ? "connected" : "pending")}`;
+    const heading = document.createElement("div");
+    heading.className = "vroute-card-heading";
+    const title = document.createElement("div");
+    title.className = "vroute-card-title";
+    title.textContent = item.route_name ? `节点 ${peerNode} · ${item.route_name}` : `节点 ${peerNode}`;
+    const state = document.createElement("span");
+    state.className = `vroute-link-state ${error ? "error" : (connected ? "connected" : "pending")}`;
+    state.textContent = stateLabel;
+    heading.append(title, state);
+    const meta = document.createElement("div");
+    meta.className = "vroute-card-meta";
+    meta.textContent = `${direction} · Carrier ${protocol}${endpoint ? ` · ${endpoint}` : ""}`;
+    const stats = document.createElement("div");
+    stats.className = "vroute-card-grid";
+    appendVRouteMetric(stats, "Carrier", connected ? (endpoint || "已建立") : "未建立");
+    appendVRouteMetric(stats, "连接方向", direction);
+    appendVRouteMetric(stats, "最近活动", formatCompactTime(activityAt) || "-");
+    appendVRouteMetric(stats, "Route ID", item.route_id || "-");
+    if (error) {
+      appendVRouteMetric(stats, "错误", error);
+    }
+    card.append(heading, meta, stats);
+    target.appendChild(card);
+  });
 }
 
 function renderVRouteExitNodes(items, fallbackIDs) {
@@ -1219,6 +1272,19 @@ function setupRouteControl() {
   }
   toggle.onchange = () => setRouteEnabled(toggle.checked);
   refreshRouteControl();
+  setupVRoutePanel();
+}
+
+function setupVRoutePanel() {
+  const refreshButton = byId("refreshVRouteButton");
+  if (refreshButton) {
+    refreshButton.onclick = refreshVRoute;
+  }
+  const rttButton = byId("vrouteRTTButton");
+  if (rttButton) {
+    rttButton.onclick = runVRouteRTT;
+  }
+  refreshVRoute();
 }
 
 function refreshRouteControl() {
@@ -1635,6 +1701,7 @@ function refreshSummarySilent() {
     setText("summaryLocalVersion", data.localVersion || "-");
     refreshVPNDiagnostics();
     refreshRouteControl();
+    refreshVRouteIfVisible();
   } catch (_) {
   }
 }

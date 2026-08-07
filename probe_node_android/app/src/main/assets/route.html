@@ -11,8 +11,8 @@
     <aside>
       <h1 class="brand">CloudHelper<br>Probe Node</h1>
       <nav>
-        <a class="nav-button" data-page="status" href="status.html">状态</a>
         <a class="nav-button" data-page="route" href="route.html">路由</a>
+        <a class="nav-button" data-page="status" href="status.html">状态</a>
         <a class="nav-button" data-page="information" href="information.html">信息框</a>
         <a class="nav-button" data-page="settings" href="settings.html">设置</a>
       </nav>
@@ -33,6 +33,25 @@
         </div>
         <div id="routeState" class="route-state" aria-live="polite"></div>
         <div id="routeDetail" class="route-detail" aria-live="polite"></div>
+        <div class="route-runtime-heading">
+          <h3>虚拟路由</h3>
+          <button id="refreshVRouteButton" class="command secondary" type="button">刷新</button>
+        </div>
+        <div id="vrouteStatus" class="inline-feedback" aria-live="polite"></div>
+        <div id="vrouteHealth"></div>
+        <div id="vrouteSummary" class="vroute-summary-grid"></div>
+        <div id="vrouteLinks" class="vroute-list"></div>
+        <div class="vroute-rtt-tools">
+          <label for="vrouteRTTTarget">RTT 目标节点</label>
+          <div class="vroute-rtt-actions">
+            <select id="vrouteRTTTarget"></select>
+            <button id="vrouteRTTButton" class="command secondary" type="button">测量 RTT</button>
+          </div>
+          <div id="vrouteRTTResult" class="inline-feedback" aria-live="polite"></div>
+        </div>
+        <div id="vrouteExitNodes" class="vroute-list"></div>
+        <div id="vrouteCarriers" class="vroute-list"></div>
+        <div id="vrouteCapabilities" class="vroute-capabilities"></div>
       </section>
     </main>
   </div>

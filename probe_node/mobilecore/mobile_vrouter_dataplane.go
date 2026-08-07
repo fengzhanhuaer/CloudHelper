@@ -1092,6 +1092,7 @@ func mobileVRouteRuntimeStatusPayload(configDir string) map[string]any {
 	return map[string]any{
 		"config":       mobileVRouteStatusPayload(configDir),
 		"carriers":     snapshotMobileVRouteCarriers(),
+		"links":        snapshotMobileVRouteRelayReports(configDir),
 		"capabilities": mobileVRouteCapabilitiesPayload(),
 	}
 }
