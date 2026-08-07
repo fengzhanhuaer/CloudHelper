@@ -2413,6 +2413,51 @@ func TestProbeVirtualRouterFrameLinkTXWorkerBatchesQueuedFrames(t *testing.T) {
 	}
 }
 
+func TestProbeVirtualRouterFrameLinkTXWorkerSendsControlWithoutBusinessBatch(t *testing.T) {
+	left, right := net.Pipe()
+	countedLeft := &probeVirtualRouterWriteCountingConn{Conn: left}
+	defer right.Close()
+
+	link := newProbeVirtualRouterFrameLink("test-control-batch-link", nil, countedLeft, nil)
+	defer stopProbeVirtualRouterFrameLink(link)
+	control := probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypePingPong, SubType: probeVirtualRouterPingPongSubTypePing, Data: []byte{1}}
+	business, err := buildProbeVirtualRouterIPFrame([]byte{0x45, 0x00, 0x00, 0x14}, []string{"16", "19"}, nil)
+	if err != nil {
+		t.Fatalf("build business frame failed: %v", err)
+	}
+	if err := link.EnqueueProbeVirtualRouterFrame(business); err != nil {
+		t.Fatalf("enqueue business frame failed: %v", err)
+	}
+	if err := link.EnqueueProbeVirtualRouterFrame(control); err != nil {
+		t.Fatalf("enqueue control frame failed: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		reader := bufio.NewReader(right)
+		for range 2 {
+			if _, err := readProbeVirtualRouterWireFrame(reader); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+	link.Start()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("read frames failed: %v", err)
+		}
+		if writes := countedLeft.WriteCalls(); writes != 2 {
+			t.Fatalf("carrier write calls=%d, want separate control and business writes", writes)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for control and business frames")
+	}
+}
+
 func TestProbeVirtualRouterFrameLinkTXCoalesceWaitsForNextFrame(t *testing.T) {
 	link := newProbeVirtualRouterFrameLink("test-coalesce-link", nil, nil, nil)
 	defer stopProbeVirtualRouterFrameLink(link)
@@ -5257,6 +5302,82 @@ func TestProbeVirtualRouterFrameLinkTXQueueFullReturnsImmediately(t *testing.T) 
 	}
 	if elapsed > 50*time.Millisecond {
 		t.Fatalf("enqueue should return immediately when tx queue is full, elapsed=%s", elapsed)
+	}
+}
+
+func TestProbeVirtualRouterTransportBufferCapacityCoversSlowCarrierBurst(t *testing.T) {
+	if probeVirtualRouterFrameLinkTXBufferFrames < 512 {
+		t.Fatalf("business frame capacity=%d, want at least 512", probeVirtualRouterFrameLinkTXBufferFrames)
+	}
+	if probeVirtualRouterFrameLinkTXBatchBytes < 256*1024 {
+		t.Fatalf("frame batch bytes=%d, want at least 256 KiB", probeVirtualRouterFrameLinkTXBatchBytes)
+	}
+	if probeRouteRelayWebSocketBufferBytes < 256*1024 {
+		t.Fatalf("websocket buffer bytes=%d, want at least 256 KiB", probeRouteRelayWebSocketBufferBytes)
+	}
+	if probeRouteRelayTCPSocketBufferBytes < 4*1024*1024 {
+		t.Fatalf("tcp socket buffer bytes=%d, want at least 4 MiB", probeRouteRelayTCPSocketBufferBytes)
+	}
+	if got := probeVirtualRouterExitNetstackOutputShards * probeVirtualRouterExitNetstackOutputShardQueuePackets; got < 4096 {
+		t.Fatalf("exit output capacity=%d, want at least 4096 packets", got)
+	}
+}
+
+func TestProbeVirtualRouterFrameLinkTXQueueWaitsForCapacity(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	link := newProbeVirtualRouterFrameLink("queue-wait", &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-queue-wait"}}, nil, nil)
+	t.Cleanup(func() { stopProbeVirtualRouterFrameLink(link) })
+	frame, err := buildProbeVirtualRouterIPFrame(buildProbeVirtualRouterTestIPv4Packet(t, "198.18.0.1", "198.18.0.2"), []string{"1", "2"}, nil)
+	if err != nil {
+		t.Fatalf("build ip frame failed: %v", err)
+	}
+	for i := 0; i < cap(link.tx); i++ {
+		link.tx <- frame
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- link.EnqueueProbeVirtualRouterFrameUntil(frame, time.Now().Add(time.Second))
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("enqueue returned before capacity was available: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	<-link.tx
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("enqueue after capacity release failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("enqueue did not resume after capacity was available")
+	}
+}
+
+func TestProbeVirtualRouterFrameLinkTXQueueWaitDeadline(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	link := newProbeVirtualRouterFrameLink("queue-wait-timeout", &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-queue-wait-timeout"}}, nil, nil)
+	t.Cleanup(func() { stopProbeVirtualRouterFrameLink(link) })
+	frame, err := buildProbeVirtualRouterIPFrame(buildProbeVirtualRouterTestIPv4Packet(t, "198.18.0.1", "198.18.0.2"), []string{"1", "2"}, nil)
+	if err != nil {
+		t.Fatalf("build ip frame failed: %v", err)
+	}
+	for i := 0; i < cap(link.tx); i++ {
+		link.tx <- frame
+	}
+
+	startedAt := time.Now()
+	err = link.EnqueueProbeVirtualRouterFrameUntil(frame, time.Now().Add(20*time.Millisecond))
+	if !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("enqueue err=%v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed < 10*time.Millisecond || elapsed > 250*time.Millisecond {
+		t.Fatalf("enqueue deadline elapsed=%s, want bounded wait", elapsed)
 	}
 }
 

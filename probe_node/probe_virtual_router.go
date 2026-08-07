@@ -3399,6 +3399,17 @@ func writeProbeVirtualRouterIPFrame(link *probeVirtualRouterFrameLink, packet []
 	return link.EnqueueProbeVirtualRouterFrame(frame)
 }
 
+func writeProbeVirtualRouterIPFrameUntil(link *probeVirtualRouterFrameLink, packet []byte, path []string, trace []probeVirtualRouterFrameTraceHop, deadline time.Time) error {
+	if link == nil {
+		return errors.New("virtual router frame link is nil")
+	}
+	frame, err := buildProbeVirtualRouterIPFrame(packet, path, trace)
+	if err != nil {
+		return err
+	}
+	return link.EnqueueProbeVirtualRouterFrameUntil(frame, deadline)
+}
+
 func writeProbeVirtualRouterWireFrameRaw(writer io.Writer, frame probeVirtualRouterFrame) error {
 	return writeProbeVirtualRouterWireFramesRaw(writer, []probeVirtualRouterFrame{frame})
 }
@@ -4479,6 +4490,14 @@ func (s *probeVirtualRouterFrameLink) Wait() {
 }
 
 func (s *probeVirtualRouterFrameLink) EnqueueProbeVirtualRouterFrame(input probeVirtualRouterFrame) error {
+	return s.enqueueProbeVirtualRouterFrame(input, time.Time{})
+}
+
+func (s *probeVirtualRouterFrameLink) EnqueueProbeVirtualRouterFrameUntil(input probeVirtualRouterFrame, deadline time.Time) error {
+	return s.enqueueProbeVirtualRouterFrame(input, deadline)
+}
+
+func (s *probeVirtualRouterFrameLink) enqueueProbeVirtualRouterFrame(input probeVirtualRouterFrame, deadline time.Time) error {
 	if s == nil {
 		return io.ErrClosedPipe
 	}
@@ -4507,6 +4526,25 @@ func (s *probeVirtualRouterFrameLink) EnqueueProbeVirtualRouterFrame(input probe
 	case <-s.done:
 		return io.ErrClosedPipe
 	default:
+	}
+	if !deadline.IsZero() {
+		wait := time.Until(deadline)
+		if wait <= 0 {
+			depth, capacity, _, _, _, _, _, _ := s.txQueueSnapshot()
+			return fmt.Errorf("virtual router tx queue wait timeout: key=%s queue=%s depth=%d capacity=%d total_depth=%d total_capacity=%d: %w", strings.TrimSpace(s.key), queueName, len(queue), cap(queue), depth, capacity, os.ErrDeadlineExceeded)
+		}
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case queue <- frame:
+			s.touch()
+			return nil
+		case <-s.done:
+			return io.ErrClosedPipe
+		case <-timer.C:
+			depth, capacity, _, _, _, _, _, _ := s.txQueueSnapshot()
+			return fmt.Errorf("virtual router tx queue wait timeout: key=%s queue=%s depth=%d capacity=%d total_depth=%d total_capacity=%d: %w", strings.TrimSpace(s.key), queueName, len(queue), cap(queue), depth, capacity, os.ErrDeadlineExceeded)
+		}
 	}
 	select {
 	case queue <- frame:
@@ -4540,10 +4578,12 @@ func (s *probeVirtualRouterFrameLink) runTXWorker() {
 		frames := []probeVirtualRouterFrame{frame}
 		batchBytes := probeVirtualRouterFrameEnvelopeHeaderSize + len(frame.Control) + len(frame.Data)
 		coalesceDeadline := time.Time{}
-		if _, queueName := s.txQueueForFrame(frame); queueName != "control" {
+		_, queueName := s.txQueueForFrame(frame)
+		allowBatch := queueName != "control"
+		if allowBatch {
 			coalesceDeadline = time.Now().Add(probeVirtualRouterFrameLinkTXCoalesceWindow)
 		}
-		for batchBytes < probeVirtualRouterFrameLinkTXBatchBytes {
+		for allowBatch && batchBytes < probeVirtualRouterFrameLinkTXBatchBytes {
 			next, available := s.tryNextTXFrame(&businessSinceBulk)
 			if !available && !coalesceDeadline.IsZero() {
 				next, available = s.waitNextTXFrameUntil(&businessSinceBulk, coalesceDeadline)
@@ -6806,7 +6846,7 @@ func forwardProbeVirtualRouterPacketAlongPath(packet []byte, dstIP string, path 
 	if err != nil {
 		return err
 	}
-	if err := writeProbeVirtualRouterIPFrame(link, packet, path, trace); err != nil {
+	if err := writeProbeVirtualRouterIPFrameUntil(link, packet, path, trace, time.Now().Add(probeVirtualRouterFrameLinkTXEnqueueWait)); err != nil {
 		recordProbeVirtualRouterRuntimeOpenError(rt.cfg.routeID, err)
 		if !isProbeVirtualRouterClosedLinkError(err) {
 			return err
@@ -6816,7 +6856,7 @@ func forwardProbeVirtualRouterPacketAlongPath(packet []byte, dstIP string, path 
 			recordProbeVirtualRouterRuntimeOpenError(rt.cfg.routeID, err)
 			return err
 		}
-		if err := writeProbeVirtualRouterIPFrame(link, packet, path, trace); err != nil {
+		if err := writeProbeVirtualRouterIPFrameUntil(link, packet, path, trace, time.Now().Add(probeVirtualRouterFrameLinkTXEnqueueWait)); err != nil {
 			recordProbeVirtualRouterRuntimeOpenError(rt.cfg.routeID, err)
 			return err
 		}

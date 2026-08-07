@@ -25,15 +25,18 @@ import (
 )
 
 const (
-	probeVirtualRouterRuntimeRouteIDPrefix                 = "vrouter-"
-	probeVirtualRouterRuntimeRouteLayer                    = "auto"
-	probeVirtualRouterRuntimeRole                          = "virtual_router"
-	probeVirtualRouterFrameLinkTXBufferFrames              = 256
+	probeVirtualRouterRuntimeRouteIDPrefix = "vrouter-"
+	probeVirtualRouterRuntimeRouteLayer    = "auto"
+	probeVirtualRouterRuntimeRole          = "virtual_router"
+	// Keep several high-latency websocket batches in memory so transient relay
+	// stalls apply bounded backpressure instead of dropping IP frames at once.
+	probeVirtualRouterFrameLinkTXBufferFrames              = 512
 	probeVirtualRouterFrameLinkTXControlBufferFrames       = 32
 	probeVirtualRouterFrameLinkTXBulkBufferFrames          = 128
 	probeVirtualRouterFrameLinkTXBusinessQuantum           = 8
-	probeVirtualRouterFrameLinkTXBatchBytes                = 64 * 1024
+	probeVirtualRouterFrameLinkTXBatchBytes                = 256 * 1024
 	probeVirtualRouterFrameLinkTXCoalesceWindow            = 200 * time.Microsecond
+	probeVirtualRouterFrameLinkTXEnqueueWait               = 750 * time.Millisecond
 	probeVirtualRouterFrameLinkRXBufferFrames              = 4096
 	probeVirtualRouterFrameLinkRXDispatchShards            = 8
 	probeVirtualRouterFrameLinkRXDispatchShardBufferFrames = 1024

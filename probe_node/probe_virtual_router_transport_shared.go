@@ -156,15 +156,17 @@ const (
 	probeRouteRelayDialTimeout          = 12 * time.Second
 	probeRouteRelayResponseReadDeadline = 10 * time.Second
 
-	probeRouteRelayProtocolQualityTTL          = 10 * time.Minute
-	probeRouteRelayProtocolNegativeTTL         = 60 * time.Second
-	probeRouteRelayProtocolProbeTimeout        = 6 * time.Second
-	probeRouteRelayProtocolSwitchMinHold       = 30 * time.Second
-	probeRouteRelayWebSocketBufferBytes        = 64 * 1024
-	probeRouteRelayWebSocketWriteBatchBytes    = 128 * 1024
-	probeRouteRelayWebSocketWriteQueueDepth    = 8
+	probeRouteRelayProtocolQualityTTL    = 10 * time.Minute
+	probeRouteRelayProtocolNegativeTTL   = 60 * time.Second
+	probeRouteRelayProtocolProbeTimeout  = 6 * time.Second
+	probeRouteRelayProtocolSwitchMinHold = 30 * time.Second
+	// Carrier writes are commonly bandwidth-delay limited. These buffers cover
+	// a multi-batch burst without changing the wire protocol.
+	probeRouteRelayWebSocketBufferBytes        = 256 * 1024
+	probeRouteRelayWebSocketWriteBatchBytes    = 512 * 1024
+	probeRouteRelayWebSocketWriteQueueDepth    = 16
 	probeRouteRelayWebSocketSlowWriteTrace     = 200 * time.Millisecond
-	probeRouteRelayTCPSocketBufferBytes        = 512 * 1024
+	probeRouteRelayTCPSocketBufferBytes        = 4 * 1024 * 1024
 	probeRouteRelayUDPSocketBufferBytes        = 4 * 1024 * 1024
 	probeRouteRelayTCPKeepAlivePeriod          = 30 * time.Second
 	probeRouteRelayQUICInitialStreamWindow     = 512 * 1024

@@ -27,13 +27,15 @@ import (
 )
 
 const (
-	probeVirtualRouterExitNetstackNICID                   = tcpip.NICID(1)
-	probeVirtualRouterExitNetstackQueueSize               = 1024
-	probeVirtualRouterExitNetstackMTU                     = 1500
-	probeVirtualRouterExitNetstackTCPWindow               = 1 << 20
-	probeVirtualRouterExitNetstackTCPInflight             = 512
-	probeVirtualRouterExitNetstackOutputShards            = 8
-	probeVirtualRouterExitNetstackOutputShardQueuePackets = 256
+	probeVirtualRouterExitNetstackNICID        = tcpip.NICID(1)
+	probeVirtualRouterExitNetstackQueueSize    = 1024
+	probeVirtualRouterExitNetstackMTU          = 1500
+	probeVirtualRouterExitNetstackTCPWindow    = 1 << 20
+	probeVirtualRouterExitNetstackTCPInflight  = 512
+	probeVirtualRouterExitNetstackOutputShards = 8
+	// Each TCP flow stays on one shard, so capacity must absorb a slow carrier
+	// write while preserving per-flow packet order.
+	probeVirtualRouterExitNetstackOutputShardQueuePackets = 512
 	probeVirtualRouterExitNetstackTCPBufferMin            = 64 << 10
 	probeVirtualRouterExitNetstackTCPBufferDefault        = 4 << 20
 	probeVirtualRouterExitNetstackTCPBufferMax            = 16 << 20
