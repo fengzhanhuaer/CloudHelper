@@ -65,7 +65,7 @@ class MainActivity : Activity() {
         webView.addJavascriptInterface(AppBridge(), "CloudHelper")
         setContentView(webView)
         WebView.setWebContentsDebuggingEnabled((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0)
-        webView.loadUrl("file:///android_asset/status.html")
+        webView.loadUrl("file:///android_asset/route.html")
         requestNotificationPermissionIfNeeded()
         startReportServiceIfConfigured()
         refreshCachedStatusAsync()
