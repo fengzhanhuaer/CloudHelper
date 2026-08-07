@@ -199,7 +199,7 @@ func recoverProbeVRouteProxyRuntimeOnce() error {
 	}
 	settings := loadProbeVirtualRouterLocalSettings()
 	if !settings.ProxyEnabled {
-		return nil
+		return probeVRouteSystemProxyRestore()
 	}
 	applied, _, _ := snapshotProbeVRouteSystemProxy()
 	if applied {

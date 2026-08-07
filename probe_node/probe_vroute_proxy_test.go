@@ -347,6 +347,36 @@ func TestRecoverProbeVRouteProxyRuntimeAfterSystemProxyBecomesAvailable(t *testi
 	}
 }
 
+func TestRecoverProbeVRouteProxyRuntimeCleansSystemProxyWhenDisabled(t *testing.T) {
+	oldRestore := probeVRouteSystemProxyRestore
+	t.Cleanup(func() { probeVRouteSystemProxyRestore = oldRestore })
+	restoreCalls := 0
+	probeVRouteSystemProxyRestore = func() error {
+		restoreCalls++
+		return nil
+	}
+
+	probeVirtualRouterLocalSettingsState.mu.Lock()
+	oldSettingsState := probeVirtualRouterLocalSettingsState.settings
+	oldSettingsLoaded := probeVirtualRouterLocalSettingsState.loaded
+	probeVirtualRouterLocalSettingsState.settings = probeVirtualRouterLocalSettings{ProxyEnabled: false}
+	probeVirtualRouterLocalSettingsState.loaded = true
+	probeVirtualRouterLocalSettingsState.mu.Unlock()
+	t.Cleanup(func() {
+		probeVirtualRouterLocalSettingsState.mu.Lock()
+		probeVirtualRouterLocalSettingsState.settings = oldSettingsState
+		probeVirtualRouterLocalSettingsState.loaded = oldSettingsLoaded
+		probeVirtualRouterLocalSettingsState.mu.Unlock()
+	})
+
+	if err := recoverProbeVRouteProxyRuntimeOnce(); err != nil {
+		t.Fatalf("disabled proxy cleanup failed: %v", err)
+	}
+	if restoreCalls != 1 {
+		t.Fatalf("system proxy cleanup calls=%d want=1", restoreCalls)
+	}
+}
+
 func jsonUnmarshalForProxyTest(payload []byte, value any) error {
 	return json.Unmarshal(payload, value)
 }

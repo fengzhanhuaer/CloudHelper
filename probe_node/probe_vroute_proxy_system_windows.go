@@ -104,27 +104,36 @@ func setProbeVRouteSystemProxy(httpListenAddress string, socks5ListenAddress str
 func restoreProbeVRouteSystemProxy() error {
 	probeVRouteWindowsSystemProxyState.mu.Lock()
 	defer probeVRouteWindowsSystemProxyState.mu.Unlock()
-	if !probeVRouteWindowsSystemProxyState.captured {
-		return nil
+	userSID := probeVRouteWindowsSystemProxyState.userSID
+	if strings.TrimSpace(userSID) == "" {
+		var err error
+		userSID, err = probeVRouteWindowsSystemProxyUserSID()
+		if err != nil {
+			return err
+		}
 	}
-	key, err := openProbeVRouteWindowsInternetSettings(probeVRouteWindowsSystemProxyState.userSID)
+	key, err := openProbeVRouteWindowsInternetSettings(userSID)
 	if err != nil {
 		return err
 	}
 	defer key.Close()
-	if err := writeProbeVRouteWindowsProxySnapshot(key, probeVRouteWindowsSystemProxyState.original); err != nil {
+	current, err := readProbeVRouteWindowsProxySnapshot(key)
+	if err != nil {
+		return err
+	}
+	managed := probeVRouteWindowsSystemProxyState.captured || probeVRouteWindowsProxySnapshotUsesManagedServer(current)
+	if !managed {
+		resetProbeVRouteWindowsSystemProxyStateLocked()
+		return nil
+	}
+	if err := writeProbeVRouteWindowsProxySnapshot(key, cleanProbeVRouteWindowsProxySnapshot()); err != nil {
 		return err
 	}
 	if err := notifyProbeVRouteWinINetProxyChanged(); err != nil {
 		return err
 	}
-	probeVRouteWindowsSystemProxyState.captured = false
-	probeVRouteWindowsSystemProxyState.applied = false
-	probeVRouteWindowsSystemProxyState.http = ""
-	probeVRouteWindowsSystemProxyState.socks5 = ""
-	probeVRouteWindowsSystemProxyState.userSID = ""
-	probeVRouteWindowsSystemProxyState.original = probeVRouteWindowsProxySnapshot{}
-	logProbeInfof("probe vroute windows system proxy restored")
+	resetProbeVRouteWindowsSystemProxyStateLocked()
+	logProbeInfof("probe vroute windows system proxy cleaned")
 	return nil
 }
 
@@ -298,6 +307,47 @@ func writeProbeVRouteWindowsProxySnapshot(key registry.Key, snapshot probeVRoute
 	return nil
 }
 
+func cleanProbeVRouteWindowsProxySnapshot() probeVRouteWindowsProxySnapshot {
+	return probeVRouteWindowsProxySnapshot{
+		proxyEnable: probeVRouteRegistryInteger{value: 0, exists: true},
+	}
+}
+
+func probeVRouteWindowsProxySnapshotUsesServer(snapshot probeVRouteWindowsProxySnapshot, proxyServer string) bool {
+	return snapshot.proxyEnable.exists && snapshot.proxyEnable.value != 0 && snapshot.proxyServer.exists &&
+		strings.EqualFold(strings.TrimSpace(snapshot.proxyServer.value), strings.TrimSpace(proxyServer))
+}
+
+func probeVRouteWindowsProxySnapshotUsesManagedServer(snapshot probeVRouteWindowsProxySnapshot) bool {
+	if !snapshot.proxyEnable.exists || snapshot.proxyEnable.value == 0 || !snapshot.proxyServer.exists {
+		return false
+	}
+	servers := []string{
+		probeVRouteWindowsProxyServerValue("127.0.0.1:18080", "127.0.0.1:18081"),
+	}
+	settings := loadProbeVirtualRouterLocalSettings()
+	httpAddress, httpErr := probeVRouteSystemProxyAddress(settings.HTTPProxyListen)
+	socks5Address, socksErr := probeVRouteSystemProxyAddress(settings.SOCKS5ProxyListen)
+	if httpErr == nil && socksErr == nil {
+		servers = append(servers, probeVRouteWindowsProxyServerValue(httpAddress, socks5Address))
+	}
+	for _, server := range servers {
+		if probeVRouteWindowsProxySnapshotUsesServer(snapshot, server) {
+			return true
+		}
+	}
+	return false
+}
+
+func resetProbeVRouteWindowsSystemProxyStateLocked() {
+	probeVRouteWindowsSystemProxyState.captured = false
+	probeVRouteWindowsSystemProxyState.applied = false
+	probeVRouteWindowsSystemProxyState.http = ""
+	probeVRouteWindowsSystemProxyState.socks5 = ""
+	probeVRouteWindowsSystemProxyState.userSID = ""
+	probeVRouteWindowsSystemProxyState.original = probeVRouteWindowsProxySnapshot{}
+}
+
 func rollbackProbeVRouteWindowsProxyLocked(key registry.Key, cause error) error {
 	restoreErr := writeProbeVRouteWindowsProxySnapshot(key, probeVRouteWindowsSystemProxyState.original)
 	if restoreErr == nil {
@@ -306,12 +356,7 @@ func rollbackProbeVRouteWindowsProxyLocked(key registry.Key, cause error) error 
 	if restoreErr != nil {
 		return fmt.Errorf("%w (rollback failed: %v)", cause, restoreErr)
 	}
-	probeVRouteWindowsSystemProxyState.captured = false
-	probeVRouteWindowsSystemProxyState.applied = false
-	probeVRouteWindowsSystemProxyState.http = ""
-	probeVRouteWindowsSystemProxyState.socks5 = ""
-	probeVRouteWindowsSystemProxyState.userSID = ""
-	probeVRouteWindowsSystemProxyState.original = probeVRouteWindowsProxySnapshot{}
+	resetProbeVRouteWindowsSystemProxyStateLocked()
 	return cause
 }
 

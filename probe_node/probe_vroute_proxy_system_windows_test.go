@@ -67,3 +67,49 @@ func TestProbeVRouteWindowsSystemProxySessionOrderDeduplicatesConsole(t *testing
 		t.Fatalf("ordered session ids=%v want=[2 4]", ids)
 	}
 }
+
+func TestCleanProbeVRouteWindowsProxySnapshotDisablesAndRemovesServer(t *testing.T) {
+	snapshot := cleanProbeVRouteWindowsProxySnapshot()
+	if !snapshot.proxyEnable.exists || snapshot.proxyEnable.value != 0 {
+		t.Fatalf("clean proxy enable=%+v", snapshot.proxyEnable)
+	}
+	if snapshot.proxyServer.exists {
+		t.Fatalf("clean proxy server=%+v", snapshot.proxyServer)
+	}
+}
+
+func TestProbeVRouteWindowsProxySnapshotUsesServer(t *testing.T) {
+	server := probeVRouteWindowsProxyServerValue("127.0.0.1:18080", "127.0.0.1:18081")
+	snapshot := probeVRouteWindowsProxySnapshot{
+		proxyEnable: probeVRouteRegistryInteger{value: 1, exists: true},
+		proxyServer: probeVRouteRegistryString{value: server, exists: true},
+	}
+	if !probeVRouteWindowsProxySnapshotUsesServer(snapshot, server) {
+		t.Fatal("enabled managed proxy was not recognized")
+	}
+	snapshot.proxyEnable.value = 0
+	if probeVRouteWindowsProxySnapshotUsesServer(snapshot, server) {
+		t.Fatal("disabled proxy was recognized as active")
+	}
+}
+
+func TestProbeVRouteWindowsProxySnapshotRecognizesStaleConfiguredProxyAfterRestart(t *testing.T) {
+	resetProbeVirtualRouterLocalSettingsForTest()
+	t.Cleanup(resetProbeVirtualRouterLocalSettingsForTest)
+	probeVirtualRouterLocalSettingsState.mu.Lock()
+	probeVirtualRouterLocalSettingsState.loaded = true
+	probeVirtualRouterLocalSettingsState.settings = probeVirtualRouterLocalSettings{
+		HTTPProxyListen:   "127.0.0.1:28080",
+		SOCKS5ProxyListen: "127.0.0.1:28081",
+	}
+	probeVirtualRouterLocalSettingsState.mu.Unlock()
+
+	server := probeVRouteWindowsProxyServerValue("127.0.0.1:28080", "127.0.0.1:28081")
+	snapshot := probeVRouteWindowsProxySnapshot{
+		proxyEnable: probeVRouteRegistryInteger{value: 1, exists: true},
+		proxyServer: probeVRouteRegistryString{value: server, exists: true},
+	}
+	if !probeVRouteWindowsProxySnapshotUsesManagedServer(snapshot) {
+		t.Fatal("stale configured proxy was not recognized after runtime state loss")
+	}
+}
