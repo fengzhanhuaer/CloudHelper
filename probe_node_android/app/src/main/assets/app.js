@@ -6,6 +6,7 @@ let infoBoxPendingAction = "";
 let infoBoxRefreshPending = false;
 let infoBoxLastRevision = "";
 let bootErrorLogged = false;
+let vrouteNodeNames = new Map();
 
 const pages = {
   status: ["状态", "当前 Android 节点配置与运行状态。"],
@@ -660,6 +661,7 @@ function renderVRouteStatus(vpnData) {
   const carrierItems = Array.isArray(carriers.items) ? carriers.items : [];
   const links = Array.isArray(vroute.links) ? vroute.links : [];
   const exitNodes = Array.isArray(config.exit_node_items) ? config.exit_node_items : [];
+  updateVRouteNodeNames(config);
   const connectedLinks = links.filter(vrouteLinkConnected).length;
   const enabled = !!config.enabled;
   const error = String(config.error || carriers.last_error || "").trim();
@@ -678,6 +680,33 @@ function renderVRouteStatus(vpnData) {
   renderVRouteExitNodes(exitNodes, config.exit_nodes);
   renderVRouteCarriers(carrierItems);
   renderVRouteCapabilities(capabilities);
+}
+
+function updateVRouteNodeNames(config) {
+  const names = new Map();
+  const localNodeID = String(config.local_node_id || "").trim();
+  const localNodeName = String(config.local_node_name || "").trim();
+  if (localNodeID) {
+    names.set(localNodeID, localNodeName || localNodeID);
+  }
+  const items = Array.isArray(config.probe_items) ? config.probe_items : [];
+  items.forEach((item) => {
+    const nodeID = String(item.node_id || "").trim();
+    const displayName = String(item.display_name || "").trim();
+    if (nodeID) {
+      names.set(nodeID, displayName || nodeID);
+    }
+  });
+  vrouteNodeNames = names;
+}
+
+function vrouteNodeLabel(nodeID) {
+  const clean = String(nodeID || "").trim();
+  return vrouteNodeNames.get(clean) || clean || "-";
+}
+
+function vroutePathLabel(path) {
+  return Array.isArray(path) ? path.map(vrouteNodeLabel).join(" > ") : "";
 }
 
 function renderVRouteRTTTargets(config) {
@@ -699,7 +728,8 @@ function renderVRouteRTTTargets(config) {
     }
     const option = document.createElement("option");
     option.value = nodeID;
-    option.textContent = item.ip ? `节点 ${nodeID} (${item.ip})` : `节点 ${nodeID}`;
+    const displayName = String(item.display_name || "").trim() || vrouteNodeLabel(nodeID);
+    option.textContent = item.ip ? `${displayName} (${item.ip})` : displayName;
     select.appendChild(option);
   });
   if (current && items.some((item) => String(item.node_id || "").trim() === current)) {
@@ -719,7 +749,7 @@ function runVRouteRTT() {
     button.disabled = true;
     button.textContent = "测量中...";
   }
-  setText("vrouteRTTResult", `正在测量到节点 ${targetNodeID} 的 RTT...`);
+  setText("vrouteRTTResult", `正在测量到 ${vrouteNodeLabel(targetNodeID)} 的 RTT...`);
   try {
     const message = window.CloudHelper && window.CloudHelper.vroutePathRTT
       ? window.CloudHelper.vroutePathRTT(targetNodeID)
@@ -741,12 +771,12 @@ function runVRouteRTT() {
 }
 
 function renderVRouteRTTResult(result) {
-  const path = Array.isArray(result.path) ? result.path.join(" > ") : "";
+  const path = vroutePathLabel(result.path);
   if (!result.ok) {
     setText("vrouteRTTResult", `RTT 失败：${result.error || "未收到响应"}${path ? `；路径 ${path}` : ""}`);
     return;
   }
-  setText("vrouteRTTResult", `节点 ${result.target_node_id || result.responder || "-"}：${Number(result.latency_ms || 0)} ms${path ? `；路径 ${path}` : ""}`);
+  setText("vrouteRTTResult", `${vrouteNodeLabel(result.target_node_id || result.responder)}：${Number(result.latency_ms || 0)} ms${path ? `；路径 ${path}` : ""}`);
 }
 
 function renderVRouteHealth(enabled, error, updatedAt, lastErrorAt) {
@@ -780,7 +810,7 @@ function renderVRouteSummary(config, carriers, links) {
     return;
   }
   target.innerHTML = "";
-  appendVRouteMetric(target, "本机节点", config.local_node_id || "-");
+  appendVRouteMetric(target, "本机节点", config.local_node_name || vrouteNodeLabel(config.local_node_id));
   appendVRouteMetric(target, "虚拟 IP", config.local_ip || "-");
   const exitNodes = Array.isArray(config.exit_nodes) ? config.exit_nodes : [];
   appendVRouteMetric(target, "Fake IP", [config.fake_ip_cidr || "-", `出口 ${exitNodes.length}`].join(" / "));
@@ -816,13 +846,14 @@ function renderVRouteLinks(items) {
     const sessions = Array.isArray(item.bridge_sessions) ? item.bridge_sessions : [];
     const session = sessions.find((value) => !value.closed) || sessions[0] || {};
     const nextState = item.next_state || {};
-    const peerNode = String(item.next_node_id || item.prev_node_id || "-").trim();
+    const peerNodeID = String(item.next_node_id || item.prev_node_id || "-").trim();
+    const peerNode = vrouteNodeLabel(peerNodeID);
     const connected = vrouteLinkConnected(item);
     const error = String(runtime.last_open_error || "").trim();
     const stateLabel = error ? "异常" : (connected ? "已连接" : "待连接");
     const endpoint = String(nextState.endpoint || session.remote_addr || "").trim();
     const protocol = vrouteProtocolLabel(nextState.selected_protocol || item.route_layer || "auto");
-    const direction = item.next_node_id ? `本机 → 节点 ${peerNode}` : `节点 ${peerNode} → 本机`;
+    const direction = item.next_node_id ? `本机 → ${peerNode}` : `${peerNode} → 本机`;
     const activityAt = session.last_frame_received_at || session.last_frame_sent_at || nextState.updated_at || bridge.updated_at;
 
     const card = document.createElement("article");
@@ -831,7 +862,7 @@ function renderVRouteLinks(items) {
     heading.className = "vroute-card-heading";
     const title = document.createElement("div");
     title.className = "vroute-card-title";
-    title.textContent = item.route_name ? `节点 ${peerNode} · ${item.route_name}` : `节点 ${peerNode}`;
+    title.textContent = item.route_name ? `${peerNode} · ${item.route_name}` : peerNode;
     const state = document.createElement("span");
     state.className = `vroute-link-state ${error ? "error" : (connected ? "connected" : "pending")}`;
     state.textContent = stateLabel;
@@ -871,7 +902,7 @@ function renderVRouteExitNodes(items, fallbackIDs) {
     card.className = "vroute-card";
     const title = document.createElement("div");
     title.className = "vroute-card-title";
-    title.textContent = `节点 ${item.node_id || "-"}`;
+    title.textContent = String(item.display_name || "").trim() || vrouteNodeLabel(item.node_id);
     const meta = document.createElement("div");
     meta.className = "vroute-card-meta";
     const host = String(item.ip || "").trim();
@@ -912,14 +943,15 @@ function renderVRouteCarriers(items) {
     }
     const title = document.createElement("div");
     title.className = "vroute-card-title";
-    title.textContent = item.route_id || "vroute";
+    const carrierNodeID = item.exit_node || item.next_node;
+    title.textContent = carrierNodeID ? `Carrier · ${vrouteNodeLabel(carrierNodeID)}` : (item.route_id || "Carrier");
     const meta = document.createElement("div");
     meta.className = "vroute-card-meta";
     meta.textContent = [
       item.layer ? `协议 ${vrouteProtocolLabel(item.layer)}` : "",
       item.relay ? `连接 ${item.relay}` : "",
-      item.next_node ? `下一跳 ${item.next_node}` : "",
-      item.exit_node ? `出口 ${item.exit_node}` : ""
+      item.next_node ? `下一跳 ${vrouteNodeLabel(item.next_node)}` : "",
+      item.exit_node ? `出口 ${vrouteNodeLabel(item.exit_node)}` : ""
     ].filter(Boolean).join(" · ");
     const stats = document.createElement("div");
     stats.className = "vroute-card-grid";
@@ -935,7 +967,8 @@ function renderVRouteCarriers(items) {
     appendVRouteMetric(stats, "RX业务", `${rxIPFrames} / ${formatBytes(rxIPBytes)}`);
     appendVRouteMetric(stats, "控制帧", `TX ${txControlFrames} / RX ${rxControlFrames}`);
     appendVRouteMetric(stats, "TUN回写", `${tunWriteFrames} / ${formatBytes(tunWriteBytes)}`);
-    appendVRouteMetric(stats, "路径", Array.isArray(item.path) ? item.path.join(" > ") : "-");
+    appendVRouteMetric(stats, "路径", vroutePathLabel(item.path) || "-");
+    appendVRouteMetric(stats, "Route ID", item.route_id || "-");
     appendVRouteMetric(stats, "活动", formatCompactTime(item.last_activity_at) || "-");
     if (item.last_error) {
       appendVRouteMetric(stats, "错误", item.last_error);

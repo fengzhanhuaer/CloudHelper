@@ -140,6 +140,7 @@ type mobileVRouteConfig struct {
 
 type mobileVRouteProbeIP struct {
 	NodeID      string `json:"node_id"`
+	DisplayName string `json:"display_name,omitempty"`
 	IP          string `json:"ip"`
 	ServicePort int    `json:"service_port,omitempty"`
 	Note        string `json:"note,omitempty"`
@@ -295,6 +296,7 @@ func sanitizeMobileVRouteConfig(input mobileVRouteConfig) mobileVRouteConfig {
 		}
 		out.ProbeIPs = append(out.ProbeIPs, mobileVRouteProbeIP{
 			NodeID:      nodeID,
+			DisplayName: strings.TrimSpace(item.DisplayName),
 			IP:          ip.String(),
 			ServicePort: item.ServicePort,
 			Note:        strings.TrimSpace(item.Note),
@@ -551,6 +553,7 @@ func mobileVRouteStatusPayload(configDir string) map[string]any {
 	for _, id := range nodes {
 		exitNodeItems = append(exitNodeItems, map[string]any{
 			"node_id":      id,
+			"display_name": mobileVRouteDisplayNameForNode(config, id),
 			"ip":           mobileVRouteProbeIPForNode(config, id),
 			"service_port": mobileVRouteServicePortForNode(config, id, 0),
 		})
@@ -563,6 +566,7 @@ func mobileVRouteStatusPayload(configDir string) map[string]any {
 		}
 		probeItems = append(probeItems, map[string]any{
 			"node_id":      nodeID,
+			"display_name": mobileVRouteDisplayNameForNode(config, nodeID),
 			"ip":           strings.TrimSpace(probe.IP),
 			"service_port": probe.ServicePort,
 		})
@@ -572,6 +576,7 @@ func mobileVRouteStatusPayload(configDir string) map[string]any {
 	})
 	return map[string]any{
 		"local_node_id":   strings.TrimSpace(config.LocalNodeID),
+		"local_node_name": mobileVRouteDisplayNameForNode(config, config.LocalNodeID),
 		"local_ip":        mobileVRouteProbeIPForNode(config, config.LocalNodeID),
 		"enabled":         config.Enabled,
 		"fake_ip_cidr":    strings.TrimSpace(config.FakeIPCIDR),
@@ -583,6 +588,19 @@ func mobileVRouteStatusPayload(configDir string) map[string]any {
 		"probe_items":     probeItems,
 		"updated_at":      strings.TrimSpace(config.UpdatedAt),
 	}
+}
+
+func mobileVRouteDisplayNameForNode(config mobileVRouteConfig, nodeID string) string {
+	target := normalizeMobileRouteNodeID(nodeID)
+	for _, item := range config.ProbeIPs {
+		if normalizeMobileRouteNodeID(item.NodeID) == target {
+			if name := strings.TrimSpace(item.DisplayName); name != "" {
+				return name
+			}
+			break
+		}
+	}
+	return target
 }
 
 func mobileVRouteProbeExitRouteID(exitNodeID string) string {

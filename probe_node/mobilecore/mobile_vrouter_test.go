@@ -811,8 +811,8 @@ func TestMobileVRouteStatusPayloadIncludesExitNodeEndpoint(t *testing.T) {
 		LocalNodeID: "9",
 		Enabled:     true,
 		ProbeIPs: []mobileVRouteProbeIP{
-			{NodeID: "9", IP: "198.18.0.9", ServicePort: 12040},
-			{NodeID: "17", IP: "198.18.0.17", ServicePort: 12041},
+			{NodeID: "9", DisplayName: "Android Phone", IP: "198.18.0.9", ServicePort: 12040},
+			{NodeID: "17", DisplayName: "Los Angeles", IP: "198.18.0.17", ServicePort: 12041},
 		},
 		RouteRules: []mobileVRouteRouteRule{{
 			ID:         "rr-tg",
@@ -832,6 +832,13 @@ func TestMobileVRouteStatusPayloadIncludesExitNodeEndpoint(t *testing.T) {
 	}
 	if items[0]["node_id"] != "17" || items[0]["ip"] != "198.18.0.17" || items[0]["service_port"] != 12041 {
 		t.Fatalf("unexpected exit node item: %#v", items[0])
+	}
+	if items[0]["display_name"] != "Los Angeles" || status["local_node_name"] != "Android Phone" {
+		t.Fatalf("node display names were not preserved: status=%#v", status)
+	}
+	probeItems, ok := status["probe_items"].([]map[string]any)
+	if !ok || len(probeItems) != 1 || probeItems[0]["display_name"] != "Los Angeles" {
+		t.Fatalf("probe display names=%#v, want Los Angeles", status["probe_items"])
 	}
 }
 
