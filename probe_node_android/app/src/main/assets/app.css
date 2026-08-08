@@ -241,6 +241,36 @@ select {
 .tab-panel {
   margin-top: 12px;
 }
+.route-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+.route-setting-item {
+  min-width: 0;
+  border: 1px solid #d7d3ca;
+  border-radius: 6px;
+  padding: 12px;
+  background: #fff;
+}
+.route-setting-item label {
+  min-height: 20px;
+  margin-bottom: 8px;
+  color: #1c1917;
+  font-size: 14px;
+}
+.route-settings-empty {
+  grid-column: 1 / -1;
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid #d7d3ca;
+  border-radius: 6px;
+  background: #fff;
+  color: #57534e;
+  font-size: 14px;
+}
 [hidden] {
   display: none !important;
 }
@@ -850,6 +880,17 @@ select {
   .key-value {
     grid-template-columns: 1fr;
     gap: 4px;
+  }
+  .route-settings-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .route-setting-item {
+    padding: 10px;
+  }
+  .route-setting-item select {
+    padding: 0 8px;
+    font-size: 14px;
   }
   .route-control {
     align-items: flex-start;

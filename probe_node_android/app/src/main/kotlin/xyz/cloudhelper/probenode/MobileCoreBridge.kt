@@ -121,6 +121,22 @@ object MobileCoreBridge {
         )
     }
 
+    fun vRouteSettings(context: Context, config: ProbeNodeConfig): String {
+        return callString(
+            methodName = "vRouteSettings",
+            parameterTypes = arrayOf(String::class.java, String::class.java, String::class.java),
+            args = arrayOf(config.controllerUrl, config.nodeId, config.nodeSecret),
+        )
+    }
+
+    fun saveVRouteSettings(context: Context, config: ProbeNodeConfig, payload: String): String {
+        return recordResult("route", callString(
+            methodName = "saveVRouteSettings",
+            parameterTypes = arrayOf(String::class.java, String::class.java, String::class.java, String::class.java, String::class.java),
+            args = arrayOf(config.controllerUrl, config.nodeId, config.nodeSecret, ProbeNodeConfig.configDir(context), payload),
+        ))
+    }
+
     fun infoBoxList(config: ProbeNodeConfig): String {
         return callString(
             methodName = "infoBoxList",

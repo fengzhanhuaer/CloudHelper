@@ -19,6 +19,7 @@ import (
 
 const (
 	mobileVRouteConfigAPIPath        = "/api/probe/route/config"
+	mobileVRouteSettingsAPIPath      = "/api/probe/route/settings"
 	mobileVRouteFakeIPResolveAPIPath = "/api/probe/route/fake_ip/resolve"
 	mobileVRouteConfigFileName       = "probe_route_config.json"
 	mobileVRouteConfigFetchTimeout   = 15 * time.Second

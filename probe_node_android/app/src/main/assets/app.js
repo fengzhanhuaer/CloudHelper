@@ -7,12 +7,13 @@ let infoBoxRefreshPending = false;
 let infoBoxLastRevision = "";
 let bootErrorLogged = false;
 let vrouteNodeNames = new Map();
+let routeSettingsState = { groups: [], nodes: [] };
 
 const pages = {
   status: ["状态", "当前 Android 节点配置与运行状态。"],
   route: ["路由", "通过 Android VPN 启用或关闭本机路由能力。"],
   information: ["信息框", "全部探针共享的信息流。"],
-  settings: ["设置", "配置主控与节点密钥，并执行直连或主控代理升级。"]
+  settings: ["设置", "配置主控、路由与应用升级。"]
 };
 
 window.CloudHelperUI = {
@@ -1762,7 +1763,7 @@ function setupSettingsTabs() {
 }
 
 function activateSettingsTab(tab) {
-  const clean = tab === "upgrade" ? "upgrade" : "controller";
+  const clean = ["upgrade", "controller", "route"].includes(tab) ? tab : "upgrade";
   document.querySelectorAll("[data-settings-tab]").forEach((button) => {
     button.classList.toggle("active", button.dataset.settingsTab === clean);
   });
@@ -1771,7 +1772,103 @@ function activateSettingsTab(tab) {
   });
   if (clean === "upgrade") {
     refreshUpgradeStatus();
+  } else if (clean === "route") {
+    loadRouteSettings();
   }
+}
+
+function loadRouteSettings() {
+  const target = byId("routeSettingsGrid");
+  if (!target) return;
+  if (!hasCloudHelper("vrouteSettings")) {
+    renderRouteSettings({ ok: false, error: "Android 路由设置接口不可用" });
+    return;
+  }
+  try {
+    renderRouteSettings(parseJSON(callCloudHelperString("vrouteSettings", "{}")));
+  } catch (error) {
+    renderRouteSettings({ ok: false, error: `读取路由设置失败：${error && error.message ? error.message : error}` });
+  }
+}
+
+function renderRouteSettings(data) {
+  const target = byId("routeSettingsGrid");
+  if (!target) return;
+  target.replaceChildren();
+  routeSettingsState = {
+    groups: Array.isArray(data && data.groups) ? data.groups : [],
+    nodes: Array.isArray(data && data.nodes) ? data.nodes : []
+  };
+  if (!data || data.ok === false) {
+    appendRouteSettingsEmpty(target, String(data && data.error || "路由设置不可用"));
+    return;
+  }
+  if (!routeSettingsState.groups.length || !routeSettingsState.nodes.length) {
+    appendRouteSettingsEmpty(target, !routeSettingsState.groups.length ? "暂无路由组" : "暂无可用出口节点");
+    return;
+  }
+  routeSettingsState.groups.forEach((group, index) => {
+    const item = document.createElement("div");
+    item.className = "route-setting-item";
+    const label = document.createElement("label");
+    const selectID = `routeSettingExit${index}`;
+    label.htmlFor = selectID;
+    label.textContent = String(group.name || group.id || "路由组");
+    const select = document.createElement("select");
+    select.id = selectID;
+    select.dataset.routeGroupId = String(group.id || "");
+    routeSettingsState.nodes.forEach((node) => {
+      const option = document.createElement("option");
+      option.value = String(node.node_id || "");
+      option.textContent = String(node.display_name || "未命名节点");
+      option.selected = option.value === String(group.exit_node_id || "");
+      select.appendChild(option);
+    });
+    item.append(label, select);
+    target.appendChild(item);
+  });
+  setRouteSettingsFeedback("");
+}
+
+function appendRouteSettingsEmpty(target, message) {
+  const empty = document.createElement("div");
+  empty.className = "route-settings-empty";
+  empty.textContent = message;
+  target.appendChild(empty);
+}
+
+function saveRouteSettings() {
+  if (!hasCloudHelper("saveVrouteSettings")) {
+    setRouteSettingsFeedback("Android 路由设置保存接口不可用", true);
+    return;
+  }
+  const exitNodes = {};
+  document.querySelectorAll("[data-route-group-id]").forEach((select) => {
+    const groupID = String(select.dataset.routeGroupId || "").trim();
+    if (groupID) exitNodes[groupID] = String(select.value || "").trim();
+  });
+  const button = byId("saveRouteSettingsButton");
+  if (button) button.disabled = true;
+  try {
+    const response = parseJSON(callCloudHelperString("saveVrouteSettings", "{}", JSON.stringify({ exit_nodes: exitNodes })));
+    if (!response || response.ok === false) {
+      throw new Error(String(response && response.error || "保存失败"));
+    }
+    renderRouteSettings(response);
+    setRouteSettingsFeedback(String(response.warning || response.message || "路由设置已保存"), !!response.warning);
+    appendUILog("route", "移动端路由设置已保存。");
+  } catch (error) {
+    setRouteSettingsFeedback(`保存失败：${error && error.message ? error.message : error}`, true);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function setRouteSettingsFeedback(message, error) {
+  const target = byId("routeSettingsFeedback");
+  if (!target) return;
+  target.textContent = message || "";
+  target.classList.toggle("error", !!error);
 }
 
 function initPage() {

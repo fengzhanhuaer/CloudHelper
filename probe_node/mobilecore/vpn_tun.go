@@ -336,6 +336,27 @@ func persistAndroidVPNDNSCacheForState(configDir string, state *androidVPNDNSSta
 	}
 }
 
+func resetAndroidVPNRouteCaches(configDir string) {
+	dir := normalizeMobileConfigDir(configDir)
+	vpnDNSState.mu.Lock()
+	if vpnDNSState.cacheTimer != nil {
+		vpnDNSState.cacheTimer.Stop()
+		vpnDNSState.cacheTimer = nil
+	}
+	vpnDNSState.fakeDomainToIP = map[string]string{}
+	vpnDNSState.fakeIPToEntry = map[string]androidVPNDNSFakeEntry{}
+	vpnDNSState.routeIPHints = map[string]androidVPNDNSRouteHintEntry{}
+	vpnDNSState.realIPToFake = map[string]androidVPNDNSRealIPFakeEntry{}
+	vpnDNSState.fakeFlowToReal = map[string]androidVPNDNSRealIPFakeEntry{}
+	vpnDNSState.cacheDir = dir
+	vpnDNSState.cacheLoaded = dir != ""
+	vpnDNSState.cacheDirty = false
+	vpnDNSState.mu.Unlock()
+	if path, ok := resolveAndroidVPNDNSCachePath(dir); ok {
+		_ = os.Remove(path)
+	}
+}
+
 // VpnStart attaches a VpnService TUN fd to the mobilecore data plane.
 func VpnStart(fd int64, configDir string) string {
 	androidLogStore.add("vpn", "info", "vpn start attach requested")

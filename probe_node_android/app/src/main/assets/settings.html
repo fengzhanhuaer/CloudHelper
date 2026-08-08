@@ -24,6 +24,7 @@
         <div class="sub-tabs" role="tablist" aria-label="设置分类">
           <button class="sub-tab-button active" type="button" data-settings-tab="upgrade">升级</button>
           <button class="sub-tab-button" type="button" data-settings-tab="controller">主控</button>
+          <button class="sub-tab-button" type="button" data-settings-tab="route">路由设置</button>
         </div>
         <div id="settingsUpgradePanel" class="tab-panel" data-settings-panel="upgrade">
           <div class="actions">
@@ -62,6 +63,14 @@
           </div>
           <div id="saveFeedback" class="inline-feedback" aria-live="polite"></div>
           <div class="status-box" id="settingsStatus"></div>
+        </div>
+        <div id="settingsRoutePanel" class="tab-panel" data-settings-panel="route" hidden>
+          <div id="routeSettingsGrid" class="route-settings-grid" aria-live="polite"></div>
+          <div class="actions">
+            <button id="saveRouteSettingsButton" class="command" type="button" onclick="saveRouteSettings()">保存路由设置</button>
+            <button class="command neutral" type="button" onclick="loadRouteSettings()">重新读取</button>
+          </div>
+          <div id="routeSettingsFeedback" class="inline-feedback" aria-live="polite"></div>
         </div>
       </section>
     </main>

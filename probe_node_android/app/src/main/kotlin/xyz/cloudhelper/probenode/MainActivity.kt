@@ -343,6 +343,19 @@ class MainActivity : Activity() {
         }
 
         @JavascriptInterface
+        fun vrouteSettings(): String {
+            return MobileCoreBridge.vRouteSettings(this@MainActivity, ProbeNodeConfig.load(this@MainActivity))
+        }
+
+        @JavascriptInterface
+        fun saveVrouteSettings(payload: String): String {
+            AndroidLogStore.add("route", "mobile route settings save requested")
+            val result = MobileCoreBridge.saveVRouteSettings(this@MainActivity, ProbeNodeConfig.load(this@MainActivity), payload)
+            refreshCachedStatusAsync()
+            return result
+        }
+
+        @JavascriptInterface
         fun infoBoxRefresh(): String {
             val config = ProbeNodeConfig.load(this@MainActivity)
             thread(name = "cloudhelper-android-info-list") {
