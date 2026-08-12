@@ -413,6 +413,7 @@ func buildTGAssistantSessionPushMessage(account tgAssistantAccountRecord, raw tg
 			MediaType:  mediaType,
 			MediaSize:  mediaSize,
 			Formats:    buildTGAssistantMessageFormats(msg.Entities),
+			WebPreview: buildTGAssistantWebPreview(msg.Media),
 		}, true
 	case *tg.MessageService:
 		if msg == nil {

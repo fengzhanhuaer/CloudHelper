@@ -23,7 +23,7 @@ func TestTGAssistantMessageStoreByAccountAndTarget(t *testing.T) {
 		t.Fatalf("store account-b: %v", err)
 	}
 	if err := storeTGAssistantSessionMessages("account-a", "user:100", []tgAssistantSessionMessage{
-		{ID: 1, Date: "2026-06-27T10:03:00Z", Text: "hello updated", SenderID: "user:100", SenderName: "Alice", Formats: []tgAssistantMessageFormat{{Type: "url", Offset: 6, Length: 7, URL: "https://example.com"}}},
+		{ID: 1, Date: "2026-06-27T10:03:00Z", Text: "hello updated", SenderID: "user:100", SenderName: "Alice", Formats: []tgAssistantMessageFormat{{Type: "url", Offset: 6, Length: 7, URL: "https://example.com"}}, WebPreview: &tgAssistantWebPreview{URL: "https://example.com", SiteName: "Example", Title: "Preview"}},
 	}); err != nil {
 		t.Fatalf("store duplicate: %v", err)
 	}
@@ -40,6 +40,9 @@ func TestTGAssistantMessageStoreByAccountAndTarget(t *testing.T) {
 	}
 	if len(messages[0].Formats) != 1 || messages[0].Formats[0].Type != "url" || messages[0].Formats[0].URL != "https://example.com" {
 		t.Fatalf("expected formats to survive sqlite round trip, got %+v", messages[0].Formats)
+	}
+	if messages[0].WebPreview == nil || messages[0].WebPreview.URL != "https://example.com" || messages[0].WebPreview.Title != "Preview" {
+		t.Fatalf("expected web preview to survive sqlite round trip, got %+v", messages[0].WebPreview)
 	}
 	if !messages[1].Out {
 		t.Fatalf("expected second message to be outgoing: %+v", messages[1])

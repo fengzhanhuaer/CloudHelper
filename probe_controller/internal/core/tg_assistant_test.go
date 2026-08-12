@@ -30,6 +30,23 @@ func TestBuildTGAssistantMessageFormats(t *testing.T) {
 	}
 }
 
+func TestBuildTGAssistantWebPreview(t *testing.T) {
+	page := &tg.WebPage{URL: "https://example.com/article", DisplayURL: "example.com/article"}
+	page.SetSiteName("Example")
+	page.SetTitle("Preview title")
+	page.SetDescription("Preview description")
+	preview := buildTGAssistantWebPreview(&tg.MessageMediaWebPage{Webpage: page})
+	if preview == nil {
+		t.Fatal("expected web preview")
+	}
+	if preview.URL != "https://example.com/article" || preview.SiteName != "Example" || preview.Title != "Preview title" || preview.Description != "Preview description" {
+		t.Fatalf("unexpected web preview: %+v", preview)
+	}
+	if preview := buildTGAssistantWebPreview(&tg.MessageMediaEmpty{}); preview != nil {
+		t.Fatalf("empty media should not produce preview: %+v", preview)
+	}
+}
+
 func TestBuildTGAssistantAccountViewIncludesSessionToken(t *testing.T) {
 	chdirTemp(t)
 

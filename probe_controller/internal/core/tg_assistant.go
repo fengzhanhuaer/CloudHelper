@@ -312,6 +312,38 @@ type tgAssistantSessionMessage struct {
 	MediaURL   string                     `json:"media_url,omitempty"`
 	MediaSize  int64                      `json:"media_size,omitempty"`
 	Formats    []tgAssistantMessageFormat `json:"formats,omitempty"`
+	WebPreview *tgAssistantWebPreview     `json:"web_preview,omitempty"`
+}
+
+type tgAssistantWebPreview struct {
+	URL         string `json:"url,omitempty"`
+	DisplayURL  string `json:"display_url,omitempty"`
+	SiteName    string `json:"site_name,omitempty"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	ImageURL    string `json:"image_url,omitempty"`
+}
+
+func buildTGAssistantWebPreview(media tg.MessageMediaClass) *tgAssistantWebPreview {
+	webMedia, ok := media.(*tg.MessageMediaWebPage)
+	if !ok || webMedia == nil {
+		return nil
+	}
+	page, ok := webMedia.Webpage.(*tg.WebPage)
+	if !ok || page == nil {
+		return nil
+	}
+	preview := &tgAssistantWebPreview{
+		URL:         strings.TrimSpace(page.URL),
+		DisplayURL:  strings.TrimSpace(page.DisplayURL),
+		SiteName:    strings.TrimSpace(page.SiteName),
+		Title:       strings.TrimSpace(page.Title),
+		Description: strings.TrimSpace(page.Description),
+	}
+	if preview.URL == "" && preview.DisplayURL == "" && preview.SiteName == "" && preview.Title == "" && preview.Description == "" {
+		return nil
+	}
+	return preview
 }
 
 type tgAssistantMessageFormat struct {
@@ -1727,6 +1759,7 @@ func buildTGAssistantSessionMessageViews(resp tg.MessagesMessagesClass, account 
 				MediaType:  mediaType,
 				MediaSize:  mediaSize,
 				Formats:    buildTGAssistantMessageFormats(msg.Entities),
+				WebPreview: buildTGAssistantWebPreview(msg.Media),
 			})
 		case *tg.MessageService:
 			if msg == nil {
@@ -1963,6 +1996,12 @@ func downloadTGAssistantSessionMedia(ctx context.Context, client *telegram.Clien
 		if !ok {
 			continue
 		}
+		if preview := next[idx].WebPreview; preview != nil {
+			if path, imageURL, err := ensureTGAssistantWebPreviewPhoto(ctx, client, accountID, target, msg.ID, msg.Media); err == nil {
+				preview.ImageURL = imageURL
+				next[idx].MediaPath = path
+			}
+		}
 		document, mediaType, ok := extractTGAssistantMediaDocument(msg.Media)
 		if !ok {
 			continue
@@ -1977,6 +2016,50 @@ func downloadTGAssistantSessionMedia(ctx context.Context, client *telegram.Clien
 		next[idx].MediaSize = document.Size
 	}
 	return next, nil
+}
+
+func ensureTGAssistantWebPreviewPhoto(ctx context.Context, client *telegram.Client, accountID, target string, messageID int, media tg.MessageMediaClass) (string, string, error) {
+	webMedia, ok := media.(*tg.MessageMediaWebPage)
+	if !ok || webMedia == nil {
+		return "", "", errors.New("web preview is unavailable")
+	}
+	page, ok := webMedia.Webpage.(*tg.WebPage)
+	if !ok || page == nil {
+		return "", "", errors.New("web preview page is unavailable")
+	}
+	photo, ok := page.Photo.(*tg.Photo)
+	if !ok || photo == nil {
+		return "", "", errors.New("web preview photo is unavailable")
+	}
+	thumbType := ""
+	thumbSize := 0
+	for _, size := range photo.Sizes {
+		if candidate, ok := size.(*tg.PhotoSize); ok && candidate != nil && candidate.Size >= thumbSize {
+			thumbType = candidate.Type
+			thumbSize = candidate.Size
+		}
+	}
+	if thumbType == "" {
+		return "", "", errors.New("web preview photo has no downloadable size")
+	}
+	path := tgAssistantMediaFilePath(accountID, target, messageID, photo.ID, "image/jpeg", "web_preview")
+	if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+		return path, tgAssistantMediaFileURL(accountID, target, messageID, photo.ID, "image/jpeg", "web_preview"), nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", "", err
+	}
+	tmp := path + ".tmp"
+	_ = os.Remove(tmp)
+	if _, err := client.Download(photo.AsInputPhotoFileLocation(thumbType)).ToPath(ctx, tmp); err != nil {
+		_ = os.Remove(tmp)
+		return "", "", err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return "", "", err
+	}
+	return path, tgAssistantMediaFileURL(accountID, target, messageID, photo.ID, "image/jpeg", "web_preview"), nil
 }
 
 func extractTGAssistantMediaDocument(media tg.MessageMediaClass) (*tg.Document, string, bool) {

@@ -295,6 +295,41 @@
     .tg-message-text pre { margin: 5px 0 0; padding: 8px 10px; overflow: auto; border-left: 3px solid var(--accent); background: rgba(0, 0, 0, .25); white-space: pre-wrap; font-family: Consolas, monospace; }
     .tg-message-text .spoiler { padding: 0 3px; border-radius: 2px; background: #42505f; color: transparent; cursor: pointer; }
     .tg-message-text .spoiler:hover { color: inherit; }
+    .tg-web-preview {
+      width: 100%;
+      margin-top: 5px;
+      padding-left: 9px;
+      border-left: 3px solid #62d58b;
+      color: inherit;
+      text-decoration: none;
+    }
+    .tg-web-preview-inner {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+    }
+    .tg-web-preview-copy { min-width: 0; }
+    .tg-web-preview-site { color: #62d58b; font-size: 12px; font-weight: 650; }
+    .tg-web-preview-title { margin-top: 2px; color: var(--text); font-size: 13px; font-weight: 650; line-height: 1.35; }
+    .tg-web-preview-description {
+      margin-top: 2px;
+      color: var(--text);
+      font-size: 12px;
+      line-height: 1.35;
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 3;
+      overflow: hidden;
+    }
+    .tg-web-preview-image {
+      width: 82px;
+      height: 72px;
+      border-radius: 4px;
+      object-fit: cover;
+      background: rgba(0, 0, 0, .22);
+    }
+    .tg-web-preview:hover .tg-web-preview-title { text-decoration: underline; }
     .tg-message-media-wrap {
       display: inline-block;
       margin-top: 8px;
@@ -498,7 +533,7 @@
         selectedSessionTarget: '',
         sessionMessages: [],
         sessionWS: null,
-        mobileListOpen: true,
+        mobileListOpen: false,
         draft: {
           sessionSearch: '',
           sessionType: 'all',
@@ -624,7 +659,9 @@
         const text = String(msg && msg.text || '');
         const mediaType = String(msg && msg.media_type || '');
         const mediaPath = String(msg && msg.media_path || '');
-        return [id, date, out, service, text, mediaType, mediaPath].join(':');
+        const formats = JSON.stringify(msg && msg.formats || []);
+        const webPreview = JSON.stringify(msg && msg.web_preview || null);
+        return [id, date, out, service, text, mediaType, mediaPath, formats, webPreview].join(':');
       }).join('|');
     }
 
@@ -688,6 +725,33 @@
         return `<a class="tg-message-media-wrap" href="${escapeHTML(mediaURL)}" target="_blank" rel="noreferrer"><video class="tg-message-media" src="${escapeHTML(mediaURL)}" controls preload="metadata"></video></a>`;
       }
       return `<a class="tg-message-media-wrap" href="${escapeHTML(mediaURL)}" target="_blank" rel="noreferrer"><img class="tg-message-media" src="${escapeHTML(mediaURL)}" alt="${escapeHTML(label)}"></a>`;
+    }
+
+    function renderTGWebPreview(msg) {
+      const preview = msg && msg.web_preview;
+      if (!preview) return '';
+      const url = String(preview.url || '').trim();
+      if (!/^https?:\/\//i.test(url)) return '';
+      const site = String(preview.site_name || preview.display_url || '').trim();
+      const title = String(preview.title || '').trim();
+      const description = String(preview.description || '').trim();
+      const imageURL = String(preview.image_url || '').trim();
+      if (!site && !title && !description && !imageURL) return '';
+      const image = imageURL
+        ? `<img class="tg-web-preview-image" src="${escapeHTML(imageURL)}" alt="" loading="lazy" onerror="this.remove()">`
+        : '';
+      return `
+        <a class="tg-web-preview" href="${escapeHTML(url)}" target="_blank" rel="noreferrer">
+          <span class="tg-web-preview-inner">
+            <span class="tg-web-preview-copy">
+              ${site ? `<span class="tg-web-preview-site">${escapeHTML(site)}</span>` : ''}
+              ${title ? `<span class="tg-web-preview-title">${escapeHTML(title)}</span>` : ''}
+              ${description ? `<span class="tg-web-preview-description">${escapeHTML(description)}</span>` : ''}
+            </span>
+            ${image}
+          </span>
+        </a>
+      `;
     }
 
     function renderMessageText(text, formats) {
@@ -791,6 +855,7 @@
             <div class="tg-message-bubble">
               ${sender}
               <div class="tg-message-text">${renderMessageText(msg && msg.text || '', msg && msg.formats)}</div>
+              ${renderTGWebPreview(msg)}
               ${renderTGMessageMedia(msg)}
               <div class="tg-message-meta">${escapeHTML(formatMessageTime(msg && msg.date || ''))}</div>
             </div>
