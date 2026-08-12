@@ -86,10 +86,12 @@
     .content-block {
       height: 100%;
       min-height: 0;
+      overflow: hidden;
     }
     .identity-card {
       height: 100%;
       min-height: 0;
+      overflow: hidden;
     }
     .title-row {
       display: flex;
@@ -149,6 +151,7 @@
       grid-template-columns: 340px minmax(0, 1fr);
       overflow: hidden;
       height: 100%;
+      min-height: 0;
       background: var(--surface);
     }
     .tg-chat-sidebar {
@@ -157,6 +160,7 @@
       display: flex;
       flex-direction: column;
       background: #111b27;
+      overflow: hidden;
     }
     .tg-chat-sidebar-head,
     .tg-chat-main-head,
@@ -226,9 +230,11 @@
     .tg-chat-item-sub { margin-top: 3px; color: var(--muted); font-size: 12px; }
     .tg-chat-main {
       min-width: 0;
+      height: 100%;
       display: grid;
-      grid-template-rows: auto 1fr auto;
+      grid-template-rows: auto minmax(0, 1fr) auto;
       min-height: 0;
+      overflow: hidden;
     }
     .tg-chat-messages {
       overflow: auto;
@@ -356,6 +362,10 @@
       border-bottom: 0;
       border-top: 1px solid var(--border);
       background: #121b28;
+      position: relative;
+      z-index: 2;
+      min-height: 70px;
+      flex-shrink: 0;
     }
     .tg-chat-composer textarea {
       min-height: 42px;
