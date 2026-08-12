@@ -12,7 +12,7 @@ func TestTGAssistantMessageStoreByAccountAndTarget(t *testing.T) {
 	chdirTemp(t)
 
 	if err := storeTGAssistantSessionMessages("account-a", "user:100", []tgAssistantSessionMessage{
-		{ID: 1, Date: "2026-06-27T10:00:00Z", Text: "hello", SenderID: "user:100", SenderName: "Alice"},
+		{ID: 1, Date: "2026-06-27T10:00:00Z", Text: "hello", SenderID: "user:100", SenderName: "Alice", Formats: []tgAssistantMessageFormat{{Type: "bold", Offset: 0, Length: 5}}},
 		{ID: 2, Date: "2026-06-27T10:01:00Z", Text: "world", Out: true, SenderID: "user:200", SenderName: "Me", MediaType: "video", MediaPath: filepath.Join(tgAssistantVideoDirPath(), "a.mp4"), MediaSize: 123},
 	}); err != nil {
 		t.Fatalf("store account-a: %v", err)
@@ -23,7 +23,7 @@ func TestTGAssistantMessageStoreByAccountAndTarget(t *testing.T) {
 		t.Fatalf("store account-b: %v", err)
 	}
 	if err := storeTGAssistantSessionMessages("account-a", "user:100", []tgAssistantSessionMessage{
-		{ID: 1, Date: "2026-06-27T10:03:00Z", Text: "hello updated", SenderID: "user:100", SenderName: "Alice"},
+		{ID: 1, Date: "2026-06-27T10:03:00Z", Text: "hello updated", SenderID: "user:100", SenderName: "Alice", Formats: []tgAssistantMessageFormat{{Type: "url", Offset: 6, Length: 7, URL: "https://example.com"}}},
 	}); err != nil {
 		t.Fatalf("store duplicate: %v", err)
 	}
@@ -37,6 +37,9 @@ func TestTGAssistantMessageStoreByAccountAndTarget(t *testing.T) {
 	}
 	if messages[0].ID != 1 || messages[0].Text != "hello updated" {
 		t.Fatalf("expected updated first message, got %+v", messages[0])
+	}
+	if len(messages[0].Formats) != 1 || messages[0].Formats[0].Type != "url" || messages[0].Formats[0].URL != "https://example.com" {
+		t.Fatalf("expected formats to survive sqlite round trip, got %+v", messages[0].Formats)
 	}
 	if !messages[1].Out {
 		t.Fatalf("expected second message to be outgoing: %+v", messages[1])

@@ -9,6 +9,27 @@ import (
 	"github.com/gotd/td/tg"
 )
 
+func TestBuildTGAssistantMessageFormats(t *testing.T) {
+	formats := buildTGAssistantMessageFormats([]tg.MessageEntityClass{
+		&tg.MessageEntityBold{Offset: 0, Length: 4},
+		&tg.MessageEntityItalic{Offset: 5, Length: 3},
+		&tg.MessageEntityTextURL{Offset: 9, Length: 4, URL: "https://example.com"},
+		&tg.MessageEntityMention{Offset: 14, Length: 5},
+	})
+	if len(formats) != 3 {
+		t.Fatalf("format count=%d, want 3: %+v", len(formats), formats)
+	}
+	if formats[0].Type != "bold" || formats[0].Offset != 0 || formats[0].Length != 4 {
+		t.Fatalf("unexpected bold format: %+v", formats[0])
+	}
+	if formats[1].Type != "italic" {
+		t.Fatalf("unexpected italic format: %+v", formats[1])
+	}
+	if formats[2].Type != "url" || formats[2].URL != "https://example.com" {
+		t.Fatalf("unexpected url format: %+v", formats[2])
+	}
+}
+
 func TestBuildTGAssistantAccountViewIncludesSessionToken(t *testing.T) {
 	chdirTemp(t)
 

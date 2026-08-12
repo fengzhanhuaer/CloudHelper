@@ -25,7 +25,7 @@
     body {
       margin: 0;
       font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
-      background: var(--bg);
+      background: #0e1621;
       color: var(--text);
       min-height: 100vh;
       overflow: hidden;
@@ -34,11 +34,7 @@
       width: 100vw;
       height: 100vh;
       margin: 0;
-      background: var(--bg);
-      padding: 14px;
-      display: grid;
-      grid-template-rows: auto 1fr;
-      gap: 10px;
+      background: #0e1621;
     }
     .topbar { display: none; }
     h1 { margin: 0; font-size: 24px; }
@@ -88,6 +84,7 @@
       align-items: center;
     }
     .content-block {
+      height: 100%;
       min-height: 0;
     }
     .identity-card {
@@ -149,9 +146,7 @@
     }
     .tg-chat-shell {
       display: grid;
-      grid-template-columns: 320px minmax(0, 1fr);
-      border: 1px solid var(--border);
-      border-radius: 8px;
+      grid-template-columns: 340px minmax(0, 1fr);
       overflow: hidden;
       height: 100%;
       background: var(--surface);
@@ -161,6 +156,7 @@
       min-width: 0;
       display: flex;
       flex-direction: column;
+      background: #111b27;
     }
     .tg-chat-sidebar-head,
     .tg-chat-main-head,
@@ -192,15 +188,15 @@
       flex: 1;
       overflow: auto;
       min-height: 0;
-      padding: 7px;
+      padding: 0;
     }
     .tg-chat-item {
       width: 100%;
       border: 0;
-      border-radius: 6px;
+      border-radius: 0;
       background: transparent;
       color: var(--text);
-      padding: 9px 10px;
+      padding: 9px 12px;
       display: grid;
       grid-template-columns: 38px 1fr;
       gap: 10px;
@@ -209,14 +205,14 @@
       cursor: pointer;
     }
     .tg-chat-item:hover { background: var(--surface-hover); }
-    .tg-chat-item.active { background: #203b51; box-shadow: inset 3px 0 var(--accent); }
+    .tg-chat-item.active { background: #2b5278; }
     .tg-chat-avatar {
       width: 38px;
       height: 38px;
       border-radius: 50%;
       display: grid;
       place-items: center;
-      background: #263b50;
+      background: var(--avatar-color, #35678d);
       color: #fff;
       font-weight: 700;
     }
@@ -332,6 +328,17 @@
       resize: none;
       line-height: 1.45;
     }
+    .tg-message-day {
+      width: max-content;
+      max-width: 90%;
+      margin: 14px auto 10px;
+      padding: 4px 9px;
+      border-radius: 10px;
+      background: rgba(24, 37, 52, .92);
+      color: var(--muted);
+      font-size: 11px;
+      text-align: center;
+    }
     .tg-sidebar-title-row, .tg-chat-heading-row, .tg-composer-meta {
       display: flex;
       align-items: center;
@@ -354,29 +361,34 @@
     .tg-back-link { color: #9ad9fb; text-decoration: none; font-size: 12px; white-space: nowrap; }
     .tg-back-link:hover { text-decoration: underline; }
     .tg-send-btn { min-width: 76px; height: 42px; }
+    .tg-mobile-back { display: none; }
     .tg-session-toolbar label { position: relative; }
     .tg-session-toolbar label span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
     .tg-account-summary-line { margin: auto; max-width: 560px; }
     :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     @media (max-width: 760px) {
-      body { overflow: auto; }
-      .wrap { height: auto; min-height: 100vh; padding: 8px; }
+      body { overflow: hidden; }
+      .wrap { height: 100dvh; min-height: 0; }
       .tg-account-basic-row { grid-template-columns: 1fr; }
       .tg-chat-shell { grid-template-columns: 1fr; }
       .tg-chat-sidebar {
         border-right: 0;
-        border-bottom: 1px solid rgba(150, 185, 240, 0.14);
       }
-      .tg-chat-shell { height: auto; }
-      .tg-chat-list { max-height: 32vh; min-height: 180px; }
-      .tg-chat-main { min-height: 58vh; }
-      .tg-chat-main-head { align-items: flex-start; }
+      .tg-chat-shell { height: 100%; }
+      .tg-chat-list { max-height: none; min-height: 0; }
+      .tg-chat-main { display: none; height: 100%; min-height: 0; }
+      .tg-chat-shell.chat-open .tg-chat-sidebar { display: none; }
+      .tg-chat-shell.chat-open .tg-chat-main { display: grid; }
+      .tg-chat-main-head { align-items: center; padding: 10px; }
+      .tg-mobile-back { display: grid; margin-right: 2px; }
+      .tg-chat-context { flex: 1; }
       .tg-message-row { margin: 5px 0; }
       .tg-message-bubble { max-width: 88%; }
       .tg-message-row.service .tg-message-bubble { max-width: 96%; }
-      .tg-chat-messages { min-height: 46vh; max-height: 58vh; padding: 14px 10px; }
-      .tg-chat-composer { grid-template-columns: 1fr; }
-      .tg-send-btn { width: 100%; }
+      .tg-chat-messages { min-height: 0; max-height: none; padding: 14px 9px; }
+      .tg-chat-composer { grid-template-columns: 1fr auto; padding: 9px; }
+      .tg-composer-meta { display: none; }
+      .tg-send-btn { width: auto; min-width: 64px; }
       .status { top: 10px; right: 10px; }
     }
   </style>
@@ -486,6 +498,7 @@
         selectedSessionTarget: '',
         sessionMessages: [],
         sessionWS: null,
+        mobileListOpen: true,
         draft: {
           sessionSearch: '',
           sessionType: 'all',
@@ -559,6 +572,32 @@
       const dt = new Date(value);
       if (Number.isNaN(dt.getTime())) return value;
       return dt.toLocaleString();
+    }
+
+    function formatMessageTime(raw) {
+      const dt = new Date(String(raw || ''));
+      if (Number.isNaN(dt.getTime())) return '';
+      return dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function formatMessageDay(raw) {
+      const dt = new Date(String(raw || ''));
+      if (Number.isNaN(dt.getTime())) return '';
+      const today = new Date();
+      const yesterday = new Date(today);
+      yesterday.setDate(today.getDate() - 1);
+      const key = (value) => `${value.getFullYear()}-${value.getMonth()}-${value.getDate()}`;
+      if (key(dt) === key(today)) return '今天';
+      if (key(dt) === key(yesterday)) return '昨天';
+      return dt.toLocaleDateString();
+    }
+
+    function avatarColor(value) {
+      const colors = ['#3f7cac', '#4c8b75', '#8968a8', '#a06b54', '#4d82a8', '#8a7350'];
+      let hash = 0;
+      const text = String(value || '');
+      for (let i = 0; i < text.length; i += 1) hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+      return colors[Math.abs(hash) % colors.length];
     }
 
     function formatTGSessionType(type) {
@@ -666,42 +705,44 @@
           while (index < utf16Offsets.length - 1 && utf16Offsets[index] < value) index += 1;
           return index;
         };
-        const opens = new Map();
-        const closes = new Map();
-        const tagFor = (entity) => {
+        const wrapText = (html, entity, rawText) => {
           const type = String(entity.type || '');
-          if (type === 'bold') return ['<strong>', '</strong>'];
-          if (type === 'italic') return ['<em>', '</em>'];
-          if (type === 'underline') return ['<u>', '</u>'];
-          if (type === 'strike') return ['<s>', '</s>'];
-          if (type === 'code') return ['<code>', '</code>'];
-          if (type === 'pre') return ['<pre>', '</pre>'];
-          if (type === 'spoiler') return ['<span class="spoiler">', '</span>'];
+          if (type === 'bold') return `<strong>${html}</strong>`;
+          if (type === 'italic') return `<em>${html}</em>`;
+          if (type === 'underline') return `<u>${html}</u>`;
+          if (type === 'strike') return `<s>${html}</s>`;
+          if (type === 'code') return `<code>${html}</code>`;
+          if (type === 'pre') return `<pre>${html}</pre>`;
+          if (type === 'spoiler') return `<span class="spoiler" tabindex="0">${html}</span>`;
           if (type === 'url') {
-            const start = toIndex(entity.offset);
-            const end = toIndex(Number(entity.offset) + Number(entity.length));
-            const href = String(entity.url || units.slice(start, end).join(''));
-            if (!/^https?:\/\//i.test(href)) return null;
-            return [`<a href="${escapeHTML(href)}" target="_blank" rel="noreferrer">`, '</a>'];
+            const href = String(entity.url || rawText);
+            if (!/^https?:\/\//i.test(href)) return html;
+            return `<a href="${escapeHTML(href)}" target="_blank" rel="noreferrer">${html}</a>`;
           }
-          return null;
+          return html;
         };
+        const boundaries = new Set([0, units.length]);
+        const normalized = [];
         entities.forEach((entity) => {
-          const tags = tagFor(entity);
-          if (!tags) return;
           const start = toIndex(entity.offset);
           const end = toIndex(Number(entity.offset) + Number(entity.length));
           if (end <= start) return;
-          if (!opens.has(start)) opens.set(start, []);
-          if (!closes.has(end)) closes.set(end, []);
-          opens.get(start).push(tags[0]);
-          closes.get(end).unshift(tags[1]);
+          boundaries.add(start);
+          boundaries.add(end);
+          normalized.push({ ...entity, start, end });
         });
+        const points = Array.from(boundaries).sort((a, b) => a - b);
         let html = '';
-        for (let i = 0; i <= units.length; i += 1) {
-          if (closes.has(i)) html += closes.get(i).join('');
-          if (opens.has(i)) html += opens.get(i).join('');
-          if (i < units.length) html += escapeHTML(units[i]);
+        for (let i = 0; i < points.length - 1; i += 1) {
+          const start = points[i];
+          const end = points[i + 1];
+          const rawText = units.slice(start, end).join('');
+          let segment = escapeHTML(rawText);
+          normalized
+            .filter((entity) => entity.start <= start && entity.end >= end)
+            .sort((a, b) => (b.end - b.start) - (a.end - a.start))
+            .forEach((entity) => { segment = wrapText(segment, entity, rawText); });
+          html += segment;
         }
         return html;
       }
@@ -735,18 +776,23 @@
       if (bucket.sessionMessages.length === 0) {
         return '<div class="tg-chat-empty">暂无消息</div>';
       }
+      let previousDay = '';
       return bucket.sessionMessages.map((msg) => {
         const out = !!(msg && msg.out);
         const service = !!(msg && msg.service);
         const rowClass = 'tg-message-row' + (out ? ' out' : '') + (service ? ' service' : '');
         const sender = !out && !service && msg.sender_name ? `<div class="tg-message-sender">${escapeHTML(msg.sender_name)}</div>` : '';
+        const day = formatMessageDay(msg && msg.date || '');
+        const dayDivider = day && day !== previousDay ? `<div class="tg-message-day">${escapeHTML(day)}</div>` : '';
+        previousDay = day;
         return `
+          ${dayDivider}
           <div class="${rowClass}">
             <div class="tg-message-bubble">
               ${sender}
               <div class="tg-message-text">${renderMessageText(msg && msg.text || '', msg && msg.formats)}</div>
               ${renderTGMessageMedia(msg)}
-              <div class="tg-message-meta">${escapeHTML(formatDateTime(msg && msg.date || ''))}</div>
+              <div class="tg-message-meta">${escapeHTML(formatMessageTime(msg && msg.date || ''))}</div>
             </div>
           </div>
         `;
@@ -766,6 +812,8 @@
       const previousBox = preserveScroll ? qs('tg-chat-messages') : null;
       const previousScrollTop = previousBox ? previousBox.scrollTop : 0;
       const wasNearBottom = previousBox ? (previousBox.scrollHeight - previousBox.scrollTop - previousBox.clientHeight) <= 24 : true;
+      const focusSearch = options.focusSearch === true;
+      const searchCursor = Number(options.searchCursor || 0);
       const active = getSessionAccount();
       if (!active) {
         const emptyMessage = state.requestedAccountID
@@ -795,7 +843,7 @@
           const activeClass = itemID === session.selectedSessionTarget ? ' active' : '';
           return `
             <button class="tg-chat-item${activeClass}" data-action="open-session-target" data-target-id="${escapeHTML(itemID)}" type="button" aria-pressed="${itemID === session.selectedSessionTarget ? 'true' : 'false'}">
-              <div class="tg-chat-avatar">${escapeHTML(initial)}</div>
+              <div class="tg-chat-avatar" style="--avatar-color:${escapeHTML(avatarColor(itemID))}">${escapeHTML(initial)}</div>
               <div>
                 <div class="tg-chat-item-title">${escapeHTML(title)}</div>
                 <div class="tg-chat-item-sub">${escapeHTML(formatTGSessionType(item && item.type))}${username ? ` · @${escapeHTML(username)}` : ''}</div>
@@ -808,7 +856,7 @@
       const selectedTitle = selected ? String(selected.name || selected.id || '-') : '请选择会话';
       const selectedSubtitle = selected ? formatSessionSubtitle(selected) : '选择左侧会话';
       host.innerHTML = `
-        <div class="tg-chat-shell">
+        <div class="tg-chat-shell${selected && !session.mobileListOpen ? ' chat-open' : ''}">
           <aside class="tg-chat-sidebar">
             <div class="tg-chat-sidebar-head">
               <div class="tg-sidebar-title-row">
@@ -831,6 +879,7 @@
           </aside>
           <section class="tg-chat-main">
             <div class="tg-chat-main-head">
+              <button class="btn icon-btn tg-mobile-back" data-action="close-mobile-chat" type="button" title="返回会话列表" aria-label="返回会话列表">‹</button>
               <div class="tg-chat-context">
                 <div class="tg-chat-title">${escapeHTML(selectedTitle)}</div>
                 <div class="tg-chat-subtitle">${escapeHTML(selectedSubtitle)}</div>
@@ -848,6 +897,13 @@
         </div>
       `;
       bindTGSessionEvents();
+      if (focusSearch) {
+        const nextSearch = qs('tg-session-search');
+        if (nextSearch) {
+          nextSearch.focus();
+          nextSearch.setSelectionRange(searchCursor, searchCursor);
+        }
+      }
       if (preserveScroll && previousBox) {
         const box = qs('tg-chat-messages');
         if (box) {
@@ -865,22 +921,31 @@
       if (search) {
         const applySearch = () => {
           session.draft.sessionSearch = String(search.value || '');
-          renderTGSessionPanel();
+          renderTGSessionPanel({ focusSearch: true, searchCursor: search.selectionStart || 0 });
         };
-        search.addEventListener('change', applySearch);
-        search.addEventListener('keydown', (event) => {
-          if (event.key === 'Enter') applySearch();
-        });
+        search.addEventListener('input', applySearch);
       }
+      document.querySelectorAll('[data-action="close-mobile-chat"]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          session.mobileListOpen = true;
+          renderTGSessionPanel();
+        });
+      });
       document.querySelectorAll('[data-action="refresh-session-targets"]').forEach((btn) => {
         btn.addEventListener('click', () => loadTargets(active && active.id).catch((err) => setStatus(`刷新会话失败：${err.message || err}`, 'err')));
       });
       document.querySelectorAll('[data-action="open-session-target"]').forEach((btn) => {
         btn.addEventListener('click', () => {
           const targetID = String(btn.getAttribute('data-target-id') || '').trim();
-          if (!targetID || targetID === session.selectedSessionTarget) return;
+          if (!targetID) return;
+          if (targetID === session.selectedSessionTarget) {
+            session.mobileListOpen = false;
+            renderTGSessionPanel();
+            return;
+          }
           closeSessionWS(active && active.id);
           session.selectedSessionTarget = targetID;
+          session.mobileListOpen = false;
           session.sessionMessages = [];
           renderTGSessionPanel();
           loadSessionMessages({ silent: true }).catch((err) => setStatus(`加载会话消息失败：${err.message || err}`, 'err'));
@@ -889,8 +954,14 @@
       });
       const composer = qs('tg-session-message');
       if (composer) {
+        const resizeComposer = () => {
+          composer.style.height = 'auto';
+          composer.style.height = `${Math.min(composer.scrollHeight, 140)}px`;
+        };
+        resizeComposer();
         composer.addEventListener('input', () => {
           session.draft.sessionMessage = composer.value;
+          resizeComposer();
           const count = qs('tg-message-count');
           if (count) count.textContent = `${composer.value.length} / 4096`;
           const sendBtn = document.querySelector('[data-action="send-session-message"]');
