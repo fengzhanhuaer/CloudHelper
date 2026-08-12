@@ -163,7 +163,9 @@ func saveProbeVirtualRouterLocalSettingsWithRuntimeReconcile(settings probeVirtu
 	probeVirtualRouterLocalSettingsState.settings = settings
 	probeVirtualRouterLocalSettingsState.loaded = true
 	probeVirtualRouterLocalSettingsState.mu.Unlock()
-	reconcileProbeVirtualRouterDNSRuntime()
+	if err := reconcileProbeVirtualRouterDNSRuntime(); err != nil && (previous.VirtualDNSEnabled || settings.VirtualDNSEnabled) {
+		return settings, fmt.Errorf("reconcile virtual router dns: %w", err)
+	}
 	if reconcileLocalEntry {
 		if err := reconcileProbeVirtualRouterLocalEntryRuntime(settings); err != nil {
 			return settings, err

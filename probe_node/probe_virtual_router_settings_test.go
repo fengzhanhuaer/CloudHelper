@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -15,6 +16,7 @@ func TestSaveProbeVirtualRouterLocalSettingsDisableKeepsBaseTransportAndPreserve
 	oldRestoreDNS := probeVirtualRouterRestoreSystemDNS
 	cleanupCalls := 0
 	ensureCalls := 0
+	restoreDNSCalls := 0
 	probeVirtualRouterCleanupTakeoverRoutesForSettings = func() error {
 		cleanupCalls++
 		return nil
@@ -23,7 +25,10 @@ func TestSaveProbeVirtualRouterLocalSettingsDisableKeepsBaseTransportAndPreserve
 		ensureCalls++
 		return "198.18.0.7", nil
 	}
-	probeVirtualRouterRestoreSystemDNS = func() error { return nil }
+	probeVirtualRouterRestoreSystemDNS = func() error {
+		restoreDNSCalls++
+		return nil
+	}
 	t.Cleanup(func() {
 		probeVirtualRouterCleanupTakeoverRoutesForSettings = oldCleanup
 		probeVirtualRouterEnsureBaseTransportForSettings = oldEnsure
@@ -62,6 +67,9 @@ func TestSaveProbeVirtualRouterLocalSettingsDisableKeepsBaseTransportAndPreserve
 	if cleanupCalls != 1 || ensureCalls != 1 {
 		t.Fatalf("takeover cleanup calls=%d base transport ensure calls=%d, want 1 each", cleanupCalls, ensureCalls)
 	}
+	if restoreDNSCalls != 1 {
+		t.Fatalf("system dns restore calls=%d want 1", restoreDNSCalls)
+	}
 	probeLocalControl.mu.Lock()
 	tunState := probeLocalControl.tun
 	probeLocalControl.mu.Unlock()
@@ -74,6 +82,38 @@ func TestSaveProbeVirtualRouterLocalSettingsDisableKeepsBaseTransportAndPreserve
 	}
 	if !persisted.TUN.Enabled {
 		t.Fatalf("persisted tun state not preserved: %+v", persisted.TUN)
+	}
+}
+
+func TestSaveProbeVirtualRouterLocalSettingsDisableReportsDNSRestoreFailure(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeVirtualRouterLocalSettingsForTest()
+	oldCleanup := probeVirtualRouterCleanupTakeoverRoutesForSettings
+	oldEnsure := probeVirtualRouterEnsureBaseTransportForSettings
+	oldRestoreDNS := probeVirtualRouterRestoreSystemDNS
+	probeVirtualRouterCleanupTakeoverRoutesForSettings = func() error { return nil }
+	probeVirtualRouterEnsureBaseTransportForSettings = func() (string, error) { return "198.18.0.7", nil }
+	probeVirtualRouterRestoreSystemDNS = func() error { return errors.New("dns restore failed") }
+	t.Cleanup(func() {
+		probeVirtualRouterCleanupTakeoverRoutesForSettings = oldCleanup
+		probeVirtualRouterEnsureBaseTransportForSettings = oldEnsure
+		probeVirtualRouterRestoreSystemDNS = oldRestoreDNS
+		resetProbeVirtualRouterLocalSettingsForTest()
+	})
+
+	settings := defaultProbeVirtualRouterLocalSettings()
+	settings.VirtualRouterEnabled = true
+	settings.VirtualDNSEnabled = true
+	probeVirtualRouterLocalSettingsState.mu.Lock()
+	probeVirtualRouterLocalSettingsState.loaded = true
+	probeVirtualRouterLocalSettingsState.settings = settings
+	probeVirtualRouterLocalSettingsState.mu.Unlock()
+
+	settings.VirtualRouterEnabled = false
+	settings.VirtualDNSEnabled = false
+	_, err := saveProbeVirtualRouterLocalSettings(settings)
+	if err == nil || !strings.Contains(err.Error(), "dns restore failed") {
+		t.Fatalf("disable virtual router dns error=%v", err)
 	}
 }
 

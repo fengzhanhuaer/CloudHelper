@@ -52,24 +52,27 @@ var probeVirtualRouterRestoreSystemDNS = restoreProbeVirtualRouterSystemDNS
 var probeVirtualRouterDNSAfterTUNReady = ensureProbeVirtualRouterDNSRuntime
 
 func ensureProbeVirtualRouterDNSRuntime() {
-	reconcileProbeVirtualRouterDNSRuntime()
+	_ = reconcileProbeVirtualRouterDNSRuntime()
 }
 
-func reconcileProbeVirtualRouterDNSRuntime() {
+func reconcileProbeVirtualRouterDNSRuntime() error {
 	if !probeVirtualRouterLocalDNSEnabled() {
 		stopProbeVirtualRouterDNSService()
 		if err := probeVirtualRouterRestoreSystemDNS(); err != nil {
 			logProbeWarnf("restore virtual router system dns failed: %v", err)
+			return err
 		}
-		return
+		return nil
 	}
 	if err := startProbeVirtualRouterDNSService(); err != nil {
 		logProbeWarnf("probe virtual router dns service startup failed: %v", err)
-		return
+		return err
 	}
 	if err := probeVirtualRouterApplySystemDNS(); err != nil {
 		logProbeWarnf("apply virtual router system dns failed: %v", err)
+		return err
 	}
+	return nil
 }
 
 func startProbeVirtualRouterDNSService() error {
