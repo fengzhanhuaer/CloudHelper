@@ -5,58 +5,82 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>CloudHelper TG 会话</title>
   <style>
-    :root { color-scheme: dark; }
+    :root {
+      color-scheme: dark;
+      --bg: #0b1018;
+      --surface: #111925;
+      --surface-raised: #172231;
+      --surface-hover: #1c2a3c;
+      --border: #26364a;
+      --border-soft: #1d2a3a;
+      --text: #eef5fc;
+      --muted: #8fa5bc;
+      --accent: #2aabee;
+      --accent-strong: #168dcc;
+      --success: #5fd19b;
+      --danger: #ff7f87;
+      --warning: #f5bd68;
+    }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
-      background: radial-gradient(circle at top, #1a2436 0%, #0d1117 45%, #090c12 100%);
-      color: #dceaff;
+      background: var(--bg);
+      color: var(--text);
       min-height: 100vh;
+      overflow: hidden;
     }
     .wrap {
       width: 100vw;
-      min-height: 100vh;
+      height: 100vh;
       margin: 0;
-      border: 1px solid rgba(150, 185, 240, 0.2);
-      background: rgba(10, 16, 26, 0.78);
-      padding: 16px;
+      background: var(--bg);
+      padding: 14px;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 10px;
     }
     .topbar { display: none; }
     h1 { margin: 0; font-size: 24px; }
     .sub { margin: 6px 0 0; color: #9fc2ff; font-size: 13px; }
     .btn {
       min-width: 108px;
-      border: 1px solid rgba(130, 176, 246, 0.36);
-      background: rgba(35, 52, 78, 0.75);
-      color: #fff;
-      border-radius: 8px;
-      height: 34px;
+      border: 1px solid var(--border);
+      background: var(--surface-raised);
+      color: var(--text);
+      border-radius: 6px;
+      height: 36px;
       padding: 0 12px;
       cursor: pointer;
     }
     .btn.primary {
-      border-color: rgba(126, 200, 255, 0.66);
-      background: linear-gradient(180deg, rgba(77, 138, 220, 0.88) 0%, rgba(55, 107, 186, 0.92) 100%);
+      border-color: var(--accent);
+      background: var(--accent-strong);
     }
     .btn:disabled { opacity: .58; cursor: not-allowed; }
     .btn:hover:enabled { filter: brightness(1.06); }
     .status {
-      border: 1px solid rgba(126, 200, 255, 0.3);
-      background: rgba(8, 14, 23, 0.62);
-      border-radius: 10px;
-      padding: 10px 12px;
+      position: fixed;
+      z-index: 20;
+      top: 14px;
+      right: 18px;
+      max-width: min(440px, calc(100vw - 36px));
+      border: 1px solid var(--border);
+      background: #172231;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, .34);
+      border-radius: 7px;
+      padding: 9px 12px;
       font-size: 13px;
       line-height: 1.45;
       min-height: 38px;
       white-space: pre-wrap;
       word-break: break-word;
-      margin-bottom: 12px;
+      margin: 0;
     }
     .status:empty { display: none; }
-    .status.ok { border-color: rgba(112, 221, 159, 0.46); color: #9ff7c0; }
-    .status.err { border-color: rgba(255, 145, 145, 0.52); color: #ffadad; }
-    .status.warn { border-color: rgba(255, 196, 122, 0.52); color: #ffd38f; }
+    .status.ok { border-color: #327659; color: #a4e7c7; }
+    .status.err { border-color: #91484f; color: #ffb2b7; }
+    .status.warn { border-color: #8c6a37; color: #f8d69d; }
     .content-actions {
       display: flex;
       gap: 10px;
@@ -64,17 +88,11 @@
       align-items: center;
     }
     .content-block {
-      border: 1px solid rgba(150, 185, 240, 0.2);
-      border-radius: 12px;
-      background: rgba(255, 255, 255, 0.04);
-      padding: 14px;
+      min-height: 0;
     }
     .identity-card {
-      border: 1px solid rgba(150, 185, 240, 0.2);
-      border-radius: 12px;
-      background: rgba(7, 11, 18, 0.42);
-      padding: 14px;
-      min-height: 68vh;
+      height: 100%;
+      min-height: 0;
     }
     .title-row {
       display: flex;
@@ -116,30 +134,30 @@
     .tg-session-toolbar input,
     .tg-session-toolbar select {
       width: 100%;
-      border: 1px solid rgba(150, 185, 240, 0.24);
-      border-radius: 8px;
-      background: rgba(6, 10, 17, 0.72);
-      color: #eef6ff;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #0d141e;
+      color: var(--text);
       min-height: 34px;
       padding: 8px 10px;
       outline: none;
     }
     .tg-session-summary {
-      color: #9fc2ff;
-      font-size: 13px;
-      margin: 10px 0 12px;
+      color: var(--muted);
+      font-size: 12px;
+      margin: 7px 0 11px;
     }
     .tg-chat-shell {
       display: grid;
-      grid-template-columns: minmax(260px, 340px) 1fr;
-      border: 1px solid rgba(150, 185, 240, 0.16);
-      border-radius: 12px;
+      grid-template-columns: 320px minmax(0, 1fr);
+      border: 1px solid var(--border);
+      border-radius: 8px;
       overflow: hidden;
-      min-height: 68vh;
-      background: rgba(5, 9, 15, 0.5);
+      height: 100%;
+      background: var(--surface);
     }
     .tg-chat-sidebar {
-      border-right: 1px solid rgba(150, 185, 240, 0.14);
+      border-right: 1px solid var(--border);
       min-width: 0;
       display: flex;
       flex-direction: column;
@@ -147,41 +165,42 @@
     .tg-chat-sidebar-head,
     .tg-chat-main-head,
     .tg-chat-composer {
-      padding: 12px;
-      border-bottom: 1px solid rgba(150, 185, 240, 0.14);
+      padding: 14px;
+      border-bottom: 1px solid var(--border);
     }
     .tg-chat-main-head {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 10px;
-      min-height: 64px;
+      min-height: 68px;
+      background: #121b28;
     }
     .tg-chat-title {
       font-size: 16px;
       font-weight: 700;
-      color: #eef6ff;
+      color: var(--text);
       word-break: break-word;
     }
     .tg-chat-subtitle {
       margin-top: 4px;
-      color: #8eaed6;
+      color: var(--muted);
       font-size: 12px;
       word-break: break-word;
     }
     .tg-chat-list {
       flex: 1;
       overflow: auto;
-      max-height: calc(100vh - 268px);
-      padding: 6px;
+      min-height: 0;
+      padding: 7px;
     }
     .tg-chat-item {
       width: 100%;
       border: 0;
-      border-radius: 8px;
+      border-radius: 6px;
       background: transparent;
-      color: #dceaff;
-      padding: 10px;
+      color: var(--text);
+      padding: 9px 10px;
       display: grid;
       grid-template-columns: 38px 1fr;
       gap: 10px;
@@ -189,15 +208,15 @@
       text-align: left;
       cursor: pointer;
     }
-    .tg-chat-item:hover { background: rgba(150, 185, 240, 0.08); }
-    .tg-chat-item.active { background: rgba(77, 138, 220, 0.24); }
+    .tg-chat-item:hover { background: var(--surface-hover); }
+    .tg-chat-item.active { background: #203b51; box-shadow: inset 3px 0 var(--accent); }
     .tg-chat-avatar {
       width: 38px;
       height: 38px;
       border-radius: 50%;
       display: grid;
       place-items: center;
-      background: rgba(77, 138, 220, 0.42);
+      background: #263b50;
       color: #fff;
       font-weight: 700;
     }
@@ -208,29 +227,31 @@
       white-space: nowrap;
     }
     .tg-chat-item-title { font-size: 14px; font-weight: 650; }
-    .tg-chat-item-sub { margin-top: 3px; color: #8eaed6; font-size: 12px; }
+    .tg-chat-item-sub { margin-top: 3px; color: var(--muted); font-size: 12px; }
     .tg-chat-main {
       min-width: 0;
       display: grid;
       grid-template-rows: auto 1fr auto;
-      min-height: 68vh;
+      min-height: 0;
     }
     .tg-chat-messages {
       overflow: auto;
-      padding: 8px 10px;
-      max-height: calc(100vh - 258px);
-      min-height: 44vh;
+      padding: 18px clamp(14px, 3vw, 42px);
+      min-height: 0;
+      background-color: #0e1621;
+      background-image: radial-gradient(rgba(130, 159, 187, .055) 1px, transparent 1px);
+      background-size: 20px 20px;
     }
     .tg-chat-empty {
-      color: #8eaed6;
-      padding: 16px;
+      color: var(--muted);
+      padding: 48px 16px;
       text-align: center;
     }
     .tg-message-row {
       display: flex;
       justify-content: flex-start;
       width: 100%;
-      margin: 6px 0;
+      margin: 5px 0;
     }
     .tg-message-row.out { justify-content: flex-end; }
     .tg-message-row.service { justify-content: center; }
@@ -239,25 +260,23 @@
       flex-direction: column;
       align-items: flex-start;
       gap: 4px;
-      width: 100%;
-      max-width: none;
+      max-width: min(680px, 78%);
       flex: 0 1 auto;
-      border: 1px solid rgba(150, 185, 240, 0.16);
-      border-radius: 12px;
-      background: rgba(28, 43, 66, 0.82);
-      padding: 8px 10px 6px;
+      border: 1px solid #2a3b4e;
+      border-radius: 8px;
+      background: #182534;
+      padding: 9px 11px 7px;
       word-break: break-word;
       line-height: 1.32;
     }
     .tg-message-row.out .tg-message-bubble {
-      flex: 0 1 88%;
-      background: rgba(54, 111, 183, 0.82);
-      border-color: rgba(126, 200, 255, 0.32);
+      background: #175f87;
+      border-color: #247da9;
     }
     .tg-message-row.service .tg-message-bubble {
-      flex: 0 1 96%;
-      background: rgba(255, 255, 255, 0.06);
-      color: #a9c7f3;
+      max-width: min(620px, 90%);
+      background: #17202b;
+      color: var(--muted);
       text-align: center;
       align-items: center;
     }
@@ -276,6 +295,10 @@
       color: #8ec5ff;
       text-decoration: underline;
     }
+    .tg-message-text code { padding: 1px 4px; border-radius: 3px; background: rgba(0, 0, 0, .25); font-family: Consolas, monospace; }
+    .tg-message-text pre { margin: 5px 0 0; padding: 8px 10px; overflow: auto; border-left: 3px solid var(--accent); background: rgba(0, 0, 0, .25); white-space: pre-wrap; font-family: Consolas, monospace; }
+    .tg-message-text .spoiler { padding: 0 3px; border-radius: 2px; background: #42505f; color: transparent; cursor: pointer; }
+    .tg-message-text .spoiler:hover { color: inherit; }
     .tg-message-media-wrap {
       display: inline-block;
       margin-top: 8px;
@@ -284,7 +307,7 @@
     .tg-message-media {
       display: block;
       max-width: 100%;
-      border-radius: 8px;
+      border-radius: 6px;
       background: rgba(0, 0, 0, 0.18);
     }
     .tg-message-meta {
@@ -298,29 +321,63 @@
       display: grid;
       grid-template-columns: 1fr auto;
       gap: 10px;
+      align-items: end;
       border-bottom: 0;
-      border-top: 1px solid rgba(150, 185, 240, 0.14);
+      border-top: 1px solid var(--border);
+      background: #121b28;
     }
     .tg-chat-composer textarea {
-      min-height: 48px;
-      max-height: 160px;
-      resize: vertical;
+      min-height: 42px;
+      max-height: 140px;
+      resize: none;
+      line-height: 1.45;
     }
+    .tg-sidebar-title-row, .tg-chat-heading-row, .tg-composer-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .tg-sidebar-actions { display: flex; gap: 6px; }
+    .icon-btn {
+      width: 34px;
+      min-width: 34px;
+      height: 34px;
+      padding: 0;
+      display: grid;
+      place-items: center;
+      font-size: 17px;
+    }
+    .tg-chat-context { min-width: 0; }
+    .tg-composer-wrap { min-width: 0; }
+    .tg-composer-meta { margin-top: 5px; color: var(--muted); font-size: 11px; }
+    .tg-back-link { color: #9ad9fb; text-decoration: none; font-size: 12px; white-space: nowrap; }
+    .tg-back-link:hover { text-decoration: underline; }
+    .tg-send-btn { min-width: 76px; height: 42px; }
+    .tg-session-toolbar label { position: relative; }
+    .tg-session-toolbar label span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
+    .tg-account-summary-line { margin: auto; max-width: 560px; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     @media (max-width: 760px) {
-      .wrap { padding: 12px; }
+      body { overflow: auto; }
+      .wrap { height: auto; min-height: 100vh; padding: 8px; }
       .tg-account-basic-row { grid-template-columns: 1fr; }
       .tg-chat-shell { grid-template-columns: 1fr; }
       .tg-chat-sidebar {
         border-right: 0;
         border-bottom: 1px solid rgba(150, 185, 240, 0.14);
       }
-      .tg-chat-list { max-height: 34vh; }
+      .tg-chat-shell { height: auto; }
+      .tg-chat-list { max-height: 32vh; min-height: 180px; }
       .tg-chat-main { min-height: 58vh; }
       .tg-chat-main-head { align-items: flex-start; }
       .tg-message-row { margin: 5px 0; }
-      .tg-message-row.out .tg-message-bubble { flex-basis: 92%; }
-      .tg-message-row.service .tg-message-bubble { flex-basis: 100%; }
+      .tg-message-bubble { max-width: 88%; }
+      .tg-message-row.service .tg-message-bubble { max-width: 96%; }
+      .tg-chat-messages { min-height: 46vh; max-height: 58vh; padding: 14px 10px; }
       .tg-chat-composer { grid-template-columns: 1fr; }
+      .tg-send-btn { width: 100%; }
+      .status { top: 10px; right: 10px; }
     }
   </style>
 </head>
@@ -353,15 +410,28 @@
     };
     const SESSION_REFRESH_INTERVAL_MS = 4000;
     let sessionRefreshTimer = null;
+    let statusDismissTimer = null;
 
     function qs(id) {
       return document.getElementById(id);
     }
 
     function setStatus(message, level) {
+      if (statusDismissTimer) {
+        window.clearTimeout(statusDismissTimer);
+        statusDismissTimer = null;
+      }
       state.status = String(message || '');
       state.statusLevel = String(level || '');
       renderStatus();
+      if (level === 'ok') {
+        statusDismissTimer = window.setTimeout(() => {
+          state.status = '';
+          state.statusLevel = '';
+          renderStatus();
+          statusDismissTimer = null;
+        }, 2200);
+      }
     }
 
     function renderStatus() {
@@ -581,8 +651,60 @@
       return `<a class="tg-message-media-wrap" href="${escapeHTML(mediaURL)}" target="_blank" rel="noreferrer"><img class="tg-message-media" src="${escapeHTML(mediaURL)}" alt="${escapeHTML(label)}"></a>`;
     }
 
-    function renderMessageText(text) {
+    function renderMessageText(text, formats) {
       const source = String(text || '');
+      const entities = Array.isArray(formats) ? formats.filter((item) => item && Number(item.length) > 0) : [];
+      if (entities.length > 0) {
+        const units = Array.from(source);
+        const utf16Offsets = [];
+        let offset = 0;
+        units.forEach((char) => { utf16Offsets.push(offset); offset += char.length; });
+        utf16Offsets.push(offset);
+        const toIndex = (utf16) => {
+          const value = Math.max(0, Number(utf16) || 0);
+          let index = 0;
+          while (index < utf16Offsets.length - 1 && utf16Offsets[index] < value) index += 1;
+          return index;
+        };
+        const opens = new Map();
+        const closes = new Map();
+        const tagFor = (entity) => {
+          const type = String(entity.type || '');
+          if (type === 'bold') return ['<strong>', '</strong>'];
+          if (type === 'italic') return ['<em>', '</em>'];
+          if (type === 'underline') return ['<u>', '</u>'];
+          if (type === 'strike') return ['<s>', '</s>'];
+          if (type === 'code') return ['<code>', '</code>'];
+          if (type === 'pre') return ['<pre>', '</pre>'];
+          if (type === 'spoiler') return ['<span class="spoiler">', '</span>'];
+          if (type === 'url') {
+            const start = toIndex(entity.offset);
+            const end = toIndex(Number(entity.offset) + Number(entity.length));
+            const href = String(entity.url || units.slice(start, end).join(''));
+            if (!/^https?:\/\//i.test(href)) return null;
+            return [`<a href="${escapeHTML(href)}" target="_blank" rel="noreferrer">`, '</a>'];
+          }
+          return null;
+        };
+        entities.forEach((entity) => {
+          const tags = tagFor(entity);
+          if (!tags) return;
+          const start = toIndex(entity.offset);
+          const end = toIndex(Number(entity.offset) + Number(entity.length));
+          if (end <= start) return;
+          if (!opens.has(start)) opens.set(start, []);
+          if (!closes.has(end)) closes.set(end, []);
+          opens.get(start).push(tags[0]);
+          closes.get(end).unshift(tags[1]);
+        });
+        let html = '';
+        for (let i = 0; i <= units.length; i += 1) {
+          if (closes.has(i)) html += closes.get(i).join('');
+          if (opens.has(i)) html += opens.get(i).join('');
+          if (i < units.length) html += escapeHTML(units[i]);
+        }
+        return html;
+      }
       const parts = [];
       const pattern = /(https?:\/\/[^\s<>"']+)/gi;
       let lastIndex = 0;
@@ -622,7 +744,7 @@
           <div class="${rowClass}">
             <div class="tg-message-bubble">
               ${sender}
-              <div class="tg-message-text">${renderMessageText(msg && msg.text || '')}</div>
+              <div class="tg-message-text">${renderMessageText(msg && msg.text || '', msg && msg.formats)}</div>
               ${renderTGMessageMedia(msg)}
               <div class="tg-message-meta">${escapeHTML(formatDateTime(msg && msg.date || ''))}</div>
             </div>
@@ -660,11 +782,6 @@
       if (!session.selectedSessionTarget && filtered.length > 0) {
         session.selectedSessionTarget = filtered[0].id || '';
       }
-      const typeCounts = { user: 0, chat: 0, channel: 0 };
-      (Array.isArray(session.targetList) ? session.targetList : []).forEach((item) => {
-        const type = String(item && item.type || '').trim();
-        if (typeCounts[type] !== undefined) typeCounts[type] += 1;
-      });
       const selected = getSelectedSessionTarget(session);
       let sessionItems = '';
       if (filtered.length === 0) {
@@ -677,7 +794,7 @@
           const initial = title ? title.slice(0, 1).toUpperCase() : '#';
           const activeClass = itemID === session.selectedSessionTarget ? ' active' : '';
           return `
-            <button class="tg-chat-item${activeClass}" data-action="open-session-target" data-target-id="${escapeHTML(itemID)}" type="button">
+            <button class="tg-chat-item${activeClass}" data-action="open-session-target" data-target-id="${escapeHTML(itemID)}" type="button" aria-pressed="${itemID === session.selectedSessionTarget ? 'true' : 'false'}">
               <div class="tg-chat-avatar">${escapeHTML(initial)}</div>
               <div>
                 <div class="tg-chat-item-title">${escapeHTML(title)}</div>
@@ -694,20 +811,19 @@
         <div class="tg-chat-shell">
           <aside class="tg-chat-sidebar">
             <div class="tg-chat-sidebar-head">
-              <div class="tg-chat-title">会话列表</div>
-              <div class="tg-chat-subtitle">${escapeHTML(active.label)} (${escapeHTML(active.phone)})</div>
-              <div class="tg-session-summary">全部 ${session.targetList.length} ｜ 私聊 ${typeCounts.user} ｜ 群组 ${typeCounts.chat} ｜ 频道 ${typeCounts.channel} ｜ 当前显示 ${filtered.length}</div>
+              <div class="tg-sidebar-title-row">
+                <div>
+                  <div class="tg-chat-title">${escapeHTML(active.label || 'TG 会话')}</div>
+                  <div class="tg-chat-subtitle">${escapeHTML(active.phone)}</div>
+                </div>
+                <div class="tg-sidebar-actions">
+                  <a class="btn icon-btn" href="/mng/tg" title="返回 TG 助手" aria-label="返回 TG 助手">‹</a>
+                  <button class="btn icon-btn" data-action="refresh-session-targets" type="button" title="刷新会话" aria-label="刷新会话" ${session.sessionLoading ? 'disabled' : ''}>↻</button>
+                </div>
+              </div>
               <div class="tg-session-toolbar" style="margin-bottom:0">
-                <label>搜索
-                  <input id="tg-session-search" class="input" value="${escapeHTML(session.draft.sessionSearch)}" placeholder="名称 / username / id / 类型">
-                </label>
-                <label>类型
-                  <select id="tg-session-type" class="input">
-                    <option value="all" ${session.draft.sessionType === 'all' ? 'selected' : ''}>全部</option>
-                    <option value="user" ${session.draft.sessionType === 'user' ? 'selected' : ''}>私聊</option>
-                    <option value="chat" ${session.draft.sessionType === 'chat' ? 'selected' : ''}>群组</option>
-                    <option value="channel" ${session.draft.sessionType === 'channel' ? 'selected' : ''}>频道</option>
-                  </select>
+                <label><span>搜索会话</span>
+                  <input id="tg-session-search" class="input" value="${escapeHTML(session.draft.sessionSearch)}" placeholder="搜索" autocomplete="off">
                 </label>
               </div>
             </div>
@@ -715,15 +831,18 @@
           </aside>
           <section class="tg-chat-main">
             <div class="tg-chat-main-head">
-              <div>
+              <div class="tg-chat-context">
                 <div class="tg-chat-title">${escapeHTML(selectedTitle)}</div>
                 <div class="tg-chat-subtitle">${escapeHTML(selectedSubtitle)}</div>
               </div>
             </div>
             <div id="tg-chat-messages" class="tg-chat-messages">${messages}</div>
             <div class="tg-chat-composer">
-              <textarea id="tg-session-message" class="input" placeholder="输入消息" ${!selected || session.sessionSending ? 'disabled' : ''}>${escapeHTML(session.draft.sessionMessage)}</textarea>
-              <button class="btn primary" data-action="send-session-message" type="button" ${!selected || session.sessionSending || !String(session.draft.sessionMessage || '').trim() ? 'disabled' : ''}>${session.sessionSending ? '发送中...' : '发送'}</button>
+              <div class="tg-composer-wrap">
+                <textarea id="tg-session-message" class="input" rows="1" maxlength="4096" placeholder="${selected ? '输入消息...' : '请先选择会话'}" ${!selected || session.sessionSending ? 'disabled' : ''}>${escapeHTML(session.draft.sessionMessage)}</textarea>
+                <div class="tg-composer-meta"><span>Enter 发送，Shift + Enter 换行</span><span id="tg-message-count">${String(session.draft.sessionMessage || '').length} / 4096</span></div>
+              </div>
+              <button class="btn primary tg-send-btn" data-action="send-session-message" type="button" ${!selected || session.sessionSending || !String(session.draft.sessionMessage || '').trim() ? 'disabled' : ''}>${session.sessionSending ? '发送中...' : '发送'}</button>
             </div>
           </section>
         </div>
@@ -753,13 +872,9 @@
           if (event.key === 'Enter') applySearch();
         });
       }
-      const type = qs('tg-session-type');
-      if (type) {
-        type.addEventListener('change', () => {
-          session.draft.sessionType = String(type.value || 'all');
-          renderTGSessionPanel();
-        });
-      }
+      document.querySelectorAll('[data-action="refresh-session-targets"]').forEach((btn) => {
+        btn.addEventListener('click', () => loadTargets(active && active.id).catch((err) => setStatus(`刷新会话失败：${err.message || err}`, 'err')));
+      });
       document.querySelectorAll('[data-action="open-session-target"]').forEach((btn) => {
         btn.addEventListener('click', () => {
           const targetID = String(btn.getAttribute('data-target-id') || '').trim();
@@ -776,6 +891,8 @@
       if (composer) {
         composer.addEventListener('input', () => {
           session.draft.sessionMessage = composer.value;
+          const count = qs('tg-message-count');
+          if (count) count.textContent = `${composer.value.length} / 4096`;
           const sendBtn = document.querySelector('[data-action="send-session-message"]');
           if (sendBtn) sendBtn.disabled = !session.selectedSessionTarget || session.sessionSending || !String(session.draft.sessionMessage || '').trim();
         });

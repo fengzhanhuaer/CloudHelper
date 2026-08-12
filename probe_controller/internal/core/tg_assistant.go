@@ -300,17 +300,60 @@ type tgAssistantSessionSendRequest struct {
 }
 
 type tgAssistantSessionMessage struct {
-	ID         int    `json:"id"`
-	Date       string `json:"date"`
-	Text       string `json:"text"`
-	Out        bool   `json:"out"`
-	SenderID   string `json:"sender_id,omitempty"`
-	SenderName string `json:"sender_name,omitempty"`
-	Service    bool   `json:"service,omitempty"`
-	MediaType  string `json:"media_type,omitempty"`
-	MediaPath  string `json:"media_path,omitempty"`
-	MediaURL   string `json:"media_url,omitempty"`
-	MediaSize  int64  `json:"media_size,omitempty"`
+	ID         int                        `json:"id"`
+	Date       string                     `json:"date"`
+	Text       string                     `json:"text"`
+	Out        bool                       `json:"out"`
+	SenderID   string                     `json:"sender_id,omitempty"`
+	SenderName string                     `json:"sender_name,omitempty"`
+	Service    bool                       `json:"service,omitempty"`
+	MediaType  string                     `json:"media_type,omitempty"`
+	MediaPath  string                     `json:"media_path,omitempty"`
+	MediaURL   string                     `json:"media_url,omitempty"`
+	MediaSize  int64                      `json:"media_size,omitempty"`
+	Formats    []tgAssistantMessageFormat `json:"formats,omitempty"`
+}
+
+type tgAssistantMessageFormat struct {
+	Type   string `json:"type"`
+	Offset int    `json:"offset"`
+	Length int    `json:"length"`
+	URL    string `json:"url,omitempty"`
+}
+
+func buildTGAssistantMessageFormats(entities []tg.MessageEntityClass) []tgAssistantMessageFormat {
+	formats := make([]tgAssistantMessageFormat, 0, len(entities))
+	for _, entity := range entities {
+		if entity == nil || entity.GetLength() <= 0 {
+			continue
+		}
+		format := tgAssistantMessageFormat{Offset: entity.GetOffset(), Length: entity.GetLength()}
+		switch value := entity.(type) {
+		case *tg.MessageEntityBold:
+			format.Type = "bold"
+		case *tg.MessageEntityItalic:
+			format.Type = "italic"
+		case *tg.MessageEntityUnderline:
+			format.Type = "underline"
+		case *tg.MessageEntityStrike:
+			format.Type = "strike"
+		case *tg.MessageEntityCode:
+			format.Type = "code"
+		case *tg.MessageEntityPre:
+			format.Type = "pre"
+		case *tg.MessageEntitySpoiler:
+			format.Type = "spoiler"
+		case *tg.MessageEntityURL:
+			format.Type = "url"
+		case *tg.MessageEntityTextURL:
+			format.Type = "url"
+			format.URL = value.URL
+		default:
+			continue
+		}
+		formats = append(formats, format)
+	}
+	return formats
 }
 
 func initTGAssistantStore() {
@@ -1683,6 +1726,7 @@ func buildTGAssistantSessionMessageViews(resp tg.MessagesMessagesClass, account 
 				SenderName: sender.Name,
 				MediaType:  mediaType,
 				MediaSize:  mediaSize,
+				Formats:    buildTGAssistantMessageFormats(msg.Entities),
 			})
 		case *tg.MessageService:
 			if msg == nil {

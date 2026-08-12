@@ -2,6 +2,7 @@ package core
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/url"
 	"os"
@@ -118,6 +119,7 @@ CREATE TABLE IF NOT EXISTS tg_messages (
 	media_type TEXT,
 	media_path TEXT,
 	media_size INTEGER NOT NULL DEFAULT 0,
+	formats_json TEXT,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL,
 	PRIMARY KEY (account_id, target, message_id)
@@ -149,6 +151,7 @@ func ensureTGAssistantMessageDBColumns(db *sql.DB) error {
 		{name: "media_type", sql: `ALTER TABLE tg_messages ADD COLUMN media_type TEXT`},
 		{name: "media_path", sql: `ALTER TABLE tg_messages ADD COLUMN media_path TEXT`},
 		{name: "media_size", sql: `ALTER TABLE tg_messages ADD COLUMN media_size INTEGER NOT NULL DEFAULT 0`},
+		{name: "formats_json", sql: `ALTER TABLE tg_messages ADD COLUMN formats_json TEXT`},
 	} {
 		if columns[stmt.name] {
 			continue
@@ -211,8 +214,8 @@ func storeTGAssistantSessionMessages(accountID, target string, messages []tgAssi
 	}
 	stmt, err := tx.Prepare(`
 INSERT INTO tg_messages (
-	account_id, target, message_id, date, out, sender_id, sender_name, text, service, media_type, media_path, media_size, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	account_id, target, message_id, date, out, sender_id, sender_name, text, service, media_type, media_path, media_size, formats_json, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(account_id, target, message_id) DO UPDATE SET
 	date = excluded.date,
 	out = excluded.out,
@@ -223,6 +226,7 @@ ON CONFLICT(account_id, target, message_id) DO UPDATE SET
 	media_type = excluded.media_type,
 	media_path = excluded.media_path,
 	media_size = excluded.media_size,
+	formats_json = excluded.formats_json,
 	updated_at = excluded.updated_at
 `)
 	if err != nil {
@@ -240,6 +244,7 @@ ON CONFLICT(account_id, target, message_id) DO UPDATE SET
 		if date == "" || date == "-" {
 			date = now
 		}
+		formatsJSON, _ := json.Marshal(message.Formats)
 		if _, err := stmt.Exec(
 			accountID,
 			target,
@@ -253,6 +258,7 @@ ON CONFLICT(account_id, target, message_id) DO UPDATE SET
 			strings.TrimSpace(message.MediaType),
 			strings.TrimSpace(message.MediaPath),
 			message.MediaSize,
+			string(formatsJSON),
 			now,
 			now,
 		); err != nil {
@@ -292,7 +298,7 @@ func listStoredTGAssistantSessionMessages(accountID, target string, limit int) (
 	defer db.Close()
 
 	rows, err := db.Query(`
-SELECT message_id, date, text, out, sender_id, sender_name, service, media_type, media_path, media_size
+SELECT message_id, date, text, out, sender_id, sender_name, service, media_type, media_path, media_size, formats_json
 FROM tg_messages
 WHERE account_id = ? AND target = ?
 ORDER BY message_id DESC
@@ -307,14 +313,17 @@ LIMIT ?
 	for rows.Next() {
 		var item tgAssistantSessionMessage
 		var out, service int
-		var mediaType, mediaPath sql.NullString
-		if err := rows.Scan(&item.ID, &item.Date, &item.Text, &out, &item.SenderID, &item.SenderName, &service, &mediaType, &mediaPath, &item.MediaSize); err != nil {
+		var mediaType, mediaPath, formatsJSON sql.NullString
+		if err := rows.Scan(&item.ID, &item.Date, &item.Text, &out, &item.SenderID, &item.SenderName, &service, &mediaType, &mediaPath, &item.MediaSize, &formatsJSON); err != nil {
 			return nil, err
 		}
 		item.Out = out != 0
 		item.Service = service != 0
 		item.MediaType = mediaType.String
 		item.MediaPath = mediaPath.String
+		if formatsJSON.Valid && strings.TrimSpace(formatsJSON.String) != "" {
+			_ = json.Unmarshal([]byte(formatsJSON.String), &item.Formats)
+		}
 		reversed = append(reversed, item)
 	}
 	if err := rows.Err(); err != nil {
