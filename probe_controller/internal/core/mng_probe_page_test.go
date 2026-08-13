@@ -53,6 +53,10 @@ func TestProbePageCreatesMihomoExitAndUsesDedicatedInstallButton(t *testing.T) {
 		`data-action="node-install-command"`,
 		`Mihomo 出口探针`,
 		`${kindLabel}安装信息`,
+		`option.disabled = isSpecialExit && option.value !== 'linux' && option.value !== 'docker'`,
+		`targetSystemSelect.disabled = false`,
+		`String(node.target_system || '').toLowerCase() === 'docker' ? 'docker' : 'native'`,
+		`copyNodeInstallCommand(state.installingNodeNo, event.target.value)`,
 	}
 	for _, item := range required {
 		if !strings.Contains(mngProbePageHTML, item) {

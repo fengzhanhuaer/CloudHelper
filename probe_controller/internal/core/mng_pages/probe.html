@@ -789,7 +789,9 @@
           const vendor = formatVendorLink(item.vendor_name, item.vendor_url);
           const nodeKind = normalizeNodeKind(item);
           const kindLabel = nodeKind === 'mihomo_exit' ? '<span class="pill node-kind-exit">Mihomo 出口</span>' : '';
-          const systemLabel = nodeKind === 'mihomo_exit' ? 'Linux x64' : escapeHTML(item.target_system || '-');
+          const systemLabel = nodeKind === 'mihomo_exit'
+            ? (String(item.target_system || '').toLowerCase() === 'docker' ? 'Docker' : 'Linux x64')
+            : escapeHTML(item.target_system || '-');
           return `<tr>
             <td>${escapeHTML(item.node_no)}</td>
             <td>${escapeHTML(item.node_name || '-')}${kindLabel}</td>
@@ -1357,7 +1359,7 @@
       }
     }
 
-    async function copyNodeInstallCommand(nodeNo) {
+    async function copyNodeInstallCommand(nodeNo, requestedMode) {
       const node = state.nodes.find((item) => Number(item.node_no) === Number(nodeNo));
       if (!node) {
         setStatus(`未找到探针：#${nodeNo}`, 'warn');
@@ -1368,6 +1370,10 @@
       const modeRow = document.getElementById('install-mode-row');
       if (isSpecialExit) {
         modeRow.removeAttribute('hidden');
+        const installMode = document.getElementById('install-mode');
+        installMode.value = requestedMode === 'docker' || requestedMode === 'native'
+          ? requestedMode
+          : (String(node.target_system || '').toLowerCase() === 'docker' ? 'docker' : 'native');
       } else {
         modeRow.setAttribute('hidden', 'hidden');
       }
@@ -1440,10 +1446,15 @@
       document.getElementById('edit-remark').value = String(node.remark || '');
       document.getElementById('edit-ddns').value = String(node.ddns || '');
       const targetSystem = String(node.target_system || 'linux').toLowerCase();
-      document.getElementById('edit-target-system').value = targetSystem === 'windows'
+      const targetSystemSelect = document.getElementById('edit-target-system');
+      const isSpecialExit = normalizeNodeKind(node) === 'mihomo_exit';
+      Array.from(targetSystemSelect.options).forEach((option) => {
+        option.disabled = isSpecialExit && option.value !== 'linux' && option.value !== 'docker';
+      });
+      targetSystemSelect.disabled = false;
+      targetSystemSelect.value = targetSystem === 'windows'
         ? 'windows'
         : (targetSystem === 'android' ? 'android' : (targetSystem === 'docker' ? 'docker' : 'linux'));
-      document.getElementById('edit-target-system').disabled = normalizeNodeKind(node) === 'mihomo_exit';
       document.getElementById('edit-direct-connect').checked = node.direct_connect === true;
       document.getElementById('edit-local-console-enabled').checked = node.local_console_enabled === true;
       document.getElementById('edit-payment-cycle').value = String(node.payment_cycle || '');
@@ -1476,6 +1487,9 @@
       if (message.includes('target system must be linux, windows, android or docker')) {
         return `保存失败：目标系统只能是 linux、windows、android 或 docker（${raw}）`;
       }
+      if (message.includes('mihomo exit node target system must be linux or docker')) {
+        return `保存失败：Mihomo 出口探针只能选择 Linux 或 Docker（${raw}）`;
+      }
       if (message.includes('invalid node number')) {
         return `保存失败：节点编号无效（${raw}）`;
       }
@@ -1499,6 +1513,9 @@
         throw buildEditValidationError('target_system 只能是 linux、windows、android 或 docker');
       }
       const nodeKind = normalizeNodeKind(state.nodes.find((item) => Number(item.node_no) === Number(state.editingNodeNo)));
+      if (nodeKind === 'mihomo_exit' && targetSystem !== 'linux' && targetSystem !== 'docker') {
+        throw buildEditValidationError('Mihomo 出口探针只能选择 Linux 或 Docker');
+      }
       if (expireAt && !/^\d{4}-\d{2}-\d{2}$/.test(expireAt)) {
         throw buildEditValidationError('expire_at 格式必须是 YYYY-MM-DD');
       }
@@ -1648,9 +1665,9 @@
     document.getElementById('btn-install-copy').addEventListener('click', () => {
       copyCurrentInstallInfo().catch((err) => setStatus(`复制安装信息失败：${err.message || err}`, 'err'));
     });
-    document.getElementById('install-mode').addEventListener('change', () => {
+    document.getElementById('install-mode').addEventListener('change', (event) => {
       if (state.installingNodeNo > 0) {
-        copyNodeInstallCommand(state.installingNodeNo).catch((err) => setStatus(`生成安装信息失败：${err.message || err}`, 'err'));
+        copyNodeInstallCommand(state.installingNodeNo, event.target.value).catch((err) => setStatus(`生成安装信息失败：${err.message || err}`, 'err'));
       }
     });
     document.getElementById('btn-install-close').addEventListener('click', () => {

@@ -30,7 +30,7 @@ func TestNormalizeProbeNodesDefaultsKindAndPreservesSpecialKind(t *testing.T) {
 	}
 }
 
-func TestMihomoExitNodeKindIsImmutableAndLinuxOnly(t *testing.T) {
+func TestMihomoExitNodeKindIsImmutableAndSupportsLinuxOrDocker(t *testing.T) {
 	oldStore := ProbeStore
 	ProbeStore = &probeConfigStore{data: probeConfigData{ProbeNodes: []probeNodeRecord{{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindMihomoExit, TargetSystem: "linux"}}}}
 	t.Cleanup(func() { ProbeStore = oldStore })
@@ -38,8 +38,12 @@ func TestMihomoExitNodeKindIsImmutableAndLinuxOnly(t *testing.T) {
 	if _, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindNormal, TargetSystem: "linux"}); err == nil || !strings.Contains(err.Error(), "cannot be changed") {
 		t.Fatalf("expected immutable node kind error, got %v", err)
 	}
-	if _, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindMihomoExit, TargetSystem: "windows"}); err == nil || !strings.Contains(err.Error(), "must be linux") {
-		t.Fatalf("expected linux-only error, got %v", err)
+	updated, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindMihomoExit, TargetSystem: "docker"})
+	if err != nil || updated.TargetSystem != "docker" {
+		t.Fatalf("expected docker target to be accepted: item=%+v err=%v", updated, err)
+	}
+	if _, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindMihomoExit, TargetSystem: "windows"}); err == nil || !strings.Contains(err.Error(), "linux or docker") {
+		t.Fatalf("expected linux-or-docker error, got %v", err)
 	}
 }
 

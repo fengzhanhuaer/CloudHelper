@@ -1,4 +1,4 @@
-# 协作文档
+﻿# 协作文档
 
 - 适用规则: AI协作规则
 - 后续工作传递声明: 本文档必须传递给后续阶段与后续角色。
@@ -6,7 +6,7 @@
 - 需求前缀: REQ-PEN-MIHOMO-EXIT-001
 - 当前阶段: Architect最终门禁已放行
 - 最近更新角色: Architect
-- 最近更新时间: 2026-08-13T20:44:52+08:00
+- 最近更新时间: 2026-08-13T21:04:30+08:00
 - 工作依据文档: `doc/ai-coding-collaboration.md`; 用户于2026-08-13确认的特殊出口探针、Mihomo二次分流、主控GUI、独立Linux amd64安装包、Docker壳和程序自升级需求; 现有 `probe_controller`、`probe_node`、`docker/probe_node` 实现; Mihomo官方配置、API、发布物、Go模块和许可证资料
 - 状态: 已放行
 
@@ -246,8 +246,8 @@ flowchart LR
 - 职责: 在 `/mng/probe` 复用普通探针创建、列表和安装弹窗管理特殊出口。
 - 输入: 探针名称、`node_kind=mihomo_exit`、已创建节点和安装方式。
 - 输出: 不可变节点类型、Linux x64原生命令或Docker Compose。
-- 处理规则: 创建复用现有探针API且只登记节点，不自动打开安装弹窗；用户点击节点行内独立“安装”按钮后选择Linux x64或Docker；特殊节点目标系统固定Linux，Docker仅为安装运行壳；二次分流页不调用安装接口。
-- 异常规则: 非特殊节点拒绝特殊安装信息；节点类型修改和非Linux目标拒绝；安装信息加载失败不影响已创建节点。
+- 处理规则: 创建复用现有探针API且只登记节点，不自动打开安装弹窗；编辑页的`target_system`允许Linux或Docker并禁用Windows/Android；用户点击节点行内独立“安装”按钮后默认生成所选版本，也可在Linux x64与Docker间切换；二次分流页不调用安装接口。
+- 异常规则: 非特殊节点拒绝特殊安装信息；节点类型修改和Windows/Android目标拒绝；安装信息加载失败不影响已创建节点。
 
 ##### UNIT-PEN-06
 - 单元名称: SpecialExitConfigCompiler
@@ -538,7 +538,7 @@ flowchart LR
 | DEFECT-PEN-009 | R05,R10 | TEST-PEN-001 | 订阅URL或请求头在下载期间变更后，旧下载结果仍可能合入新配置 | 高 | 已完成 | 下载前计算订阅源指纹；提交和错误记录时在事务内复核；源变更注入测试通过 | 更换、清除和删除均拒绝过期结果 |
 | DEFECT-PEN-010 | R04,R05 | TEST-PEN-001 | 特殊配置保存失败的回滚对象存在切片别名，并可能覆盖另一并发成功写入 | 高 | 已完成 | 存储写入串行化；对深拷贝工作副本聚合Fake IP；落盘成功后才提交内存；失败和双并发测试通过 | 失败路径不再需要覆盖式内存回滚 |
 | DEFECT-PEN-011 | R03,R11 | TEST-PEN-005 | Mihomo健康检查持续失败时只降级状态，未主动恢复子进程 | 高 | 已完成 | 首次失败立即`exit_ready=false`；连续三次失败停止旧进程并进入既有退避重启；阈值测试通过 | 成功健康检查重置计数 |
-| DEFECT-PEN-012 | R06,R07,R09 | TEST-PEN-008 | 特殊出口的创建和安装入口曾位于二次分流页，且创建后自动弹安装方式，不符合普通探针独立安装操作 | 中 | 已完成 | 创建复用`/mng/api/probe/node/create`并只登记节点；安装由节点行内按钮调用`/mng/api/probe/node/install`；路由页移除创建/安装控件和API | 特殊节点固定Linux，Docker为安装壳；安装失败不影响节点创建 |
+| DEFECT-PEN-012 | R06,R07,R09 | TEST-PEN-008 | 特殊出口创建后曾自动弹安装；编辑页禁用`target_system`且安装弹窗切换时重置mode，均导致无法选择Docker | 中 | 已完成 | 创建只登记节点；编辑页允许Linux/Docker；安装由节点行内按钮调用`/mng/api/probe/node/install`，首次默认匹配所选版本且保留用户主动切换；路由页移除创建/安装控件和API | Windows/Android仍拒绝；安装失败不影响节点创建 |
 
 ### 2.5 Code执行证据
 - 状态: 已完成
@@ -563,7 +563,7 @@ flowchart LR
 - 订阅刷新以URL和请求头的稳定指纹绑定下载结果；特殊配置在串行持久化锁内修改深拷贝，磁盘成功后才提交内存，保存失败或并发写入不会泄漏半状态。
 - Mihomo候选先`-t`校验，再加载和健康检查，成功后提交快照；进程退出或连续三次健康失败均按5至60秒退避重启，首次失败即关闭`exit_ready`且不回落直连。
 - 原生和Docker首次安装都使用配对manifest；程序升级自行校验并替换程序/Mihomo，失败成对回滚。Mihomo MIT许可证随Release与镜像交付。
-- 主控探针管理页统一创建两类探针；创建只登记节点，不弹安装方式。特殊出口通过节点行内独立“安装”按钮进入弹窗并仅提供Linux x64原生/Docker方式。二次分流页不再创建探针或生成安装信息。
+- 主控探针管理页统一创建两类探针；创建只登记节点，不弹安装方式。特殊出口编辑页可选择Linux/Docker，节点行内独立“安装”按钮按所选版本默认生成安装信息。二次分流页不再创建探针或生成安装信息。
 
 #### 2.5.4 影响文件
 - 主控：`probe_special_exit*.go`、route/node store与handlers、runtime/report/WS、`server.go`、`mng_pages/probe.html`、`mng_pages/route.html`、嵌入式安装脚本及测试。
@@ -580,7 +580,7 @@ flowchart LR
 - `docker compose -f docker/probe_exit_node/compose.yaml config --quiet; docker build ...; docker run ...entrypoint`
 - `go test . -run TestReleaseWorkflowDefinesMihomoExitLinuxAMD64Artifacts -count=1; node --check <route-script>; go mod tidy -diff; git diff --check`
 - Edge Headless CDP：真实管理会话打开`/mng/route`、点击二次分流，采集桌面/移动DOM、控制台与截图。
-- TASK-PEN-008：`go test ./internal/core -run 'Test(ProbePageCreatesMihomoExitAndUsesDedicatedInstallButton|MngProbeNodeInstallHandlerServesMihomoExitFromProbeManagement|MihomoExitNodeKindIsImmutableAndLinuxOnly|MngRoutePageIncludesSpecialExitWorkflow)'`; `node --check <probe-script>`与`node --check <route-script>`；Playwright通过真实管理会话创建特殊出口，确认创建不弹安装，再由独立安装按钮验证native/Docker及路由页边界。
+- TASK-PEN-008：`go test ./internal/core -run 'Test(ProbePageCreatesMihomoExitAndUsesDedicatedInstallButton|MngProbeNodeInstallHandlerServesMihomoExitFromProbeManagement|MihomoExitNodeKindIsImmutableAndSupportsLinuxOrDocker|MngRoutePageIncludesSpecialExitWorkflow)'`; `node --check <probe-script>`与`node --check <route-script>`；Playwright通过真实管理会话创建特殊出口，确认创建不弹安装、编辑页可保存Docker，再由独立安装按钮验证默认Docker及路由页边界。
 
 #### 2.5.6 自测结果
 - 通过：控制端全量测试和`go vet ./...`。
