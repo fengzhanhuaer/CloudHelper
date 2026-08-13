@@ -21,19 +21,39 @@ type probeSystemMetrics struct {
 }
 
 type probeRuntimeStatus struct {
-	NodeID               string                 `json:"node_id"`
-	Online               bool                   `json:"online"`
-	LastSeen             string                 `json:"last_seen"`
-	Platform             string                 `json:"platform,omitempty"`
-	OS                   string                 `json:"os,omitempty"`
-	Arch                 string                 `json:"arch,omitempty"`
-	IPv4                 []string               `json:"ipv4,omitempty"`
-	IPv6                 []string               `json:"ipv6,omitempty"`
-	IPLocations          map[string]string      `json:"ip_locations,omitempty"`
-	Version              string                 `json:"version,omitempty"`
-	System               probeSystemMetrics     `json:"system"`
-	MachineUptimeSeconds int64                  `json:"machine_uptime_seconds,omitempty"`
-	RelayStatus          []probeRelayStatusItem `json:"relay_status,omitempty"`
+	NodeID               string                        `json:"node_id"`
+	Online               bool                          `json:"online"`
+	LastSeen             string                        `json:"last_seen"`
+	Platform             string                        `json:"platform,omitempty"`
+	OS                   string                        `json:"os,omitempty"`
+	Arch                 string                        `json:"arch,omitempty"`
+	IPv4                 []string                      `json:"ipv4,omitempty"`
+	IPv6                 []string                      `json:"ipv6,omitempty"`
+	IPLocations          map[string]string             `json:"ip_locations,omitempty"`
+	Version              string                        `json:"version,omitempty"`
+	BuildKind            string                        `json:"build_kind,omitempty"`
+	SpecialExit          probeSpecialExitRuntimeReport `json:"special_exit,omitempty"`
+	System               probeSystemMetrics            `json:"system"`
+	MachineUptimeSeconds int64                         `json:"machine_uptime_seconds,omitempty"`
+	RelayStatus          []probeRelayStatusItem        `json:"relay_status,omitempty"`
+}
+
+func updateProbeRuntimeProductStatus(nodeID string, buildKind string, status probeSpecialExitRuntimeReport) {
+	nodeID = normalizeProbeNodeID(nodeID)
+	if nodeID == "" {
+		return
+	}
+	probeRuntimeStore.mu.Lock()
+	current := probeRuntimeStore.data[nodeID]
+	current.NodeID = nodeID
+	current.BuildKind = normalizeProbeNodeKind(buildKind)
+	status.AppliedSHA256 = strings.ToLower(strings.TrimSpace(status.AppliedSHA256))
+	status.MihomoVersion = strings.TrimSpace(status.MihomoVersion)
+	status.LastApplyError = strings.TrimSpace(status.LastApplyError)
+	status.UpdatedAt = strings.TrimSpace(status.UpdatedAt)
+	current.SpecialExit = status
+	probeRuntimeStore.data[nodeID] = current
+	probeRuntimeStore.mu.Unlock()
 }
 
 type probeRelayProtocolQuality struct {

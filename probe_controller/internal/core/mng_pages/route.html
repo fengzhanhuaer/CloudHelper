@@ -90,6 +90,16 @@
     .name-input { min-width:220px; width:100%; box-sizing:border-box; }
     .rule-editor { min-width:360px; }
     .route-rule-actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+    .special-exit-layout { display:grid; grid-template-columns:minmax(0, 2fr) minmax(320px, 1fr); gap:12px; }
+    .special-exit-layout textarea { min-height:88px; }
+    .special-exit-rule-grid { display:grid; grid-template-columns:minmax(160px, 1fr) 132px minmax(150px, 1fr) 112px 130px; gap:8px; align-items:start; }
+    .special-exit-rule-grid > * { min-width:0; width:100%; box-sizing:border-box; }
+    .special-exit-rule-entries { grid-column:1 / 4; }
+    .special-exit-rule-actions { display:flex; justify-content:flex-end; }
+    .special-exit-status-list { display:grid; gap:8px; margin-top:10px; }
+    .special-exit-status-item { border-top:1px solid #30363d; padding-top:8px; overflow-wrap:anywhere; }
+    @media (max-width: 1080px) { .special-exit-layout { grid-template-columns:1fr; } }
+    @media (max-width: 820px) { .special-exit-rule-grid { grid-template-columns:1fr; } .special-exit-rule-entries { grid-column:auto; } }
     @media (max-width: 620px) {
       .box-title.filterable { align-items:flex-start; flex-direction:column; }
       .filter-control { width:100%; margin-left:0; }
@@ -117,6 +127,7 @@
     <div class="tabs">
       <button class="tab active" data-tab="topology" type="button">拓扑规则</button>
       <button class="tab" data-tab="route-rules" type="button">路由规则</button>
+      <button class="tab" data-tab="special-exits" type="button">二次分流</button>
       <button class="tab" data-tab="fake-ip" type="button">Fake IP</button>
       <button class="tab" data-tab="doh" type="button">DoH</button>
       <button class="tab" data-tab="route" type="button">路由状态</button>
@@ -204,6 +215,69 @@
           </thead>
           <tbody id="route-rules-body"></tbody>
         </table>
+      </section>
+
+      <section id="section-special-exits" class="section">
+        <div class="toolbar">
+          <div class="toolbar-actions">
+            <button id="btn-special-exit-refresh" class="btn" type="button">刷新</button>
+            <button id="btn-special-exit-save" class="btn primary" type="button">保存配置</button>
+            <button id="btn-special-exit-subscription" class="btn" type="button">刷新订阅</button>
+            <button id="btn-special-exit-delete" class="btn danger" type="button">删除配置</button>
+          </div>
+          <span id="special-exit-summary" class="summary-pill small">未加载</span>
+        </div>
+        <div class="special-exit-layout">
+          <div>
+            <div class="box" style="margin-bottom:12px;">
+              <div class="config-grid">
+                <label for="special-exit-node">特殊探针</label>
+                <select id="special-exit-node"></select>
+                <label for="special-exit-name">配置名称</label>
+                <input id="special-exit-name" type="text" autocomplete="off" />
+                <label for="special-exit-enabled">启用</label>
+                <select id="special-exit-enabled" class="small"><option value="true">启用</option><option value="false">禁用</option></select>
+                <label for="special-exit-default-action">默认动作</label>
+                <div class="route-rule-actions">
+                  <select id="special-exit-default-action" class="small"><option value="direct">直连</option><option value="reject">拒绝</option><option value="proxy">代理</option><option value="group">策略组</option><option value="node">节点</option></select>
+                  <input id="special-exit-default-target" type="text" placeholder="目标节点或策略组" autocomplete="off" />
+                </div>
+                <label for="special-exit-subscription-url">Clash 订阅</label>
+                <input id="special-exit-subscription-url" class="wide mono" type="password" placeholder="HTTPS URL" autocomplete="new-password" />
+                <label for="special-exit-subscription-headers">订阅请求头</label>
+                <textarea id="special-exit-subscription-headers" class="mono" placeholder='{"Authorization":"Bearer ..."}'></textarea>
+                <label for="special-exit-clear-subscription">清除订阅凭据</label>
+                <input id="special-exit-clear-subscription" type="checkbox" />
+              </div>
+            </div>
+            <div class="box">
+              <div class="box-title"><span>二次分流规则</span><button id="btn-special-exit-rule-add" class="btn" type="button">添加规则</button></div>
+              <div id="special-exit-rules" class="special-exit-status-list"></div>
+            </div>
+          </div>
+          <div>
+            <div class="box" style="margin-bottom:12px;">
+              <div class="box-title"><span>特殊探针</span></div>
+              <div class="row" style="margin-top:10px;">
+                <input id="special-exit-new-node-name" type="text" placeholder="探针名称" autocomplete="off" />
+                <button id="btn-special-exit-create-node" class="btn primary" type="button">创建</button>
+              </div>
+              <div id="special-exit-status-list" class="special-exit-status-list"></div>
+            </div>
+            <div class="box" style="margin-bottom:12px;">
+              <div class="box-title"><span>聚合路由规则</span></div>
+              <textarea id="special-exit-managed-rule" class="mono" readonly></textarea>
+            </div>
+            <div class="box">
+              <div class="box-title"><span>安装</span></div>
+              <div class="row" style="margin-top:10px;">
+                <select id="special-exit-install-mode" class="small"><option value="native">Linux x64</option><option value="docker">Docker</option></select>
+                <button id="btn-special-exit-install" class="btn" type="button">生成参数</button>
+              </div>
+              <textarea id="special-exit-install-output" class="mono" readonly></textarea>
+            </div>
+          </div>
+        </div>
       </section>
 
       <section id="section-fake-ip" class="section">
@@ -336,6 +410,11 @@
       nodes: [],
       virtualRouterStatus: [],
       routeRules: [],
+      specialExits: [],
+      specialExitStatuses: [],
+      specialExitManagedRules: [],
+      selectedSpecialExitNodeID: '',
+      specialExitDrafts: {},
       fakeIPSearch: '',
       doh: { enabled: false, upstream: '', endpoint_path: '', updated_at: '' },
       dohQueries: [],
@@ -426,6 +505,7 @@
           .map((item) => ({
             node_no: Number.parseInt(String(item.node_no || '0'), 10),
             node_name: String(item.node_name || '').trim(),
+            node_kind: String(item.node_kind || 'normal').trim() || 'normal',
           }))
           .filter((item) => Number.isFinite(item.node_no) && item.node_no > 0)
           .sort((a, b) => a.node_no - b.node_no)
@@ -483,6 +563,228 @@
       renderRouteRules();
       renderFakeIPLibrary();
       if (!silent) setStatus(`路由规则已刷新：${state.routeRules.length} 个`, 'ok');
+    }
+
+    function blankSpecialExitDraft(nodeID) {
+      return {
+        node_id: normalizeNodeID(nodeID), name: '', enabled: true,
+        default_action: 'direct', default_target: '', subscription_url: '',
+        subscription_headers: {}, clear_subscription: false, rules: [],
+      };
+    }
+
+    function currentSpecialExitDraft() {
+      const nodeID = normalizeNodeID(state.selectedSpecialExitNodeID);
+      if (!nodeID) return null;
+      if (!state.specialExitDrafts[nodeID]) {
+        const saved = state.specialExits.find((item) => normalizeNodeID(item.node_id) === nodeID);
+        state.specialExitDrafts[nodeID] = saved
+          ? { ...blankSpecialExitDraft(nodeID), ...JSON.parse(JSON.stringify(saved)), subscription_url: '', subscription_headers: {}, clear_subscription: false }
+          : blankSpecialExitDraft(nodeID);
+      }
+      return state.specialExitDrafts[nodeID];
+    }
+
+    async function loadSpecialExits(silent) {
+      const [configs, statuses] = await Promise.all([
+        requestJSON('/mng/api/route/special_exits'),
+        requestJSON('/mng/api/route/special_exits/status'),
+      ]);
+      state.specialExits = Array.isArray(configs.items) ? configs.items : [];
+      state.specialExitManagedRules = Array.isArray(configs.managed_rules) ? configs.managed_rules : [];
+      state.specialExitStatuses = Array.isArray(statuses.items) ? statuses.items : [];
+      const candidates = state.nodes.filter((item) => item.node_kind === 'mihomo_exit');
+      if (!candidates.some((item) => normalizeNodeID(item.node_no) === normalizeNodeID(state.selectedSpecialExitNodeID))) {
+        state.selectedSpecialExitNodeID = candidates.length ? normalizeNodeID(candidates[0].node_no) : '';
+      }
+      state.specialExits.forEach((saved) => {
+        const nodeID = normalizeNodeID(saved.node_id);
+        const current = state.specialExitDrafts[nodeID] || {};
+        state.specialExitDrafts[nodeID] = {
+          ...blankSpecialExitDraft(nodeID), ...JSON.parse(JSON.stringify(saved)),
+          subscription_url: String(current.subscription_url || ''),
+          subscription_headers: current.subscription_headers || {},
+          clear_subscription: !!current.clear_subscription,
+        };
+      });
+      renderSpecialExits();
+      if (!silent) setStatus(`二次分流已刷新：${state.specialExits.length} 个特殊探针`, 'ok');
+    }
+
+    function renderSpecialExits() {
+      const candidates = state.nodes.filter((item) => item.node_kind === 'mihomo_exit');
+      const nodeSelect = document.getElementById('special-exit-node');
+      nodeSelect.innerHTML = candidates.length
+        ? candidates.map((item) => `<option value="${escapeHTML(item.node_no)}">#${escapeHTML(item.node_no)} ${escapeHTML(item.node_name || '')}</option>`).join('')
+        : '<option value="">暂无特殊探针</option>';
+      nodeSelect.value = normalizeNodeID(state.selectedSpecialExitNodeID);
+      const draft = currentSpecialExitDraft();
+      const controls = ['special-exit-name', 'special-exit-enabled', 'special-exit-default-action', 'special-exit-default-target', 'special-exit-subscription-url', 'special-exit-subscription-headers', 'special-exit-clear-subscription'];
+      controls.forEach((id) => { document.getElementById(id).disabled = !draft; });
+      document.getElementById('btn-special-exit-save').disabled = !draft;
+      document.getElementById('btn-special-exit-subscription').disabled = !draft || !state.specialExits.some((item) => normalizeNodeID(item.node_id) === normalizeNodeID(draft.node_id));
+      document.getElementById('btn-special-exit-delete').disabled = !draft || !state.specialExits.some((item) => normalizeNodeID(item.node_id) === normalizeNodeID(draft.node_id));
+      if (draft) {
+        document.getElementById('special-exit-name').value = String(draft.name || '');
+        document.getElementById('special-exit-enabled').value = draft.enabled === false ? 'false' : 'true';
+        document.getElementById('special-exit-default-action').value = String(draft.default_action || 'direct');
+        document.getElementById('special-exit-default-target').value = String(draft.default_target || '');
+        document.getElementById('special-exit-default-target').disabled = draft.default_action === 'direct' || draft.default_action === 'reject';
+        document.getElementById('special-exit-subscription-url').value = String(draft.subscription_url || '');
+        const headers = draft.subscription_headers && Object.keys(draft.subscription_headers).length ? JSON.stringify(draft.subscription_headers, null, 2) : '';
+        document.getElementById('special-exit-subscription-headers').value = headers;
+        document.getElementById('special-exit-clear-subscription').checked = !!draft.clear_subscription;
+      } else {
+        document.getElementById('special-exit-name').value = '';
+        document.getElementById('special-exit-subscription-url').value = '';
+        document.getElementById('special-exit-subscription-headers').value = '';
+      }
+      renderSpecialExitRules(draft);
+      renderSpecialExitStatus();
+      const managed = state.specialExitManagedRules.find((item) => normalizeNodeID(item.exit_node_id) === normalizeNodeID(state.selectedSpecialExitNodeID));
+      document.getElementById('special-exit-managed-rule').value = managed ? JSON.stringify(managed, null, 2) : '';
+      const configured = state.specialExits.length;
+      const ready = state.specialExitStatuses.filter((item) => item.online && item.exit_ready && item.healthy && item.build_kind === 'mihomo_exit').length;
+      document.getElementById('special-exit-summary').textContent = `已配置 ${configured}，就绪 ${ready}`;
+    }
+
+    function renderSpecialExitRules(draft) {
+      const host = document.getElementById('special-exit-rules');
+      const rules = draft && Array.isArray(draft.rules) ? draft.rules : [];
+      if (!rules.length) {
+        host.innerHTML = '<div class="muted small">暂无二次分流规则。</div>';
+        return;
+      }
+      host.innerHTML = rules.map((rule, index) => `<div class="special-exit-status-item" data-special-exit-rule="${index}">
+        <div class="special-exit-rule-grid">
+          <input data-se-rule-name="${index}" type="text" value="${escapeHTML(rule.name || rule.id || '')}" placeholder="规则名称" />
+          <select data-se-rule-action="${index}"><option value="direct" ${rule.action === 'direct' ? 'selected' : ''}>直连</option><option value="reject" ${rule.action === 'reject' ? 'selected' : ''}>拒绝</option><option value="proxy" ${rule.action === 'proxy' ? 'selected' : ''}>代理</option><option value="group" ${rule.action === 'group' ? 'selected' : ''}>策略组</option><option value="node" ${rule.action === 'node' ? 'selected' : ''}>节点</option></select>
+          <input data-se-rule-target="${index}" type="text" value="${escapeHTML(rule.target || '')}" placeholder="目标节点或策略组" ${(rule.action === 'direct' || rule.action === 'reject') ? 'disabled' : ''} />
+          <select data-se-rule-network="${index}"><option value="" ${!rule.network ? 'selected' : ''}>全部网络</option><option value="tcp" ${rule.network === 'tcp' ? 'selected' : ''}>TCP</option><option value="udp" ${rule.network === 'udp' ? 'selected' : ''}>UDP</option></select>
+          <input data-se-rule-ports="${index}" type="text" value="${escapeHTML((rule.ports || []).join(', '))}" placeholder="端口" />
+          <textarea class="special-exit-rule-entries mono" data-se-rule-entries="${index}" placeholder="domain_suffix:example.com">${escapeHTML((rule.entries || []).join('\n'))}</textarea>
+          <label class="small"><input data-se-rule-enabled="${index}" type="checkbox" ${rule.enabled === false ? '' : 'checked'} /> 启用</label>
+          <div class="special-exit-rule-actions"><button class="btn danger" data-se-rule-remove="${index}" type="button">删除</button></div>
+        </div>
+      </div>`).join('');
+      bindSpecialExitRuleEvents();
+    }
+
+    function renderSpecialExitStatus() {
+      const host = document.getElementById('special-exit-status-list');
+      if (!state.specialExitStatuses.length) {
+        host.innerHTML = '<div class="muted small">暂无运行状态。</div>';
+        return;
+      }
+      host.innerHTML = state.specialExitStatuses.map((item) => {
+        const correctBuild = item.build_kind === 'mihomo_exit';
+        const stateClass = item.online && item.exit_ready && item.healthy && correctBuild ? 'ok' : 'err';
+        const stateText = !item.online ? '离线' : !correctBuild ? '安装包不匹配' : item.exit_ready && item.healthy ? '就绪' : '未就绪';
+        const error = item.last_apply_error ? `<div class="route-error small">${escapeHTML(item.last_apply_error)}</div>` : '';
+        return `<div class="special-exit-status-item"><div>${escapeHTML(nodeLabel(item.node_id))} <span class="route-state ${stateClass}">${stateText}</span></div><div class="small muted mono">desired ${escapeHTML(item.desired_revision || 0)} / applied ${escapeHTML(item.applied_revision || 0)} · probe ${escapeHTML(item.probe_version || '-')} · mihomo ${escapeHTML(item.mihomo_version || '-')}</div><div class="small muted">会话 ${escapeHTML(item.active_sessions || 0)} · ↑ ${escapeHTML(formatBytes(item.bytes_up))} · ↓ ${escapeHTML(formatBytes(item.bytes_down))}</div>${error}</div>`;
+      }).join('');
+    }
+
+    function bindSpecialExitRuleEvents() {
+      const draft = currentSpecialExitDraft();
+      if (!draft) return;
+      const setValue = (selector, field, transform) => document.querySelectorAll(selector).forEach((element) => {
+        const apply = () => {
+          const index = Number.parseInt(element.getAttribute(selector.slice(1, -1)) || '-1', 10);
+          if (index >= 0 && index < draft.rules.length) draft.rules[index][field] = transform(element);
+        };
+        element.addEventListener(element.tagName === 'TEXTAREA' || element.tagName === 'INPUT' ? 'input' : 'change', apply);
+      });
+      setValue('[data-se-rule-name]', 'name', (element) => String(element.value || ''));
+      setValue('[data-se-rule-target]', 'target', (element) => String(element.value || '').trim());
+      setValue('[data-se-rule-network]', 'network', (element) => String(element.value || ''));
+      setValue('[data-se-rule-ports]', 'ports', (element) => String(element.value || '').split(',').map((value) => value.trim()).filter(Boolean));
+      setValue('[data-se-rule-entries]', 'entries', (element) => String(element.value || '').split(/\r?\n/).map((value) => value.trim()).filter(Boolean));
+      document.querySelectorAll('[data-se-rule-enabled]').forEach((element) => element.addEventListener('change', () => {
+        const index = Number.parseInt(element.dataset.seRuleEnabled || '-1', 10);
+        if (index >= 0 && index < draft.rules.length) draft.rules[index].enabled = !!element.checked;
+      }));
+      document.querySelectorAll('[data-se-rule-action]').forEach((element) => element.addEventListener('change', () => {
+        const index = Number.parseInt(element.dataset.seRuleAction || '-1', 10);
+        if (index < 0 || index >= draft.rules.length) return;
+        draft.rules[index].action = String(element.value || 'direct');
+        if (draft.rules[index].action === 'direct' || draft.rules[index].action === 'reject') draft.rules[index].target = '';
+        renderSpecialExitRules(draft);
+      }));
+      document.querySelectorAll('[data-se-rule-remove]').forEach((element) => element.addEventListener('click', () => {
+        const index = Number.parseInt(element.dataset.seRuleRemove || '-1', 10);
+        if (index >= 0 && index < draft.rules.length) draft.rules.splice(index, 1);
+        renderSpecialExitRules(draft);
+      }));
+    }
+
+    function addSpecialExitRule() {
+      const draft = currentSpecialExitDraft();
+      if (!draft) return;
+      const sequence = draft.rules.length + 1;
+      draft.rules.push({ id: `rule-${sequence}`, name: `规则 ${sequence}`, enabled: true, action: 'direct', target: '', entries: [], ports: [], network: '' });
+      renderSpecialExitRules(draft);
+    }
+
+    async function createSpecialExitNode() {
+      const input = document.getElementById('special-exit-new-node-name');
+      const name = String(input.value || '').trim();
+      if (!name) throw new Error('请输入特殊探针名称');
+      const payload = await requestJSON('/mng/api/probe/node/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ node_name: name, node_kind: 'mihomo_exit' }) });
+      input.value = '';
+      await loadNodes();
+      state.selectedSpecialExitNodeID = normalizeNodeID(payload.node && payload.node.node_no);
+      await loadSpecialExits(true);
+      setStatus(`特殊探针已创建：${name}`, 'ok');
+    }
+
+    function captureSpecialExitDraft() {
+      const draft = currentSpecialExitDraft();
+      if (!draft) throw new Error('请选择特殊探针');
+      draft.name = String(document.getElementById('special-exit-name').value || '').trim();
+      draft.enabled = document.getElementById('special-exit-enabled').value !== 'false';
+      draft.default_action = String(document.getElementById('special-exit-default-action').value || 'direct');
+      draft.default_target = String(document.getElementById('special-exit-default-target').value || '').trim();
+      draft.subscription_url = String(document.getElementById('special-exit-subscription-url').value || '').trim();
+      const headerText = String(document.getElementById('special-exit-subscription-headers').value || '').trim();
+      try { draft.subscription_headers = headerText ? JSON.parse(headerText) : {}; } catch (_) { throw new Error('订阅请求头必须是 JSON 对象'); }
+      if (!draft.subscription_headers || Array.isArray(draft.subscription_headers) || typeof draft.subscription_headers !== 'object') throw new Error('订阅请求头必须是 JSON 对象');
+      draft.clear_subscription = document.getElementById('special-exit-clear-subscription').checked;
+      return draft;
+    }
+
+    async function saveSpecialExit() {
+      const draft = captureSpecialExitDraft();
+      const result = await requestJSON('/mng/api/route/special_exits', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ item: draft, clear_subscription: draft.clear_subscription }) });
+      state.specialExitDrafts[draft.node_id] = { ...blankSpecialExitDraft(draft.node_id), ...JSON.parse(JSON.stringify(result.item || draft)), subscription_url: '', subscription_headers: {}, clear_subscription: false };
+      await Promise.all([loadVirtualRouter(true), loadRouteRules(true), loadSpecialExits(true)]);
+      setStatus(`二次分流配置已保存：${nodeLabel(draft.node_id)}`, 'ok');
+    }
+
+    async function refreshSpecialExitSubscription() {
+      const draft = currentSpecialExitDraft();
+      if (!draft) throw new Error('请选择特殊探针');
+      const result = await requestJSON('/mng/api/route/special_exits/subscription/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ node_id: draft.node_id }) });
+      await loadSpecialExits(true);
+      setStatus(`订阅已刷新：${Number(result.proxy_count || 0)} 个节点`, 'ok');
+    }
+
+    async function deleteSpecialExit() {
+      const draft = currentSpecialExitDraft();
+      if (!draft || !window.confirm(`确认删除 ${nodeLabel(draft.node_id)} 的二次分流配置？`)) return;
+      await requestJSON('/mng/api/route/special_exits', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ node_id: draft.node_id }) });
+      delete state.specialExitDrafts[draft.node_id];
+      await Promise.all([loadVirtualRouter(true), loadRouteRules(true), loadSpecialExits(true)]);
+      setStatus('二次分流配置已删除', 'ok');
+    }
+
+    async function loadSpecialExitInstallInfo() {
+      const nodeID = normalizeNodeID(state.selectedSpecialExitNodeID);
+      if (!nodeID) throw new Error('请选择特殊探针');
+      const mode = document.getElementById('special-exit-install-mode').value;
+      const result = await requestJSON(`/mng/api/route/special_exits/install?node_id=${encodeURIComponent(nodeID)}&mode=${encodeURIComponent(mode)}`);
+      document.getElementById('special-exit-install-output').value = JSON.stringify(result, null, 2);
+      setStatus('安装参数已生成', 'ok');
     }
 
     async function loadDoHSettings(silent) {
@@ -1513,6 +1815,11 @@
           if (state.activeTab === 'route-rules') {
             Promise.all([loadVirtualRouter(true), loadRouteRules(true)]).catch((err) => setStatus(`刷新路由规则失败：${err.message || err}`, 'err'));
           }
+          if (state.activeTab === 'special-exits') {
+            loadNodes().then(() => loadSpecialExits(true))
+              .then(() => setStatus('二次分流配置与运行状态已刷新', 'ok'))
+              .catch((err) => setStatus(`刷新二次分流失败：${err.message || err}`, 'err'));
+          }
           if (state.activeTab === 'fake-ip') {
             loadVirtualRouter(true).catch((err) => setStatus(`刷新 Fake IP 失败：${err.message || err}`, 'err'));
           }
@@ -1549,6 +1856,36 @@
       document.getElementById('btn-route-rule-add').addEventListener('click', addRouteRule);
       document.getElementById('btn-route-rules-save').addEventListener('click', () => {
         saveRouteRules().catch((err) => setStatus(`保存路由规则失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('btn-special-exit-refresh').addEventListener('click', () => {
+        loadNodes().then(() => loadSpecialExits(false)).catch((err) => setStatus(`刷新二次分流失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('btn-special-exit-create-node').addEventListener('click', () => {
+        createSpecialExitNode().catch((err) => setStatus(`创建特殊探针失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('special-exit-node').addEventListener('change', (event) => {
+        state.selectedSpecialExitNodeID = normalizeNodeID(event.target.value);
+        renderSpecialExits();
+      });
+      document.getElementById('special-exit-default-action').addEventListener('change', (event) => {
+        const draft = currentSpecialExitDraft();
+        if (!draft) return;
+        draft.default_action = String(event.target.value || 'direct');
+        if (draft.default_action === 'direct' || draft.default_action === 'reject') draft.default_target = '';
+        renderSpecialExits();
+      });
+      document.getElementById('btn-special-exit-rule-add').addEventListener('click', addSpecialExitRule);
+      document.getElementById('btn-special-exit-save').addEventListener('click', () => {
+        saveSpecialExit().catch((err) => setStatus(`保存二次分流失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('btn-special-exit-subscription').addEventListener('click', () => {
+        refreshSpecialExitSubscription().catch((err) => setStatus(`刷新订阅失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('btn-special-exit-delete').addEventListener('click', () => {
+        deleteSpecialExit().catch((err) => setStatus(`删除二次分流失败：${err.message || err}`, 'err'));
+      });
+      document.getElementById('btn-special-exit-install').addEventListener('click', () => {
+        loadSpecialExitInstallInfo().catch((err) => setStatus(`生成安装参数失败：${err.message || err}`, 'err'));
       });
       document.getElementById('btn-fake-ip-refresh').addEventListener('click', () => {
         loadVirtualRouter(true)
@@ -1636,6 +1973,7 @@
       await loadCloudflareDDNSRecords().catch(() => {});
       await loadVirtualRouter(true);
       await loadRouteRules(true).catch(() => {});
+      await loadSpecialExits(true).catch(() => {});
       await loadVirtualRouterStatus(true).catch(() => {});
       setStatus('路由管理页面初始化完成', 'ok');
     }

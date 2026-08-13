@@ -19,11 +19,37 @@ const (
 	probeRouteConfigSyncPollInterval = 60 * time.Minute
 	probeRouteConfigSyncFetchTimeout = 15 * time.Second
 	probeRouteConfigCacheFileName    = "probe_route_config.json"
+	probeRouteConfigResponseMaxBytes = 20 << 20
 )
 
 type probeRouteConfigResponse struct {
+	NodeID           string                    `json:"node_id"`
+	ExpectedNodeKind string                    `json:"expected_node_kind,omitempty"`
+	SpecialExit      *probeSpecialExitSnapshot `json:"special_exit,omitempty"`
+	VirtualRouter    probeVirtualRouterConfig  `json:"virtual_router,omitempty"`
+}
+
+type probeSpecialExitSnapshot struct {
+	Version       int                      `json:"version"`
 	NodeID        string                   `json:"node_id"`
-	VirtualRouter probeVirtualRouterConfig `json:"virtual_router,omitempty"`
+	Enabled       bool                     `json:"enabled"`
+	Revision      int64                    `json:"revision"`
+	SHA256        string                   `json:"sha256"`
+	DefaultAction string                   `json:"default_action"`
+	DefaultTarget string                   `json:"default_target,omitempty"`
+	Rules         []probeSpecialExitRule   `json:"rules"`
+	Proxies       []map[string]interface{} `json:"proxies"`
+}
+
+type probeSpecialExitRule struct {
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Enabled bool     `json:"enabled"`
+	Action  string   `json:"action"`
+	Target  string   `json:"target,omitempty"`
+	Entries []string `json:"entries"`
+	Ports   []string `json:"ports,omitempty"`
+	Network string   `json:"network,omitempty"`
 }
 
 type probeVirtualRouterConfig struct {
@@ -104,9 +130,10 @@ type probeRouteFakeIPResolveResponse struct {
 }
 
 var (
-	probeRequestRouteConfig     = requestProbeRouteConfig
-	probeRequestRouteFakeIP     = requestProbeRouteFakeIP
-	probeRequestRouteFakeIPByIP = requestProbeRouteFakeIPByIP
+	probeRequestRouteConfig      = requestProbeRouteConfig
+	probeApplyProductRouteConfig = applyProbeProductRouteConfig
+	probeRequestRouteFakeIP      = requestProbeRouteFakeIP
+	probeRequestRouteFakeIPByIP  = requestProbeRouteFakeIPByIP
 )
 
 func startProbeRouteConfigSyncLoop(identity nodeIdentity, controllerBaseURL string) {
@@ -227,8 +254,15 @@ func requestProbeRouteConfig(ctx context.Context, controllerBaseURL string, iden
 	}
 
 	var payload probeRouteConfigResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&payload); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, probeRouteConfigResponseMaxBytes)).Decode(&payload); err != nil {
 		return probeVirtualRouterConfig{}, err
+	}
+	if err := validateProbeExpectedNodeKind(payload.ExpectedNodeKind); err != nil {
+		_ = probeApplyProductRouteConfig(nil, identity.NodeID)
+		return probeVirtualRouterConfig{}, fmt.Errorf("route config rejected: expected_node_kind=%s build_kind=%s: %w", strings.TrimSpace(payload.ExpectedNodeKind), currentProbeBuildKind(), err)
+	}
+	if err := probeApplyProductRouteConfig(payload.SpecialExit, identity.NodeID); err != nil {
+		return probeVirtualRouterConfig{}, fmt.Errorf("route config rejected: special_exit: %w", err)
 	}
 	return sanitizeProbeVirtualRouterConfigForCache(payload.VirtualRouter), nil
 }

@@ -1,0 +1,608 @@
+# 协作文档
+
+- 适用规则: AI协作规则
+- 后续工作传递声明: 本文档必须传递给后续阶段与后续角色。
+- 需求编号: REQ-PEN-MIHOMO-EXIT-001
+- 需求前缀: REQ-PEN-MIHOMO-EXIT-001
+- 当前阶段: Architect最终门禁已放行
+- 最近更新角色: Architect
+- 最近更新时间: 2026-08-13T17:21:49+08:00
+- 工作依据文档: `doc/ai-coding-collaboration.md`; 用户于2026-08-13确认的特殊出口探针、Mihomo二次分流、主控GUI、独立Linux amd64安装包、Docker壳和程序自升级需求; 现有 `probe_controller`、`probe_node`、`docker/probe_node` 实现; Mihomo官方配置、API、发布物、Go模块和许可证资料
+- 状态: 已放行
+
+## 第1章 Architect章节
+- 章节责任角色: Architect
+- 状态: 已完成
+
+### 1.1 需求定义
+- 状态: 已完成
+
+#### 1.1.1 需求目标
+- REQ-PEN-MIHOMO-EXIT-001-R01: 新增独立发布物和程序名 `probe_exit_node`，作为兼容现有CloudHelper虚拟路由协议的特殊出口探针；它与普通探针从同一 `probe_node` Go包构建，使用 `mihomo_exit` build tag、现有 `runProbeNodeEntry` 接缝和不可运行时切换的构建标识隔离特殊功能；主控节点记录新增向后兼容的 `node_kind=normal|mihomo_exit`。
+- REQ-PEN-MIHOMO-EXIT-001-R02: 特殊出口探针直接复用同包内现有节点身份、主控连接、拓扑、ticket、WebSocket/H3、虚拟路由帧、Path Ping/Pong和gVisor末跳实现，不复制或另行提取第二套VRoute运行时。
+- REQ-PEN-MIHOMO-EXIT-001-R03: 特殊出口探针收到最终出口流量后恢复原始域名并将域名目标交给本机Mihomo，由该探针私有配置在Mihomo内执行DIRECT、REJECT、策略组或指定节点二次分流。
+- REQ-PEN-MIHOMO-EXIT-001-R04: 每个特殊出口探针自动聚合为且仅聚合为一条供普通探针使用的 `probe_exit` 路由规则；规则条目为该探针全部启用二次分流条目的规范化去重并集。聚合规则使用稳定ID并从特殊出口配置实时派生，不在普通 `RouteRules` 中重复持久化。
+- REQ-PEN-MIHOMO-EXIT-001-R05: 二次分流对普通探针透明；普通探针不得接收订阅URL、代理凭证、策略组、节点或内部动作。私有配置使用单调 `revision` 和内容SHA-256，特殊出口必须报告build_kind及desired/applied revision；现有HMAC认证算法保持不变。
+- REQ-PEN-MIHOMO-EXIT-001-R06: 主控 `/mng/route` 新增独立“二次分流”Tab，管理特殊出口、Clash/Mihomo订阅、默认动作、分流规则、聚合预览、同步状态和安装入口。
+- REQ-PEN-MIHOMO-EXIT-001-R07: 特殊出口探针使用独立Linux amd64安装包和systemd服务，不提供Windows、ARM64或Android版本。
+- REQ-PEN-MIHOMO-EXIT-001-R08: 工作目录按 `data/`、`log/`、`temp/` 分区；升级不得覆盖持久化数据。
+- REQ-PEN-MIHOMO-EXIT-001-R09: 提供Docker壳版本；镜像只提供固定环境和entrypoint，业务程序及Mihomo由持久化目录中的程序按带版本、构建类型、兼容范围和SHA-256的升级清单自行安装、升级、校验、替换和成对回滚。
+- REQ-PEN-MIHOMO-EXIT-001-R10: 主控独占保存和刷新订阅URL/请求头，使用结构化YAML解析、限制下载并防止SSRF；特殊出口只接收已规范化的代理节点/策略/规则快照，不接收订阅URL和请求头；敏感快照只下发给对应特殊出口。
+- REQ-PEN-MIHOMO-EXIT-001-R11: 主控、相邻探针承载、升级和Mihomo上游防回环流量必须绕过Mihomo二次分流；若CloudHelper VRoute TUN无法移除，Mihomo的DIRECT、代理节点连接和引导DNS必须绑定或策略路由到TUN之外的物理出口。
+- REQ-PEN-MIHOMO-EXIT-001-R12: TCP、UDP与QUIC业务流量均须具备可测试的二次分流闭环，不能只实现HTTP或TCP代理。
+
+#### 1.1.2 需求范围
+- 主控特殊出口配置存储、规范化、校验、敏感字段作用域和配置同步。
+- 每个特殊出口唯一聚合规则的生成、更新、禁用、删除和冲突检测。
+- `/mng/route` 二次分流Tab及聚合规则只读投影。
+- 独立 `probe_exit_node` Linux amd64程序。
+- 从同一 `probe_node` Go包构建普通和特殊两个发布物，特殊代码由build tag隔离。
+- Fake IP到原始域名恢复、类型化出口目标适配和Mihomo规则配置生成。
+- Mihomo进程、配置、日志、健康检查、升级与回滚。
+- 原生systemd安装脚本和Docker壳。
+- 单元、集成、安装升级和端到端验证。
+
+#### 1.1.3 非范围
+- Windows、Linux ARM64、Android特殊出口探针。
+- Clash Verge桌面GUI。
+- 由主控承载代理业务流量。
+- 把Clash订阅节点直接当成CloudHelper虚拟路由协议端点。
+- 改变普通探针现有路由语义或向普通探针加入Mihomo依赖。
+- 通过SSH/SCP手工替换线上探针二进制。
+
+#### 1.1.4 验收标准
+- AC-01: 主控可创建、保存、读取、更新、禁用和删除特殊出口配置，旧路由配置文件可无损加载。
+- AC-02: 每个启用特殊出口仅生成一条稳定ID的聚合规则；条目规范化、去重并稳定排序；重启和刷新后由单一特殊出口配置确定性重建，普通 `RouteRules` 中不存在重复副本。
+- AC-03: 普通探针配置响应不包含特殊出口秘密；对应特殊出口只收到自己的规范化私有快照，且不包含订阅URL/请求头；desired/applied revision和SHA-256可核对。
+- AC-04: 跨特殊出口、与手工路由规则的相同或语义重叠条目在保存时得到确定性拒绝，至少覆盖嵌套域名后缀和相交CIDR，不依赖数组顺序；派生规则使用保留ID命名空间，手工规则不得占用。
+- AC-05: 二次分流Tab可完成订阅、规则、默认动作、聚合预览和安装信息配置，订阅秘密不明文回显，并显示desired/applied revision与hash、BuildKind、探针/Mihomo版本、exit_ready、健康、最后订阅刷新和最后应用错误。
+- AC-06: `probe_exit_node`独立发布物可作为现有虚拟路由拓扑节点完成鉴权、承载、Ping/Pong、RTT、重连和最终帧处理；普通构建回归测试通过；主控配置响应提供expected_node_kind，探针状态上报build_kind，二者不匹配时特殊配置拒绝应用并上报错误；特殊版不启动本地代理接管、系统DNS接管、同步和DDNS调度器。
+- AC-07: 同一特殊出口内的测试域名可分别命中DIRECT、REJECT、Mihomo策略组和指定节点，普通探针仅看到统一出口规则。
+- AC-08: TCP、UDP和QUIC端到端测试通过；Fake IP映射缺失时明确补取或失败，不允许错误直连Fake IP。
+- AC-09: 主控、承载、升级连接不进入Mihomo；不存在二次分流回环；Mihomo不健康或当前revision未成功应用时 `exit_ready=false`，业务失败关闭且不回落物理直连；ICMP不得绕过Mihomo向目标直连。
+- AC-10: 原生Linux amd64安装、幂等重装、自升级和失败回滚保留 `data/`、`log/`，仅清理可重建的 `temp/`；升级候选必须匹配 `mihomo_exit` 构建类型并通过清单哈希和Mihomo配置校验。
+- AC-11: Docker壳首次缺二进制时下载，已有二进制时直接运行；容器重建保留程序和数据；日常应用升级无需拉取镜像。
+- AC-12: 主控、普通探针、特殊出口和页面测试通过；CI从同一源码分别构建普通矩阵和仅Linux amd64特殊发布物，并记录未执行测试及残余风险。
+
+#### 1.1.5 风险
+- 现有VRoute并非独立协议库：`probe_node`下153个Go文件同属 `package main`，carrier、ticket、控制帧、全局状态和gVisor末跳网络栈耦合；因此不能新建第二个Go包直接导入，也不应复制或大规模提取。优化方案是在同一包内通过build tag构建独立特殊发布物。
+- 当前末跳在进入出口拨号前把Fake IP域名解析为IPv4，只把 `IP:port` 交给拨号器；该路径会丢失Mihomo域名规则所需信息，必须新增保留 `domain:port` 的类型化出口目标。
+- 当前TCP出口抽象返回 `net.Conn`，可对接SOCKS5；UDP出口固定返回 `*net.UDPConn`，不能直接承载SOCKS5 UDP Associate，QUIC也因此未被证明。
+- Mihomo官方Go模块主入口为 `package main` 且采用GPLv3。禁止静态库式嵌入；固定采用独立受控子进程，通过回环SOCKS5/mixed端口与受保护的回环REST API协作，并履行二进制分发许可证义务。
+- UDP/QUIC、DNS、策略组热更新及旧会话排空涉及会话生命周期与回滚。
+- 订阅URL属于高敏感配置且可形成SSRF入口；必须仅保存在主控，禁止复制到特殊出口。
+- 同一源码双构建会引入普通发布物误带特殊功能、升级下载错资产或特殊版误启普通后台服务的风险，必须由build tag、产品profile、构建标识、expected_node_kind/build_kind核对和资产命名阻断。
+- 当前 `runProbeNodeEntry` 接缝位于参数解析、日志初始化、升级校验和启动锁之后，且普通探针日志目录为 `logs/`；特殊版若只替换该入口，无法保证早期路径、资产和命令边界。必须增加在 `main` 早期可读、由build tag确定且不可运行时切换的产品描述，不改变普通版默认值。
+- 主控配置、派生规则和Mihomo实际配置存在短暂版本差；必须用revision、内容哈希和last-known-good快照消除不可观察的半应用状态。
+- Mihomo SOCKS出口不承载ICMP；现有特殊末跳若复用物理ICMP会绕过二次分流，特殊产品必须显式失败关闭或返回不可达，并以TCP/UDP应用层诊断替代真实ICMP探测。
+- 代理节点主机名解析若误进Mihomo自身规则会形成DNS/上游回环；生成配置必须区分业务域名解析和代理服务器引导解析，并固定防回环出口。
+
+#### 1.1.6 遗留事项
+- 全量实施前必须由TASK-PEN-000证明同包双构建、域名不丢失、SOCKS5 TCP/UDP和QUIC闭环可用；未通过时回到Architect调整数据面边界。
+- 首期仅支持包含已展开具体 `proxies` 的Clash/Mihomo标准YAML订阅；不执行或向探针下发订阅内的远程 `proxy-providers` URL。聚合层选择器严格限定为现有VRoute可表达的域名后缀、域名前缀、域名关键字和CIDR；每条启用规则至少包含一个可聚合选择器，目标端口及TCP/UDP只允许作为特殊出口内的Mihomo私有细化条件，不进入普通探针聚合规则。不承诺进程、用户、源网卡或源IP规则。
+- 产品层“指定Mihomo节点”编译为每个可选择节点对应的内部selector组，由Mihomo规则指向稳定组名，避免依赖非标准的逐连接节点选择接口。
+
+#### 1.1.7 结论
+- 产品方案可行；同包双构建消除了独立运行时复制/提取风险，但UDP接口、域名保持和双构建隔离仍需PoC证明。仅有条件放行TASK-PEN-000，不允许直接进入全量实施。
+
+### 1.2 总体架构
+- 状态: 已完成
+
+#### 1.2.1 架构目标
+- 让特殊出口在主路由层保持普通 `probe_exit` 兼容性，在最终出口层封装私有二次分流。
+- 保持主控为特殊出口配置、聚合条目和Fake IP映射权威来源。
+- 使原生和Docker部署共享同一持久化、自升级和回滚模型。
+
+#### 1.2.2 总体设计
+- 构建面：保留一个 `probe_node` Go包和一套VRoute实现；普通发布物按当前矩阵构建，特殊发布物使用 `mihomo_exit` build tag、现有 `runProbeNodeEntry` 接缝、在 `main` 早期生效的编译期产品profile、`BuildKind=mihomo_exit` 和独立资产名，仅产出Linux amd64 `probe_exit_node`。
+- 控制面：节点记录以默认值为 `normal` 的 `node_kind` 区分特殊出口；主控独占保存/刷新订阅，从同一规范模型实时派生每节点唯一聚合规则和带revision/hash的私有快照，并将含派生规则的有效虚拟路由配置下发给所有探针；仅将对应私有快照下发给匹配的特殊出口节点。
+- 主路由数据面：普通探针按聚合规则命中 `probe_exit`，通过现有虚拟路由协议将流量送至特殊出口。
+- 特殊出口数据面：复用现有VRoute运行时和gVisor末跳网络栈；特殊出口恢复Fake IP域名并保留域名和端口，通过本机SOCKS5 TCP/UDP接口交给Mihomo，由Mihomo执行二次规则和出口选择。CloudHelper不再维护一套重复的出口规则引擎。
+- Mihomo运行面：固定采用同安装包内独立二进制，由 `probe_exit_node` 监管；代理端口和REST API仅绑定回环，API使用随机秘密，配置候选通过Mihomo校验并健康检查后原子切换。
+- 就绪面：VRoute控制连接与业务出口就绪解耦；只有当前desired revision/hash经Mihomo校验、激活和健康检查后才报告 `exit_ready=true`。未就绪期间保持拓扑控制能力但拒绝新业务会话，聚合规则不因短暂故障反复增删。
+- 进程面：特殊产品profile仅启用身份/主控报告、路由同步、VRoute carrier与末跳、升级、状态和Mihomo管理；禁用普通探针本地代理接管、系统DNS接管、文件同步、DDNS和无关调度器。VRoute基础TUN是否可去除由PoC裁决。
+- 部署面：原生systemd与Docker壳都运行持久化目录内的 `probe_exit_node`；程序按升级清单管理自身和Mihomo版本，任一候选失败则保持或恢复成对兼容的last-known-good组合。
+
+```mermaid
+flowchart LR
+  A[普通探针] -->|现有VRoute| B[特殊出口探针]
+  B --> C[Fake IP域名恢复]
+  C --> D[保留域名的TCP/UDP出口适配]
+  D --> I[Mihomo受控子进程]
+  I --> E[DIRECT]
+  I --> F[REJECT]
+  I --> G[策略组/指定节点]
+  E --> H[目标]
+  G --> H
+```
+
+#### 1.2.3 关键模块
+| 模块编号 | 模块名称 | 职责 | 输入 | 输出 |
+|---|---|---|---|---|
+| MOD-PEN-01 | 特殊出口配置仓库 | 持久化订阅、规则、默认动作和状态 | 管理请求 | 规范化私有配置 |
+| MOD-PEN-02 | 有效规则投影 | 从特殊出口配置实时派生唯一普通路由规则并与手工规则组合、检测冲突 | 私有二次规则 | 非持久化 `probe_exit` 有效规则 |
+| MOD-PEN-03 | 主控管理API/UI | 配置、订阅刷新、聚合预览、状态和安装入口 | 管理会话 | JSON与页面 |
+| MOD-PEN-04 | 私有配置编译与分发 | 主控刷新订阅、编译规范快照并按节点身份裁剪 | 节点鉴权请求 | revision/hash及普通或特殊配置 |
+| MOD-PEN-05 | 双构建与产品profile | 从同一Go包构建normal和mihomo_exit发布物，隔离入口、依赖和启用组件 | build tag/ldflags/profile | 独立资产，共享VRoute实现 |
+| MOD-PEN-06 | 特殊出口运行时 | 主控连接、拓扑、承载、Ping/Pong、最终帧和域名目标恢复 | 配置和VRoute帧 | 类型化域名/IP出口目标 |
+| MOD-PEN-07 | 出口适配层 | 将全部类型化业务目标接入Mihomo SOCKS5 TCP/UDP并管理会话排空 | 域名/IP/端口/协议 | 出口连接、数据报会话或失败 |
+| MOD-PEN-08 | Mihomo管理器 | 订阅、规则配置生成、子进程、REST控制、健康、日志、许可证和回滚 | 私有配置 | Mihomo数据面 |
+| MOD-PEN-09 | 安装升级 | 原生/Docker首次安装、自升级和回滚 | 安装身份/版本 | 可运行服务 |
+
+#### 1.2.4 关键接口
+| 接口编号 | 接口名称 | 调用方 | 提供方 | 说明 |
+|---|---|---|---|---|
+| IF-PEN-001 | `/mng/api/route/special_exits` | 二次分流Tab | 主控 | GET/POST/PATCH/DELETE特殊出口配置 |
+| IF-PEN-002 | `/mng/api/route/special_exits/subscription/refresh` | 二次分流Tab | 主控 | 安全刷新订阅并生成规范化快照，URL/请求头不下发 |
+| IF-PEN-003 | `/mng/api/route/special_exits/status` | 二次分流Tab | 主控 | 配置同步和运行状态 |
+| IF-PEN-004 | `/mng/api/route/special_exits/install` | 二次分流Tab | 主控 | 原生或Docker壳安装信息 |
+| IF-PEN-005 | `/api/probe/route/config`扩展 | 探针 | 主控 | 普通VRoute配置及按节点私有快照，包含expected_node_kind/revision/hash |
+| IF-PEN-006 | ManagedSpecialExitRule | Fake IP/普通探针路由 | 聚合规则引擎 | 每节点唯一派生 `probe_exit`规则 |
+| IF-PEN-007 | ProbeBuildVariant | CI/启动入口 | 同一 `probe_node` Go包 | build tag、BuildKind、expected_node_kind核对及独立资产 |
+| IF-PEN-008 | ExitTarget | VRoute末跳 | 出口适配层 | 保留域名的TCP连接目标或UDP会话目标 |
+| IF-PEN-009 | MihomoRuntime | 出口适配层 | Mihomo管理器 | 回环SOCKS5 TCP/UDP、REST控制和状态 |
+| IF-PEN-010 | SelfUpgradeManifest | 主控/本地运行时 | 特殊出口升级器 | 带build kind、兼容范围和SHA-256的程序/Mihomo成对升级回滚 |
+
+#### 1.2.5 关键约束
+- 特殊出口派生规则ID稳定，不因条目顺序、订阅刷新或显示名改变。
+- 派生规则ID固定使用保留命名空间 `special-exit:<node_id>`；普通手工规则创建/修改时拒绝该前缀。
+- 特殊出口配置是聚合规则唯一持久化来源；有效规则在读取、Fake IP授权和探针配置下发时统一投影，禁止把派生规则复制进普通 `RouteRules`。
+- `reject` 条目仍进入聚合规则，由特殊出口执行拒绝，确保内部动作透明。
+- 订阅URL和请求头只存储于主控；特殊出口仅存规范化快照中的节点连接秘密，管理响应仅返回掩码状态。
+- 主控、相邻承载、升级和 `198.18.0.0/15` 内部流量必须绕过Mihomo。
+- 如果PoC证明CloudHelper VRoute仍依赖TUN，Mihomo生成配置和Linux路由必须把DIRECT、代理节点连接及引导DNS绑定至探针选定的物理出口或专用routing mark；网络变化时重新解析出口，无法确定物理出口时 `exit_ready=false`。
+- Docker壳参照 `docker/probe_node`，不在每次启动覆盖持久化二进制。
+- VRoute不提取、不复制第二套carrier/控制帧实现；普通与特殊发布物必须从同一Go包构建，任何公共路径修改都必须同时跑普通和特殊变体测试。
+- 特殊产品profile采用默认拒绝：只有身份/报告、路由同步、VRoute、升级、状态和Mihomo列入启用清单；新增普通探针后台组件不会自动进入特殊版。
+- 编译期产品profile必须先于参数解析、日志初始化、升级校验和启动锁生效，统一给出BuildKind、服务名、允许命令、资产前缀以及 `./data`、`./log`、`./temp` 路径；普通profile保留现有默认行为和 `logs/` 路径。特殊版不得暴露普通探针本地TUN安装等无关维护命令。
+- Mihomo不使用TUN，不接管宿主机默认路由；仅开放回环SOCKS5/mixed和REST API，避免CloudHelper TUN、Docker NET_ADMIN和测试网段冲突。
+- Fake IP域名命中时必须把域名而不是预解析IP交给Mihomo；CIDR规则才使用原始IP目标。
+- 聚合层只能使用现有VRoute选择器；Mihomo私有规则可以追加目标端口和TCP/UDP条件，但不得因此扩大普通探针可见配置。
+- `data/`保存身份、有效配置、Mihomo home和版本状态，`log/`保存两进程日志，`temp/`仅保存可丢弃的下载和候选文件。
+- 主控私有配置是唯一规则源；聚合规则与Mihomo规则必须从同一个规范化规则模型生成，禁止页面、主控和探针分别解释三套语义。
+- CloudHelper出口适配层不执行业务DIRECT/REJECT/节点选择；全部业务流都进入受认证Mihomo listener，由Mihomo执行这些动作。Mihomo不可用时失败关闭。
+- 应用配置采用 `desired_revision -> validate -> activate -> applied_revision` 状态机；失败保留last-known-good，状态上报不得把“已下发”误报为“已生效”。
+- 特殊出口ICMP不允许调用现有物理直连探测路径；首期明确返回不可达，页面使用经Mihomo的TCP/UDP诊断展示可用性。
+- Mihomo DNS配置必须为业务域名和代理服务器主机名提供分离的解析路径；代理服务器引导解析、主控、承载和升级目标固定绕过业务规则，避免自引用。
+- 主控限制订阅下载字节数、解析节点数、规则数和单条字段长度；特殊探针限制候选配置大小、子进程重启频率、日志大小及文件描述符，超限时保留last-known-good。
+
+#### 1.2.6 风险
+- 双构建若只靠运行参数切换，普通探针可能意外启用特殊功能；必须使用build tag排除Mihomo管理代码，通过配置响应和状态报告核对BuildKind与expected_node_kind，同时保持现有HMAC认证算法不变。
+- SOCKS5 UDP Associate必须保留每会话目标、回包来源和超时语义；QUIC是强制验收项。
+- Docker数据面不依赖Mihomo TUN，因此不应为Mihomo额外增加NET_ADMIN；PoC必须分别验证仅作VRoute末跳时是否能移除CloudHelper TUN，若承载本身仍需要则按实际调用面最小授权。
+- 分发未修改的Mihomo二进制仍需随包保留GPLv3许可证和对应源码获取方式；不得把其Go包静态链接进CloudHelper专有二进制。
+- 订阅解析器与Mihomo实际兼容性可能漂移；候选快照除结构化解析外必须通过目标Mihomo版本的配置校验，且订阅刷新不能自动覆盖仍被规则引用但暂时缺失的节点。
+
+#### 1.2.7 结论
+- 修订后的子进程加SOCKS5架构满足独立安装包、透明聚合、主控GUI、Linux amd64和Docker壳要求；数据面须先通过PoC门禁。
+
+### 1.3 单元设计
+- 状态: 已完成
+
+#### 1.3.1 单元清单
+| 单元编号 | 单元名称 | 所属模块 | 职责 | 输入 | 输出 |
+|---|---|---|---|---|---|
+| UNIT-PEN-01 | SpecialExitStore | MOD-PEN-01 | 规范化、保存、秘密保留 | JSON配置 | 特殊出口配置 |
+| UNIT-PEN-02 | SpecialExitAggregator | MOD-PEN-02 | 合并条目并生成唯一派生规则 | 特殊出口列表 | 路由规则 |
+| UNIT-PEN-03 | SpecialExitConflictValidator | MOD-PEN-02 | 检测跨出口和手工规则的相同或语义重叠冲突 | 候选规则 | 校验结果 |
+| UNIT-PEN-04 | SpecialExitMngHandler | MOD-PEN-03 | 管理CRUD、刷新、状态和安装响应 | HTTP请求 | JSON |
+| UNIT-PEN-05 | SpecialExitRoutePage | MOD-PEN-03 | 二次分流Tab交互 | 管理API | 页面状态 |
+| UNIT-PEN-06 | SpecialExitConfigCompiler | MOD-PEN-04 | 刷新订阅、编译规范快照并按节点裁剪 | node_id/revision | 配置响应 |
+| UNIT-PEN-07 | ProbeBuildVariant | MOD-PEN-05 | 同包构建normal/mihomo_exit，校验构建与节点类型 | build tag/ldflags | 独立发布物 |
+| UNIT-PEN-08 | ExitControllerClient | MOD-PEN-06 | 身份、配置同步、心跳和命令 | 主控URL/secret | 运行配置 |
+| UNIT-PEN-09 | ExitVRouteRuntime | MOD-PEN-06 | carrier、转发、最终帧、Ping/Pong和出口目标恢复 | VRoute配置 | 类型化目标/状态 |
+| UNIT-PEN-10 | ExitFakeIPResolver | MOD-PEN-06 | Fake IP到域名及规则恢复 | Fake IP | 域名映射 |
+| UNIT-PEN-11 | ExitTransportAdapter | MOD-PEN-07 | 将域名/IP目标接入Mihomo TCP/UDP会话并阻止ICMP直连旁路 | 域名/IP/端口/协议 | 连接/数据报会话/不可达 |
+| UNIT-PEN-12 | MihomoConfigBuilder | MOD-PEN-08 | 结构化配置生成和校验 | 订阅/规则 | YAML配置 |
+| UNIT-PEN-13 | MihomoRuntimeManager | MOD-PEN-08 | 进程、健康、日志和热切换 | 有效配置 | 数据面状态 |
+| UNIT-PEN-14 | ExitUpgradeManager | MOD-PEN-09 | 程序/Mihomo升级与回滚 | 版本命令 | 新运行时 |
+| UNIT-PEN-15 | NativeInstaller | MOD-PEN-09 | Linux amd64 systemd安装 | 安装身份 | 原生服务 |
+| UNIT-PEN-16 | DockerShell | MOD-PEN-09 | 首次下载和持久化执行 | 环境变量 | 容器进程 |
+
+#### 1.3.2 单元设计
+##### UNIT-PEN-01
+- 单元名称: SpecialExitStore
+- 职责: 在路由配置仓库独立配置域中保存特殊出口私有配置。
+- 输入: 管理API JSON和现存配置。
+- 输出: 规范化、版本化配置。
+- 处理规则: 空秘密更新保留旧值；文件权限0600；稳定ID；字段上限；启用规则至少包含一个可聚合选择器；每次有效变更增加单调revision并计算规范JSON的SHA-256。
+- 异常规则: 非法节点、动作、订阅或条目拒绝保存且不改当前配置。
+
+##### UNIT-PEN-02
+- 单元名称: SpecialExitAggregator
+- 职责: 为每个特殊出口生成一条非持久化派生规则，并与手工规则组成唯一有效规则视图。
+- 输入: 全部启用二次规则。
+- 输出: 稳定排序的 `probe_exit` 规则。
+- 处理规则: 复用现有条目规范化；去重；稳定ID `special-exit:<node_id>`；拒绝手工规则占用保留前缀；只投影现有VRoute可表达的选择器；在读取、Fake IP授权、冲突校验和探针配置下发时调用同一投影函数；不写回普通RouteRules。
+- 异常规则: 无有效条目时不生成可吸收流量的启用规则。
+
+##### UNIT-PEN-03
+- 单元名称: SpecialExitConflictValidator
+- 职责: 防止同一条目含糊归属。
+- 输入: 派生规则和手工规则。
+- 输出: 冲突清单或通过。
+- 处理规则: 保存前确定性比较规范化条目及语义交集；至少识别相同条目、嵌套域名后缀、相交CIDR以及可证明相交的前缀/关键字组合；无法证明互斥的跨所有者宽泛关键字规则按冲突处理。
+- 异常规则: 冲突返回400和具体规则/条目，不隐式重排。
+
+##### UNIT-PEN-04
+- 单元名称: SpecialExitMngHandler
+- 职责: 提供管理CRUD、刷新、状态和安装信息。
+- 输入: 管理会话请求。
+- 输出: 脱敏JSON。
+- 处理规则: 管理鉴权、方法限制、请求体限制；订阅只允许受控HTTPS访问；URL和请求头只保留在主控，刷新结果进入候选快照；首期只接受已展开的具体proxies，远程proxy-provider引用返回明确的不支持错误。
+- 异常规则: SSRF、超时、过大响应、无效YAML或保存失败不破坏旧配置。
+
+##### UNIT-PEN-05
+- 单元名称: SpecialExitRoutePage
+- 职责: 在 `/mng/route` 管理完整二次分流闭环。
+- 输入: IF-PEN-001至004。
+- 输出: 可编辑配置、聚合预览、desired/applied状态、exit_ready、版本、错误和安装命令。
+- 处理规则: 订阅秘密不回显；派生规则只读；页面沿用现有样式。
+- 异常规则: API失败保留最后成功状态并显示错误。
+
+##### UNIT-PEN-06
+- 单元名称: SpecialExitConfigCompiler
+- 职责: 从主控订阅、二次规则和默认动作编译唯一规范快照，并仅向对应特殊出口发送。
+- 输入: 已认证node_id、期望node_kind、订阅解析结果和全局配置。
+- 输出: 可选 `special_exit` 快照、desired_revision和SHA-256，不含订阅URL/请求头。
+- 处理规则: 精确node_id和期望node_kind匹配；聚合规则与Mihomo规则共用同一规范模型；普通探针字段省略；不改变现有HMAC签名口径。
+- 异常规则: 重复绑定、未知节点、构建类型不匹配或无法编译的规则拒绝发布并保留旧revision。
+
+##### UNIT-PEN-07
+- 单元名称: ProbeBuildVariant
+- 职责: 从同一 `probe_node` Go包构建普通和特殊两个独立发布物，VRoute公共代码只保留一份。
+- 输入: 默认构建或 `-tags mihomo_exit`、产品profile、`BuildKind`、`BuildVersion`。
+- 输出: 普通平台矩阵资产和仅Linux amd64的 `probe_exit_node` 资产。
+- 处理规则: 通过 `runProbeNodeEntry` tag变体选择编译期产品profile；特殊入口/依赖仅存在于tag文件；公共文件不得反向依赖特殊代码；特殊profile按启用清单启动组件；配置响应携带expected_node_kind，状态报告携带BuildKind，应用前核对；保留现有HMAC、magic、字段、checksum、ticket和重连语义。
+- 异常规则: profile未在参数、日志和升级路径之前生效、普通构建包含特殊入口、特殊profile启动未列入清单的普通组件、错误资产可被升级器选择、构建类型不匹配仍应用配置或任一普通回归失败即阻塞。
+
+##### UNIT-PEN-08
+- 单元名称: ExitControllerClient
+- 职责: 复用探针身份、配置同步、心跳和升级命令。
+- 输入: node_id、node_secret、controller_url。
+- 输出: 私有快照、desired revision和VRoute配置。
+- 处理规则: HTTPS/HMAC；校验内容哈希；原子落盘至 `data/`；应用成功后报告applied revision/hash。
+- 异常规则: 拉取失败继续使用最后有效配置并退避重试。
+
+##### UNIT-PEN-09
+- 单元名称: ExitVRouteRuntime
+- 职责: 参与现有拓扑并在终点交付业务帧。
+- 输入: VRoute配置和carrier帧。
+- 输出: 保留域名或原始IP的类型化TCP/UDP目标、控制响应和状态。
+- 处理规则: 与普通探针保持桥接方向和Path Ping/Pong一致；Fake IP目标禁止在出口适配前预解析为IP；Path Ping/Pong仅表示VRoute承载可达，不冒充Mihomo业务就绪。
+- 异常规则: carrier失败清理会话并限频记录，不回落错误直连。
+
+##### UNIT-PEN-10
+- 单元名称: ExitFakeIPResolver
+- 职责: 恢复主控Fake IP映射。
+- 输入: 目的Fake IP。
+- 输出: 域名、规则和出口所有权。
+- 处理规则: 本地缓存优先，缺失时通过受鉴权主控接口补取。
+- 异常规则: 补取失败快速失败，不把Fake IP交给Mihomo或公网。
+
+##### UNIT-PEN-11
+- 单元名称: ExitTransportAdapter
+- 职责: 对TCP返回通用 `net.Conn`，对UDP提供不依赖 `*net.UDPConn` 的数据报会话抽象，并将全部业务目标交给Mihomo。
+- 输入: 域名或IP、端口和TCP/UDP协议；ICMP帧只用于显式失败处理。
+- 输出: 受认证SOCKS5连接/UDP Associate会话或失败。
+- 处理规则: 域名保持到SOCKS5请求；回包携带正确源地址；旧会话按超时排空；不在CloudHelper内重复执行DIRECT/REJECT/节点选择；Mihomo不可用或revision未应用时不隐式直连；ICMP返回不可达且不得调用物理出口。
+- 异常规则: UDP Associate、目标选择或Mihomo健康失败时快速失败并限频记录。
+
+##### UNIT-PEN-12
+- 单元名称: MihomoConfigBuilder
+- 职责: 从订阅和私有规则生成由Mihomo直接执行的完整规则配置。
+- 输入: 主控下发的规范化代理节点/规则快照、选择项和防回环目标，不接收订阅URL。
+- 输出: `temp/`候选配置。
+- 处理规则: 结构化YAML、最小秘密、随机SOCKS用户名/密码、固定回环端口、REST秘密、显式绕行规则和域名规则；业务域名DNS与代理服务器引导DNS分离；必要时为DIRECT、代理节点及引导DNS生成物理接口绑定或routing mark；聚合选择器与私有端口/协议细化条件从同一规范模型编译；候选配置先由目标Mihomo版本校验。
+- 异常规则: 校验失败不替换 `data/` 中有效配置。
+
+##### UNIT-PEN-13
+- 单元名称: MihomoRuntimeManager
+- 职责: 管理独立Mihomo子进程生命周期、回环REST API和健康。
+- 输入: 已校验配置和二进制。
+- 输出: TCP/UDP/QUIC数据面及 `exit_ready`、版本、会话/字节/错误计数状态。
+- 处理规则: stdout/stderr写入 `log/` 并滚动；代理和API只绑定回环；SOCKS listener使用随机凭据且不得配置loopback免认证；当前revision激活并通过数据面健康检查后才置 `exit_ready=true`；热切换前后健康检查；失败回滚；分发物附许可证和源码链接。
+- 异常规则: 异常退出退避重启；重复错误节流。
+
+##### UNIT-PEN-14
+- 单元名称: ExitUpgradeManager
+- 职责: 自行升级 `probe_exit_node` 和Mihomo。
+- 输入: 主控升级命令、版本检查和升级清单。
+- 输出: 原子替换、exec重启或回滚。
+- 处理规则: 清单固定build_kind、probe版本、Mihomo版本、兼容范围、资产名和SHA-256；参照普通探针候选校验、下载续传、备份和回滚；仅在全部候选就绪后切换。
+- 异常规则: 任一步失败恢复旧程序、旧Mihomo和旧配置的last-known-good组合，禁止只留下半升级状态。
+
+##### UNIT-PEN-15
+- 单元名称: NativeInstaller
+- 职责: 安装Linux amd64 systemd服务。
+- 输入: 主控生成的安装身份。
+- 输出: `/opt/cloudhelper/probe_exit_node`服务。
+- 处理规则: 幂等；在服务WorkingDirectory下精确创建 `data/`、`log/`、`temp/`；特殊版早期日志也写入 `log/`；不覆盖持久化文件。
+- 异常规则: 非Linux amd64明确退出。
+
+##### UNIT-PEN-16
+- 单元名称: DockerShell
+- 职责: 提供固定容器环境并执行持久化二进制。
+- 输入: 环境变量和挂载目录。
+- 输出: `exec probe_exit_node`。
+- 处理规则: 缺失时优先主控代理下载；已有时不覆盖；host network；仅在PoC证明CloudHelper VRoute承载确实需要时授予NET_ADMIN/TUN。
+- 异常规则: 下载失败明确退出，由容器重启策略重试。
+
+#### 1.3.3 风险
+- TASK-PEN-000和正式实现均已证明build tag隔离、域名目标及TCP/UDP/QUIC闭环；特殊产品没有切换到TUN或复制VRoute运行时。
+- 保留风险为Linux systemd实机安装/回滚演练、高吞吐QUIC缓冲压测和本机未执行race；已在2.5.7至2.5.8记录，均不改变协议正确性和失败关闭边界。
+
+#### 1.3.4 结论
+- 控制面、数据面和部署实现均完成；本地、Linux交叉构建、Docker Linux壳及官方Mihomo真实进程证据满足最终门禁。
+
+### 1.4 Code任务执行包
+- 状态: 已完成
+
+#### 1.4.1 执行边界
+- 允许修改: `probe_controller/internal/core/probe_route_config_store.go`; `probe_controller/internal/core/probe_route_handlers.go`; `probe_controller/internal/core/probe_virtual_router.go`; `probe_controller/internal/core/probe_registry.go`; `probe_controller/internal/core/mng_route_actions.go`; `probe_controller/internal/core/mng_route_handlers.go`; `probe_controller/internal/core/mng_probe_handlers.go`; `probe_controller/internal/core/probe_command.go`; `probe_controller/internal/core/probe_runtime.go`; `probe_controller/internal/core/probe_ws.go`; `probe_controller/internal/core/mng_pages/route.html`; `probe_controller/internal/core/server.go`; `probe_controller/internal/core/install_scripts.go`; `probe_controller/internal/core/install_scripts/`; `probe_controller/internal/core/*special_exit*`; `probe_controller/internal/core/*test.go`; `probe_node`内双构建、出口适配、Mihomo管理、升级清单及测试所需文件; `.github/workflows/release.yml`; 新增 `docker/probe_exit_node/`; `THIRD_PARTY_LICENSES/mihomo-LICENSE`; `README.md`; `doc/install_upgrade.md`; 本协作文档Code章节。补充列出的状态/命令/报告文件及许可证均为TASK-PEN-002、004、005既有接口和许可证验收项的必要落点，不扩展需求行为。
+- 禁止修改: Android/mobilecore行为; 普通探针Windows安装逻辑; 主控认证边界; 现有VRoute线协议语义; 线上部署文件; 用户未授权的远程运行环境。
+
+#### 1.4.2 任务清单
+| 任务编号 | 需求编号 | 单元编号 | 文件范围 | 操作类型 | 验收标准 |
+|---|---|---|---|---|---|
+| TASK-PEN-000 | R01,R02,R03,R08,R11,R12 | UNIT-PEN-07,09,10,11,12,13 | `probe_node`内新增最小mihomo_exit tag入口/产品profile/构建标识、出口适配PoC和测试；禁止拆分或复制VRoute | 验证性新增/最小修改 | profile在参数/日志/升级前生效且特殊版精确使用data/log/temp；默认构建与Linux amd64特殊构建均成功；expected_node_kind/BuildKind错配拒绝应用且HMAC不变；特殊profile不启动代理/DNS/同步/DDNS或暴露无关TUN维护命令；普通VRoute fixture不变；Fake IP恢复后以域名进入受认证Mihomo SOCKS5；TCP、UDP、QUIC闭环；验证末跳是否可无TUN运行，若保留TUN则Mihomo全部上游固定物理出口；代理服务器DNS不自回环；revision未应用或Mihomo崩溃时exit_ready=false且不回落直连；ICMP不走物理出口；形成继续/整改结论 |
+| TASK-PEN-001 | R01,R04,R05,R10 | UNIT-PEN-01,02,03,06 | 主控route/node store、special_exit新增文件、route handlers及测试 | 新增/修改 | AC-01至04；普通节点无秘密/订阅URL，revision/hash可核对，聚合稳定；保留ID、嵌套域名后缀、相交CIDR和宽泛关键字冲突均可测 |
+| TASK-PEN-002 | R06 | UNIT-PEN-04,05 | mng handlers、server.go、route.html及页面测试 | 新增/修改 | AC-05；CRUD/刷新/状态/安装入口完整，秘密不回显，desired/applied、exit_ready、版本和错误可见 |
+| TASK-PEN-003 | R02 | UNIT-PEN-07 | `probe_node`双构建/profile边界、CI发布矩阵、升级资产选择及测试 | 新增/修改 | 普通平台矩阵不变；特殊仅Linux amd64且组件启用清单固定；同一VRoute源码；expected_node_kind/BuildKind和资产选择负向测试通过；HMAC兼容fixture不变 |
+| TASK-PEN-004 | R01,R02,R03,R11 | UNIT-PEN-08,09,10,11 | `probe_node`内特殊出口控制面、末跳目标、SOCKS5 TCP/UDP适配和测试 | 新增/修改 | AC-06、08、09；可作为正式节点完成最终帧处理；desired/applied revision与exit_ready准确；ICMP无直连旁路 |
+| TASK-PEN-005 | R03,R10,R11,R12 | UNIT-PEN-12,13 | probe_exit_node Mihomo配置、子进程监管、REST控制及测试 | 新增 | AC-07至09；DIRECT/REJECT/策略/节点和TCP/UDP/QUIC闭环；受认证回环监听、业务/引导DNS分离、资源上限和许可证交付通过 |
+| TASK-PEN-006 | R07,R08,R09 | UNIT-PEN-14,15,16 | 安装脚本、install_scripts.go、docker/probe_exit_node、升级清单代码和测试 | 新增/修改 | AC-10、11；原生/Docker持久化、构建类型/哈希校验、程序与Mihomo成对自升级及回滚通过 |
+| TASK-PEN-007 | R01-R12 | 全部 | README、install_upgrade、本协作文档Code章节、端到端测试 | 修改 | AC-12；文档、证据、风险和回滚完整 |
+
+#### 1.4.3 源码修改规则
+- 修改源代码时必须注意可能存在的 GBK 编码并保持原文件编码，避免乱码或误转码。
+- 每次仅执行一个任务或一个可独立验证的子闭环，完成后立即更新第2章证据。
+- TASK-PEN-000前置门禁已通过，TASK-PEN-001至007已按依赖顺序实施并完成。
+- TASK-PEN-004不得早于TASK-PEN-003兼容测试通过。
+- TASK-PEN-005不得引入Mihomo Go包静态链接或切换到TUN；发现SOCKS5 UDP/QUIC语义不满足时必须在第2.6节记录“执行阻塞”并等待Architect裁决。
+- 禁止为了独立程序名新建第二套VRoute Go包或复制现有carrier/控制帧实现；独立性由发布物、build tag、服务名、工作目录和升级通道保证。
+
+#### 1.4.4 交付物
+- 主控特殊出口存储/API/UI与测试。
+- 同一 `probe_node` Go包的普通/特殊双构建边界、独立发布物和兼容fixture。
+- Linux amd64 `probe_exit_node`源码与测试。
+- Mihomo二次分流运行时。
+- 原生安装脚本和Docker壳。
+- 更新后的README、安装升级文档及本协作文档Code证据。
+
+#### 1.4.5 门禁输入
+- AI协作规则v2.5已读取。
+- 需求、非范围、接口、单元、文件范围、操作类型和可测试验收标准均已声明；同包双构建、域名保持和SOCKS UDP/QUIC均已有正式证据。
+- Code章节固定结构已预创建。
+- 当前工作树可能有用户变更，Code必须先检查并保留无关修改。
+- 2026-08-13 Architect先关闭TASK-PEN-000前置条件，Code随后完成TASK-PEN-001至007并提交第2章完整证据。
+
+#### 1.4.6 结论
+- Code任务包已全部完成；实现顺序、文件范围和交付物经最终差异复核符合任务边界。
+
+### 1.5 Architect需求跟踪矩阵
+- 状态: 已完成
+
+| 需求编号 | 需求描述 | 架构章节 | 单元设计章节 | Code任务章节 | 状态 | 备注 |
+|---|---|---|---|---|---|---|
+| R01 | 独立特殊出口程序 | 1.2 | UNIT-PEN-07至09 | TASK-PEN-000,003,004 | 已完成 | 同包构建独立Linux amd64发布物，构建类型不可运行时切换 |
+| R02 | 复用现有VRoute协议 | 1.2 | UNIT-PEN-07,09 | TASK-PEN-000,003,004 | 已完成 | 同一源码直接复用，不提取不复制 |
+| R03 | Mihomo二次分流 | 1.2 | UNIT-PEN-10至13 | TASK-PEN-000,004,005 | 已完成 | 正式快照、监管和官方Mihomo TCP/UDP/QUIC闭环 |
+| R04 | 每节点唯一聚合规则 | 1.2 | UNIT-PEN-02 | TASK-PEN-001 | 已完成 | 稳定ID，实时派生且Fake IP库使用有效规则 |
+| R05 | 私有配置作用域 | 1.2 | UNIT-PEN-01,06 | TASK-PEN-001 | 已完成 | revision/hash，订阅URL不下发，快照只给目标特殊探针 |
+| R06 | 主控二次分流Tab | 1.2 | UNIT-PEN-04,05 | TASK-PEN-002 | 已完成 | 路由页独立Tab及状态/安装入口 |
+| R07 | Linux amd64独立安装 | 1.2 | UNIT-PEN-15 | TASK-PEN-006 | 已完成 | 无Windows/ARM，systemd脚本和独立资产已交付 |
+| R08 | data/log/temp分区 | 1.2 | UNIT-PEN-14至16 | TASK-PEN-006 | 已完成 | 原生三目录，Docker另分program，升级保留持久数据 |
+| R09 | Docker壳与程序自升级 | 1.2 | UNIT-PEN-14,16 | TASK-PEN-006 | 已完成 | 清单校验、成对回滚，非镜像日常升级 |
+| R10 | 安全订阅与秘密 | 1.2 | UNIT-PEN-01,04,06,12 | TASK-PEN-001,002,005 | 已完成 | HTTPS/SSRF/脱敏/作用域/0600运行秘密均通过 |
+| R11 | 承载绕行防回环 | 1.2 | UNIT-PEN-09,12,13 | TASK-PEN-000,004,005 | 已完成 | 无TUN、回环SOCKS/REST、失败不直连 |
+| R12 | TCP/UDP/QUIC | 1.2 | UNIT-PEN-09,11,13 | TASK-PEN-000,004,005 | 已完成 | 模拟与官方Mihomo真实进程均通过 |
+
+### 1.6 Architect关键接口跟踪矩阵
+- 状态: 已完成
+
+| 接口编号 | 需求编号 | 接口名称 | 调用方 | 提供方 | 输入 | 输出 | 状态 | 备注 |
+|---|---|---|---|---|---|---|---|---|
+| IF-PEN-001 | R06 | SpecialExits CRUD | 路由页 | 主控 | 管理JSON | 脱敏配置 | 已完成 | 管理鉴权，写入秘密不回显 |
+| IF-PEN-002 | R06,R10 | Subscription Refresh | 路由页 | 主控 | 特殊出口ID | 规范快照摘要/revision/hash | 已完成 | HTTPS固定解析、防SSRF/重定向/大小限制，URL不下发 |
+| IF-PEN-003 | R06 | SpecialExit Status | 路由页 | 主控 | 无 | desired/applied revision/hash、BuildKind、版本、exit_ready、健康、计数和错误 | 已完成 | 不含秘密 |
+| IF-PEN-004 | R07,R09 | Install Info | 路由页 | 主控 | node/mode | 安装参数 | 已完成 | native/docker入口、身份和HTTPS参数完整 |
+| IF-PEN-005 | R02,R05 | Probe Route Config | 探针 | 主控 | 现有HMAC请求 | expected_node_kind/revision/hash作用域快照 | 已完成 | 探针验证并原子应用，错配失败关闭 |
+| IF-PEN-006 | R04 | Managed Rule | 路由/Fake IP | 聚合器 | 私有规则 | 单一派生规则 | 已完成 | `special-exit:<node_id>`稳定ID |
+| IF-PEN-007 | R01,R02 | Probe Build Variant | CI/配置应用/状态报告 | 同一probe_node Go包 | tag/BuildKind/expected_node_kind | 独立发布物和状态 | 已完成 | 特殊仅Linux amd64，候选程序自检构建类型 |
+| IF-PEN-008 | R03 | Exit Target | VRoute末跳 | 出口适配层 | 域名/IP/端口/协议 | 连接或数据报会话 | 已完成 | PoC确认域名不预解析且普通语义不变 |
+| IF-PEN-009 | R03,R12 | Mihomo Runtime | 出口适配层 | Mihomo管理器 | SOCKS5/REST | 出口/状态 | 已完成 | 子进程监管、REST、健康、滚动日志和数据面通过 |
+| IF-PEN-010 | R08,R09 | Self Upgrade Manifest | 主控/运行时 | 升级器 | 版本/构建/哈希/兼容范围 | 成对替换/回滚 | 已完成 | 原生/Docker首次安装与自身升级共享配对约束 |
+
+### 1.7 门禁裁判
+- 状态: 已放行
+
+#### 1.7.1 门禁输入
+| 文档 | 路径 | 状态 |
+|---|---|---|
+| 协作文档 | `doc/REQ-PEN-MIHOMO-EXIT-001-collaboration.md` | 已完成 |
+| AI协作规则 | `doc/ai-coding-collaboration.md` | 已读取 |
+
+#### 1.7.2 裁判检查
+| 检查项 | 结果 | 证据 | 备注 |
+|---|---|---|---|
+| 协作文档存在 | 通过 | 本文件 | 无 |
+| Architect章节存在 | 通过 | 第1章 | 无 |
+| Code章节存在 | 通过 | 第2章 | TASK-PEN-000至007证据完整 |
+| 必需子章节存在 | 通过 | 1.1至1.7、2.1至2.6 | 无 |
+| 需求前缀一致 | 通过 | REQ-PEN-MIHOMO-EXIT-001 | 无 |
+| 需求编号一致 | 通过 | R01至R12 | 无 |
+| 接口编号一致 | 通过 | IF-PEN-001至010 | 无 |
+| 模板字段完整 | 通过 | 文档头及固定章节 | 无 |
+| GBK编码文件无乱码或误转码 | 通过 | 最终差异、编译、浏览器中文渲染 | 未出现乱码或误转码 |
+| Code证据完整 | 通过 | 2.1至2.6、特别是2.5.1至2.5.9 | 接口、配置、报告、文件、测试、风险和回滚齐全 |
+| Code任务反馈已处理 | 通过 | 2.6无未处理反馈 | 无 |
+| 验收标准可测试 | 通过 | AC-01至12 | 无 |
+| 需求任务覆盖完整 | 通过 | 1.5矩阵 | 无 |
+| 任务自测覆盖完整 | 通过 | TEST-PEN-000至007 | 每项任务均有测试或未执行原因 |
+| 修改文件在允许范围内 | 通过 | 2.5.4与补充后的1.4.1逐项核对 | 状态/命令/许可证必要落点已显式列出 |
+| 测试失败已记录缺陷 | 通过 | DEFECT-PEN-001至011；2.5.6并行抖动记录 | 三项最终整改和稳定复跑全部通过 |
+| 未执行测试原因完整 | 通过 | 2.5.7 | systemd实机、race、最终联网重建均说明替代证据 |
+| 遗留风险可接受 | 通过 | 2.5.8 | 不影响协议兼容、秘密边界、事务提交或失败关闭 |
+| 最终整改闭合 | 通过 | DEFECT-PEN-009至011；定向测试、普通/特殊/主控全量 | 旧订阅结果拒绝、深拷贝事务落盘后提交、连续健康失败受监管重启均完成 |
+| 无Ruby产品依赖 | 通过 | Go结构化解析workflow、Docker Compose v5.3.0原生解析、Bash语法检查 | 构建、安装、CI与运行均不需要Ruby |
+
+#### 1.7.3 冲突记录
+| 冲突编号 | 冲突条款 | 最终采用条款 | 裁决人 | 裁决结论 |
+|---|---|---|---|---|
+| CONFLICT-PEN-001 | 初始草稿误放 `plans/`，不符合规则固定输出目录和单文档要求 | 删除草稿，仅保留本 `doc/...-collaboration.md` | Architect | 已处理 |
+| CONFLICT-PEN-002 | 初始允许清单未逐项列出状态报告/命令文件和第三方许可证落点 | 按已声明IF-PEN-003、007、TASK-PEN-002、004、005补充必要文件，禁止借此扩展其他行为 | Architect | 已处理 |
+
+#### 1.7.4 裁判结论
+- 结论: 通过
+- 放行阻塞: 放行
+- 条件: 无。
+- 责任方: 无
+- 关闭要求: 无。
+- 整改关闭: DEFECT-PEN-009通过订阅源指纹关闭；DEFECT-PEN-010通过串行持久化锁、深拷贝工作副本和落盘后提交关闭；DEFECT-PEN-011通过失败关闭和三次失败受监管重启关闭。
+
+#### 1.7.5 结论
+- Architect重新逐行复核实现、任务范围、文档矩阵和测试证据；三项运行韧性缺口全部关闭，REQ-PEN-MIHOMO-EXIT-001最终门禁通过并放行。
+
+## 第2章 Code章节
+- 章节责任角色: Code
+- 状态: 已完成
+
+### 2.1 Code需求跟踪矩阵
+- 状态: 已完成
+
+| 需求编号 | 任务编号 | 实现文件 | 实现状态 | 自测状态 | 证据 | 备注 |
+|---|---|---|---|---|---|---|
+| R01,R02,R03,R08,R11,R12 | TASK-PEN-000 | `probe_node/product_profile*.go`、末跳目标/传输接缝及测试 | 已完成 | 已完成 | 2.5.5至2.5.6 | 前置PoC及正式实现共用同一VRoute源码 |
+| R04,R05,R10 | TASK-PEN-001 | `probe_special_exit*.go`、route store/actions/handlers | 已完成 | 已完成 | TEST-PEN-001 | 私有存储、订阅、聚合、冲突与Fake IP有效规则 |
+| R06 | TASK-PEN-002 | 管理handlers、`server.go`、`mng_pages/route.html` | 已完成 | 已完成 | TEST-PEN-002、007 | CRUD、刷新、状态、安装和真实浏览器验证 |
+| R01,R02,R07 | TASK-PEN-003 | 产品profile、CI矩阵、升级资产自检 | 已完成 | 已完成 | TEST-PEN-003 | 特殊发布物仅Linux amd64 |
+| R01,R02,R03,R11,R12 | TASK-PEN-004 | 路由配置同步、正式末跳TCP/UDP出口、运行报告 | 已完成 | 已完成 | TEST-PEN-004 | 作用域快照、失败关闭、普通协议透明 |
+| R03,R10,R11,R12 | TASK-PEN-005 | `probe_special_exit_mihomo.go`及测试 | 已完成 | 已完成 | TEST-PEN-005 | Mihomo配置、监管、REST、健康、滚动日志、TCP/UDP/QUIC |
+| R07,R08,R09 | TASK-PEN-006 | 原生安装、Docker壳、发布清单、成对升级 | 已完成 | 已完成 | TEST-PEN-006 | data/log/temp分区、候选校验、成对替换/回滚 |
+| R01-R12 | TASK-PEN-007 | README、安装升级文档、端到端回归与本章 | 已完成 | 已完成 | TEST-PEN-007 | 全部交付物和证据闭合 |
+
+### 2.2 Code关键接口跟踪矩阵
+- 状态: 已完成
+
+| 接口编号 | 需求编号 | 实现文件 | 调用方 | 提供方 | 实现状态 | 证据 | 备注 |
+|---|---|---|---|---|---|---|---|
+| IF-PEN-001至003、006 | R04-R06,R10 | `probe_special_exit*.go`、管理handlers和`route.html` | 见1.6 | 见1.6 | 已完成 | TEST-PEN-001、002 | 管理响应脱敏；浏览器不能直接注入代理明文 |
+| IF-PEN-004 | R07,R09 | 安装信息handler、嵌入式Linux脚本、Docker Compose | 路由页 | 主控 | 已完成 | TEST-PEN-006 | 节点身份、HTTPS、平台与构建类型校验 |
+| IF-PEN-005 | R02,R05 | 路由配置handler/sync | 探针 | 主控 | 已完成 | TEST-PEN-001、004 | HMAC不变；私有快照仅下发目标特殊探针 |
+| IF-PEN-007 | R01,R02 | 产品profile、状态报告、CI与候选自检 | CI/配置/状态 | 同一Go包 | 已完成 | TEST-PEN-003 | 构建类型不可运行时切换 |
+| IF-PEN-008 | R03 | `probe_virtual_router_exit_target.go`、exit netstack | VRoute末跳 | 出口适配层 | 已完成 | TEST-PEN-004、005 | Fake IP恢复域名；普通探针行为保持 |
+| IF-PEN-009 | R03,R12 | Mihomo runtime/transport | 出口适配层 | Mihomo管理器 | 已完成 | TEST-PEN-005 | 受认证回环SOCKS、REST和健康门禁 |
+| IF-PEN-010 | R08,R09 | 发布manifest、`upgrade_companion*` | 主控/运行时 | 升级器 | 已完成 | TEST-PEN-006 | 版本/平台/构建/哈希/兼容范围成对校验与回滚 |
+
+### 2.3 Code测试项跟踪矩阵
+- 状态: 已完成
+
+| 测试项编号 | 需求编号 | 任务编号 | 测试目标 | 测试方法 | 结果 | 证据 | 未执行原因 | 备注 |
+|---|---|---|---|---|---|---|---|---|
+| TEST-PEN-000 | R01,R02,R03,R08,R11,R12 | TASK-PEN-000 | 数据面PoC | 双构建、域名保持、SOCKS TCP/UDP/QUIC、失败注入 | 已完成 | 前置全量和官方Mihomo测试 | 无 | Architect已复核 |
+| TEST-PEN-001 | R04,R05,R10 | TASK-PEN-001 | 存储、订阅、作用域、聚合、冲突 | 控制器单元/全量、保存失败、并发写入和订阅源变更注入 | 已完成 | `go test ./...` | 无 | 含SSRF、秘密、源指纹和深拷贝事务正反例 |
+| TEST-PEN-002 | R06 | TASK-PEN-002 | 管理API与页面脚本 | 控制器测试、`node --check` | 已完成 | 全量测试和页面marker测试 | 无 | 只写秘密与显式清除 |
+| TEST-PEN-003 | R01,R02,R07 | TASK-PEN-003 | 双构建/发布矩阵/错包 | Linux交叉构建、构建类型自检、Go解析workflow YAML | 已完成 | 22,340,437字节特殊产物 | 无 | 普通矩阵不变且无需Ruby |
+| TEST-PEN-004 | R01,R02,R03,R11 | TASK-PEN-004 | 正式配置同步和末跳 | revision/hash/BuildKind、Fake IP域名、ICMP失败关闭 | 已完成 | 普通/特殊全量 | 无 | 初次无快照保持在线等待同步 |
+| TEST-PEN-005 | R03,R10,R11,R12 | TASK-PEN-005 | Mihomo正式运行时 | 官方v1.19.29配置校验、TCP/UDP/QUIC真实进程和连续健康失败注入 | 已完成 | 两个显式集成用例及健康阈值用例通过 | 无 | 无TUN；API/SOCKS只回环且认证；失败关闭后受监管重启 |
+| TEST-PEN-006 | R07,R08,R09 | TASK-PEN-006 | 安装/Docker/成对升级 | Bash语法、Compose、镜像构建/入口冒烟、manifest/rollback单测 | 已完成 | Docker和脚本验证通过 | Linux systemd实机安装未执行，原因见2.5.7 | Docker壳不参与日常程序升级 |
+| TEST-PEN-007 | R01-R12 | TASK-PEN-007 | 端到端与视觉 | 全量回归、Edge CDP桌面1440/移动390、DOM/控制台/截图 | 已完成 | 无横向溢出、无控制台错误 | 无 | 二次分流Tab交互与样例状态通过 |
+
+### 2.4 Code缺陷跟踪矩阵
+- 状态: 已完成
+
+| 缺陷编号 | 需求编号 | 测试项编号 | 缺陷描述 | 严重级别 | 修复状态 | 修复证据 | 备注 |
+|---|---|---|---|---|---|---|---|
+| DEFECT-PEN-001 | R01,R08 | TEST-PEN-000 | 特殊tag测试争用工作目录/固定端口 | 中 | 已完成 | 特殊`TestMain`隔离临时目录；串行全量通过 | 无数据污染 |
+| DEFECT-PEN-002 | R03,R11 | TEST-PEN-000 | 特殊版曾恢复普通TUN状态 | 中 | 已完成 | profile门禁及无TUN测试 | 普通路径不变 |
+| DEFECT-PEN-003 | R03,R11 | TEST-PEN-000 | 普通断言与特殊域名/ICMP语义冲突 | 低 | 已完成 | build kind隔离正反向测试 | 仅修测试边界 |
+| DEFECT-PEN-004 | R05,R10 | TEST-PEN-001 | 订阅下载期间GUI保存可能被旧副本覆盖 | 中 | 已完成 | 下载后在锁内重读并合并最新配置测试 | 删除期间刷新也拒绝 |
+| DEFECT-PEN-005 | R03,R10 | TEST-PEN-005 | 热更新曾先覆盖有效配置，候选失败难以回滚 | 高 | 已完成 | 候选校验/加载/健康后提交；失败恢复旧配置或停止 | 始终`exit_ready=false`失败关闭 |
+| DEFECT-PEN-006 | R08,R09 | TEST-PEN-006 | Docker最初整体挂载目录，data/log/temp未分离 | 中 | 已完成 | 四目录挂载、Compose解析和入口冒烟 | 程序位于`program/` |
+| DEFECT-PEN-007 | R10 | TEST-PEN-001 | 管理请求可携带代理明文且传输错误可能包含秘密URL | 中 | 已完成 | 请求代理字段忽略；错误固定脱敏；测试通过 | 代理只来自主控订阅抓取 |
+| DEFECT-PEN-008 | R07-R09 | TEST-PEN-006 | 安装/升级替换与服务失败回滚不完整 | 高 | 已完成 | 程序/Mihomo/许可证/服务配置和启用状态事务；升级任一回滚失败保持停止 | 无错配运行 |
+| DEFECT-PEN-009 | R05,R10 | TEST-PEN-001 | 订阅URL或请求头在下载期间变更后，旧下载结果仍可能合入新配置 | 高 | 已完成 | 下载前计算订阅源指纹；提交和错误记录时在事务内复核；源变更注入测试通过 | 更换、清除和删除均拒绝过期结果 |
+| DEFECT-PEN-010 | R04,R05 | TEST-PEN-001 | 特殊配置保存失败的回滚对象存在切片别名，并可能覆盖另一并发成功写入 | 高 | 已完成 | 存储写入串行化；对深拷贝工作副本聚合Fake IP；落盘成功后才提交内存；失败和双并发测试通过 | 失败路径不再需要覆盖式内存回滚 |
+| DEFECT-PEN-011 | R03,R11 | TEST-PEN-005 | Mihomo健康检查持续失败时只降级状态，未主动恢复子进程 | 高 | 已完成 | 首次失败立即`exit_ready=false`；连续三次失败停止旧进程并进入既有退避重启；阈值测试通过 | 成功健康检查重置计数 |
+
+### 2.5 Code执行证据
+- 状态: 已完成
+
+#### 2.5.1 修改接口
+- `probeRouteConfigResponse.expected_node_kind/special_exit`：沿用现有HMAC；普通节点不收私有快照，目标特殊探针收规范快照。
+- `nodeStatus/probeReportPayload`：报告`build_kind`以及desired/applied revision/hash、`exit_ready`、健康、版本、会话、字节和错误。
+- 管理接口：新增SpecialExits CRUD、订阅刷新、状态和安装信息；响应仅返回脱敏元数据。
+- `probeVirtualRouterExitTarget`和build-tag TCP/UDP接缝：特殊版将恢复的域名交给受管理Mihomo，普通版保持原解析/直连语义。
+- 发布与升级：新增仅Linux amd64特殊资产、配对manifest和Mihomo伴随升级事务。
+
+#### 2.5.2 配置文件
+- 主控`probe_route_config.json.special_exits`保存订阅秘密、规则、代理快照和revision/hash；管理读取不回显秘密。
+- 特殊探针`data/special_exit_snapshot.json`、`data/mihomo_runtime.json`、`data/mihomo.yaml`；均原子写入，秘密文件0600。
+- 原生目录为`/opt/cloudhelper/probe_exit_node/{data,log,temp}`；Docker另将`program/`独立挂载。
+- Mihomo固定回环SOCKS 17890、REST 17891，随机API/SOCKS秘密、无TUN；`log/mihomo.log`复用2 MiB滚动writer。
+
+#### 2.5.3 执行报告
+- TASK-PEN-000至007全部实现；同一`probe_node`源码形成`normal`和`mihomo_exit`两个产品，特殊版仅Linux amd64且不启动普通本地控制台、代理、系统DNS、同步、DDNS或平台TUN。
+- 每特殊探针派生唯一`special-exit:<node_id>`规则；普通探针仅见聚合域名/CIDR和出口节点，二次动作与凭据透明。
+- 主控订阅仅HTTPS 443、固定公共解析IP、禁重定向/代理/私网/保留地址/远程provider，8 MiB上限；失败文本不含URL。
+- 订阅刷新以URL和请求头的稳定指纹绑定下载结果；特殊配置在串行持久化锁内修改深拷贝，磁盘成功后才提交内存，保存失败或并发写入不会泄漏半状态。
+- Mihomo候选先`-t`校验，再加载和健康检查，成功后提交快照；进程退出或连续三次健康失败均按5至60秒退避重启，首次失败即关闭`exit_ready`且不回落直连。
+- 原生和Docker首次安装都使用配对manifest；程序升级自行校验并替换程序/Mihomo，失败成对回滚。Mihomo MIT许可证随Release与镜像交付。
+
+#### 2.5.4 影响文件
+- 主控：`probe_special_exit*.go`、route/node store与handlers、runtime/report/WS、`server.go`、`mng_pages/route.html`、嵌入式安装脚本及测试。
+- 探针：产品profile、特殊入口、路由同步、末跳目标/传输、Mihomo运行时、升级伴随组件、`go.mod/go.sum`及测试；原VRoute线协议文件仅增加出口接缝。
+- 发布部署：`.github/workflows/release.yml`、`docker/probe_exit_node/`、`THIRD_PARTY_LICENSES/mihomo-LICENSE`。
+- 文档：`README.md`、`doc/install_upgrade.md`、本协作文档。
+
+#### 2.5.5 测试命令
+- `cd probe_controller; go test ./...; go vet ./...`
+- `cd probe_node; go test ./...; go test -tags mihomo_exit ./...`
+- `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go vet -tags mihomo_exit .; go build -tags mihomo_exit ...`
+- `PROBE_MIHOMO_POC_BINARY=<official-v1.19.29> go test -tags mihomo_exit -run 'Test(OfficialMihomoValidatesCompiledSpecialExitConfig|MihomoExitOfficialBinaryTCPUDPQUIC)' -count=1 -v`
+- `bash -n ...install_probe_exit_node_service.sh; bash -n ...docker-entrypoint.sh`
+- `docker compose -f docker/probe_exit_node/compose.yaml config --quiet; docker build ...; docker run ...entrypoint`
+- `go test . -run TestReleaseWorkflowDefinesMihomoExitLinuxAMD64Artifacts -count=1; node --check <route-script>; go mod tidy -diff; git diff --check`
+- Edge Headless CDP：真实管理会话打开`/mng/route`、点击二次分流，采集桌面/移动DOM、控制台与截图。
+
+#### 2.5.6 自测结果
+- 通过：控制端全量测试和`go vet ./...`。
+- 通过：普通探针全量；最终并行高负载轮出现一次既有端口型非确定失败，立即串行复跑21.216秒通过，tidy后缓存复跑也通过。
+- 通过：特殊tag全量24.959秒；Linux amd64目标`go vet`、构建和Alpine内`--upgrade-verify-build-kind=mihomo_exit`通过，产物22,340,437字节。
+- 通过：官方Mihomo v1.19.29配置校验与真实TCP/UDP/QUIC闭环；QUIC仅提示通用`net.Conn`无法调大UDP缓冲区。
+- 通过：workflow YAML由Go结构化解析测试覆盖；Bash语法、Docker Compose v5.3.0原生解析、Docker镜像最新文件完整重建，正式entrypoint启动Linux特殊产物完成5秒自检。
+- 通过：Edge 151桌面1440x1000与移动390x844；Tab激活、内容/API数据完整、控制台无警告错误、`scrollWidth==viewport width`、关键控件无重叠。
+- 通过：`go mod tidy -diff`为空；两份Mihomo许可证SHA-256一致；`git diff --check`仅LF/CRLF提示。
+- 通过：订阅源变更拒绝、保存失败不提交、双并发更新不丢失和Mihomo三次健康失败重启阈值定向回归；控制器全量/vet及普通、特殊全量复跑均通过。
+- 仓库全平台探针`go vet`仍有既有mobilecore复制Mutex与Windows unsafe.Pointer告警；本次Linux特殊目标和新增代码vet通过。
+
+#### 2.5.7 未执行测试原因
+- 未在真实Linux systemd主机运行原生安装/幂等重装/服务重启：当前环境为Windows，且用户未授权部署到远端；用Bash语法、Linux交叉构建、候选自检、事务代码测试和Docker Linux壳覆盖。
+- 未执行`go test -race`：本机无`gcc`，开启CGO后构建阶段报`C compiler gcc not found`；控制器并发合并/保存失败路径已有定向单测与全量测试。
+- 未做生产订阅抓取、线上安装或升级；测试避免向外部配置源发送秘密，也遵守不直接部署探针/主控二进制的边界。
+
+#### 2.5.8 遗留风险
+- Linux systemd权限、包管理器差异和真实服务重启仍需发布前在隔离Linux x86_64验收环境执行安装/重装/回滚演练。
+- SOCKS UDP经通用`net.Conn`时quic-go无法调整系统UDP接收缓冲；功能闭环通过，高吞吐QUIC仍需Linux压测。
+- 主控配置存储为现有JSON文件模型，进程崩溃级断电原子性未在本任务扩展；本次特殊出口API只有磁盘保存成功才提交内存状态。
+- 本机缺少gcc导致race未执行；仓库既有全平台vet告警未纳入本需求整改。
+
+#### 2.5.9 回滚方案
+- 主控先禁用或删除特殊出口配置，使派生规则消失并停止向特殊探针提供可用快照；普通探针继续使用既有人工规则。
+- 发布回滚：停止发布特殊资产和Docker标签；特殊探针程序/Mihomo由伴随升级器恢复`.bak`成对版本，原生安装事务恢复旧程序、Mihomo、许可证、环境和service unit。
+- 代码回滚：移除新增特殊出口、profile/传输/运行时/升级伴随文件，回退2.5.4列出的接缝和CI/UI修改；主控旧版本会忽略不认识的`special_exits`字段，普通VRoute协议不需迁移。
+- 持久数据回滚前备份`data/`和`log/`；`temp/`可直接重建。
+
+#### 2.5.10 结论
+- TASK-PEN-000至007及DEFECT-PEN-009至011最终整改全部完成，AC-01至12具备实现和本地验证证据；提交Architect重新执行最终门禁。
+
+### 2.6 Code任务反馈
+- 状态: 已完成
+
+| 反馈编号 | 任务编号 | 反馈类型 | 反馈描述 | 阻塞影响 | Code建议 | Architect处理状态 | Architect处理结论 |
+|---|---|---|---|---|---|---|---|
+| 无 | TASK-PEN-000至007 | 无 | 无未处理任务包缺口或接口冲突 | 无 | 进入最终门禁 | 已完成 | 无需整改 |
+
+#### 2.6.1 结论
+- Code任务全部完成，无未处理反馈；未执行项和可接受残余风险已在2.5.7至2.5.8记录。

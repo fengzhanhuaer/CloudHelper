@@ -63,6 +63,7 @@ type nodeStatus struct {
 	Status    string `json:"status"`
 	NodeID    string `json:"node_id,omitempty"`
 	Version   string `json:"version,omitempty"`
+	BuildKind string `json:"build_kind,omitempty"`
 	Timestamp string `json:"timestamp"`
 }
 
@@ -73,18 +74,33 @@ type nodeIdentity struct {
 }
 
 type probeReportPayload struct {
-	Type                 string                      `json:"type"`
-	NodeID               string                      `json:"node_id"`
-	Platform             string                      `json:"platform,omitempty"`
-	OS                   string                      `json:"os,omitempty"`
-	Arch                 string                      `json:"arch,omitempty"`
-	IPv4                 []string                    `json:"ipv4,omitempty"`
-	IPv6                 []string                    `json:"ipv6,omitempty"`
-	System               systemStatus                `json:"system"`
-	MachineUptimeSeconds int64                       `json:"machine_uptime_seconds,omitempty"`
-	Version              string                      `json:"version,omitempty"`
-	RelayStatus          []probeRouteRelayReportItem `json:"relay_status,omitempty"`
-	Timestamp            string                      `json:"timestamp"`
+	Type                 string                        `json:"type"`
+	NodeID               string                        `json:"node_id"`
+	Platform             string                        `json:"platform,omitempty"`
+	OS                   string                        `json:"os,omitempty"`
+	Arch                 string                        `json:"arch,omitempty"`
+	IPv4                 []string                      `json:"ipv4,omitempty"`
+	IPv6                 []string                      `json:"ipv6,omitempty"`
+	System               systemStatus                  `json:"system"`
+	MachineUptimeSeconds int64                         `json:"machine_uptime_seconds,omitempty"`
+	Version              string                        `json:"version,omitempty"`
+	BuildKind            string                        `json:"build_kind,omitempty"`
+	SpecialExit          probeSpecialExitRuntimeReport `json:"special_exit,omitempty"`
+	RelayStatus          []probeRouteRelayReportItem   `json:"relay_status,omitempty"`
+	Timestamp            string                        `json:"timestamp"`
+}
+
+type probeSpecialExitRuntimeReport struct {
+	AppliedRevision int64  `json:"applied_revision,omitempty"`
+	AppliedSHA256   string `json:"applied_sha256,omitempty"`
+	ExitReady       bool   `json:"exit_ready"`
+	Healthy         bool   `json:"healthy"`
+	MihomoVersion   string `json:"mihomo_version,omitempty"`
+	ActiveSessions  int64  `json:"active_sessions,omitempty"`
+	BytesUp         int64  `json:"bytes_up,omitempty"`
+	BytesDown       int64  `json:"bytes_down,omitempty"`
+	LastApplyError  string `json:"last_apply_error,omitempty"`
+	UpdatedAt       string `json:"updated_at,omitempty"`
 }
 
 type systemStatus struct {
@@ -179,6 +195,7 @@ type probeLaunchOptions struct {
 	LocalConsoleEnabled      bool
 	UpgradeVerify            bool
 	UpgradeVerifyDurationSec int
+	UpgradeVerifyBuildKind   string
 	LocalTUNInstall          bool
 }
 
@@ -186,6 +203,9 @@ func main() {
 	reportIntervalSec.Store(defaultReportIntervalSec)
 	options := parseProbeLaunchOptions()
 	if options.LocalTUNInstall {
+		if !activeProbeProductProfile.AllowLocalTUNInstall {
+			log.Fatalf("local tun install mode is unavailable for build kind %s", currentProbeBuildKind())
+		}
 		initProbeLoggerWithStderrMirror()
 		if exePath, err := os.Executable(); err == nil && strings.TrimSpace(exePath) != "" {
 			debugLogPath := filepath.Join(filepath.Dir(exePath), "temp", "probe_local_tun_install_debug.log")
@@ -245,18 +265,30 @@ func main() {
 }
 
 func initProbeNodeRuntimeLogger() func() {
+	if currentProbeBuildKind() == probeBuildKindMihomoExit {
+		logDir, err := resolveProbeProductWorkingPath(activeProbeProductProfile.RuntimeLogDir)
+		if err != nil {
+			initProbeLoggerWithStderrMirror()
+			return func() {}
+		}
+		return initProbeNodeRuntimeLoggerAt(logDir, activeProbeProductProfile.RuntimeLogFile)
+	}
 	exePath, err := os.Executable()
 	if err != nil || strings.TrimSpace(exePath) == "" {
 		initProbeLoggerWithStderrMirror()
 		return func() {}
 	}
-	logDir := filepath.Join(filepath.Dir(exePath), "logs")
+	logDir := filepath.Join(filepath.Dir(exePath), activeProbeProductProfile.RuntimeLogDir)
+	return initProbeNodeRuntimeLoggerAt(logDir, activeProbeProductProfile.RuntimeLogFile)
+}
+
+func initProbeNodeRuntimeLoggerAt(logDir string, logFile string) func() {
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		initProbeLoggerWithStderrMirror()
 		logProbeWarnf("probe runtime log directory create failed: %v", err)
 		return func() {}
 	}
-	logPath := filepath.Join(logDir, "probe_node.runtime.log")
+	logPath := filepath.Join(logDir, strings.TrimSpace(logFile))
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
 		initProbeLoggerWithStderrMirror()
@@ -290,7 +322,10 @@ func parseProbeLaunchOptions() probeLaunchOptions {
 	flag.BoolVar(&options.LocalConsoleEnabled, "local-console", parseProbeBoolEnv("PROBE_LOCAL_CONSOLE_ENABLED", false), "enable probe local console listener (fallback: PROBE_LOCAL_CONSOLE_ENABLED; default: false)")
 	flag.BoolVar(&options.UpgradeVerify, "upgrade-verify", false, "internal: run upgrade verification mode")
 	flag.IntVar(&options.UpgradeVerifyDurationSec, "upgrade-verify-duration", defaultUpgradeVerifyDurationSec, "internal: upgrade verification duration in seconds")
-	flag.BoolVar(&options.LocalTUNInstall, "local-tun-install", false, "internal: run local tun install mode")
+	flag.StringVar(&options.UpgradeVerifyBuildKind, "upgrade-verify-build-kind", "", "internal: expected candidate build kind")
+	if activeProbeProductProfile.AllowLocalTUNInstall {
+		flag.BoolVar(&options.LocalTUNInstall, "local-tun-install", false, "internal: run local tun install mode")
+	}
 	flag.Parse()
 	return options
 }
@@ -311,30 +346,46 @@ func parseProbeBoolEnv(name string, fallback bool) bool {
 }
 
 func runProbeNode(options probeLaunchOptions) error {
+	if err := probeProductPlatformError(); err != nil {
+		return err
+	}
 	identity, err := resolveNodeIdentity(strings.TrimSpace(options.NodeID), strings.TrimSpace(options.NodeSecret))
 	if err != nil {
 		return fmt.Errorf("failed to load node identity: %w", err)
 	}
-	if _, err := ensureProbeLocalAuthManager(); err != nil {
-		return fmt.Errorf("failed to initialize local console auth: %w", err)
+	if err := startProbeProductRuntime(identity.NodeID); err != nil {
+		logProbeWarnf("probe product runtime startup pending: %v", err)
 	}
-	if err := ensureprobeLocalRouteDefaultsInitialized(); err != nil {
-		return fmt.Errorf("failed to initialize local proxy default files: %w", err)
+	if activeProbeProductProfile.EnableLocalConsole || activeProbeProductProfile.EnableLocalProxy {
+		if _, err := ensureProbeLocalAuthManager(); err != nil {
+			return fmt.Errorf("failed to initialize local console auth: %w", err)
+		}
+		if err := ensureprobeLocalRouteDefaultsInitialized(); err != nil {
+			return fmt.Errorf("failed to initialize local proxy default files: %w", err)
+		}
+		if err := loadProbeRouteAuthBlacklistFromDisk(); err != nil {
+			logProbeWarnf("probe route auth blacklist restore failed: %v", err)
+		}
 	}
-	if err := loadProbeRouteAuthBlacklistFromDisk(); err != nil {
-		logProbeWarnf("probe route auth blacklist restore failed: %v", err)
+	if activeProbeProductProfile.EnableVRoutePlatformInterface {
+		applyProbeLocalTUNEgressPersistentState(currentProbeLocalTUNEgressPersistentStateBestEffort())
 	}
-	applyProbeLocalTUNEgressPersistentState(currentProbeLocalTUNEgressPersistentStateBestEffort())
-	ensureProbeVirtualRouterDNSRuntime()
+	if activeProbeProductProfile.EnableSystemDNS {
+		ensureProbeVirtualRouterDNSRuntime()
+	}
 	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(options.ControllerURL), strings.TrimSpace(options.ControllerWS))
 	setprobeLocalRouteRuntimeContext(identity, controllerBaseURL)
-	if err := reconcileProbeVRouteProxyRuntime(loadProbeVirtualRouterLocalSettings()); err != nil {
-		logProbeWarnf("probe vroute proxy startup failed: %v", err)
+	if activeProbeProductProfile.EnableLocalProxy {
+		if err := reconcileProbeVRouteProxyRuntime(loadProbeVirtualRouterLocalSettings()); err != nil {
+			logProbeWarnf("probe vroute proxy startup failed: %v", err)
+		}
+		startProbeVRouteProxyRecoveryLoop()
 	}
-	startProbeVRouteProxyRecoveryLoop()
 
-	ensureProbeLocalListenConfigDefaults()
-	if options.LocalConsoleEnabled {
+	if activeProbeProductProfile.EnableLocalConsole {
+		ensureProbeLocalListenConfigDefaults()
+	}
+	if activeProbeProductProfile.EnableLocalConsole && options.LocalConsoleEnabled {
 		if err := applyProbeLocalConsoleListenerEnabled(true, strings.TrimSpace(options.LocalListenAddr), "startup"); err != nil {
 			return fmt.Errorf("failed to start local console: %w", err)
 		}
@@ -348,19 +399,30 @@ func runProbeNode(options probeLaunchOptions) error {
 		logProbeWarnf("probe reporter disabled: set PROBE_CONTROLLER_URL or PROBE_CONTROLLER_WS")
 	}
 	startProbeRouteConfigSyncLoop(identity, controllerBaseURL)
-	startProbeSyncScheduler(identity)
-	startProbeDDNSScheduler()
+	if activeProbeProductProfile.EnableSyncScheduler {
+		startProbeSyncScheduler(identity)
+	}
+	if activeProbeProductProfile.EnableDDNSScheduler {
+		startProbeDDNSScheduler()
+	}
 
-	logProbeInfof("probe node started: node_id=%s version=%s", identity.NodeID, BuildVersion)
-	startProbeLocalTUNStartupRecoveryAsync()
+	logProbeInfof("probe node started: node_id=%s version=%s build_kind=%s", identity.NodeID, BuildVersion, currentProbeBuildKind())
+	if activeProbeProductProfile.EnableLocalTUNStartupRecovery {
+		startProbeLocalTUNStartupRecoveryAsync()
+	}
 	stopSignal := make(chan os.Signal, 1)
 	signal.Notify(stopSignal, os.Interrupt, syscall.SIGTERM)
 	<-stopSignal
 	signal.Stop(stopSignal)
-	stopProbeVRouteProxyRuntime()
-	stopProbeVirtualRouterDNSService()
-	if err := restoreProbeVirtualRouterSystemDNS(); err != nil {
-		logProbeWarnf("probe virtual router system dns shutdown restore failed: %v", err)
+	stopProbeProductRuntime()
+	if activeProbeProductProfile.EnableLocalProxy {
+		stopProbeVRouteProxyRuntime()
+	}
+	if activeProbeProductProfile.EnableSystemDNS {
+		stopProbeVirtualRouterDNSService()
+		if err := restoreProbeVirtualRouterSystemDNS(); err != nil {
+			logProbeWarnf("probe virtual router system dns shutdown restore failed: %v", err)
+		}
 	}
 	return nil
 }
@@ -377,6 +439,7 @@ func buildProbeNodeHTTPMux(identity nodeIdentity) *http.ServeMux {
 			Status:    "ok",
 			NodeID:    identity.NodeID,
 			Version:   BuildVersion,
+			BuildKind: currentProbeBuildKind(),
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
 		})
 	})
@@ -389,6 +452,7 @@ func buildProbeNodeHTTPMux(identity nodeIdentity) *http.ServeMux {
 			Status:    "ok",
 			NodeID:    identity.NodeID,
 			Version:   BuildVersion,
+			BuildKind: currentProbeBuildKind(),
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
 		})
 	})
@@ -517,6 +581,26 @@ func resolveNodeIdentity(explicitNodeID string, explicitSecret string) (nodeIden
 }
 
 func resolveDataDir() (string, error) {
+	if currentProbeBuildKind() == probeBuildKindMihomoExit {
+		if envDir := strings.TrimSpace(os.Getenv("PROBE_NODE_DATA_DIR")); envDir != "" {
+			dataDir, err := filepath.Abs(envDir)
+			if err != nil {
+				return "", err
+			}
+			if err := os.MkdirAll(dataDir, 0o755); err != nil {
+				return "", err
+			}
+			return dataDir, nil
+		}
+		dataDir, err := resolveProbeProductWorkingPath(activeProbeProductProfile.DataDir)
+		if err != nil {
+			return "", err
+		}
+		if err := os.MkdirAll(dataDir, 0o755); err != nil {
+			return "", err
+		}
+		return dataDir, nil
+	}
 	candidates := make([]string, 0, 4)
 	if envDir := strings.TrimSpace(os.Getenv("PROBE_NODE_DATA_DIR")); envDir != "" {
 		candidates = append(candidates, envDir)
@@ -710,6 +794,8 @@ func sendProbeReport(stream net.Conn, encoder *json.Encoder, identity nodeIdenti
 		System:               system,
 		MachineUptimeSeconds: readMachineUptimeSeconds(),
 		Version:              BuildVersion,
+		BuildKind:            currentProbeBuildKind(),
+		SpecialExit:          probeProductSpecialExitReport(),
 		RelayStatus:          snapshotProbeRouteRelayReports(),
 		Timestamp:            time.Now().UTC().Format(time.RFC3339),
 	}

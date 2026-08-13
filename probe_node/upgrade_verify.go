@@ -29,6 +29,9 @@ func normalizeUpgradeVerifyDurationSec(sec int) int {
 }
 
 func runProbeUpgradeVerifyMode(options probeLaunchOptions) error {
+	if err := validateProbeUpgradeVerifyBuildKind(options.UpgradeVerifyBuildKind); err != nil {
+		return err
+	}
 	durationSec := normalizeUpgradeVerifyDurationSec(options.UpgradeVerifyDurationSec)
 	stableDuration := time.Duration(durationSec) * time.Second
 	log.Printf("probe upgrade verify mode started: version=%s duration=%ds", BuildVersion, durationSec)
@@ -93,6 +96,17 @@ func runProbeUpgradeVerifyMode(options probeLaunchOptions) error {
 	}
 
 	log.Printf("probe upgrade verify mode passed: duration=%ds", durationSec)
+	return nil
+}
+
+func validateProbeUpgradeVerifyBuildKind(expected string) error {
+	expected = strings.ToLower(strings.TrimSpace(expected))
+	if expected == "" {
+		return nil
+	}
+	if expected != currentProbeBuildKind() {
+		return fmt.Errorf("candidate build kind mismatch: expected=%s actual=%s", expected, currentProbeBuildKind())
+	}
 	return nil
 }
 

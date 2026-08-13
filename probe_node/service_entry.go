@@ -1,3 +1,5 @@
+//go:build !mihomo_exit
+
 package main
 
 import "log"

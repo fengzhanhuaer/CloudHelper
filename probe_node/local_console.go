@@ -3160,7 +3160,7 @@ func probeLocalSystemUpgradeCheckHandler(w http.ResponseWriter, r *http.Request)
 		ReleaseRepo:    repo,
 		CheckedAt:      time.Now().UTC().Format(time.RFC3339),
 	}
-	if asset, assetErr := pickProbeNodeAsset(release.Assets, detectRuntimePlatformInfo()); assetErr != nil {
+	if asset, assetErr := pickCurrentProbeProductAsset(release.Assets, detectRuntimePlatformInfo()); assetErr != nil {
 		result.AssetError = strings.TrimSpace(assetErr.Error())
 	} else {
 		result.AssetName = strings.TrimSpace(asset.Name)

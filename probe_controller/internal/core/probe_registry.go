@@ -24,6 +24,7 @@ type probeSecretUpsertRequest struct {
 type probeNodeRecord struct {
 	NodeNo                int                    `json:"node_no"`
 	NodeName              string                 `json:"node_name"`
+	NodeKind              string                 `json:"node_kind,omitempty"`
 	Remark                string                 `json:"remark"`
 	DDNS                  string                 `json:"ddns"`
 	CloudflareDDNSRecords []cloudflareDDNSRecord `json:"cloudflare_ddns_records,omitempty"`
@@ -55,11 +56,13 @@ type probeNodesSyncRequest struct {
 
 type probeNodeCreateRequest struct {
 	NodeName string `json:"node_name"`
+	NodeKind string `json:"node_kind,omitempty"`
 }
 
 type probeNodeUpdateRequest struct {
 	NodeNo              int    `json:"node_no"`
 	NodeName            string `json:"node_name"`
+	NodeKind            string `json:"node_kind,omitempty"`
 	Remark              string `json:"remark"`
 	DDNS                string `json:"ddns"`
 	TargetSystem        string `json:"target_system"`
@@ -443,6 +446,7 @@ func normalizeProbeNodes(items []probeNodeRecord) ([]probeNodeRecord, map[string
 
 		node := item
 		node.NodeName = strings.TrimSpace(node.NodeName)
+		node.NodeKind = normalizeProbeNodeKind(node.NodeKind)
 		node.Remark = strings.TrimSpace(node.Remark)
 		node.DDNS = strings.TrimSpace(node.DDNS)
 		node.CloudflareDDNSRecords = normalizeCloudflareRecords(node.CloudflareDDNSRecords)
@@ -520,6 +524,10 @@ func attachProbeRuntimeToNodes(nodes []probeNodeRecord) []probeNodeWithRuntime {
 }
 
 func createProbeNodeLocked(nodeName string) (probeNodeRecord, error) {
+	return createProbeNodeWithKindLocked(nodeName, probeNodeKindNormal)
+}
+
+func createProbeNodeWithKindLocked(nodeName string, nodeKind string) (probeNodeRecord, error) {
 	name := strings.TrimSpace(nodeName)
 	if name == "" {
 		return probeNodeRecord{}, fmt.Errorf("node name is required")
@@ -544,6 +552,7 @@ func createProbeNodeLocked(nodeName string) (probeNodeRecord, error) {
 	node := probeNodeRecord{
 		NodeNo:        nextNo,
 		NodeName:      name,
+		NodeKind:      normalizeProbeNodeKind(nodeKind),
 		Remark:        "",
 		DDNS:          "",
 		NodeSecret:    randomProbeNodeSecret(32),
@@ -703,6 +712,9 @@ func updateProbeNodeLocked(req probeNodeUpdateRequest) (probeNodeRecord, error) 
 	}
 
 	nodes[found].NodeName = name
+	if strings.TrimSpace(req.NodeKind) != "" {
+		nodes[found].NodeKind = normalizeProbeNodeKind(req.NodeKind)
+	}
 	nodes[found].Remark = strings.TrimSpace(req.Remark)
 	nodes[found].DDNS = strings.TrimSpace(req.DDNS)
 	nodes[found].TargetSystem = system

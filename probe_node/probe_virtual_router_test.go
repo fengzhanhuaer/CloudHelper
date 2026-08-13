@@ -4208,6 +4208,9 @@ func TestProbeVirtualRouterFakeIPMappingMissDoesNotBlockOnItemRefresh(t *testing
 }
 
 func TestProbeVirtualRouterFakeIPExitUDPForwarderDoesNotBlockOnResolve(t *testing.T) {
+	if currentProbeBuildKind() != probeBuildKindNormal {
+		t.Skip("ordinary probe resolves fake-IP exit domains locally; mihomo exit preserves the domain for SOCKS5")
+	}
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeVirtualRouterStateForTest()
 	resetProbeLocalDNSServiceForTest()
@@ -4346,6 +4349,9 @@ func (c *probeVirtualRouterHalfCloseTestConn) CloseWrite() error {
 }
 
 func TestProbeVirtualRouterFakeIPExitICMPEchoUsesRealTarget(t *testing.T) {
+	if currentProbeBuildKind() != probeBuildKindNormal {
+		t.Skip("ordinary probe permits physical ICMP exit; mihomo exit rejects ICMP without a direct fallback")
+	}
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeVirtualRouterStateForTest()
 	resetProbeLocalDNSServiceForTest()

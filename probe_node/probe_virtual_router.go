@@ -892,7 +892,7 @@ func applyProbeVirtualRouterConfigForNode(config probeVirtualRouterConfig, nodeI
 	probeVirtualRouterState.rulesByID = index.rulesByID
 	probeVirtualRouterState.localIP = index.nodeToIP[effectiveNodeID]
 	probeVirtualRouterState.topologySignature = signature
-	ensureLocalInterface := sanitized.Enabled && strings.TrimSpace(probeVirtualRouterState.localIP) != ""
+	ensureLocalInterface := activeProbeProductProfile.EnableVRoutePlatformInterface && sanitized.Enabled && strings.TrimSpace(probeVirtualRouterState.localIP) != ""
 	probeVirtualRouterState.mu.Unlock()
 	if topologyChanged {
 		clearProbeVirtualRouterRouteCache("config updated")
@@ -903,10 +903,12 @@ func applyProbeVirtualRouterConfigForNode(config probeVirtualRouterConfig, nodeI
 	if sanitized.Enabled {
 		cleanupProbeRouteDirectBypassForVirtualRouterRules(sanitized)
 	}
-	if ensureLocalInterface {
-		scheduleProbeVirtualRouterLocalInterfaceIPEnsure("config_updated")
-	} else if err := cleanupProbeVirtualRouterPlatformRoutes(); err != nil {
-		log.Printf("warning: cleanup probe virtual router platform routes failed: %v", err)
+	if activeProbeProductProfile.EnableVRoutePlatformInterface {
+		if ensureLocalInterface {
+			scheduleProbeVirtualRouterLocalInterfaceIPEnsure("config_updated")
+		} else if err := cleanupProbeVirtualRouterPlatformRoutes(); err != nil {
+			log.Printf("warning: cleanup probe virtual router platform routes failed: %v", err)
+		}
 	}
 }
 

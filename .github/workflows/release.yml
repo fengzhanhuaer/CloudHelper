@@ -131,6 +131,38 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: probe_node/${{ matrix.output }}
 
+  build-probe-exit-node:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Tagged Source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          ref: v${{ needs.prepare-release.outputs.new_version }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.4'
+          cache-dependency-path: probe_node/go.sum
+
+      - name: Build Mihomo Exit Probe (Linux amd64 only)
+        working-directory: probe_node
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: 0
+          NEW_VERSION: ${{ needs.prepare-release.outputs.new_version }}
+        shell: bash
+        run: go build -tags mihomo_exit -ldflags "-X main.BuildVersion=v${NEW_VERSION}" -o cloudhelper-probe-exit-node-linux-amd64 .
+
+      - name: Upload Mihomo Exit Probe Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudhelper-probe-exit-node-linux-amd64
+          path: probe_node/cloudhelper-probe-exit-node-linux-amd64
+
   build-probe-node-docker:
     needs: prepare-release
     runs-on: ubuntu-latest
@@ -171,6 +203,50 @@ jobs:
           tags: |
             ${{ steps.image.outputs.image_repo }}:v${{ needs.prepare-release.outputs.new_version }}
             ${{ steps.image.outputs.image_repo }}:${{ needs.prepare-release.outputs.new_version }}
+            ${{ steps.image.outputs.image_repo }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=v${{ needs.prepare-release.outputs.new_version }}
+
+  build-probe-exit-node-docker:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout Tagged Source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          ref: v${{ needs.prepare-release.outputs.new_version }}
+
+      - name: Resolve Docker Image Name
+        id: image
+        shell: bash
+        run: |
+          IMAGE_REPO=$(printf 'ghcr.io/%s/cloudhelper-probe-exit-node-shell' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          echo "image_repo=$IMAGE_REPO" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Mihomo Exit Probe Shell
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/probe_exit_node
+          file: docker/probe_exit_node/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.image.outputs.image_repo }}:v${{ needs.prepare-release.outputs.new_version }}
             ${{ steps.image.outputs.image_repo }}:latest
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
@@ -363,12 +439,20 @@ jobs:
       - prepare-release
       - build-probe-controller
       - build-probe-node
+      - build-probe-exit-node
       - build-probe-node-docker
+      - build-probe-exit-node-docker
       - build-probe-node-android
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - name: Checkout Tagged Source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          ref: v${{ needs.prepare-release.outputs.new_version }}
+
       - name: Download Probe Controller Artifact
         uses: actions/download-artifact@v4
         with:
@@ -393,11 +477,45 @@ jobs:
           name: cloudhelper-probe-node-windows-amd64.exe
           path: release-assets
 
+      - name: Download Mihomo Exit Probe Artifact (linux amd64)
+        uses: actions/download-artifact@v4
+        with:
+          name: cloudhelper-probe-exit-node-linux-amd64
+          path: release-assets
+
       - name: Download Probe Node Android Artifact (arm64)
         uses: actions/download-artifact@v4
         with:
           name: cloudhelper-probe-node-android-arm64.apk
           path: release-assets
+
+      - name: Generate Mihomo Exit Paired Upgrade Manifest
+        shell: bash
+        env:
+          NEW_VERSION: ${{ needs.prepare-release.outputs.new_version }}
+        run: |
+          PROGRAM_SHA256=$(sha256sum release-assets/cloudhelper-probe-exit-node-linux-amd64 | awk '{print $1}')
+          cat > release-assets/cloudhelper-probe-exit-node-manifest.json <<EOF
+          {
+            "schema_version": 1,
+            "version": "v${NEW_VERSION}",
+            "build_kind": "mihomo_exit",
+            "os": "linux",
+            "arch": "amd64",
+            "compatible_program_versions": {"min": "v${NEW_VERSION}", "max": "v${NEW_VERSION}"},
+            "program": {"asset": "cloudhelper-probe-exit-node-linux-amd64", "sha256": "${PROGRAM_SHA256}"},
+            "mihomo": {
+              "version": "v1.19.29",
+              "asset": "mihomo-linux-amd64-compatible-v1.19.29.gz",
+              "url": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.29/mihomo-linux-amd64-compatible-v1.19.29.gz",
+              "sha256": "5612e698e96c8b8ad15abc4c0a4f098eba9234354b4f248cb97f2528e215b094"
+            }
+          }
+          EOF
+
+      - name: Stage Mihomo License
+        shell: bash
+        run: cp THIRD_PARTY_LICENSES/mihomo-LICENSE release-assets/mihomo-LICENSE
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -409,4 +527,7 @@ jobs:
             release-assets/cloudhelper-probe-node-linux-amd64
             release-assets/cloudhelper-probe-node-linux-arm64
             release-assets/cloudhelper-probe-node-windows-amd64.exe
+            release-assets/cloudhelper-probe-exit-node-linux-amd64
+            release-assets/cloudhelper-probe-exit-node-manifest.json
+            release-assets/mihomo-LICENSE
             release-assets/cloudhelper-probe-node-android-arm64.apk

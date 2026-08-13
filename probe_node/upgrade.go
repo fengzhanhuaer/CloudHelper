@@ -58,7 +58,6 @@ const (
 	probeUpgradeVerifyOutputLimit     = 2048
 	probeUpgradeVerifyTimeoutGraceSec = 15
 	probeUpgradeWorkspaceDirName      = ".cloudhelper-upgrade"
-	probeUpgradeWorkspacePrefix       = "cloudhelper-probe-node-upgrade-"
 	probeUpgradeWorkspaceStaleTTL     = 24 * time.Hour
 	probeUpgradeOperationTimeout      = 30 * time.Minute
 	probeUpgradeDownloadIdleTimeout   = time.Minute
@@ -149,7 +148,7 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 		Mode:        mode,
 		ReleaseRepo: repo,
 	})
-	asset, err := pickProbeNodeAsset(release.Assets, platform)
+	asset, err := pickCurrentProbeProductAsset(release.Assets, platform)
 	if err != nil {
 		log.Printf("probe upgrade failed: pick asset: %v", err)
 		reportProbeLocalUpgradeFailed("pick_asset", err, mode, repo, 20)
@@ -267,6 +266,12 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 		return
 	}
 	log.Printf("probe upgrade candidate runtime verify complete: binary=%s", binaryPath)
+	companion, err := prepareProbeProductUpgradeCompanion(ctx, downloadMode, release, controllerBase, identity, tmpDir, assetFile)
+	if err != nil {
+		log.Printf("probe upgrade failed: paired component validation: %v", err)
+		reportProbeLocalUpgradeFailed("verify_pair", err, mode, repo, 80)
+		return
+	}
 
 	reportProbeLocalUpgradeProgress(probeLocalUpgradeRuntimeState{
 		Status:      "running",
@@ -283,6 +288,18 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 		return
 	}
 	log.Printf("probe upgrade replace complete: exe=%s backup=%s", exePath, backupPath)
+	companion, err = replaceProbeProductUpgradeCompanion(companion)
+	if err != nil {
+		if rollbackErr := rollbackExecutable(exePath, backupPath); rollbackErr != nil {
+			combinedErr := fmt.Errorf("paired component replace failed: %v; program rollback failed: %w", err, rollbackErr)
+			log.Printf("probe upgrade rollback failed: %v", combinedErr)
+			reportProbeLocalUpgradeFailed("rollback", combinedErr, mode, repo, 89)
+			return
+		}
+		log.Printf("probe upgrade failed: paired component replace: %v", err)
+		reportProbeLocalUpgradeFailed("replace_pair", err, mode, repo, 88)
+		return
+	}
 
 	reportProbeLocalUpgradeProgress(probeLocalUpgradeRuntimeState{
 		Status:      "running",
@@ -293,14 +310,27 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 		ReleaseRepo: repo,
 	})
 	log.Printf("probe upgrade complete: %s -> %s, restarting", BuildVersion, release.TagName)
+	stopProbeProductRuntime()
 	if err := restartCurrentProcess(exePath); err != nil {
 		log.Printf("probe upgrade restart failed: %v", err)
+		rollbackFailures := make([]string, 0, 2)
+		if rollbackErr := rollbackProbeProductUpgradeCompanion(companion); rollbackErr != nil {
+			log.Printf("probe upgrade paired component rollback failed: %v", rollbackErr)
+			rollbackFailures = append(rollbackFailures, "mihomo: "+rollbackErr.Error())
+		}
 		if rollbackErr := rollbackExecutable(exePath, backupPath); rollbackErr != nil {
 			log.Printf("probe upgrade rollback failed: %v", rollbackErr)
+			rollbackFailures = append(rollbackFailures, "program: "+rollbackErr.Error())
+		}
+		if len(rollbackFailures) > 0 {
+			rollbackErr := errors.New("paired rollback incomplete: " + strings.Join(rollbackFailures, "; "))
 			reportProbeLocalUpgradeFailed("rollback", rollbackErr, mode, repo, 96)
 			return
 		}
 		log.Printf("probe upgrade rollback complete, old binary restored")
+		if runtimeErr := startProbeProductRuntime(identity.NodeID); runtimeErr != nil {
+			log.Printf("probe upgrade rollback runtime restore failed: %v", runtimeErr)
+		}
 		reportProbeLocalUpgradeFailed("restart", err, mode, repo, 96)
 		return
 	}
@@ -358,10 +388,22 @@ func fetchProbeRelease(ctx context.Context, mode, repo, controllerBase string, i
 }
 
 func pickProbeNodeAsset(assets []releaseAsset, platform runtimePlatformInfo) (releaseAsset, error) {
+	return pickProbeNodeAssetForPrefix(assets, platform, "cloudhelper-probe-node")
+}
+
+func pickCurrentProbeProductAsset(assets []releaseAsset, platform runtimePlatformInfo) (releaseAsset, error) {
+	return pickProbeNodeAssetForPrefix(assets, platform, activeProbeProductProfile.UpgradeAssetPrefix)
+}
+
+func pickProbeNodeAssetForPrefix(assets []releaseAsset, platform runtimePlatformInfo, prefix string) (releaseAsset, error) {
+	assetPrefix := strings.ToLower(strings.TrimSpace(prefix))
+	if assetPrefix == "" {
+		return releaseAsset{}, errors.New("probe upgrade asset prefix is empty")
+	}
 	probeAssets := make([]releaseAsset, 0, len(assets))
 	for _, a := range assets {
 		n := strings.ToLower(strings.TrimSpace(a.Name))
-		if strings.Contains(n, "probe-node") || strings.Contains(n, "probe_node") {
+		if strings.HasPrefix(n, assetPrefix+"-") || n == assetPrefix {
 			probeAssets = append(probeAssets, a)
 		}
 	}
@@ -375,7 +417,7 @@ func pickProbeNodeAsset(assets []releaseAsset, platform runtimePlatformInfo) (re
 
 	// Keep selection aligned with GitHub Action artifact naming:
 	// cloudhelper-probe-node-<goos>-<goarch>
-	preferredPrefix := "cloudhelper-probe-node-" + strings.ToLower(strings.TrimSpace(platform.GOOS)) + "-" + strings.ToLower(strings.TrimSpace(platform.GOARCH))
+	preferredPrefix := assetPrefix + "-" + strings.ToLower(strings.TrimSpace(platform.GOOS)) + "-" + strings.ToLower(strings.TrimSpace(platform.GOARCH))
 	prefixMatched := make([]releaseAsset, 0, len(probeAssets))
 	for _, a := range probeAssets {
 		name := strings.ToLower(strings.TrimSpace(a.Name))
@@ -1167,6 +1209,7 @@ func verifyProbeCandidateRuntime(binaryPath string) error {
 	args := []string{
 		"--upgrade-verify",
 		fmt.Sprintf("--upgrade-verify-duration=%d", verifySec),
+		"--upgrade-verify-build-kind=" + currentProbeBuildKind(),
 	}
 	cmd := exec.CommandContext(ctx, candidate, args...)
 	hideWindowSysProcAttr(cmd)
@@ -1479,10 +1522,13 @@ func createProbeUpgradeWorkspace() (string, error) {
 		return "", err
 	}
 	cleanupProbeStaleUpgradeWorkspaces(baseDir)
-	return os.MkdirTemp(baseDir, probeUpgradeWorkspacePrefix+"*")
+	return os.MkdirTemp(baseDir, probeProductUpgradeWorkspacePrefix()+"*")
 }
 
 func probeUpgradeWorkspaceBaseDir() (string, error) {
+	if currentProbeBuildKind() == probeBuildKindMihomoExit {
+		return resolveProbeProductWorkingPath(activeProbeProductProfile.TempDir)
+	}
 	exePath, err := os.Executable()
 	if err != nil {
 		return "", err
@@ -1501,7 +1547,7 @@ func cleanupProbeStaleUpgradeWorkspaces(baseDir string) {
 	now := time.Now()
 	for _, entry := range entries {
 		name := strings.TrimSpace(entry.Name())
-		if !strings.HasPrefix(name, probeUpgradeWorkspacePrefix) {
+		if !strings.HasPrefix(name, probeProductUpgradeWorkspacePrefix()) {
 			continue
 		}
 		fullPath := filepath.Join(baseDir, name)

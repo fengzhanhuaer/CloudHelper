@@ -89,8 +89,8 @@ var errProbeVirtualRouterExitNetstackOutputQueueFull = errors.New("exit response
 
 var probeVirtualRouterSendICMPEcho = sendProbeVirtualRouterICMPEcho
 var probeVirtualRouterExitLookupIPv4 = lookupProbeVirtualRouterExitSystemIPv4s
-var probeVirtualRouterExitDialTCP = dialProbeVirtualRouterExitTCP
-var probeVirtualRouterExitDialUDP = dialProbeVirtualRouterExitUDP
+var probeVirtualRouterExitDialTargetTCP = dialProbeVirtualRouterProductExitTCP
+var probeVirtualRouterExitDialTargetUDP = dialProbeVirtualRouterProductExitUDP
 
 func handleProbeVirtualRouterFakeIPExitPacket(runtime *probeVirtualRouterRuntime, link *probeVirtualRouterFrameLink, packet []byte, path []string) bool {
 	dstIP := probeVirtualRouterIPv4Destination(packet)
@@ -167,6 +167,12 @@ func handleProbeVirtualRouterFakeIPExitICMPEchoRequest(runtime *probeVirtualRout
 	info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet)
 	if !ok || info.Kind != "echo_request" {
 		return false
+	}
+	if !probeProductAllowsPhysicalICMPExit() {
+		err := errors.New("icmp is unsupported by mihomo exit and physical fallback is disabled")
+		recordProbeVirtualRouterRuntimeDeliveryError(runtime, err)
+		log.Printf("probe virtual router fake ip icmp exit rejected: route=%s fake_ip=%s domain=%s err=%v", probeVirtualRouterRuntimeLogRouteID(runtime), info.DestinationIP, strings.TrimSpace(entry.Domain), err)
+		return true
 	}
 	targetIPs, err := probeVirtualRouterFakeIPRealIPs(strings.TrimSpace(entry.Domain))
 	if err != nil {
@@ -477,21 +483,21 @@ func (n *probeVirtualRouterExitNetstack) handleTCPForwarder(req *tcp.ForwarderRe
 }
 
 func relayProbeVirtualRouterExitTCP(inbound net.Conn, localAddress tcpip.Address, localPort uint16) {
-	targetAddrs, entry, err := probeVirtualRouterFakeIPTargetsFromTransportID(localAddress, localPort)
+	target, entry, err := probeVirtualRouterFakeIPTargetFromTransportID(localAddress, localPort)
 	if err != nil {
 		log.Printf("probe virtual router fake ip tcp exit resolve failed: fake_ip=%s port=%d err=%v", strings.TrimSpace(localAddress.String()), localPort, err)
 		_ = inbound.Close()
 		return
 	}
-	outbound, err := probeVirtualRouterExitDialTCP(targetAddrs)
+	outbound, err := probeVirtualRouterExitDialTargetTCP(target)
 	if err != nil {
-		log.Printf("probe virtual router fake ip tcp exit open failed: targets=%s err=%v", strings.Join(targetAddrs, ","), err)
+		log.Printf("probe virtual router fake ip tcp exit open failed: target=%s err=%v", target.Address(), err)
 		_ = inbound.Close()
 		return
 	}
 	tuneProbeVirtualRouterExitTCPConn(inbound)
 	tuneProbeVirtualRouterExitTCPConn(outbound)
-	log.Printf("probe virtual router fake ip tcp exit open ok: targets=%s remote=%s", strings.Join(targetAddrs, ","), outbound.RemoteAddr())
+	log.Printf("probe virtual router fake ip tcp exit open ok: target=%s remote=%s", target.Address(), outbound.RemoteAddr())
 	recordProbeVirtualRouterFakeIPExitHit(entry.Domain)
 	go relayProbeVirtualRouterExitTCPConns(inbound, outbound)
 }
@@ -522,19 +528,19 @@ func (n *probeVirtualRouterExitNetstack) handleUDPForwarder(req *udp.ForwarderRe
 }
 
 func relayProbeVirtualRouterExitUDP(inbound *gonet.UDPConn, localAddress tcpip.Address, localPort uint16) {
-	targetAddrs, entry, err := probeVirtualRouterFakeIPTargetsFromTransportID(localAddress, localPort)
+	target, entry, err := probeVirtualRouterFakeIPTargetFromTransportID(localAddress, localPort)
 	if err != nil {
 		log.Printf("probe virtual router fake ip udp exit resolve failed: fake_ip=%s port=%d err=%v", strings.TrimSpace(localAddress.String()), localPort, err)
 		_ = inbound.Close()
 		return
 	}
-	outbound, err := probeVirtualRouterExitDialUDP(targetAddrs)
+	outbound, err := probeVirtualRouterExitDialTargetUDP(target)
 	if err != nil {
-		log.Printf("probe virtual router fake ip udp exit open failed: targets=%s err=%v", strings.Join(targetAddrs, ","), err)
+		log.Printf("probe virtual router fake ip udp exit open failed: target=%s err=%v", target.Address(), err)
 		_ = inbound.Close()
 		return
 	}
-	log.Printf("probe virtual router fake ip udp exit open ok: targets=%s remote=%s", strings.Join(targetAddrs, ","), outbound.RemoteAddr())
+	log.Printf("probe virtual router fake ip udp exit open ok: target=%s remote=%s", target.Address(), outbound.RemoteAddr())
 	recordProbeVirtualRouterFakeIPExitHit(entry.Domain)
 	relayProbeVirtualRouterExitUDPConns(inbound, outbound)
 }
@@ -939,7 +945,7 @@ func shutdownProbeVirtualRouterExitConnRead(conn net.Conn) {
 	}
 }
 
-func relayProbeVirtualRouterExitUDPConns(inbound *gonet.UDPConn, outbound *net.UDPConn) {
+func relayProbeVirtualRouterExitUDPConns(inbound *gonet.UDPConn, outbound net.Conn) {
 	defer inbound.Close()
 	defer outbound.Close()
 	done := make(chan struct{}, 2)

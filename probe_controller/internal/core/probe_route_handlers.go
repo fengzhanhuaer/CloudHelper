@@ -8,8 +8,10 @@ import (
 )
 
 type probeRouteConfigResponse struct {
-	NodeID        string                   `json:"node_id"`
-	VirtualRouter probeVirtualRouterConfig `json:"virtual_router,omitempty"`
+	NodeID           string                    `json:"node_id"`
+	ExpectedNodeKind string                    `json:"expected_node_kind,omitempty"`
+	VirtualRouter    probeVirtualRouterConfig  `json:"virtual_router,omitempty"`
+	SpecialExit      *probeSpecialExitSnapshot `json:"special_exit,omitempty"`
 }
 
 type probeRouteFakeIPResolveResponse struct {
@@ -45,10 +47,22 @@ func ProbeRouteConfigHandler(w http.ResponseWriter, r *http.Request) {
 	reconcileProbeVirtualRouterFakeIPLibraryBestEffort()
 	ProbeRouteConfigStore.mu.RLock()
 	virtualRouter := buildProbeVirtualRouterConfigForNodeLocked(nodeID)
+	specialExit, hasSpecialExit := findProbeSpecialExitByNodeID(ProbeRouteConfigStore.data.SpecialExits, nodeID)
 	ProbeRouteConfigStore.mu.RUnlock()
+	expectedNodeKind := probeNodeKindNormal
+	if node, ok := getProbeNodeByID(nodeID); ok {
+		expectedNodeKind = normalizeProbeNodeKind(node.NodeKind)
+	}
+	var snapshot *probeSpecialExitSnapshot
+	if hasSpecialExit && expectedNodeKind == probeNodeKindMihomoExit {
+		value := probeSpecialExitSnapshotForConfig(specialExit)
+		snapshot = &value
+	}
 	writeJSON(w, http.StatusOK, probeRouteConfigResponse{
-		NodeID:        nodeID,
-		VirtualRouter: virtualRouter,
+		NodeID:           nodeID,
+		ExpectedNodeKind: expectedNodeKind,
+		VirtualRouter:    virtualRouter,
+		SpecialExit:      snapshot,
 	})
 }
 
@@ -171,6 +185,7 @@ func authorizedProbeVirtualRouterFakeIPRule(domain string, requestedRuleID strin
 	}
 	ProbeRouteConfigStore.mu.RLock()
 	config := normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter)
+	config.RouteRules = buildEffectiveProbeVirtualRouterRouteRules(config.RouteRules, ProbeRouteConfigStore.data.SpecialExits)
 	ProbeRouteConfigStore.mu.RUnlock()
 	if !config.Enabled {
 		return probeVirtualRouterRouteRule{}, fmt.Errorf("virtual router is disabled")

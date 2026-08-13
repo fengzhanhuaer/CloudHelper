@@ -184,6 +184,7 @@ func buildProbeVirtualRouterConfigForNodeLocked(nodeID string) probeVirtualRoute
 		return defaultProbeVirtualRouterConfig()
 	}
 	config := ensureProbeVirtualRouterAuthFields(ensureProbeVirtualRouterProbeIPsForKnownNodes(normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter)))
+	config.RouteRules = buildEffectiveProbeVirtualRouterRouteRules(config.RouteRules, ProbeRouteConfigStore.data.SpecialExits)
 	config = enrichProbeVirtualRouterTLSFingerprints(config)
 	config = enrichProbeVirtualRouterAuthTickets(config)
 	config = enrichProbeVirtualRouterProbeIPDisplayNames(config)
@@ -747,10 +748,15 @@ func reconcileProbeVirtualRouterFakeIPLibraryWithRouteRulesLocked(rules []probeV
 	if ProbeRouteConfigStore == nil {
 		return false
 	}
-	library := normalizeProbeVirtualRouterFakeIPLibrary(ProbeRouteConfigStore.data.VirtualRouterFakeIP)
+	library, changed := reconcileProbeVirtualRouterFakeIPLibraryWithRouteRules(ProbeRouteConfigStore.data.VirtualRouterFakeIP, rules, now)
+	ProbeRouteConfigStore.data.VirtualRouterFakeIP = library
+	return changed
+}
+
+func reconcileProbeVirtualRouterFakeIPLibraryWithRouteRules(input probeVirtualRouterFakeIPLibrary, rules []probeVirtualRouterRouteRule, now time.Time) (probeVirtualRouterFakeIPLibrary, bool) {
+	library := normalizeProbeVirtualRouterFakeIPLibrary(input)
 	if len(library.Items) == 0 {
-		ProbeRouteConfigStore.data.VirtualRouterFakeIP = library
-		return false
+		return library, false
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -790,8 +796,7 @@ func reconcileProbeVirtualRouterFakeIPLibraryWithRouteRulesLocked(rules []probeV
 	if changed {
 		bumpProbeVirtualRouterFakeIPLibraryVersion(&library, now)
 	}
-	ProbeRouteConfigStore.data.VirtualRouterFakeIP = library
-	return changed
+	return library, changed
 }
 
 func probeVirtualRouterRouteRuleForFakeIPDomain(rules []probeVirtualRouterRouteRule, domain string) (probeVirtualRouterRouteRule, bool) {

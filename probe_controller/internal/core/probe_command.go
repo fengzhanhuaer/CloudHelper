@@ -683,6 +683,36 @@ func ProbeProxyInstallScriptHandler(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, script)
 }
 
+func ProbeProxyExitNodeInstallScriptHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	nodeID := normalizeProbeNodeID(r.URL.Query().Get("node_id"))
+	secret := strings.TrimSpace(r.URL.Query().Get("secret"))
+	if nodeID == "" || secret == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node_id and secret query parameters are required"})
+		return
+	}
+	storedSecret, ok := resolveProbeSecret(nodeID)
+	if !ok || !hmac.Equal([]byte(storedSecret), []byte(secret)) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid probe secret"})
+		return
+	}
+	node, ok := getProbeNodeByID(nodeID)
+	if !ok || normalizeProbeNodeKind(node.NodeKind) != probeNodeKindMihomoExit {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node must use node_kind mihomo_exit"})
+		return
+	}
+	if strings.TrimSpace(probeExitNodeInstallScriptLinux) == "" {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "exit probe install script is not embedded"})
+		return
+	}
+	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, probeExitNodeInstallScriptLinux)
+}
+
 func dispatchUpgradeToProbe(node probeNodeRecord, controllerBaseURL string) (probeUpgradeDispatchResult, error) {
 	nodeID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
 	session, ok := getProbeSession(nodeID)

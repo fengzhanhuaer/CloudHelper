@@ -104,7 +104,7 @@ func mngProbeNodeCreateHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ProbeStore.mu.Lock()
-	node, err := createProbeNodeLocked(req.NodeName)
+	node, err := createProbeNodeWithKindLocked(req.NodeName, req.NodeKind)
 	ProbeStore.mu.Unlock()
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

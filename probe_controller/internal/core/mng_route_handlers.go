@@ -82,6 +82,71 @@ func mngRouteVirtualRouterRouteRulesHandler(w http.ResponseWriter, r *http.Reque
 	}
 }
 
+func mngRouteSpecialExitsHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		result, err := listMngProbeSpecialExits()
+		writeMngRouteResult(w, result, err)
+	case http.MethodPost, http.MethodPatch:
+		payload, err := readMngRawJSONPayload(r)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+			return
+		}
+		result, err := upsertMngProbeSpecialExit(payload, controllerBaseURLFromRequest(r))
+		writeMngRouteResult(w, result, err)
+	case http.MethodDelete:
+		var req struct {
+			NodeID string `json:"node_id"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&req); err != nil && err != io.EOF {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+			return
+		}
+		if strings.TrimSpace(req.NodeID) == "" {
+			req.NodeID = r.URL.Query().Get("node_id")
+		}
+		result, err := deleteMngProbeSpecialExit(req.NodeID, controllerBaseURLFromRequest(r))
+		writeMngRouteResult(w, result, err)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func mngRouteSpecialExitSubscriptionRefreshHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		NodeID string `json:"node_id"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+	result, err := refreshMngProbeSpecialExitSubscription(r.Context(), req.NodeID, controllerBaseURLFromRequest(r))
+	writeMngRouteResult(w, result, err)
+}
+
+func mngRouteSpecialExitStatusHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	result, err := listMngProbeSpecialExitStatuses()
+	writeMngRouteResult(w, result, err)
+}
+
+func mngRouteSpecialExitInstallHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	result, err := buildMngProbeSpecialExitInstallInfo(r.URL.Query().Get("node_id"), r.URL.Query().Get("mode"), controllerBaseURLFromRequest(r))
+	writeMngRouteResult(w, result, err)
+}
+
 func mngRouteVirtualRouterFakeIPResetHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -668,7 +733,14 @@ func writeMngRouteError(w http.ResponseWriter, err error) {
 		strings.Contains(lower, " must be"),
 		strings.Contains(lower, " duplicated"),
 		strings.Contains(lower, "endpoints must be different"),
-		strings.Contains(lower, "exceeded limit"):
+		strings.Contains(lower, "exceeded limit"),
+		strings.Contains(lower, "conflict"),
+		strings.Contains(lower, "overlaps"),
+		strings.Contains(lower, "reserved"),
+		strings.Contains(lower, "unsupported"),
+		strings.Contains(lower, "too long"),
+		strings.Contains(lower, "https url"),
+		strings.Contains(lower, "non-public"):
 		status = http.StatusBadRequest
 	case strings.Contains(lower, "not found"):
 		status = http.StatusNotFound

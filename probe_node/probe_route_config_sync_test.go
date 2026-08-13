@@ -33,6 +33,9 @@ func TestNormalizeProbeRouteNodeID(t *testing.T) {
 func TestFetchProbeRouteConfigUsesRouteEndpoint(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("PROBE_NODE_DATA_DIR", dataDir)
+	previousApply := probeApplyProductRouteConfig
+	probeApplyProductRouteConfig = func(*probeSpecialExitSnapshot, string) error { return nil }
+	t.Cleanup(func() { probeApplyProductRouteConfig = previousApply })
 
 	var requestedPath string
 	var requestedNodeID string
@@ -55,6 +58,7 @@ func TestFetchProbeRouteConfigUsesRouteEndpoint(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(probeRouteConfigResponse{
+			ExpectedNodeKind: currentProbeBuildKind(),
 			VirtualRouter: probeVirtualRouterConfig{
 				Enabled:    true,
 				FakeIPCIDR: "198.18.0.0/15",
@@ -93,5 +97,34 @@ func TestFetchProbeRouteConfigUsesRouteEndpoint(t *testing.T) {
 	}
 	if config.RouteRules[0].Action != "probe_exit" || config.RouteRules[0].ExitNodeID != "2" {
 		t.Fatalf("unexpected route rule action: %+v", config.RouteRules[0])
+	}
+}
+
+func TestFetchProbeRouteConfigRejectsExpectedNodeKindMismatchAfterHMAC(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	mismatch := probeBuildKindNormal
+	if currentProbeBuildKind() == probeBuildKindNormal {
+		mismatch = probeBuildKindMihomoExit
+	}
+	authenticated := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/probe/auth/challenge" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"challenge": "controller-issued-kind-mismatch"})
+			return
+		}
+		authenticated = r.Header.Get("X-Probe-Node-Id") == "7" && r.Header.Get("X-Probe-Signature") != ""
+		_ = json.NewEncoder(w).Encode(probeRouteConfigResponse{
+			ExpectedNodeKind: mismatch,
+			VirtualRouter:    probeVirtualRouterConfig{Enabled: true},
+		})
+	}))
+	defer server.Close()
+
+	_, err := fetchProbeRouteConfig(context.Background(), server.URL, nodeIdentity{NodeID: "7", Secret: "secret-7"})
+	if err == nil {
+		t.Fatal("expected node kind mismatch was accepted")
+	}
+	if !authenticated {
+		t.Fatal("expected node kind check changed or bypassed HMAC request headers")
 	}
 }

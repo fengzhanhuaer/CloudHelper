@@ -7,6 +7,7 @@ CloudHelper 是一个探针主控与节点项目，当前版本：`0.0.7`。
 
 - `probe_controller`：探针主控服务（Go）
 - `probe_node`：探针节点服务（Go）
+- `probe_node` 的 `mihomo_exit` 构建：特殊出口探针 `probe_exit_node`（仅 Linux amd64）
 - `scripts/install_probe_controller_service.sh`：Linux 主控一键安装脚本（systemd，公网安装入口）
 - `probe_controller/internal/core/install_scripts/install_probe_controller_service.sh`：主控安装脚本的内置副本（用于系统设置里生成自包含迁移脚本）
 - `probe_controller/internal/core/install_scripts/install_probe_node_service.sh`：Linux 探针节点安装脚本（由主控探针页分发，支持 systemd / 非 systemd）
@@ -100,6 +101,30 @@ Compose 会将 `docker/probe_node/` 目录整体挂载到容器的 `/opt/cloudhe
 - `PROBE_NODE_AUTO_INSTALL=false`：关闭缺失时自动安装，缺少二进制会直接退出
 - `PROBE_NODE_FORCE_INSTALL=true`：启动时强制重新下载探针二进制
 - `PROBE_LOCAL_CONSOLE_ENABLED=true`、`PROBE_LOCAL_LISTEN=0.0.0.0:16032`：需要开放本地控制台时再追加
+
+## Mihomo 特殊出口探针
+
+主控 `/mng/route` 的“二次分流”Tab可创建 `mihomo_exit` 节点、保存 Clash/Mihomo 订阅和二次分流规则。每个特殊探针自动聚合为一条普通虚拟路由规则；普通探针只看到域名/CIDR条目和特殊出口节点，不会收到订阅URL、请求头、代理节点或凭据。
+
+特殊探针仅发布 `cloudhelper-probe-exit-node-linux-amd64`，不提供 Windows、ARM 或 Android 版本，也不会创建 CloudHelper/Mihomo TUN。最终出口通过受认证的 `127.0.0.1` SOCKS5 listener 交给受管理的 Mihomo，支持 TCP、UDP 和基于 UDP 的 QUIC。
+
+原生安装：在“二次分流”Tab选中节点和 `Linux x64`，执行页面生成的命令。默认目录为 `/opt/cloudhelper/probe_exit_node`：
+
+- `data/`：节点身份、私有规范快照、Mihomo程序/配置和运行秘密，升级保留。
+- `log/`：特殊探针与Mihomo日志，升级保留。
+- `temp/`：下载和升级工作区，可删除重建。
+
+Docker壳：
+
+```bash
+cd docker/probe_exit_node
+vi compose.yaml
+docker compose up -d
+```
+
+`ghcr.io/fengzhanhuaer/cloudhelper-probe-exit-node-shell:latest`只提供固定Alpine环境和启动入口。Compose将 `program/`、`data/`、`log/`、`temp/`分别挂载；`probe_exit_node`位于`program/`，Mihomo和身份/快照位于`data/`。首次启动成对安装，日常升级由程序自己完成，无需重建容器。特殊Docker配置不需要 `/dev/net/tun` 或 `NET_ADMIN`。
+
+特殊探针升级使用Release中的 `cloudhelper-probe-exit-node-manifest.json`，核对构建类型、平台、版本范围和程序/Mihomo SHA-256后成对替换。任一候选校验、替换或重启失败都会回滚程序与Mihomo。Mihomo按MIT许可证分发，许可证位于 `THIRD_PARTY_LICENSES/mihomo-LICENSE`。
 
 ## Windows 一键安装（探针节点）
 
