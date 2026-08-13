@@ -43,20 +43,32 @@ func TestProbePageVersionColumnsShowUpgradeAvailability(t *testing.T) {
 	}
 }
 
-func TestProbePageCreatesAndInstallsMihomoExitWithNormalProbeWorkflow(t *testing.T) {
+func TestProbePageCreatesMihomoExitAndUsesDedicatedInstallButton(t *testing.T) {
 	required := []string{
 		`id="create-node-kind"`,
 		`value="mihomo_exit"`,
 		`JSON.stringify({ node_name: nodeName, node_kind: nodeKind })`,
 		`/mng/api/probe/node/install?node_id=`,
 		`id="install-mode"`,
+		`data-action="node-install-command"`,
 		`Mihomo 出口探针`,
 		`${kindLabel}安装信息`,
-		`await copyNodeInstallCommand(Number(payload.node.node_no))`,
 	}
 	for _, item := range required {
 		if !strings.Contains(mngProbePageHTML, item) {
 			t.Fatalf("probe page mihomo exit workflow missing %q", item)
 		}
+	}
+	createStart := strings.Index(mngProbePageHTML, "async function createNode()")
+	if createStart < 0 {
+		t.Fatal("probe page createNode function not found")
+	}
+	createEnd := strings.Index(mngProbePageHTML[createStart:], "function closeEditNodeModal()")
+	if createEnd < 0 {
+		t.Fatal("probe page createNode function end not found")
+	}
+	createBody := mngProbePageHTML[createStart : createStart+createEnd]
+	if strings.Contains(createBody, "copyNodeInstallCommand") {
+		t.Fatal("creating a probe must not open the install dialog")
 	}
 }

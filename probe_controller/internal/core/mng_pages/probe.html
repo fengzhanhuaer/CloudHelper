@@ -789,7 +789,7 @@
           const vendor = formatVendorLink(item.vendor_name, item.vendor_url);
           const nodeKind = normalizeNodeKind(item);
           const kindLabel = nodeKind === 'mihomo_exit' ? '<span class="pill node-kind-exit">Mihomo 出口</span>' : '';
-          const systemLabel = nodeKind === 'mihomo_exit' ? 'linux x64' : escapeHTML(item.target_system || '-');
+          const systemLabel = nodeKind === 'mihomo_exit' ? 'Linux x64' : escapeHTML(item.target_system || '-');
           return `<tr>
             <td>${escapeHTML(item.node_no)}</td>
             <td>${escapeHTML(item.node_name || '-')}${kindLabel}</td>
@@ -1426,13 +1426,6 @@
       await refreshNodes(true);
       const kindLabel = nodeKind === 'mihomo_exit' ? 'Mihomo 出口探针' : '普通探针';
       setStatus(`${kindLabel}创建成功：${payload.node && payload.node.node_name ? payload.node.node_name : nodeName}`, 'ok');
-      if (payload.node && Number(payload.node.node_no) > 0) {
-        try {
-          await copyNodeInstallCommand(Number(payload.node.node_no));
-        } catch (err) {
-          setStatus(`${kindLabel}已创建，但安装信息生成失败：${err && err.message ? err.message : err}`, 'warn');
-        }
-      }
     }
 
     function closeEditNodeModal() {
@@ -1505,13 +1498,14 @@
       if (targetSystem !== 'linux' && targetSystem !== 'windows' && targetSystem !== 'android' && targetSystem !== 'docker') {
         throw buildEditValidationError('target_system 只能是 linux、windows、android 或 docker');
       }
+      const nodeKind = normalizeNodeKind(state.nodes.find((item) => Number(item.node_no) === Number(state.editingNodeNo)));
       if (expireAt && !/^\d{4}-\d{2}-\d{2}$/.test(expireAt)) {
         throw buildEditValidationError('expire_at 格式必须是 YYYY-MM-DD');
       }
       return {
         node_no: Number(state.editingNodeNo),
         node_name: nodeName,
-        node_kind: normalizeNodeKind(state.nodes.find((item) => Number(item.node_no) === Number(state.editingNodeNo))),
+        node_kind: nodeKind,
         remark: String(document.getElementById('edit-remark').value || '').trim(),
         ddns: String(document.getElementById('edit-ddns').value || '').trim(),
         target_system: targetSystem,
