@@ -710,11 +710,16 @@ func updateProbeNodeLocked(req probeNodeUpdateRequest) (probeNodeRecord, error) 
 	if found < 0 {
 		return probeNodeRecord{}, fmt.Errorf("node %d not found", req.NodeNo)
 	}
+	existingKind := normalizeProbeNodeKind(nodes[found].NodeKind)
+	if requestedKind := strings.TrimSpace(req.NodeKind); requestedKind != "" && normalizeProbeNodeKind(requestedKind) != existingKind {
+		return probeNodeRecord{}, fmt.Errorf("node kind cannot be changed after creation")
+	}
+	if existingKind == probeNodeKindMihomoExit && system != "linux" {
+		return probeNodeRecord{}, fmt.Errorf("mihomo exit node target system must be linux")
+	}
 
 	nodes[found].NodeName = name
-	if strings.TrimSpace(req.NodeKind) != "" {
-		nodes[found].NodeKind = normalizeProbeNodeKind(req.NodeKind)
-	}
+	nodes[found].NodeKind = existingKind
 	nodes[found].Remark = strings.TrimSpace(req.Remark)
 	nodes[found].DDNS = strings.TrimSpace(req.DDNS)
 	nodes[found].TargetSystem = system

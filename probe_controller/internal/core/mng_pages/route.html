@@ -257,24 +257,12 @@
           </div>
           <div>
             <div class="box" style="margin-bottom:12px;">
-              <div class="box-title"><span>特殊探针</span></div>
-              <div class="row" style="margin-top:10px;">
-                <input id="special-exit-new-node-name" type="text" placeholder="探针名称" autocomplete="off" />
-                <button id="btn-special-exit-create-node" class="btn primary" type="button">创建</button>
-              </div>
+              <div class="box-title"><span>运行状态</span></div>
               <div id="special-exit-status-list" class="special-exit-status-list"></div>
             </div>
             <div class="box" style="margin-bottom:12px;">
               <div class="box-title"><span>聚合路由规则</span></div>
               <textarea id="special-exit-managed-rule" class="mono" readonly></textarea>
-            </div>
-            <div class="box">
-              <div class="box-title"><span>安装</span></div>
-              <div class="row" style="margin-top:10px;">
-                <select id="special-exit-install-mode" class="small"><option value="native">Linux x64</option><option value="docker">Docker</option></select>
-                <button id="btn-special-exit-install" class="btn" type="button">生成参数</button>
-              </div>
-              <textarea id="special-exit-install-output" class="mono" readonly></textarea>
             </div>
           </div>
         </div>
@@ -726,18 +714,6 @@
       renderSpecialExitRules(draft);
     }
 
-    async function createSpecialExitNode() {
-      const input = document.getElementById('special-exit-new-node-name');
-      const name = String(input.value || '').trim();
-      if (!name) throw new Error('请输入特殊探针名称');
-      const payload = await requestJSON('/mng/api/probe/node/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ node_name: name, node_kind: 'mihomo_exit' }) });
-      input.value = '';
-      await loadNodes();
-      state.selectedSpecialExitNodeID = normalizeNodeID(payload.node && payload.node.node_no);
-      await loadSpecialExits(true);
-      setStatus(`特殊探针已创建：${name}`, 'ok');
-    }
-
     function captureSpecialExitDraft() {
       const draft = currentSpecialExitDraft();
       if (!draft) throw new Error('请选择特殊探针');
@@ -776,15 +752,6 @@
       delete state.specialExitDrafts[draft.node_id];
       await Promise.all([loadVirtualRouter(true), loadRouteRules(true), loadSpecialExits(true)]);
       setStatus('二次分流配置已删除', 'ok');
-    }
-
-    async function loadSpecialExitInstallInfo() {
-      const nodeID = normalizeNodeID(state.selectedSpecialExitNodeID);
-      if (!nodeID) throw new Error('请选择特殊探针');
-      const mode = document.getElementById('special-exit-install-mode').value;
-      const result = await requestJSON(`/mng/api/route/special_exits/install?node_id=${encodeURIComponent(nodeID)}&mode=${encodeURIComponent(mode)}`);
-      document.getElementById('special-exit-install-output').value = JSON.stringify(result, null, 2);
-      setStatus('安装参数已生成', 'ok');
     }
 
     async function loadDoHSettings(silent) {
@@ -1860,9 +1827,6 @@
       document.getElementById('btn-special-exit-refresh').addEventListener('click', () => {
         loadNodes().then(() => loadSpecialExits(false)).catch((err) => setStatus(`刷新二次分流失败：${err.message || err}`, 'err'));
       });
-      document.getElementById('btn-special-exit-create-node').addEventListener('click', () => {
-        createSpecialExitNode().catch((err) => setStatus(`创建特殊探针失败：${err.message || err}`, 'err'));
-      });
       document.getElementById('special-exit-node').addEventListener('change', (event) => {
         state.selectedSpecialExitNodeID = normalizeNodeID(event.target.value);
         renderSpecialExits();
@@ -1883,9 +1847,6 @@
       });
       document.getElementById('btn-special-exit-delete').addEventListener('click', () => {
         deleteSpecialExit().catch((err) => setStatus(`删除二次分流失败：${err.message || err}`, 'err'));
-      });
-      document.getElementById('btn-special-exit-install').addEventListener('click', () => {
-        loadSpecialExitInstallInfo().catch((err) => setStatus(`生成安装参数失败：${err.message || err}`, 'err'));
       });
       document.getElementById('btn-fake-ip-refresh').addEventListener('click', () => {
         loadVirtualRouter(true)

@@ -119,6 +119,15 @@ func mngProbeNodeCreateHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"node": node})
 }
 
+func mngProbeNodeInstallHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	result, err := buildMngProbeSpecialExitInstallInfo(r.URL.Query().Get("node_id"), r.URL.Query().Get("mode"), controllerBaseURLFromRequest(r))
+	writeMngRouteResult(w, result, err)
+}
+
 func mngProbeNodeUpdateHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

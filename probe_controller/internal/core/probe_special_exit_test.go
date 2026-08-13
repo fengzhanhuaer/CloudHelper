@@ -30,6 +30,19 @@ func TestNormalizeProbeNodesDefaultsKindAndPreservesSpecialKind(t *testing.T) {
 	}
 }
 
+func TestMihomoExitNodeKindIsImmutableAndLinuxOnly(t *testing.T) {
+	oldStore := ProbeStore
+	ProbeStore = &probeConfigStore{data: probeConfigData{ProbeNodes: []probeNodeRecord{{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindMihomoExit, TargetSystem: "linux"}}}}
+	t.Cleanup(func() { ProbeStore = oldStore })
+
+	if _, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindNormal, TargetSystem: "linux"}); err == nil || !strings.Contains(err.Error(), "cannot be changed") {
+		t.Fatalf("expected immutable node kind error, got %v", err)
+	}
+	if _, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindMihomoExit, TargetSystem: "windows"}); err == nil || !strings.Contains(err.Error(), "must be linux") {
+		t.Fatalf("expected linux-only error, got %v", err)
+	}
+}
+
 func TestSpecialExitManagedRuleIsStableAndNotPersistedAsManual(t *testing.T) {
 	item := probeSpecialExitConfig{NodeID: "19", Name: "Exit 19", Enabled: true, DefaultAction: "direct", Rules: []probeSpecialExitRule{
 		{ID: "b", Name: "b", Enabled: true, Action: "reject", Entries: []string{"DOMAIN-SUFFIX,example.com", "domain_suffix:example.com"}},
@@ -353,11 +366,16 @@ func TestMngRoutePageIncludesSpecialExitWorkflow(t *testing.T) {
 	for _, marker := range []string{
 		`data-tab="special-exits"`, `id="section-special-exits"`, `id="special-exit-subscription-url"`,
 		`id="special-exit-clear-subscription"`, `id="special-exit-status-list"`,
-		`id="special-exit-managed-rule"`, `id="special-exit-install-mode"`,
+		`id="special-exit-managed-rule"`,
 		`/mng/api/route/special_exits/subscription/refresh`,
 	} {
 		if !strings.Contains(mngRoutePageHTML, marker) {
 			t.Fatalf("route page missing %q", marker)
+		}
+	}
+	for _, marker := range []string{`id="special-exit-new-node-name"`, `id="btn-special-exit-create-node"`, `id="special-exit-install-mode"`, `/mng/api/route/special_exits/install?`} {
+		if strings.Contains(mngRoutePageHTML, marker) {
+			t.Fatalf("route page must not include probe creation or install marker %q", marker)
 		}
 	}
 }

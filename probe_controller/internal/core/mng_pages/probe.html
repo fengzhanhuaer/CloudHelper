@@ -44,6 +44,7 @@
     .pill.version-current { color:#7ee787; border-color:#2ea043; }
     .pill.version-upgrade { color:#f2cc60; border-color:#9e6a03; }
     .pill.version-unknown { color:#8b949e; border-color:#484f58; }
+    .pill.node-kind-exit { color:#79c0ff; border-color:#1f6feb; margin-left:6px; }
     .version-cell { display:flex; flex-direction:column; align-items:flex-start; gap:4px; min-width:112px; }
     pre { background:#0d1117; border:1px solid #30363d; border-radius:8px; padding:10px; max-height:420px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
     .split { display:grid; grid-template-columns:2fr 1fr; gap:10px; }
@@ -101,6 +102,10 @@
       <section id="section-list" class="section active">
         <div class="row">
           <input id="create-node-name" placeholder="新探针名称" />
+          <select id="create-node-kind" aria-label="探针类型">
+            <option value="normal">普通探针</option>
+            <option value="mihomo_exit">Mihomo 出口探针</option>
+          </select>
           <button id="btn-create-node" class="btn primary" type="button">创建</button>
           <button id="btn-refresh-nodes" class="btn" type="button">刷新列表</button>
           <button id="btn-upgrade-all" class="btn" type="button">一键升级</button>
@@ -331,6 +336,13 @@
   <div id="node-install-modal" class="modal-backdrop" hidden>
     <div class="modal">
       <h3 id="install-modal-title">探针安装信息</h3>
+      <div id="install-mode-row" class="row" hidden>
+        <label class="muted" for="install-mode">安装方式</label>
+        <select id="install-mode">
+          <option value="native">Linux x64</option>
+          <option value="docker">Docker</option>
+        </select>
+      </div>
       <pre id="install-modal-content" class="mono"></pre>
       <div class="row" style="margin-top:12px; justify-content:flex-end;">
         <button id="btn-install-copy" class="btn primary" type="button">复制</button>
@@ -353,6 +365,7 @@
       statusTimer: null,
       shellShortcuts: [],
       editingNodeNo: 0,
+      installingNodeNo: 0,
       installCommandText: '',
       networkRunning: false,
       editingNetworkTaskID: '',
@@ -658,6 +671,49 @@
       return linuxInstallCommand;
     }
 
+    function normalizeNodeKind(node) {
+      return String((node && node.node_kind) || '').trim().toLowerCase() === 'mihomo_exit' ? 'mihomo_exit' : 'normal';
+    }
+
+    function formatSpecialExitInstallInfo(info) {
+      if (String(info && info.mode || '') === 'native') {
+        return String(info && info.command || '').trim();
+      }
+      const environment = info && info.environment ? info.environment : {};
+      return [
+        'services:',
+        '  cloudhelper-probe-exit-node:',
+        '    image: ghcr.io/fengzhanhuaer/cloudhelper-probe-exit-node-shell:latest',
+        '    container_name: cloudhelper-probe-exit-node',
+        '    restart: unless-stopped',
+        '    network_mode: host',
+        '    mem_limit: 1g',
+        '    pids_limit: 512',
+        '    ulimits:',
+        '      nofile:',
+        '        soft: 262144',
+        '        hard: 262144',
+        '    environment:',
+        `      PROBE_NODE_ID: ${JSON.stringify(String(environment.PROBE_NODE_ID || ''))}`,
+        `      PROBE_NODE_SECRET: ${JSON.stringify(String(environment.PROBE_NODE_SECRET || ''))}`,
+        `      PROBE_CONTROLLER_URL: ${JSON.stringify(String(environment.PROBE_CONTROLLER_URL || ''))}`,
+        '    volumes:',
+        '      - ./program:/opt/cloudhelper/probe_exit_node/program',
+        '      - ./data:/opt/cloudhelper/probe_exit_node/data',
+        '      - ./log:/opt/cloudhelper/probe_exit_node/log',
+        '      - ./temp:/opt/cloudhelper/probe_exit_node/temp',
+      ].join('\n');
+    }
+
+    async function buildNodeInstallCommand(node, mode) {
+      if (normalizeNodeKind(node) !== 'mihomo_exit') {
+        return buildProbeInstallCommand(node, window.location.origin);
+      }
+      const nodeID = String(Number(node && node.node_no) || '').trim();
+      const result = await requestJSON(`/mng/api/probe/node/install?node_id=${encodeURIComponent(nodeID)}&mode=${encodeURIComponent(mode || 'native')}`);
+      return formatSpecialExitInstallInfo(result);
+    }
+
     function renderIPLines(family, list) {
       if (!Array.isArray(list) || list.length === 0) {
         return `<div class="muted">${family}: -</div>`;
@@ -731,10 +787,13 @@
           const remark = escapeHTML(item.remark || '-');
           const ddns = escapeHTML(item.ddns || '-');
           const vendor = formatVendorLink(item.vendor_name, item.vendor_url);
+          const nodeKind = normalizeNodeKind(item);
+          const kindLabel = nodeKind === 'mihomo_exit' ? '<span class="pill node-kind-exit">Mihomo 出口</span>' : '';
+          const systemLabel = nodeKind === 'mihomo_exit' ? 'linux x64' : escapeHTML(item.target_system || '-');
           return `<tr>
             <td>${escapeHTML(item.node_no)}</td>
-            <td>${escapeHTML(item.node_name || '-')}</td>
-            <td>${escapeHTML(item.target_system || '-')}<br><span class="muted">${item.direct_connect ? '直连' : '主控转发'} / 本机控制台${item.local_console_enabled ? '启用' : '关闭'}</span></td>
+            <td>${escapeHTML(item.node_name || '-')}${kindLabel}</td>
+            <td>${systemLabel}<br><span class="muted">${item.direct_connect ? '直连' : '主控转发'} / 本机控制台${item.local_console_enabled ? '启用' : '关闭'}</span></td>
             <td>${remark}<br><span class="muted">${ddns}</span><br><span class="muted">厂家：${vendor}</span></td>
             <td>${renderProbeVersion(version, online)}<span class="muted">${escapeHTML(formatTime(item.updated_at))}</span></td>
             <td>
@@ -1304,7 +1363,16 @@
         setStatus(`未找到探针：#${nodeNo}`, 'warn');
         return;
       }
-      const command = buildProbeInstallCommand(node, window.location.origin);
+      state.installingNodeNo = Number(nodeNo);
+      const isSpecialExit = normalizeNodeKind(node) === 'mihomo_exit';
+      const modeRow = document.getElementById('install-mode-row');
+      if (isSpecialExit) {
+        modeRow.removeAttribute('hidden');
+      } else {
+        modeRow.setAttribute('hidden', 'hidden');
+      }
+      const mode = isSpecialExit ? document.getElementById('install-mode').value : '';
+      const command = await buildNodeInstallCommand(node, mode);
       if (!command) {
         setStatus(`探针 #${nodeNo} 缺少 node_secret，无法生成安装命令`, 'warn');
         return;
@@ -1316,12 +1384,14 @@
       const nodeNo = Number(node && node.node_no);
       const nodeName = String((node && node.node_name) || '').trim();
       state.installCommandText = String(command || '');
-      document.getElementById('install-modal-title').textContent = `探针安装信息：#${nodeNo}${nodeName ? ' ' + nodeName : ''}`;
+      const kindLabel = normalizeNodeKind(node) === 'mihomo_exit' ? 'Mihomo 出口探针' : '普通探针';
+      document.getElementById('install-modal-title').textContent = `${kindLabel}安装信息：#${nodeNo}${nodeName ? ' ' + nodeName : ''}`;
       document.getElementById('install-modal-content').textContent = state.installCommandText;
       document.getElementById('node-install-modal').removeAttribute('hidden');
     }
 
     function closeNodeInstallModal() {
+      state.installingNodeNo = 0;
       state.installCommandText = '';
       document.getElementById('node-install-modal').setAttribute('hidden', 'hidden');
     }
@@ -1342,6 +1412,7 @@
 
     async function createNode() {
       const nodeName = String(document.getElementById('create-node-name').value || '').trim();
+      const nodeKind = document.getElementById('create-node-kind').value === 'mihomo_exit' ? 'mihomo_exit' : 'normal';
       if (!nodeName) {
         setStatus('请输入探针名称', 'warn');
         return;
@@ -1349,11 +1420,19 @@
       const payload = await requestJSON('/mng/api/probe/node/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ node_name: nodeName }),
+        body: JSON.stringify({ node_name: nodeName, node_kind: nodeKind }),
       });
       document.getElementById('create-node-name').value = '';
       await refreshNodes(true);
-      setStatus(`探针创建成功：${payload.node && payload.node.node_name ? payload.node.node_name : nodeName}`, 'ok');
+      const kindLabel = nodeKind === 'mihomo_exit' ? 'Mihomo 出口探针' : '普通探针';
+      setStatus(`${kindLabel}创建成功：${payload.node && payload.node.node_name ? payload.node.node_name : nodeName}`, 'ok');
+      if (payload.node && Number(payload.node.node_no) > 0) {
+        try {
+          await copyNodeInstallCommand(Number(payload.node.node_no));
+        } catch (err) {
+          setStatus(`${kindLabel}已创建，但安装信息生成失败：${err && err.message ? err.message : err}`, 'warn');
+        }
+      }
     }
 
     function closeEditNodeModal() {
@@ -1371,6 +1450,7 @@
       document.getElementById('edit-target-system').value = targetSystem === 'windows'
         ? 'windows'
         : (targetSystem === 'android' ? 'android' : (targetSystem === 'docker' ? 'docker' : 'linux'));
+      document.getElementById('edit-target-system').disabled = normalizeNodeKind(node) === 'mihomo_exit';
       document.getElementById('edit-direct-connect').checked = node.direct_connect === true;
       document.getElementById('edit-local-console-enabled').checked = node.local_console_enabled === true;
       document.getElementById('edit-payment-cycle').value = String(node.payment_cycle || '');
@@ -1431,6 +1511,7 @@
       return {
         node_no: Number(state.editingNodeNo),
         node_name: nodeName,
+        node_kind: normalizeNodeKind(state.nodes.find((item) => Number(item.node_no) === Number(state.editingNodeNo))),
         remark: String(document.getElementById('edit-remark').value || '').trim(),
         ddns: String(document.getElementById('edit-ddns').value || '').trim(),
         target_system: targetSystem,
@@ -1572,6 +1653,11 @@
     });
     document.getElementById('btn-install-copy').addEventListener('click', () => {
       copyCurrentInstallInfo().catch((err) => setStatus(`复制安装信息失败：${err.message || err}`, 'err'));
+    });
+    document.getElementById('install-mode').addEventListener('change', () => {
+      if (state.installingNodeNo > 0) {
+        copyNodeInstallCommand(state.installingNodeNo).catch((err) => setStatus(`生成安装信息失败：${err.message || err}`, 'err'));
+      }
     });
     document.getElementById('btn-install-close').addEventListener('click', () => {
       closeNodeInstallModal();

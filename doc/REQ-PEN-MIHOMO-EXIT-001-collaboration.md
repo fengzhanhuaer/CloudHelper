@@ -6,7 +6,7 @@
 - 需求前缀: REQ-PEN-MIHOMO-EXIT-001
 - 当前阶段: Architect最终门禁已放行
 - 最近更新角色: Architect
-- 最近更新时间: 2026-08-13T17:21:49+08:00
+- 最近更新时间: 2026-08-13T19:50:31+08:00
 - 工作依据文档: `doc/ai-coding-collaboration.md`; 用户于2026-08-13确认的特殊出口探针、Mihomo二次分流、主控GUI、独立Linux amd64安装包、Docker壳和程序自升级需求; 现有 `probe_controller`、`probe_node`、`docker/probe_node` 实现; Mihomo官方配置、API、发布物、Go模块和许可证资料
 - 状态: 已放行
 
@@ -23,8 +23,8 @@
 - REQ-PEN-MIHOMO-EXIT-001-R03: 特殊出口探针收到最终出口流量后恢复原始域名并将域名目标交给本机Mihomo，由该探针私有配置在Mihomo内执行DIRECT、REJECT、策略组或指定节点二次分流。
 - REQ-PEN-MIHOMO-EXIT-001-R04: 每个特殊出口探针自动聚合为且仅聚合为一条供普通探针使用的 `probe_exit` 路由规则；规则条目为该探针全部启用二次分流条目的规范化去重并集。聚合规则使用稳定ID并从特殊出口配置实时派生，不在普通 `RouteRules` 中重复持久化。
 - REQ-PEN-MIHOMO-EXIT-001-R05: 二次分流对普通探针透明；普通探针不得接收订阅URL、代理凭证、策略组、节点或内部动作。私有配置使用单调 `revision` 和内容SHA-256，特殊出口必须报告build_kind及desired/applied revision；现有HMAC认证算法保持不变。
-- REQ-PEN-MIHOMO-EXIT-001-R06: 主控 `/mng/route` 新增独立“二次分流”Tab，管理特殊出口、Clash/Mihomo订阅、默认动作、分流规则、聚合预览、同步状态和安装入口。
-- REQ-PEN-MIHOMO-EXIT-001-R07: 特殊出口探针使用独立Linux amd64安装包和systemd服务，不提供Windows、ARM64或Android版本。
+- REQ-PEN-MIHOMO-EXIT-001-R06: 主控 `/mng/route` 新增独立“二次分流”Tab，仅管理已创建特殊出口的Clash/Mihomo订阅、默认动作、分流规则、聚合预览和同步状态；该Tab不得创建探针或生成安装信息。
+- REQ-PEN-MIHOMO-EXIT-001-R07: 特殊出口探针与普通探针共用 `/mng/probe` 的创建和安装入口，通过创建时选择 `node_kind=mihomo_exit` 区分产品；创建后从同一探针列表生成独立Linux amd64原生或Docker安装信息，不提供Windows、ARM64或Android版本。
 - REQ-PEN-MIHOMO-EXIT-001-R08: 工作目录按 `data/`、`log/`、`temp/` 分区；升级不得覆盖持久化数据。
 - REQ-PEN-MIHOMO-EXIT-001-R09: 提供Docker壳版本；镜像只提供固定环境和entrypoint，业务程序及Mihomo由持久化目录中的程序按带版本、构建类型、兼容范围和SHA-256的升级清单自行安装、升级、校验、替换和成对回滚。
 - REQ-PEN-MIHOMO-EXIT-001-R10: 主控独占保存和刷新订阅URL/请求头，使用结构化YAML解析、限制下载并防止SSRF；特殊出口只接收已规范化的代理节点/策略/规则快照，不接收订阅URL和请求头；敏感快照只下发给对应特殊出口。
@@ -55,12 +55,12 @@
 - AC-02: 每个启用特殊出口仅生成一条稳定ID的聚合规则；条目规范化、去重并稳定排序；重启和刷新后由单一特殊出口配置确定性重建，普通 `RouteRules` 中不存在重复副本。
 - AC-03: 普通探针配置响应不包含特殊出口秘密；对应特殊出口只收到自己的规范化私有快照，且不包含订阅URL/请求头；desired/applied revision和SHA-256可核对。
 - AC-04: 跨特殊出口、与手工路由规则的相同或语义重叠条目在保存时得到确定性拒绝，至少覆盖嵌套域名后缀和相交CIDR，不依赖数组顺序；派生规则使用保留ID命名空间，手工规则不得占用。
-- AC-05: 二次分流Tab可完成订阅、规则、默认动作、聚合预览和安装信息配置，订阅秘密不明文回显，并显示desired/applied revision与hash、BuildKind、探针/Mihomo版本、exit_ready、健康、最后订阅刷新和最后应用错误。
+- AC-05: 二次分流Tab可完成已创建特殊出口的订阅、规则、默认动作和聚合预览，订阅秘密不明文回显，并显示desired/applied revision与hash、BuildKind、探针/Mihomo版本、exit_ready、健康、最后订阅刷新和最后应用错误；页面不存在探针创建或安装入口。
 - AC-06: `probe_exit_node`独立发布物可作为现有虚拟路由拓扑节点完成鉴权、承载、Ping/Pong、RTT、重连和最终帧处理；普通构建回归测试通过；主控配置响应提供expected_node_kind，探针状态上报build_kind，二者不匹配时特殊配置拒绝应用并上报错误；特殊版不启动本地代理接管、系统DNS接管、同步和DDNS调度器。
 - AC-07: 同一特殊出口内的测试域名可分别命中DIRECT、REJECT、Mihomo策略组和指定节点，普通探针仅看到统一出口规则。
 - AC-08: TCP、UDP和QUIC端到端测试通过；Fake IP映射缺失时明确补取或失败，不允许错误直连Fake IP。
 - AC-09: 主控、承载、升级连接不进入Mihomo；不存在二次分流回环；Mihomo不健康或当前revision未成功应用时 `exit_ready=false`，业务失败关闭且不回落物理直连；ICMP不得绕过Mihomo向目标直连。
-- AC-10: 原生Linux amd64安装、幂等重装、自升级和失败回滚保留 `data/`、`log/`，仅清理可重建的 `temp/`；升级候选必须匹配 `mihomo_exit` 构建类型并通过清单哈希和Mihomo配置校验。
+- AC-10: `/mng/probe` 使用与普通探针相同的创建API和探针列表流程创建 `mihomo_exit` 节点，并按节点类型生成原生Linux amd64或Docker安装信息；原生安装、幂等重装、自升级和失败回滚保留 `data/`、`log/`，仅清理可重建的 `temp/`；升级候选必须匹配 `mihomo_exit` 构建类型并通过清单哈希和Mihomo配置校验。
 - AC-11: Docker壳首次缺二进制时下载，已有二进制时直接运行；容器重建保留程序和数据；日常应用升级无需拉取镜像。
 - AC-12: 主控、普通探针、特殊出口和页面测试通过；CI从同一源码分别构建普通矩阵和仅Linux amd64特殊发布物，并记录未执行测试及残余风险。
 
@@ -121,7 +121,7 @@ flowchart LR
 |---|---|---|---|---|
 | MOD-PEN-01 | 特殊出口配置仓库 | 持久化订阅、规则、默认动作和状态 | 管理请求 | 规范化私有配置 |
 | MOD-PEN-02 | 有效规则投影 | 从特殊出口配置实时派生唯一普通路由规则并与手工规则组合、检测冲突 | 私有二次规则 | 非持久化 `probe_exit` 有效规则 |
-| MOD-PEN-03 | 主控管理API/UI | 配置、订阅刷新、聚合预览、状态和安装入口 | 管理会话 | JSON与页面 |
+| MOD-PEN-03 | 主控管理API/UI | 探针页统一创建/安装；路由页配置、订阅刷新、聚合预览和状态 | 管理会话 | JSON与页面 |
 | MOD-PEN-04 | 私有配置编译与分发 | 主控刷新订阅、编译规范快照并按节点身份裁剪 | 节点鉴权请求 | revision/hash及普通或特殊配置 |
 | MOD-PEN-05 | 双构建与产品profile | 从同一Go包构建normal和mihomo_exit发布物，隔离入口、依赖和启用组件 | build tag/ldflags/profile | 独立资产，共享VRoute实现 |
 | MOD-PEN-06 | 特殊出口运行时 | 主控连接、拓扑、承载、Ping/Pong、最终帧和域名目标恢复 | 配置和VRoute帧 | 类型化域名/IP出口目标 |
@@ -135,7 +135,7 @@ flowchart LR
 | IF-PEN-001 | `/mng/api/route/special_exits` | 二次分流Tab | 主控 | GET/POST/PATCH/DELETE特殊出口配置 |
 | IF-PEN-002 | `/mng/api/route/special_exits/subscription/refresh` | 二次分流Tab | 主控 | 安全刷新订阅并生成规范化快照，URL/请求头不下发 |
 | IF-PEN-003 | `/mng/api/route/special_exits/status` | 二次分流Tab | 主控 | 配置同步和运行状态 |
-| IF-PEN-004 | `/mng/api/route/special_exits/install` | 二次分流Tab | 主控 | 原生或Docker壳安装信息 |
+| IF-PEN-004 | `/mng/api/probe/node/install` | 探针管理页安装弹窗 | 主控 | 已创建 `mihomo_exit` 节点的原生或Docker壳安装信息；二次分流模块不暴露安装接口 |
 | IF-PEN-005 | `/api/probe/route/config`扩展 | 探针 | 主控 | 普通VRoute配置及按节点私有快照，包含expected_node_kind/revision/hash |
 | IF-PEN-006 | ManagedSpecialExitRule | Fake IP/普通探针路由 | 聚合规则引擎 | 每节点唯一派生 `probe_exit`规则 |
 | IF-PEN-007 | ProbeBuildVariant | CI/启动入口 | 同一 `probe_node` Go包 | build tag、BuildKind、expected_node_kind核对及独立资产 |
@@ -185,7 +185,7 @@ flowchart LR
 | UNIT-PEN-01 | SpecialExitStore | MOD-PEN-01 | 规范化、保存、秘密保留 | JSON配置 | 特殊出口配置 |
 | UNIT-PEN-02 | SpecialExitAggregator | MOD-PEN-02 | 合并条目并生成唯一派生规则 | 特殊出口列表 | 路由规则 |
 | UNIT-PEN-03 | SpecialExitConflictValidator | MOD-PEN-02 | 检测跨出口和手工规则的相同或语义重叠冲突 | 候选规则 | 校验结果 |
-| UNIT-PEN-04 | SpecialExitMngHandler | MOD-PEN-03 | 管理CRUD、刷新、状态和安装响应 | HTTP请求 | JSON |
+| UNIT-PEN-04 | SpecialExitMngHandler | MOD-PEN-03 | 二次分流配置CRUD、刷新和状态响应 | HTTP请求 | JSON |
 | UNIT-PEN-05 | SpecialExitRoutePage | MOD-PEN-03 | 二次分流Tab交互 | 管理API | 页面状态 |
 | UNIT-PEN-06 | SpecialExitConfigCompiler | MOD-PEN-04 | 刷新订阅、编译规范快照并按节点裁剪 | node_id/revision | 配置响应 |
 | UNIT-PEN-07 | ProbeBuildVariant | MOD-PEN-05 | 同包构建normal/mihomo_exit，校验构建与节点类型 | build tag/ldflags | 独立发布物 |
@@ -198,6 +198,7 @@ flowchart LR
 | UNIT-PEN-14 | ExitUpgradeManager | MOD-PEN-09 | 程序/Mihomo升级与回滚 | 版本命令 | 新运行时 |
 | UNIT-PEN-15 | NativeInstaller | MOD-PEN-09 | Linux amd64 systemd安装 | 安装身份 | 原生服务 |
 | UNIT-PEN-16 | DockerShell | MOD-PEN-09 | 首次下载和持久化执行 | 环境变量 | 容器进程 |
+| UNIT-PEN-17 | ProbeMngSpecialExitWorkflow | MOD-PEN-03 | 在普通探针管理流程中创建、展示并安装特殊出口 | 探针管理API | 节点记录和安装信息 |
 
 #### 1.3.2 单元设计
 ##### UNIT-PEN-01
@@ -226,7 +227,7 @@ flowchart LR
 
 ##### UNIT-PEN-04
 - 单元名称: SpecialExitMngHandler
-- 职责: 提供管理CRUD、刷新、状态和安装信息。
+- 职责: 提供二次分流配置管理CRUD、订阅刷新和运行状态。
 - 输入: 管理会话请求。
 - 输出: 脱敏JSON。
 - 处理规则: 管理鉴权、方法限制、请求体限制；订阅只允许受控HTTPS访问；URL和请求头只保留在主控，刷新结果进入候选快照；首期只接受已展开的具体proxies，远程proxy-provider引用返回明确的不支持错误。
@@ -234,11 +235,19 @@ flowchart LR
 
 ##### UNIT-PEN-05
 - 单元名称: SpecialExitRoutePage
-- 职责: 在 `/mng/route` 管理完整二次分流闭环。
-- 输入: IF-PEN-001至004。
-- 输出: 可编辑配置、聚合预览、desired/applied状态、exit_ready、版本、错误和安装命令。
+- 职责: 在 `/mng/route` 管理二次分流配置和运行状态，不承担探针生命周期管理。
+- 输入: IF-PEN-001至003。
+- 输出: 可编辑配置、聚合预览、desired/applied状态、exit_ready、版本和错误。
 - 处理规则: 订阅秘密不回显；派生规则只读；页面沿用现有样式。
 - 异常规则: API失败保留最后成功状态并显示错误。
+
+##### UNIT-PEN-17
+- 单元名称: ProbeMngSpecialExitWorkflow
+- 职责: 在 `/mng/probe` 复用普通探针创建、列表和安装弹窗管理特殊出口。
+- 输入: 探针名称、`node_kind=mihomo_exit`、已创建节点和安装方式。
+- 输出: 不可变节点类型、Linux x64原生命令或Docker Compose。
+- 处理规则: 创建复用现有探针API；创建成功后打开安装弹窗；特殊节点目标系统固定Linux；二次分流页不调用安装接口。
+- 异常规则: 非特殊节点拒绝特殊安装信息；节点类型修改和非Linux目标拒绝；创建成功后安装信息加载失败只告警，不撤销节点。
 
 ##### UNIT-PEN-06
 - 单元名称: SpecialExitConfigCompiler
@@ -339,7 +348,7 @@ flowchart LR
 - 状态: 已完成
 
 #### 1.4.1 执行边界
-- 允许修改: `probe_controller/internal/core/probe_route_config_store.go`; `probe_controller/internal/core/probe_route_handlers.go`; `probe_controller/internal/core/probe_virtual_router.go`; `probe_controller/internal/core/probe_registry.go`; `probe_controller/internal/core/mng_route_actions.go`; `probe_controller/internal/core/mng_route_handlers.go`; `probe_controller/internal/core/mng_probe_handlers.go`; `probe_controller/internal/core/probe_command.go`; `probe_controller/internal/core/probe_runtime.go`; `probe_controller/internal/core/probe_ws.go`; `probe_controller/internal/core/mng_pages/route.html`; `probe_controller/internal/core/server.go`; `probe_controller/internal/core/install_scripts.go`; `probe_controller/internal/core/install_scripts/`; `probe_controller/internal/core/*special_exit*`; `probe_controller/internal/core/*test.go`; `probe_node`内双构建、出口适配、Mihomo管理、升级清单及测试所需文件; `.github/workflows/release.yml`; 新增 `docker/probe_exit_node/`; `THIRD_PARTY_LICENSES/mihomo-LICENSE`; `README.md`; `doc/install_upgrade.md`; 本协作文档Code章节。补充列出的状态/命令/报告文件及许可证均为TASK-PEN-002、004、005既有接口和许可证验收项的必要落点，不扩展需求行为。
+- 允许修改: `probe_controller/internal/core/probe_route_config_store.go`; `probe_controller/internal/core/probe_route_handlers.go`; `probe_controller/internal/core/probe_virtual_router.go`; `probe_controller/internal/core/probe_registry.go`; `probe_controller/internal/core/mng_route_actions.go`; `probe_controller/internal/core/mng_route_handlers.go`; `probe_controller/internal/core/mng_probe_handlers.go`; `probe_controller/internal/core/probe_command.go`; `probe_controller/internal/core/probe_runtime.go`; `probe_controller/internal/core/probe_ws.go`; `probe_controller/internal/core/mng_pages/probe.html`; `probe_controller/internal/core/mng_pages/route.html`; `probe_controller/internal/core/server.go`; `probe_controller/internal/core/install_scripts.go`; `probe_controller/internal/core/install_scripts/`; `probe_controller/internal/core/*special_exit*`; `probe_controller/internal/core/*test.go`; `probe_node`内双构建、出口适配、Mihomo管理、升级清单及测试所需文件; `.github/workflows/release.yml`; 新增 `docker/probe_exit_node/`; `THIRD_PARTY_LICENSES/mihomo-LICENSE`; `README.md`; `doc/install_upgrade.md`; 本协作文档Code章节。补充列出的状态/命令/报告文件及许可证均为TASK-PEN-002、004、005既有接口和许可证验收项的必要落点，不扩展需求行为。
 - 禁止修改: Android/mobilecore行为; 普通探针Windows安装逻辑; 主控认证边界; 现有VRoute线协议语义; 线上部署文件; 用户未授权的远程运行环境。
 
 #### 1.4.2 任务清单
@@ -347,12 +356,13 @@ flowchart LR
 |---|---|---|---|---|---|
 | TASK-PEN-000 | R01,R02,R03,R08,R11,R12 | UNIT-PEN-07,09,10,11,12,13 | `probe_node`内新增最小mihomo_exit tag入口/产品profile/构建标识、出口适配PoC和测试；禁止拆分或复制VRoute | 验证性新增/最小修改 | profile在参数/日志/升级前生效且特殊版精确使用data/log/temp；默认构建与Linux amd64特殊构建均成功；expected_node_kind/BuildKind错配拒绝应用且HMAC不变；特殊profile不启动代理/DNS/同步/DDNS或暴露无关TUN维护命令；普通VRoute fixture不变；Fake IP恢复后以域名进入受认证Mihomo SOCKS5；TCP、UDP、QUIC闭环；验证末跳是否可无TUN运行，若保留TUN则Mihomo全部上游固定物理出口；代理服务器DNS不自回环；revision未应用或Mihomo崩溃时exit_ready=false且不回落直连；ICMP不走物理出口；形成继续/整改结论 |
 | TASK-PEN-001 | R01,R04,R05,R10 | UNIT-PEN-01,02,03,06 | 主控route/node store、special_exit新增文件、route handlers及测试 | 新增/修改 | AC-01至04；普通节点无秘密/订阅URL，revision/hash可核对，聚合稳定；保留ID、嵌套域名后缀、相交CIDR和宽泛关键字冲突均可测 |
-| TASK-PEN-002 | R06 | UNIT-PEN-04,05 | mng handlers、server.go、route.html及页面测试 | 新增/修改 | AC-05；CRUD/刷新/状态/安装入口完整，秘密不回显，desired/applied、exit_ready、版本和错误可见 |
+| TASK-PEN-002 | R06 | UNIT-PEN-04,05 | mng handlers、server.go、route.html及页面测试 | 新增/修改 | AC-05；CRUD/刷新/状态完整，秘密不回显，desired/applied、exit_ready、版本和错误可见 |
 | TASK-PEN-003 | R02 | UNIT-PEN-07 | `probe_node`双构建/profile边界、CI发布矩阵、升级资产选择及测试 | 新增/修改 | 普通平台矩阵不变；特殊仅Linux amd64且组件启用清单固定；同一VRoute源码；expected_node_kind/BuildKind和资产选择负向测试通过；HMAC兼容fixture不变 |
 | TASK-PEN-004 | R01,R02,R03,R11 | UNIT-PEN-08,09,10,11 | `probe_node`内特殊出口控制面、末跳目标、SOCKS5 TCP/UDP适配和测试 | 新增/修改 | AC-06、08、09；可作为正式节点完成最终帧处理；desired/applied revision与exit_ready准确；ICMP无直连旁路 |
 | TASK-PEN-005 | R03,R10,R11,R12 | UNIT-PEN-12,13 | probe_exit_node Mihomo配置、子进程监管、REST控制及测试 | 新增 | AC-07至09；DIRECT/REJECT/策略/节点和TCP/UDP/QUIC闭环；受认证回环监听、业务/引导DNS分离、资源上限和许可证交付通过 |
 | TASK-PEN-006 | R07,R08,R09 | UNIT-PEN-14,15,16 | 安装脚本、install_scripts.go、docker/probe_exit_node、升级清单代码和测试 | 新增/修改 | AC-10、11；原生/Docker持久化、构建类型/哈希校验、程序与Mihomo成对自升级及回滚通过 |
 | TASK-PEN-007 | R01-R12 | 全部 | README、install_upgrade、本协作文档Code章节、端到端测试 | 修改 | AC-12；文档、证据、风险和回滚完整 |
+| TASK-PEN-008 | R06,R07,R09 | UNIT-PEN-05,15,16,17 | `mng_pages/probe.html`、`mng_pages/route.html`、管理安装路由及页面/handler测试、本协作文档 | 修改 | 特殊出口与普通探针共用创建API、探针列表和安装弹窗；创建时显式提交 `node_kind=mihomo_exit`；特殊安装仅Linux x64/Docker；二次分流Tab无创建和安装入口；主控全量及浏览器交互通过 |
 
 #### 1.4.3 源码修改规则
 - 修改源代码时必须注意可能存在的 GBK 编码并保持原文件编码，避免乱码或误转码。
@@ -375,10 +385,10 @@ flowchart LR
 - 需求、非范围、接口、单元、文件范围、操作类型和可测试验收标准均已声明；同包双构建、域名保持和SOCKS UDP/QUIC均已有正式证据。
 - Code章节固定结构已预创建。
 - 当前工作树可能有用户变更，Code必须先检查并保留无关修改。
-- 2026-08-13 Architect先关闭TASK-PEN-000前置条件，Code随后完成TASK-PEN-001至007并提交第2章完整证据。
+- 2026-08-13 Architect先关闭TASK-PEN-000前置条件，Code随后完成TASK-PEN-001至008并提交第2章完整证据。
 
 #### 1.4.6 结论
-- Code任务包已全部完成；实现顺序、文件范围和交付物经最终差异复核符合任务边界。
+- TASK-PEN-008已完成：特殊出口在探针管理页按普通探针流程创建并生成安装信息，二次分流页只保留配置和运行状态；Code证据已回写并进入最终门禁。
 
 ### 1.5 Architect需求跟踪矩阵
 - 状态: 已完成
@@ -390,10 +400,10 @@ flowchart LR
 | R03 | Mihomo二次分流 | 1.2 | UNIT-PEN-10至13 | TASK-PEN-000,004,005 | 已完成 | 正式快照、监管和官方Mihomo TCP/UDP/QUIC闭环 |
 | R04 | 每节点唯一聚合规则 | 1.2 | UNIT-PEN-02 | TASK-PEN-001 | 已完成 | 稳定ID，实时派生且Fake IP库使用有效规则 |
 | R05 | 私有配置作用域 | 1.2 | UNIT-PEN-01,06 | TASK-PEN-001 | 已完成 | revision/hash，订阅URL不下发，快照只给目标特殊探针 |
-| R06 | 主控二次分流Tab | 1.2 | UNIT-PEN-04,05 | TASK-PEN-002 | 已完成 | 路由页独立Tab及状态/安装入口 |
-| R07 | Linux amd64独立安装 | 1.2 | UNIT-PEN-15 | TASK-PEN-006 | 已完成 | 无Windows/ARM，systemd脚本和独立资产已交付 |
+| R06 | 主控二次分流Tab | 1.2 | UNIT-PEN-04,05 | TASK-PEN-002,008 | 已完成 | 路由页仅保留配置和运行状态，无创建/安装入口 |
+| R07 | Linux amd64独立安装 | 1.2 | UNIT-PEN-15 | TASK-PEN-006,008 | 已完成 | 探针管理页统一创建/安装入口；无Windows/ARM |
 | R08 | data/log/temp分区 | 1.2 | UNIT-PEN-14至16 | TASK-PEN-006 | 已完成 | 原生三目录，Docker另分program，升级保留持久数据 |
-| R09 | Docker壳与程序自升级 | 1.2 | UNIT-PEN-14,16 | TASK-PEN-006 | 已完成 | 清单校验、成对回滚，非镜像日常升级 |
+| R09 | Docker壳与程序自升级 | 1.2 | UNIT-PEN-14,16 | TASK-PEN-006,008 | 已完成 | 探针安装弹窗提供Docker壳配置；清单校验、成对回滚，非镜像日常升级 |
 | R10 | 安全订阅与秘密 | 1.2 | UNIT-PEN-01,04,06,12 | TASK-PEN-001,002,005 | 已完成 | HTTPS/SSRF/脱敏/作用域/0600运行秘密均通过 |
 | R11 | 承载绕行防回环 | 1.2 | UNIT-PEN-09,12,13 | TASK-PEN-000,004,005 | 已完成 | 无TUN、回环SOCKS/REST、失败不直连 |
 | R12 | TCP/UDP/QUIC | 1.2 | UNIT-PEN-09,11,13 | TASK-PEN-000,004,005 | 已完成 | 模拟与官方Mihomo真实进程均通过 |
@@ -406,7 +416,7 @@ flowchart LR
 | IF-PEN-001 | R06 | SpecialExits CRUD | 路由页 | 主控 | 管理JSON | 脱敏配置 | 已完成 | 管理鉴权，写入秘密不回显 |
 | IF-PEN-002 | R06,R10 | Subscription Refresh | 路由页 | 主控 | 特殊出口ID | 规范快照摘要/revision/hash | 已完成 | HTTPS固定解析、防SSRF/重定向/大小限制，URL不下发 |
 | IF-PEN-003 | R06 | SpecialExit Status | 路由页 | 主控 | 无 | desired/applied revision/hash、BuildKind、版本、exit_ready、健康、计数和错误 | 已完成 | 不含秘密 |
-| IF-PEN-004 | R07,R09 | Install Info | 路由页 | 主控 | node/mode | 安装参数 | 已完成 | native/docker入口、身份和HTTPS参数完整 |
+| IF-PEN-004 | R07,R09 | Install Info | 探针管理页 | 主控 | node/mode | 安装参数 | 已完成 | `/mng/api/probe/node/install`提供native/docker入口、身份和HTTPS参数；路由页不调用 |
 | IF-PEN-005 | R02,R05 | Probe Route Config | 探针 | 主控 | 现有HMAC请求 | expected_node_kind/revision/hash作用域快照 | 已完成 | 探针验证并原子应用，错配失败关闭 |
 | IF-PEN-006 | R04 | Managed Rule | 路由/Fake IP | 聚合器 | 私有规则 | 单一派生规则 | 已完成 | `special-exit:<node_id>`稳定ID |
 | IF-PEN-007 | R01,R02 | Probe Build Variant | CI/配置应用/状态报告 | 同一probe_node Go包 | tag/BuildKind/expected_node_kind | 独立发布物和状态 | 已完成 | 特殊仅Linux amd64，候选程序自检构建类型 |
@@ -428,7 +438,7 @@ flowchart LR
 |---|---|---|---|
 | 协作文档存在 | 通过 | 本文件 | 无 |
 | Architect章节存在 | 通过 | 第1章 | 无 |
-| Code章节存在 | 通过 | 第2章 | TASK-PEN-000至007证据完整 |
+| Code章节存在 | 通过 | 第2章 | TASK-PEN-000至008证据完整 |
 | 必需子章节存在 | 通过 | 1.1至1.7、2.1至2.6 | 无 |
 | 需求前缀一致 | 通过 | REQ-PEN-MIHOMO-EXIT-001 | 无 |
 | 需求编号一致 | 通过 | R01至R12 | 无 |
@@ -439,13 +449,14 @@ flowchart LR
 | Code任务反馈已处理 | 通过 | 2.6无未处理反馈 | 无 |
 | 验收标准可测试 | 通过 | AC-01至12 | 无 |
 | 需求任务覆盖完整 | 通过 | 1.5矩阵 | 无 |
-| 任务自测覆盖完整 | 通过 | TEST-PEN-000至007 | 每项任务均有测试或未执行原因 |
+| 任务自测覆盖完整 | 通过 | TEST-PEN-000至008 | 每项任务均有测试或未执行原因 |
 | 修改文件在允许范围内 | 通过 | 2.5.4与补充后的1.4.1逐项核对 | 状态/命令/许可证必要落点已显式列出 |
-| 测试失败已记录缺陷 | 通过 | DEFECT-PEN-001至011；2.5.6并行抖动记录 | 三项最终整改和稳定复跑全部通过 |
+| 测试失败已记录缺陷 | 通过 | DEFECT-PEN-001至012；2.5.6并行抖动记录 | 四项最终整改和稳定复跑全部通过 |
 | 未执行测试原因完整 | 通过 | 2.5.7 | systemd实机、race、最终联网重建均说明替代证据 |
 | 遗留风险可接受 | 通过 | 2.5.8 | 不影响协议兼容、秘密边界、事务提交或失败关闭 |
 | 最终整改闭合 | 通过 | DEFECT-PEN-009至011；定向测试、普通/特殊/主控全量 | 旧订阅结果拒绝、深拷贝事务落盘后提交、连续健康失败受监管重启均完成 |
 | 无Ruby产品依赖 | 通过 | Go结构化解析workflow、Docker Compose v5.3.0原生解析、Bash语法检查 | 构建、安装、CI与运行均不需要Ruby |
+| 创建安装入口符合产品边界 | 通过 | TASK-PEN-008、TEST-PEN-008、DEFECT-PEN-012 | `/mng/probe`统一创建/安装；`/mng/route`仅配置和状态 |
 
 #### 1.7.3 冲突记录
 | 冲突编号 | 冲突条款 | 最终采用条款 | 裁决人 | 裁决结论 |
@@ -457,12 +468,12 @@ flowchart LR
 - 结论: 通过
 - 放行阻塞: 放行
 - 条件: 无。
-- 责任方: 无
+- 责任方: 无。
 - 关闭要求: 无。
-- 整改关闭: DEFECT-PEN-009通过订阅源指纹关闭；DEFECT-PEN-010通过串行持久化锁、深拷贝工作副本和落盘后提交关闭；DEFECT-PEN-011通过失败关闭和三次失败受监管重启关闭。
+- 整改关闭: TASK-PEN-008已完成；主控全量、vet、普通/特殊探针全量及桌面/移动浏览器交互均通过。
 
 #### 1.7.5 结论
-- Architect重新逐行复核实现、任务范围、文档矩阵和测试证据；三项运行韧性缺口全部关闭，REQ-PEN-MIHOMO-EXIT-001最终门禁通过并放行。
+- REQ-PEN-MIHOMO-EXIT-001全部任务和用户体验纠偏均已闭合，最终门禁放行。
 
 ## 第2章 Code章节
 - 章节责任角色: Code
@@ -475,12 +486,13 @@ flowchart LR
 |---|---|---|---|---|---|---|
 | R01,R02,R03,R08,R11,R12 | TASK-PEN-000 | `probe_node/product_profile*.go`、末跳目标/传输接缝及测试 | 已完成 | 已完成 | 2.5.5至2.5.6 | 前置PoC及正式实现共用同一VRoute源码 |
 | R04,R05,R10 | TASK-PEN-001 | `probe_special_exit*.go`、route store/actions/handlers | 已完成 | 已完成 | TEST-PEN-001 | 私有存储、订阅、聚合、冲突与Fake IP有效规则 |
-| R06 | TASK-PEN-002 | 管理handlers、`server.go`、`mng_pages/route.html` | 已完成 | 已完成 | TEST-PEN-002、007 | CRUD、刷新、状态、安装和真实浏览器验证 |
+| R06 | TASK-PEN-002 | 管理handlers、`server.go`、`mng_pages/route.html` | 已完成 | 已完成 | TEST-PEN-002、007 | CRUD、刷新、状态和真实浏览器验证 |
 | R01,R02,R07 | TASK-PEN-003 | 产品profile、CI矩阵、升级资产自检 | 已完成 | 已完成 | TEST-PEN-003 | 特殊发布物仅Linux amd64 |
 | R01,R02,R03,R11,R12 | TASK-PEN-004 | 路由配置同步、正式末跳TCP/UDP出口、运行报告 | 已完成 | 已完成 | TEST-PEN-004 | 作用域快照、失败关闭、普通协议透明 |
 | R03,R10,R11,R12 | TASK-PEN-005 | `probe_special_exit_mihomo.go`及测试 | 已完成 | 已完成 | TEST-PEN-005 | Mihomo配置、监管、REST、健康、滚动日志、TCP/UDP/QUIC |
 | R07,R08,R09 | TASK-PEN-006 | 原生安装、Docker壳、发布清单、成对升级 | 已完成 | 已完成 | TEST-PEN-006 | data/log/temp分区、候选校验、成对替换/回滚 |
 | R01-R12 | TASK-PEN-007 | README、安装升级文档、端到端回归与本章 | 已完成 | 已完成 | TEST-PEN-007 | 全部交付物和证据闭合 |
+| R06,R07,R09 | TASK-PEN-008 | `mng_pages/probe.html`、`mng_pages/route.html`、probe安装handler/路由、节点类型约束及测试 | 已完成 | 已完成 | TEST-PEN-008 | 与普通探针共用创建/列表/安装流程；二次分流页仅配置和状态 |
 
 ### 2.2 Code关键接口跟踪矩阵
 - 状态: 已完成
@@ -488,7 +500,7 @@ flowchart LR
 | 接口编号 | 需求编号 | 实现文件 | 调用方 | 提供方 | 实现状态 | 证据 | 备注 |
 |---|---|---|---|---|---|---|---|
 | IF-PEN-001至003、006 | R04-R06,R10 | `probe_special_exit*.go`、管理handlers和`route.html` | 见1.6 | 见1.6 | 已完成 | TEST-PEN-001、002 | 管理响应脱敏；浏览器不能直接注入代理明文 |
-| IF-PEN-004 | R07,R09 | 安装信息handler、嵌入式Linux脚本、Docker Compose | 路由页 | 主控 | 已完成 | TEST-PEN-006 | 节点身份、HTTPS、平台与构建类型校验 |
+| IF-PEN-004 | R07,R09 | `mngProbeNodeInstallHandler`、嵌入式Linux脚本、Docker Compose | 探针管理页 | 主控 | 已完成 | TEST-PEN-006、008 | `/mng/api/probe/node/install`校验节点身份、HTTPS、平台与构建类型；路由页无调用 |
 | IF-PEN-005 | R02,R05 | 路由配置handler/sync | 探针 | 主控 | 已完成 | TEST-PEN-001、004 | HMAC不变；私有快照仅下发目标特殊探针 |
 | IF-PEN-007 | R01,R02 | 产品profile、状态报告、CI与候选自检 | CI/配置/状态 | 同一Go包 | 已完成 | TEST-PEN-003 | 构建类型不可运行时切换 |
 | IF-PEN-008 | R03 | `probe_virtual_router_exit_target.go`、exit netstack | VRoute末跳 | 出口适配层 | 已完成 | TEST-PEN-004、005 | Fake IP恢复域名；普通探针行为保持 |
@@ -508,6 +520,7 @@ flowchart LR
 | TEST-PEN-005 | R03,R10,R11,R12 | TASK-PEN-005 | Mihomo正式运行时 | 官方v1.19.29配置校验、TCP/UDP/QUIC真实进程和连续健康失败注入 | 已完成 | 两个显式集成用例及健康阈值用例通过 | 无 | 无TUN；API/SOCKS只回环且认证；失败关闭后受监管重启 |
 | TEST-PEN-006 | R07,R08,R09 | TASK-PEN-006 | 安装/Docker/成对升级 | Bash语法、Compose、镜像构建/入口冒烟、manifest/rollback单测 | 已完成 | Docker和脚本验证通过 | Linux systemd实机安装未执行，原因见2.5.7 | Docker壳不参与日常程序升级 |
 | TEST-PEN-007 | R01-R12 | TASK-PEN-007 | 端到端与视觉 | 全量回归、Edge CDP桌面1440/移动390、DOM/控制台/截图 | 已完成 | 无横向溢出、无控制台错误 | 无 | 二次分流Tab交互与样例状态通过 |
+| TEST-PEN-008 | R06,R07,R09 | TASK-PEN-008 | 统一创建/安装入口与二次分流边界 | handler/page单测、JS语法、控制器全量/vet、普通/特殊探针全量、Playwright桌面/移动真实交互 | 已完成 | 创建后自动打开Linux安装弹窗；native/Docker可切换；路由页无创建/安装；移动端无横向溢出且控制台无错误 | 无 | 使用隔离临时控制器和临时节点，截图中的安装秘密已遮蔽 |
 
 ### 2.4 Code缺陷跟踪矩阵
 - 状态: 已完成
@@ -525,6 +538,7 @@ flowchart LR
 | DEFECT-PEN-009 | R05,R10 | TEST-PEN-001 | 订阅URL或请求头在下载期间变更后，旧下载结果仍可能合入新配置 | 高 | 已完成 | 下载前计算订阅源指纹；提交和错误记录时在事务内复核；源变更注入测试通过 | 更换、清除和删除均拒绝过期结果 |
 | DEFECT-PEN-010 | R04,R05 | TEST-PEN-001 | 特殊配置保存失败的回滚对象存在切片别名，并可能覆盖另一并发成功写入 | 高 | 已完成 | 存储写入串行化；对深拷贝工作副本聚合Fake IP；落盘成功后才提交内存；失败和双并发测试通过 | 失败路径不再需要覆盖式内存回滚 |
 | DEFECT-PEN-011 | R03,R11 | TEST-PEN-005 | Mihomo健康检查持续失败时只降级状态，未主动恢复子进程 | 高 | 已完成 | 首次失败立即`exit_ready=false`；连续三次失败停止旧进程并进入既有退避重启；阈值测试通过 | 成功健康检查重置计数 |
+| DEFECT-PEN-012 | R06,R07,R09 | TEST-PEN-008 | 特殊出口的创建和安装入口曾位于二次分流页，不符合普通探针统一管理流程 | 中 | 已完成 | 创建改为复用`/mng/api/probe/node/create`并提交不可变`node_kind`；安装改为`/mng/api/probe/node/install`；路由页移除创建/安装控件和API | 特殊节点仅允许Linux，创建成功不因后续安装信息加载失败而回滚 |
 
 ### 2.5 Code执行证据
 - 状态: 已完成
@@ -532,7 +546,7 @@ flowchart LR
 #### 2.5.1 修改接口
 - `probeRouteConfigResponse.expected_node_kind/special_exit`：沿用现有HMAC；普通节点不收私有快照，目标特殊探针收规范快照。
 - `nodeStatus/probeReportPayload`：报告`build_kind`以及desired/applied revision/hash、`exit_ready`、健康、版本、会话、字节和错误。
-- 管理接口：新增SpecialExits CRUD、订阅刷新、状态和安装信息；响应仅返回脱敏元数据。
+- 管理接口：SpecialExits CRUD、订阅刷新和状态保留在路由管理；新增`/mng/api/probe/node/install`由探针管理页生成特殊出口原生/Docker安装信息；响应仅返回脱敏元数据。
 - `probeVirtualRouterExitTarget`和build-tag TCP/UDP接缝：特殊版将恢复的域名交给受管理Mihomo，普通版保持原解析/直连语义。
 - 发布与升级：新增仅Linux amd64特殊资产、配对manifest和Mihomo伴随升级事务。
 
@@ -543,15 +557,16 @@ flowchart LR
 - Mihomo固定回环SOCKS 17890、REST 17891，随机API/SOCKS秘密、无TUN；`log/mihomo.log`复用2 MiB滚动writer。
 
 #### 2.5.3 执行报告
-- TASK-PEN-000至007全部实现；同一`probe_node`源码形成`normal`和`mihomo_exit`两个产品，特殊版仅Linux amd64且不启动普通本地控制台、代理、系统DNS、同步、DDNS或平台TUN。
+- TASK-PEN-000至008全部实现；同一`probe_node`源码形成`normal`和`mihomo_exit`两个产品，特殊版仅Linux amd64且不启动普通本地控制台、代理、系统DNS、同步、DDNS或平台TUN。
 - 每特殊探针派生唯一`special-exit:<node_id>`规则；普通探针仅见聚合域名/CIDR和出口节点，二次动作与凭据透明。
 - 主控订阅仅HTTPS 443、固定公共解析IP、禁重定向/代理/私网/保留地址/远程provider，8 MiB上限；失败文本不含URL。
 - 订阅刷新以URL和请求头的稳定指纹绑定下载结果；特殊配置在串行持久化锁内修改深拷贝，磁盘成功后才提交内存，保存失败或并发写入不会泄漏半状态。
 - Mihomo候选先`-t`校验，再加载和健康检查，成功后提交快照；进程退出或连续三次健康失败均按5至60秒退避重启，首次失败即关闭`exit_ready`且不回落直连。
 - 原生和Docker首次安装都使用配对manifest；程序升级自行校验并替换程序/Mihomo，失败成对回滚。Mihomo MIT许可证随Release与镜像交付。
+- 主控探针管理页统一创建两类探针；特殊出口创建后自动进入同一安装弹窗并仅提供Linux x64原生/Docker方式。二次分流页不再创建探针或生成安装信息。
 
 #### 2.5.4 影响文件
-- 主控：`probe_special_exit*.go`、route/node store与handlers、runtime/report/WS、`server.go`、`mng_pages/route.html`、嵌入式安装脚本及测试。
+- 主控：`probe_special_exit*.go`、route/node store与handlers、runtime/report/WS、`server.go`、`mng_pages/probe.html`、`mng_pages/route.html`、嵌入式安装脚本及测试。
 - 探针：产品profile、特殊入口、路由同步、末跳目标/传输、Mihomo运行时、升级伴随组件、`go.mod/go.sum`及测试；原VRoute线协议文件仅增加出口接缝。
 - 发布部署：`.github/workflows/release.yml`、`docker/probe_exit_node/`、`THIRD_PARTY_LICENSES/mihomo-LICENSE`。
 - 文档：`README.md`、`doc/install_upgrade.md`、本协作文档。
@@ -565,6 +580,7 @@ flowchart LR
 - `docker compose -f docker/probe_exit_node/compose.yaml config --quiet; docker build ...; docker run ...entrypoint`
 - `go test . -run TestReleaseWorkflowDefinesMihomoExitLinuxAMD64Artifacts -count=1; node --check <route-script>; go mod tidy -diff; git diff --check`
 - Edge Headless CDP：真实管理会话打开`/mng/route`、点击二次分流，采集桌面/移动DOM、控制台与截图。
+- TASK-PEN-008：`go test ./internal/core -run 'Test(ProbePageCreatesAndInstallsMihomoExitWithNormalProbeWorkflow|MngProbeNodeInstallHandlerServesMihomoExitFromProbeManagement|MihomoExitNodeKindIsImmutableAndLinuxOnly|MngRoutePageIncludesSpecialExitWorkflow)'`; `node --check <probe-script>`与`node --check <route-script>`；Playwright通过真实管理会话创建特殊出口并验证native/Docker安装及路由页边界。
 
 #### 2.5.6 自测结果
 - 通过：控制端全量测试和`go vet ./...`。
@@ -575,6 +591,8 @@ flowchart LR
 - 通过：Edge 151桌面1440x1000与移动390x844；Tab激活、内容/API数据完整、控制台无警告错误、`scrollWidth==viewport width`、关键控件无重叠。
 - 通过：`go mod tidy -diff`为空；两份Mihomo许可证SHA-256一致；`git diff --check`仅LF/CRLF提示。
 - 通过：订阅源变更拒绝、保存失败不提交、双并发更新不丢失和Mihomo三次健康失败重启阈值定向回归；控制器全量/vet及普通、特殊全量复跑均通过。
+- 通过：统一创建/安装定向测试；特殊节点类型不可修改且只允许Linux；最终控制器全量/vet、普通探针全量、特殊tag全量复跑均通过。
+- 通过：Playwright桌面和390px移动端真实流程；创建特殊出口后自动打开原生安装，Docker配置可切换，路由页不存在创建/安装控件，无控制台错误、警告或横向溢出。
 - 仓库全平台探针`go vet`仍有既有mobilecore复制Mutex与Windows unsafe.Pointer告警；本次Linux特殊目标和新增代码vet通过。
 
 #### 2.5.7 未执行测试原因
@@ -595,14 +613,14 @@ flowchart LR
 - 持久数据回滚前备份`data/`和`log/`；`temp/`可直接重建。
 
 #### 2.5.10 结论
-- TASK-PEN-000至007及DEFECT-PEN-009至011最终整改全部完成，AC-01至12具备实现和本地验证证据；提交Architect重新执行最终门禁。
+- TASK-PEN-000至008及DEFECT-PEN-009至012最终整改全部完成，AC-01至12及统一创建入口纠偏具备实现和本地验证证据；已提交Architect并通过最终门禁。
 
 ### 2.6 Code任务反馈
 - 状态: 已完成
 
 | 反馈编号 | 任务编号 | 反馈类型 | 反馈描述 | 阻塞影响 | Code建议 | Architect处理状态 | Architect处理结论 |
 |---|---|---|---|---|---|---|---|
-| 无 | TASK-PEN-000至007 | 无 | 无未处理任务包缺口或接口冲突 | 无 | 进入最终门禁 | 已完成 | 无需整改 |
+| 无 | TASK-PEN-000至008 | 无 | 无未处理任务包缺口或接口冲突 | 无 | 进入最终门禁 | 已完成 | 无需整改 |
 
 #### 2.6.1 结论
 - Code任务全部完成，无未处理反馈；未执行项和可接受残余风险已在2.5.7至2.5.8记录。

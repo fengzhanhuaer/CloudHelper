@@ -2,11 +2,11 @@
 
 ## Mihomo 特殊出口探针
 
-特殊出口探针从普通 `probe_node` 同一源码以 `mihomo_exit` tag构建，发布物名为 `cloudhelper-probe-exit-node-linux-amd64`。安装前先在主控 `/mng/route` 的“二次分流”Tab创建特殊探针并保存配置。
+特殊出口探针从普通 `probe_node` 同一源码以 `mihomo_exit` tag构建，发布物名为 `cloudhelper-probe-exit-node-linux-amd64`。安装前先在主控 `/mng/probe` 的探针列表选择“Mihomo 出口探针”并创建；创建后再到 `/mng/route` 的“二次分流”Tab保存该探针的订阅和规则配置。
 
 ### 原生安装
 
-在该Tab选择 `Linux x64`并执行生成命令。安装器会：
+在主控“探针管理”页创建或选中Mihomo出口探针，点击“安装”，选择 `Linux x64`并执行生成命令。二次分流Tab不负责创建或安装探针。安装器会：
 
 1. 拒绝非 Linux x86_64 环境。
 2. 下载并自检 `build_kind=mihomo_exit` 的特殊探针程序。

@@ -138,15 +138,6 @@ func mngRouteSpecialExitStatusHandler(w http.ResponseWriter, r *http.Request) {
 	writeMngRouteResult(w, result, err)
 }
 
-func mngRouteSpecialExitInstallHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	result, err := buildMngProbeSpecialExitInstallInfo(r.URL.Query().Get("node_id"), r.URL.Query().Get("mode"), controllerBaseURLFromRequest(r))
-	writeMngRouteResult(w, result, err)
-}
-
 func mngRouteVirtualRouterFakeIPResetHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

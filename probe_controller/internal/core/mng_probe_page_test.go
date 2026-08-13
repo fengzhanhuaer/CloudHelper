@@ -42,3 +42,21 @@ func TestProbePageVersionColumnsShowUpgradeAvailability(t *testing.T) {
 		}
 	}
 }
+
+func TestProbePageCreatesAndInstallsMihomoExitWithNormalProbeWorkflow(t *testing.T) {
+	required := []string{
+		`id="create-node-kind"`,
+		`value="mihomo_exit"`,
+		`JSON.stringify({ node_name: nodeName, node_kind: nodeKind })`,
+		`/mng/api/probe/node/install?node_id=`,
+		`id="install-mode"`,
+		`Mihomo 出口探针`,
+		`${kindLabel}安装信息`,
+		`await copyNodeInstallCommand(Number(payload.node.node_no))`,
+	}
+	for _, item := range required {
+		if !strings.Contains(mngProbePageHTML, item) {
+			t.Fatalf("probe page mihomo exit workflow missing %q", item)
+		}
+	}
+}

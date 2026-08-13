@@ -104,11 +104,11 @@ Compose 会将 `docker/probe_node/` 目录整体挂载到容器的 `/opt/cloudhe
 
 ## Mihomo 特殊出口探针
 
-主控 `/mng/route` 的“二次分流”Tab可创建 `mihomo_exit` 节点、保存 Clash/Mihomo 订阅和二次分流规则。每个特殊探针自动聚合为一条普通虚拟路由规则；普通探针只看到域名/CIDR条目和特殊出口节点，不会收到订阅URL、请求头、代理节点或凭据。
+主控 `/mng/probe` 的探针列表使用与普通探针相同的入口创建 `mihomo_exit` 节点：填写名称、选择“Mihomo 出口探针”并创建，随后安装弹窗按该节点身份生成 Linux x64 原生命令或完整 Docker Compose。`/mng/route` 的“二次分流”Tab只配置已创建特殊探针的 Clash/Mihomo 订阅和二次分流规则。每个特殊探针自动聚合为一条普通虚拟路由规则；普通探针只看到域名/CIDR条目和特殊出口节点，不会收到订阅URL、请求头、代理节点或凭据。
 
 特殊探针仅发布 `cloudhelper-probe-exit-node-linux-amd64`，不提供 Windows、ARM 或 Android 版本，也不会创建 CloudHelper/Mihomo TUN。最终出口通过受认证的 `127.0.0.1` SOCKS5 listener 交给受管理的 Mihomo，支持 TCP、UDP 和基于 UDP 的 QUIC。
 
-原生安装：在“二次分流”Tab选中节点和 `Linux x64`，执行页面生成的命令。默认目录为 `/opt/cloudhelper/probe_exit_node`：
+原生安装：在“探针管理”页创建或选中Mihomo出口探针，点击“安装”，选择 `Linux x64`并执行弹窗生成的命令。默认目录为 `/opt/cloudhelper/probe_exit_node`：
 
 - `data/`：节点身份、私有规范快照、Mihomo程序/配置和运行秘密，升级保留。
 - `log/`：特殊探针与Mihomo日志，升级保留。
