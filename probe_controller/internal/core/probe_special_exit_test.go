@@ -534,7 +534,9 @@ func TestMngRoutePageIncludesSpecialExitWorkflow(t *testing.T) {
 		`data-tab="special-exits"`, `id="section-special-exits"`, `id="special-exit-subscriptions"`,
 		`id="btn-special-exit-subscription-add"`, `function addSpecialExitSubscription()`, `可选请求头 JSON`,
 		`id="special-exit-clear-subscription"`, `id="special-exit-status-list"`,
-		`id="special-exit-managed-rule"`,
+		`id="special-exit-managed-rule"`, `id="special-exit-detail"`, `id="special-exit-empty"`,
+		`<option value="">请选择特殊探针</option>`, `.special-exit-layout[hidden] { display:none; }`,
+		`state.specialExitStatuses.find((status) => normalizeNodeID(status.node_id) === nodeID)`,
 		`/mng/api/route/special_exits/subscription/refresh`,
 	} {
 		if !strings.Contains(mngRoutePageHTML, marker) {
@@ -549,7 +551,7 @@ func TestMngRoutePageIncludesSpecialExitWorkflow(t *testing.T) {
 	if !strings.Contains(mngRoutePageHTML, `.special-exit-layout { display:grid; grid-template-columns:minmax(0, 1fr);`) {
 		t.Fatal("special exit workflow must use a single-column layout")
 	}
-	ordered := []string{`<span>运行状态</span>`, `<span>聚合路由规则</span>`, `<span>基础配置</span>`, `<span>Clash 订阅源</span>`, `<span>二次分流规则</span>`}
+	ordered := []string{`<label for="special-exit-node">特殊探针</label>`, `<span>基础配置</span>`, `<span>Clash 订阅源</span>`, `<span>二次分流规则</span>`, `<span>聚合路由规则</span>`, `<span>运行状态</span>`}
 	position := -1
 	for _, marker := range ordered {
 		next := strings.Index(mngRoutePageHTML, marker)

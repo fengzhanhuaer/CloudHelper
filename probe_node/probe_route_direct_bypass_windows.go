@@ -32,6 +32,9 @@ func prepareProbeRouteWindowsDirectRouteTarget() error {
 		return err
 	}
 	setProbeRouteWindowsDirectRouteTarget(routeTarget)
+	if cleanupErr := cleanupProbeRouteWindowsInvalidLocalAddressBypassRoutes(); cleanupErr != nil {
+		logProbeWarnf("probe route direct bypass cleanup invalid local-address routes failed: %v", cleanupErr)
+	}
 	logProbeInfof("probe route direct route route target prepared: %s", describeProbeLocalTUNEgressTarget(routeTarget))
 	return nil
 }

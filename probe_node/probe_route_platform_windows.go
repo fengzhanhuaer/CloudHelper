@@ -35,7 +35,8 @@ type probeRouteWindowsTUNRouteTarget struct {
 }
 
 var (
-	probeLocalWindowsRunCommand = runProbeLocalCommand
+	probeLocalWindowsRunCommand       = runProbeLocalCommand
+	probeRouteWindowsListAdaptersIPv4 = windowsListAdaptersIPv4
 )
 
 func resolveProbeRouteWindowsTUNRouteTarget() (probeRouteWindowsTUNRouteTarget, error) {
@@ -123,6 +124,33 @@ func ensureProbeRouteDirectBypass(targetAddr string) error {
 		logProbeWarnf("probe route direct route skipped for protected tun target: target=%s ips=%s", strings.TrimSpace(targetAddr), strings.Join(ips, ","))
 		return nil
 	}
+	localIPv4s, err := probeRouteWindowsLocalIPv4AddressSet()
+	if err != nil {
+		return fmt.Errorf("list local ipv4 addresses before direct bypass: %w", err)
+	}
+	bypassIPs := make([]string, 0, len(ips))
+	hasLocalTarget := false
+	for _, ipText := range ips {
+		ip4 := net.ParseIP(strings.TrimSpace(ipText)).To4()
+		if ip4 == nil {
+			continue
+		}
+		if _, ok := localIPv4s[ip4.String()]; ok {
+			hasLocalTarget = true
+			continue
+		}
+		bypassIPs = append(bypassIPs, ip4.String())
+	}
+	var allErr error
+	if hasLocalTarget {
+		if cleanupErr := cleanupProbeRouteWindowsInvalidLocalAddressBypassRoutesFor(localIPv4s); cleanupErr != nil {
+			allErr = errors.Join(allErr, cleanupErr)
+		}
+	}
+	if len(bypassIPs) == 0 {
+		return allErr
+	}
+	ips = bypassIPs
 	excludedIfIndex := currentProbeVirtualRouterTUNDataPlaneIfIndex()
 	bypassTarget, ok := currentProbeRouteWindowsDirectRouteTarget()
 	if !ok || bypassTarget.InterfaceIndex <= 0 || strings.TrimSpace(bypassTarget.NextHop) == "" {
@@ -144,7 +172,6 @@ func ensureProbeRouteDirectBypass(targetAddr string) error {
 		logProbeWarnf("probe route direct route target rejected because it points to tun: target=%s ips=%s if_index=%d next_hop=%s", strings.TrimSpace(targetAddr), strings.Join(ips, ","), bypassTarget.InterfaceIndex, strings.TrimSpace(bypassTarget.NextHop))
 		return fmt.Errorf("direct route target points to tun interface: if_index=%d", bypassTarget.InterfaceIndex)
 	}
-	var allErr error
 	for _, ipText := range ips {
 		ip4 := net.ParseIP(strings.TrimSpace(ipText)).To4()
 		if ip4 == nil {
@@ -177,6 +204,71 @@ func ensureProbeRouteDirectBypass(targetAddr string) error {
 			logProbeWarnf("probe route direct route host route failed: target=%s ip=%s gateway=%s if_index=%d interface_luid=%d err=%v", strings.TrimSpace(targetAddr), routeDef.Prefix, routeDef.Gateway, routeDef.IfIndex, routeDef.InterfaceLUID, routeErr)
 			allErr = errors.Join(allErr, routeErr)
 		}
+	}
+	return allErr
+}
+
+func probeRouteWindowsLocalIPv4AddressSet() (map[string]struct{}, error) {
+	adapters, err := probeRouteWindowsListAdaptersIPv4()
+	if err != nil {
+		return nil, err
+	}
+	localIPv4s := make(map[string]struct{})
+	for _, adapter := range adapters {
+		for _, ipText := range adapter.IPv4Addrs {
+			ip4 := net.ParseIP(strings.TrimSpace(ipText)).To4()
+			if ip4 == nil {
+				continue
+			}
+			localIPv4s[ip4.String()] = struct{}{}
+		}
+	}
+	return localIPv4s, nil
+}
+
+func cleanupProbeRouteWindowsInvalidLocalAddressBypassRoutes() error {
+	localIPv4s, err := probeRouteWindowsLocalIPv4AddressSet()
+	if err != nil {
+		return fmt.Errorf("list local ipv4 addresses: %w", err)
+	}
+	return cleanupProbeRouteWindowsInvalidLocalAddressBypassRoutesFor(localIPv4s)
+}
+
+func cleanupProbeRouteWindowsInvalidLocalAddressBypassRoutesFor(localIPv4s map[string]struct{}) error {
+	if len(localIPv4s) == 0 {
+		return nil
+	}
+	entries, err := probeLocalListWindowsRouteEntries()
+	if err != nil {
+		return fmt.Errorf("list windows routes: %w", err)
+	}
+	var allErr error
+	for _, entry := range entries {
+		if entry.PrefixLength != 32 || entry.IfIndex <= 0 || entry.Metric != uint32(probeRouteWindowsRouteMetric) {
+			continue
+		}
+		nextHop := strings.TrimSpace(entry.NextHop)
+		if nextHop == "" || nextHop == "0.0.0.0" {
+			continue
+		}
+		ip4 := net.ParseIP(strings.TrimSpace(entry.Prefix)).To4()
+		if ip4 == nil {
+			continue
+		}
+		if _, ok := localIPv4s[ip4.String()]; !ok {
+			continue
+		}
+		routeDef := probeRouteWindowsRouteDef{
+			Prefix:  ip4.String(),
+			Mask:    probeRouteWindowsHostRouteMask,
+			Gateway: nextHop,
+			IfIndex: entry.IfIndex,
+		}
+		if deleteErr := deleteProbeRouteWindowsRoute(routeDef); deleteErr != nil {
+			allErr = errors.Join(allErr, fmt.Errorf("delete invalid local-address bypass route %s via %s if_index=%d: %w", routeDef.Prefix, routeDef.Gateway, routeDef.IfIndex, deleteErr))
+			continue
+		}
+		logProbeInfof("probe route direct bypass removed invalid local-address host route: ip=%s gateway=%s if_index=%d", routeDef.Prefix, routeDef.Gateway, routeDef.IfIndex)
 	}
 	return allErr
 }

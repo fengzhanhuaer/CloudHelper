@@ -91,6 +91,7 @@
     .rule-editor { min-width:360px; }
     .route-rule-actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
     .special-exit-layout { display:grid; grid-template-columns:minmax(0, 1fr); gap:12px; }
+    .special-exit-layout[hidden] { display:none; }
     .special-exit-layout textarea { min-height:88px; }
     .special-exit-rule-grid { display:grid; grid-template-columns:minmax(160px, 1fr) 132px minmax(150px, 1fr) 112px 130px; gap:8px; align-items:start; }
     .special-exit-rule-grid > * { min-width:0; width:100%; box-sizing:border-box; }
@@ -234,23 +235,18 @@
           </div>
           <span id="special-exit-summary" class="summary-pill small">未加载</span>
         </div>
-        <div class="special-exit-layout">
-          <div>
-            <div class="box" style="margin-bottom:12px;">
-              <div class="box-title"><span>运行状态</span></div>
-              <div id="special-exit-status-list" class="special-exit-status-list"></div>
-            </div>
-            <div class="box" style="margin-bottom:12px;">
-              <div class="box-title"><span>聚合路由规则</span></div>
-              <textarea id="special-exit-managed-rule" class="mono" readonly></textarea>
-            </div>
+        <div class="box" style="margin-bottom:12px;">
+          <div class="config-grid">
+            <label for="special-exit-node">特殊探针</label>
+            <select id="special-exit-node"></select>
           </div>
+        </div>
+        <div id="special-exit-empty" class="box muted small">请选择特殊探针。</div>
+        <div id="special-exit-detail" class="special-exit-layout" hidden>
           <div>
             <div class="box" style="margin-bottom:12px;">
               <div class="box-title"><span>基础配置</span></div>
               <div class="config-grid">
-                <label for="special-exit-node">特殊探针</label>
-                <select id="special-exit-node"></select>
                 <label for="special-exit-name">配置名称</label>
                 <input id="special-exit-name" type="text" autocomplete="off" />
                 <label for="special-exit-enabled">启用</label>
@@ -271,6 +267,14 @@
             <div class="box" style="margin-top:12px;">
               <div class="box-title"><span>二次分流规则</span><button id="btn-special-exit-rule-add" class="btn" type="button">添加规则</button></div>
               <div id="special-exit-rules" class="special-exit-status-list"></div>
+            </div>
+            <div class="box" style="margin-top:12px;">
+              <div class="box-title"><span>聚合路由规则</span></div>
+              <textarea id="special-exit-managed-rule" class="mono" readonly></textarea>
+            </div>
+            <div class="box" style="margin-top:12px;">
+              <div class="box-title"><span>运行状态</span></div>
+              <div id="special-exit-status-list" class="special-exit-status-list"></div>
             </div>
           </div>
         </div>
@@ -607,7 +611,7 @@
       state.specialExitStatuses = Array.isArray(statuses.items) ? statuses.items : [];
       const candidates = state.nodes.filter((item) => item.node_kind === 'mihomo_exit');
       if (!candidates.some((item) => normalizeNodeID(item.node_no) === normalizeNodeID(state.selectedSpecialExitNodeID))) {
-        state.selectedSpecialExitNodeID = candidates.length ? normalizeNodeID(candidates[0].node_no) : '';
+        state.selectedSpecialExitNodeID = '';
       }
       state.specialExits.forEach((saved) => {
         const nodeID = normalizeNodeID(saved.node_id);
@@ -626,10 +630,14 @@
       const candidates = state.nodes.filter((item) => item.node_kind === 'mihomo_exit');
       const nodeSelect = document.getElementById('special-exit-node');
       nodeSelect.innerHTML = candidates.length
-        ? candidates.map((item) => `<option value="${escapeHTML(item.node_no)}">#${escapeHTML(item.node_no)} ${escapeHTML(item.node_name || '')}</option>`).join('')
+        ? '<option value="">请选择特殊探针</option>' + candidates.map((item) => `<option value="${escapeHTML(item.node_no)}">#${escapeHTML(item.node_no)} ${escapeHTML(item.node_name || '')}</option>`).join('')
         : '<option value="">暂无特殊探针</option>';
       nodeSelect.value = normalizeNodeID(state.selectedSpecialExitNodeID);
       const draft = currentSpecialExitDraft();
+      document.getElementById('special-exit-detail').hidden = !draft;
+      const empty = document.getElementById('special-exit-empty');
+      empty.hidden = !!draft;
+      empty.textContent = candidates.length ? '请选择特殊探针。' : '暂无特殊探针，请先在探针管理中创建 Mihomo 出口探针。';
       const controls = ['special-exit-name', 'special-exit-enabled', 'special-exit-default-action', 'special-exit-default-target', 'special-exit-clear-subscription'];
       controls.forEach((id) => { document.getElementById(id).disabled = !draft; });
       document.getElementById('btn-special-exit-save').disabled = !draft;
@@ -652,8 +660,7 @@
       const managed = state.specialExitManagedRules.find((item) => normalizeNodeID(item.exit_node_id) === normalizeNodeID(state.selectedSpecialExitNodeID));
       document.getElementById('special-exit-managed-rule').value = managed ? JSON.stringify(managed, null, 2) : '';
       const configured = state.specialExits.length;
-      const ready = state.specialExitStatuses.filter((item) => item.online && item.exit_ready && item.healthy && item.build_kind === 'mihomo_exit').length;
-      document.getElementById('special-exit-summary').textContent = `已配置 ${configured}，就绪 ${ready}`;
+      document.getElementById('special-exit-summary').textContent = `已配置 ${configured}`;
     }
 
     function renderSpecialExitSubscriptions(draft) {
@@ -762,17 +769,21 @@
 
     function renderSpecialExitStatus() {
       const host = document.getElementById('special-exit-status-list');
-      if (!state.specialExitStatuses.length) {
-        host.innerHTML = '<div class="muted small">暂无运行状态。</div>';
+      const nodeID = normalizeNodeID(state.selectedSpecialExitNodeID);
+      const item = state.specialExitStatuses.find((status) => normalizeNodeID(status.node_id) === nodeID);
+      if (!nodeID || !item) {
+        host.innerHTML = '<div class="muted small">当前探针暂无运行状态，保存配置并等待探针上报。</div>';
         return;
       }
-      host.innerHTML = state.specialExitStatuses.map((item) => {
-        const correctBuild = item.build_kind === 'mihomo_exit';
-        const stateClass = item.online && item.exit_ready && item.healthy && correctBuild ? 'ok' : 'err';
-        const stateText = !item.online ? '离线' : !correctBuild ? '安装包不匹配' : item.exit_ready && item.healthy ? '就绪' : '未就绪';
-        const error = item.last_apply_error ? `<div class="route-error small">${escapeHTML(item.last_apply_error)}</div>` : '';
-        return `<div class="special-exit-status-item"><div>${escapeHTML(nodeLabel(item.node_id))} <span class="route-state ${stateClass}">${stateText}</span></div><div class="small muted mono">desired ${escapeHTML(item.desired_revision || 0)} / applied ${escapeHTML(item.applied_revision || 0)} · probe ${escapeHTML(item.probe_version || '-')} · mihomo ${escapeHTML(item.mihomo_version || '-')}</div><div class="small muted">会话 ${escapeHTML(item.active_sessions || 0)} · ↑ ${escapeHTML(formatBytes(item.bytes_up))} · ↓ ${escapeHTML(formatBytes(item.bytes_down))}</div>${error}</div>`;
-      }).join('');
+      const correctBuild = item.build_kind === 'mihomo_exit';
+      const synchronized = Number(item.desired_revision || 0) > 0
+        && Number(item.desired_revision || 0) === Number(item.applied_revision || 0)
+        && String(item.desired_sha256 || '').toLowerCase() === String(item.applied_sha256 || '').toLowerCase();
+      const ready = item.online && correctBuild && synchronized && item.exit_ready && item.healthy;
+      const stateClass = ready ? 'ok' : 'err';
+      const stateText = !item.online ? '离线' : !correctBuild ? '安装包不匹配' : !synchronized ? '配置未同步' : ready ? '就绪' : '未就绪';
+      const error = item.last_apply_error ? `<div class="route-error small">${escapeHTML(item.last_apply_error)}</div>` : '';
+      host.innerHTML = `<div class="special-exit-status-item"><div>${escapeHTML(nodeLabel(item.node_id))} <span class="route-state ${stateClass}">${stateText}</span></div><div class="small muted mono">desired ${escapeHTML(item.desired_revision || 0)} / applied ${escapeHTML(item.applied_revision || 0)} · probe ${escapeHTML(item.probe_version || '-')} · mihomo ${escapeHTML(item.mihomo_version || '-')}</div><div class="small muted">会话 ${escapeHTML(item.active_sessions || 0)} · ↑ ${escapeHTML(formatBytes(item.bytes_up))} · ↓ ${escapeHTML(formatBytes(item.bytes_down))}</div>${error}</div>`;
     }
 
     function bindSpecialExitRuleEvents() {

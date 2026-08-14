@@ -77,6 +77,7 @@ func resetProbeLocalWindowsNativeRouteHooksForTest() {
 	probeLocalCreateWindowsRouteEntry = ensureProbeRouteWindowsRouteNative
 	probeLocalDeleteWindowsRouteEntry = deleteProbeRouteWindowsRouteNative
 	probeLocalListWindowsRouteEntries = listProbeLocalWindowsIPv4RouteEntries
+	probeRouteWindowsListAdaptersIPv4 = windowsListAdaptersIPv4
 	probeLocalResolveWindowsPrimaryEgressRoute = resolveProbeLocalWindowsPrimaryEgressRouteTarget
 	probeLocalSnapshotWindowsIPv4Routes = snapshotProbeLocalWindowsIPv4Routes
 	probeLocalSetWindowsInterfaceDNS = setProbeLocalWindowsInterfaceDNS
@@ -162,6 +163,9 @@ func TestEnsureProbeRouteDirectBypassWritesHostRoute(t *testing.T) {
 	probeRouteDirectRouteTargetState.routeTarget = probeRouteWindowsDirectRouteTarget{InterfaceIndex: 13, NextHop: "192.168.51.1"}
 	probeRouteDirectRouteTargetState.ready = true
 	probeRouteDirectRouteTargetState.mu.Unlock()
+	probeRouteWindowsListAdaptersIPv4 = func() ([]windowsAdapterInfo, error) {
+		return []windowsAdapterInfo{{InterfaceIndex: 13, IPv4Addrs: []string{"192.168.51.20"}}}, nil
+	}
 
 	var created []probeRouteWindowsRouteDef
 	probeLocalCreateWindowsRouteEntry = func(routeDef probeRouteWindowsRouteDef) (bool, error) {
@@ -191,6 +195,9 @@ func TestEnsureProbeRouteDirectBypassBeforeTUNEnvironmentReady(t *testing.T) {
 
 	probeLocalFindWintunAdapter = func() (probeLocalWindowsNetAdapter, bool, error) {
 		return probeLocalWindowsNetAdapter{InterfaceIndex: 8}, true, nil
+	}
+	probeRouteWindowsListAdaptersIPv4 = func() ([]windowsAdapterInfo, error) {
+		return []windowsAdapterInfo{{InterfaceIndex: 21, IPv4Addrs: []string{"172.18.54.246"}}}, nil
 	}
 	var excludedIfIndex int
 	probeLocalResolveWindowsPrimaryEgressRoute = func(excluded int) (probeRouteWindowsDirectRouteTarget, error) {
@@ -233,6 +240,45 @@ func TestEnsureProbeRouteDirectBypassSkipsFakeIPTarget(t *testing.T) {
 	}
 	if err := ensureProbeRouteDirectBypass("198.18.0.3:443"); err != nil {
 		t.Fatalf("ensure fake ip direct bypass should be skipped without error: %v", err)
+	}
+}
+
+func TestEnsureProbeRouteDirectBypassSkipsAndCleansLocalAddress(t *testing.T) {
+	resetProbeRouteDirectBypassStateForTest()
+	t.Cleanup(func() {
+		resetProbeRouteDirectBypassStateForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
+	})
+
+	probeRouteDirectRouteTargetState.mu.Lock()
+	probeRouteDirectRouteTargetState.routeTarget = probeRouteWindowsDirectRouteTarget{InterfaceIndex: 15, NextHop: "172.18.55.254"}
+	probeRouteDirectRouteTargetState.ready = true
+	probeRouteDirectRouteTargetState.mu.Unlock()
+	probeRouteWindowsListAdaptersIPv4 = func() ([]windowsAdapterInfo, error) {
+		return []windowsAdapterInfo{{InterfaceIndex: 15, IPv4Addrs: []string{"172.18.54.246"}}}, nil
+	}
+	probeLocalListWindowsRouteEntries = func() ([]probeLocalWindowsRouteEntry, error) {
+		return []probeLocalWindowsRouteEntry{
+			{Prefix: "172.18.54.246", PrefixLength: 32, NextHop: "0.0.0.0", IfIndex: 15, Metric: 256},
+			{Prefix: "172.18.54.246", PrefixLength: 32, NextHop: "172.18.55.254", IfIndex: 15, Metric: probeRouteWindowsRouteMetric},
+			{Prefix: "172.18.54.246", PrefixLength: 32, NextHop: "172.18.55.253", IfIndex: 16, Metric: 4},
+		}, nil
+	}
+	probeLocalCreateWindowsRouteEntry = func(routeDef probeRouteWindowsRouteDef) (bool, error) {
+		t.Fatalf("should not create direct bypass route for local address: %+v", routeDef)
+		return false, nil
+	}
+	var deleted []probeRouteWindowsRouteDef
+	probeLocalDeleteWindowsRouteEntry = func(routeDef probeRouteWindowsRouteDef) error {
+		deleted = append(deleted, routeDef)
+		return nil
+	}
+
+	if err := ensureProbeRouteDirectBypass("172.18.54.246:12040"); err != nil {
+		t.Fatalf("ensure local address direct bypass should be skipped and cleaned: %v", err)
+	}
+	if len(deleted) != 1 || deleted[0].Prefix != "172.18.54.246" || deleted[0].Gateway != "172.18.55.254" || deleted[0].IfIndex != 15 {
+		t.Fatalf("deleted=%+v, want only probe-created local-address route", deleted)
 	}
 }
 
@@ -290,6 +336,9 @@ func TestEnsureProbeRouteDirectBypassRejectsTUNInterfaceTarget(t *testing.T) {
 	probeRouteDirectRouteTargetState.routeTarget = probeRouteWindowsDirectRouteTarget{InterfaceIndex: 9, NextHop: "198.18.0.1"}
 	probeRouteDirectRouteTargetState.ready = true
 	probeRouteDirectRouteTargetState.mu.Unlock()
+	probeRouteWindowsListAdaptersIPv4 = func() ([]windowsAdapterInfo, error) {
+		return []windowsAdapterInfo{{InterfaceIndex: 15, IPv4Addrs: []string{"192.168.51.20"}}}, nil
+	}
 	probeLocalCreateWindowsRouteEntry = func(routeDef probeRouteWindowsRouteDef) (bool, error) {
 		t.Fatalf("should not create direct bypass route pointing to tun: %+v", routeDef)
 		return false, nil
