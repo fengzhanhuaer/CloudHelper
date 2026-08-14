@@ -19,16 +19,17 @@ import (
 func signedProbeMihomoTestSnapshot(t *testing.T) probeSpecialExitSnapshot {
 	t.Helper()
 	snapshot := probeSpecialExitSnapshot{
-		Version: 1, NodeID: "19", Enabled: true, Revision: 7,
-		DefaultAction: "direct",
+		Version: 2, NodeID: "19", Revision: 7,
 		Rules: []probeSpecialExitRule{
-			{ID: "proxy", Name: "proxy", Enabled: true, Action: "node", Target: "node-a", Entries: []string{"domain_suffix:example.com"}, Ports: []string{"443"}, Network: "tcp"},
-			{ID: "prefix", Name: "prefix", Enabled: true, Action: "reject", Entries: []string{"domain_prefix:api."}},
-			{ID: "keyword", Name: "keyword", Enabled: true, Action: "direct", Entries: []string{"domain_keyword:.media."}},
-			{ID: "cidr", Name: "cidr", Enabled: true, Action: "direct", Entries: []string{"cidr:203.0.113.0/24"}},
+			{ID: "primary", Target: "node-a", Domains: []string{"example.com", "api.example.net"}},
 		},
 		Proxies: []map[string]interface{}{{"name": "node-a", "type": "socks5", "server": "proxy.example", "port": 1080, "username": "user", "password": "secret", "udp": true}},
 	}
+	return signProbeMihomoTestSnapshot(t, snapshot)
+}
+
+func signProbeMihomoTestSnapshot(t *testing.T, snapshot probeSpecialExitSnapshot) probeSpecialExitSnapshot {
+	t.Helper()
 	unsigned := snapshot
 	unsigned.SHA256 = ""
 	raw, err := json.Marshal(unsigned)
@@ -46,7 +47,7 @@ func TestProbeMihomoSnapshotValidationAndTamperDetection(t *testing.T) {
 		t.Fatalf("valid snapshot rejected: %v", err)
 	}
 	tampered := snapshot
-	tampered.DefaultAction = "reject"
+	tampered.Revision++
 	if err := validateProbeMihomoSnapshot(tampered, "19"); err == nil || !strings.Contains(err.Error(), "sha256") {
 		t.Fatalf("tampered snapshot accepted: %v", err)
 	}
@@ -55,19 +56,29 @@ func TestProbeMihomoSnapshotValidationAndTamperDetection(t *testing.T) {
 	}
 }
 
-func TestProbeMihomoPolicyNamesRejectReservedAndDelimitedValues(t *testing.T) {
-	proxies := map[string]struct{}{"node-a": {}}
-	for _, target := range []string{"DIRECT", "bad,group", "node-a"} {
-		if err := validateProbeMihomoPolicy("group", target, proxies); err == nil {
-			t.Fatalf("invalid group target %q accepted", target)
-		}
+func TestProbeMihomoSnapshotRejectsVersionOneAndInvalidRules(t *testing.T) {
+	legacy := signedProbeMihomoTestSnapshot(t)
+	legacy.Version = 1
+	legacy = signProbeMihomoTestSnapshot(t, legacy)
+	if err := validateProbeMihomoSnapshot(legacy, "19"); err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("version 1 snapshot accepted: %v", err)
 	}
-	if err := validateProbeMihomoPolicy("node", "missing", proxies); err == nil {
-		t.Fatal("missing proxy node accepted")
+	invalidDomain := signedProbeMihomoTestSnapshot(t)
+	invalidDomain.Rules = append([]probeSpecialExitRule(nil), invalidDomain.Rules...)
+	invalidDomain.Rules[0].Domains = []string{"domain_suffix:example.com"}
+	invalidDomain = signProbeMihomoTestSnapshot(t, invalidDomain)
+	if err := validateProbeMihomoSnapshot(invalidDomain, "19"); err == nil || !strings.Contains(err.Error(), "invalid domain") {
+		t.Fatalf("prefixed domain accepted: %v", err)
+	}
+	missing := signedProbeMihomoTestSnapshot(t)
+	missing.Rules[0].Target = "missing"
+	missing = signProbeMihomoTestSnapshot(t, missing)
+	if err := validateProbeMihomoSnapshot(missing, "19"); err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("missing node accepted: %v", err)
 	}
 }
 
-func TestCompileProbeMihomoConfigIsLoopbackAuthenticatedAndPreservesRuleSemantics(t *testing.T) {
+func TestCompileProbeMihomoConfigIsLoopbackAuthenticatedAndUsesSelectedNodes(t *testing.T) {
 	snapshot := signedProbeMihomoTestSnapshot(t)
 	raw, err := compileProbeMihomoConfig(snapshot, probeMihomoRuntimeSecrets{SOCKSUsername: "runtime-user", SOCKSPassword: "runtime-password", APISecret: "api-secret"})
 	if err != nil {
@@ -76,9 +87,7 @@ func TestCompileProbeMihomoConfigIsLoopbackAuthenticatedAndPreservesRuleSemantic
 	text := string(raw)
 	for _, want := range []string{
 		"127.0.0.1", "runtime-user", "runtime-password", "api-secret",
-		"AND,((DOMAIN-SUFFIX,example.com),(DST-PORT,443),(NETWORK,TCP)),node-a",
-		`DOMAIN-REGEX,^api\.,REJECT`, `DOMAIN-REGEX,\.media\.,DIRECT`,
-		"IP-CIDR,203.0.113.0/24,DIRECT,no-resolve", "MATCH,DIRECT",
+		"DOMAIN-SUFFIX,example.com,node-a", "DOMAIN-SUFFIX,api.example.net,node-a", "MATCH,DIRECT",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("compiled config missing %q:\n%s", want, text)

@@ -25,22 +25,15 @@ const (
 )
 
 type probeSpecialExitConfig struct {
-	NodeID        string                         `json:"node_id"`
-	Name          string                         `json:"name"`
-	Enabled       bool                           `json:"enabled"`
-	Subscriptions []probeSpecialExitSubscription `json:"subscriptions,omitempty"`
-	// Legacy single-source fields are accepted during migration and omitted from normalized storage.
-	SubscriptionURL            string                   `json:"subscription_url,omitempty"`
-	SubscriptionHeaders        map[string]string        `json:"subscription_headers,omitempty"`
-	DefaultAction              string                   `json:"default_action"`
-	DefaultTarget              string                   `json:"default_target,omitempty"`
-	Rules                      []probeSpecialExitRule   `json:"rules,omitempty"`
-	Proxies                    []map[string]interface{} `json:"proxies,omitempty"`
-	Revision                   int64                    `json:"revision"`
-	SHA256                     string                   `json:"sha256"`
-	LastSubscriptionRefreshAt  string                   `json:"last_subscription_refresh_at,omitempty"`
-	LastSubscriptionRefreshErr string                   `json:"last_subscription_refresh_error,omitempty"`
-	UpdatedAt                  string                   `json:"updated_at,omitempty"`
+	NodeID                     string                         `json:"node_id"`
+	Subscriptions              []probeSpecialExitSubscription `json:"subscriptions,omitempty"`
+	Rules                      []probeSpecialExitRule         `json:"rules,omitempty"`
+	Proxies                    []map[string]interface{}       `json:"proxies,omitempty"`
+	Revision                   int64                          `json:"revision"`
+	SHA256                     string                         `json:"sha256"`
+	LastSubscriptionRefreshAt  string                         `json:"last_subscription_refresh_at,omitempty"`
+	LastSubscriptionRefreshErr string                         `json:"last_subscription_refresh_error,omitempty"`
+	UpdatedAt                  string                         `json:"updated_at,omitempty"`
 }
 
 type probeSpecialExitSubscription struct {
@@ -56,25 +49,17 @@ type probeSpecialExitSubscription struct {
 
 type probeSpecialExitRule struct {
 	ID      string   `json:"id"`
-	Name    string   `json:"name"`
-	Enabled bool     `json:"enabled"`
-	Action  string   `json:"action"`
-	Target  string   `json:"target,omitempty"`
-	Entries []string `json:"entries"`
-	Ports   []string `json:"ports,omitempty"`
-	Network string   `json:"network,omitempty"`
+	Target  string   `json:"target"`
+	Domains []string `json:"domains"`
 }
 
 type probeSpecialExitSnapshot struct {
-	Version       int                      `json:"version"`
-	NodeID        string                   `json:"node_id"`
-	Enabled       bool                     `json:"enabled"`
-	Revision      int64                    `json:"revision"`
-	SHA256        string                   `json:"sha256"`
-	DefaultAction string                   `json:"default_action"`
-	DefaultTarget string                   `json:"default_target,omitempty"`
-	Rules         []probeSpecialExitRule   `json:"rules"`
-	Proxies       []map[string]interface{} `json:"proxies"`
+	Version  int                      `json:"version"`
+	NodeID   string                   `json:"node_id"`
+	Revision int64                    `json:"revision"`
+	SHA256   string                   `json:"sha256"`
+	Rules    []probeSpecialExitRule   `json:"rules"`
+	Proxies  []map[string]interface{} `json:"proxies"`
 }
 
 type probeSpecialExitRuntimeReport struct {
@@ -128,42 +113,21 @@ func normalizeProbeSpecialExitConfig(raw probeSpecialExitConfig, previous *probe
 	if nodeID == "" {
 		return probeSpecialExitConfig{}, fmt.Errorf("node_id is required")
 	}
-	name := strings.TrimSpace(raw.Name)
-	if name == "" {
-		name = "Special exit " + nodeID
-	}
-	if len(name) > 160 {
-		return probeSpecialExitConfig{}, fmt.Errorf("name exceeds 160 characters")
-	}
 	previousSubscriptions := []probeSpecialExitSubscription(nil)
 	if previous != nil {
 		previousSubscriptions = previous.Subscriptions
-		if len(previousSubscriptions) == 0 && (strings.TrimSpace(previous.SubscriptionURL) != "" || len(previous.SubscriptionHeaders) > 0) {
-			previousSubscriptions = []probeSpecialExitSubscription{{ID: "subscription-1", Name: "订阅 1", Enabled: true, URL: previous.SubscriptionURL, Headers: previous.SubscriptionHeaders}}
-		}
 	}
 	rawSubscriptions := raw.Subscriptions
 	if rawSubscriptions == nil {
-		switch {
-		case strings.TrimSpace(raw.SubscriptionURL) != "" || len(raw.SubscriptionHeaders) > 0:
-			rawSubscriptions = []probeSpecialExitSubscription{{ID: "subscription-1", Name: "订阅 1", Enabled: true, URL: raw.SubscriptionURL, Headers: raw.SubscriptionHeaders}}
-		case previous != nil:
+		if previous != nil {
 			rawSubscriptions = append([]probeSpecialExitSubscription(nil), previousSubscriptions...)
-		default:
+		} else {
 			rawSubscriptions = []probeSpecialExitSubscription{}
 		}
 	}
 	subscriptions, err := normalizeProbeSpecialExitSubscriptions(rawSubscriptions, previousSubscriptions)
 	if err != nil {
 		return probeSpecialExitConfig{}, err
-	}
-	defaultAction, err := normalizeProbeSpecialExitAction(raw.DefaultAction, raw.DefaultTarget)
-	if err != nil {
-		return probeSpecialExitConfig{}, fmt.Errorf("default_action: %w", err)
-	}
-	defaultTarget := strings.TrimSpace(raw.DefaultTarget)
-	if defaultAction == "direct" || defaultAction == "reject" {
-		defaultTarget = ""
 	}
 	rules, err := normalizeProbeSpecialExitRules(raw.Rules)
 	if err != nil {
@@ -179,11 +143,7 @@ func normalizeProbeSpecialExitConfig(raw probeSpecialExitConfig, previous *probe
 	}
 	item := probeSpecialExitConfig{
 		NodeID:                     nodeID,
-		Name:                       name,
-		Enabled:                    raw.Enabled,
 		Subscriptions:              subscriptions,
-		DefaultAction:              defaultAction,
-		DefaultTarget:              defaultTarget,
 		Rules:                      rules,
 		Proxies:                    proxies,
 		Revision:                   raw.Revision,
@@ -300,81 +260,31 @@ func normalizeProbeSpecialExitRules(input []probeSpecialExitRule) ([]probeSpecia
 			return nil, fmt.Errorf("rules[%d].id is duplicated", index)
 		}
 		seen[id] = struct{}{}
-		name := strings.TrimSpace(raw.Name)
-		if name == "" {
-			name = id
-		}
-		action, err := normalizeProbeSpecialExitAction(raw.Action, raw.Target)
-		if err != nil {
-			return nil, fmt.Errorf("rules[%d].action: %w", index, err)
-		}
-		entries := normalizeProbeVirtualRouterRouteRuleEntries(raw.Entries)
-		if raw.Enabled && len(entries) == 0 {
-			return nil, fmt.Errorf("rules[%d] requires an aggregatable entry", index)
-		}
-		ports, err := normalizeProbeSpecialExitPorts(raw.Ports)
-		if err != nil {
-			return nil, fmt.Errorf("rules[%d].ports: %w", index, err)
-		}
-		network := strings.ToLower(strings.TrimSpace(raw.Network))
-		if network != "" && network != "tcp" && network != "udp" {
-			return nil, fmt.Errorf("rules[%d].network must be tcp or udp", index)
-		}
 		target := strings.TrimSpace(raw.Target)
-		if action == "direct" || action == "reject" {
-			target = ""
-		}
-		out = append(out, probeSpecialExitRule{ID: id, Name: name, Enabled: raw.Enabled, Action: action, Target: target, Entries: entries, Ports: ports, Network: network})
-	}
-	return out, nil
-}
-
-func normalizeProbeSpecialExitAction(raw string, target string) (string, error) {
-	action := strings.ToLower(strings.TrimSpace(raw))
-	switch action {
-	case "", "direct":
-		return "direct", nil
-	case "reject":
-		return "reject", nil
-	case "proxy", "group", "node":
-		target = strings.TrimSpace(target)
 		if target == "" {
-			return "", fmt.Errorf("%s action requires target", action)
+			return nil, fmt.Errorf("rules[%d] requires an exit node", index)
 		}
 		if len(target) > 256 || strings.ContainsAny(target, ",\r\n") {
-			return "", fmt.Errorf("%s target contains an unsupported delimiter", action)
+			return nil, fmt.Errorf("rules[%d].target contains an unsupported delimiter", index)
 		}
-		return action, nil
-	default:
-		return "", fmt.Errorf("unsupported action %q", raw)
-	}
-}
-
-func normalizeProbeSpecialExitPorts(input []string) ([]string, error) {
-	out := make([]string, 0, len(input))
-	seen := make(map[string]struct{})
-	for _, raw := range input {
-		value := strings.TrimSpace(raw)
-		if value == "" {
-			continue
-		}
-		parts := strings.Split(value, "-")
-		if len(parts) > 2 {
-			return nil, fmt.Errorf("invalid port %q", value)
-		}
-		for _, part := range parts {
-			port, err := strconv.Atoi(strings.TrimSpace(part))
-			if err != nil || port < 1 || port > 65535 {
-				return nil, fmt.Errorf("invalid port %q", value)
+		for _, domain := range raw.Domains {
+			if strings.ContainsAny(strings.TrimSpace(domain), ",:\r\n") {
+				return nil, fmt.Errorf("rules[%d] contains an invalid domain", index)
 			}
 		}
-		if _, exists := seen[value]; exists {
-			continue
+		entries := normalizeProbeVirtualRouterRouteRuleEntries(raw.Domains)
+		if len(entries) == 0 {
+			return nil, fmt.Errorf("rules[%d] requires at least one domain", index)
 		}
-		seen[value] = struct{}{}
-		out = append(out, value)
+		domains := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			if !strings.HasPrefix(entry, "domain_suffix:") {
+				return nil, fmt.Errorf("rules[%d] only supports domain names", index)
+			}
+			domains = append(domains, strings.TrimPrefix(entry, "domain_suffix:"))
+		}
+		out = append(out, probeSpecialExitRule{ID: id, Target: target, Domains: domains})
 	}
-	sort.Strings(out)
 	return out, nil
 }
 
@@ -428,43 +338,23 @@ func validateProbeSpecialExitResolvedPolicies(item probeSpecialExitConfig) error
 	for _, proxy := range item.Proxies {
 		proxyNames[strings.TrimSpace(fmt.Sprint(proxy["name"]))] = struct{}{}
 	}
-	validate := func(action, target string) error {
-		action = strings.ToLower(strings.TrimSpace(action))
+	validate := func(target string) error {
 		target = strings.TrimSpace(target)
-		switch action {
-		case "proxy", "group":
-			if len(proxyNames) == 0 {
-				return fmt.Errorf("%s action requires at least one subscription proxy", action)
-			}
-			if probeSpecialExitReservedPolicyName(target) {
-				return fmt.Errorf("policy target %q is reserved", target)
-			}
-			if _, exists := proxyNames[target]; exists {
-				return fmt.Errorf("policy group %q conflicts with a proxy name", target)
-			}
-		case "node":
-			if _, exists := proxyNames[target]; !exists {
-				return fmt.Errorf("proxy node %q does not exist", target)
-			}
+		if _, exists := proxyNames[target]; !exists {
+			return fmt.Errorf("proxy node %q does not exist", target)
 		}
 		return nil
 	}
-	if err := validate(item.DefaultAction, item.DefaultTarget); err != nil {
-		return fmt.Errorf("default_action: %w", err)
-	}
 	for index, rule := range item.Rules {
-		if !rule.Enabled {
-			continue
-		}
-		if err := validate(rule.Action, rule.Target); err != nil {
-			return fmt.Errorf("rules[%d].action: %w", index, err)
+		if err := validate(rule.Target); err != nil {
+			return fmt.Errorf("rules[%d].target: %w", index, err)
 		}
 	}
 	return nil
 }
 
 func probeSpecialExitSnapshotForConfig(item probeSpecialExitConfig) probeSpecialExitSnapshot {
-	return probeSpecialExitSnapshot{Version: 1, NodeID: item.NodeID, Enabled: item.Enabled, Revision: item.Revision, SHA256: item.SHA256, DefaultAction: item.DefaultAction, DefaultTarget: item.DefaultTarget, Rules: append([]probeSpecialExitRule(nil), item.Rules...), Proxies: append([]map[string]interface{}(nil), item.Proxies...)}
+	return probeSpecialExitSnapshot{Version: 2, NodeID: item.NodeID, Revision: item.Revision, SHA256: item.SHA256, Rules: append([]probeSpecialExitRule(nil), item.Rules...), Proxies: append([]map[string]interface{}(nil), item.Proxies...)}
 }
 
 func probeSpecialExitSnapshotHash(item probeSpecialExitConfig) string {
@@ -496,20 +386,17 @@ func probeSpecialExitSubscriptionSourceHash(item probeSpecialExitConfig) string 
 func buildProbeSpecialExitManagedRules(items []probeSpecialExitConfig) []probeVirtualRouterRouteRule {
 	out := make([]probeVirtualRouterRouteRule, 0, len(items))
 	for _, item := range normalizeProbeSpecialExitConfigs(items) {
-		if !item.Enabled {
-			continue
-		}
 		entries := make([]string, 0)
 		for _, rule := range item.Rules {
-			if rule.Enabled {
-				entries = append(entries, rule.Entries...)
+			for _, domain := range rule.Domains {
+				entries = append(entries, "domain_suffix:"+domain)
 			}
 		}
 		entries = normalizeProbeVirtualRouterRouteRuleEntries(entries)
 		if len(entries) == 0 {
 			continue
 		}
-		out = append(out, probeVirtualRouterRouteRule{ID: probeSpecialExitRuleIDPrefix + item.NodeID, Name: item.Name, Action: probeVirtualRouterRouteRuleActionExit, ExitNodeID: item.NodeID, Entries: entries, Note: "managed special exit", UpdatedAt: item.UpdatedAt})
+		out = append(out, probeVirtualRouterRouteRule{ID: probeSpecialExitRuleIDPrefix + item.NodeID, Name: "Mihomo exit " + item.NodeID, Action: probeVirtualRouterRouteRuleActionExit, ExitNodeID: item.NodeID, Entries: entries, Note: "managed special exit", UpdatedAt: item.UpdatedAt})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
@@ -533,15 +420,9 @@ func validateProbeSpecialExitConflicts(manual []probeVirtualRouterRouteRule, spe
 		}
 	}
 	for _, item := range normalizeProbeSpecialExitConfigs(special) {
-		if !item.Enabled {
-			continue
-		}
 		for _, rule := range item.Rules {
-			if !rule.Enabled {
-				continue
-			}
-			for _, entry := range rule.Entries {
-				owned = append(owned, ownedEntry{owner: "special:" + item.NodeID, entry: entry})
+			for _, domain := range rule.Domains {
+				owned = append(owned, ownedEntry{owner: "special:" + item.NodeID, entry: "domain_suffix:" + domain})
 			}
 		}
 	}

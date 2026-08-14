@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -25,14 +26,10 @@ const (
 
 type probeSpecialExitManagedView struct {
 	NodeID                    string                             `json:"node_id"`
-	Name                      string                             `json:"name"`
-	Enabled                   bool                               `json:"enabled"`
 	SubscriptionConfigured    bool                               `json:"subscription_configured"`
 	SubscriptionHeadersSet    bool                               `json:"subscription_headers_configured"`
 	Subscriptions             []probeSpecialExitSubscriptionView `json:"subscriptions"`
-	DefaultAction             string                             `json:"default_action"`
-	DefaultTarget             string                             `json:"default_target,omitempty"`
-	Rules                     []probeSpecialExitRule             `json:"rules"`
+	Rules                     []probeSpecialExitRuleView         `json:"rules"`
 	ProxyNames                []string                           `json:"proxy_names"`
 	Revision                  int64                              `json:"desired_revision"`
 	SHA256                    string                             `json:"desired_sha256"`
@@ -40,6 +37,18 @@ type probeSpecialExitManagedView struct {
 	LastSubscriptionRefreshAt string                             `json:"last_subscription_refresh_at,omitempty"`
 	LastSubscriptionError     string                             `json:"last_subscription_refresh_error,omitempty"`
 	UpdatedAt                 string                             `json:"updated_at,omitempty"`
+}
+
+type probeSpecialExitRuleView struct {
+	ID      string   `json:"id"`
+	Target  string   `json:"target"`
+	Domains []string `json:"domains"`
+}
+
+type probeSpecialExitManagedInput struct {
+	NodeID        string                         `json:"node_id"`
+	Subscriptions []probeSpecialExitSubscription `json:"subscriptions"`
+	Rules         []probeSpecialExitRuleView     `json:"rules"`
 }
 
 type probeSpecialExitSubscriptionView struct {
@@ -92,10 +101,14 @@ func mngProbeSpecialExitView(item probeSpecialExitConfig) probeSpecialExitManage
 			LastSubscriptionRefreshAt: source.LastSubscriptionRefreshAt, LastSubscriptionRefreshErr: source.LastSubscriptionRefreshErr,
 		})
 	}
+	rules := make([]probeSpecialExitRuleView, 0, len(item.Rules))
+	for _, rule := range item.Rules {
+		rules = append(rules, probeSpecialExitRuleView{ID: rule.ID, Target: rule.Target, Domains: append([]string(nil), rule.Domains...)})
+	}
 	view := probeSpecialExitManagedView{
-		NodeID: item.NodeID, Name: item.Name, Enabled: item.Enabled,
+		NodeID:                 item.NodeID,
 		SubscriptionConfigured: probeSpecialExitHasConfiguredSubscription(item), SubscriptionHeadersSet: probeSpecialExitHasSubscriptionHeaders(item), Subscriptions: subscriptions,
-		DefaultAction: item.DefaultAction, DefaultTarget: item.DefaultTarget, Rules: append([]probeSpecialExitRule(nil), item.Rules...), ProxyNames: proxyNames,
+		Rules: rules, ProxyNames: proxyNames,
 		Revision: item.Revision, SHA256: item.SHA256, LastSubscriptionRefreshAt: item.LastSubscriptionRefreshAt,
 		LastSubscriptionError: item.LastSubscriptionRefreshErr, UpdatedAt: item.UpdatedAt,
 	}
@@ -128,10 +141,14 @@ func upsertMngProbeSpecialExit(payload json.RawMessage, controllerBaseURL string
 		return nil, fmt.Errorf("probe route config store is not initialized")
 	}
 	var req struct {
-		Item              probeSpecialExitConfig `json:"item"`
-		ClearSubscription bool                   `json:"clear_subscription"`
+		Item probeSpecialExitManagedInput `json:"item"`
 	}
-	if err := json.Unmarshal(payload, &req); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		return nil, fmt.Errorf("invalid payload")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return nil, fmt.Errorf("invalid payload")
 	}
 	nodeID := normalizeProbeNodeID(req.Item.NodeID)
@@ -155,8 +172,15 @@ func upsertMngProbeSpecialExit(payload json.RawMessage, controllerBaseURL string
 				break
 			}
 		}
+		rules := make([]probeSpecialExitRule, 0, len(req.Item.Rules))
+		for _, rule := range req.Item.Rules {
+			rules = append(rules, probeSpecialExitRule{ID: rule.ID, Target: rule.Target, Domains: append([]string(nil), rule.Domains...)})
+		}
+		raw := probeSpecialExitConfig{
+			NodeID: nodeID, Subscriptions: req.Item.Subscriptions, Rules: rules,
+		}
 		var normalizeErr error
-		item, normalizeErr = normalizeProbeSpecialExitConfig(req.Item, previous)
+		item, normalizeErr = normalizeProbeSpecialExitConfig(raw, previous)
 		if normalizeErr != nil {
 			return normalizeErr
 		}
@@ -166,13 +190,10 @@ func upsertMngProbeSpecialExit(payload json.RawMessage, controllerBaseURL string
 			item.LastSubscriptionRefreshErr = previous.LastSubscriptionRefreshErr
 			item.Proxies = previous.Proxies
 		}
-		if req.ClearSubscription {
-			item.Subscriptions = []probeSpecialExitSubscription{}
-		}
 		if validateErr := validateProbeSpecialExitResolvedPolicies(item); validateErr != nil {
 			return validateErr
 		}
-		changed := previous == nil || probeSpecialExitSemanticHash(*previous) != probeSpecialExitSemanticHash(item) || previous.Enabled != item.Enabled || previous.Name != item.Name
+		changed := previous == nil || probeSpecialExitSemanticHash(*previous) != probeSpecialExitSemanticHash(item)
 		if previous == nil {
 			item.Revision = 1
 		} else if changed {

@@ -30,26 +30,18 @@ type probeRouteConfigResponse struct {
 }
 
 type probeSpecialExitSnapshot struct {
-	Version       int                      `json:"version"`
-	NodeID        string                   `json:"node_id"`
-	Enabled       bool                     `json:"enabled"`
-	Revision      int64                    `json:"revision"`
-	SHA256        string                   `json:"sha256"`
-	DefaultAction string                   `json:"default_action"`
-	DefaultTarget string                   `json:"default_target,omitempty"`
-	Rules         []probeSpecialExitRule   `json:"rules"`
-	Proxies       []map[string]interface{} `json:"proxies"`
+	Version  int                      `json:"version"`
+	NodeID   string                   `json:"node_id"`
+	Revision int64                    `json:"revision"`
+	SHA256   string                   `json:"sha256"`
+	Rules    []probeSpecialExitRule   `json:"rules"`
+	Proxies  []map[string]interface{} `json:"proxies"`
 }
 
 type probeSpecialExitRule struct {
 	ID      string   `json:"id"`
-	Name    string   `json:"name"`
-	Enabled bool     `json:"enabled"`
-	Action  string   `json:"action"`
-	Target  string   `json:"target,omitempty"`
-	Entries []string `json:"entries"`
-	Ports   []string `json:"ports,omitempty"`
-	Network string   `json:"network,omitempty"`
+	Target  string   `json:"target"`
+	Domains []string `json:"domains"`
 }
 
 type probeVirtualRouterConfig struct {

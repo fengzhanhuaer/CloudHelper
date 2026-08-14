@@ -104,7 +104,7 @@ Compose 会将 `docker/probe_node/` 目录整体挂载到容器的 `/opt/cloudhe
 
 ## Mihomo 特殊出口探针
 
-主控 `/mng/probe` 的探针列表使用与普通探针相同的入口创建 `mihomo_exit` 节点：填写名称、选择“Mihomo 出口探针”并创建。创建只登记节点，不弹出安装方式；在“编辑”中将 `target_system` 选择为 `linux`或`docker`，随后点击该节点行内独立的“安装”按钮生成对应的 Linux x64 原生命令或完整 Docker Compose。Mihomo出口不支持Windows或Android。`/mng/route` 的“二次分流”Tab不会自动选择探针；选择特殊探针后，按单列展示基础配置、Clash订阅源、二次分流规则、该探针的聚合路由规则和运行状态。每个特殊探针最多配置32个订阅源，请求头可选，公开订阅只需HTTPS URL。刷新时所有启用源原子合并，任一源失败或节点重名都保留上一次有效节点快照。每个特殊探针自动聚合为一条普通虚拟路由规则；普通探针只看到域名/CIDR条目和特殊出口节点，不会收到订阅URL、请求头、代理节点或凭据。
+主控 `/mng/probe` 的探针列表使用与普通探针相同的入口创建 `mihomo_exit` 节点：填写名称、选择“Mihomo 出口探针”并创建。创建只登记节点，不弹出安装方式；在“编辑”中将 `target_system` 选择为 `linux`或`docker`，随后点击该节点行内独立的“安装”按钮生成对应的 Linux x64 原生命令或完整 Docker Compose。Mihomo出口不支持Windows或Android。`/mng/route` 的“二次分流”Tab不会自动选择探针；选择特殊探针后，按单列展示Clash配置、提取出的出口节点、域名分流、该探针的聚合路由规则和运行状态。每个特殊探针最多配置32个Clash配置源，请求头可选，公开配置只需HTTPS URL；点击“提取节点”后，用户为每组域名直接选择一个具体节点。刷新时所有启用源原子合并，任一源失败或节点重名都保留上一次有效节点快照。未匹配域名固定DIRECT，不提供默认动作、REJECT、策略组、端口或网络条件。每个特殊探针自动聚合为一条普通虚拟路由规则；普通探针只看到域名条目和特殊出口节点，不会收到配置URL、请求头、代理节点或凭据。二次分流私有快照已升级为v2且不兼容旧动作模型；升级主控和特殊探针后需在新页面重新保存配置并重新提取节点。
 
 特殊探针仅发布 `cloudhelper-probe-exit-node-linux-amd64`，不提供 Windows、ARM 或 Android 版本，也不会创建 CloudHelper/Mihomo TUN。最终出口通过受认证的 `127.0.0.1` SOCKS5 listener 交给受管理的 Mihomo，支持 TCP、UDP 和基于 UDP 的 QUIC。
 

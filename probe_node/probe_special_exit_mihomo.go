@@ -134,18 +134,6 @@ func applyProbeMihomoSnapshot(snapshot probeSpecialExitSnapshot, nodeID string) 
 		activeProbeMihomoRuntime.dataDir, activeProbeMihomoRuntime.secrets = dataDir, secrets
 		activeProbeMihomoRuntime.mu.Unlock()
 	}
-	if !snapshot.Enabled {
-		stopProbeMihomoProcessLocked()
-		if err := persistProbeMihomoSnapshot(dataDir, snapshot); err != nil {
-			setProbeMihomoApplyError(snapshot, err)
-			return err
-		}
-		activeProbeMihomoRuntime.mu.Lock()
-		activeProbeMihomoRuntime.runtime = probeMihomoExitRuntimeConfig{DesiredRevision: snapshot.Revision, AppliedRevision: snapshot.Revision, DesiredSHA256: strings.ToLower(snapshot.SHA256), AppliedSHA256: strings.ToLower(snapshot.SHA256)}
-		activeProbeMihomoRuntime.report = probeSpecialExitRuntimeReport{AppliedRevision: snapshot.Revision, AppliedSHA256: strings.ToLower(snapshot.SHA256), ExitReady: false, Healthy: false, UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
-		activeProbeMihomoRuntime.mu.Unlock()
-		return nil
-	}
 	config, err := compileProbeMihomoConfig(snapshot, secrets)
 	if err != nil {
 		stopProbeMihomoProcessLocked()
@@ -207,7 +195,7 @@ func applyProbeMihomoSnapshot(snapshot probeSpecialExitSnapshot, nodeID string) 
 }
 
 func validateProbeMihomoSnapshot(snapshot probeSpecialExitSnapshot, nodeID string) error {
-	if snapshot.Version != 1 {
+	if snapshot.Version != 2 {
 		return fmt.Errorf("unsupported special exit snapshot version %d", snapshot.Version)
 	}
 	if normalizeProbeRouteNodeID(snapshot.NodeID) != normalizeProbeRouteNodeID(nodeID) {
@@ -240,51 +228,21 @@ func validateProbeMihomoSnapshot(snapshot probeSpecialExitSnapshot, nodeID strin
 		}
 		proxyNames[name] = struct{}{}
 	}
-	if err := validateProbeMihomoPolicy(snapshot.DefaultAction, snapshot.DefaultTarget, proxyNames); err != nil {
-		return fmt.Errorf("default action: %w", err)
-	}
 	for index, rule := range snapshot.Rules {
-		if !rule.Enabled {
-			continue
+		if len(rule.Domains) == 0 {
+			return fmt.Errorf("rules[%d] has no domains", index)
 		}
-		if len(rule.Entries) == 0 {
-			return fmt.Errorf("rules[%d] has no entries", index)
+		for _, domain := range rule.Domains {
+			domain = strings.TrimSpace(domain)
+			if domain == "" || strings.ContainsAny(domain, ",:\r\n") {
+				return fmt.Errorf("rules[%d] contains an invalid domain", index)
+			}
 		}
-		if err := validateProbeMihomoPolicy(rule.Action, rule.Target, proxyNames); err != nil {
-			return fmt.Errorf("rules[%d]: %w", index, err)
+		if _, ok := proxyNames[strings.TrimSpace(rule.Target)]; !ok {
+			return fmt.Errorf("rules[%d]: proxy node %q does not exist", index, strings.TrimSpace(rule.Target))
 		}
 	}
 	return nil
-}
-
-func validateProbeMihomoPolicy(action, target string, proxyNames map[string]struct{}) error {
-	action = strings.ToLower(strings.TrimSpace(action))
-	target = strings.TrimSpace(target)
-	switch action {
-	case "", "direct", "reject":
-		return nil
-	case "proxy", "group":
-		if target == "" {
-			return errors.New("policy target is required")
-		}
-		if len(proxyNames) == 0 {
-			return errors.New("policy requires at least one proxy")
-		}
-		if strings.ContainsAny(target, ",\r\n") || probeMihomoReservedPolicyName(target) {
-			return fmt.Errorf("policy target %q is invalid or reserved", target)
-		}
-		if _, exists := proxyNames[target]; exists {
-			return fmt.Errorf("policy group %q conflicts with a proxy name", target)
-		}
-		return nil
-	case "node":
-		if _, ok := proxyNames[target]; !ok {
-			return fmt.Errorf("proxy node %q does not exist", target)
-		}
-		return nil
-	default:
-		return fmt.Errorf("unsupported policy action %q", action)
-	}
 }
 
 func probeMihomoReservedPolicyName(value string) bool {
@@ -297,75 +255,25 @@ func probeMihomoReservedPolicyName(value string) bool {
 }
 
 func compileProbeMihomoConfig(snapshot probeSpecialExitSnapshot, secrets probeMihomoRuntimeSecrets) ([]byte, error) {
-	proxyNames := make([]string, 0, len(snapshot.Proxies))
-	for _, proxy := range snapshot.Proxies {
-		proxyNames = append(proxyNames, strings.TrimSpace(fmt.Sprint(proxy["name"])))
-	}
-	groups := []map[string]interface{}{}
-	groupSeen := map[string]struct{}{}
-	ensureGroup := func(name string) error {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			return errors.New("proxy group name is empty")
-		}
-		if _, exists := groupSeen[name]; exists {
-			return nil
-		}
-		if len(proxyNames) == 0 {
-			return fmt.Errorf("proxy group %q has no proxies", name)
-		}
-		groupSeen[name] = struct{}{}
-		groups = append(groups, map[string]interface{}{"name": name, "type": "select", "proxies": append([]string(nil), proxyNames...)})
-		return nil
-	}
-	policies := []struct{ action, target string }{{snapshot.DefaultAction, snapshot.DefaultTarget}}
-	for _, rule := range snapshot.Rules {
-		if rule.Enabled {
-			policies = append(policies, struct{ action, target string }{rule.Action, rule.Target})
-		}
-	}
-	for _, item := range policies {
-		action := strings.ToLower(strings.TrimSpace(item.action))
-		if action == "proxy" || action == "group" {
-			if err := ensureGroup(item.target); err != nil {
-				return nil, err
-			}
-		}
-	}
 	rules := make([]string, 0)
 	for _, rule := range snapshot.Rules {
-		if !rule.Enabled {
-			continue
-		}
-		policy := probeMihomoPolicyName(rule.Action, rule.Target)
-		for _, entry := range rule.Entries {
-			line, err := compileProbeMihomoRule(entry, rule.Ports, rule.Network, policy)
+		for _, domain := range rule.Domains {
+			line, err := compileProbeMihomoRule("domain_suffix:"+strings.TrimSpace(domain), nil, "", strings.TrimSpace(rule.Target))
 			if err != nil {
 				return nil, fmt.Errorf("rule %q: %w", rule.ID, err)
 			}
 			rules = append(rules, line)
 		}
 	}
-	rules = append(rules, "MATCH,"+probeMihomoPolicyName(snapshot.DefaultAction, snapshot.DefaultTarget))
+	rules = append(rules, "MATCH,DIRECT")
 	config := map[string]interface{}{
 		"mode": "rule", "log-level": "warning", "ipv6": false, "allow-lan": false,
 		"external-controller": net.JoinHostPort("127.0.0.1", strconv.Itoa(probeMihomoAPIPort)), "secret": secrets.APISecret,
 		"listeners": []map[string]interface{}{{"name": "cloudhelper-exit", "type": "socks", "port": probeMihomoSOCKSPort, "listen": "127.0.0.1", "udp": true, "users": []map[string]string{{"username": secrets.SOCKSUsername, "password": secrets.SOCKSPassword}}}},
 		"dns":       map[string]interface{}{"enable": true, "ipv6": false, "enhanced-mode": "redir-host", "default-nameserver": []string{"1.1.1.1", "8.8.8.8"}, "nameserver": []string{"https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query"}, "proxy-server-nameserver": []string{"1.1.1.1", "8.8.8.8"}, "direct-nameserver": []string{"system"}},
-		"proxies":   snapshot.Proxies, "proxy-groups": groups, "rules": rules,
+		"proxies":   snapshot.Proxies, "proxy-groups": []map[string]interface{}{}, "rules": rules,
 	}
 	return yaml.Marshal(config)
-}
-
-func probeMihomoPolicyName(action, target string) string {
-	switch strings.ToLower(strings.TrimSpace(action)) {
-	case "reject":
-		return "REJECT"
-	case "proxy", "group", "node":
-		return strings.TrimSpace(target)
-	default:
-		return "DIRECT"
-	}
 }
 
 func compileProbeMihomoRule(entry string, ports []string, network, policy string) (string, error) {
@@ -557,9 +465,6 @@ func restartProbeMihomoAfterUnexpectedExit(dataDir, nodeID string) {
 			return
 		}
 		snapshot, err := loadProbeMihomoSnapshot(dataDir)
-		if err == nil && !snapshot.Enabled {
-			return
-		}
 		if err == nil {
 			err = applyProbeMihomoSnapshot(snapshot, nodeID)
 		}
