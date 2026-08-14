@@ -22,6 +22,8 @@
 
 Release必须同时包含特殊探针程序和 `cloudhelper-probe-exit-node-manifest.json`。清单固定 `build_kind=mihomo_exit`、`os=linux`、`arch=amd64`，并给出程序资产、Mihomo资产、兼容版本范围和两者SHA-256。升级器在替换前校验两个候选，替换/重启失败时恢复两个旧文件。Docker壳不参与日常程序升级。
 
+`v0.3.316`及更早的特殊探针无法识别无扩展名的`cloudhelper-probe-exit-node-linux-amd64`候选文件。升级这些版本时必须先升级主控，再从新版主控重新下发探针升级。主控会临时通过认证下载代理提供旧解包器可识别的兼容文件名，下载内容、Release URL、配对manifest和SHA-256均保持不变；探针升级至`v0.3.317`及以后版本后，后续升级恢复使用节点自身的直连/主控代理设置。
+
 ### 状态与失败关闭
 
 特殊探针向主控报告 desired/applied revision/hash、探针/Mihomo版本、`exit_ready`、健康、活动会话、上下行字节和最近应用错误。缺少私有快照、构建类型错配、快照哈希失败、Mihomo配置校验失败或健康检查失败时停止旧Mihomo并拒绝新出口连接。

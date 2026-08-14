@@ -121,6 +121,31 @@ func TestMihomoExitUpgradeAssetCannotSelectOrdinaryProbe(t *testing.T) {
 	}
 }
 
+func TestMihomoExitUpgradeExtractsRawReleaseBinary(t *testing.T) {
+	workDir := t.TempDir()
+	assetName := "cloudhelper-probe-exit-node-linux-amd64"
+	assetPath := filepath.Join(workDir, "download")
+	want := []byte("mihomo-exit-probe-binary")
+	if err := os.WriteFile(assetPath, want, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	binaryPath, err := extractProbeBinary(assetPath, assetName, workDir)
+	if err != nil {
+		t.Fatalf("extract raw Mihomo exit probe: %v", err)
+	}
+	if filepath.Base(binaryPath) != assetName {
+		t.Fatalf("binary=%q want base=%q", binaryPath, assetName)
+	}
+	got, err := os.ReadFile(binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("binary content=%q want=%q", got, want)
+	}
+}
+
 func TestMihomoExitVRouteConfigDoesNotStartPlatformTUN(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
 	resetProbeVirtualRouterTUNDataPlaneHooksForTest()

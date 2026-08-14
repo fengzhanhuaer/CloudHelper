@@ -52,6 +52,12 @@ type probeUpgradeCommand struct {
 	Timestamp         string `json:"timestamp"`
 }
 
+const (
+	probeMihomoExitUpgradeExtractorFixedVersion = "0.3.317"
+	probeMihomoExitUpgradeAssetName             = "cloudhelper-probe-exit-node-linux-amd64"
+	probeMihomoExitLegacyUpgradeAssetAlias      = "cloudhelper-probe-exit-node-probe-node-linux-amd64"
+)
+
 type probeLocalConsoleControlCommand struct {
 	Type         string `json:"type"`
 	LocalConsole bool   `json:"local_console"`
@@ -537,7 +543,8 @@ func ProbeProxyGitHubLatestHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if _, err := authenticateProbeProxyRequest(r); err != nil {
+	nodeID, err := authenticateProbeProxyRequest(r)
+	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 		return
 	}
@@ -558,7 +565,7 @@ func ProbeProxyGitHubLatestHandler(w http.ResponseWriter, r *http.Request) {
 
 	assets := make([]proxyAsset, 0, len(release.Assets))
 	for _, a := range release.Assets {
-		assets = append(assets, proxyAsset{Name: a.Name, Size: a.Size, DownloadURL: a.BrowserDownloadURL})
+		assets = append(assets, proxyAsset{Name: probeUpgradeAssetNameForNode(nodeID, a.Name), Size: a.Size, DownloadURL: a.BrowserDownloadURL})
 	}
 	writeJSON(w, http.StatusOK, proxyLatestResponse{
 		Repo:        repo,
@@ -720,10 +727,7 @@ func dispatchUpgradeToProbe(node probeNodeRecord, controllerBaseURL string) (pro
 		return probeUpgradeDispatchResult{}, fmt.Errorf("probe is offline")
 	}
 
-	mode := "proxy"
-	if node.DirectConnect {
-		mode = "direct"
-	}
+	mode, legacyMihomoCompat := probeUpgradeModeForNode(node, nodeID)
 	repo := releaseRepo()
 	timestamp := time.Now().UTC().Format(time.RFC3339)
 	cmd := probeUpgradeCommand{
@@ -741,6 +745,8 @@ func dispatchUpgradeToProbe(node probeNodeRecord, controllerBaseURL string) (pro
 	modeLabel := "主控代理"
 	if mode == "direct" {
 		modeLabel = "直连"
+	} else if legacyMihomoCompat {
+		modeLabel = "主控代理（旧版 Mihomo 升级兼容）"
 	}
 	return probeUpgradeDispatchResult{
 		OK:            true,
@@ -754,6 +760,74 @@ func dispatchUpgradeToProbe(node probeNodeRecord, controllerBaseURL string) (pro
 		Message:       fmt.Sprintf("upgrade command dispatched (%s)", modeLabel),
 		Timestamp:     timestamp,
 	}, nil
+}
+
+func probeUpgradeModeForNode(node probeNodeRecord, nodeID string) (string, bool) {
+	if !node.DirectConnect {
+		return "proxy", false
+	}
+	if normalizeProbeNodeKind(node.NodeKind) != probeNodeKindMihomoExit {
+		return "direct", false
+	}
+	runtimeStatus, ok := getProbeRuntime(nodeID)
+	if ok && probeVersionAtLeast(runtimeStatus.Version, probeMihomoExitUpgradeExtractorFixedVersion) {
+		return "direct", false
+	}
+	return "proxy", true
+}
+
+func probeUpgradeAssetNameForNode(nodeID, assetName string) string {
+	if !strings.EqualFold(strings.TrimSpace(assetName), probeMihomoExitUpgradeAssetName) {
+		return assetName
+	}
+	node, ok := getProbeNodeByID(nodeID)
+	if !ok || normalizeProbeNodeKind(node.NodeKind) != probeNodeKindMihomoExit {
+		return assetName
+	}
+	runtimeStatus, runtimeOK := getProbeRuntime(nodeID)
+	if runtimeOK && probeVersionAtLeast(runtimeStatus.Version, probeMihomoExitUpgradeExtractorFixedVersion) {
+		return assetName
+	}
+	// Old Mihomo exit probes only recognized names containing probe-node.
+	// Keep the original download URL and checksum, but expose a compatible local filename.
+	return probeMihomoExitLegacyUpgradeAssetAlias
+}
+
+func probeVersionAtLeast(version, minimum string) bool {
+	current, ok := parseProbeNumericVersion(version)
+	if !ok {
+		return false
+	}
+	want, ok := parseProbeNumericVersion(minimum)
+	if !ok {
+		return false
+	}
+	for i := range current {
+		if current[i] != want[i] {
+			return current[i] > want[i]
+		}
+	}
+	return true
+}
+
+func parseProbeNumericVersion(value string) ([3]int, bool) {
+	var parsed [3]int
+	normalized := normalizeVersion(value)
+	if cut := strings.IndexAny(normalized, "-+"); cut >= 0 {
+		normalized = normalized[:cut]
+	}
+	parts := strings.Split(normalized, ".")
+	if len(parts) != len(parsed) {
+		return parsed, false
+	}
+	for i, part := range parts {
+		number, err := strconv.Atoi(part)
+		if err != nil || number < 0 {
+			return [3]int{}, false
+		}
+		parsed[i] = number
+	}
+	return parsed, true
 }
 
 func dispatchProbeLocalConsoleControl(node probeNodeRecord) (bool, error) {

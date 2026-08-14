@@ -4,11 +4,11 @@
 - 后续工作传递声明: 本文档必须传递给后续阶段与后续角色。
 - 需求编号: REQ-PEN-MIHOMO-EXIT-001
 - 需求前缀: REQ-PEN-MIHOMO-EXIT-001
-- 当前阶段: Architect最终门禁已放行
-- 最近更新角色: Architect
-- 最近更新时间: 2026-08-14T08:57:56+08:00
+- 当前阶段: Code线上升级缺陷整改已完成，待Architect复核
+- 最近更新角色: Code
+- 最近更新时间: 2026-08-14T13:24:19+08:00
 - 工作依据文档: `doc/ai-coding-collaboration.md`; 用户于2026-08-13确认的特殊出口探针、Mihomo二次分流、主控GUI、独立Linux amd64安装包、Docker壳和程序自升级需求; 现有 `probe_controller`、`probe_node`、`docker/probe_node` 实现; Mihomo官方配置、API、发布物、Go模块和许可证资料
-- 状态: 已放行
+- 状态: 待评审
 
 ## 第1章 Architect章节
 - 章节责任角色: Architect
@@ -529,6 +529,7 @@ flowchart LR
 | TEST-PEN-008 | R06,R07,R09 | TASK-PEN-008 | 统一创建/独立安装入口与二次分流边界 | handler/page单测、JS语法、控制器全量/vet、普通/特殊探针全量、Playwright桌面/移动真实交互 | 已完成 | 创建后不弹安装；点击节点行内“安装”后native/Docker可切换；路由页无创建/安装；移动端无横向溢出且控制台无错误 | 无 | 使用隔离临时控制器和临时节点，截图中的安装秘密已遮蔽 |
 | TEST-PEN-009 | R06,R10 | TASK-PEN-009 | 多订阅源、原子刷新与单列页面 | 旧配置迁移/凭据保留清除/多源成功合并/单源失败/跨源重名单测，页面脚本语法、控制器全量/vet、Playwright桌面1440与移动390真实保存和脱敏回显 | 已完成 | 两源保存后URL/请求头不回显；任一失败或重名保持last-known-good及revision；五区域纵向顺序稳定、无横向溢出或控制台错误 | 无 | 浏览器插件在当前任务不可调用，按前端测试技能使用本机Playwright与隔离控制器；截图位于临时QA目录 |
 | TEST-PEN-010 | R06 | TASK-PEN-010 | 探针选择与派生信息归属 | 页面marker/顺序测试、JS语法、控制器全量/vet、Playwright桌面1440与移动390切换至少两台特殊探针 | 已完成 | 初始详情隐藏且不自动选中；选择后配置、订阅、规则、聚合、状态依次出现；切换时聚合和状态只显示当前node_id；无溢出或控制台错误 | 无 | Browser插件当前不可调用，使用本机Playwright隔离控制器验证 |
+| TEST-PEN-011 | R08,R09 | TASK-PEN-006 | Mihomo特殊探针主控下发自升级与旧版自救 | 复现v0.3.315下载无扩展名特殊资产后`probe binary not found`；特殊tag裸文件解包单测；主控旧版本代理模式/兼容资产名单测；主控与普通/特殊探针全量回归 | 已完成 | 特殊资产按当前产品ServiceName识别；v0.3.316及更早特殊探针由主控临时代理并使用保持原URL/SHA的兼容本地文件名；升级至v0.3.317及以后恢复节点直连设置 | 无 | 生产复测需先发布并升级主控，再重新下发特殊探针升级 |
 
 ### 2.4 Code缺陷跟踪矩阵
 - 状态: 已完成
@@ -549,6 +550,7 @@ flowchart LR
 | DEFECT-PEN-012 | R06,R07,R09 | TEST-PEN-008 | 特殊出口创建后曾自动弹安装；编辑页禁用`target_system`且安装弹窗切换时重置mode，均导致无法选择Docker | 中 | 已完成 | 创建只登记节点；编辑页允许Linux/Docker；安装由节点行内按钮调用`/mng/api/probe/node/install`，首次默认匹配所选版本且保留用户主动切换；路由页移除创建/安装控件和API | Windows/Android仍拒绝；安装失败不影响节点创建 |
 | DEFECT-PEN-013 | R06,R10 | TEST-PEN-009 | 初版只能保存一个订阅源，状态/聚合规则位于右列，不符合多配置和单列纠偏；多源局部成功不能覆盖旧节点快照 | 中 | 已完成 | 新订阅数组兼容迁移旧字段；逐源脱敏和可选请求头；启用源全部结束且全部成功后原子合并；页面顺序测试与桌面/移动Playwright通过 | 单源失败只更新对应错误元数据，不增加revision，不替换last-known-good |
 | DEFECT-PEN-014 | R06 | TEST-PEN-010 | 页面自动选择首台探针，并在选择器之前展示全部探针状态和当前聚合规则，派生信息归属与操作顺序不清晰 | 中 | 已完成 | 独立选择器前置且默认空；详情按选择显隐；状态用当前node_id查找而非遍历全部；聚合和状态后置；ready同时要求desired/applied revision/hash一致 | 顶部摘要只保留配置数量，不提前展示全局就绪状态 |
+| DEFECT-PEN-015 | R08,R09 | TEST-PEN-011 | 主控成功下发升级后，特殊探针下载`cloudhelper-probe-exit-node-linux-amd64`完成，但通用解包器只识别包含`probe_node`/`probe-node`的候选名，导致`probe binary not found`且无法用原直连升级路径自修复 | 高 | 已完成 | 解包候选增加当前产品ServiceName及连字符形式；主控对v0.3.316及更早特殊探针临时强制代理，并将同一资产URL呈现为旧解包器可识别的兼容文件名；专项及全量测试通过 | 不改变下载内容、manifest或SHA；需主控先升级到修复版本后再次下发 |
 
 ### 2.5 Code执行证据
 - 状态: 已完成
@@ -560,6 +562,7 @@ flowchart LR
 - 多订阅接口：SpecialExits配置使用稳定ID订阅源数组；管理响应逐源只返回configured/headers_configured及刷新状态；旧`subscription_url/subscription_headers`加载和编辑时自动迁移。
 - `probeVirtualRouterExitTarget`和build-tag TCP/UDP接缝：特殊版将恢复的域名交给受管理Mihomo，普通版保持原解析/直连语义。
 - 发布与升级：新增仅Linux amd64特殊资产、配对manifest和Mihomo伴随升级事务。
+- 旧版升级兼容：主控根据特殊探针运行版本选择升级模式；v0.3.316及更早版本通过认证代理取得兼容资产名，v0.3.317及以后继续遵循节点直连配置。
 
 #### 2.5.2 配置文件
 - 主控`probe_route_config.json.special_exits`保存订阅秘密、规则、代理快照和revision/hash；管理读取不回显秘密。
@@ -576,12 +579,14 @@ flowchart LR
 - 原生和Docker首次安装都使用配对manifest；程序升级自行校验并替换程序/Mihomo，失败成对回滚。Mihomo MIT许可证随Release与镜像交付。
 - 主控探针管理页统一创建两类探针；创建只登记节点，不弹安装方式。特殊出口编辑页可选择Linux/Docker，节点行内独立“安装”按钮按所选版本默认生成安装信息。二次分流页不再创建探针或生成安装信息。
 - 二次分流页不自动选择探针；独立选择器位于详情之前，选择后才展开基础配置、订阅、规则、聚合和运行状态。聚合及状态按当前node_id投影，状态只有在主控desired与探针applied revision/hash一致且探针/Mihomo健康时才显示就绪。
+- 线上日志确认升级命令已执行并下载22,354,413字节特殊资产，失败点为裸二进制候选名称识别；整改后特殊解包器按产品ServiceName识别，且主控提供旧版本无需手工覆盖的代理自救路径。
 
 #### 2.5.4 影响文件
 - 主控：`probe_special_exit*.go`、route/node store与handlers、runtime/report/WS、`server.go`、`mng_pages/probe.html`、`mng_pages/route.html`、嵌入式安装脚本及测试。
+- 本次升级整改：`probe_controller/internal/core/probe_command.go`、`probe_controller/internal/core/probe_upgrade_mihomo_compat_test.go`、`probe_node/upgrade.go`、`probe_node/product_profile_mihomo_exit_test.go`。
 - 探针：产品profile、特殊入口、路由同步、末跳目标/传输、Mihomo运行时、升级伴随组件、`go.mod/go.sum`及测试；原VRoute线协议文件仅增加出口接缝。
 - 发布部署：`.github/workflows/release.yml`、`docker/probe_exit_node/`、`THIRD_PARTY_LICENSES/mihomo-LICENSE`。
-- 文档：`README.md`、`doc/install_upgrade.md`、本协作文档。
+- 文档：`README.md`、`doc/install_upgrade.md`（补充v0.3.316及更早版本的先主控后探针迁移顺序）、本协作文档。
 
 #### 2.5.5 测试命令
 - `cd probe_controller; go test ./...; go vet ./...`
@@ -595,6 +600,7 @@ flowchart LR
 - TASK-PEN-008：`go test ./internal/core -run 'Test(ProbePageCreatesMihomoExitAndUsesDedicatedInstallButton|MngProbeNodeInstallHandlerServesMihomoExitFromProbeManagement|MihomoExitNodeKindIsImmutableAndSupportsLinuxOrDocker|MngRoutePageIncludesSpecialExitWorkflow)'`; `node --check <probe-script>`与`node --check <route-script>`；Playwright通过真实管理会话创建特殊出口，确认创建不弹安装、编辑页可保存Docker，再由独立安装按钮验证默认Docker及路由页边界。
 - TASK-PEN-009：`go test ./internal/core -run 'Test(NormalizeProbeSpecialExitSubscriptionsPreservesAndClearsSecrets|NormalizeProbeSpecialExitSubscriptionsMigratesUnnormalizedPreviousConfig|RefreshSpecialExitMergesMultipleSubscriptionsAtomically|RefreshSpecialExitRejectsDuplicateProxyAcrossSubscriptions|RefreshSpecialExitSourceFailurePreservesLastGood|MngSpecialExitListRedactsControllerAndProxySecrets|MngRoutePageIncludesSpecialExitWorkflow)' -count=1`；`node --check <route-script>`；隔离控制器Playwright保存两源并验证脱敏、单列顺序、桌面/移动无溢出和无控制台错误。
 - TASK-PEN-010：`go test ./internal/core -run TestMngRoutePageIncludesSpecialExitWorkflow -count=1`；`node --check <route-script>`；隔离控制器Playwright验证初始无选择/详情隐藏，依次切换两台特殊探针，核对配置、聚合和状态node_id归属以及桌面/移动顺序。
+- TEST-PEN-011：`cd probe_controller; go test ./internal/core -run 'TestProbe(UpgradeModeUsesProxyToRescueLegacyMihomoExit|UpgradeAssetNameAliasesOnlyLegacyMihomoExit|VersionAtLeast)' -count=1; go test ./...; go vet ./...`；`cd probe_node; go test -tags mihomo_exit ./... -run 'TestMihomoExitUpgrade(AssetCannotSelectOrdinaryProbe|ExtractsRawReleaseBinary)' -count=1; go test ./...; go test -tags mihomo_exit ./...`。
 
 #### 2.5.6 自测结果
 - 通过：控制端全量测试和`go vet ./...`。
@@ -605,6 +611,7 @@ flowchart LR
 - 通过：Edge 151桌面1440x1000与移动390x844；Tab激活、内容/API数据完整、控制台无警告错误、`scrollWidth==viewport width`、关键控件无重叠。
 - 通过：`go mod tidy -diff`为空；两份Mihomo许可证SHA-256一致；`git diff --check`仅LF/CRLF提示。
 - 通过：订阅源变更拒绝、保存失败不提交、双并发更新不丢失和Mihomo三次健康失败重启阈值定向回归；控制器全量/vet及普通、特殊全量复跑均通过。
+- 通过：TEST-PEN-011专项测试、主控全量/vet、特殊tag全量；普通探针全量首次出现既有网络/TUN非确定失败，立即独立全量复跑通过。
 - 通过：统一创建/安装定向测试；特殊节点类型不可修改且只允许Linux；最终控制器全量/vet、普通探针全量、特殊tag全量复跑均通过。
 - 通过：Playwright桌面和390px移动端真实流程；创建特殊出口后不弹安装，点击节点行内“安装”后原生/Docker配置可切换，路由页不存在创建/安装控件，无控制台错误、警告或横向溢出。
 - 通过：多订阅专项测试、控制器全量和vet；隔离控制器Playwright桌面1440和移动390真实保存两源，请求头为空可保存，URL/请求头仅回显配置状态，五个区域固定单列，无横向溢出、控制台错误或控件重叠。
@@ -621,6 +628,7 @@ flowchart LR
 - SOCKS UDP经通用`net.Conn`时quic-go无法调整系统UDP接收缓冲；功能闭环通过，高吞吐QUIC仍需Linux压测。
 - 主控配置存储为现有JSON文件模型，进程崩溃级断电原子性未在本任务扩展；本次特殊出口API只有磁盘保存成功才提交内存状态。
 - 本机缺少gcc导致race未执行；仓库既有全平台vet告警未纳入本需求整改。
+- 旧特殊探针自身含有候选名称缺陷，无法仅靠新探针程序直接修复；必须先把主控升级到含兼容代理的版本，再重新下发特殊探针升级。代码与本地协议测试已完成，真实生产升级复测需在新Release发布后执行。
 
 #### 2.5.9 回滚方案
 - 主控先禁用或删除特殊出口配置，使派生规则消失并停止向特殊探针提供可用快照；普通探针继续使用既有人工规则。
@@ -629,7 +637,7 @@ flowchart LR
 - 持久数据回滚前备份`data/`和`log/`；`temp/`可直接重建。
 
 #### 2.5.10 结论
-- TASK-PEN-000至010及DEFECT-PEN-009至014最终整改全部完成，AC-01至12、统一创建入口、多订阅、探针选择和派生信息顺序纠偏具备实现和本地验证证据；已提交Architect并通过最终门禁。
+- TASK-PEN-000至010及DEFECT-PEN-009至015代码整改全部完成；DEFECT-PEN-015已具备旧版自救和后续正常直连升级路径，本地专项/全量证据通过，待新Release生产复测及Architect重新复核门禁。
 
 ### 2.6 Code任务反馈
 - 状态: 已完成

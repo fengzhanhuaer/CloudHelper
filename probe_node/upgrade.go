@@ -927,7 +927,7 @@ func findProbeBinary(root string) (string, error) {
 		if strings.HasSuffix(n, ".exe") && !allowExe {
 			return nil
 		}
-		if strings.Contains(n, "probe_node") || strings.Contains(n, "probe-node") {
+		if isProbeProductBinaryName(n) {
 			candidates = append(candidates, path)
 		}
 		return nil
@@ -962,6 +962,24 @@ func findProbeBinary(root string) (string, error) {
 	candidate := candidates[0]
 	_ = os.Chmod(candidate, 0o755)
 	return candidate, nil
+}
+
+func isProbeProductBinaryName(name string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(filepath.Base(name)))
+	if normalized == "" {
+		return false
+	}
+	markers := []string{"probe_node", "probe-node"}
+	serviceName := strings.ToLower(strings.TrimSpace(activeProbeProductProfile.ServiceName))
+	if serviceName != "" {
+		markers = append(markers, serviceName, strings.ReplaceAll(serviceName, "_", "-"))
+	}
+	for _, marker := range markers {
+		if marker != "" && strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveProbeUpgradeTargetPathForRuntime(exePath string, goos string) (string, string) {
