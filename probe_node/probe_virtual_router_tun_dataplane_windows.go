@@ -187,6 +187,7 @@ func prepareProbeVirtualRouterTUNDataPlaneRouteTarget(libraryPath string, handle
 }
 
 func stopProbeVirtualRouterTUNDataPlane() error {
+	directRouteTarget, hasDirectRouteTarget := currentProbeRouteWindowsDirectRouteTarget()
 	probeVirtualRouterTUNDataPlaneState.mu.Lock()
 	libraryPath := strings.TrimSpace(probeVirtualRouterTUNDataPlaneState.libraryPath)
 	handle := probeVirtualRouterTUNDataPlaneState.adapterHandle
@@ -200,6 +201,14 @@ func stopProbeVirtualRouterTUNDataPlane() error {
 
 	defer clearProbeRouteWindowsDirectRouteTarget()
 	var allErr error
+	if cleanupErr := cleanupProbeRouteWindowsTrackedDirectBypassRoutes(); cleanupErr != nil {
+		allErr = errors.Join(allErr, cleanupErr)
+	}
+	if hasDirectRouteTarget {
+		if cleanupErr := cleanupProbeRouteWindowsManagedDirectBypassRoutesForTarget(directRouteTarget); cleanupErr != nil {
+			allErr = errors.Join(allErr, cleanupErr)
+		}
+	}
 	if dataPlane != nil {
 		stats := dataPlane.Stats()
 		if err := dataPlane.Close(); err != nil {

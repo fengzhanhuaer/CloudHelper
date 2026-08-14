@@ -140,6 +140,7 @@ type probeLocalWindowsRouteEntry struct {
 	NextHop      string
 	IfIndex      int
 	Metric       uint32
+	Protocol     uint32
 }
 
 type probeLocalDNSInterfaceSettings struct {
@@ -632,7 +633,10 @@ func ensureProbeRouteWindowsRouteNative(routeDef probeRouteWindowsRouteDef) (boo
 	row.DestinationPrefix.PrefixLength = uint8(prefixLength)
 	row.NextHop = nextHopAddr
 	row.SitePrefixLength = uint8(prefixLength)
-	row.Metric = uint32(probeRouteWindowsRouteMetric)
+	row.Metric = routeDef.Metric
+	if row.Metric == 0 {
+		row.Metric = uint32(probeRouteWindowsRouteMetric)
+	}
 
 	ret, _, callErr := probeLocalProcCreateIpForwardEntry2Net.Call(uintptr(unsafe.Pointer(&row)))
 	if ret == 0 {
@@ -701,6 +705,7 @@ func listProbeLocalWindowsIPv4RouteEntries() ([]probeLocalWindowsRouteEntry, err
 			NextHop:      nextHop,
 			IfIndex:      int(row.InterfaceIndex),
 			Metric:       row.Metric,
+			Protocol:     row.Protocol,
 		})
 	}
 	return entries, nil

@@ -31,6 +31,12 @@ func prepareProbeRouteWindowsDirectRouteTarget() error {
 	if err != nil {
 		return err
 	}
+	if cleanupErr := cleanupProbeRouteWindowsTrackedDirectBypassRoutes(); cleanupErr != nil {
+		logProbeWarnf("probe route direct bypass cleanup tracked routes before egress prepare failed: %v", cleanupErr)
+	}
+	if cleanupErr := cleanupProbeRouteWindowsManagedDirectBypassRoutesForTarget(routeTarget); cleanupErr != nil {
+		logProbeWarnf("probe route direct bypass cleanup prepared egress legacy routes failed: %v", cleanupErr)
+	}
 	setProbeRouteWindowsDirectRouteTarget(routeTarget)
 	if cleanupErr := cleanupProbeRouteWindowsInvalidLocalAddressBypassRoutes(); cleanupErr != nil {
 		logProbeWarnf("probe route direct bypass cleanup invalid local-address routes failed: %v", cleanupErr)
@@ -167,4 +173,7 @@ func resetProbeRouteDirectBypassStateForTest() {
 	probeRouteDirectRouteTargetState.updatedAt = ""
 	probeRouteDirectRouteTargetState.ready = false
 	probeRouteDirectRouteTargetState.mu.Unlock()
+	probeRouteWindowsManagedDirectBypassState.mu.Lock()
+	probeRouteWindowsManagedDirectBypassState.routes = make(map[string]probeRouteWindowsRouteDef)
+	probeRouteWindowsManagedDirectBypassState.mu.Unlock()
 }

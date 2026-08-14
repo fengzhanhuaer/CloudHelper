@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const (
@@ -18,6 +19,9 @@ const (
 	probeRouteWindowsSplitRouteMaskB   = "128.0.0.0"
 	probeRouteWindowsHostRouteMask     = "255.255.255.255"
 	probeRouteWindowsRouteMetric       = 3
+	probeRouteWindowsDirectRouteMetric = 4273
+	probeRouteWindowsTakeoverPrefixLen = 1
+	probeRouteWindowsProtocolNetMgmt   = 3
 )
 
 type probeRouteWindowsRouteDef struct {
@@ -26,6 +30,7 @@ type probeRouteWindowsRouteDef struct {
 	Gateway       string
 	InterfaceLUID uint64
 	IfIndex       int
+	Metric        uint32
 }
 
 type probeRouteWindowsTUNRouteTarget struct {
@@ -38,6 +43,11 @@ var (
 	probeLocalWindowsRunCommand       = runProbeLocalCommand
 	probeRouteWindowsListAdaptersIPv4 = windowsListAdaptersIPv4
 )
+
+var probeRouteWindowsManagedDirectBypassState = struct {
+	mu     sync.Mutex
+	routes map[string]probeRouteWindowsRouteDef
+}{routes: make(map[string]probeRouteWindowsRouteDef)}
 
 func resolveProbeRouteWindowsTUNRouteTarget() (probeRouteWindowsTUNRouteTarget, error) {
 	gateway := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_GATEWAY"))
@@ -139,6 +149,9 @@ func ensureProbeRouteDirectBypass(targetAddr string) error {
 			hasLocalTarget = true
 			continue
 		}
+		if probeRouteWindowsDirectBypassIPIsSpecial(ip4) {
+			continue
+		}
 		bypassIPs = append(bypassIPs, ip4.String())
 	}
 	var allErr error
@@ -172,6 +185,10 @@ func ensureProbeRouteDirectBypass(targetAddr string) error {
 		logProbeWarnf("probe route direct route target rejected because it points to tun: target=%s ips=%s if_index=%d next_hop=%s", strings.TrimSpace(targetAddr), strings.Join(ips, ","), bypassTarget.InterfaceIndex, strings.TrimSpace(bypassTarget.NextHop))
 		return fmt.Errorf("direct route target points to tun interface: if_index=%d", bypassTarget.InterfaceIndex)
 	}
+	routeEntries, routeListErr := probeLocalListWindowsRouteEntries()
+	if routeListErr != nil {
+		return errors.Join(allErr, fmt.Errorf("list windows routes before direct bypass: %w", routeListErr))
+	}
 	for _, ipText := range ips {
 		ip4 := net.ParseIP(strings.TrimSpace(ipText)).To4()
 		if ip4 == nil {
@@ -183,6 +200,18 @@ func ensureProbeRouteDirectBypass(targetAddr string) error {
 			Gateway:       strings.TrimSpace(bypassTarget.NextHop),
 			InterfaceLUID: bypassTarget.InterfaceLUID,
 			IfIndex:       bypassTarget.InterfaceIndex,
+			Metric:        probeRouteWindowsDirectRouteMetric,
+		}
+		covered, alreadyManaged := probeRouteWindowsDirectBypassExistingRoute(ip4, routeEntries, excludedIfIndex, bypassTarget)
+		if covered {
+			if cleanupErr := cleanupProbeRouteWindowsRedundantDirectBypassRoutesForIP(ip4, routeEntries); cleanupErr != nil {
+				allErr = errors.Join(allErr, cleanupErr)
+			}
+			continue
+		}
+		if alreadyManaged {
+			rememberProbeRouteWindowsManagedDirectBypass(routeDef)
+			continue
 		}
 		_, routeErr := ensureProbeRouteWindowsRoute(routeDef)
 		if routeErr != nil {
@@ -203,7 +232,163 @@ func ensureProbeRouteDirectBypass(targetAddr string) error {
 		if routeErr != nil {
 			logProbeWarnf("probe route direct route host route failed: target=%s ip=%s gateway=%s if_index=%d interface_luid=%d err=%v", strings.TrimSpace(targetAddr), routeDef.Prefix, routeDef.Gateway, routeDef.IfIndex, routeDef.InterfaceLUID, routeErr)
 			allErr = errors.Join(allErr, routeErr)
+			continue
 		}
+		rememberProbeRouteWindowsManagedDirectBypass(routeDef)
+	}
+	return allErr
+}
+
+func probeRouteWindowsDirectBypassIPIsSpecial(ip net.IP) bool {
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return true
+	}
+	if ip4[0] == 0 {
+		return true
+	}
+	return !ip4.IsGlobalUnicast()
+}
+
+func probeRouteWindowsDirectBypassExistingRoute(ip net.IP, entries []probeLocalWindowsRouteEntry, excludedIfIndex int, bypassTarget probeRouteWindowsDirectRouteTarget) (covered bool, alreadyManaged bool) {
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return true, false
+	}
+	if nextHop := net.ParseIP(strings.TrimSpace(bypassTarget.NextHop)).To4(); nextHop != nil && nextHop.Equal(ip4) {
+		return true, false
+	}
+	for _, entry := range entries {
+		if entry.IfIndex <= 0 || (excludedIfIndex > 0 && entry.IfIndex == excludedIfIndex) || entry.PrefixLength <= probeRouteWindowsTakeoverPrefixLen {
+			continue
+		}
+		if !probeRouteWindowsRouteEntryContainsIP(entry, ip4) {
+			continue
+		}
+		if probeRouteWindowsRouteEntryIsManagedDirectBypass(entry) {
+			if entry.PrefixLength == 32 && entry.IfIndex == bypassTarget.InterfaceIndex && strings.EqualFold(strings.TrimSpace(entry.NextHop), strings.TrimSpace(bypassTarget.NextHop)) {
+				alreadyManaged = true
+			}
+			continue
+		}
+		covered = true
+	}
+	return covered, alreadyManaged
+}
+
+func probeRouteWindowsRouteEntryContainsIP(entry probeLocalWindowsRouteEntry, ip net.IP) bool {
+	ip4 := ip.To4()
+	prefix := net.ParseIP(strings.TrimSpace(entry.Prefix)).To4()
+	if ip4 == nil || prefix == nil || entry.PrefixLength < 0 || entry.PrefixLength > 32 {
+		return false
+	}
+	mask := net.CIDRMask(entry.PrefixLength, 32)
+	return (&net.IPNet{IP: prefix.Mask(mask), Mask: mask}).Contains(ip4)
+}
+
+func probeRouteWindowsRouteEntryIsManagedDirectBypass(entry probeLocalWindowsRouteEntry) bool {
+	if entry.PrefixLength != 32 || entry.IfIndex <= 0 || entry.Protocol != probeRouteWindowsProtocolNetMgmt {
+		return false
+	}
+	nextHop := strings.TrimSpace(entry.NextHop)
+	if nextHop == "" || nextHop == "0.0.0.0" {
+		return false
+	}
+	return entry.Metric == uint32(probeRouteWindowsDirectRouteMetric) || entry.Metric == uint32(probeRouteWindowsRouteMetric)
+}
+
+func probeRouteWindowsManagedDirectBypassKey(routeDef probeRouteWindowsRouteDef) string {
+	return strings.ToLower(strings.Join([]string{
+		strings.TrimSpace(routeDef.Prefix),
+		strings.TrimSpace(routeDef.Gateway),
+		strconv.Itoa(routeDef.IfIndex),
+	}, "|"))
+}
+
+func rememberProbeRouteWindowsManagedDirectBypass(routeDef probeRouteWindowsRouteDef) {
+	if strings.TrimSpace(routeDef.Prefix) == "" || strings.TrimSpace(routeDef.Gateway) == "" || routeDef.IfIndex <= 0 {
+		return
+	}
+	probeRouteWindowsManagedDirectBypassState.mu.Lock()
+	probeRouteWindowsManagedDirectBypassState.routes[probeRouteWindowsManagedDirectBypassKey(routeDef)] = routeDef
+	probeRouteWindowsManagedDirectBypassState.mu.Unlock()
+}
+
+func forgetProbeRouteWindowsManagedDirectBypass(routeDef probeRouteWindowsRouteDef) {
+	probeRouteWindowsManagedDirectBypassState.mu.Lock()
+	delete(probeRouteWindowsManagedDirectBypassState.routes, probeRouteWindowsManagedDirectBypassKey(routeDef))
+	probeRouteWindowsManagedDirectBypassState.mu.Unlock()
+}
+
+func cleanupProbeRouteWindowsRedundantDirectBypassRoutesForIP(ip net.IP, entries []probeLocalWindowsRouteEntry) error {
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return nil
+	}
+	var allErr error
+	for _, entry := range entries {
+		if !probeRouteWindowsRouteEntryIsManagedDirectBypass(entry) || !strings.EqualFold(strings.TrimSpace(entry.Prefix), ip4.String()) {
+			continue
+		}
+		routeDef := probeRouteWindowsRouteDef{Prefix: ip4.String(), Mask: probeRouteWindowsHostRouteMask, Gateway: strings.TrimSpace(entry.NextHop), IfIndex: entry.IfIndex, Metric: entry.Metric}
+		if err := deleteProbeRouteWindowsRoute(routeDef); err != nil {
+			allErr = errors.Join(allErr, fmt.Errorf("delete redundant direct bypass route %s via %s if_index=%d: %w", routeDef.Prefix, routeDef.Gateway, routeDef.IfIndex, err))
+			continue
+		}
+		forgetProbeRouteWindowsManagedDirectBypass(routeDef)
+	}
+	return allErr
+}
+
+func cleanupProbeRouteWindowsManagedDirectBypassRoutesForTarget(target probeRouteWindowsDirectRouteTarget) error {
+	if target.InterfaceIndex <= 0 || strings.TrimSpace(target.NextHop) == "" {
+		return nil
+	}
+	entries, err := probeLocalListWindowsRouteEntries()
+	if err != nil {
+		return fmt.Errorf("list managed direct bypass routes: %w", err)
+	}
+	removed := 0
+	var allErr error
+	for _, entry := range entries {
+		if !probeRouteWindowsRouteEntryIsManagedDirectBypass(entry) || entry.IfIndex != target.InterfaceIndex || !strings.EqualFold(strings.TrimSpace(entry.NextHop), strings.TrimSpace(target.NextHop)) {
+			continue
+		}
+		routeDef := probeRouteWindowsRouteDef{
+			Prefix:  strings.TrimSpace(entry.Prefix),
+			Mask:    probeRouteWindowsHostRouteMask,
+			Gateway: strings.TrimSpace(entry.NextHop),
+			IfIndex: entry.IfIndex,
+			Metric:  entry.Metric,
+		}
+		if deleteErr := deleteProbeRouteWindowsRoute(routeDef); deleteErr != nil {
+			allErr = errors.Join(allErr, fmt.Errorf("delete managed direct bypass route %s via %s if_index=%d: %w", routeDef.Prefix, routeDef.Gateway, routeDef.IfIndex, deleteErr))
+			continue
+		}
+		forgetProbeRouteWindowsManagedDirectBypass(routeDef)
+		removed++
+	}
+	if removed > 0 {
+		logProbeInfof("probe route direct bypass cleanup removed managed host routes: count=%d gateway=%s if_index=%d", removed, strings.TrimSpace(target.NextHop), target.InterfaceIndex)
+	}
+	return allErr
+}
+
+func cleanupProbeRouteWindowsTrackedDirectBypassRoutes() error {
+	probeRouteWindowsManagedDirectBypassState.mu.Lock()
+	routes := make([]probeRouteWindowsRouteDef, 0, len(probeRouteWindowsManagedDirectBypassState.routes))
+	for _, routeDef := range probeRouteWindowsManagedDirectBypassState.routes {
+		routes = append(routes, routeDef)
+	}
+	probeRouteWindowsManagedDirectBypassState.mu.Unlock()
+
+	var allErr error
+	for _, routeDef := range routes {
+		if err := deleteProbeRouteWindowsRoute(routeDef); err != nil {
+			allErr = errors.Join(allErr, fmt.Errorf("delete tracked direct bypass route %s via %s if_index=%d: %w", routeDef.Prefix, routeDef.Gateway, routeDef.IfIndex, err))
+			continue
+		}
+		forgetProbeRouteWindowsManagedDirectBypass(routeDef)
 	}
 	return allErr
 }
@@ -244,7 +429,7 @@ func cleanupProbeRouteWindowsInvalidLocalAddressBypassRoutesFor(localIPv4s map[s
 	}
 	var allErr error
 	for _, entry := range entries {
-		if entry.PrefixLength != 32 || entry.IfIndex <= 0 || entry.Metric != uint32(probeRouteWindowsRouteMetric) {
+		if !probeRouteWindowsRouteEntryIsManagedDirectBypass(entry) {
 			continue
 		}
 		nextHop := strings.TrimSpace(entry.NextHop)
@@ -268,6 +453,7 @@ func cleanupProbeRouteWindowsInvalidLocalAddressBypassRoutesFor(localIPv4s map[s
 			allErr = errors.Join(allErr, fmt.Errorf("delete invalid local-address bypass route %s via %s if_index=%d: %w", routeDef.Prefix, routeDef.Gateway, routeDef.IfIndex, deleteErr))
 			continue
 		}
+		forgetProbeRouteWindowsManagedDirectBypass(routeDef)
 		logProbeInfof("probe route direct bypass removed invalid local-address host route: ip=%s gateway=%s if_index=%d", routeDef.Prefix, routeDef.Gateway, routeDef.IfIndex)
 	}
 	return allErr
@@ -285,7 +471,7 @@ func cleanupProbeRouteDirectBypassForVirtualRouterRules(config probeVirtualRoute
 	}
 	excludedIfIndex := currentProbeVirtualRouterTUNDataPlaneIfIndex()
 	for _, entry := range entries {
-		if entry.PrefixLength != 32 || entry.IfIndex <= 0 {
+		if !probeRouteWindowsRouteEntryIsManagedDirectBypass(entry) {
 			continue
 		}
 		if excludedIfIndex > 0 && entry.IfIndex == excludedIfIndex {
@@ -308,6 +494,7 @@ func cleanupProbeRouteDirectBypassForVirtualRouterRules(config probeVirtualRoute
 			logProbeWarnf("probe route direct bypass cleanup failed: ip=%s gateway=%s if_index=%d err=%v", routeDef.Prefix, routeDef.Gateway, routeDef.IfIndex, err)
 			continue
 		}
+		forgetProbeRouteWindowsManagedDirectBypass(routeDef)
 		logProbeInfof("probe route direct bypass cleanup removed virtual-router target route: ip=%s gateway=%s if_index=%d", routeDef.Prefix, routeDef.Gateway, routeDef.IfIndex)
 	}
 }
