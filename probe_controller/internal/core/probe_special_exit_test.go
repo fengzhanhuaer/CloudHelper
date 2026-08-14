@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -154,6 +155,55 @@ func TestParseProbeSpecialExitSubscriptionRejectsProvidersAndNormalizesProxies(t
 	}
 	if _, err := parseProbeSpecialExitSubscription([]byte("proxy-providers:\n  remote:\n    type: http\n    url: https://provider.example/config.yaml\n")); err == nil || !strings.Contains(err.Error(), "proxy-providers") {
 		t.Fatalf("remote provider accepted: %v", err)
+	}
+}
+
+func TestParseProbeSpecialExitSubscriptionSupportsPlainAndBase64AnyTLS(t *testing.T) {
+	plain := "anytls://p%40ss@example.com:8443/?sni=edge.example.com&insecure=1&fp=chrome&alpn=h2,http%2F1.1#冲上云霄\n" +
+		"anytls://second@[2001:db8::1]/?insecure=0#IPv6"
+	encoded := base64.StdEncoding.EncodeToString([]byte(plain))
+	proxies, err := parseProbeSpecialExitSubscription([]byte(encoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(proxies) != 2 {
+		t.Fatalf("proxies=%+v", proxies)
+	}
+	byName := make(map[string]map[string]interface{}, len(proxies))
+	for _, proxy := range proxies {
+		byName[fmt.Sprint(proxy["name"])] = proxy
+	}
+	primary := byName["冲上云霄"]
+	if primary == nil || primary["type"] != "anytls" || primary["server"] != "example.com" || primary["port"] != float64(8443) || primary["password"] != "p@ss" || primary["sni"] != "edge.example.com" || primary["client-fingerprint"] != "chrome" || primary["skip-cert-verify"] != true || primary["udp"] != true {
+		t.Fatalf("primary anytls proxy=%+v", primary)
+	}
+	if got := primary["alpn"]; !reflect.DeepEqual(got, []interface{}{"h2", "http/1.1"}) {
+		t.Fatalf("primary alpn=%+v", got)
+	}
+	ipv6 := byName["IPv6"]
+	if ipv6 == nil || ipv6["server"] != "2001:db8::1" || ipv6["port"] != float64(443) || ipv6["password"] != "second" || ipv6["skip-cert-verify"] != false {
+		t.Fatalf("IPv6 anytls proxy=%+v", ipv6)
+	}
+	plainProxies, err := parseProbeSpecialExitSubscription([]byte("anytls://secret@plain.example:443/#Plain"))
+	if err != nil || len(plainProxies) != 1 || plainProxies[0]["name"] != "Plain" {
+		t.Fatalf("plain anytls proxies=%+v err=%v", plainProxies, err)
+	}
+}
+
+func TestParseProbeSpecialExitSubscriptionRejectsUnsupportedOrInvalidURIWithoutLeakingSecrets(t *testing.T) {
+	unsupported := base64.RawStdEncoding.EncodeToString([]byte("vmess://do-not-leak#node"))
+	if _, err := parseProbeSpecialExitSubscription([]byte(unsupported)); err == nil || !strings.Contains(err.Error(), `scheme "vmess"`) || strings.Contains(err.Error(), "do-not-leak") {
+		t.Fatalf("unsupported URI error=%v", err)
+	}
+	secret := "anytls-secret-do-not-leak"
+	invalidAnyTLS := "anytls://" + secret + "@example.com:443/?insecure=invalid#node"
+	if _, err := parseProbeSpecialExitSubscription([]byte(invalidAnyTLS)); err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("invalid AnyTLS error=%v", err)
+	}
+	for _, content := range []string{"not yaml or base64", base64.StdEncoding.EncodeToString([]byte("anytls://"))} {
+		if _, err := parseProbeSpecialExitSubscription([]byte(content)); err == nil || strings.Contains(err.Error(), content) {
+			t.Fatalf("invalid subscription error=%v", err)
+		}
 	}
 }
 
@@ -572,6 +622,7 @@ func TestMngRoutePageIncludesSpecialExitWorkflow(t *testing.T) {
 		`<option value="">请选择特殊探针</option>`, `.special-exit-layout[hidden] { display:none; }`,
 		`state.specialExitStatuses.find((status) => normalizeNodeID(status.node_id) === nodeID)`,
 		`/mng/api/route/special_exits/subscription/refresh`,
+		`data-se-subscription-url="${index}" class="mono" type="url"`,
 	} {
 		if !strings.Contains(mngRoutePageHTML, marker) {
 			t.Fatalf("route page missing %q", marker)
@@ -580,6 +631,7 @@ func TestMngRoutePageIncludesSpecialExitWorkflow(t *testing.T) {
 	for _, marker := range []string{
 		`id="special-exit-new-node-name"`, `id="btn-special-exit-create-node"`, `id="special-exit-install-mode"`, `/mng/api/route/special_exits/install?`,
 		`id="special-exit-name"`, `id="special-exit-enabled"`, `id="special-exit-default-action"`, `data-se-rule-action`, `data-se-rule-network`, `data-se-rule-ports`,
+		`data-se-subscription-url="${index}" class="mono" type="password"`,
 	} {
 		if strings.Contains(mngRoutePageHTML, marker) {
 			t.Fatalf("route page must not include probe creation or install marker %q", marker)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,8 +13,10 @@ import (
 	"net/netip"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	yaml "gopkg.in/yaml.v2"
 )
@@ -438,25 +441,206 @@ func probeSpecialExitHasSubscriptionHeaders(item probeSpecialExitConfig) bool {
 }
 
 func parseProbeSpecialExitSubscription(content []byte) ([]map[string]interface{}, error) {
+	if proxies, recognized, err := parseProbeSpecialExitYAML(content); recognized {
+		return proxies, err
+	}
+	proxies, err := parseProbeSpecialExitURIList(content)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeProbeSpecialExitProxies(proxies)
+}
+
+func parseProbeSpecialExitYAML(content []byte) ([]map[string]interface{}, bool, error) {
 	var raw struct {
 		Proxies        []map[interface{}]interface{} `yaml:"proxies"`
+		Payload        []map[interface{}]interface{} `yaml:"payload"`
 		ProxyProviders map[string]interface{}        `yaml:"proxy-providers"`
 	}
 	if err := yaml.Unmarshal(content, &raw); err != nil {
-		return nil, fmt.Errorf("subscription YAML is invalid: %w", err)
+		return nil, false, nil
 	}
 	if len(raw.ProxyProviders) > 0 {
-		return nil, fmt.Errorf("remote proxy-providers are not supported")
+		return nil, true, fmt.Errorf("remote proxy-providers are not supported")
 	}
-	converted := make([]map[string]interface{}, 0, len(raw.Proxies))
-	for index, item := range raw.Proxies {
+	recognized := raw.Proxies != nil || raw.Payload != nil || raw.ProxyProviders != nil
+	if !recognized {
+		return nil, false, nil
+	}
+	items := raw.Proxies
+	if items == nil {
+		items = raw.Payload
+	}
+	if len(items) == 0 {
+		return nil, true, fmt.Errorf("subscription contains no proxy nodes")
+	}
+	converted := make([]map[string]interface{}, 0, len(items))
+	for index, item := range items {
 		value, err := probeSpecialExitStringMap(item)
 		if err != nil {
-			return nil, fmt.Errorf("proxies[%d]: %w", index, err)
+			return nil, true, fmt.Errorf("proxies[%d]: %w", index, err)
 		}
 		converted = append(converted, value)
 	}
-	return normalizeProbeSpecialExitProxies(converted)
+	proxies, err := normalizeProbeSpecialExitProxies(converted)
+	return proxies, true, err
+}
+
+func parseProbeSpecialExitURIList(content []byte) ([]map[string]interface{}, error) {
+	text := strings.TrimSpace(strings.TrimPrefix(string(content), "\ufeff"))
+	if !strings.Contains(text, "://") {
+		decoded, ok := decodeProbeSpecialExitBase64Subscription(text)
+		if !ok {
+			return nil, fmt.Errorf("subscription is not valid Clash YAML or a supported proxy URI list")
+		}
+		text = strings.TrimSpace(strings.TrimPrefix(string(decoded), "\ufeff"))
+	}
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
+	proxies := make([]map[string]interface{}, 0, len(lines))
+	for index, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parsed, err := url.Parse(line)
+		if err != nil || strings.TrimSpace(parsed.Scheme) == "" {
+			return nil, fmt.Errorf("subscription URI at line %d is invalid", index+1)
+		}
+		var proxy map[string]interface{}
+		switch strings.ToLower(strings.TrimSpace(parsed.Scheme)) {
+		case "anytls":
+			proxy, err = parseProbeSpecialExitAnyTLSURI(parsed, index+1)
+		default:
+			err = fmt.Errorf("subscription URI scheme %q is not supported", strings.ToLower(strings.TrimSpace(parsed.Scheme)))
+		}
+		if err != nil {
+			return nil, err
+		}
+		proxies = append(proxies, proxy)
+	}
+	if len(proxies) == 0 {
+		return nil, fmt.Errorf("subscription contains no proxy nodes")
+	}
+	return proxies, nil
+}
+
+func decodeProbeSpecialExitBase64Subscription(text string) ([]byte, bool) {
+	compact := strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, text)
+	if compact == "" {
+		return nil, false
+	}
+	for _, encoding := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+		decoded, err := encoding.DecodeString(compact)
+		if err == nil && len(decoded) > 0 && strings.Contains(string(decoded), "://") {
+			return decoded, true
+		}
+	}
+	return nil, false
+}
+
+func parseProbeSpecialExitAnyTLSURI(parsed *url.URL, line int) (map[string]interface{}, error) {
+	if parsed == nil || parsed.User == nil {
+		return nil, fmt.Errorf("anytls URI at line %d is missing its password", line)
+	}
+	password := parsed.User.Username()
+	if password == "" {
+		return nil, fmt.Errorf("anytls URI at line %d is missing its password", line)
+	}
+	if _, hasPassword := parsed.User.Password(); hasPassword {
+		return nil, fmt.Errorf("anytls URI at line %d must use password@host userinfo", line)
+	}
+	server := strings.TrimSpace(parsed.Hostname())
+	if server == "" {
+		return nil, fmt.Errorf("anytls URI at line %d is missing its server", line)
+	}
+	port := 443
+	if rawPort := strings.TrimSpace(parsed.Port()); rawPort != "" {
+		value, err := strconv.Atoi(rawPort)
+		if err != nil || value < 1 || value > 65535 {
+			return nil, fmt.Errorf("anytls URI at line %d has an invalid port", line)
+		}
+		port = value
+	}
+	query := parsed.Query()
+	if strings.EqualFold(strings.TrimSpace(query.Get("security")), "reality") || query.Get("pbk") != "" {
+		return nil, fmt.Errorf("anytls URI at line %d uses unsupported Reality transport", line)
+	}
+	name := strings.TrimSpace(parsed.Fragment)
+	if name == "" {
+		name = net.JoinHostPort(server, strconv.Itoa(port))
+	}
+	proxy := map[string]interface{}{
+		"name": name, "type": "anytls", "server": server, "port": port,
+		"password": password, "udp": true,
+	}
+	if sni := firstProbeSpecialExitQueryValue(query, "sni", "peer", "serverName"); sni != "" {
+		proxy["sni"] = sni
+	}
+	if fingerprint := firstProbeSpecialExitQueryValue(query, "client-fingerprint", "fp"); fingerprint != "" {
+		proxy["client-fingerprint"] = fingerprint
+	}
+	if raw := firstProbeSpecialExitQueryValue(query, "insecure", "allowInsecure", "skip-cert-verify"); raw != "" {
+		value, err := parseProbeSpecialExitURIFlag(raw)
+		if err != nil {
+			return nil, fmt.Errorf("anytls URI at line %d has an invalid insecure flag", line)
+		}
+		proxy["skip-cert-verify"] = value
+	}
+	if raw := strings.TrimSpace(query.Get("udp")); raw != "" {
+		value, err := parseProbeSpecialExitURIFlag(raw)
+		if err != nil {
+			return nil, fmt.Errorf("anytls URI at line %d has an invalid udp flag", line)
+		}
+		proxy["udp"] = value
+	}
+	if raw := strings.TrimSpace(query.Get("alpn")); raw != "" {
+		values := make([]string, 0)
+		for _, item := range strings.Split(raw, ",") {
+			if item = strings.TrimSpace(item); item != "" {
+				values = append(values, item)
+			}
+		}
+		if len(values) > 0 {
+			proxy["alpn"] = values
+		}
+	}
+	for _, key := range []string{"idle-session-check-interval", "idle-session-timeout", "min-idle-session"} {
+		raw := strings.TrimSpace(query.Get(key))
+		if raw == "" {
+			continue
+		}
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 0 {
+			return nil, fmt.Errorf("anytls URI at line %d has an invalid %s", line, key)
+		}
+		proxy[key] = value
+	}
+	return proxy, nil
+}
+
+func firstProbeSpecialExitQueryValue(query url.Values, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(query.Get(key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func parseProbeSpecialExitURIFlag(raw string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true, nil
+	case "0", "false", "no", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("invalid boolean value")
+	}
 }
 
 func probeSpecialExitStringMap(input map[interface{}]interface{}) (map[string]interface{}, error) {

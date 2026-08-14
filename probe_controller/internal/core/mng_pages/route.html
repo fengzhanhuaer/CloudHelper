@@ -664,7 +664,7 @@
         return `<div class="special-exit-subscription" data-special-exit-subscription="${index}">
           <div class="special-exit-subscription-grid">
             <input data-se-subscription-name="${index}" type="text" value="${escapeHTML(source.name || '')}" placeholder="配置名称" />
-            <input data-se-subscription-url="${index}" class="mono" type="password" value="${escapeHTML(source.url || '')}" placeholder="Clash 配置 URL（留空保留）" autocomplete="new-password" />
+            <input data-se-subscription-url="${index}" class="mono" type="url" value="${escapeHTML(source.url || '')}" placeholder="Clash 配置 URL（留空保留）" autocomplete="url" />
             <select data-se-subscription-enabled="${index}"><option value="true" ${source.enabled === false ? '' : 'selected'}>使用</option><option value="false" ${source.enabled === false ? 'selected' : ''}>停用</option></select>
             <button class="btn danger" data-se-subscription-remove="${index}" type="button">删除</button>
             <details class="special-exit-subscription-advanced">
