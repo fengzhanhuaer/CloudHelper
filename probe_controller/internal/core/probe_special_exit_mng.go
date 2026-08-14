@@ -24,25 +24,37 @@ const (
 )
 
 type probeSpecialExitManagedView struct {
-	NodeID                    string                       `json:"node_id"`
-	Name                      string                       `json:"name"`
-	Enabled                   bool                         `json:"enabled"`
-	SubscriptionConfigured    bool                         `json:"subscription_configured"`
-	SubscriptionHeadersSet    bool                         `json:"subscription_headers_configured"`
-	DefaultAction             string                       `json:"default_action"`
-	DefaultTarget             string                       `json:"default_target,omitempty"`
-	Rules                     []probeSpecialExitRule       `json:"rules"`
-	ProxyNames                []string                     `json:"proxy_names"`
-	Revision                  int64                        `json:"desired_revision"`
-	SHA256                    string                       `json:"desired_sha256"`
-	ManagedRule               *probeVirtualRouterRouteRule `json:"managed_rule,omitempty"`
-	LastSubscriptionRefreshAt string                       `json:"last_subscription_refresh_at,omitempty"`
-	LastSubscriptionError     string                       `json:"last_subscription_refresh_error,omitempty"`
-	UpdatedAt                 string                       `json:"updated_at,omitempty"`
+	NodeID                    string                             `json:"node_id"`
+	Name                      string                             `json:"name"`
+	Enabled                   bool                               `json:"enabled"`
+	SubscriptionConfigured    bool                               `json:"subscription_configured"`
+	SubscriptionHeadersSet    bool                               `json:"subscription_headers_configured"`
+	Subscriptions             []probeSpecialExitSubscriptionView `json:"subscriptions"`
+	DefaultAction             string                             `json:"default_action"`
+	DefaultTarget             string                             `json:"default_target,omitempty"`
+	Rules                     []probeSpecialExitRule             `json:"rules"`
+	ProxyNames                []string                           `json:"proxy_names"`
+	Revision                  int64                              `json:"desired_revision"`
+	SHA256                    string                             `json:"desired_sha256"`
+	ManagedRule               *probeVirtualRouterRouteRule       `json:"managed_rule,omitempty"`
+	LastSubscriptionRefreshAt string                             `json:"last_subscription_refresh_at,omitempty"`
+	LastSubscriptionError     string                             `json:"last_subscription_refresh_error,omitempty"`
+	UpdatedAt                 string                             `json:"updated_at,omitempty"`
+}
+
+type probeSpecialExitSubscriptionView struct {
+	ID                         string `json:"id"`
+	Name                       string `json:"name"`
+	Enabled                    bool   `json:"enabled"`
+	Configured                 bool   `json:"configured"`
+	HeadersConfigured          bool   `json:"headers_configured"`
+	LastSubscriptionRefreshAt  string `json:"last_subscription_refresh_at,omitempty"`
+	LastSubscriptionRefreshErr string `json:"last_subscription_refresh_error,omitempty"`
 }
 
 var probeSpecialExitLookupIP = net.DefaultResolver.LookupIPAddr
 var probeSpecialExitDialContext = (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+var probeSpecialExitFetchSubscription = fetchProbeSpecialExitSubscription
 
 func listMngProbeSpecialExits() (map[string]interface{}, error) {
 	if ProbeRouteConfigStore == nil {
@@ -72,9 +84,17 @@ func mngProbeSpecialExitView(item probeSpecialExitConfig) probeSpecialExitManage
 		}
 	}
 	sort.Strings(proxyNames)
+	subscriptions := make([]probeSpecialExitSubscriptionView, 0, len(item.Subscriptions))
+	for _, source := range item.Subscriptions {
+		subscriptions = append(subscriptions, probeSpecialExitSubscriptionView{
+			ID: source.ID, Name: source.Name, Enabled: source.Enabled,
+			Configured: strings.TrimSpace(source.URL) != "", HeadersConfigured: len(source.Headers) > 0,
+			LastSubscriptionRefreshAt: source.LastSubscriptionRefreshAt, LastSubscriptionRefreshErr: source.LastSubscriptionRefreshErr,
+		})
+	}
 	view := probeSpecialExitManagedView{
 		NodeID: item.NodeID, Name: item.Name, Enabled: item.Enabled,
-		SubscriptionConfigured: strings.TrimSpace(item.SubscriptionURL) != "", SubscriptionHeadersSet: len(item.SubscriptionHeaders) > 0,
+		SubscriptionConfigured: probeSpecialExitHasConfiguredSubscription(item), SubscriptionHeadersSet: probeSpecialExitHasSubscriptionHeaders(item), Subscriptions: subscriptions,
 		DefaultAction: item.DefaultAction, DefaultTarget: item.DefaultTarget, Rules: append([]probeSpecialExitRule(nil), item.Rules...), ProxyNames: proxyNames,
 		Revision: item.Revision, SHA256: item.SHA256, LastSubscriptionRefreshAt: item.LastSubscriptionRefreshAt,
 		LastSubscriptionError: item.LastSubscriptionRefreshErr, UpdatedAt: item.UpdatedAt,
@@ -147,8 +167,7 @@ func upsertMngProbeSpecialExit(payload json.RawMessage, controllerBaseURL string
 			item.Proxies = previous.Proxies
 		}
 		if req.ClearSubscription {
-			item.SubscriptionURL = ""
-			item.SubscriptionHeaders = map[string]string{}
+			item.Subscriptions = []probeSpecialExitSubscription{}
 		}
 		if validateErr := validateProbeSpecialExitResolvedPolicies(item); validateErr != nil {
 			return validateErr
@@ -232,24 +251,74 @@ func refreshMngProbeSpecialExitSubscription(ctx context.Context, nodeID string, 
 		return nil, fmt.Errorf("special exit %q not found", nodeID)
 	}
 	sourceHash := probeSpecialExitSubscriptionSourceHash(item)
-	content, err := fetchProbeSpecialExitSubscription(ctx, item.SubscriptionURL, item.SubscriptionHeaders)
+	enabled := make([]probeSpecialExitSubscription, 0, len(item.Subscriptions))
+	for _, source := range item.Subscriptions {
+		if source.Enabled && strings.TrimSpace(source.URL) != "" {
+			enabled = append(enabled, source)
+		}
+	}
+	if len(enabled) == 0 {
+		return nil, fmt.Errorf("no enabled subscription sources are configured")
+	}
+	type fetchResult struct {
+		source  probeSpecialExitSubscription
+		proxies []map[string]interface{}
+		err     error
+	}
+	results := make(chan fetchResult, len(enabled))
+	for _, source := range enabled {
+		source := source
+		go func() {
+			content, fetchErr := probeSpecialExitFetchSubscription(ctx, source.URL, source.Headers)
+			if fetchErr != nil {
+				results <- fetchResult{source: source, err: fetchErr}
+				return
+			}
+			proxies, parseErr := parseProbeSpecialExitSubscription(content)
+			results <- fetchResult{source: source, proxies: proxies, err: parseErr}
+		}()
+	}
+	resultsByID := make(map[string]fetchResult, len(enabled))
+	for range enabled {
+		result := <-results
+		resultsByID[result.source.ID] = result
+	}
+	merged := make([]map[string]interface{}, 0)
+	refreshedSourceIDs := make([]string, 0, len(enabled))
+	var firstFailure *fetchResult
+	for _, source := range enabled {
+		result := resultsByID[source.ID]
+		if result.err != nil {
+			recordProbeSpecialExitRefreshError(nodeID, sourceHash, result.source.ID, result.err)
+			if firstFailure == nil {
+				failure := result
+				firstFailure = &failure
+			}
+			continue
+		}
+		refreshedSourceIDs = append(refreshedSourceIDs, result.source.ID)
+		merged = append(merged, result.proxies...)
+	}
+	if firstFailure != nil {
+		return nil, fmt.Errorf("subscription source %q refresh failed: %w", firstFailure.source.Name, firstFailure.err)
+	}
+	proxies, err := normalizeProbeSpecialExitProxies(merged)
 	if err != nil {
-		recordProbeSpecialExitRefreshError(nodeID, sourceHash, err)
+		recordProbeSpecialExitRefreshError(nodeID, sourceHash, "", err)
+		return nil, fmt.Errorf("merged subscriptions are invalid: %w", err)
+	}
+	item, err = applyProbeSpecialExitSubscriptionRefreshSources(nodeID, sourceHash, proxies, refreshedSourceIDs, time.Now().UTC())
+	if err != nil {
 		return nil, err
 	}
-	proxies, err := parseProbeSpecialExitSubscription(content)
-	if err != nil {
-		recordProbeSpecialExitRefreshError(nodeID, sourceHash, err)
-		return nil, err
-	}
-	item, err = applyProbeSpecialExitSubscriptionRefresh(nodeID, sourceHash, proxies, time.Now().UTC())
-	if err != nil {
-		return nil, err
-	}
-	return map[string]interface{}{"ok": true, "item": mngProbeSpecialExitView(item), "proxy_count": len(proxies), "sync": dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURL)}, nil
+	return map[string]interface{}{"ok": true, "item": mngProbeSpecialExitView(item), "proxy_count": len(proxies), "subscription_count": len(enabled), "sync": dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURL)}, nil
 }
 
 func applyProbeSpecialExitSubscriptionRefresh(nodeID, sourceHash string, proxies []map[string]interface{}, refreshedAt time.Time) (probeSpecialExitConfig, error) {
+	return applyProbeSpecialExitSubscriptionRefreshSources(nodeID, sourceHash, proxies, nil, refreshedAt)
+}
+
+func applyProbeSpecialExitSubscriptionRefreshSources(nodeID, sourceHash string, proxies []map[string]interface{}, refreshedSourceIDs []string, refreshedAt time.Time) (probeSpecialExitConfig, error) {
 	nodeID = normalizeProbeNodeID(nodeID)
 	var item probeSpecialExitConfig
 	err := ProbeRouteConfigStore.update(func(data *probeRouteConfigStoreData) error {
@@ -273,6 +342,16 @@ func applyProbeSpecialExitSubscriptionRefresh(nodeID, sourceHash string, proxies
 		}
 		item.LastSubscriptionRefreshAt = refreshedAt.Format(time.RFC3339)
 		item.LastSubscriptionRefreshErr = ""
+		refreshedSet := make(map[string]struct{}, len(refreshedSourceIDs))
+		for _, id := range refreshedSourceIDs {
+			refreshedSet[strings.TrimSpace(id)] = struct{}{}
+		}
+		for index := range item.Subscriptions {
+			if len(refreshedSet) == 0 || containsProbeSpecialExitSubscriptionID(refreshedSet, item.Subscriptions[index].ID) {
+				item.Subscriptions[index].LastSubscriptionRefreshAt = item.LastSubscriptionRefreshAt
+				item.Subscriptions[index].LastSubscriptionRefreshErr = ""
+			}
+		}
 		item.UpdatedAt = item.LastSubscriptionRefreshAt
 		item.SHA256 = probeSpecialExitSnapshotHash(item)
 		for index := range currentItems {
@@ -294,7 +373,7 @@ func applyProbeSpecialExitSubscriptionRefresh(nodeID, sourceHash string, proxies
 	return item, nil
 }
 
-func recordProbeSpecialExitRefreshError(nodeID, sourceHash string, refreshErr error) {
+func recordProbeSpecialExitRefreshError(nodeID, sourceHash, sourceID string, refreshErr error) {
 	if ProbeRouteConfigStore == nil {
 		return
 	}
@@ -302,11 +381,39 @@ func recordProbeSpecialExitRefreshError(nodeID, sourceHash string, refreshErr er
 		for index := range data.SpecialExits {
 			if data.SpecialExits[index].NodeID == nodeID && probeSpecialExitSubscriptionSourceHash(data.SpecialExits[index]) == strings.ToLower(strings.TrimSpace(sourceHash)) {
 				data.SpecialExits[index].LastSubscriptionRefreshErr = strings.TrimSpace(refreshErr.Error())
+				for sourceIndex := range data.SpecialExits[index].Subscriptions {
+					if strings.TrimSpace(sourceID) == "" || data.SpecialExits[index].Subscriptions[sourceIndex].ID == strings.TrimSpace(sourceID) {
+						data.SpecialExits[index].Subscriptions[sourceIndex].LastSubscriptionRefreshErr = strings.TrimSpace(refreshErr.Error())
+					}
+				}
 				break
 			}
 		}
 		return nil
 	})
+}
+
+func containsProbeSpecialExitSubscriptionID(items map[string]struct{}, id string) bool {
+	_, ok := items[strings.TrimSpace(id)]
+	return ok
+}
+
+func probeSpecialExitHasConfiguredSubscription(item probeSpecialExitConfig) bool {
+	for _, source := range item.Subscriptions {
+		if strings.TrimSpace(source.URL) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func probeSpecialExitHasSubscriptionHeaders(item probeSpecialExitConfig) bool {
+	for _, source := range item.Subscriptions {
+		if len(source.Headers) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func parseProbeSpecialExitSubscription(content []byte) ([]map[string]interface{}, error) {

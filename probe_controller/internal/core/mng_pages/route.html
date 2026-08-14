@@ -90,7 +90,7 @@
     .name-input { min-width:220px; width:100%; box-sizing:border-box; }
     .rule-editor { min-width:360px; }
     .route-rule-actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
-    .special-exit-layout { display:grid; grid-template-columns:minmax(0, 2fr) minmax(320px, 1fr); gap:12px; }
+    .special-exit-layout { display:grid; grid-template-columns:minmax(0, 1fr); gap:12px; }
     .special-exit-layout textarea { min-height:88px; }
     .special-exit-rule-grid { display:grid; grid-template-columns:minmax(160px, 1fr) 132px minmax(150px, 1fr) 112px 130px; gap:8px; align-items:start; }
     .special-exit-rule-grid > * { min-width:0; width:100%; box-sizing:border-box; }
@@ -98,8 +98,15 @@
     .special-exit-rule-actions { display:flex; justify-content:flex-end; }
     .special-exit-status-list { display:grid; gap:8px; margin-top:10px; }
     .special-exit-status-item { border-top:1px solid #30363d; padding-top:8px; overflow-wrap:anywhere; }
-    @media (max-width: 1080px) { .special-exit-layout { grid-template-columns:1fr; } }
-    @media (max-width: 820px) { .special-exit-rule-grid { grid-template-columns:1fr; } .special-exit-rule-entries { grid-column:auto; } }
+    .special-exit-subscriptions { display:grid; gap:10px; margin-top:10px; }
+    .special-exit-subscription { border:1px solid #30363d; border-radius:8px; padding:10px; background:#0d1117; }
+    .special-exit-subscription-grid { display:grid; grid-template-columns:minmax(140px, 1fr) 110px minmax(220px, 2fr); gap:8px; align-items:start; }
+    .special-exit-subscription-grid > * { min-width:0; width:100%; box-sizing:border-box; }
+    .special-exit-subscription-headers { grid-column:1 / 3; min-height:72px !important; }
+    .special-exit-subscription-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; }
+    .special-exit-subscription-actions label { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
+    .special-exit-subscription-actions input[type="checkbox"] { min-width:0; width:16px; height:16px; margin:0; accent-color:#2ea043; }
+    @media (max-width: 820px) { .special-exit-rule-grid, .special-exit-subscription-grid { grid-template-columns:1fr; } .special-exit-rule-entries, .special-exit-subscription-headers { grid-column:auto; } }
     @media (max-width: 620px) {
       .box-title.filterable { align-items:flex-start; flex-direction:column; }
       .filter-control { width:100%; margin-left:0; }
@@ -230,6 +237,17 @@
         <div class="special-exit-layout">
           <div>
             <div class="box" style="margin-bottom:12px;">
+              <div class="box-title"><span>运行状态</span></div>
+              <div id="special-exit-status-list" class="special-exit-status-list"></div>
+            </div>
+            <div class="box" style="margin-bottom:12px;">
+              <div class="box-title"><span>聚合路由规则</span></div>
+              <textarea id="special-exit-managed-rule" class="mono" readonly></textarea>
+            </div>
+          </div>
+          <div>
+            <div class="box" style="margin-bottom:12px;">
+              <div class="box-title"><span>基础配置</span></div>
               <div class="config-grid">
                 <label for="special-exit-node">特殊探针</label>
                 <select id="special-exit-node"></select>
@@ -242,27 +260,17 @@
                   <select id="special-exit-default-action" class="small"><option value="direct">直连</option><option value="reject">拒绝</option><option value="proxy">代理</option><option value="group">策略组</option><option value="node">节点</option></select>
                   <input id="special-exit-default-target" type="text" placeholder="目标节点或策略组" autocomplete="off" />
                 </div>
-                <label for="special-exit-subscription-url">Clash 订阅</label>
-                <input id="special-exit-subscription-url" class="wide mono" type="password" placeholder="HTTPS URL" autocomplete="new-password" />
-                <label for="special-exit-subscription-headers">订阅请求头</label>
-                <textarea id="special-exit-subscription-headers" class="mono" placeholder='{"Authorization":"Bearer ..."}'></textarea>
                 <label for="special-exit-clear-subscription">清除订阅凭据</label>
                 <input id="special-exit-clear-subscription" type="checkbox" />
               </div>
             </div>
-            <div class="box">
+            <div class="box" style="margin-top:12px;">
+              <div class="box-title"><span>Clash 订阅源</span><button id="btn-special-exit-subscription-add" class="btn" type="button">添加订阅</button></div>
+              <div id="special-exit-subscriptions" class="special-exit-subscriptions"></div>
+            </div>
+            <div class="box" style="margin-top:12px;">
               <div class="box-title"><span>二次分流规则</span><button id="btn-special-exit-rule-add" class="btn" type="button">添加规则</button></div>
               <div id="special-exit-rules" class="special-exit-status-list"></div>
-            </div>
-          </div>
-          <div>
-            <div class="box" style="margin-bottom:12px;">
-              <div class="box-title"><span>运行状态</span></div>
-              <div id="special-exit-status-list" class="special-exit-status-list"></div>
-            </div>
-            <div class="box" style="margin-bottom:12px;">
-              <div class="box-title"><span>聚合路由规则</span></div>
-              <textarea id="special-exit-managed-rule" class="mono" readonly></textarea>
             </div>
           </div>
         </div>
@@ -556,9 +564,25 @@
     function blankSpecialExitDraft(nodeID) {
       return {
         node_id: normalizeNodeID(nodeID), name: '', enabled: true,
-        default_action: 'direct', default_target: '', subscription_url: '',
-        subscription_headers: {}, clear_subscription: false, rules: [],
+        default_action: 'direct', default_target: '', subscriptions: [],
+        clear_subscription: false, rules: [],
       };
+    }
+
+    function editableSpecialExitSubscriptions(saved, current) {
+      const draftsByID = new Map((Array.isArray(current) ? current : []).map((item) => [String(item.id || ''), item]));
+      return (Array.isArray(saved) ? saved : []).map((item, index) => {
+        const existing = draftsByID.get(String(item.id || '')) || {};
+        return {
+          id: String(item.id || `subscription-${index + 1}`),
+          name: String(existing.name || item.name || `订阅 ${index + 1}`),
+          enabled: existing.enabled === undefined ? item.enabled !== false : existing.enabled !== false,
+          url: String(existing.url || ''), headers: existing.headers || {}, clear_headers: !!existing.clear_headers,
+          configured: item.configured === true, headers_configured: item.headers_configured === true,
+          last_subscription_refresh_at: String(item.last_subscription_refresh_at || ''),
+          last_subscription_refresh_error: String(item.last_subscription_refresh_error || ''),
+        };
+      });
     }
 
     function currentSpecialExitDraft() {
@@ -567,7 +591,7 @@
       if (!state.specialExitDrafts[nodeID]) {
         const saved = state.specialExits.find((item) => normalizeNodeID(item.node_id) === nodeID);
         state.specialExitDrafts[nodeID] = saved
-          ? { ...blankSpecialExitDraft(nodeID), ...JSON.parse(JSON.stringify(saved)), subscription_url: '', subscription_headers: {}, clear_subscription: false }
+          ? { ...blankSpecialExitDraft(nodeID), ...JSON.parse(JSON.stringify(saved)), subscriptions: editableSpecialExitSubscriptions(saved.subscriptions, []), clear_subscription: false }
           : blankSpecialExitDraft(nodeID);
       }
       return state.specialExitDrafts[nodeID];
@@ -590,8 +614,7 @@
         const current = state.specialExitDrafts[nodeID] || {};
         state.specialExitDrafts[nodeID] = {
           ...blankSpecialExitDraft(nodeID), ...JSON.parse(JSON.stringify(saved)),
-          subscription_url: String(current.subscription_url || ''),
-          subscription_headers: current.subscription_headers || {},
+          subscriptions: editableSpecialExitSubscriptions(saved.subscriptions, current.subscriptions),
           clear_subscription: !!current.clear_subscription,
         };
       });
@@ -607,7 +630,7 @@
         : '<option value="">暂无特殊探针</option>';
       nodeSelect.value = normalizeNodeID(state.selectedSpecialExitNodeID);
       const draft = currentSpecialExitDraft();
-      const controls = ['special-exit-name', 'special-exit-enabled', 'special-exit-default-action', 'special-exit-default-target', 'special-exit-subscription-url', 'special-exit-subscription-headers', 'special-exit-clear-subscription'];
+      const controls = ['special-exit-name', 'special-exit-enabled', 'special-exit-default-action', 'special-exit-default-target', 'special-exit-clear-subscription'];
       controls.forEach((id) => { document.getElementById(id).disabled = !draft; });
       document.getElementById('btn-special-exit-save').disabled = !draft;
       document.getElementById('btn-special-exit-subscription').disabled = !draft || !state.specialExits.some((item) => normalizeNodeID(item.node_id) === normalizeNodeID(draft.node_id));
@@ -618,15 +641,12 @@
         document.getElementById('special-exit-default-action').value = String(draft.default_action || 'direct');
         document.getElementById('special-exit-default-target').value = String(draft.default_target || '');
         document.getElementById('special-exit-default-target').disabled = draft.default_action === 'direct' || draft.default_action === 'reject';
-        document.getElementById('special-exit-subscription-url').value = String(draft.subscription_url || '');
-        const headers = draft.subscription_headers && Object.keys(draft.subscription_headers).length ? JSON.stringify(draft.subscription_headers, null, 2) : '';
-        document.getElementById('special-exit-subscription-headers').value = headers;
         document.getElementById('special-exit-clear-subscription').checked = !!draft.clear_subscription;
       } else {
         document.getElementById('special-exit-name').value = '';
-        document.getElementById('special-exit-subscription-url').value = '';
-        document.getElementById('special-exit-subscription-headers').value = '';
       }
+      document.getElementById('btn-special-exit-subscription-add').disabled = !draft;
+      renderSpecialExitSubscriptions(draft);
       renderSpecialExitRules(draft);
       renderSpecialExitStatus();
       const managed = state.specialExitManagedRules.find((item) => normalizeNodeID(item.exit_node_id) === normalizeNodeID(state.selectedSpecialExitNodeID));
@@ -634,6 +654,88 @@
       const configured = state.specialExits.length;
       const ready = state.specialExitStatuses.filter((item) => item.online && item.exit_ready && item.healthy && item.build_kind === 'mihomo_exit').length;
       document.getElementById('special-exit-summary').textContent = `已配置 ${configured}，就绪 ${ready}`;
+    }
+
+    function renderSpecialExitSubscriptions(draft) {
+      const host = document.getElementById('special-exit-subscriptions');
+      const subscriptions = draft && Array.isArray(draft.subscriptions) ? draft.subscriptions : [];
+      if (!subscriptions.length) {
+        host.innerHTML = '<div class="muted small">暂无订阅源。请求头为可选项，公开订阅只需填写 HTTPS URL。</div>';
+        return;
+      }
+      host.innerHTML = subscriptions.map((source, index) => {
+        const configured = source.configured ? '已保存URL' : '未保存URL';
+        const headers = source.headers_configured ? '已保存请求头' : '无请求头';
+        const refresh = source.last_subscription_refresh_error
+          ? `<span class="route-error">${escapeHTML(source.last_subscription_refresh_error)}</span>`
+          : escapeHTML(source.last_subscription_refresh_at || '未刷新');
+        const headerText = source.headers && Object.keys(source.headers).length ? JSON.stringify(source.headers, null, 2) : '';
+        return `<div class="special-exit-subscription" data-special-exit-subscription="${index}">
+          <div class="special-exit-subscription-grid">
+            <input data-se-subscription-name="${index}" type="text" value="${escapeHTML(source.name || '')}" placeholder="订阅名称" />
+            <select data-se-subscription-enabled="${index}"><option value="true" ${source.enabled === false ? '' : 'selected'}>启用</option><option value="false" ${source.enabled === false ? 'selected' : ''}>禁用</option></select>
+            <input data-se-subscription-url="${index}" class="mono" type="password" value="${escapeHTML(source.url || '')}" placeholder="HTTPS URL（留空保留已保存值）" autocomplete="new-password" />
+            <textarea data-se-subscription-headers="${index}" class="mono special-exit-subscription-headers" placeholder='可选请求头 JSON，例如 {"Authorization":"Bearer ..."}'>${escapeHTML(headerText)}</textarea>
+            <div class="special-exit-subscription-actions">
+              <label class="small"><input data-se-subscription-clear-headers="${index}" type="checkbox" ${source.clear_headers ? 'checked' : ''} /> 清除请求头</label>
+              <button class="btn danger" data-se-subscription-remove="${index}" type="button">删除</button>
+            </div>
+          </div>
+          <div class="small muted" style="margin-top:8px;">${configured} · ${headers} · ${refresh}</div>
+        </div>`;
+      }).join('');
+      bindSpecialExitSubscriptionEvents();
+    }
+
+    function bindSpecialExitSubscriptionEvents() {
+      const draft = currentSpecialExitDraft();
+      if (!draft) return;
+      document.querySelectorAll('[data-se-subscription-name]').forEach((element) => element.addEventListener('input', () => {
+        const index = Number(element.dataset.seSubscriptionName);
+        if (draft.subscriptions[index]) draft.subscriptions[index].name = String(element.value || '');
+      }));
+      document.querySelectorAll('[data-se-subscription-enabled]').forEach((element) => element.addEventListener('change', () => {
+        const index = Number(element.dataset.seSubscriptionEnabled);
+        if (draft.subscriptions[index]) draft.subscriptions[index].enabled = element.value !== 'false';
+      }));
+      document.querySelectorAll('[data-se-subscription-url]').forEach((element) => element.addEventListener('input', () => {
+        const index = Number(element.dataset.seSubscriptionUrl);
+        if (draft.subscriptions[index]) draft.subscriptions[index].url = String(element.value || '').trim();
+      }));
+      document.querySelectorAll('[data-se-subscription-headers]').forEach((element) => element.addEventListener('input', () => {
+        const index = Number(element.dataset.seSubscriptionHeaders);
+        if (!draft.subscriptions[index]) return;
+        const value = String(element.value || '').trim();
+        try {
+          const headers = value ? JSON.parse(value) : {};
+          if (!headers || Array.isArray(headers) || typeof headers !== 'object') throw new Error();
+          draft.subscriptions[index].headers = headers;
+          element.setCustomValidity('');
+        } catch (_) {
+          draft.subscriptions[index].headers = null;
+          element.setCustomValidity('请求头必须是 JSON 对象');
+        }
+      }));
+      document.querySelectorAll('[data-se-subscription-clear-headers]').forEach((element) => element.addEventListener('change', () => {
+        const index = Number(element.dataset.seSubscriptionClearHeaders);
+        if (draft.subscriptions[index]) draft.subscriptions[index].clear_headers = !!element.checked;
+      }));
+      document.querySelectorAll('[data-se-subscription-remove]').forEach((element) => element.addEventListener('click', () => {
+        const index = Number(element.dataset.seSubscriptionRemove);
+        if (index >= 0 && index < draft.subscriptions.length) draft.subscriptions.splice(index, 1);
+        renderSpecialExitSubscriptions(draft);
+      }));
+    }
+
+    function addSpecialExitSubscription() {
+      const draft = currentSpecialExitDraft();
+      if (!draft) return;
+      const sequence = draft.subscriptions.length + 1;
+      const existingIDs = new Set(draft.subscriptions.map((item) => String(item.id || '')));
+      let id = '';
+      do { id = `subscription-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`; } while (existingIDs.has(id));
+      draft.subscriptions.push({ id, name: `订阅 ${sequence}`, enabled: true, url: '', headers: {}, clear_headers: false, configured: false, headers_configured: false });
+      renderSpecialExitSubscriptions(draft);
     }
 
     function renderSpecialExitRules(draft) {
@@ -721,10 +823,9 @@
       draft.enabled = document.getElementById('special-exit-enabled').value !== 'false';
       draft.default_action = String(document.getElementById('special-exit-default-action').value || 'direct');
       draft.default_target = String(document.getElementById('special-exit-default-target').value || '').trim();
-      draft.subscription_url = String(document.getElementById('special-exit-subscription-url').value || '').trim();
-      const headerText = String(document.getElementById('special-exit-subscription-headers').value || '').trim();
-      try { draft.subscription_headers = headerText ? JSON.parse(headerText) : {}; } catch (_) { throw new Error('订阅请求头必须是 JSON 对象'); }
-      if (!draft.subscription_headers || Array.isArray(draft.subscription_headers) || typeof draft.subscription_headers !== 'object') throw new Error('订阅请求头必须是 JSON 对象');
+      for (const [index, source] of (draft.subscriptions || []).entries()) {
+        if (!source.headers || Array.isArray(source.headers) || typeof source.headers !== 'object') throw new Error(`订阅 ${index + 1} 的请求头必须是 JSON 对象`);
+      }
       draft.clear_subscription = document.getElementById('special-exit-clear-subscription').checked;
       return draft;
     }
@@ -732,7 +833,7 @@
     async function saveSpecialExit() {
       const draft = captureSpecialExitDraft();
       const result = await requestJSON('/mng/api/route/special_exits', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ item: draft, clear_subscription: draft.clear_subscription }) });
-      state.specialExitDrafts[draft.node_id] = { ...blankSpecialExitDraft(draft.node_id), ...JSON.parse(JSON.stringify(result.item || draft)), subscription_url: '', subscription_headers: {}, clear_subscription: false };
+      state.specialExitDrafts[draft.node_id] = { ...blankSpecialExitDraft(draft.node_id), ...JSON.parse(JSON.stringify(result.item || draft)), subscriptions: editableSpecialExitSubscriptions((result.item || draft).subscriptions, []), clear_subscription: false };
       await Promise.all([loadVirtualRouter(true), loadRouteRules(true), loadSpecialExits(true)]);
       setStatus(`二次分流配置已保存：${nodeLabel(draft.node_id)}`, 'ok');
     }
@@ -742,7 +843,7 @@
       if (!draft) throw new Error('请选择特殊探针');
       const result = await requestJSON('/mng/api/route/special_exits/subscription/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ node_id: draft.node_id }) });
       await loadSpecialExits(true);
-      setStatus(`订阅已刷新：${Number(result.proxy_count || 0)} 个节点`, 'ok');
+      setStatus(`订阅已刷新：${Number(result.subscription_count || 0)} 个配置，${Number(result.proxy_count || 0)} 个节点`, 'ok');
     }
 
     async function deleteSpecialExit() {
@@ -1839,6 +1940,7 @@
         renderSpecialExits();
       });
       document.getElementById('btn-special-exit-rule-add').addEventListener('click', addSpecialExitRule);
+      document.getElementById('btn-special-exit-subscription-add').addEventListener('click', addSpecialExitSubscription);
       document.getElementById('btn-special-exit-save').addEventListener('click', () => {
         saveSpecialExit().catch((err) => setStatus(`保存二次分流失败：${err.message || err}`, 'err'));
       });

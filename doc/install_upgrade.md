@@ -2,7 +2,7 @@
 
 ## Mihomo 特殊出口探针
 
-特殊出口探针从普通 `probe_node` 同一源码以 `mihomo_exit` tag构建，发布物名为 `cloudhelper-probe-exit-node-linux-amd64`。安装前先在主控 `/mng/probe` 的探针列表选择“Mihomo 出口探针”并创建；创建后再到 `/mng/route` 的“二次分流”Tab保存该探针的订阅和规则配置。
+特殊出口探针从普通 `probe_node` 同一源码以 `mihomo_exit` tag构建，发布物名为 `cloudhelper-probe-exit-node-linux-amd64`。安装前先在主控 `/mng/probe` 的探针列表选择“Mihomo 出口探针”并创建；创建后再到 `/mng/route` 的“二次分流”Tab保存该探针的多订阅源和规则配置。每个订阅源的请求头均为可选项；刷新只有在全部启用源成功下载、解析和合并后才替换现有节点快照。
 
 ### 原生安装
 

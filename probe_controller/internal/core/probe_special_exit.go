@@ -19,14 +19,17 @@ const (
 	probeSpecialExitMaxCount             = 128
 	probeSpecialExitMaxRules             = 2048
 	probeSpecialExitMaxProxies           = 4096
+	probeSpecialExitMaxSubscriptions     = 32
 	probeSpecialExitMaxSubscriptionURL   = 4096
 	probeSpecialExitMaxSubscriptionHeads = 32
 )
 
 type probeSpecialExitConfig struct {
-	NodeID                     string                   `json:"node_id"`
-	Name                       string                   `json:"name"`
-	Enabled                    bool                     `json:"enabled"`
+	NodeID        string                         `json:"node_id"`
+	Name          string                         `json:"name"`
+	Enabled       bool                           `json:"enabled"`
+	Subscriptions []probeSpecialExitSubscription `json:"subscriptions,omitempty"`
+	// Legacy single-source fields are accepted during migration and omitted from normalized storage.
 	SubscriptionURL            string                   `json:"subscription_url,omitempty"`
 	SubscriptionHeaders        map[string]string        `json:"subscription_headers,omitempty"`
 	DefaultAction              string                   `json:"default_action"`
@@ -38,6 +41,17 @@ type probeSpecialExitConfig struct {
 	LastSubscriptionRefreshAt  string                   `json:"last_subscription_refresh_at,omitempty"`
 	LastSubscriptionRefreshErr string                   `json:"last_subscription_refresh_error,omitempty"`
 	UpdatedAt                  string                   `json:"updated_at,omitempty"`
+}
+
+type probeSpecialExitSubscription struct {
+	ID                         string            `json:"id"`
+	Name                       string            `json:"name"`
+	Enabled                    bool              `json:"enabled"`
+	URL                        string            `json:"url,omitempty"`
+	Headers                    map[string]string `json:"headers,omitempty"`
+	ClearHeaders               bool              `json:"clear_headers,omitempty"`
+	LastSubscriptionRefreshAt  string            `json:"last_subscription_refresh_at,omitempty"`
+	LastSubscriptionRefreshErr string            `json:"last_subscription_refresh_error,omitempty"`
 }
 
 type probeSpecialExitRule struct {
@@ -121,16 +135,27 @@ func normalizeProbeSpecialExitConfig(raw probeSpecialExitConfig, previous *probe
 	if len(name) > 160 {
 		return probeSpecialExitConfig{}, fmt.Errorf("name exceeds 160 characters")
 	}
-	url := strings.TrimSpace(raw.SubscriptionURL)
-	if url == "" && previous != nil {
-		url = previous.SubscriptionURL
+	previousSubscriptions := []probeSpecialExitSubscription(nil)
+	if previous != nil {
+		previousSubscriptions = previous.Subscriptions
+		if len(previousSubscriptions) == 0 && (strings.TrimSpace(previous.SubscriptionURL) != "" || len(previous.SubscriptionHeaders) > 0) {
+			previousSubscriptions = []probeSpecialExitSubscription{{ID: "subscription-1", Name: "订阅 1", Enabled: true, URL: previous.SubscriptionURL, Headers: previous.SubscriptionHeaders}}
+		}
 	}
-	if len(url) > probeSpecialExitMaxSubscriptionURL {
-		return probeSpecialExitConfig{}, fmt.Errorf("subscription_url is too long")
+	rawSubscriptions := raw.Subscriptions
+	if rawSubscriptions == nil {
+		switch {
+		case strings.TrimSpace(raw.SubscriptionURL) != "" || len(raw.SubscriptionHeaders) > 0:
+			rawSubscriptions = []probeSpecialExitSubscription{{ID: "subscription-1", Name: "订阅 1", Enabled: true, URL: raw.SubscriptionURL, Headers: raw.SubscriptionHeaders}}
+		case previous != nil:
+			rawSubscriptions = append([]probeSpecialExitSubscription(nil), previousSubscriptions...)
+		default:
+			rawSubscriptions = []probeSpecialExitSubscription{}
+		}
 	}
-	headers := normalizeProbeSpecialExitHeaders(raw.SubscriptionHeaders)
-	if len(headers) == 0 && previous != nil {
-		headers = normalizeProbeSpecialExitHeaders(previous.SubscriptionHeaders)
+	subscriptions, err := normalizeProbeSpecialExitSubscriptions(rawSubscriptions, previousSubscriptions)
+	if err != nil {
+		return probeSpecialExitConfig{}, err
 	}
 	defaultAction, err := normalizeProbeSpecialExitAction(raw.DefaultAction, raw.DefaultTarget)
 	if err != nil {
@@ -156,8 +181,7 @@ func normalizeProbeSpecialExitConfig(raw probeSpecialExitConfig, previous *probe
 		NodeID:                     nodeID,
 		Name:                       name,
 		Enabled:                    raw.Enabled,
-		SubscriptionURL:            url,
-		SubscriptionHeaders:        headers,
+		Subscriptions:              subscriptions,
 		DefaultAction:              defaultAction,
 		DefaultTarget:              defaultTarget,
 		Rules:                      rules,
@@ -172,6 +196,66 @@ func normalizeProbeSpecialExitConfig(raw probeSpecialExitConfig, previous *probe
 	}
 	item.SHA256 = probeSpecialExitSnapshotHash(item)
 	return item, nil
+}
+
+func normalizeProbeSpecialExitSubscriptions(input, previous []probeSpecialExitSubscription) ([]probeSpecialExitSubscription, error) {
+	if len(input) > probeSpecialExitMaxSubscriptions {
+		return nil, fmt.Errorf("subscriptions exceeded limit (%d)", probeSpecialExitMaxSubscriptions)
+	}
+	previousByID := make(map[string]probeSpecialExitSubscription, len(previous))
+	for _, item := range previous {
+		previousByID[strings.TrimSpace(item.ID)] = item
+	}
+	out := make([]probeSpecialExitSubscription, 0, len(input))
+	seen := make(map[string]struct{}, len(input))
+	for index, raw := range input {
+		id := strings.TrimSpace(raw.ID)
+		if id == "" {
+			id = "subscription-" + strconv.Itoa(index+1)
+		}
+		if len(id) > 128 || strings.ContainsAny(id, "\r\n") {
+			return nil, fmt.Errorf("subscriptions[%d].id is invalid", index)
+		}
+		if _, exists := seen[id]; exists {
+			return nil, fmt.Errorf("subscriptions[%d].id is duplicated", index)
+		}
+		seen[id] = struct{}{}
+		prior, hadPrior := previousByID[id]
+		name := strings.TrimSpace(raw.Name)
+		if name == "" && hadPrior {
+			name = strings.TrimSpace(prior.Name)
+		}
+		if name == "" {
+			name = "订阅 " + strconv.Itoa(index+1)
+		}
+		if len(name) > 160 {
+			return nil, fmt.Errorf("subscriptions[%d].name exceeds 160 characters", index)
+		}
+		url := strings.TrimSpace(raw.URL)
+		if url == "" && hadPrior {
+			url = strings.TrimSpace(prior.URL)
+		}
+		if len(url) > probeSpecialExitMaxSubscriptionURL {
+			return nil, fmt.Errorf("subscriptions[%d].url is too long", index)
+		}
+		headers := normalizeProbeSpecialExitHeaders(raw.Headers)
+		if raw.ClearHeaders {
+			headers = map[string]string{}
+		} else if len(headers) == 0 && hadPrior {
+			headers = normalizeProbeSpecialExitHeaders(prior.Headers)
+		}
+		lastRefreshAt := strings.TrimSpace(raw.LastSubscriptionRefreshAt)
+		lastRefreshErr := strings.TrimSpace(raw.LastSubscriptionRefreshErr)
+		if hadPrior {
+			lastRefreshAt = prior.LastSubscriptionRefreshAt
+			lastRefreshErr = prior.LastSubscriptionRefreshErr
+		}
+		out = append(out, probeSpecialExitSubscription{
+			ID: id, Name: name, Enabled: raw.Enabled, URL: url, Headers: headers,
+			LastSubscriptionRefreshAt: lastRefreshAt, LastSubscriptionRefreshErr: lastRefreshErr,
+		})
+	}
+	return out, nil
 }
 
 func normalizeProbeSpecialExitHeaders(input map[string]string) map[string]string {
@@ -397,10 +481,13 @@ func probeSpecialExitSemanticHash(item probeSpecialExitConfig) string {
 }
 
 func probeSpecialExitSubscriptionSourceHash(item probeSpecialExitConfig) string {
-	value := struct {
-		URL     string            `json:"url"`
-		Headers map[string]string `json:"headers"`
-	}{URL: strings.TrimSpace(item.SubscriptionURL), Headers: normalizeProbeSpecialExitHeaders(item.SubscriptionHeaders)}
+	value := make([]probeSpecialExitSubscription, 0, len(item.Subscriptions))
+	for _, source := range item.Subscriptions {
+		value = append(value, probeSpecialExitSubscription{
+			ID: strings.TrimSpace(source.ID), Name: strings.TrimSpace(source.Name), Enabled: source.Enabled,
+			URL: strings.TrimSpace(source.URL), Headers: normalizeProbeSpecialExitHeaders(source.Headers),
+		})
+	}
 	encoded, _ := json.Marshal(value)
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:])
