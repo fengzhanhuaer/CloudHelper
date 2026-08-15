@@ -48,11 +48,28 @@ type probeSubscriptionFetchResultMessage struct {
 	Timestamp     string `json:"timestamp,omitempty"`
 }
 
+type probeControllerSubscriptionFetchRequestError struct {
+	message string
+}
+
+func (e *probeControllerSubscriptionFetchRequestError) Error() string {
+	return e.message
+}
+
 var probeSubscriptionFetchRequestSeq atomic.Uint64
 
 var probeControllerSubscriptionFetchLookupIP = net.DefaultResolver.LookupIPAddr
 var probeControllerSubscriptionFetchDialContext = (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+var probeControllerSubscriptionFetchHTTPDo = func(client *http.Client, request *http.Request) (*http.Response, error) {
+	return client.Do(request)
+}
 var probeControllerSubscriptionFetchDo = doProbeControllerSubscriptionFetch
+
+var probeControllerSubscriptionFetchUserAgents = []string{
+	probeSubscriptionFetchUserAgent,
+	"mihomo/1.19.29",
+	"Clash.Meta",
+}
 
 var probeSubscriptionFetchWaiters = struct {
 	mu   sync.Mutex
@@ -129,7 +146,7 @@ func fetchProbeSpecialExitSubscriptionFromController(ctx context.Context, rawURL
 			if fetchCtx.Err() != nil {
 				return nil, fmt.Errorf("subscription fetch timed out or was canceled")
 			}
-			return nil, fmt.Errorf("subscription fetch failed")
+			return nil, classifyProbeControllerSubscriptionFetchRequestError(err)
 		}
 		if probeSubscriptionRedirectStatus(response.StatusCode) {
 			location := strings.TrimSpace(response.Header.Get("Location"))
@@ -149,6 +166,9 @@ func fetchProbeSpecialExitSubscriptionFromController(ctx context.Context, rawURL
 		}
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
 			_ = response.Body.Close()
+			if response.StatusCode == http.StatusForbidden {
+				return nil, fmt.Errorf("subscription returned HTTP 403 after Clash/Mihomo client retries; the fetch egress may be blocked by the provider")
+			}
 			return nil, fmt.Errorf("subscription returned HTTP %d", response.StatusCode)
 		}
 		content, readErr := io.ReadAll(io.LimitReader(response.Body, probeSpecialExitSubscriptionMaxBytes+1))
@@ -171,21 +191,104 @@ func doProbeControllerSubscriptionFetch(ctx context.Context, target *url.URL, ip
 	if port == "" {
 		port = "443"
 	}
+	dialAddresses := probeControllerSubscriptionFetchDialAddresses(ips, port)
+	if len(dialAddresses) == 0 {
+		return nil, &probeControllerSubscriptionFetchRequestError{message: "subscription has no usable public dial address"}
+	}
 	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: target.Hostname()}, Proxy: nil}
 	transport.DialContext = func(dialCtx context.Context, network, _ string) (net.Conn, error) {
-		return probeControllerSubscriptionFetchDialContext(dialCtx, network, net.JoinHostPort(ips[0].String(), port))
+		var lastErr error
+		for _, address := range dialAddresses {
+			conn, dialErr := probeControllerSubscriptionFetchDialContext(dialCtx, network, address)
+			if dialErr == nil {
+				return conn, nil
+			}
+			lastErr = dialErr
+		}
+		return nil, lastErr
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
-	if err != nil {
-		transport.CloseIdleConnections()
-		return nil, fmt.Errorf("subscription request is invalid")
-	}
-	request.Header.Set("User-Agent", probeSubscriptionFetchUserAgent)
-	request.Header.Set("Accept", probeSubscriptionFetchAccept)
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	response, err := client.Do(request)
-	transport.CloseIdleConnections()
-	return response, err
+	defer transport.CloseIdleConnections()
+	for index, userAgent := range probeControllerSubscriptionFetchUserAgents {
+		request, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+		if requestErr != nil {
+			return nil, &probeControllerSubscriptionFetchRequestError{message: "subscription request is invalid"}
+		}
+		request.Header.Set("User-Agent", userAgent)
+		request.Header.Set("Accept", probeSubscriptionFetchAccept)
+		response, requestErr := probeControllerSubscriptionFetchHTTPDo(client, request)
+		if requestErr != nil {
+			return nil, classifyProbeControllerSubscriptionFetchRequestError(requestErr)
+		}
+		if response.StatusCode != http.StatusForbidden || index == len(probeControllerSubscriptionFetchUserAgents)-1 {
+			return response, nil
+		}
+		_ = response.Body.Close()
+	}
+	return nil, &probeControllerSubscriptionFetchRequestError{message: "subscription request failed"}
+}
+
+func probeControllerSubscriptionFetchDialAddresses(ips []netip.Addr, port string) []string {
+	ordered := make([]netip.Addr, 0, len(ips))
+	for _, address := range ips {
+		if address.Is4() {
+			ordered = append(ordered, address)
+		}
+	}
+	for _, address := range ips {
+		if !address.Is4() {
+			ordered = append(ordered, address)
+		}
+	}
+	seen := make(map[string]struct{}, len(ordered))
+	result := make([]string, 0, len(ordered))
+	for _, address := range ordered {
+		if !address.IsValid() {
+			continue
+		}
+		dialAddress := net.JoinHostPort(address.String(), port)
+		if _, ok := seen[dialAddress]; ok {
+			continue
+		}
+		seen[dialAddress] = struct{}{}
+		result = append(result, dialAddress)
+	}
+	return result
+}
+
+func classifyProbeControllerSubscriptionFetchRequestError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var safeErr *probeControllerSubscriptionFetchRequestError
+	if errors.As(err, &safeErr) {
+		return safeErr
+	}
+	if errors.Is(err, context.Canceled) {
+		return &probeControllerSubscriptionFetchRequestError{message: "subscription request was canceled"}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return &probeControllerSubscriptionFetchRequestError{message: "subscription network request timed out"}
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return &probeControllerSubscriptionFetchRequestError{message: "subscription network request timed out"}
+	}
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "connection refused"):
+		return &probeControllerSubscriptionFetchRequestError{message: "subscription TCP connection was refused"}
+	case strings.Contains(message, "network is unreachable"), strings.Contains(message, "no route to host"):
+		return &probeControllerSubscriptionFetchRequestError{message: "subscription network is unreachable"}
+	case strings.Contains(message, "certificate"), strings.Contains(message, "x509"):
+		return &probeControllerSubscriptionFetchRequestError{message: "subscription TLS certificate verification failed"}
+	case strings.Contains(message, "tls"), strings.Contains(message, "handshake"):
+		return &probeControllerSubscriptionFetchRequestError{message: "subscription TLS handshake failed"}
+	case strings.Contains(message, "connection reset"), strings.Contains(message, "forcibly closed"):
+		return &probeControllerSubscriptionFetchRequestError{message: "subscription connection was reset"}
+	default:
+		return &probeControllerSubscriptionFetchRequestError{message: "subscription network request failed"}
+	}
 }
 
 func validateProbeControllerSubscriptionFetchURL(ctx context.Context, raw string) (*url.URL, []netip.Addr, error) {

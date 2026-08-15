@@ -37,7 +37,7 @@
 - REQ-PEN-MIHOMO-EXIT-001-R17: 原路由规则是主路由匹配和二次分流匹配的唯一事实来源。原规则新增、删除、修改匹配条目、动作或出口探针时，主控必须确定性重编译受影响特殊出口快照并更新revision/hash；未配置二级选择的新规则默认DIRECT，已不再指向该特殊探针的旧选择必须忽略并在后续保存时移除。
 - REQ-PEN-MIHOMO-EXIT-001-R18: 保存或刷新特殊出口配置时，主控必须定向向当前特殊探针发送`route_config_sync`并在响应中返回准确的dispatched/offline/failed结果；探针成功应用后必须立即上报新的applied revision/hash，不得依赖最长60秒的周期上报。页面应等待并刷新同步结果，不能把刚保存后的旧上报直接显示为最终“配置未同步”。
 - REQ-PEN-MIHOMO-EXIT-001-R19: Clash订阅单独位于“Clash订阅”子Tab，订阅库不依赖当前探针选择并供所有特殊探针共用。每条Clash配置各自提供“提取节点”按钮，只原子刷新该订阅的节点并保留其他订阅结果；顶部不提供全局提取按钮。每个提取节点必须在主控保留其订阅源ID，节点按订阅分组，探针规则出口下拉框显示“订阅名称 / 节点名称”，保存值仍为原节点名且来源元数据不得进入Mihomo私有快照。特殊探针应通过本机受认证Mihomo API对被路由规则实际选中的非DIRECT节点去重探测，向主控上报连通性、延迟、错误和时间；选中探针的运行状态增加“出口连通性”磁贴展示这些结果。
-- REQ-PEN-MIHOMO-EXIT-001-R20: 每个全局Clash订阅可选一个“拉取探针”；不选择时表示用户显式要求主控直接拉取，选择后主控必须通过现有认证控制连接向该桌面探针下发一次性`subscription_fetch`命令，不得在所选探针失败时静默回退主控。主控和探针拉取均须执行HTTPS、合法端口、公开IP固定解析、禁代理、TLS、超时和8 MiB限制，并支持最多5次逐跳重新校验的HTTPS重定向；错误及日志不得包含订阅URL。探针结果须校验请求ID、节点身份、回传大小和SHA-256，再按来源指纹、内容格式、跨来源重名、last-known-good和定向同步规则原子提交。订阅URL仅保存在主控，并仅在选择探针时的一次性命令中发送，不进入特殊出口私有快照或探针磁盘。
+- REQ-PEN-MIHOMO-EXIT-001-R20: 每个全局Clash订阅可选一个“拉取探针”；不选择时表示用户显式要求主控直接拉取，选择后主控必须通过现有认证控制连接向该桌面探针下发一次性`subscription_fetch`命令，不得在所选探针失败时静默回退主控。主控和探针拉取均须执行HTTPS、合法端口、公开IP固定解析、禁代理、TLS、超时和8 MiB限制，并支持最多5次逐跳重新校验的HTTPS重定向；HTTP 403时只允许自动尝试内置Clash/Mihomo兼容请求标识，不提供手工请求头。探针本地VRoute TUN运行时，固定IPv4拨号前须先建立物理出口旁路，旁路失败时关闭该候选而非经TUN抓取；多IP应按IPv4优先逐个尝试。错误须区分超时、拒绝、不可达、TLS和HTTP状态，且错误及日志不得包含订阅URL。探针结果须校验请求ID、节点身份、回传大小和SHA-256，再按来源指纹、内容格式、跨来源重名、last-known-good和定向同步规则原子提交。订阅URL仅保存在主控，并仅在选择探针时的一次性命令中发送，不进入特殊出口私有快照或探针磁盘。
 - REQ-PEN-MIHOMO-EXIT-001-R21: `/mng/settings`、`/mng/probe`、`/mng/backup`、`/mng/notepad`、`/mng/controller-logs`、`/mng/route`、`/mng/cloudflare`和`/mng/tg`页头必须提供磁贴面板全部可进入页面的快捷入口，名称和路由与`/mng/panel`保持一致；每页仅当前入口须有可访问的选中态。快捷入口在宽屏填充页头中部，在390px移动端改为两列且不得遮挡原有标题、页面操作、“返回磁贴面板”和“退出登录”。
 
 #### 1.1.2 需求范围
@@ -77,7 +77,7 @@
 - AC-13: 管理API拒绝客户端提交`domains/entries/name/action/exit_node_id`等原规则字段、引用未分配规则或不存在代理节点；DIRECT无需代理节点。桌面及390px窄屏完成“在原路由规则选择特殊探针 -> 二次分流选择该探针 -> 为规则选择DIRECT/Clash节点 -> 保存”，且无横向溢出、控件重叠或控制台错误。
 - AC-14: Base64编码的`anytls://password@host:port/?sni=...&insecure=...#name`列表可提取为Mihomo `type=anytls`节点并保留密码、SNI、UDP和证书校验语义；明文AnyTLS列表同样可用；非法Base64、无节点及不支持协议均返回脱敏错误；Clash配置URL控件不是password类型，保存后重新加载仍只显示已配置状态而不回显URL。
 - AC-15: 明文或Base64 URI列表同时包含普通AnyTLS和`security=reality`或`pbk`节点时刷新成功，仅提交普通节点，响应返回准确的`skipped_proxy_count`；页面状态显示跳过数量。仅含Reality节点时返回明确且脱敏的无兼容节点错误，不更新revision或last-known-good快照。
-- AC-16: 未配置任何用户请求头时，订阅HTTP请求固定包含`User-Agent: clash.meta`和接受YAML的`Accept`；管理页面不存在请求设置、请求头JSON或清除请求头控件，保存请求仅提交订阅`id/name/enabled/url`。管理API收到旧`headers`或`clear_headers`字段时明确拒绝；标准YAML、Base64兜底、SSRF和原子刷新回归通过。
+- AC-16: 订阅HTTP请求首选`User-Agent: clash.meta`并固定包含接受YAML的`Accept`；仅在HTTP 403时按确定顺序尝试内置Mihomo/Clash Meta兼容标识。管理页面不存在请求设置、请求头JSON或清除请求头控件，保存请求仅提交订阅`id/name/enabled/url/fetch_node_id`。管理API收到旧`headers`或`clear_headers`字段时明确拒绝；标准YAML、Base64兜底、SSRF、物理出口旁路、403回退和原子刷新回归通过。
 - AC-17: 原路由规则的域名后缀、域名关键字、域名前缀和CIDR条目可编译为Mihomo规则；原规则匹配条目或归属变化后，受影响快照SHA变化且revision单调增加。删除/改派规则后页面不再显示旧绑定；新增分配规则默认DIRECT，不要求先提取代理节点。
 - AC-18: 特殊出口保存接口只向当前node_id下发同步；在线时响应`dispatched=1`，离线时`offline=1`。探针应用成功后触发一次即时状态报告，页面轮询到desired/applied revision与SHA一致后显示就绪；失败或超时保留可诊断状态和last_apply_error。
 - AC-19: 两个订阅各含不同节点时，全局订阅库每行提取按钮只替换对应订阅的节点，另一订阅节点及所有探针选择保持不变；失败保持该订阅last-known-good。两个特殊探针均能从同一管理响应选择任一全局节点，页面按订阅分组展示节点，规则选择和连通性磁贴均显示正确来源名称；探针写入载荷仍严格只有`route_rule_id/target`，私有快照只含当前探针实际选中的代理对象。特殊探针只探测当前规则实际选中的非DIRECT节点，Mihomo delay API成功/失败均形成脱敏报告；桌面和390px页面无溢出、重叠或控制台错误。
@@ -419,6 +419,7 @@ flowchart LR
 | TASK-PEN-021 | R20 | UNIT-PEN-04,05,20 | 控制端订阅模型/命令等待器/WS结果、`mng_pages/route.html`、探针下载器/控制消息、双端测试及本协作文档 | 修改 | 每源选择拉取探针；主控下发一次性抓取命令并校验结果；探针安全下载后回传，不回退主控抓取 |
 | TASK-PEN-022 | R21 | UNIT-PEN-05 | `mng_pages/route.html`、页面契约测试及本协作文档 | 修改 | 页头增加九个磁贴快捷入口并高亮当前页；桌面填充留白、移动两列；真实点击跳转和浏览器布局验证通过 |
 | TASK-PEN-023 | R20,R21 | UNIT-PEN-04,05,20 | 主控/探针订阅下载器、special-exit校验与调度、共享管理页渲染器、八个磁贴管理页模板/handler、双端测试及本协作文档 | 修改 | 空拉取探针保存并由主控安全下载；选中探针仍严格定向且支持安全重定向；下拉显示主控默认和探针在线状态；八个管理页共享九个入口且各自唯一高亮；双端全量和桌面/390px浏览器流程通过 |
+| TASK-PEN-024 | R16,R20 | UNIT-PEN-20 | 主控/探针订阅下载器、双端专项测试及本协作文档 | 修改 | 403仅自动回退内置Clash/Mihomo请求标识；探针TUN运行时固定IPv4先建物理旁路且失败关闭；多IP逐个拨号；网络错误分级且URL脱敏；主控全量/vet及普通/特殊探针全量通过 |
 
 #### 1.4.3 源码修改规则
 - 修改源代码时必须注意可能存在的 GBK 编码并保持原文件编码，避免乱码或误转码。
@@ -506,14 +507,14 @@ flowchart LR
 |---|---|---|---|
 | 协作文档存在 | 通过 | 本文件 | 无 |
 | Architect章节存在 | 通过 | 第1章 | 无 |
-| Code章节存在 | 通过 | 第2章 | TASK-PEN-000至023证据完整 |
+| Code章节存在 | 通过 | 第2章 | TASK-PEN-000至024证据完整 |
 | 必需子章节存在 | 通过 | 1.1至1.7、2.1至2.6 | 无 |
 | 需求前缀一致 | 通过 | REQ-PEN-MIHOMO-EXIT-001 | 无 |
 | 需求编号一致 | 通过 | R01至R21 | 无 |
 | 接口编号一致 | 通过 | IF-PEN-001至013 | 无 |
 | 模板字段完整 | 通过 | 文档头及固定章节 | 无 |
 | GBK编码文件无乱码或误转码 | 通过 | 最终差异、编译、浏览器中文渲染 | 未出现乱码或误转码 |
-| Code证据完整 | 通过 | 2.1至2.6、特别是TEST-PEN-023与DEFECT-PEN-026 | TASK-PEN-023代码、测试、浏览器和文档证据完整 |
+| Code证据完整 | 通过 | 2.1至2.6、特别是TEST-PEN-024与DEFECT-PEN-027 | TASK-PEN-024代码、测试和文档证据完整 |
 | Code任务反馈已处理 | 通过 | 2.6无未处理反馈 | 无 |
 | 验收标准可测试 | 通过 | AC-01至17 | TASK-PEN-016至017具备原规则投影、v3快照、API和浏览器验收路径 |
 | 需求任务覆盖完整 | 通过 | 1.5矩阵 | 无 |
@@ -628,6 +629,7 @@ flowchart LR
 | TEST-PEN-021 | R20 | TASK-PEN-021 | 指定探针代拉订阅 | 拉取探针DTO/持久化、命令请求结果关联、HTTPS/SSRF/端口/大小/哈希/脱敏、Android/离线与超时、控制器和普通/特殊探针全量、Chrome桌面/移动流程 | 已完成 | 认证结果绑定节点；篡改内容拒绝；探针URL不落日志；选择普通Linux/Windows/Mihomo且排除Android；保存载荷含`fetch_node_id`，刷新仅含`subscription_id`；1440/390无溢出和浏览器错误 | 无 | Browser插件不可用，按前端测试技能使用本机Playwright与Chrome；隔离监听已停止，截图位于临时QA目录 |
 | TEST-PEN-022 | R21 | TASK-PEN-022 | 页头磁贴快捷入口 | 页面契约测试、Playwright与Chrome桌面1440x1000/移动390x844、真实点击探针管理入口 | 已完成 | 九个名称和href与磁贴面板一致；只有路由管理为`aria-current=page`；点击后进入`/mng/probe`；无溢出、遮挡、控制台或页面错误 | 无 | Browser插件不可用，使用本机Playwright与Chrome；隔离监听已停止，截图位于临时QA目录 |
 | TEST-PEN-023 | R20,R21 | TASK-PEN-023 | 可选拉取位置、安全重定向与全管理页快捷切换 | 空`fetch_node_id`保存/调度、主控直接下载、主控/探针跨域HTTPS重定向、私网重定向拒绝、探针在线状态、八页导航契约、控制器/探针全量、Chrome 1440x1000/390x844交互 | 已完成 | 空选由主控拉取；选中仍走认证探针；两端最多5跳且每跳重新校验公网HTTPS；下拉默认主控并标记在线/离线；八页各含9项且唯一高亮；保存再提取载荷准确；无溢出、遮挡、控制台或页面错误 | `go vet ./...`在`probe_node`仍报告既有Windows unsafe.Pointer与mobilecore测试复制锁告警 | Browser插件不可用，使用本机Playwright与Chrome；控制器全量/vet和探针全量通过；隔离监听已停止，截图位于临时QA目录 |
+| TEST-PEN-024 | R16,R20 | TASK-PEN-024 | 订阅403兼容回退、物理出口旁路和分级诊断 | 双端固定UA顺序/Accept、最终403提示、探针自定义端口旁路、TUN旁路失败关闭、无TUN不改路由、超时分类、URL/token脱敏、主控/普通/特殊探针全量 | 已完成 | 双端按`clash.meta`、`mihomo/1.19.29`、`Clash.Meta`顺序仅对403重试；旁路目标与固定拨号地址一致；TUN运行时旁路失败不拨号且无TUN不添加旁路；最终错误不含URL | 未向生产订阅发请求，真实服务商是否封锁所选出口IP需发布后复测 | 控制器全量3.204秒、vet通过；并行复跑命中既有端口预留抖动，串行普通探针21.90秒、特殊tag 23.03秒通过 |
 
 ### 2.4 Code缺陷跟踪矩阵
 - 状态: 已完成
@@ -660,6 +662,7 @@ flowchart LR
 | DEFECT-PEN-024 | R10 | TEST-PEN-020 | 订阅URL校验和固定IP下载器都强制使用443，导致合法的非443 HTTPS订阅无法提取节点 | 中 | 已完成 | 允许显式1至65535端口并将校验后的端口传给固定IP拨号；默认仍为443；边界和拨号回归通过 | SSRF、TLS和脱敏边界保持不变 |
 | DEFECT-PEN-025 | R20 | TEST-PEN-021 | 提取节点仍由主控HTTP客户端抓取，订阅服务按主控VPN出口返回“请在非VPN网络环境下更新订阅”，无法使用指定探针所在网络 | 高 | 已完成 | 每源持久化`fetch_node_id`；主控通过认证会话下发一次性命令；探针安全下载并回传大小/SHA-256，主控校验后原子应用；无主控回退 | 所选探针自身若仍走VPN，服务商仍可能拒绝 |
 | DEFECT-PEN-026 | R20,R21 | TEST-PEN-023 | `fetch_node_id`被服务端强制必填，空选无法保存；探针下载器禁止订阅常见的3xx跳转；快捷入口仅存在路由页 | 高 | 已完成 | 空选显式进入主控安全下载；选中探针保持定向；主控/探针逐跳校验并支持最多5次HTTPS重定向；共享服务端导航渲染器覆盖八个磁贴管理页 | 旧探针版本不识别`subscription_fetch`时仍需先在线升级；选中离线探针会明确失败且不回退主控 |
+| DEFECT-PEN-027 | R16,R20 | TEST-PEN-024 | 指定探针已连到订阅服务但返回HTTP 403；下载器仅发送单一客户端标识，且探针固定IP连接未先确保绕过本机VRoute TUN，错误又把所有网络失败压成同一文本 | 高 | 已完成 | 双端403自动回退内置Clash/Mihomo标识；探针IPv4固定拨号前建立物理旁路并在TUN运行时失败关闭；按多IP尝试；超时/拒绝/不可达/TLS/重置分级且不泄漏URL | 若三种标识仍返回403，服务商可能封锁当前拉取出口，需改选真正直连且被服务商接受的探针 |
 
 ### 2.5 Code执行证据
 - 状态: 已完成
@@ -671,7 +674,7 @@ flowchart LR
 - 探针出口管理接口：`/mng/api/route/special_exits`写入DTO仅接受`node_id/rules`，规则仅含`route_rule_id/target`；响应返回目标下发统计和已分配原规则的只读名称。`/mng/api/probe/node/install`仍由探针管理页生成特殊出口原生/Docker安装信息。
 - 原规则投影接口：只选择`action=probe_exit`且`exit_node_id`等于当前特殊探针的原规则；新分配规则默认DIRECT，规则删除或改派后从私有快照移除并更新revision/hash；普通路由API、Fake IP和普通探针下发不再合并任何特殊出口派生规则。
 - 全局订阅接口：`/mng/api/route/special_exit_subscriptions`维护唯一稳定ID订阅源数组；管理响应逐源只返回configured、`fetch_node_id`、刷新状态和`proxy_options[name/subscription_id/subscription_name]`；管理写入只接受`id/name/enabled/url/fetch_node_id`。`/mng/api/route/special_exits/subscription/refresh`只接受`subscription_id`，并只通知实际引用变化节点的特殊探针。
-- 订阅抓取接口：主控经所选探针的认证控制会话发送一次性`subscription_fetch`；探针固定设置`User-Agent: clash.meta`和接受YAML的`Accept`，回传Base64内容、大小和SHA-256；管理页和API不存在手工请求头覆盖或浏览器直拉入口。
+- 订阅抓取接口：主控经所选探针的认证控制会话发送一次性`subscription_fetch`；双端首选`User-Agent: clash.meta`和接受YAML的`Accept`，仅对403自动尝试内置Mihomo/Clash Meta标识。探针在本地TUN运行时为每个固定IPv4先建立物理出口旁路，按IPv4优先尝试多个公开地址；回传Base64内容、大小、SHA-256或脱敏分级错误；管理页和API不存在手工请求头覆盖或浏览器直拉入口。
 - 订阅解析接口：先尝试标准Clash/Mihomo YAML中的`proxies`或`payload`，再尝试明文或Base64代理URI列表；AnyTLS URI按官方字段映射为规范代理对象，错误只报告格式或协议类别，不拼接原始订阅内容、URI或密码。
 - Reality兼容过滤：URI解析结果附带`SkippedProxyCount`，刷新响应增加`skipped_proxy_count`；混合源只过滤Mihomo不支持的AnyTLS+Reality节点，过滤后为零节点则返回脱敏错误并保持原revision/快照。
 - `probeVirtualRouterExitTarget`和build-tag TCP/UDP接缝：特殊版将恢复的域名交给受管理Mihomo，普通版保持原解析/直连语义。
@@ -685,9 +688,9 @@ flowchart LR
 - Mihomo固定回环SOCKS 17890、REST 17891，随机API/SOCKS秘密、无TUN；`log/mihomo.log`复用2 MiB滚动writer。
 
 #### 2.5.3 执行报告
-- TASK-PEN-000至023全部实现；同一`probe_node`源码形成`normal`和`mihomo_exit`两个产品，特殊版仅Linux amd64且不启动普通本地控制台、代理、系统DNS、同步、DDNS或平台TUN。
+- TASK-PEN-000至024全部实现；同一`probe_node`源码形成`normal`和`mihomo_exit`两个产品，特殊版仅Linux amd64且不启动普通本地控制台、代理、系统DNS、同步、DDNS或平台TUN。
 - 原`VirtualRouter.RouteRules`是唯一主路由和二次匹配来源，不生成`special-exit:<node_id>`或其他聚合规则；普通探针只见原规则和特殊出口节点，具体Mihomo节点及凭据透明。
-- 主控维护一份供所有特殊探针共用、最多32个来源的全局订阅库；每源配置HTTPS URL并可选拉取探针。空选时主控直接安全拉取，选择后只向该非Android探针下发一次性命令且失败不回退主控；两端固定发送`User-Agent: clash.meta`和YAML `Accept`，默认443，显式端口允许1至65535并固定到逐跳校验后的公共解析IP；禁代理/私网/保留地址，最多5次HTTPS重定向，单源8 MiB上限；失败文本和日志不含URL。
+- 主控维护一份供所有特殊探针共用、最多32个来源的全局订阅库；每源配置HTTPS URL并可选拉取探针。空选时主控直接安全拉取，选择后只向该非Android探针下发一次性命令且失败不回退主控；两端首选`User-Agent: clash.meta`和YAML `Accept`，仅对403自动尝试内置Mihomo/Clash Meta标识。默认443，显式端口允许1至65535并固定到逐跳校验后的公共解析IP；探针本地TUN运行时固定IPv4先建立物理旁路且失败关闭，多IP按IPv4优先尝试；禁代理/私网/保留地址，最多5次HTTPS重定向，单源8 MiB上限；失败文本和日志不含URL。
 - 每行“提取节点”只下载并原子替换该来源节点；订阅源指纹在提交时复核，失败、源变更或跨源节点重名均保留last-known-good。变更后按每探针实际规则目标裁剪私有代理集合，只有内容变化的探针增加revision并接收同步命令。
 - Mihomo候选先`-t`校验，再加载和健康检查，成功后提交快照；进程退出或连续三次健康失败均按5至60秒退避重启，首次失败即关闭`exit_ready`且不回落直连。
 - 原生和Docker首次安装都使用配对manifest；程序升级自行校验并替换程序/Mihomo，失败成对回滚。Mihomo MIT许可证随Release与镜像交付。
@@ -772,6 +775,7 @@ flowchart LR
 - 通过：Playwright与Chrome在1440x1000和390x844验证每个订阅独立选择普通Linux、普通Windows或Mihomo拉取探针，Android不进入候选；保存字段精确含`fetch_node_id`，刷新载荷精确只有`subscription_id`；无横向溢出、控制台或页面错误，截图位于临时QA目录，隔离控制器已停止且15030端口清空。Browser插件在本任务不可用，因此按前端测试技能使用本机Playwright。
 - 通过：TEST-PEN-022页头快捷入口契约与浏览器流程；九个入口名称/href准确，路由管理是唯一当前页项，点击探针管理成功进入`/mng/probe`；1440x1000填充页头中部，390x844两列显示，无横向溢出、遮挡、控制台或页面错误，隔离控制器已停止且15030端口清空。
 - 通过：TEST-PEN-023可选拉取位置、安全重定向和全管理页导航；控制器全量2.677秒与vet通过，探针全量21.631秒通过。浏览器确认空选主控、指定探针在线状态、八页唯一高亮、保存/提取载荷和桌面/移动布局，无溢出、遮挡、控制台或页面错误；探针vet仅剩既有Windows unsafe.Pointer和mobilecore测试复制锁告警。
+- 通过：TEST-PEN-024订阅403兼容回退、物理出口旁路和分级诊断；双端专项确认固定UA顺序、Accept、403提示和URL/token脱敏，探针专项确认8443旁路地址与拨号一致、TUN旁路失败关闭、无TUN不改路由及超时分类；控制器全量3.204秒与vet通过。普通/特殊探针并行全量各命中一次既有TCP/UDP端口预留抖动，随后串行普通探针21.90秒、特殊tag 23.03秒完整通过。
 - 仓库全平台探针`go vet`仍有既有mobilecore复制Mutex与Windows unsafe.Pointer告警；本次Linux特殊目标和新增代码vet通过。
 
 #### 2.5.7 未执行测试原因
@@ -790,7 +794,7 @@ flowchart LR
 - 二次分流快照已直接升级为v3且不迁移旧域名组模型；升级主控和特殊探针后，需要先在原路由规则界面把规则指向特殊探针，再在二次分流页面重新保存DIRECT/节点选择并重新提取节点。v2探针会拒绝v3快照，v3探针也会拒绝v2快照，因此两端应在同一维护窗口完成升级。
 - URI列表首期只实现AnyTLS；其他协议仍可通过标准Clash/Mihomo YAML的`proxies`数组导入，若以URI列表提供则会显式报告不支持并保留last-known-good，后续协议须逐项按官方URI语义扩展和测试。
 - Mihomo当前明确不支持AnyTLS+Reality；这类节点不会出现在可选出口节点池。订阅若全部为该组合将无法用于特殊出口，需要服务端提供普通AnyTLS或Mihomo支持的其他协议配置。
-- 指定拉取探针必须在线并已升级到支持`subscription_fetch`的版本；旧版探针会在主控等待窗口后明确超时。所选探针自身若使用VPN出口，订阅服务仍可能返回网络环境限制提示；此时应为该来源改选实际直连的探针。
+- 指定拉取探针必须在线并已升级到支持`subscription_fetch`及物理出口旁路的版本；旧版探针会在主控等待窗口后明确超时，或可能通过本机TUN拉取。新版本自动尝试内置客户端标识后若仍返回403，说明服务商仍可能封锁该出口IP或请求特征；此时应为该来源改选实际直连且被服务商接受的探针。
 
 #### 2.5.9 回滚方案
 - 主控先把原路由规则改为直连/拒绝或改派普通出口，再删除特殊出口配置；不需要清理派生规则，因为TASK-PEN-016后不存在聚合规则。
@@ -803,14 +807,14 @@ flowchart LR
 - 持久数据回滚前备份`data/`和`log/`；`temp/`可直接重建。
 
 #### 2.5.10 结论
-- TASK-PEN-000至023及DEFECT-PEN-009至026代码整改全部完成；原路由规则唯一来源、全局Clash订阅库、主控/指定探针可选拉取、安全订阅重定向、全部磁贴管理页快捷入口、逐规则DIRECT/具体节点选择、目标同步与即时回报、v3快照裁剪、订阅格式/Reality过滤和出口连通性均闭合，本地专项、全量和桌面/移动浏览器证据通过，Architect增量门禁已放行。
+- TASK-PEN-000至024及DEFECT-PEN-009至027代码整改全部完成；原路由规则唯一来源、全局Clash订阅库、主控/指定探针可选拉取、安全订阅重定向、403兼容回退、探针物理出口旁路、全部磁贴管理页快捷入口、逐规则DIRECT/具体节点选择、目标同步与即时回报、v3快照裁剪、订阅格式/Reality过滤和出口连通性均闭合，本地专项、全量和桌面/移动浏览器证据通过，Architect增量门禁已放行。
 
 ### 2.6 Code任务反馈
 - 状态: 已完成
 
 | 反馈编号 | 任务编号 | 反馈类型 | 反馈描述 | 阻塞影响 | Code建议 | Architect处理状态 | Architect处理结论 |
 |---|---|---|---|---|---|---|---|
-| 无 | TASK-PEN-000至023 | 无 | 无未处理任务包缺口或接口冲突 | 无 | 进入最终门禁 | 已完成 | 无需整改 |
+| 无 | TASK-PEN-000至024 | 无 | 无未处理任务包缺口或接口冲突 | 无 | 进入最终门禁 | 已完成 | 无需整改 |
 
 #### 2.6.1 结论
 - Code任务全部完成，无未处理反馈；未执行项和可接受残余风险已在2.5.7至2.5.8记录。

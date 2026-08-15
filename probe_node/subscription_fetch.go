@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -44,8 +45,27 @@ type probeSubscriptionFetchResultPayload struct {
 
 var probeSubscriptionFetchLookupIP = net.DefaultResolver.LookupIPAddr
 var probeSubscriptionFetchDialContext = (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+var probeSubscriptionFetchHTTPDo = func(client *http.Client, request *http.Request) (*http.Response, error) {
+	return client.Do(request)
+}
+var probeSubscriptionFetchEnsureDirectBypass = ensureProbeRouteDirectBypass
+var probeSubscriptionFetchTUNRunning = probeVirtualRouterTUNDataPlaneRunning
 var probeSubscriptionFetchContent = fetchProbeSubscriptionContent
 var probeSubscriptionFetchDo = doProbeSubscriptionFetch
+
+var probeSubscriptionFetchUserAgents = []string{
+	probeSubscriptionFetchUserAgent,
+	"mihomo/1.19.29",
+	"Clash.Meta",
+}
+
+type probeSubscriptionFetchRequestError struct {
+	message string
+}
+
+func (e *probeSubscriptionFetchRequestError) Error() string {
+	return e.message
+}
 
 func runProbeSubscriptionFetch(cmd probeControlMessage, identity nodeIdentity, stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex) {
 	requestID := strings.TrimSpace(cmd.RequestID)
@@ -103,7 +123,7 @@ func fetchProbeSubscriptionContent(ctx context.Context, rawURL string, maxBytes 
 			if ctx.Err() != nil {
 				return nil, fmt.Errorf("subscription fetch timed out or was canceled")
 			}
-			return nil, fmt.Errorf("subscription fetch failed")
+			return nil, classifyProbeSubscriptionFetchRequestError(err)
 		}
 		if probeSubscriptionRedirectStatus(response.StatusCode) {
 			location := strings.TrimSpace(response.Header.Get("Location"))
@@ -123,6 +143,9 @@ func fetchProbeSubscriptionContent(ctx context.Context, rawURL string, maxBytes 
 		}
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
 			_ = response.Body.Close()
+			if response.StatusCode == http.StatusForbidden {
+				return nil, fmt.Errorf("subscription returned HTTP 403 after Clash/Mihomo client retries; the fetch egress may be blocked by the provider")
+			}
 			return nil, fmt.Errorf("subscription returned HTTP %d", response.StatusCode)
 		}
 		content, readErr := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
@@ -145,21 +168,119 @@ func doProbeSubscriptionFetch(ctx context.Context, target *url.URL, ips []netip.
 	if port == "" {
 		port = "443"
 	}
+	dialAddresses, err := prepareProbeSubscriptionFetchDialAddresses(ips, port)
+	if err != nil {
+		return nil, err
+	}
 	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: target.Hostname()}, Proxy: nil}
 	transport.DialContext = func(dialCtx context.Context, network, _ string) (net.Conn, error) {
-		return probeSubscriptionFetchDialContext(dialCtx, network, net.JoinHostPort(ips[0].String(), port))
+		var lastErr error
+		for _, address := range dialAddresses {
+			conn, dialErr := probeSubscriptionFetchDialContext(dialCtx, probeRouteEgressDialNetwork(network, address), address)
+			if dialErr == nil {
+				return conn, nil
+			}
+			lastErr = dialErr
+		}
+		return nil, lastErr
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
-	if err != nil {
-		transport.CloseIdleConnections()
-		return nil, fmt.Errorf("subscription request is invalid")
-	}
-	request.Header.Set("User-Agent", probeSubscriptionFetchUserAgent)
-	request.Header.Set("Accept", probeSubscriptionFetchAccept)
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	response, err := client.Do(request)
-	transport.CloseIdleConnections()
-	return response, err
+	defer transport.CloseIdleConnections()
+	for index, userAgent := range probeSubscriptionFetchUserAgents {
+		request, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+		if requestErr != nil {
+			return nil, &probeSubscriptionFetchRequestError{message: "subscription request is invalid"}
+		}
+		request.Header.Set("User-Agent", userAgent)
+		request.Header.Set("Accept", probeSubscriptionFetchAccept)
+		response, requestErr := probeSubscriptionFetchHTTPDo(client, request)
+		if requestErr != nil {
+			return nil, classifyProbeSubscriptionFetchRequestError(requestErr)
+		}
+		if response.StatusCode != http.StatusForbidden || index == len(probeSubscriptionFetchUserAgents)-1 {
+			return response, nil
+		}
+		_ = response.Body.Close()
+	}
+	return nil, &probeSubscriptionFetchRequestError{message: "subscription request failed"}
+}
+
+func prepareProbeSubscriptionFetchDialAddresses(ips []netip.Addr, port string) ([]string, error) {
+	ordered := make([]netip.Addr, 0, len(ips))
+	for _, address := range ips {
+		if address.Is4() {
+			ordered = append(ordered, address)
+		}
+	}
+	for _, address := range ips {
+		if !address.Is4() {
+			ordered = append(ordered, address)
+		}
+	}
+	seen := make(map[string]struct{}, len(ordered))
+	dialAddresses := make([]string, 0, len(ordered))
+	bypassFailed := false
+	tunRunning := probeSubscriptionFetchTUNRunning()
+	for _, address := range ordered {
+		if !address.IsValid() {
+			continue
+		}
+		dialAddress := net.JoinHostPort(address.String(), port)
+		if _, ok := seen[dialAddress]; ok {
+			continue
+		}
+		seen[dialAddress] = struct{}{}
+		if address.Is4() && tunRunning {
+			if err := probeSubscriptionFetchEnsureDirectBypass(dialAddress); err != nil {
+				logProbeWarnf("probe subscription physical egress bypass failed: target_ip=%s err=%v", address, err)
+				bypassFailed = true
+				continue
+			}
+		}
+		dialAddresses = append(dialAddresses, dialAddress)
+	}
+	if len(dialAddresses) > 0 {
+		return dialAddresses, nil
+	}
+	if bypassFailed {
+		return nil, &probeSubscriptionFetchRequestError{message: "subscription physical egress bypass failed"}
+	}
+	return nil, &probeSubscriptionFetchRequestError{message: "subscription has no usable public dial address"}
+}
+
+func classifyProbeSubscriptionFetchRequestError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var safeErr *probeSubscriptionFetchRequestError
+	if errors.As(err, &safeErr) {
+		return safeErr
+	}
+	if errors.Is(err, context.Canceled) {
+		return &probeSubscriptionFetchRequestError{message: "subscription request was canceled"}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return &probeSubscriptionFetchRequestError{message: "subscription network request timed out"}
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return &probeSubscriptionFetchRequestError{message: "subscription network request timed out"}
+	}
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "connection refused"):
+		return &probeSubscriptionFetchRequestError{message: "subscription TCP connection was refused"}
+	case strings.Contains(message, "network is unreachable"), strings.Contains(message, "no route to host"):
+		return &probeSubscriptionFetchRequestError{message: "subscription network is unreachable"}
+	case strings.Contains(message, "certificate"), strings.Contains(message, "x509"):
+		return &probeSubscriptionFetchRequestError{message: "subscription TLS certificate verification failed"}
+	case strings.Contains(message, "tls"), strings.Contains(message, "handshake"):
+		return &probeSubscriptionFetchRequestError{message: "subscription TLS handshake failed"}
+	case strings.Contains(message, "connection reset"), strings.Contains(message, "forcibly closed"):
+		return &probeSubscriptionFetchRequestError{message: "subscription connection was reset"}
+	default:
+		return &probeSubscriptionFetchRequestError{message: "subscription network request failed"}
+	}
 }
 
 func probeSubscriptionRedirectStatus(status int) bool {

@@ -82,9 +82,17 @@ func TestValidateProbeSubscriptionFetchURLSupportsCustomPortAndRejectsPrivate(t 
 func TestFetchProbeSubscriptionContentUsesConfiguredPortWithoutLeakingURL(t *testing.T) {
 	oldLookup := probeSubscriptionFetchLookupIP
 	oldDial := probeSubscriptionFetchDialContext
+	oldEnsureBypass := probeSubscriptionFetchEnsureDirectBypass
+	oldTUNRunning := probeSubscriptionFetchTUNRunning
 	probeSubscriptionFetchLookupIP = func(context.Context, string) ([]net.IPAddr, error) {
 		return []net.IPAddr{{IP: net.ParseIP("1.1.1.1")}}, nil
 	}
+	bypassAddress := ""
+	probeSubscriptionFetchEnsureDirectBypass = func(address string) error {
+		bypassAddress = address
+		return nil
+	}
+	probeSubscriptionFetchTUNRunning = func() bool { return true }
 	dialAddress := ""
 	probeSubscriptionFetchDialContext = func(_ context.Context, _, address string) (net.Conn, error) {
 		dialAddress = address
@@ -93,13 +101,111 @@ func TestFetchProbeSubscriptionContentUsesConfiguredPortWithoutLeakingURL(t *tes
 	t.Cleanup(func() {
 		probeSubscriptionFetchLookupIP = oldLookup
 		probeSubscriptionFetchDialContext = oldDial
+		probeSubscriptionFetchEnsureDirectBypass = oldEnsureBypass
+		probeSubscriptionFetchTUNRunning = oldTUNRunning
 	})
 	_, err := fetchProbeSubscriptionContent(context.Background(), "https://subscription.example:8443/config?token=do-not-leak", 1024)
-	if err == nil || dialAddress != "1.1.1.1:8443" {
-		t.Fatalf("dialAddress=%q err=%v", dialAddress, err)
+	if err == nil || dialAddress != "1.1.1.1:8443" || bypassAddress != dialAddress || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("dialAddress=%q bypassAddress=%q err=%v", dialAddress, bypassAddress, err)
 	}
 	if strings.Contains(err.Error(), "do-not-leak") || strings.Contains(err.Error(), "subscription.example") {
 		t.Fatalf("subscription URL leaked in error: %v", err)
+	}
+}
+
+func TestFetchProbeSubscriptionContentFailsClosedWhenTUNBypassFails(t *testing.T) {
+	oldLookup := probeSubscriptionFetchLookupIP
+	oldDial := probeSubscriptionFetchDialContext
+	oldEnsureBypass := probeSubscriptionFetchEnsureDirectBypass
+	oldTUNRunning := probeSubscriptionFetchTUNRunning
+	probeSubscriptionFetchLookupIP = func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("1.1.1.1")}}, nil
+	}
+	probeSubscriptionFetchEnsureDirectBypass = func(string) error { return errors.New("route add failed") }
+	probeSubscriptionFetchTUNRunning = func() bool { return true }
+	probeSubscriptionFetchDialContext = func(context.Context, string, string) (net.Conn, error) {
+		t.Fatal("subscription dialed without a physical egress bypass")
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		probeSubscriptionFetchLookupIP = oldLookup
+		probeSubscriptionFetchDialContext = oldDial
+		probeSubscriptionFetchEnsureDirectBypass = oldEnsureBypass
+		probeSubscriptionFetchTUNRunning = oldTUNRunning
+	})
+
+	_, err := fetchProbeSubscriptionContent(context.Background(), "https://subscription.example/config?token=do-not-leak", 1024)
+	if err == nil || !strings.Contains(err.Error(), "physical egress bypass failed") {
+		t.Fatalf("bypass error=%v", err)
+	}
+	if strings.Contains(err.Error(), "do-not-leak") || strings.Contains(err.Error(), "subscription.example") {
+		t.Fatalf("subscription URL leaked in bypass error: %v", err)
+	}
+}
+
+func TestFetchProbeSubscriptionContentDoesNotAddBypassWithoutTUN(t *testing.T) {
+	oldLookup := probeSubscriptionFetchLookupIP
+	oldHTTPDo := probeSubscriptionFetchHTTPDo
+	oldEnsureBypass := probeSubscriptionFetchEnsureDirectBypass
+	oldTUNRunning := probeSubscriptionFetchTUNRunning
+	probeSubscriptionFetchLookupIP = func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("1.1.1.1")}}, nil
+	}
+	probeSubscriptionFetchTUNRunning = func() bool { return false }
+	probeSubscriptionFetchEnsureDirectBypass = func(string) error {
+		t.Fatal("physical bypass added while TUN was not running")
+		return nil
+	}
+	probeSubscriptionFetchHTTPDo = func(_ *http.Client, _ *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("proxies: []\n"))}, nil
+	}
+	t.Cleanup(func() {
+		probeSubscriptionFetchLookupIP = oldLookup
+		probeSubscriptionFetchHTTPDo = oldHTTPDo
+		probeSubscriptionFetchEnsureDirectBypass = oldEnsureBypass
+		probeSubscriptionFetchTUNRunning = oldTUNRunning
+	})
+
+	content, err := fetchProbeSubscriptionContent(context.Background(), "https://subscription.example/config", 1024)
+	if err != nil || string(content) != "proxies: []\n" {
+		t.Fatalf("content=%q err=%v", content, err)
+	}
+}
+
+func TestFetchProbeSubscriptionContentRetriesClientProfilesOnForbidden(t *testing.T) {
+	oldLookup := probeSubscriptionFetchLookupIP
+	oldHTTPDo := probeSubscriptionFetchHTTPDo
+	oldEnsureBypass := probeSubscriptionFetchEnsureDirectBypass
+	oldTUNRunning := probeSubscriptionFetchTUNRunning
+	probeSubscriptionFetchLookupIP = func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("1.1.1.1")}}, nil
+	}
+	probeSubscriptionFetchEnsureDirectBypass = func(string) error { return nil }
+	probeSubscriptionFetchTUNRunning = func() bool { return true }
+	userAgents := []string{}
+	probeSubscriptionFetchHTTPDo = func(_ *http.Client, request *http.Request) (*http.Response, error) {
+		userAgents = append(userAgents, request.Header.Get("User-Agent"))
+		if request.Header.Get("Accept") != probeSubscriptionFetchAccept {
+			t.Fatalf("Accept=%q", request.Header.Get("Accept"))
+		}
+		return &http.Response{StatusCode: http.StatusForbidden, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("denied"))}, nil
+	}
+	t.Cleanup(func() {
+		probeSubscriptionFetchLookupIP = oldLookup
+		probeSubscriptionFetchHTTPDo = oldHTTPDo
+		probeSubscriptionFetchEnsureDirectBypass = oldEnsureBypass
+		probeSubscriptionFetchTUNRunning = oldTUNRunning
+	})
+
+	_, err := fetchProbeSubscriptionContent(context.Background(), "https://subscription.example/config?token=do-not-leak", 1024)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 403 after Clash/Mihomo client retries") {
+		t.Fatalf("forbidden error=%v", err)
+	}
+	if got, want := strings.Join(userAgents, ","), strings.Join(probeSubscriptionFetchUserAgents, ","); got != want {
+		t.Fatalf("User-Agent sequence=%q want=%q", got, want)
+	}
+	if strings.Contains(err.Error(), "do-not-leak") || strings.Contains(err.Error(), "subscription.example") {
+		t.Fatalf("subscription URL leaked in forbidden error: %v", err)
 	}
 }
 
