@@ -195,7 +195,7 @@ func applyProbeMihomoSnapshot(snapshot probeSpecialExitSnapshot, nodeID string) 
 }
 
 func validateProbeMihomoSnapshot(snapshot probeSpecialExitSnapshot, nodeID string) error {
-	if snapshot.Version != 2 {
+	if snapshot.Version != 3 {
 		return fmt.Errorf("unsupported special exit snapshot version %d", snapshot.Version)
 	}
 	if normalizeProbeRouteNodeID(snapshot.NodeID) != normalizeProbeRouteNodeID(nodeID) {
@@ -228,21 +228,35 @@ func validateProbeMihomoSnapshot(snapshot probeSpecialExitSnapshot, nodeID strin
 		}
 		proxyNames[name] = struct{}{}
 	}
+	routeRuleIDs := make(map[string]struct{}, len(snapshot.Rules))
 	for index, rule := range snapshot.Rules {
-		if len(rule.Domains) == 0 {
-			return fmt.Errorf("rules[%d] has no domains", index)
+		if strings.TrimSpace(rule.RouteRuleID) == "" {
+			return fmt.Errorf("rules[%d].route_rule_id is required", index)
 		}
-		for _, domain := range rule.Domains {
-			domain = strings.TrimSpace(domain)
-			if domain == "" || strings.ContainsAny(domain, ",:\r\n") {
-				return fmt.Errorf("rules[%d] contains an invalid domain", index)
+		if _, exists := routeRuleIDs[strings.TrimSpace(rule.RouteRuleID)]; exists {
+			return fmt.Errorf("rules[%d].route_rule_id is duplicated", index)
+		}
+		routeRuleIDs[strings.TrimSpace(rule.RouteRuleID)] = struct{}{}
+		target := normalizeProbeMihomoRuleTarget(rule.Target)
+		for _, entry := range rule.Entries {
+			if _, err := compileProbeMihomoRule(entry, nil, "", target); err != nil {
+				return fmt.Errorf("rules[%d] entry %q is invalid: %w", index, entry, err)
 			}
 		}
-		if _, ok := proxyNames[strings.TrimSpace(rule.Target)]; !ok {
-			return fmt.Errorf("rules[%d]: proxy node %q does not exist", index, strings.TrimSpace(rule.Target))
+		if target != "DIRECT" {
+			if _, ok := proxyNames[target]; !ok {
+				return fmt.Errorf("rules[%d]: proxy node %q does not exist", index, target)
+			}
 		}
 	}
 	return nil
+}
+
+func normalizeProbeMihomoRuleTarget(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), "DIRECT") {
+		return "DIRECT"
+	}
+	return strings.TrimSpace(value)
 }
 
 func probeMihomoReservedPolicyName(value string) bool {
@@ -257,10 +271,10 @@ func probeMihomoReservedPolicyName(value string) bool {
 func compileProbeMihomoConfig(snapshot probeSpecialExitSnapshot, secrets probeMihomoRuntimeSecrets) ([]byte, error) {
 	rules := make([]string, 0)
 	for _, rule := range snapshot.Rules {
-		for _, domain := range rule.Domains {
-			line, err := compileProbeMihomoRule("domain_suffix:"+strings.TrimSpace(domain), nil, "", strings.TrimSpace(rule.Target))
+		for _, entry := range rule.Entries {
+			line, err := compileProbeMihomoRule(entry, nil, "", normalizeProbeMihomoRuleTarget(rule.Target))
 			if err != nil {
-				return nil, fmt.Errorf("rule %q: %w", rule.ID, err)
+				return nil, fmt.Errorf("route rule %q: %w", rule.RouteRuleID, err)
 			}
 			rules = append(rules, line)
 		}
@@ -282,6 +296,9 @@ func compileProbeMihomoRule(entry string, ports []string, network, policy string
 		return "", fmt.Errorf("invalid entry %q", entry)
 	}
 	value = strings.TrimSpace(value)
+	if strings.ContainsAny(value, ",\r\n") {
+		return "", fmt.Errorf("entry %q contains an unsupported delimiter", entry)
+	}
 	var base string
 	switch kind {
 	case "domain_suffix":

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 type probeRouteConfigStore struct {
@@ -58,6 +59,18 @@ func initProbeRouteConfigStore() {
 		}
 	} else {
 		log.Fatalf("failed to check probe route config store: %v", err)
+	}
+
+	reconciled, changed := reconcileProbeSpecialExitConfigsWithRouteRules(
+		ProbeRouteConfigStore.data.SpecialExits,
+		ProbeRouteConfigStore.data.VirtualRouter.RouteRules,
+		time.Now().UTC(),
+	)
+	ProbeRouteConfigStore.data.SpecialExits = reconciled
+	if changed {
+		if saveErr := ProbeRouteConfigStore.SaveWithoutAutoBackup(); saveErr != nil {
+			log.Fatalf("failed to reconcile probe special exit rules: %v", saveErr)
+		}
 	}
 
 	log.Println("Probe route config datastore initialized at", storePath)

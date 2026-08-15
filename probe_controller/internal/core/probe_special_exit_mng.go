@@ -38,22 +38,27 @@ type probeSpecialExitManagedView struct {
 	ProxyNames                []string                           `json:"proxy_names"`
 	Revision                  int64                              `json:"desired_revision"`
 	SHA256                    string                             `json:"desired_sha256"`
-	ManagedRule               *probeVirtualRouterRouteRule       `json:"managed_rule,omitempty"`
 	LastSubscriptionRefreshAt string                             `json:"last_subscription_refresh_at,omitempty"`
 	LastSubscriptionError     string                             `json:"last_subscription_refresh_error,omitempty"`
 	UpdatedAt                 string                             `json:"updated_at,omitempty"`
 }
 
 type probeSpecialExitRuleView struct {
-	ID      string   `json:"id"`
-	Target  string   `json:"target"`
-	Domains []string `json:"domains"`
+	RouteRuleID string   `json:"route_rule_id"`
+	Name        string   `json:"name"`
+	Entries     []string `json:"entries"`
+	Target      string   `json:"target"`
+}
+
+type probeSpecialExitRuleInput struct {
+	RouteRuleID string `json:"route_rule_id"`
+	Target      string `json:"target"`
 }
 
 type probeSpecialExitManagedInput struct {
 	NodeID        string                         `json:"node_id"`
 	Subscriptions []probeSpecialExitSubscription `json:"subscriptions"`
-	Rules         []probeSpecialExitRuleView     `json:"rules"`
+	Rules         []probeSpecialExitRuleInput    `json:"rules"`
 }
 
 type probeSpecialExitSubscriptionView struct {
@@ -86,17 +91,16 @@ func listMngProbeSpecialExits() (map[string]interface{}, error) {
 	ProbeRouteConfigStore.mu.RUnlock()
 	views := make([]probeSpecialExitManagedView, 0, len(items))
 	for _, item := range items {
-		views = append(views, mngProbeSpecialExitView(item))
+		views = append(views, mngProbeSpecialExitView(item, manual))
 	}
 	return map[string]interface{}{
-		"items":           views,
-		"managed_rules":   buildProbeSpecialExitManagedRules(items),
-		"effective_rules": buildEffectiveProbeVirtualRouterRouteRules(manual, items),
-		"nodes":           listMngProbeSpecialExitCandidateNodes(),
+		"items":       views,
+		"route_rules": manual,
+		"nodes":       listMngProbeSpecialExitCandidateNodes(),
 	}, nil
 }
 
-func mngProbeSpecialExitView(item probeSpecialExitConfig) probeSpecialExitManagedView {
+func mngProbeSpecialExitView(item probeSpecialExitConfig, routeRules []probeVirtualRouterRouteRule) probeSpecialExitManagedView {
 	proxyNames := make([]string, 0, len(item.Proxies))
 	for _, proxy := range item.Proxies {
 		if name := strings.TrimSpace(fmt.Sprint(proxy["name"])); name != "" {
@@ -112,9 +116,25 @@ func mngProbeSpecialExitView(item probeSpecialExitConfig) probeSpecialExitManage
 			LastSubscriptionRefreshAt: source.LastSubscriptionRefreshAt, LastSubscriptionRefreshErr: source.LastSubscriptionRefreshErr,
 		})
 	}
-	rules := make([]probeSpecialExitRuleView, 0, len(item.Rules))
+	selected := make(map[string]string, len(item.Rules))
 	for _, rule := range item.Rules {
-		rules = append(rules, probeSpecialExitRuleView{ID: rule.ID, Target: rule.Target, Domains: append([]string(nil), rule.Domains...)})
+		selected[strings.TrimSpace(rule.RouteRuleID)] = normalizeProbeSpecialExitTarget(rule.Target)
+	}
+	rules := make([]probeSpecialExitRuleView, 0, len(selected))
+	for _, routeRule := range normalizeProbeVirtualRouterRouteRules(routeRules) {
+		if !probeSpecialExitRouteRuleAssignedToNode(routeRule, item.NodeID) {
+			continue
+		}
+		target := probeSpecialExitDirectTarget
+		if value, ok := selected[routeRule.ID]; ok {
+			target = value
+		}
+		rules = append(rules, probeSpecialExitRuleView{
+			RouteRuleID: routeRule.ID,
+			Name:        routeRule.Name,
+			Entries:     append([]string(nil), routeRule.Entries...),
+			Target:      target,
+		})
 	}
 	view := probeSpecialExitManagedView{
 		NodeID:                 item.NodeID,
@@ -122,11 +142,6 @@ func mngProbeSpecialExitView(item probeSpecialExitConfig) probeSpecialExitManage
 		Rules: rules, ProxyNames: proxyNames,
 		Revision: item.Revision, SHA256: item.SHA256, LastSubscriptionRefreshAt: item.LastSubscriptionRefreshAt,
 		LastSubscriptionError: item.LastSubscriptionRefreshErr, UpdatedAt: item.UpdatedAt,
-	}
-	managed := buildProbeSpecialExitManagedRules([]probeSpecialExitConfig{item})
-	if len(managed) == 1 {
-		value := managed[0]
-		view.ManagedRule = &value
 	}
 	return view
 }
@@ -183,9 +198,13 @@ func upsertMngProbeSpecialExit(payload json.RawMessage, controllerBaseURL string
 				break
 			}
 		}
-		rules := make([]probeSpecialExitRule, 0, len(req.Item.Rules))
+		selections := make([]probeSpecialExitRule, 0, len(req.Item.Rules))
 		for _, rule := range req.Item.Rules {
-			rules = append(rules, probeSpecialExitRule{ID: rule.ID, Target: rule.Target, Domains: append([]string(nil), rule.Domains...)})
+			selections = append(selections, probeSpecialExitRule{RouteRuleID: rule.RouteRuleID, Target: rule.Target})
+		}
+		rules, compileErr := compileProbeSpecialExitRules(nodeID, selections, manual, true)
+		if compileErr != nil {
+			return compileErr
 		}
 		raw := probeSpecialExitConfig{
 			NodeID: nodeID, Subscriptions: req.Item.Subscriptions, Rules: rules,
@@ -229,18 +248,18 @@ func upsertMngProbeSpecialExit(payload json.RawMessage, controllerBaseURL string
 			next = append(next, item)
 		}
 		next = normalizeProbeSpecialExitConfigs(next)
-		if validateErr := validateProbeSpecialExitConflicts(manual, next); validateErr != nil {
-			return validateErr
-		}
 		data.SpecialExits = next
-		data.VirtualRouterFakeIP, _ = reconcileProbeVirtualRouterFakeIPLibraryWithRouteRules(data.VirtualRouterFakeIP, buildEffectiveProbeVirtualRouterRouteRules(manual, next), now)
+		data.VirtualRouterFakeIP, _ = reconcileProbeVirtualRouterFakeIPLibraryWithRouteRules(data.VirtualRouterFakeIP, manual, now)
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	syncResult := dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURL)
-	return map[string]interface{}{"ok": true, "item": mngProbeSpecialExitView(item), "sync": syncResult}, nil
+	ProbeRouteConfigStore.mu.RLock()
+	routeRules := append([]probeVirtualRouterRouteRule(nil), ProbeRouteConfigStore.data.VirtualRouter.RouteRules...)
+	ProbeRouteConfigStore.mu.RUnlock()
+	return map[string]interface{}{"ok": true, "item": mngProbeSpecialExitView(item, routeRules), "sync": syncResult}, nil
 }
 
 func deleteMngProbeSpecialExit(nodeID string, controllerBaseURL string) (map[string]interface{}, error) {
@@ -262,7 +281,7 @@ func deleteMngProbeSpecialExit(nodeID string, controllerBaseURL string) (map[str
 			return fmt.Errorf("special exit %q not found", nodeID)
 		}
 		data.SpecialExits = next
-		data.VirtualRouterFakeIP, _ = reconcileProbeVirtualRouterFakeIPLibraryWithRouteRules(data.VirtualRouterFakeIP, buildEffectiveProbeVirtualRouterRouteRules(data.VirtualRouter.RouteRules, next), time.Now().UTC())
+		data.VirtualRouterFakeIP, _ = reconcileProbeVirtualRouterFakeIPLibraryWithRouteRules(data.VirtualRouterFakeIP, data.VirtualRouter.RouteRules, time.Now().UTC())
 		return nil
 	})
 	if err != nil {
@@ -346,7 +365,10 @@ func refreshMngProbeSpecialExitSubscription(ctx context.Context, nodeID string, 
 	if err != nil {
 		return nil, err
 	}
-	return map[string]interface{}{"ok": true, "item": mngProbeSpecialExitView(item), "proxy_count": len(proxies), "skipped_proxy_count": skippedProxyCount, "subscription_count": len(enabled), "sync": dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURL)}, nil
+	ProbeRouteConfigStore.mu.RLock()
+	routeRules := append([]probeVirtualRouterRouteRule(nil), ProbeRouteConfigStore.data.VirtualRouter.RouteRules...)
+	ProbeRouteConfigStore.mu.RUnlock()
+	return map[string]interface{}{"ok": true, "item": mngProbeSpecialExitView(item, routeRules), "proxy_count": len(proxies), "skipped_proxy_count": skippedProxyCount, "subscription_count": len(enabled), "sync": dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURL)}, nil
 }
 
 func applyProbeSpecialExitSubscriptionRefresh(nodeID, sourceHash string, proxies []map[string]interface{}, refreshedAt time.Time) (probeSpecialExitConfig, error) {
@@ -395,11 +417,8 @@ func applyProbeSpecialExitSubscriptionRefreshSources(nodeID, sourceHash string, 
 				break
 			}
 		}
-		if validateErr := validateProbeSpecialExitConflicts(manual, currentItems); validateErr != nil {
-			return validateErr
-		}
 		data.SpecialExits = currentItems
-		data.VirtualRouterFakeIP, _ = reconcileProbeVirtualRouterFakeIPLibraryWithRouteRules(data.VirtualRouterFakeIP, buildEffectiveProbeVirtualRouterRouteRules(manual, currentItems), refreshedAt)
+		data.VirtualRouterFakeIP, _ = reconcileProbeVirtualRouterFakeIPLibraryWithRouteRules(data.VirtualRouterFakeIP, manual, refreshedAt)
 		return nil
 	})
 	if err != nil {

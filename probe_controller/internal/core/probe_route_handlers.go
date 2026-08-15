@@ -185,7 +185,6 @@ func authorizedProbeVirtualRouterFakeIPRule(domain string, requestedRuleID strin
 	}
 	ProbeRouteConfigStore.mu.RLock()
 	config := normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter)
-	config.RouteRules = buildEffectiveProbeVirtualRouterRouteRules(config.RouteRules, ProbeRouteConfigStore.data.SpecialExits)
 	ProbeRouteConfigStore.mu.RUnlock()
 	if !config.Enabled {
 		return probeVirtualRouterRouteRule{}, fmt.Errorf("virtual router is disabled")

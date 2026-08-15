@@ -49,45 +49,47 @@ func TestMihomoExitNodeKindIsImmutableAndSupportsLinuxOrDocker(t *testing.T) {
 	}
 }
 
-func TestSpecialExitManagedRuleIsStableAndNotPersistedAsManual(t *testing.T) {
-	item := probeSpecialExitConfig{NodeID: "19", Rules: []probeSpecialExitRule{
-		{ID: "b", Target: "node-b", Domains: []string{"Example.COM", "example.com"}},
-		{ID: "a", Target: "node-a", Domains: []string{"api.example.net"}},
-	}}
-	normalized, err := normalizeProbeSpecialExitConfig(item, nil)
+func TestSpecialExitUsesAssignedRouteRulesWithoutManagedRules(t *testing.T) {
+	manual := []probeVirtualRouterRouteRule{
+		{ID: "rr-1", Name: "assigned", Action: "probe_exit", ExitNodeID: "19", Entries: []string{"domain_suffix:example.com", "cidr:10.0.0.0/8"}},
+		{ID: "rr-2", Name: "direct", Action: "direct", Entries: []string{"domain_suffix:manual.test"}},
+	}
+	compiled, err := compileProbeSpecialExitRules("19", []probeSpecialExitRule{{RouteRuleID: "rr-1", Target: "node-a"}}, manual, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	managed := buildProbeSpecialExitManagedRules([]probeSpecialExitConfig{normalized})
-	if len(managed) != 1 || managed[0].ID != "special-exit:19" || managed[0].ExitNodeID != "19" {
-		t.Fatalf("managed=%+v", managed)
+	wantEntries := []string{"cidr:10.0.0.0/8", "domain_suffix:example.com"}
+	if len(compiled) != 1 || compiled[0].RouteRuleID != "rr-1" || compiled[0].Target != "node-a" || !reflect.DeepEqual(compiled[0].Entries, wantEntries) {
+		t.Fatalf("compiled=%+v", compiled)
 	}
-	want := []string{"domain_suffix:api.example.net", "domain_suffix:example.com"}
-	if !reflect.DeepEqual(managed[0].Entries, want) {
-		t.Fatalf("entries=%v want=%v", managed[0].Entries, want)
-	}
-	manual := []probeVirtualRouterRouteRule{{ID: "rr-1", Name: "manual", Action: "direct", Entries: []string{"domain_suffix:manual.test"}}}
-	effective := buildEffectiveProbeVirtualRouterRouteRules(manual, []probeSpecialExitConfig{normalized})
-	if len(effective) != 2 || len(manual) != 1 || manual[0].ID != "rr-1" {
+	effective := normalizeProbeVirtualRouterRouteRules(manual)
+	if !reflect.DeepEqual(effective, normalizeProbeVirtualRouterRouteRules(manual)) {
 		t.Fatalf("effective=%+v manual=%+v", effective, manual)
 	}
 }
 
-func TestSpecialExitConflictValidatorDetectsSemanticOverlap(t *testing.T) {
-	tests := []struct{ name, left, right string }{
-		{name: "nested suffix", left: "domain_suffix:example.com", right: "api.example.com"},
+func TestSpecialExitReconcilesAssignedRulesAndBumpsRevision(t *testing.T) {
+	now := time.Unix(200, 0).UTC()
+	initialRules := []probeVirtualRouterRouteRule{{ID: "rr-1", Name: "assigned", Action: "probe_exit", ExitNodeID: "19", Entries: []string{"domain_suffix:old.example"}}}
+	compiled, err := compileProbeSpecialExitRules("19", []probeSpecialExitRule{{RouteRuleID: "rr-1", Target: "node-a"}}, initialRules, true)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			manual := []probeVirtualRouterRouteRule{{ID: "rr-1", Name: "manual", Action: "direct", Entries: []string{tc.left}}}
-			special := []probeSpecialExitConfig{{NodeID: "19", Rules: []probeSpecialExitRule{{ID: "r1", Target: "node-a", Domains: []string{tc.right}}}}}
-			if err := validateProbeSpecialExitConflicts(manual, special); err == nil {
-				t.Fatalf("expected overlap for %q and %q", tc.left, tc.right)
-			}
-		})
+	item, err := normalizeProbeSpecialExitConfig(probeSpecialExitConfig{NodeID: "19", Rules: compiled, Revision: 7}, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := validateProbeSpecialExitConflicts([]probeVirtualRouterRouteRule{{ID: "special-exit:19", Name: "manual", Entries: []string{"example.com"}}}, nil); err == nil {
-		t.Fatal("reserved manual rule ID accepted")
+	changedRules := []probeVirtualRouterRouteRule{{ID: "rr-1", Name: "assigned", Action: "probe_exit", ExitNodeID: "19", Entries: []string{"domain_keyword:new"}}}
+	reconciled, changed := reconcileProbeSpecialExitConfigsWithRouteRules([]probeSpecialExitConfig{item}, changedRules, now)
+	if !changed || len(reconciled) != 1 || reconciled[0].Revision != 8 || !reflect.DeepEqual(reconciled[0].Rules[0].Entries, []string{"domain_keyword:new"}) {
+		t.Fatalf("reconciled=%+v changed=%v", reconciled, changed)
+	}
+	if reconciled[0].SHA256 != probeSpecialExitSnapshotHash(reconciled[0]) {
+		t.Fatalf("reconciled snapshot hash does not match revision %d", reconciled[0].Revision)
+	}
+	reassigned, changed := reconcileProbeSpecialExitConfigsWithRouteRules(reconciled, []probeVirtualRouterRouteRule{{ID: "rr-1", Name: "moved", Action: "probe_exit", ExitNodeID: "20", Entries: []string{"domain_keyword:new"}}}, now.Add(time.Second))
+	if !changed || len(reassigned[0].Rules) != 0 || reassigned[0].Revision != 9 {
+		t.Fatalf("reassigned=%+v changed=%v", reassigned, changed)
 	}
 }
 
@@ -101,13 +103,15 @@ func TestProbeRouteConfigScopesSpecialExitSnapshotAndSecrets(t *testing.T) {
 	item, err := normalizeProbeSpecialExitConfig(probeSpecialExitConfig{
 		NodeID:        "19",
 		Subscriptions: []probeSpecialExitSubscription{{ID: "primary", Name: "Primary", Enabled: true, URL: "https://subscription.example/secret"}},
-		Rules:         []probeSpecialExitRule{{ID: "r1", Target: "proxy-a", Domains: []string{"api.example.com"}}},
+		Rules:         []probeSpecialExitRule{{RouteRuleID: "rr-1", Target: "proxy-a", Entries: []string{"domain_suffix:api.example.com"}}},
 		Proxies:       []map[string]interface{}{{"name": "proxy-a", "type": "socks5", "server": "proxy.example", "port": 1080, "password": "node-secret"}},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ProbeRouteConfigStore = &probeRouteConfigStore{data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), SpecialExits: []probeSpecialExitConfig{item}}}
+	virtualRouter := defaultProbeVirtualRouterConfig()
+	virtualRouter.RouteRules = []probeVirtualRouterRouteRule{{ID: "rr-1", Name: "API", Action: "probe_exit", ExitNodeID: "19", Entries: []string{"domain_suffix:api.example.com"}}}
+	ProbeRouteConfigStore = &probeRouteConfigStore{data: probeRouteConfigStoreData{VirtualRouter: virtualRouter, SpecialExits: []probeSpecialExitConfig{item}}}
 	resetProbeAuthChallengeStateForTest()
 	t.Cleanup(func() {
 		ProbeStore = oldProbeStore
@@ -256,8 +260,8 @@ func TestNormalizeProbeSpecialExitSubscriptionsDropsLegacyHeaders(t *testing.T) 
 	}
 }
 
-func TestProbeSpecialExitSnapshotUsesVersionTwoDomainModel(t *testing.T) {
-	item, err := normalizeProbeSpecialExitConfig(probeSpecialExitConfig{NodeID: "19", Rules: []probeSpecialExitRule{{ID: "domains", Target: "node-a", Domains: []string{"Example.COM"}}}}, nil)
+func TestProbeSpecialExitSnapshotUsesVersionThreeRouteEntryModel(t *testing.T) {
+	item, err := normalizeProbeSpecialExitConfig(probeSpecialExitConfig{NodeID: "19", Rules: []probeSpecialExitRule{{RouteRuleID: "rr-1", Target: "node-a", Entries: []string{"domain_suffix:example.com", "cidr:10.0.0.0/8"}}}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,12 +271,12 @@ func TestProbeSpecialExitSnapshotUsesVersionTwoDomainModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	if snapshot.Version != 2 || !strings.Contains(text, `"domains":["example.com"]`) {
+	if snapshot.Version != 3 || !strings.Contains(text, `"route_rule_id":"rr-1"`) || !strings.Contains(text, `"entries":["cidr:10.0.0.0/8","domain_suffix:example.com"]`) {
 		t.Fatalf("snapshot=%s", text)
 	}
-	for _, legacy := range []string{`"enabled"`, `"default_action"`, `"action"`, `"entries"`, `"ports"`, `"network"`} {
+	for _, legacy := range []string{`"enabled"`, `"default_action"`, `"action"`, `"domains"`, `"ports"`, `"network"`} {
 		if strings.Contains(text, legacy) {
-			t.Fatalf("version 2 snapshot contains legacy field %s: %s", legacy, text)
+			t.Fatalf("version 3 snapshot contains legacy field %s: %s", legacy, text)
 		}
 	}
 }
@@ -446,31 +450,31 @@ func TestRefreshSpecialExitSourceFailurePreservesLastGood(t *testing.T) {
 	}
 }
 
-func TestSpecialExitRejectsInvalidDomainsAndNodeNames(t *testing.T) {
+func TestSpecialExitRejectsInvalidNodeNamesAndUnassignedRules(t *testing.T) {
 	for _, name := range []string{"bad,name", "DIRECT", "line\nbreak"} {
 		if _, err := normalizeProbeSpecialExitProxies([]map[string]interface{}{{"name": name, "type": "socks5"}}); err == nil {
 			t.Fatalf("invalid proxy name %q accepted", name)
 		}
 	}
-	for _, domain := range []string{"10.0.0.0/8", "domain_suffix:example.com", "bad,example.com", "line\nbreak"} {
-		if _, err := normalizeProbeSpecialExitConfig(probeSpecialExitConfig{
-			NodeID: "19", Rules: []probeSpecialExitRule{{ID: "r1", Target: "node-a", Domains: []string{domain}}},
-		}, nil); err == nil {
-			t.Fatalf("invalid domain %q accepted", domain)
-		}
+	routeRules := []probeVirtualRouterRouteRule{{ID: "rr-1", Name: "assigned", Action: "probe_exit", ExitNodeID: "19", Entries: []string{"domain_suffix:example.com"}}}
+	if _, err := compileProbeSpecialExitRules("19", []probeSpecialExitRule{{RouteRuleID: "rr-missing", Target: "DIRECT"}}, routeRules, true); err == nil {
+		t.Fatal("unassigned route rule accepted")
+	}
+	if _, err := compileProbeSpecialExitRules("19", []probeSpecialExitRule{{RouteRuleID: "rr-1", Target: "DIRECT"}, {RouteRuleID: "rr-1", Target: "DIRECT"}}, routeRules, true); err == nil {
+		t.Fatal("duplicate route rule selection accepted")
 	}
 }
 
 func TestApplySpecialExitSubscriptionRefreshMergesLatestGUIConfig(t *testing.T) {
 	oldStore := ProbeRouteConfigStore
 	item, err := normalizeProbeSpecialExitConfig(probeSpecialExitConfig{
-		NodeID: "19", Rules: []probeSpecialExitRule{{ID: "old", Target: "old-node", Domains: []string{"old.example"}}},
+		NodeID: "19", Rules: []probeSpecialExitRule{{RouteRuleID: "old", Target: "old-node", Entries: []string{"domain_suffix:old.example"}}},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	latest := item
-	latest.Rules = []probeSpecialExitRule{{ID: "new", Target: "node-a", Domains: []string{"new.example"}}}
+	latest.Rules = []probeSpecialExitRule{{RouteRuleID: "new", Target: "node-a", Entries: []string{"domain_suffix:new.example"}}}
 	latest.Revision++
 	latest.SHA256 = probeSpecialExitSnapshotHash(latest)
 	ProbeRouteConfigStore = &probeRouteConfigStore{
@@ -482,7 +486,7 @@ func TestApplySpecialExitSubscriptionRefreshMergesLatestGUIConfig(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(refreshed.Rules) != 1 || refreshed.Rules[0].ID != "new" || refreshed.Revision != latest.Revision+1 {
+	if len(refreshed.Rules) != 1 || refreshed.Rules[0].RouteRuleID != "new" || refreshed.Revision != latest.Revision+1 {
 		t.Fatalf("refresh overwrote latest GUI config: %+v", refreshed)
 	}
 }
@@ -631,13 +635,15 @@ func TestMngSpecialExitListRedactsControllerAndProxySecrets(t *testing.T) {
 	item, err := normalizeProbeSpecialExitConfig(probeSpecialExitConfig{
 		NodeID:        "19",
 		Subscriptions: []probeSpecialExitSubscription{{ID: "primary", Name: "Primary", Enabled: true, URL: "https://subscription.example/secret"}},
-		Rules:         []probeSpecialExitRule{{ID: "r1", Target: "proxy-a", Domains: []string{"example.com"}}},
+		Rules:         []probeSpecialExitRule{{RouteRuleID: "rr-1", Target: "proxy-a", Entries: []string{"domain_suffix:example.com"}}},
 		Proxies:       []map[string]interface{}{{"name": "proxy-a", "type": "socks5", "server": "proxy.example", "password": "proxy-secret"}},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ProbeRouteConfigStore = &probeRouteConfigStore{data: probeRouteConfigStoreData{SpecialExits: []probeSpecialExitConfig{item}}}
+	virtualRouter := defaultProbeVirtualRouterConfig()
+	virtualRouter.RouteRules = []probeVirtualRouterRouteRule{{ID: "rr-1", Name: "Example", Action: "probe_exit", ExitNodeID: "19", Entries: []string{"domain_suffix:example.com"}}}
+	ProbeRouteConfigStore = &probeRouteConfigStore{data: probeRouteConfigStoreData{VirtualRouter: virtualRouter, SpecialExits: []probeSpecialExitConfig{item}}}
 	t.Cleanup(func() { ProbeStore = oldProbeStore; ProbeRouteConfigStore = oldRouteStore })
 	result, err := listMngProbeSpecialExits()
 	if err != nil {
@@ -656,9 +662,18 @@ func TestMngSpecialExitListRedactsControllerAndProxySecrets(t *testing.T) {
 	if !strings.Contains(text, `"subscription_configured":true`) || !strings.Contains(text, `"proxy_names":["proxy-a"]`) {
 		t.Fatalf("redacted metadata missing: %s", text)
 	}
+	if _, exists := result["managed_rules"]; exists {
+		t.Fatalf("special exit list still exposes managed rules: %+v", result)
+	}
+	if _, exists := result["effective_rules"]; exists {
+		t.Fatalf("special exit list still exposes effective aggregate rules: %+v", result)
+	}
+	if rules, ok := result["route_rules"].([]probeVirtualRouterRouteRule); !ok || len(rules) != 1 || rules[0].ID != "rr-1" {
+		t.Fatalf("original route rule projection missing: %+v", result["route_rules"])
+	}
 }
 
-func TestUpsertMngSpecialExitUsesDomainNodeModel(t *testing.T) {
+func TestUpsertMngSpecialExitUsesAssignedRouteRuleModel(t *testing.T) {
 	oldProbeStore := ProbeStore
 	oldRouteStore := ProbeRouteConfigStore
 	ProbeStore = &probeConfigStore{data: probeConfigData{ProbeNodes: []probeNodeRecord{{NodeNo: 19, NodeName: "exit", NodeKind: probeNodeKindMihomoExit}}}}
@@ -669,31 +684,45 @@ func TestUpsertMngSpecialExitUsesDomainNodeModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	virtualRouter := defaultProbeVirtualRouterConfig()
+	virtualRouter.RouteRules = []probeVirtualRouterRouteRule{
+		{ID: "rr-1", Name: "Example domains", Action: "probe_exit", ExitNodeID: "19", Entries: []string{"domain_suffix:example.com", "domain_keyword:api"}},
+		{ID: "rr-direct", Name: "Unrelated", Action: "direct", Entries: []string{"domain_suffix:direct.example"}},
+	}
 	ProbeRouteConfigStore = &probeRouteConfigStore{
 		path: filepath.Join(t.TempDir(), "route.json"),
-		data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), SpecialExits: []probeSpecialExitConfig{previous}},
+		data: probeRouteConfigStoreData{VirtualRouter: virtualRouter, SpecialExits: []probeSpecialExitConfig{previous}},
 	}
 	t.Cleanup(func() { ProbeStore = oldProbeStore; ProbeRouteConfigStore = oldRouteStore })
 
-	result, err := upsertMngProbeSpecialExit(json.RawMessage(`{"item":{"node_id":"19","subscriptions":[],"rules":[{"id":"domains","target":"node-a","domains":["Example.COM","api.example.net"]}]}}`), "")
+	result, err := upsertMngProbeSpecialExit(json.RawMessage(`{"item":{"node_id":"19","subscriptions":[],"rules":[{"route_rule_id":"rr-1","target":"node-a"}]}}`), "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	view, ok := result["item"].(probeSpecialExitManagedView)
-	if !ok || len(view.Rules) != 1 || view.Rules[0].Target != "node-a" || !reflect.DeepEqual(view.Rules[0].Domains, []string{"api.example.net", "example.com"}) {
-		t.Fatalf("simplified view=%+v", result["item"])
+	wantEntries := []string{"domain_keyword:api", "domain_suffix:example.com"}
+	if !ok || len(view.Rules) != 1 || view.Rules[0].RouteRuleID != "rr-1" || view.Rules[0].Name != "Example domains" || view.Rules[0].Target != "node-a" || !reflect.DeepEqual(view.Rules[0].Entries, wantEntries) {
+		t.Fatalf("assigned route view=%+v", result["item"])
 	}
 	stored := ProbeRouteConfigStore.data.SpecialExits[0]
-	if len(stored.Rules) != 1 || stored.Rules[0].Target != "node-a" || !reflect.DeepEqual(stored.Rules[0].Domains, []string{"api.example.net", "example.com"}) {
-		t.Fatalf("stored rule was not normalized to the domain-node model: %+v", stored)
+	if len(stored.Rules) != 1 || stored.Rules[0].RouteRuleID != "rr-1" || stored.Rules[0].Target != "node-a" || !reflect.DeepEqual(stored.Rules[0].Entries, wantEntries) {
+		t.Fatalf("stored rule was not compiled from the assigned route rule: %+v", stored)
+	}
+	if _, err := upsertMngProbeSpecialExit(json.RawMessage(`{"item":{"node_id":"19","subscriptions":[],"rules":[{"route_rule_id":"rr-1","target":"DIRECT"}]}}`), ""); err != nil {
+		t.Fatalf("direct secondary exit was rejected: %v", err)
 	}
 
 	for _, payload := range []string{
 		`{"item":{"node_id":"19","default_action":"reject","subscriptions":[],"rules":[]}}`,
 		`{"item":{"node_id":"19","subscriptions":[{"id":"primary","name":"Primary","enabled":true,"url":"https://example.com/config","headers":{"Authorization":"Bearer secret"}}],"rules":[]}}`,
 		`{"item":{"node_id":"19","subscriptions":[{"id":"primary","name":"Primary","enabled":true,"url":"https://example.com/config","clear_headers":true}],"rules":[]}}`,
-		`{"item":{"node_id":"19","subscriptions":[],"rules":[{"id":"legacy","action":"reject","target":"node-a","domains":["example.com"]}]}}`,
-		`{"item":{"node_id":"19","subscriptions":[],"rules":[{"id":"missing","target":"missing-node","domains":["example.com"]}]}}`,
+		`{"item":{"node_id":"19","subscriptions":[],"rules":[{"route_rule_id":"rr-1","target":"node-a","entries":["domain_suffix:other.example"]}]}}`,
+		`{"item":{"node_id":"19","subscriptions":[],"rules":[{"route_rule_id":"rr-1","target":"node-a","domains":["example.com"]}]}}`,
+		`{"item":{"node_id":"19","subscriptions":[],"rules":[{"route_rule_id":"rr-1","target":"node-a","name":"forged"}]}}`,
+		`{"item":{"node_id":"19","subscriptions":[],"rules":[{"route_rule_id":"rr-1","target":"node-a","action":"direct"}]}}`,
+		`{"item":{"node_id":"19","subscriptions":[],"rules":[{"route_rule_id":"rr-1","target":"node-a","exit_node_id":"20"}]}}`,
+		`{"item":{"node_id":"19","subscriptions":[],"rules":[{"route_rule_id":"rr-direct","target":"DIRECT"}]}}`,
+		`{"item":{"node_id":"19","subscriptions":[],"rules":[{"route_rule_id":"rr-1","target":"missing-node"}]}}`,
 	} {
 		if _, err := upsertMngProbeSpecialExit(json.RawMessage(payload), ""); err == nil {
 			t.Fatalf("invalid simplified payload accepted: %s", payload)
@@ -705,8 +734,8 @@ func TestMngRoutePageIncludesSpecialExitWorkflow(t *testing.T) {
 	for _, marker := range []string{
 		`data-tab="special-exits"`, `id="section-special-exits"`, `id="special-exit-subscriptions"`,
 		`id="btn-special-exit-subscription-add"`, `function addSpecialExitSubscription()`,
-		`id="special-exit-proxies"`, `id="special-exit-status-list"`, `data-se-rule-domains`,
-		`id="special-exit-managed-rule"`, `id="special-exit-detail"`, `id="special-exit-empty"`,
+		`id="special-exit-proxies"`, `id="special-exit-status-list"`, `data-se-rule-target`,
+		`<span>路由规则出口</span>`, `id="special-exit-detail"`, `id="special-exit-empty"`,
 		`<option value="">请选择特殊探针</option>`, `.special-exit-layout[hidden] { display:none; }`,
 		`state.specialExitStatuses.find((status) => normalizeNodeID(status.node_id) === nodeID)`,
 		`/mng/api/route/special_exits/subscription/refresh`,
@@ -720,6 +749,7 @@ func TestMngRoutePageIncludesSpecialExitWorkflow(t *testing.T) {
 	for _, marker := range []string{
 		`id="special-exit-new-node-name"`, `id="btn-special-exit-create-node"`, `id="special-exit-install-mode"`, `/mng/api/route/special_exits/install?`,
 		`id="special-exit-name"`, `id="special-exit-enabled"`, `id="special-exit-default-action"`, `data-se-rule-action`, `data-se-rule-network`, `data-se-rule-ports`,
+		`id="btn-special-exit-rule-add"`, `data-se-rule-domains`, `data-se-rule-remove`, `id="special-exit-managed-rule"`, `<span>聚合路由规则</span>`,
 		`data-se-subscription-url="${index}" class="mono" type="password"`, `<summary>请求设置</summary>`, `data-se-subscription-headers`, `data-se-subscription-clear-headers`, `headers_configured`, `clear_headers`,
 	} {
 		if strings.Contains(mngRoutePageHTML, marker) {
@@ -729,7 +759,7 @@ func TestMngRoutePageIncludesSpecialExitWorkflow(t *testing.T) {
 	if !strings.Contains(mngRoutePageHTML, `.special-exit-layout { display:grid; grid-template-columns:minmax(0, 1fr);`) {
 		t.Fatal("special exit workflow must use a single-column layout")
 	}
-	ordered := []string{`<label for="special-exit-node">特殊探针</label>`, `<span>Clash 配置</span>`, `<span>出口节点</span>`, `<span>域名分流</span>`, `<span>聚合路由规则</span>`, `<span>运行状态</span>`}
+	ordered := []string{`<label for="special-exit-node">特殊探针</label>`, `<span>Clash 配置</span>`, `<span>出口节点</span>`, `<span>路由规则出口</span>`, `<span>运行状态</span>`}
 	position := -1
 	for _, marker := range ordered {
 		next := strings.Index(mngRoutePageHTML, marker)

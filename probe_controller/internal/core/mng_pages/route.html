@@ -93,11 +93,12 @@
     .special-exit-layout { display:grid; grid-template-columns:minmax(0, 1fr); gap:12px; }
     .special-exit-layout[hidden] { display:none; }
     .special-exit-layout textarea { min-height:88px; }
-    .special-exit-rule-grid { display:grid; grid-template-columns:minmax(260px, 2fr) minmax(220px, 1fr) auto; gap:12px; align-items:end; }
+    .special-exit-rule-grid { display:grid; grid-template-columns:minmax(260px, 2fr) minmax(220px, 1fr); gap:12px; align-items:end; }
     .special-exit-rule-grid > * { min-width:0; width:100%; box-sizing:border-box; }
     .special-exit-field { display:grid; gap:6px; color:#8b949e; font-size:12px; }
     .special-exit-field textarea, .special-exit-field select { min-width:0; width:100%; box-sizing:border-box; }
-    .special-exit-rule-actions { display:flex; justify-content:flex-end; }
+    .special-exit-rule-name { color:#c9d1d9; font-weight:600; }
+    .special-exit-rule-entries { display:grid; gap:3px; margin-top:6px; color:#8b949e; font-size:12px; overflow-wrap:anywhere; }
     .special-exit-status-list { display:grid; gap:8px; margin-top:10px; }
     .special-exit-status-item { border-top:1px solid #30363d; padding-top:8px; overflow-wrap:anywhere; }
     .special-exit-subscriptions { display:grid; gap:10px; margin-top:10px; }
@@ -106,10 +107,8 @@
     .special-exit-subscription-grid > * { min-width:0; width:100%; box-sizing:border-box; }
     .special-exit-proxy-list { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:0 16px; max-height:240px; overflow:auto; margin-top:10px; }
     .special-exit-proxy-item { border-top:1px solid #30363d; padding:8px 0; overflow-wrap:anywhere; }
-    .special-exit-domain-list { display:grid; gap:6px; margin-top:10px; }
-    .special-exit-domain-item { display:grid; grid-template-columns:minmax(0, 1fr) minmax(160px, auto); gap:12px; padding:7px 0; border-top:1px solid #30363d; }
     .special-exit-layout .box-title > span:first-child { flex:0 0 auto; white-space:nowrap; }
-    @media (max-width: 820px) { .special-exit-rule-grid, .special-exit-subscription-grid { grid-template-columns:1fr; } .special-exit-rule-actions { justify-content:flex-start; } }
+    @media (max-width: 820px) { .special-exit-rule-grid, .special-exit-subscription-grid { grid-template-columns:1fr; } }
     @media (max-width: 620px) {
       .box-title.filterable { align-items:flex-start; flex-direction:column; }
       .filter-control { width:100%; margin-left:0; }
@@ -117,7 +116,6 @@
       .doh-config { grid-template-columns:1fr; }
       .doh-endpoint { align-items:stretch; flex-direction:column; }
       .special-exit-layout .box-title { align-items:flex-start; flex-wrap:wrap; }
-      .special-exit-domain-item { grid-template-columns:1fr; gap:2px; }
     }
   </style>
 </head>
@@ -256,12 +254,8 @@
               <div id="special-exit-proxies" class="special-exit-proxy-list"></div>
             </div>
             <div class="box" style="margin-top:12px;">
-              <div class="box-title"><span>域名分流</span><button id="btn-special-exit-rule-add" class="btn" type="button">添加域名组</button></div>
+              <div class="box-title"><span>路由规则出口</span></div>
               <div id="special-exit-rules" class="special-exit-status-list"></div>
-            </div>
-            <div class="box" style="margin-top:12px;">
-              <div class="box-title"><span>聚合路由规则</span></div>
-              <div id="special-exit-managed-rule" class="special-exit-domain-list"></div>
             </div>
             <div class="box" style="margin-top:12px;">
               <div class="box-title"><span>运行状态</span></div>
@@ -403,7 +397,7 @@
       routeRules: [],
       specialExits: [],
       specialExitStatuses: [],
-      specialExitManagedRules: [],
+      specialExitRouteRules: [],
       selectedSpecialExitNodeID: '',
       specialExitDrafts: {},
       fakeIPSearch: '',
@@ -595,7 +589,7 @@
         requestJSON('/mng/api/route/special_exits/status'),
       ]);
       state.specialExits = Array.isArray(configs.items) ? configs.items : [];
-      state.specialExitManagedRules = Array.isArray(configs.managed_rules) ? configs.managed_rules : [];
+      state.specialExitRouteRules = Array.isArray(configs.route_rules) ? configs.route_rules : [];
       state.specialExitStatuses = Array.isArray(statuses.items) ? statuses.items : [];
       const candidates = state.nodes.filter((item) => item.node_kind === 'mihomo_exit');
       if (!candidates.some((item) => normalizeNodeID(item.node_no) === normalizeNodeID(state.selectedSpecialExitNodeID))) {
@@ -633,8 +627,6 @@
       renderSpecialExitProxies(draft);
       renderSpecialExitRules(draft);
       renderSpecialExitStatus();
-      const managed = state.specialExitManagedRules.find((item) => normalizeNodeID(item.exit_node_id) === normalizeNodeID(state.selectedSpecialExitNodeID));
-      renderSpecialExitManagedRule(managed);
       const configured = state.specialExits.length;
       document.getElementById('special-exit-summary').textContent = `已配置 ${configured}`;
     }
@@ -705,29 +697,41 @@
         : '<div class="muted small">尚未提取节点。</div>';
     }
 
-    function renderSpecialExitManagedRule(managed) {
-      const host = document.getElementById('special-exit-managed-rule');
-      const entries = managed && Array.isArray(managed.entries) ? managed.entries : [];
-      host.innerHTML = entries.length
-        ? entries.map((entry) => `<div class="special-exit-domain-item"><span>${escapeHTML(String(entry || '').replace(/^domain_suffix:/, ''))}</span><span class="muted">${escapeHTML(nodeLabel(managed.exit_node_id))}</span></div>`).join('')
-        : '<div class="muted small">暂无聚合域名。</div>';
+    function assignedSpecialExitRules(draft) {
+      if (!draft) return [];
+      const targets = new Map((Array.isArray(draft.rules) ? draft.rules : []).map((rule) => [String(rule.route_rule_id || ''), String(rule.target || 'DIRECT').trim() || 'DIRECT']));
+      return (Array.isArray(state.specialExitRouteRules) ? state.specialExitRouteRules : [])
+        .filter((rule) => routeRuleAction(rule) === 'probe_exit' && normalizeNodeID(rule.exit_node_id) === normalizeNodeID(draft.node_id))
+        .map((rule) => ({
+          route_rule_id: String(rule.id || ''),
+          name: String(rule.name || rule.id || ''),
+          entries: Array.isArray(rule.entries) ? rule.entries.slice() : [],
+          target: targets.get(String(rule.id || '')) || 'DIRECT',
+        }));
     }
 
     function renderSpecialExitRules(draft) {
       const host = document.getElementById('special-exit-rules');
-      const rules = draft && Array.isArray(draft.rules) ? draft.rules : [];
+      const rules = assignedSpecialExitRules(draft);
+      if (draft) draft.rules = rules;
       if (!rules.length) {
-        host.innerHTML = '<div class="muted small">暂无域名分流。</div>';
+        host.innerHTML = '<div class="muted small">暂无指向当前探针的路由规则。</div>';
         return;
       }
       const proxyNames = Array.isArray(draft.proxy_names) ? draft.proxy_names : [];
-      host.innerHTML = rules.map((rule, index) => `<div class="special-exit-status-item" data-special-exit-rule="${index}">
+      host.innerHTML = rules.map((rule, index) => {
+        const target = String(rule.target || 'DIRECT').trim() || 'DIRECT';
+        const unavailable = target !== 'DIRECT' && !proxyNames.includes(target)
+          ? `<option value="${escapeHTML(target)}" selected>${escapeHTML(target)}（不可用）</option>`
+          : '';
+        const entries = (rule.entries || []).map((entry) => `<div class="mono">${escapeHTML(entry)}</div>`).join('');
+        return `<div class="special-exit-status-item" data-special-exit-rule="${index}">
         <div class="special-exit-rule-grid">
-          <label class="special-exit-field"><span>域名</span><textarea class="mono" data-se-rule-domains="${index}" placeholder="example.com&#10;example.net">${escapeHTML((rule.domains || []).join('\n'))}</textarea></label>
-          <label class="special-exit-field"><span>出口节点</span><select data-se-rule-target="${index}"><option value="">请选择出口节点</option>${proxyNames.map((name) => `<option value="${escapeHTML(name)}" ${name === rule.target ? 'selected' : ''}>${escapeHTML(name)}</option>`).join('')}</select></label>
-          <div class="special-exit-rule-actions"><button class="btn danger" data-se-rule-remove="${index}" type="button">删除</button></div>
+          <div><div class="special-exit-rule-name">${escapeHTML(rule.name || rule.route_rule_id)}</div><div class="special-exit-rule-entries">${entries}</div></div>
+          <label class="special-exit-field"><span>出口方式</span><select data-se-rule-target="${index}"><option value="DIRECT" ${target === 'DIRECT' ? 'selected' : ''}>直出</option>${unavailable}${proxyNames.map((name) => `<option value="${escapeHTML(name)}" ${name === target ? 'selected' : ''}>${escapeHTML(name)}</option>`).join('')}</select></label>
         </div>
-      </div>`).join('');
+      </div>`;
+      }).join('');
       bindSpecialExitRuleEvents();
     }
 
@@ -761,20 +765,6 @@
         element.addEventListener(element.tagName === 'TEXTAREA' || element.tagName === 'INPUT' ? 'input' : 'change', apply);
       });
       setValue('[data-se-rule-target]', 'target', (element) => String(element.value || '').trim());
-      setValue('[data-se-rule-domains]', 'domains', (element) => String(element.value || '').split(/\r?\n/).map((value) => value.trim()).filter(Boolean));
-      document.querySelectorAll('[data-se-rule-remove]').forEach((element) => element.addEventListener('click', () => {
-        const index = Number.parseInt(element.dataset.seRuleRemove || '-1', 10);
-        if (index >= 0 && index < draft.rules.length) draft.rules.splice(index, 1);
-        renderSpecialExitRules(draft);
-      }));
-    }
-
-    function addSpecialExitRule() {
-      const draft = currentSpecialExitDraft();
-      if (!draft) return;
-      const id = `rule-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-      draft.rules.push({ id, target: '', domains: [] });
-      renderSpecialExitRules(draft);
     }
 
     function captureSpecialExitPayload() {
@@ -782,8 +772,8 @@
       if (!draft) throw new Error('请选择特殊探针');
       const proxyNames = new Set(Array.isArray(draft.proxy_names) ? draft.proxy_names : []);
       for (const [index, rule] of (draft.rules || []).entries()) {
-        if (!Array.isArray(rule.domains) || !rule.domains.length) throw new Error(`域名组 ${index + 1} 至少需要一个域名`);
-        if (!proxyNames.has(String(rule.target || '').trim())) throw new Error(`域名组 ${index + 1} 请选择有效的出口节点`);
+        const target = String(rule.target || 'DIRECT').trim() || 'DIRECT';
+        if (target !== 'DIRECT' && !proxyNames.has(target)) throw new Error(`路由规则 ${index + 1} 请选择有效的出口节点`);
       }
       return {
         node_id: draft.node_id,
@@ -791,7 +781,7 @@
           id: source.id, name: source.name, enabled: source.enabled !== false,
           url: source.url || '',
         })),
-        rules: (draft.rules || []).map((rule) => ({ id: rule.id, target: rule.target, domains: rule.domains || [] })),
+        rules: (draft.rules || []).map((rule) => ({ route_rule_id: rule.route_rule_id, target: String(rule.target || 'DIRECT').trim() || 'DIRECT' })),
       };
     }
 
@@ -1903,7 +1893,6 @@
         state.selectedSpecialExitNodeID = normalizeNodeID(event.target.value);
         renderSpecialExits();
       });
-      document.getElementById('btn-special-exit-rule-add').addEventListener('click', addSpecialExitRule);
       document.getElementById('btn-special-exit-subscription-add').addEventListener('click', addSpecialExitSubscription);
       document.getElementById('btn-special-exit-save').addEventListener('click', () => {
         saveSpecialExit().catch((err) => setStatus(`保存二次分流失败：${err.message || err}`, 'err'));

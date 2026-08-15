@@ -19,9 +19,10 @@ import (
 func signedProbeMihomoTestSnapshot(t *testing.T) probeSpecialExitSnapshot {
 	t.Helper()
 	snapshot := probeSpecialExitSnapshot{
-		Version: 2, NodeID: "19", Revision: 7,
+		Version: 3, NodeID: "19", Revision: 7,
 		Rules: []probeSpecialExitRule{
-			{ID: "primary", Target: "node-a", Domains: []string{"example.com", "api.example.net"}},
+			{RouteRuleID: "rr-proxy", Target: "node-a", Entries: []string{"domain_suffix:example.com", "domain_keyword:api", "domain_prefix:cdn", "cidr:10.0.0.0/8"}},
+			{RouteRuleID: "rr-direct", Target: "DIRECT", Entries: []string{"domain_suffix:direct.example"}},
 		},
 		Proxies: []map[string]interface{}{{"name": "node-a", "type": "socks5", "server": "proxy.example", "port": 1080, "username": "user", "password": "secret", "udp": true}},
 	}
@@ -56,25 +57,54 @@ func TestProbeMihomoSnapshotValidationAndTamperDetection(t *testing.T) {
 	}
 }
 
-func TestProbeMihomoSnapshotRejectsVersionOneAndInvalidRules(t *testing.T) {
+func TestProbeMihomoSnapshotRejectsVersionTwoAndInvalidRules(t *testing.T) {
 	legacy := signedProbeMihomoTestSnapshot(t)
-	legacy.Version = 1
+	legacy.Version = 2
 	legacy = signProbeMihomoTestSnapshot(t, legacy)
 	if err := validateProbeMihomoSnapshot(legacy, "19"); err == nil || !strings.Contains(err.Error(), "unsupported") {
-		t.Fatalf("version 1 snapshot accepted: %v", err)
+		t.Fatalf("version 2 snapshot accepted: %v", err)
 	}
-	invalidDomain := signedProbeMihomoTestSnapshot(t)
-	invalidDomain.Rules = append([]probeSpecialExitRule(nil), invalidDomain.Rules...)
-	invalidDomain.Rules[0].Domains = []string{"domain_suffix:example.com"}
-	invalidDomain = signProbeMihomoTestSnapshot(t, invalidDomain)
-	if err := validateProbeMihomoSnapshot(invalidDomain, "19"); err == nil || !strings.Contains(err.Error(), "invalid domain") {
-		t.Fatalf("prefixed domain accepted: %v", err)
+	invalidEntry := signedProbeMihomoTestSnapshot(t)
+	invalidEntry.Rules = append([]probeSpecialExitRule(nil), invalidEntry.Rules...)
+	invalidEntry.Rules[0].Entries = []string{"unsupported:example.com"}
+	invalidEntry = signProbeMihomoTestSnapshot(t, invalidEntry)
+	if err := validateProbeMihomoSnapshot(invalidEntry, "19"); err == nil || !strings.Contains(err.Error(), "unsupported entry kind") {
+		t.Fatalf("unsupported route entry accepted: %v", err)
 	}
 	missing := signedProbeMihomoTestSnapshot(t)
 	missing.Rules[0].Target = "missing"
 	missing = signProbeMihomoTestSnapshot(t, missing)
 	if err := validateProbeMihomoSnapshot(missing, "19"); err == nil || !strings.Contains(err.Error(), "does not exist") {
 		t.Fatalf("missing node accepted: %v", err)
+	}
+	duplicate := signedProbeMihomoTestSnapshot(t)
+	duplicate.Rules[1].RouteRuleID = duplicate.Rules[0].RouteRuleID
+	duplicate = signProbeMihomoTestSnapshot(t, duplicate)
+	if err := validateProbeMihomoSnapshot(duplicate, "19"); err == nil || !strings.Contains(err.Error(), "duplicated") {
+		t.Fatalf("duplicate route rule accepted: %v", err)
+	}
+	injected := signedProbeMihomoTestSnapshot(t)
+	injected.Rules[0].Entries = []string{"domain_suffix:example.com,DIRECT"}
+	injected = signProbeMihomoTestSnapshot(t, injected)
+	if err := validateProbeMihomoSnapshot(injected, "19"); err == nil || !strings.Contains(err.Error(), "delimiter") {
+		t.Fatalf("delimiter injection accepted: %v", err)
+	}
+}
+
+func TestProbeMihomoSnapshotAllowsRouteRuleWithoutEntries(t *testing.T) {
+	snapshot := signedProbeMihomoTestSnapshot(t)
+	snapshot.Rules[0].Entries = nil
+	snapshot = signProbeMihomoTestSnapshot(t, snapshot)
+	if err := validateProbeMihomoSnapshot(snapshot, "19"); err != nil {
+		t.Fatalf("empty original route rule rejected: %v", err)
+	}
+
+	raw, err := compileProbeMihomoConfig(snapshot, probeMihomoRuntimeSecrets{SOCKSUsername: "runtime-user", SOCKSPassword: "runtime-password", APISecret: "api-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "node-a,no-resolve") || !strings.Contains(string(raw), "MATCH,DIRECT") {
+		t.Fatalf("empty route rule emitted traffic match or lost fallback:\n%s", raw)
 	}
 }
 
@@ -87,13 +117,14 @@ func TestCompileProbeMihomoConfigIsLoopbackAuthenticatedAndUsesSelectedNodes(t *
 	text := string(raw)
 	for _, want := range []string{
 		"127.0.0.1", "runtime-user", "runtime-password", "api-secret",
-		"DOMAIN-SUFFIX,example.com,node-a", "DOMAIN-SUFFIX,api.example.net,node-a", "MATCH,DIRECT",
+		"DOMAIN-SUFFIX,example.com,node-a", "DOMAIN-REGEX,api,node-a", "DOMAIN-REGEX,^cdn,node-a",
+		"IP-CIDR,10.0.0.0/8,node-a,no-resolve", "DOMAIN-SUFFIX,direct.example,DIRECT", "MATCH,DIRECT",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("compiled config missing %q:\n%s", want, text)
 		}
 	}
-	for _, forbidden := range []string{"tun:", "0.0.0.0", "allow-lan: true"} {
+	for _, forbidden := range []string{"tun:", "listen: 0.0.0.0", "allow-lan: true"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("compiled config contains %q:\n%s", forbidden, text)
 		}

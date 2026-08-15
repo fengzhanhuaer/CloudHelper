@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,7 +14,7 @@ import (
 const (
 	probeNodeKindNormal                = "normal"
 	probeNodeKindMihomoExit            = "mihomo_exit"
-	probeSpecialExitRuleIDPrefix       = "special-exit:"
+	probeSpecialExitDirectTarget       = "DIRECT"
 	probeSpecialExitMaxCount           = 128
 	probeSpecialExitMaxRules           = 2048
 	probeSpecialExitMaxProxies         = 4096
@@ -45,9 +44,9 @@ type probeSpecialExitSubscription struct {
 }
 
 type probeSpecialExitRule struct {
-	ID      string   `json:"id"`
-	Target  string   `json:"target"`
-	Domains []string `json:"domains"`
+	RouteRuleID string   `json:"route_rule_id"`
+	Target      string   `json:"target"`
+	Entries     []string `json:"entries"`
 }
 
 type probeSpecialExitSnapshot struct {
@@ -216,43 +215,109 @@ func normalizeProbeSpecialExitRules(input []probeSpecialExitRule) ([]probeSpecia
 	out := make([]probeSpecialExitRule, 0, len(input))
 	seen := make(map[string]struct{})
 	for index, raw := range input {
-		id := strings.TrimSpace(raw.ID)
-		if id == "" {
-			id = "rule-" + strconv.Itoa(index+1)
+		routeRuleID := strings.TrimSpace(raw.RouteRuleID)
+		if routeRuleID == "" {
+			continue
 		}
-		if len(id) > 128 {
-			return nil, fmt.Errorf("rules[%d].id is too long", index)
+		if len(routeRuleID) > 128 || strings.ContainsAny(routeRuleID, "\r\n") {
+			return nil, fmt.Errorf("rules[%d].route_rule_id is invalid", index)
 		}
-		if _, exists := seen[id]; exists {
-			return nil, fmt.Errorf("rules[%d].id is duplicated", index)
+		if _, exists := seen[routeRuleID]; exists {
+			return nil, fmt.Errorf("rules[%d].route_rule_id is duplicated", index)
 		}
-		seen[id] = struct{}{}
-		target := strings.TrimSpace(raw.Target)
+		seen[routeRuleID] = struct{}{}
+		target := normalizeProbeSpecialExitTarget(raw.Target)
 		if target == "" {
-			return nil, fmt.Errorf("rules[%d] requires an exit node", index)
+			return nil, fmt.Errorf("rules[%d].target is invalid", index)
 		}
 		if len(target) > 256 || strings.ContainsAny(target, ",\r\n") {
 			return nil, fmt.Errorf("rules[%d].target contains an unsupported delimiter", index)
 		}
-		for _, domain := range raw.Domains {
-			if strings.ContainsAny(strings.TrimSpace(domain), ",:\r\n") {
-				return nil, fmt.Errorf("rules[%d] contains an invalid domain", index)
-			}
-		}
-		entries := normalizeProbeVirtualRouterRouteRuleEntries(raw.Domains)
-		if len(entries) == 0 {
-			return nil, fmt.Errorf("rules[%d] requires at least one domain", index)
-		}
-		domains := make([]string, 0, len(entries))
-		for _, entry := range entries {
-			if !strings.HasPrefix(entry, "domain_suffix:") {
-				return nil, fmt.Errorf("rules[%d] only supports domain names", index)
-			}
-			domains = append(domains, strings.TrimPrefix(entry, "domain_suffix:"))
-		}
-		out = append(out, probeSpecialExitRule{ID: id, Target: target, Domains: domains})
+		entries := normalizeProbeVirtualRouterRouteRuleEntries(raw.Entries)
+		out = append(out, probeSpecialExitRule{RouteRuleID: routeRuleID, Target: target, Entries: entries})
 	}
 	return out, nil
+}
+
+func normalizeProbeSpecialExitTarget(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" || strings.EqualFold(value, probeSpecialExitDirectTarget) {
+		return probeSpecialExitDirectTarget
+	}
+	return value
+}
+
+func probeSpecialExitRouteRuleAssignedToNode(rule probeVirtualRouterRouteRule, nodeID string) bool {
+	return normalizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) == probeVirtualRouterRouteRuleActionExit &&
+		normalizeProbeNodeID(rule.ExitNodeID) == normalizeProbeNodeID(nodeID)
+}
+
+func compileProbeSpecialExitRules(nodeID string, selections []probeSpecialExitRule, routeRules []probeVirtualRouterRouteRule, strict bool) ([]probeSpecialExitRule, error) {
+	nodeID = normalizeProbeNodeID(nodeID)
+	selectionByID := make(map[string]string, len(selections))
+	for index, selection := range selections {
+		routeRuleID := strings.TrimSpace(selection.RouteRuleID)
+		if routeRuleID == "" || len(routeRuleID) > 128 || strings.ContainsAny(routeRuleID, "\r\n") {
+			return nil, fmt.Errorf("rules[%d].route_rule_id is invalid", index)
+		}
+		if _, exists := selectionByID[routeRuleID]; exists {
+			return nil, fmt.Errorf("rules[%d].route_rule_id is duplicated", index)
+		}
+		target := normalizeProbeSpecialExitTarget(selection.Target)
+		if len(target) > 256 || strings.ContainsAny(target, ",\r\n") {
+			return nil, fmt.Errorf("rules[%d].target is invalid", index)
+		}
+		selectionByID[routeRuleID] = target
+	}
+
+	matched := make(map[string]struct{}, len(selectionByID))
+	out := make([]probeSpecialExitRule, 0)
+	for _, routeRule := range normalizeProbeVirtualRouterRouteRules(routeRules) {
+		if !probeSpecialExitRouteRuleAssignedToNode(routeRule, nodeID) {
+			continue
+		}
+		routeRuleID := strings.TrimSpace(routeRule.ID)
+		target := probeSpecialExitDirectTarget
+		if selected, ok := selectionByID[routeRuleID]; ok {
+			target = selected
+			matched[routeRuleID] = struct{}{}
+		}
+		out = append(out, probeSpecialExitRule{
+			RouteRuleID: routeRuleID,
+			Target:      target,
+			Entries:     append([]string(nil), routeRule.Entries...),
+		})
+	}
+	if strict {
+		for routeRuleID := range selectionByID {
+			if _, ok := matched[routeRuleID]; !ok {
+				return nil, fmt.Errorf("route rule %q is not assigned to special exit %q", routeRuleID, nodeID)
+			}
+		}
+	}
+	return out, nil
+}
+
+func reconcileProbeSpecialExitConfigsWithRouteRules(items []probeSpecialExitConfig, routeRules []probeVirtualRouterRouteRule, now time.Time) ([]probeSpecialExitConfig, bool) {
+	normalized := normalizeProbeSpecialExitConfigs(items)
+	changed := false
+	for index := range normalized {
+		item := &normalized[index]
+		previousHash := probeSpecialExitSemanticHash(*item)
+		compiled, err := compileProbeSpecialExitRules(item.NodeID, item.Rules, routeRules, false)
+		if err != nil {
+			continue
+		}
+		item.Rules = compiled
+		nextHash := probeSpecialExitSemanticHash(*item)
+		if nextHash != previousHash {
+			item.Revision++
+			item.UpdatedAt = now.UTC().Format(time.RFC3339)
+			changed = true
+		}
+		item.SHA256 = probeSpecialExitSnapshotHash(*item)
+	}
+	return normalized, changed
 }
 
 func normalizeProbeSpecialExitProxies(input []map[string]interface{}) ([]map[string]interface{}, error) {
@@ -313,6 +378,9 @@ func validateProbeSpecialExitResolvedPolicies(item probeSpecialExitConfig) error
 		return nil
 	}
 	for index, rule := range item.Rules {
+		if normalizeProbeSpecialExitTarget(rule.Target) == probeSpecialExitDirectTarget {
+			continue
+		}
 		if err := validate(rule.Target); err != nil {
 			return fmt.Errorf("rules[%d].target: %w", index, err)
 		}
@@ -321,7 +389,7 @@ func validateProbeSpecialExitResolvedPolicies(item probeSpecialExitConfig) error
 }
 
 func probeSpecialExitSnapshotForConfig(item probeSpecialExitConfig) probeSpecialExitSnapshot {
-	return probeSpecialExitSnapshot{Version: 2, NodeID: item.NodeID, Revision: item.Revision, SHA256: item.SHA256, Rules: append([]probeSpecialExitRule(nil), item.Rules...), Proxies: append([]map[string]interface{}(nil), item.Proxies...)}
+	return probeSpecialExitSnapshot{Version: 3, NodeID: item.NodeID, Revision: item.Revision, SHA256: item.SHA256, Rules: append([]probeSpecialExitRule(nil), item.Rules...), Proxies: append([]map[string]interface{}(nil), item.Proxies...)}
 }
 
 func probeSpecialExitSnapshotHash(item probeSpecialExitConfig) string {
@@ -348,97 +416,6 @@ func probeSpecialExitSubscriptionSourceHash(item probeSpecialExitConfig) string 
 	encoded, _ := json.Marshal(value)
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:])
-}
-
-func buildProbeSpecialExitManagedRules(items []probeSpecialExitConfig) []probeVirtualRouterRouteRule {
-	out := make([]probeVirtualRouterRouteRule, 0, len(items))
-	for _, item := range normalizeProbeSpecialExitConfigs(items) {
-		entries := make([]string, 0)
-		for _, rule := range item.Rules {
-			for _, domain := range rule.Domains {
-				entries = append(entries, "domain_suffix:"+domain)
-			}
-		}
-		entries = normalizeProbeVirtualRouterRouteRuleEntries(entries)
-		if len(entries) == 0 {
-			continue
-		}
-		out = append(out, probeVirtualRouterRouteRule{ID: probeSpecialExitRuleIDPrefix + item.NodeID, Name: "Mihomo exit " + item.NodeID, Action: probeVirtualRouterRouteRuleActionExit, ExitNodeID: item.NodeID, Entries: entries, Note: "managed special exit", UpdatedAt: item.UpdatedAt})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out
-}
-
-func buildEffectiveProbeVirtualRouterRouteRules(manual []probeVirtualRouterRouteRule, special []probeSpecialExitConfig) []probeVirtualRouterRouteRule {
-	out := append([]probeVirtualRouterRouteRule(nil), normalizeProbeVirtualRouterRouteRules(manual)...)
-	out = append(out, buildProbeSpecialExitManagedRules(special)...)
-	return out
-}
-
-func validateProbeSpecialExitConflicts(manual []probeVirtualRouterRouteRule, special []probeSpecialExitConfig) error {
-	type ownedEntry struct{ owner, entry string }
-	owned := make([]ownedEntry, 0)
-	for _, rule := range normalizeProbeVirtualRouterRouteRules(manual) {
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(rule.ID)), probeSpecialExitRuleIDPrefix) {
-			return fmt.Errorf("manual route rule %q uses reserved special-exit ID", rule.ID)
-		}
-		for _, entry := range rule.Entries {
-			owned = append(owned, ownedEntry{owner: "manual", entry: entry})
-		}
-	}
-	for _, item := range normalizeProbeSpecialExitConfigs(special) {
-		for _, rule := range item.Rules {
-			for _, domain := range rule.Domains {
-				owned = append(owned, ownedEntry{owner: "special:" + item.NodeID, entry: "domain_suffix:" + domain})
-			}
-		}
-	}
-	for i := 0; i < len(owned); i++ {
-		for j := i + 1; j < len(owned); j++ {
-			if owned[i].owner == owned[j].owner || !probeSpecialExitEntriesOverlap(owned[i].entry, owned[j].entry) {
-				continue
-			}
-			return fmt.Errorf("route entry conflict: %s %q overlaps %s %q", owned[i].owner, owned[i].entry, owned[j].owner, owned[j].entry)
-		}
-	}
-	return nil
-}
-
-func probeSpecialExitEntriesOverlap(left string, right string) bool {
-	if left == right {
-		return true
-	}
-	lk, lv, lok := strings.Cut(left, ":")
-	rk, rv, rok := strings.Cut(right, ":")
-	if !lok || !rok {
-		return false
-	}
-	leftCIDR := lk == "cidr"
-	rightCIDR := rk == "cidr"
-	if leftCIDR != rightCIDR {
-		return false
-	}
-	if lk == "cidr" && rk == "cidr" {
-		lp, le := netip.ParsePrefix(lv)
-		rp, re := netip.ParsePrefix(rv)
-		return le == nil && re == nil && (lp.Contains(rp.Addr()) || rp.Contains(lp.Addr()))
-	}
-	if lk == "domain_keyword" || rk == "domain_keyword" {
-		return true
-	}
-	if lk == "domain_suffix" && rk == "domain_suffix" {
-		return lv == rv || strings.HasSuffix(lv, "."+rv) || strings.HasSuffix(rv, "."+lv)
-	}
-	if lk == "domain_prefix" && rk == "domain_prefix" {
-		return strings.HasPrefix(lv, rv) || strings.HasPrefix(rv, lv)
-	}
-	if lk == "domain_prefix" && rk == "domain_suffix" {
-		return true
-	}
-	if lk == "domain_suffix" && rk == "domain_prefix" {
-		return true
-	}
-	return false
 }
 
 func findProbeSpecialExitByNodeID(items []probeSpecialExitConfig, nodeID string) (probeSpecialExitConfig, bool) {

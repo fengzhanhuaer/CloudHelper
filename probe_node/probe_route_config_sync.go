@@ -39,9 +39,9 @@ type probeSpecialExitSnapshot struct {
 }
 
 type probeSpecialExitRule struct {
-	ID      string   `json:"id"`
-	Target  string   `json:"target"`
-	Domains []string `json:"domains"`
+	RouteRuleID string   `json:"route_rule_id"`
+	Target      string   `json:"target"`
+	Entries     []string `json:"entries"`
 }
 
 type probeVirtualRouterConfig struct {

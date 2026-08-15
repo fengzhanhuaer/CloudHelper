@@ -22,7 +22,6 @@ func getMngProbeVirtualRouterConfig() (map[string]interface{}, error) {
 	ensureProbeVirtualRouterStoredAuthFields()
 	ProbeRouteConfigStore.mu.RLock()
 	config := normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter)
-	config.RouteRules = buildEffectiveProbeVirtualRouterRouteRules(config.RouteRules, ProbeRouteConfigStore.data.SpecialExits)
 	config.FakeIPLibrary = normalizeProbeVirtualRouterFakeIPLibrary(ProbeRouteConfigStore.data.VirtualRouterFakeIP)
 	ProbeRouteConfigStore.mu.RUnlock()
 	config = enrichProbeVirtualRouterAuthTickets(ensureProbeVirtualRouterAuthFields(ensureProbeVirtualRouterProbeIPsForKnownNodes(config)))
@@ -230,23 +229,16 @@ func getMngProbeVirtualRouterRouteRules() (map[string]interface{}, error) {
 	}
 	ProbeRouteConfigStore.mu.RLock()
 	config := normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter)
-	managed := buildProbeSpecialExitManagedRules(ProbeRouteConfigStore.data.SpecialExits)
-	effective := buildEffectiveProbeVirtualRouterRouteRules(config.RouteRules, ProbeRouteConfigStore.data.SpecialExits)
 	config.FakeIPLibrary = normalizeProbeVirtualRouterFakeIPLibrary(ProbeRouteConfigStore.data.VirtualRouterFakeIP)
 	ProbeRouteConfigStore.mu.RUnlock()
 	return map[string]interface{}{
-		"items":           config.RouteRules,
-		"managed_items":   managed,
-		"effective_items": effective,
+		"items": config.RouteRules,
 	}, nil
 }
 
 func validateMngProbeVirtualRouterRouteRule(item probeVirtualRouterRouteRule, index int) error {
 	if strings.TrimSpace(item.Name) == "" {
 		return fmt.Errorf("route_rules[%d].name is required", index)
-	}
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(item.ID)), probeSpecialExitRuleIDPrefix) {
-		return fmt.Errorf("route_rules[%d].id uses reserved prefix %q", index, probeSpecialExitRuleIDPrefix)
 	}
 	action := normalizeProbeVirtualRouterRouteRuleAction(item.Action, item.ExitNodeID)
 	if action == "" {
@@ -291,19 +283,14 @@ func upsertMngProbeVirtualRouterRouteRules(payload json.RawMessage, controllerBa
 		return nil, fmt.Errorf("route_rules exceeded limit (%d)", probeVirtualRouterMaxRouteRules)
 	}
 	rules := normalizeProbeVirtualRouterRouteRules(req.Items)
-	ProbeRouteConfigStore.mu.RLock()
-	specialExits := append([]probeSpecialExitConfig(nil), ProbeRouteConfigStore.data.SpecialExits...)
-	ProbeRouteConfigStore.mu.RUnlock()
-	if err := validateProbeSpecialExitConflicts(rules, specialExits); err != nil {
-		return nil, err
-	}
 	now := time.Now().UTC()
 	ProbeRouteConfigStore.mu.Lock()
 	config := normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter)
 	config.RouteRules = rules
 	config.UpdatedAt = now.Format(time.RFC3339)
 	ProbeRouteConfigStore.data.VirtualRouter = config
-	reconcileProbeVirtualRouterFakeIPLibraryWithRouteRulesLocked(buildEffectiveProbeVirtualRouterRouteRules(rules, specialExits), now)
+	ProbeRouteConfigStore.data.SpecialExits, _ = reconcileProbeSpecialExitConfigsWithRouteRules(ProbeRouteConfigStore.data.SpecialExits, rules, now)
+	reconcileProbeVirtualRouterFakeIPLibraryWithRouteRulesLocked(rules, now)
 	ProbeRouteConfigStore.mu.Unlock()
 	if err := ProbeRouteConfigStore.Save(); err != nil {
 		return nil, err
@@ -363,11 +350,6 @@ func upsertMngProbeVirtualRouterRouteRule(payload json.RawMessage, controllerBas
 	}
 
 	rules = normalizeProbeVirtualRouterRouteRules(rules)
-	specialExits := append([]probeSpecialExitConfig(nil), ProbeRouteConfigStore.data.SpecialExits...)
-	if err := validateProbeSpecialExitConflicts(rules, specialExits); err != nil {
-		ProbeRouteConfigStore.mu.Unlock()
-		return nil, err
-	}
 	var saved probeVirtualRouterRouteRule
 	for _, rule := range rules {
 		if rule.ID == item.ID {
@@ -382,7 +364,8 @@ func upsertMngProbeVirtualRouterRouteRule(payload json.RawMessage, controllerBas
 	config.RouteRules = rules
 	config.UpdatedAt = now.Format(time.RFC3339)
 	ProbeRouteConfigStore.data.VirtualRouter = config
-	reconcileProbeVirtualRouterFakeIPLibraryWithRouteRulesLocked(buildEffectiveProbeVirtualRouterRouteRules(rules, specialExits), now)
+	ProbeRouteConfigStore.data.SpecialExits, _ = reconcileProbeSpecialExitConfigsWithRouteRules(ProbeRouteConfigStore.data.SpecialExits, rules, now)
+	reconcileProbeVirtualRouterFakeIPLibraryWithRouteRulesLocked(rules, now)
 	ProbeRouteConfigStore.mu.Unlock()
 	if err := ProbeRouteConfigStore.Save(); err != nil {
 		return nil, err

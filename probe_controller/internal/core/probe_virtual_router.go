@@ -184,7 +184,6 @@ func buildProbeVirtualRouterConfigForNodeLocked(nodeID string) probeVirtualRoute
 		return defaultProbeVirtualRouterConfig()
 	}
 	config := ensureProbeVirtualRouterAuthFields(ensureProbeVirtualRouterProbeIPsForKnownNodes(normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter)))
-	config.RouteRules = buildEffectiveProbeVirtualRouterRouteRules(config.RouteRules, ProbeRouteConfigStore.data.SpecialExits)
 	config = enrichProbeVirtualRouterTLSFingerprints(config)
 	config = enrichProbeVirtualRouterAuthTickets(config)
 	config = enrichProbeVirtualRouterProbeIPDisplayNames(config)

@@ -2,7 +2,7 @@
 
 ## Mihomo 特殊出口探针
 
-特殊出口探针从普通 `probe_node` 同一源码以 `mihomo_exit` tag构建，发布物名为 `cloudhelper-probe-exit-node-linux-amd64`。安装前先在主控 `/mng/probe` 的探针列表选择“Mihomo 出口探针”并创建；创建后再到 `/mng/route` 的“二次分流”Tab添加Clash配置并提取节点，然后为每组域名选择一个具体节点。Clash配置URL使用普通可见输入；主控自动携带固定的Clash/Mihomo格式协商请求头，不需要也不支持手工请求头配置。主控支持标准Clash/Mihomo YAML以及明文或Base64编码的AnyTLS URI列表。Mihomo不支持的AnyTLS+Reality节点按节点跳过并在页面显示数量；若过滤后没有兼容节点则刷新失败并保留last-known-good。刷新只有在全部启用源成功下载、解析和合并后才替换现有节点快照。未匹配域名固定DIRECT，不支持旧的多动作、端口或网络条件模型。私有快照v2不兼容旧动作模型；升级主控和特殊探针后，需要重新保存二次分流配置并重新提取节点，两端应安排在同一维护窗口升级。
+特殊出口探针从普通 `probe_node` 同一源码以 `mihomo_exit` tag构建，发布物名为 `cloudhelper-probe-exit-node-linux-amd64`。安装前先在主控 `/mng/probe` 的探针列表选择“Mihomo 出口探针”并创建；在 `/mng/route` 的“路由规则”Tab把业务规则指向该探针，再到“二次分流”Tab添加Clash配置、提取节点，并为每条已分配规则选择“直出”或一个具体Clash节点。规则名称和匹配条目只能在原“路由规则”Tab维护；二次分流不创建域名组或聚合规则。Clash配置URL使用普通可见输入；主控自动携带固定的Clash/Mihomo格式协商请求头，不需要也不支持手工请求头配置。主控支持标准Clash/Mihomo YAML以及明文或Base64编码的AnyTLS URI列表。Mihomo不支持的AnyTLS+Reality节点按节点跳过并在页面显示数量；若过滤后没有兼容节点则刷新失败并保留last-known-good。刷新只有在全部启用源成功下载、解析和合并后才替换现有节点快照。新分配规则默认直出，主规则变化会自动重编译私有快照。私有快照v3不兼容旧域名组模型；升级主控和特殊探针后，需要重新保存二次分流配置并重新提取节点，两端应安排在同一维护窗口升级。
 
 ### 原生安装
 
