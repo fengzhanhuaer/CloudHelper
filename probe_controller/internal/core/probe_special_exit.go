@@ -13,15 +13,14 @@ import (
 )
 
 const (
-	probeNodeKindNormal                  = "normal"
-	probeNodeKindMihomoExit              = "mihomo_exit"
-	probeSpecialExitRuleIDPrefix         = "special-exit:"
-	probeSpecialExitMaxCount             = 128
-	probeSpecialExitMaxRules             = 2048
-	probeSpecialExitMaxProxies           = 4096
-	probeSpecialExitMaxSubscriptions     = 32
-	probeSpecialExitMaxSubscriptionURL   = 4096
-	probeSpecialExitMaxSubscriptionHeads = 32
+	probeNodeKindNormal                = "normal"
+	probeNodeKindMihomoExit            = "mihomo_exit"
+	probeSpecialExitRuleIDPrefix       = "special-exit:"
+	probeSpecialExitMaxCount           = 128
+	probeSpecialExitMaxRules           = 2048
+	probeSpecialExitMaxProxies         = 4096
+	probeSpecialExitMaxSubscriptions   = 32
+	probeSpecialExitMaxSubscriptionURL = 4096
 )
 
 type probeSpecialExitConfig struct {
@@ -37,14 +36,12 @@ type probeSpecialExitConfig struct {
 }
 
 type probeSpecialExitSubscription struct {
-	ID                         string            `json:"id"`
-	Name                       string            `json:"name"`
-	Enabled                    bool              `json:"enabled"`
-	URL                        string            `json:"url,omitempty"`
-	Headers                    map[string]string `json:"headers,omitempty"`
-	ClearHeaders               bool              `json:"clear_headers,omitempty"`
-	LastSubscriptionRefreshAt  string            `json:"last_subscription_refresh_at,omitempty"`
-	LastSubscriptionRefreshErr string            `json:"last_subscription_refresh_error,omitempty"`
+	ID                         string `json:"id"`
+	Name                       string `json:"name"`
+	Enabled                    bool   `json:"enabled"`
+	URL                        string `json:"url,omitempty"`
+	LastSubscriptionRefreshAt  string `json:"last_subscription_refresh_at,omitempty"`
+	LastSubscriptionRefreshErr string `json:"last_subscription_refresh_error,omitempty"`
 }
 
 type probeSpecialExitRule struct {
@@ -198,12 +195,6 @@ func normalizeProbeSpecialExitSubscriptions(input, previous []probeSpecialExitSu
 		if len(url) > probeSpecialExitMaxSubscriptionURL {
 			return nil, fmt.Errorf("subscriptions[%d].url is too long", index)
 		}
-		headers := normalizeProbeSpecialExitHeaders(raw.Headers)
-		if raw.ClearHeaders {
-			headers = map[string]string{}
-		} else if len(headers) == 0 && hadPrior {
-			headers = normalizeProbeSpecialExitHeaders(prior.Headers)
-		}
 		lastRefreshAt := strings.TrimSpace(raw.LastSubscriptionRefreshAt)
 		lastRefreshErr := strings.TrimSpace(raw.LastSubscriptionRefreshErr)
 		if hadPrior {
@@ -211,35 +202,11 @@ func normalizeProbeSpecialExitSubscriptions(input, previous []probeSpecialExitSu
 			lastRefreshErr = prior.LastSubscriptionRefreshErr
 		}
 		out = append(out, probeSpecialExitSubscription{
-			ID: id, Name: name, Enabled: raw.Enabled, URL: url, Headers: headers,
+			ID: id, Name: name, Enabled: raw.Enabled, URL: url,
 			LastSubscriptionRefreshAt: lastRefreshAt, LastSubscriptionRefreshErr: lastRefreshErr,
 		})
 	}
 	return out, nil
-}
-
-func normalizeProbeSpecialExitHeaders(input map[string]string) map[string]string {
-	if len(input) == 0 {
-		return map[string]string{}
-	}
-	keys := make([]string, 0, len(input))
-	for key := range input {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	out := make(map[string]string)
-	for _, rawKey := range keys {
-		key := strings.TrimSpace(rawKey)
-		value := strings.TrimSpace(input[rawKey])
-		if key == "" || value == "" || len(key) > 128 || len(value) > 4096 {
-			continue
-		}
-		out[key] = value
-		if len(out) >= probeSpecialExitMaxSubscriptionHeads {
-			break
-		}
-	}
-	return out
 }
 
 func normalizeProbeSpecialExitRules(input []probeSpecialExitRule) ([]probeSpecialExitRule, error) {
@@ -375,7 +342,7 @@ func probeSpecialExitSubscriptionSourceHash(item probeSpecialExitConfig) string 
 	for _, source := range item.Subscriptions {
 		value = append(value, probeSpecialExitSubscription{
 			ID: strings.TrimSpace(source.ID), Name: strings.TrimSpace(source.Name), Enabled: source.Enabled,
-			URL: strings.TrimSpace(source.URL), Headers: normalizeProbeSpecialExitHeaders(source.Headers),
+			URL: strings.TrimSpace(source.URL),
 		})
 	}
 	encoded, _ := json.Marshal(value)

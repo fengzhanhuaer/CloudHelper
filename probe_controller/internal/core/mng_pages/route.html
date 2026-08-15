@@ -104,19 +104,12 @@
     .special-exit-subscription { border-top:1px solid #30363d; padding-top:10px; }
     .special-exit-subscription-grid { display:grid; grid-template-columns:minmax(140px, 1fr) minmax(280px, 2fr) auto auto; gap:8px; align-items:center; }
     .special-exit-subscription-grid > * { min-width:0; width:100%; box-sizing:border-box; }
-    .special-exit-subscription-advanced { grid-column:1 / -1; }
-    .special-exit-subscription-advanced summary { cursor:pointer; color:#8b949e; font-size:12px; }
-    .special-exit-subscription-advanced-body { display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:8px; align-items:end; margin-top:8px; }
-    .special-exit-subscription-headers { min-height:72px !important; }
-    .special-exit-subscription-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; }
-    .special-exit-subscription-actions label { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
-    .special-exit-subscription-actions input[type="checkbox"] { min-width:0; width:16px; height:16px; margin:0; accent-color:#2ea043; }
     .special-exit-proxy-list { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:0 16px; max-height:240px; overflow:auto; margin-top:10px; }
     .special-exit-proxy-item { border-top:1px solid #30363d; padding:8px 0; overflow-wrap:anywhere; }
     .special-exit-domain-list { display:grid; gap:6px; margin-top:10px; }
     .special-exit-domain-item { display:grid; grid-template-columns:minmax(0, 1fr) minmax(160px, auto); gap:12px; padding:7px 0; border-top:1px solid #30363d; }
     .special-exit-layout .box-title > span:first-child { flex:0 0 auto; white-space:nowrap; }
-    @media (max-width: 820px) { .special-exit-rule-grid, .special-exit-subscription-grid, .special-exit-subscription-advanced-body { grid-template-columns:1fr; } .special-exit-subscription-advanced { grid-column:auto; } .special-exit-rule-actions { justify-content:flex-start; } }
+    @media (max-width: 820px) { .special-exit-rule-grid, .special-exit-subscription-grid { grid-template-columns:1fr; } .special-exit-rule-actions { justify-content:flex-start; } }
     @media (max-width: 620px) {
       .box-title.filterable { align-items:flex-start; flex-direction:column; }
       .filter-control { width:100%; margin-left:0; }
@@ -577,8 +570,7 @@
           id: String(item.id || `subscription-${index + 1}`),
           name: String(existing.name || item.name || `订阅 ${index + 1}`),
           enabled: existing.enabled === undefined ? item.enabled !== false : existing.enabled !== false,
-          url: String(existing.url || ''), headers: existing.headers || {}, clear_headers: !!existing.clear_headers,
-          configured: item.configured === true, headers_configured: item.headers_configured === true,
+          url: String(existing.url || ''), configured: item.configured === true,
           last_subscription_refresh_at: String(item.last_subscription_refresh_at || ''),
           last_subscription_refresh_error: String(item.last_subscription_refresh_error || ''),
         };
@@ -656,28 +648,17 @@
       }
       host.innerHTML = subscriptions.map((source, index) => {
         const configured = source.configured ? '已保存URL' : '未保存URL';
-        const headers = source.headers_configured ? '已保存请求头' : '无请求头';
         const refresh = source.last_subscription_refresh_error
           ? `<span class="route-error">${escapeHTML(source.last_subscription_refresh_error)}</span>`
           : escapeHTML(source.last_subscription_refresh_at || '未刷新');
-        const headerText = source.headers && Object.keys(source.headers).length ? JSON.stringify(source.headers, null, 2) : '';
         return `<div class="special-exit-subscription" data-special-exit-subscription="${index}">
           <div class="special-exit-subscription-grid">
             <input data-se-subscription-name="${index}" type="text" value="${escapeHTML(source.name || '')}" placeholder="配置名称" />
             <input data-se-subscription-url="${index}" class="mono" type="url" value="${escapeHTML(source.url || '')}" placeholder="Clash 配置 URL（留空保留）" autocomplete="url" />
             <select data-se-subscription-enabled="${index}"><option value="true" ${source.enabled === false ? '' : 'selected'}>使用</option><option value="false" ${source.enabled === false ? 'selected' : ''}>停用</option></select>
             <button class="btn danger" data-se-subscription-remove="${index}" type="button">删除</button>
-            <details class="special-exit-subscription-advanced">
-              <summary>请求设置</summary>
-              <div class="special-exit-subscription-advanced-body">
-                <textarea data-se-subscription-headers="${index}" class="mono special-exit-subscription-headers" placeholder='请求头 JSON'>${escapeHTML(headerText)}</textarea>
-                <div class="special-exit-subscription-actions">
-                  <label class="small"><input data-se-subscription-clear-headers="${index}" type="checkbox" ${source.clear_headers ? 'checked' : ''} /> 清除请求头</label>
-                </div>
-              </div>
-            </details>
           </div>
-          <div class="small muted" style="margin-top:8px;">${configured} · ${headers} · ${refresh}</div>
+          <div class="small muted" style="margin-top:8px;">${configured} · ${refresh}</div>
         </div>`;
       }).join('');
       bindSpecialExitSubscriptionEvents();
@@ -698,24 +679,6 @@
         const index = Number(element.dataset.seSubscriptionUrl);
         if (draft.subscriptions[index]) draft.subscriptions[index].url = String(element.value || '').trim();
       }));
-      document.querySelectorAll('[data-se-subscription-headers]').forEach((element) => element.addEventListener('input', () => {
-        const index = Number(element.dataset.seSubscriptionHeaders);
-        if (!draft.subscriptions[index]) return;
-        const value = String(element.value || '').trim();
-        try {
-          const headers = value ? JSON.parse(value) : {};
-          if (!headers || Array.isArray(headers) || typeof headers !== 'object') throw new Error();
-          draft.subscriptions[index].headers = headers;
-          element.setCustomValidity('');
-        } catch (_) {
-          draft.subscriptions[index].headers = null;
-          element.setCustomValidity('请求头必须是 JSON 对象');
-        }
-      }));
-      document.querySelectorAll('[data-se-subscription-clear-headers]').forEach((element) => element.addEventListener('change', () => {
-        const index = Number(element.dataset.seSubscriptionClearHeaders);
-        if (draft.subscriptions[index]) draft.subscriptions[index].clear_headers = !!element.checked;
-      }));
       document.querySelectorAll('[data-se-subscription-remove]').forEach((element) => element.addEventListener('click', () => {
         const index = Number(element.dataset.seSubscriptionRemove);
         if (index >= 0 && index < draft.subscriptions.length) draft.subscriptions.splice(index, 1);
@@ -730,7 +693,7 @@
       const existingIDs = new Set(draft.subscriptions.map((item) => String(item.id || '')));
       let id = '';
       do { id = `subscription-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`; } while (existingIDs.has(id));
-      draft.subscriptions.push({ id, name: `Clash 配置 ${sequence}`, enabled: true, url: '', headers: {}, clear_headers: false, configured: false, headers_configured: false });
+      draft.subscriptions.push({ id, name: `Clash 配置 ${sequence}`, enabled: true, url: '', configured: false });
       renderSpecialExitSubscriptions(draft);
     }
 
@@ -817,10 +780,6 @@
     function captureSpecialExitPayload() {
       const draft = currentSpecialExitDraft();
       if (!draft) throw new Error('请选择特殊探针');
-      for (const [index, source] of (draft.subscriptions || []).entries()) {
-        if (!source.headers || Array.isArray(source.headers) || typeof source.headers !== 'object') throw new Error(`订阅 ${index + 1} 的请求头必须是 JSON 对象`);
-        if (Object.values(source.headers).some((value) => typeof value !== 'string')) throw new Error(`订阅 ${index + 1} 的请求头值必须是字符串`);
-      }
       const proxyNames = new Set(Array.isArray(draft.proxy_names) ? draft.proxy_names : []);
       for (const [index, rule] of (draft.rules || []).entries()) {
         if (!Array.isArray(rule.domains) || !rule.domains.length) throw new Error(`域名组 ${index + 1} 至少需要一个域名`);
@@ -830,7 +789,7 @@
         node_id: draft.node_id,
         subscriptions: (draft.subscriptions || []).map((source) => ({
           id: source.id, name: source.name, enabled: source.enabled !== false,
-          url: source.url || '', headers: source.headers || {}, clear_headers: !!source.clear_headers,
+          url: source.url || '',
         })),
         rules: (draft.rules || []).map((rule) => ({ id: rule.id, target: rule.target, domains: rule.domains || [] })),
       };
@@ -853,7 +812,9 @@
       const item = await persistSpecialExit();
       const result = await requestJSON('/mng/api/route/special_exits/subscription/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ node_id: item.node_id }) });
       await loadSpecialExits(true);
-      setStatus(`节点提取完成：${Number(result.subscription_count || 0)} 个配置，${Number(result.proxy_count || 0)} 个节点`, 'ok');
+      const skipped = Number(result.skipped_proxy_count || 0);
+      const skippedText = skipped > 0 ? `，已跳过 ${skipped} 个 Mihomo 不支持的 AnyTLS+Reality 节点` : '';
+      setStatus(`节点提取完成：${Number(result.subscription_count || 0)} 个配置，${Number(result.proxy_count || 0)} 个节点${skippedText}`, 'ok');
     }
 
     async function deleteSpecialExit() {

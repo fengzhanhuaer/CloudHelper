@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -22,15 +23,16 @@ import (
 )
 
 const (
-	probeSpecialExitSubscriptionMaxBytes = 8 << 20
-	probeSpecialExitSubscriptionTimeout  = 20 * time.Second
-	probeSpecialExitMaxRedirects         = 5
+	probeSpecialExitSubscriptionMaxBytes  = 8 << 20
+	probeSpecialExitSubscriptionTimeout   = 20 * time.Second
+	probeSpecialExitMaxRedirects          = 5
+	probeSpecialExitSubscriptionUserAgent = "clash.meta"
+	probeSpecialExitSubscriptionAccept    = "application/yaml, application/x-yaml, text/yaml, text/plain;q=0.9, */*;q=0.1"
 )
 
 type probeSpecialExitManagedView struct {
 	NodeID                    string                             `json:"node_id"`
 	SubscriptionConfigured    bool                               `json:"subscription_configured"`
-	SubscriptionHeadersSet    bool                               `json:"subscription_headers_configured"`
 	Subscriptions             []probeSpecialExitSubscriptionView `json:"subscriptions"`
 	Rules                     []probeSpecialExitRuleView         `json:"rules"`
 	ProxyNames                []string                           `json:"proxy_names"`
@@ -59,10 +61,16 @@ type probeSpecialExitSubscriptionView struct {
 	Name                       string `json:"name"`
 	Enabled                    bool   `json:"enabled"`
 	Configured                 bool   `json:"configured"`
-	HeadersConfigured          bool   `json:"headers_configured"`
 	LastSubscriptionRefreshAt  string `json:"last_subscription_refresh_at,omitempty"`
 	LastSubscriptionRefreshErr string `json:"last_subscription_refresh_error,omitempty"`
 }
+
+type probeSpecialExitSubscriptionParseResult struct {
+	Proxies           []map[string]interface{}
+	SkippedProxyCount int
+}
+
+var errProbeSpecialExitAnyTLSRealityUnsupported = errors.New("AnyTLS+Reality is not supported by Mihomo")
 
 var probeSpecialExitLookupIP = net.DefaultResolver.LookupIPAddr
 var probeSpecialExitDialContext = (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext
@@ -100,7 +108,7 @@ func mngProbeSpecialExitView(item probeSpecialExitConfig) probeSpecialExitManage
 	for _, source := range item.Subscriptions {
 		subscriptions = append(subscriptions, probeSpecialExitSubscriptionView{
 			ID: source.ID, Name: source.Name, Enabled: source.Enabled,
-			Configured: strings.TrimSpace(source.URL) != "", HeadersConfigured: len(source.Headers) > 0,
+			Configured:                strings.TrimSpace(source.URL) != "",
 			LastSubscriptionRefreshAt: source.LastSubscriptionRefreshAt, LastSubscriptionRefreshErr: source.LastSubscriptionRefreshErr,
 		})
 	}
@@ -110,7 +118,7 @@ func mngProbeSpecialExitView(item probeSpecialExitConfig) probeSpecialExitManage
 	}
 	view := probeSpecialExitManagedView{
 		NodeID:                 item.NodeID,
-		SubscriptionConfigured: probeSpecialExitHasConfiguredSubscription(item), SubscriptionHeadersSet: probeSpecialExitHasSubscriptionHeaders(item), Subscriptions: subscriptions,
+		SubscriptionConfigured: probeSpecialExitHasConfiguredSubscription(item), Subscriptions: subscriptions,
 		Rules: rules, ProxyNames: proxyNames,
 		Revision: item.Revision, SHA256: item.SHA256, LastSubscriptionRefreshAt: item.LastSubscriptionRefreshAt,
 		LastSubscriptionError: item.LastSubscriptionRefreshErr, UpdatedAt: item.UpdatedAt,
@@ -285,21 +293,22 @@ func refreshMngProbeSpecialExitSubscription(ctx context.Context, nodeID string, 
 		return nil, fmt.Errorf("no enabled subscription sources are configured")
 	}
 	type fetchResult struct {
-		source  probeSpecialExitSubscription
-		proxies []map[string]interface{}
-		err     error
+		source            probeSpecialExitSubscription
+		proxies           []map[string]interface{}
+		skippedProxyCount int
+		err               error
 	}
 	results := make(chan fetchResult, len(enabled))
 	for _, source := range enabled {
 		source := source
 		go func() {
-			content, fetchErr := probeSpecialExitFetchSubscription(ctx, source.URL, source.Headers)
+			content, fetchErr := probeSpecialExitFetchSubscription(ctx, source.URL)
 			if fetchErr != nil {
 				results <- fetchResult{source: source, err: fetchErr}
 				return
 			}
-			proxies, parseErr := parseProbeSpecialExitSubscription(content)
-			results <- fetchResult{source: source, proxies: proxies, err: parseErr}
+			parsed, parseErr := parseProbeSpecialExitSubscriptionWithResult(content)
+			results <- fetchResult{source: source, proxies: parsed.Proxies, skippedProxyCount: parsed.SkippedProxyCount, err: parseErr}
 		}()
 	}
 	resultsByID := make(map[string]fetchResult, len(enabled))
@@ -308,6 +317,7 @@ func refreshMngProbeSpecialExitSubscription(ctx context.Context, nodeID string, 
 		resultsByID[result.source.ID] = result
 	}
 	merged := make([]map[string]interface{}, 0)
+	skippedProxyCount := 0
 	refreshedSourceIDs := make([]string, 0, len(enabled))
 	var firstFailure *fetchResult
 	for _, source := range enabled {
@@ -322,6 +332,7 @@ func refreshMngProbeSpecialExitSubscription(ctx context.Context, nodeID string, 
 		}
 		refreshedSourceIDs = append(refreshedSourceIDs, result.source.ID)
 		merged = append(merged, result.proxies...)
+		skippedProxyCount += result.skippedProxyCount
 	}
 	if firstFailure != nil {
 		return nil, fmt.Errorf("subscription source %q refresh failed: %w", firstFailure.source.Name, firstFailure.err)
@@ -335,7 +346,7 @@ func refreshMngProbeSpecialExitSubscription(ctx context.Context, nodeID string, 
 	if err != nil {
 		return nil, err
 	}
-	return map[string]interface{}{"ok": true, "item": mngProbeSpecialExitView(item), "proxy_count": len(proxies), "subscription_count": len(enabled), "sync": dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURL)}, nil
+	return map[string]interface{}{"ok": true, "item": mngProbeSpecialExitView(item), "proxy_count": len(proxies), "skipped_proxy_count": skippedProxyCount, "subscription_count": len(enabled), "sync": dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURL)}, nil
 }
 
 func applyProbeSpecialExitSubscriptionRefresh(nodeID, sourceHash string, proxies []map[string]interface{}, refreshedAt time.Time) (probeSpecialExitConfig, error) {
@@ -431,24 +442,22 @@ func probeSpecialExitHasConfiguredSubscription(item probeSpecialExitConfig) bool
 	return false
 }
 
-func probeSpecialExitHasSubscriptionHeaders(item probeSpecialExitConfig) bool {
-	for _, source := range item.Subscriptions {
-		if len(source.Headers) > 0 {
-			return true
-		}
-	}
-	return false
+func parseProbeSpecialExitSubscription(content []byte) ([]map[string]interface{}, error) {
+	result, err := parseProbeSpecialExitSubscriptionWithResult(content)
+	return result.Proxies, err
 }
 
-func parseProbeSpecialExitSubscription(content []byte) ([]map[string]interface{}, error) {
+func parseProbeSpecialExitSubscriptionWithResult(content []byte) (probeSpecialExitSubscriptionParseResult, error) {
 	if proxies, recognized, err := parseProbeSpecialExitYAML(content); recognized {
-		return proxies, err
+		return probeSpecialExitSubscriptionParseResult{Proxies: proxies}, err
 	}
-	proxies, err := parseProbeSpecialExitURIList(content)
+	result, err := parseProbeSpecialExitURIList(content)
 	if err != nil {
-		return nil, err
+		return probeSpecialExitSubscriptionParseResult{}, err
 	}
-	return normalizeProbeSpecialExitProxies(proxies)
+	proxies, err := normalizeProbeSpecialExitProxies(result.Proxies)
+	result.Proxies = proxies
+	return result, err
 }
 
 func parseProbeSpecialExitYAML(content []byte) ([]map[string]interface{}, bool, error) {
@@ -486,17 +495,17 @@ func parseProbeSpecialExitYAML(content []byte) ([]map[string]interface{}, bool, 
 	return proxies, true, err
 }
 
-func parseProbeSpecialExitURIList(content []byte) ([]map[string]interface{}, error) {
+func parseProbeSpecialExitURIList(content []byte) (probeSpecialExitSubscriptionParseResult, error) {
 	text := strings.TrimSpace(strings.TrimPrefix(string(content), "\ufeff"))
 	if !strings.Contains(text, "://") {
 		decoded, ok := decodeProbeSpecialExitBase64Subscription(text)
 		if !ok {
-			return nil, fmt.Errorf("subscription is not valid Clash YAML or a supported proxy URI list")
+			return probeSpecialExitSubscriptionParseResult{}, fmt.Errorf("subscription is not valid Clash YAML or a supported proxy URI list")
 		}
 		text = strings.TrimSpace(strings.TrimPrefix(string(decoded), "\ufeff"))
 	}
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
-	proxies := make([]map[string]interface{}, 0, len(lines))
+	result := probeSpecialExitSubscriptionParseResult{Proxies: make([]map[string]interface{}, 0, len(lines))}
 	for index, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -504,7 +513,7 @@ func parseProbeSpecialExitURIList(content []byte) ([]map[string]interface{}, err
 		}
 		parsed, err := url.Parse(line)
 		if err != nil || strings.TrimSpace(parsed.Scheme) == "" {
-			return nil, fmt.Errorf("subscription URI at line %d is invalid", index+1)
+			return probeSpecialExitSubscriptionParseResult{}, fmt.Errorf("subscription URI at line %d is invalid", index+1)
 		}
 		var proxy map[string]interface{}
 		switch strings.ToLower(strings.TrimSpace(parsed.Scheme)) {
@@ -514,14 +523,21 @@ func parseProbeSpecialExitURIList(content []byte) ([]map[string]interface{}, err
 			err = fmt.Errorf("subscription URI scheme %q is not supported", strings.ToLower(strings.TrimSpace(parsed.Scheme)))
 		}
 		if err != nil {
-			return nil, err
+			if errors.Is(err, errProbeSpecialExitAnyTLSRealityUnsupported) {
+				result.SkippedProxyCount++
+				continue
+			}
+			return probeSpecialExitSubscriptionParseResult{}, err
 		}
-		proxies = append(proxies, proxy)
+		result.Proxies = append(result.Proxies, proxy)
 	}
-	if len(proxies) == 0 {
-		return nil, fmt.Errorf("subscription contains no proxy nodes")
+	if len(result.Proxies) == 0 {
+		if result.SkippedProxyCount > 0 {
+			return probeSpecialExitSubscriptionParseResult{}, fmt.Errorf("subscription contains no Mihomo-compatible proxy nodes; skipped %d AnyTLS+Reality nodes", result.SkippedProxyCount)
+		}
+		return probeSpecialExitSubscriptionParseResult{}, fmt.Errorf("subscription contains no proxy nodes")
 	}
-	return proxies, nil
+	return result, nil
 }
 
 func decodeProbeSpecialExitBase64Subscription(text string) ([]byte, bool) {
@@ -567,8 +583,8 @@ func parseProbeSpecialExitAnyTLSURI(parsed *url.URL, line int) (map[string]inter
 		port = value
 	}
 	query := parsed.Query()
-	if strings.EqualFold(strings.TrimSpace(query.Get("security")), "reality") || query.Get("pbk") != "" {
-		return nil, fmt.Errorf("anytls URI at line %d uses unsupported Reality transport", line)
+	if strings.EqualFold(strings.TrimSpace(query.Get("security")), "reality") || firstProbeSpecialExitQueryValue(query, "pbk", "public-key", "sid", "short-id") != "" {
+		return nil, fmt.Errorf("anytls URI at line %d: %w", line, errProbeSpecialExitAnyTLSRealityUnsupported)
 	}
 	name := strings.TrimSpace(parsed.Fragment)
 	if name == "" {
@@ -680,7 +696,7 @@ func probeSpecialExitYAMLValue(input interface{}) (interface{}, error) {
 	}
 }
 
-func fetchProbeSpecialExitSubscription(parent context.Context, rawURL string, headers map[string]string) ([]byte, error) {
+func fetchProbeSpecialExitSubscription(parent context.Context, rawURL string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(parent, probeSpecialExitSubscriptionTimeout)
 	defer cancel()
 	target, ips, err := validateProbeSpecialExitSubscriptionURL(ctx, rawURL)
@@ -702,9 +718,7 @@ func fetchProbeSpecialExitSubscription(parent context.Context, rawURL string, he
 	if err != nil {
 		return nil, err
 	}
-	for key, value := range headers {
-		req.Header.Set(key, value)
-	}
+	applyProbeSpecialExitSubscriptionRequestHeaders(req)
 	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -725,6 +739,14 @@ func fetchProbeSpecialExitSubscription(parent context.Context, rawURL string, he
 		return nil, fmt.Errorf("subscription exceeded %d bytes", probeSpecialExitSubscriptionMaxBytes)
 	}
 	return content, nil
+}
+
+func applyProbeSpecialExitSubscriptionRequestHeaders(req *http.Request) {
+	if req == nil {
+		return
+	}
+	req.Header.Set("User-Agent", probeSpecialExitSubscriptionUserAgent)
+	req.Header.Set("Accept", probeSpecialExitSubscriptionAccept)
 }
 
 func validateProbeSpecialExitSubscriptionURL(ctx context.Context, raw string) (*url.URL, []netip.Addr, error) {

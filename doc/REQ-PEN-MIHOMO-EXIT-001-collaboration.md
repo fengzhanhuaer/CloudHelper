@@ -4,9 +4,9 @@
 - 后续工作传递声明: 本文档必须传递给后续阶段与后续角色。
 - 需求编号: REQ-PEN-MIHOMO-EXIT-001
 - 需求前缀: REQ-PEN-MIHOMO-EXIT-001
-- 当前阶段: Architect最终验收完成
+- 当前阶段: Architect最终门禁已通过
 - 最近更新角色: Architect
-- 最近更新时间: 2026-08-14T16:48:00+08:00
+- 最近更新时间: 2026-08-14T19:47:53+08:00
 - 工作依据文档: `doc/ai-coding-collaboration.md`; 用户于2026-08-13确认的特殊出口探针、Mihomo二次分流、主控GUI、独立Linux amd64安装包、Docker壳和程序自升级需求; 现有 `probe_controller`、`probe_node`、`docker/probe_node` 实现; Mihomo官方配置、API、发布物、Go模块和许可证资料
 - 状态: 已完成
 
@@ -27,11 +27,13 @@
 - REQ-PEN-MIHOMO-EXIT-001-R07: 特殊出口探针与普通探针共用 `/mng/probe` 的创建和安装入口，通过创建时选择 `node_kind=mihomo_exit` 区分产品；创建后从同一探针列表生成独立Linux amd64原生或Docker安装信息，不提供Windows、ARM64或Android版本。
 - REQ-PEN-MIHOMO-EXIT-001-R08: 工作目录按 `data/`、`log/`、`temp/` 分区；升级不得覆盖持久化数据。
 - REQ-PEN-MIHOMO-EXIT-001-R09: 提供Docker壳版本；镜像只提供固定环境和entrypoint，业务程序及Mihomo由持久化目录中的程序按带版本、构建类型、兼容范围和SHA-256的升级清单自行安装、升级、校验、替换和成对回滚。
-- REQ-PEN-MIHOMO-EXIT-001-R10: 主控独占保存和刷新最多32个Clash配置源的URL及可选请求头，使用结构化YAML解析、限制下载并防止SSRF；所有启用源并发抓取后必须原子合并，任一源失败或跨源节点名冲突都保留last-known-good代理快照；特殊出口只接收已规范化的代理节点和“域名组到具体节点”规则，不接收配置URL和请求头；敏感快照只下发给对应特殊出口。
+- REQ-PEN-MIHOMO-EXIT-001-R10: 主控独占保存和刷新最多32个Clash配置源的URL，自动协商Clash/Mihomo YAML格式，使用结构化YAML解析、限制下载并防止SSRF；所有启用源并发抓取后必须原子合并，任一源失败或跨源节点名冲突都保留last-known-good代理快照；特殊出口只接收已规范化的代理节点和“域名组到具体节点”规则，不接收配置URL；敏感快照只下发给对应特殊出口。
 - REQ-PEN-MIHOMO-EXIT-001-R11: 主控、相邻探针承载、升级和Mihomo上游防回环流量必须绕过Mihomo二次分流；若CloudHelper VRoute TUN无法移除，Mihomo的DIRECT、代理节点连接和引导DNS必须绑定或策略路由到TUN之外的物理出口。
 - REQ-PEN-MIHOMO-EXIT-001-R12: TCP、UDP与QUIC业务流量均须具备可测试的二次分流闭环，不能只实现HTTP或TCP代理。
 - REQ-PEN-MIHOMO-EXIT-001-R13: 管理端和管理API使用同一简化模型；Clash配置解析后的完整节点及认证秘密只保存在主控私有快照中，管理响应仅返回可选节点名称；保存时后端强制把每条域名组编译为指定节点规则并校验节点存在，旧多动作配置不要求兼容。
 - REQ-PEN-MIHOMO-EXIT-001-R14: Clash配置URL使用普通可见文本输入；主控节点提取同时支持标准Clash/Mihomo YAML、明文代理URI列表和Base64代理URI列表，首期按AnyTLS官方URI规范提取节点名称、服务器、端口、密码、SNI及证书校验设置；未知URI协议明确失败且不覆盖last-known-good快照，管理读取仍不得回显已保存URL或节点秘密。
+- REQ-PEN-MIHOMO-EXIT-001-R15: Mihomo明确不支持AnyTLS+Reality时，单个Reality节点不得导致同一URI订阅内的兼容AnyTLS节点全部提取失败；主控应跳过该节点并在刷新响应及页面成功提示中显示跳过数量。若订阅没有任何兼容节点则整体失败并保留last-known-good；提示不得包含节点URI、密码、公钥或订阅URL。
+- REQ-PEN-MIHOMO-EXIT-001-R16: Clash配置源不提供用户手工请求头配置；主控请求订阅时自动发送固定的Clash Meta/Mihomo格式协商标识，优先取得标准YAML。管理API不得接受`headers`或`clear_headers`，管理页面不展示请求设置或请求头状态；旧持久化请求头不再参与抓取或订阅源指纹，并在后续规范化保存时自然移除。
 
 #### 1.1.2 需求范围
 - 主控特殊出口配置存储、规范化、校验、敏感字段作用域和配置同步。
@@ -57,7 +59,7 @@
 - AC-02: 每个启用特殊出口仅生成一条稳定ID的聚合规则；条目规范化、去重并稳定排序；重启和刷新后由单一特殊出口配置确定性重建，普通 `RouteRules` 中不存在重复副本。
 - AC-03: 普通探针配置响应不包含特殊出口秘密；对应特殊出口只收到自己的规范化私有快照，且不包含订阅URL/请求头；desired/applied revision和SHA-256可核对。
 - AC-04: 跨特殊出口、与手工路由规则的相同或语义重叠条目在保存时得到确定性拒绝，至少覆盖嵌套域名后缀和相交CIDR，不依赖数组顺序；派生规则使用保留ID命名空间，手工规则不得占用。
-- AC-05: 二次分流Tab可完成已创建特殊出口的多Clash配置源、节点提取、域名组绑定节点和聚合预览；每个配置源可独立命名、启用、删除并在折叠的高级请求设置中按需配置请求头，公开订阅无需请求头；订阅和节点秘密不明文回显；未选择探针时详情隐藏，选择后页面按Clash配置、出口节点、域名分流、聚合路由规则、运行状态单列展示，聚合与状态只属于当前探针；状态同时核对desired/applied revision与hash、BuildKind、健康和exit_ready；页面不存在探针创建或安装入口以及旧基础配置或多动作控件。
+- AC-05: 二次分流Tab可完成已创建特殊出口的多Clash配置源、节点提取、域名组绑定节点和聚合预览；每个配置源可独立命名、启用和删除，只需填写HTTPS URL，格式协商由主控自动完成；订阅和节点秘密不明文回显；未选择探针时详情隐藏，选择后页面按Clash配置、出口节点、域名分流、聚合路由规则、运行状态单列展示，聚合与状态只属于当前探针；状态同时核对desired/applied revision与hash、BuildKind、健康和exit_ready；页面不存在探针创建或安装入口、请求头配置以及旧基础配置或多动作控件。
 - AC-06: `probe_exit_node`独立发布物可作为现有虚拟路由拓扑节点完成鉴权、承载、Ping/Pong、RTT、重连和最终帧处理；普通构建回归测试通过；主控配置响应提供expected_node_kind，探针状态上报build_kind，二者不匹配时特殊配置拒绝应用并上报错误；特殊版不启动本地代理接管、系统DNS接管、同步和DDNS调度器。
 - AC-07: 同一特殊出口内的不同域名组可分别命中所选的具体Mihomo节点，未匹配域名固定DIRECT，普通探针仅看到统一出口规则。
 - AC-08: TCP、UDP和QUIC端到端测试通过；Fake IP映射缺失时明确补取或失败，不允许错误直连Fake IP。
@@ -67,6 +69,8 @@
 - AC-12: 主控、普通探针、特殊出口和页面测试通过；CI从同一源码分别构建普通矩阵和仅Linux amd64特殊发布物，并记录未执行测试及残余风险。
 - AC-13: 管理API拒绝缺少域名或出口节点、引用不存在节点及尝试写入旧动作模型的请求；Clash刷新后节点名称立即进入节点池和规则下拉框；桌面及390px窄屏完成“添加配置 -> 提取节点 -> 添加域名组 -> 选择节点 -> 保存”且无横向溢出、控件重叠或控制台错误。
 - AC-14: Base64编码的`anytls://password@host:port/?sni=...&insecure=...#name`列表可提取为Mihomo `type=anytls`节点并保留密码、SNI、UDP和证书校验语义；明文AnyTLS列表同样可用；非法Base64、无节点及不支持协议均返回脱敏错误；Clash配置URL控件不是password类型，保存后重新加载仍只显示已配置状态而不回显URL。
+- AC-15: 明文或Base64 URI列表同时包含普通AnyTLS和`security=reality`或`pbk`节点时刷新成功，仅提交普通节点，响应返回准确的`skipped_proxy_count`；页面状态显示跳过数量。仅含Reality节点时返回明确且脱敏的无兼容节点错误，不更新revision或last-known-good快照。
+- AC-16: 未配置任何用户请求头时，订阅HTTP请求固定包含`User-Agent: clash.meta`和接受YAML的`Accept`；管理页面不存在请求设置、请求头JSON或清除请求头控件，保存请求仅提交订阅`id/name/enabled/url`。管理API收到旧`headers`或`clear_headers`字段时明确拒绝；标准YAML、Base64兜底、SSRF和原子刷新回归通过。
 
 #### 1.1.5 风险
 - 现有VRoute并非独立协议库：`probe_node`下153个Go文件同属 `package main`，carrier、ticket、控制帧、全局状态和gVisor末跳网络栈耦合；因此不能新建第二个Go包直接导入，也不应复制或大规模提取。优化方案是在同一包内通过build tag构建独立特殊发布物。
@@ -151,7 +155,7 @@ flowchart LR
 - 派生规则ID固定使用保留命名空间 `special-exit:<node_id>`；普通手工规则创建/修改时拒绝该前缀。
 - 特殊出口配置是聚合规则唯一持久化来源；有效规则在读取、Fake IP授权和探针配置下发时统一投影，禁止把派生规则复制进普通 `RouteRules`。
 - 二次分流规则只允许指定已提取的具体节点；未匹配业务固定DIRECT，管理API不得接受REJECT、策略组、默认动作、端口或网络条件。
-- 订阅URL和请求头只存储于主控；特殊出口仅存规范化快照中的节点连接秘密，管理响应仅返回掩码状态。
+- 订阅URL只存储于主控；特殊出口仅存规范化快照中的节点连接秘密，管理响应仅返回掩码状态。订阅请求头由主控代码固定生成，不进入用户配置。
 - 主控、相邻承载、升级和 `198.18.0.0/15` 内部流量必须绕过Mihomo。
 - 如果PoC证明CloudHelper VRoute仍依赖TUN，Mihomo生成配置和Linux路由必须把DIRECT、代理节点连接及引导DNS绑定至探针选定的物理出口或专用routing mark；网络变化时重新解析出口，无法确定物理出口时 `exit_ready=false`。
 - Docker壳参照 `docker/probe_node`，不在每次启动覆盖持久化二进制。
@@ -233,7 +237,7 @@ flowchart LR
 - 职责: 提供二次分流配置管理CRUD、订阅刷新和运行状态。
 - 输入: 管理会话请求。
 - 输出: 脱敏JSON。
-- 处理规则: 管理鉴权、方法限制、请求体限制；订阅只允许受控HTTPS访问；URL和请求头只保留在主控，刷新结果进入候选快照；首期只接受已展开的具体proxies，远程proxy-provider引用返回明确的不支持错误。
+- 处理规则: 管理鉴权、方法限制、请求体限制；订阅只允许受控HTTPS访问；URL只保留在主控，固定格式协商请求头由抓取器生成，刷新结果进入候选快照；首期只接受已展开的具体proxies，远程proxy-provider引用返回明确的不支持错误。
 - 异常规则: SSRF、超时、过大响应、无效YAML或保存失败不破坏旧配置。
 
 ##### UNIT-PEN-05
@@ -366,10 +370,12 @@ flowchart LR
 | TASK-PEN-006 | R07,R08,R09 | UNIT-PEN-14,15,16 | 安装脚本、install_scripts.go、docker/probe_exit_node、升级清单代码和测试 | 新增/修改 | AC-10、11；原生/Docker持久化、构建类型/哈希校验、程序与Mihomo成对自升级及回滚通过 |
 | TASK-PEN-007 | R01-R12 | 全部 | README、install_upgrade、本协作文档Code章节、端到端测试 | 修改 | AC-12；文档、证据、风险和回滚完整 |
 | TASK-PEN-008 | R06,R07,R09 | UNIT-PEN-05,15,16,17 | `mng_pages/probe.html`、`mng_pages/route.html`、管理安装路由及页面/handler测试、本协作文档 | 修改 | 特殊出口与普通探针共用创建API、探针列表和安装弹窗；创建时显式提交 `node_kind=mihomo_exit`；特殊安装仅Linux x64/Docker；二次分流Tab无创建和安装入口；主控全量及浏览器交互通过 |
-| TASK-PEN-009 | R06,R10 | UNIT-PEN-01,04,05,06 | `probe_special_exit.go`、`probe_special_exit_mng.go`、`mng_pages/route.html`、专项测试、README及本协作文档 | 修改 | 旧单订阅无损迁移；每探针最多32个订阅源且请求头可选；管理响应逐源脱敏；全部启用源原子刷新并确定性合并，任一失败或重名不覆盖last-known-good；多订阅编辑器单列响应式显示；控制器全量/vet、JS语法和桌面/移动Playwright通过 |
+| TASK-PEN-009 | R06,R10 | UNIT-PEN-01,04,05,06 | `probe_special_exit.go`、`probe_special_exit_mng.go`、`mng_pages/route.html`、专项测试、README及本协作文档 | 修改 | 旧单订阅无损迁移；每探针最多32个订阅源；管理响应逐源脱敏；全部启用源原子刷新并确定性合并，任一失败或重名不覆盖last-known-good；多订阅编辑器单列响应式显示；该任务原有手工请求头能力由TASK-PEN-015删除 |
 | TASK-PEN-010 | R06 | UNIT-PEN-04,05 | `mng_pages/route.html`、页面测试、README及本协作文档 | 修改 | 不自动选择首台探针；选择器位于全部详情之前；未选择时隐藏详情；选择后依次显示基础配置、订阅、规则、聚合和运行状态；聚合和状态只显示当前节点；状态额外核对主控desired与探针applied revision/hash；桌面/移动Playwright切换节点通过 |
 | TASK-PEN-012 | R03,R06,R13 | UNIT-PEN-01,04,05,06,12 | `probe_controller/internal/core/probe_special_exit.go`、`probe_controller/internal/core/probe_special_exit_mng.go`、`probe_controller/internal/core/mng_pages/route.html`、`probe_controller/internal/core/probe_special_exit_test.go`、必要的`probe_node`快照/Mihomo编译文件及测试、`README.md`、`doc/install_upgrade.md`、本协作文档 | 修改/删除 | 删除管理面旧多动作模型和基础配置；Clash配置解析形成脱敏节点池；页面每条规则只有域名列表和具体节点下拉；后端强制具体节点规则且未匹配固定DIRECT；管理API负向测试、JS语法、主控及普通/特殊探针回归、桌面和390px Playwright流程通过 |
 | TASK-PEN-013 | R10,R14 | UNIT-PEN-04,05,06 | `probe_controller/internal/core/probe_special_exit_mng.go`、`probe_controller/internal/core/mng_pages/route.html`、`probe_controller/internal/core/probe_special_exit_test.go`、`README.md`、`doc/install_upgrade.md`、本协作文档 | 修改 | URL改为普通文本输入；解析器按YAML、明文URI、Base64 URI顺序识别且支持AnyTLS官方URI字段；秘密不进入错误或管理响应；YAML回归、URI正负向、原子刷新、页面marker/浏览器及控制器全量/vet通过 |
+| TASK-PEN-014 | R10,R15 | UNIT-PEN-04,05,06 | `probe_controller/internal/core/probe_special_exit_mng.go`、`probe_controller/internal/core/mng_pages/route.html`、`probe_controller/internal/core/probe_special_exit_test.go`、`README.md`、`doc/install_upgrade.md`、本协作文档 | 修改 | 仅对URI列表中的AnyTLS+Reality执行节点级过滤；兼容节点继续原子提交；刷新响应和页面显示跳过数；全Reality失败且秘密不泄漏；专项、全量、vet和桌面/移动Playwright通过 |
+| TASK-PEN-015 | R06,R10,R16 | UNIT-PEN-01,04,05,06 | `probe_controller/internal/core/probe_special_exit.go`、`probe_special_exit_mng.go`、`mng_pages/route.html`、`probe_special_exit_test.go`、README、安装文档和本协作文档 | 修改/删除 | 删除订阅请求头DTO、持久化解释、管理响应和页面控件；主控自动设置`User-Agent: clash.meta`及YAML Accept；旧请求头API字段拒绝；专项、全量、vet和桌面/移动Playwright通过 |
 
 #### 1.4.3 源码修改规则
 - 修改源代码时必须注意可能存在的 GBK 编码并保持原文件编码，避免乱码或误转码。
@@ -395,7 +401,7 @@ flowchart LR
 - 2026-08-13 Architect先关闭TASK-PEN-000前置条件，Code随后完成TASK-PEN-001至008并提交第2章完整证据。
 
 #### 1.4.6 结论
-- TASK-PEN-013已按Architect边界完成：保持现有秘密和原子刷新边界，扩展主控解析格式并取消URL密码框显示，专项、全量和浏览器证据均通过。
+- TASK-PEN-015已执行并验收完成：用户无需也不得手工配置订阅请求头，主控自动协商标准Clash/Mihomo YAML。
 
 ### 1.5 Architect需求跟踪矩阵
 - 状态: 已完成
@@ -411,11 +417,13 @@ flowchart LR
 | R07 | Linux amd64独立安装 | 1.2 | UNIT-PEN-15 | TASK-PEN-006,008 | 已完成 | 探针管理页统一创建/安装入口；无Windows/ARM |
 | R08 | data/log/temp分区 | 1.2 | UNIT-PEN-14至16 | TASK-PEN-006 | 已完成 | 原生三目录，Docker另分program，升级保留持久数据 |
 | R09 | Docker壳与程序自升级 | 1.2 | UNIT-PEN-14,16 | TASK-PEN-006,008 | 已完成 | 探针安装弹窗提供Docker壳配置；清单校验、成对回滚，非镜像日常升级 |
-| R10 | 安全订阅与秘密 | 1.2 | UNIT-PEN-01,04,06,12 | TASK-PEN-001,002,005,009,013 | 已完成 | 多订阅、可选请求头、原子合并、HTTPS/SSRF/脱敏/作用域/0600运行秘密均通过 |
+| R10 | 安全订阅与秘密 | 1.2 | UNIT-PEN-01,04,06,12 | TASK-PEN-001,002,005,009,013,015 | 已完成 | 多订阅、自动格式协商、原子合并、HTTPS/SSRF/脱敏/作用域/0600运行秘密均通过 |
 | R11 | 承载绕行防回环 | 1.2 | UNIT-PEN-09,12,13 | TASK-PEN-000,004,005 | 已完成 | 无TUN、回环SOCKS/REST、失败不直连 |
 | R12 | TCP/UDP/QUIC | 1.2 | UNIT-PEN-09,11,13 | TASK-PEN-000,004,005 | 已完成 | 模拟与官方Mihomo真实进程均通过 |
 | R13 | 节点池与域名组简化模型 | 1.2 | UNIT-PEN-01,04,05,06,12 | TASK-PEN-012 | 已完成 | 管理API、页面和Mihomo快照只接受域名组绑定具体节点；旧模型不兼容 |
 | R14 | 可见URL与Base64 AnyTLS配置 | 1.2 | UNIT-PEN-04,05,06 | TASK-PEN-013 | 已完成 | 标准YAML、明文/Base64 AnyTLS正负向、错误脱敏、last-known-good和可见URL浏览器证据通过 |
+| R15 | AnyTLS Reality兼容过滤 | 1.2 | UNIT-PEN-04,05,06 | TASK-PEN-014 | 已完成 | 兼容节点继续提取，Reality跳过数可见，全Reality失败并保留last-known-good |
+| R16 | 自动订阅格式协商 | 1.2 | UNIT-PEN-01,04,05,06 | TASK-PEN-015 | 已完成 | 固定Clash Meta请求标识，无手工请求头DTO/UI，旧字段拒绝 |
 
 ### 1.6 Architect关键接口跟踪矩阵
 - 状态: 已完成
@@ -423,7 +431,7 @@ flowchart LR
 | 接口编号 | 需求编号 | 接口名称 | 调用方 | 提供方 | 输入 | 输出 | 状态 | 备注 |
 |---|---|---|---|---|---|---|---|---|
 | IF-PEN-001 | R06,R13,R14 | SpecialExits CRUD | 路由页 | 主控 | Clash配置源及域名组节点绑定 | 脱敏配置和节点名称池 | 已完成 | 管理鉴权，写入秘密不回显；拒绝旧动作模型；URL使用普通可见输入但不由读取接口返回 |
-| IF-PEN-002 | R06,R10,R13,R14 | Subscription Refresh | 路由页 | 主控 | 特殊出口ID | 多源合并后的节点名称池/revision/hash | 已完成 | 启用源并发抓取、全成才提交；HTTPS固定解析、防SSRF/重定向/大小限制；识别标准YAML和明文/Base64 AnyTLS，URL及节点秘密不下发 |
+| IF-PEN-002 | R06,R10,R13-R15 | Subscription Refresh | 路由页 | 主控 | 特殊出口ID | 多源合并后的节点名称池/revision/hash及跳过数 | 已完成 | 启用源并发抓取、全成才提交；HTTPS固定解析、防SSRF/重定向/大小限制；识别标准YAML和明文/Base64 AnyTLS，节点级过滤AnyTLS+Reality，URL及节点秘密不下发 |
 | IF-PEN-003 | R06 | SpecialExit Status | 路由页 | 主控 | 无 | desired/applied revision/hash、BuildKind、版本、exit_ready、健康、计数和错误 | 已完成 | 不含秘密 |
 | IF-PEN-004 | R07,R09 | Install Info | 探针管理页 | 主控 | node/mode | 安装参数 | 已完成 | `/mng/api/probe/node/install`提供native/docker入口、身份和HTTPS参数；路由页不调用 |
 | IF-PEN-005 | R02,R05 | Probe Route Config | 探针 | 主控 | 现有HMAC请求 | expected_node_kind/revision/hash作用域快照 | 已完成 | 探针验证并原子应用，错配失败关闭 |
@@ -447,20 +455,20 @@ flowchart LR
 |---|---|---|---|
 | 协作文档存在 | 通过 | 本文件 | 无 |
 | Architect章节存在 | 通过 | 第1章 | 无 |
-| Code章节存在 | 通过 | 第2章 | TASK-PEN-000至013证据完整 |
+| Code章节存在 | 通过 | 第2章 | TASK-PEN-000至015证据完整 |
 | 必需子章节存在 | 通过 | 1.1至1.7、2.1至2.6 | 无 |
 | 需求前缀一致 | 通过 | REQ-PEN-MIHOMO-EXIT-001 | 无 |
-| 需求编号一致 | 通过 | R01至R14 | 无 |
+| 需求编号一致 | 通过 | R01至R16 | 无 |
 | 接口编号一致 | 通过 | IF-PEN-001至010 | 无 |
 | 模板字段完整 | 通过 | 文档头及固定章节 | 无 |
 | GBK编码文件无乱码或误转码 | 通过 | 最终差异、编译、浏览器中文渲染 | 未出现乱码或误转码 |
-| Code证据完整 | 通过 | 2.1至2.6、特别是2.5.1至2.5.9 | TASK-PEN-013实现、测试、限制与回滚均已回写 |
+| Code证据完整 | 通过 | 2.1至2.6、特别是2.5.1至2.5.10 | TASK-PEN-015接口、测试、浏览器和回滚证据完整 |
 | Code任务反馈已处理 | 通过 | 2.6无未处理反馈 | 无 |
-| 验收标准可测试 | 通过 | AC-01至14 | TASK-PEN-013具备解析器正负向、原子刷新、页面及浏览器验收路径 |
+| 验收标准可测试 | 通过 | AC-01至16 | TASK-PEN-015具备自动请求头、旧字段拒绝、页面和浏览器验收路径 |
 | 需求任务覆盖完整 | 通过 | 1.5矩阵 | 无 |
-| 任务自测覆盖完整 | 通过 | TEST-PEN-000至013 | TEST-PEN-013专项、控制器全量/vet及浏览器证据通过 |
+| 任务自测覆盖完整 | 通过 | TEST-PEN-000至015 | TEST-PEN-015专项、全量、vet和Playwright均通过 |
 | 修改文件在允许范围内 | 通过 | 2.5.4与补充后的1.4.1逐项核对 | 状态/命令/许可证必要落点已显式列出 |
-| 测试失败已记录缺陷 | 通过 | DEFECT-PEN-001至017；2.5.6并行抖动记录 | 最终整改和稳定复跑全部通过 |
+| 测试失败已记录缺陷 | 通过 | DEFECT-PEN-001至019；2.5.6并行抖动记录 | 最终整改和稳定复跑全部通过 |
 | 未执行测试原因完整 | 通过 | 2.5.7 | systemd实机、race、最终联网重建均说明替代证据 |
 | 遗留风险可接受 | 通过 | 2.5.8 | 不影响协议兼容、秘密边界、事务提交或失败关闭 |
 | 最终整改闭合 | 通过 | DEFECT-PEN-009至011；定向测试、普通/特殊/主控全量 | 旧订阅结果拒绝、深拷贝事务落盘后提交、连续健康失败受监管重启均完成 |
@@ -470,6 +478,8 @@ flowchart LR
 | 探针选择与派生信息顺序闭合 | 通过 | TASK-PEN-010、TEST-PEN-010、DEFECT-PEN-014 | 未选择时详情隐藏；聚合和状态在配置后且只显示当前探针 |
 | 节点池与域名组简化 | 通过 | TASK-PEN-012、TEST-PEN-012、DEFECT-PEN-016 | 持久模型和快照升级为v2，仅保留`id/domains/target`；API负向及桌面/窄屏证据通过 |
 | Base64 AnyTLS提取与URL可见性 | 通过 | TASK-PEN-013、TEST-PEN-013、DEFECT-PEN-017 | Base64/明文AnyTLS字段映射、脱敏负向、YAML回归、页面marker和桌面/移动浏览器证据通过 |
+| AnyTLS Reality节点过滤 | 通过 | TASK-PEN-014、TEST-PEN-014、DEFECT-PEN-018 | 混合源继续提取、全Reality失败且快照不变、跳过数响应/页面提示和秘密负向证据通过 |
+| 自动Clash订阅格式协商 | 通过 | TASK-PEN-015、TEST-PEN-015、DEFECT-PEN-019 | 固定UA/Accept、旧字段拒绝、无请求头UI和桌面/移动浏览器证据完整 |
 
 #### 1.7.3 冲突记录
 | 冲突编号 | 冲突条款 | 最终采用条款 | 裁决人 | 裁决结论 |
@@ -483,11 +493,11 @@ flowchart LR
 - 放行阻塞: 放行
 - 条件: 无。
 - 责任方: 无。
-- 关闭要求: 无。
-- 整改关闭: TASK-PEN-013和DEFECT-PEN-017已关闭。
+- 关闭要求: 已满足。
+- 整改关闭: TASK-PEN-015与TEST-PEN-015已完成。
 
 #### 1.7.5 结论
-- REQ-PEN-MIHOMO-EXIT-001的R01至R14、TASK-PEN-000至013和TEST-PEN-000至013全部闭合；Base64 AnyTLS订阅故障已修复且未扩大秘密暴露面，最终门禁通过。
+- TASK-PEN-015已完成；自动格式协商、API/UI删除边界和真实浏览器证据闭合，REQ-PEN-MIHOMO-EXIT-001最终门禁通过。
 
 ## 第2章 Code章节
 - 章节责任角色: Code
@@ -507,17 +517,19 @@ flowchart LR
 | R07,R08,R09 | TASK-PEN-006 | 原生安装、Docker壳、发布清单、成对升级 | 已完成 | 已完成 | TEST-PEN-006 | data/log/temp分区、候选校验、成对替换/回滚 |
 | R01-R12 | TASK-PEN-007 | README、安装升级文档、端到端回归与本章 | 已完成 | 已完成 | TEST-PEN-007 | 全部交付物和证据闭合 |
 | R06,R07,R09 | TASK-PEN-008 | `mng_pages/probe.html`、`mng_pages/route.html`、probe安装handler/路由、节点类型约束及测试 | 已完成 | 已完成 | TEST-PEN-008 | 与普通探针共用创建/列表/安装流程；二次分流页仅配置和状态 |
-| R06,R10 | TASK-PEN-009 | `probe_special_exit.go`、`probe_special_exit_mng.go`、`mng_pages/route.html`、专项测试和文档 | 已完成 | 已完成 | TEST-PEN-009 | 最多32个脱敏订阅源、请求头可选、原子合并与单列编辑；旧单订阅无损迁移 |
+| R06,R10 | TASK-PEN-009 | `probe_special_exit.go`、`probe_special_exit_mng.go`、`mng_pages/route.html`、专项测试和文档 | 已完成 | 已完成 | TEST-PEN-009 | 最多32个脱敏订阅源、原子合并与单列编辑；该任务原有手工请求头能力已由TASK-PEN-015删除 |
 | R06 | TASK-PEN-010 | `mng_pages/route.html`、页面测试、README和本协作文档 | 已完成 | 已完成 | TEST-PEN-010 | 显式选择探针后才展开配置；聚合/状态后置并限定当前节点；状态核对revision/hash |
 | R03,R06,R13 | TASK-PEN-012 | `probe_special_exit.go`、`probe_special_exit_mng.go`、`mng_pages/route.html`、控制器测试、`probe_special_exit_mihomo.go`及测试、README、安装文档和本协作文档 | 已完成 | 已完成 | TEST-PEN-012 | Clash配置提取脱敏节点池；每组域名只选具体节点；旧动作字段和旧运行快照均拒绝；未匹配固定DIRECT |
 | R10,R14 | TASK-PEN-013 | `probe_special_exit_mng.go`、`mng_pages/route.html`、`probe_special_exit_test.go`、README、安装文档和本协作文档 | 已完成 | 已完成 | TEST-PEN-013 | URL为可见文本输入；支持标准YAML、明文AnyTLS URI和Base64 AnyTLS URI；错误脱敏并保留last-known-good |
+| R10,R15 | TASK-PEN-014 | `probe_special_exit_mng.go`、`mng_pages/route.html`、`probe_special_exit_test.go`、README、安装文档和本协作文档 | 已完成 | 已完成 | TEST-PEN-014 | 混合URI源跳过AnyTLS+Reality并继续提取兼容节点；响应和页面显示跳过数；全Reality失败并保留last-known-good |
+| R06,R10,R16 | TASK-PEN-015 | `probe_special_exit.go`、`probe_special_exit_mng.go`、`mng_pages/route.html`、`probe_special_exit_test.go`、README、安装文档和本协作文档 | 已完成 | 已完成 | TEST-PEN-015 | 主控固定发送Clash Meta UA及YAML Accept；DTO、持久化解释、管理响应和页面均无手工请求头；旧API字段拒绝 |
 
 ### 2.2 Code关键接口跟踪矩阵
 - 状态: 已完成
 
 | 接口编号 | 需求编号 | 实现文件 | 调用方 | 提供方 | 实现状态 | 证据 | 备注 |
 |---|---|---|---|---|---|---|---|
-| IF-PEN-001至003、006 | R04-R06,R10,R13,R14 | `probe_special_exit*.go`、管理handlers和`route.html` | 见1.6 | 见1.6 | 已完成 | TEST-PEN-001、002、012、013 | 管理响应只暴露节点名；写接口仅接受Clash配置与域名组到具体节点模型；刷新识别标准YAML、明文AnyTLS和Base64 AnyTLS |
+| IF-PEN-001至003、006 | R04-R06,R10,R13-R16 | `probe_special_exit*.go`、管理handlers和`route.html` | 见1.6 | 见1.6 | 已完成 | TEST-PEN-001、002、012至015 | 管理响应只暴露节点名；刷新自动协商YAML并识别标准YAML、明文/Base64 AnyTLS；报告Reality过滤数 |
 | IF-PEN-004 | R07,R09 | `mngProbeNodeInstallHandler`、嵌入式Linux脚本、Docker Compose | 探针管理页 | 主控 | 已完成 | TEST-PEN-006、008 | `/mng/api/probe/node/install`校验节点身份、HTTPS、平台与构建类型；路由页无调用 |
 | IF-PEN-005 | R02,R05 | 路由配置handler/sync | 探针 | 主控 | 已完成 | TEST-PEN-001、004 | HMAC不变；私有快照仅下发目标特殊探针 |
 | IF-PEN-007 | R01,R02 | 产品profile、状态报告、CI与候选自检 | CI/配置/状态 | 同一Go包 | 已完成 | TEST-PEN-003 | 构建类型不可运行时切换 |
@@ -539,11 +551,13 @@ flowchart LR
 | TEST-PEN-006 | R07,R08,R09 | TASK-PEN-006 | 安装/Docker/成对升级 | Bash语法、Compose、镜像构建/入口冒烟、manifest/rollback单测 | 已完成 | Docker和脚本验证通过 | Linux systemd实机安装未执行，原因见2.5.7 | Docker壳不参与日常程序升级 |
 | TEST-PEN-007 | R01-R12 | TASK-PEN-007 | 端到端与视觉 | 全量回归、Edge CDP桌面1440/移动390、DOM/控制台/截图 | 已完成 | 无横向溢出、无控制台错误 | 无 | 二次分流Tab交互与样例状态通过 |
 | TEST-PEN-008 | R06,R07,R09 | TASK-PEN-008 | 统一创建/独立安装入口与二次分流边界 | handler/page单测、JS语法、控制器全量/vet、普通/特殊探针全量、Playwright桌面/移动真实交互 | 已完成 | 创建后不弹安装；点击节点行内“安装”后native/Docker可切换；路由页无创建/安装；移动端无横向溢出且控制台无错误 | 无 | 使用隔离临时控制器和临时节点，截图中的安装秘密已遮蔽 |
-| TEST-PEN-009 | R06,R10 | TASK-PEN-009 | 多订阅源、原子刷新与单列页面 | 旧配置迁移/凭据保留清除/多源成功合并/单源失败/跨源重名单测，页面脚本语法、控制器全量/vet、Playwright桌面1440与移动390真实保存和脱敏回显 | 已完成 | 两源保存后URL/请求头不回显；任一失败或重名保持last-known-good及revision；五区域纵向顺序稳定、无横向溢出或控制台错误 | 无 | 浏览器插件在当前任务不可调用，按前端测试技能使用本机Playwright与隔离控制器；截图位于临时QA目录 |
+| TEST-PEN-009 | R06,R10 | TASK-PEN-009 | 多订阅源、原子刷新与单列页面 | 旧配置迁移/多源成功合并/单源失败/跨源重名单测，页面脚本语法、控制器全量/vet、Playwright桌面1440与移动390真实保存和脱敏回显 | 已完成 | 两源保存后URL不回显；任一失败或重名保持last-known-good及revision；五区域纵向顺序稳定、无横向溢出或控制台错误 | 无 | 当时的手工请求头测试已被TEST-PEN-015的删除边界取代；浏览器证据位于临时QA目录 |
 | TEST-PEN-010 | R06 | TASK-PEN-010 | 探针选择与派生信息归属 | 页面marker/顺序测试、JS语法、控制器全量/vet、Playwright桌面1440与移动390切换至少两台特殊探针 | 已完成 | 初始详情隐藏且不自动选中；选择后配置、订阅、规则、聚合、状态依次出现；切换时聚合和状态只显示当前node_id；无溢出或控制台错误 | 无 | Browser插件当前不可调用，使用本机Playwright隔离控制器验证 |
 | TEST-PEN-011 | R08,R09 | TASK-PEN-006 | Mihomo特殊探针主控下发自升级与旧版自救 | 复现v0.3.315下载无扩展名特殊资产后`probe binary not found`；特殊tag裸文件解包单测；主控旧版本代理模式/兼容资产名单测；主控与普通/特殊探针全量回归 | 已完成 | 特殊资产按当前产品ServiceName识别；v0.3.316及更早特殊探针由主控临时代理并使用保持原URL/SHA的兼容本地文件名；升级至v0.3.317及以后恢复节点直连设置 | 无 | 生产复测需先发布并升级主控，再重新下发特殊探针升级 |
 | TEST-PEN-012 | R03,R06,R13 | TASK-PEN-012 | Clash节点提取和域名组到具体节点简化闭环 | 控制器管理API正负向测试、Mihomo快照/编译测试、主控/普通/特殊全量、vet、JS语法、Playwright桌面1440与移动390完整交互 | 已完成 | 精确保存请求字段；旧默认动作/规则动作/端口/网络字段拒绝；节点不存在拒绝；页面无旧控件、无溢出、重叠或控制台错误 | 无 | 特殊tag并行全量出现一次既有测试端口预留抖动，串行完整复跑通过 |
 | TEST-PEN-013 | R10,R14 | TASK-PEN-013 | Clash配置格式识别、AnyTLS提取、秘密边界和URL输入 | Base64/明文AnyTLS解析正反例、控制器全量/vet、Playwright桌面1440与移动390真实输入和脱敏重载 | 已完成 | 正确提取名称、主机、端口、密码、SNI、指纹、ALPN、UDP和证书校验；不支持协议及非法内容不泄漏秘密；URL控件为`type=url`且保存响应不回显 | 无 | 未抓取用户真实订阅，使用结构等价样本；本任务未暴露Browser插件，使用本机Playwright与Edge |
+| TEST-PEN-014 | R10,R15 | TASK-PEN-014 | AnyTLS+Reality节点级过滤、原子性、秘密和页面提示 | Base64混合源、全Reality源、刷新响应/持久快照专项测试，控制器全量/vet，Playwright桌面1440与移动390真实提取交互 | 已完成 | 混合源提交1个兼容节点并报告跳过1个；全Reality返回脱敏无兼容节点错误且revision/last-known-good不变；页面显示跳过数，无溢出或控制台/页面错误 | 无 | Mihomo官方明确不支持AnyTLS+Reality，因此过滤而非生成无效配置 |
+| TEST-PEN-015 | R06,R10,R16 | TASK-PEN-015 | 自动订阅格式协商和无手工请求头边界 | 固定UA/Accept单测、旧持久化字段丢弃、管理API旧字段拒绝、页面marker、控制器专项/全量/vet、Playwright桌面1440与移动390真实保存 | 已完成 | 保存的订阅键精确为`enabled/id/name/url`；页面无请求设置和请求头控件；五区顺序正确、无溢出、控制台或页面错误 | 无 | Browser插件当前不可调用，按前端测试技能使用本机Playwright与Edge；隔离监听已停止，截图位于临时QA目录 |
 
 ### 2.4 Code缺陷跟踪矩阵
 - 状态: 已完成
@@ -567,6 +581,8 @@ flowchart LR
 | DEFECT-PEN-015 | R08,R09 | TEST-PEN-011 | 主控成功下发升级后，特殊探针下载`cloudhelper-probe-exit-node-linux-amd64`完成，但通用解包器只识别包含`probe_node`/`probe-node`的候选名，导致`probe binary not found`且无法用原直连升级路径自修复 | 高 | 已完成 | 解包候选增加当前产品ServiceName及连字符形式；主控对v0.3.316及更早特殊探针临时强制代理，并将同一资产URL呈现为旧解包器可识别的兼容文件名；专项及全量测试通过 | 不改变下载内容、manifest或SHA；需主控先升级到修复版本后再次下发 |
 | DEFECT-PEN-016 | R03,R06,R13 | TEST-PEN-012 | 二次分流页面和API暴露配置名称、总开关、默认动作、REJECT/策略组、规则名称、端口和网络等内部模型，用户无法直接完成“域名组选择Clash节点” | 中 | 已完成 | 管理DTO收敛为Clash配置、脱敏节点名和`domains/target`；页面重构为五个单列区；探针编译器拒绝旧快照并生成具体节点规则和固定DIRECT兜底 | 按用户授权不保留旧动作模型兼容 |
 | DEFECT-PEN-017 | R10,R14 | TEST-PEN-013 | Base64代理URI订阅被直接交给YAML结构体解析，首行标量触发`cannot unmarshal !!str`；订阅URL又被password控件隐藏 | 中 | 已完成 | 刷新解析器先识别结构化YAML，再识别明文/Base64 URI列表；首期按AnyTLS URI映射Mihomo字段，错误不包含原始URI或密码；URL控件改为`type=url` | 未知URI协议显式失败并保持last-known-good，不静默丢弃节点 |
+| DEFECT-PEN-018 | R10,R15 | TEST-PEN-014 | Base64解码成功后，第10行AnyTLS+Reality节点触发整源失败，导致同一订阅前面的兼容节点也无法提取 | 中 | 已完成 | URI解析结果增加跳过计数；仅对`security=reality`、`pbk/public-key`或`sid/short-id`节点过滤；兼容节点继续原子合并，刷新响应及页面显示跳过数量；全Reality仍失败关闭 | 不把Reality字段伪装成Mihomo可用配置；错误不含密码、公钥、URI或订阅URL |
+| DEFECT-PEN-019 | R06,R10,R16 | TEST-PEN-015 | 用户仍需在二次分流页面理解和手工填写订阅请求头，且未配置时Go默认请求标识可能使服务商返回Base64通用订阅而非Clash YAML | 中 | 已完成 | 删除请求头字段、状态和控件；抓取器固定设置`User-Agent: clash.meta`及YAML Accept；严格管理DTO拒绝旧字段；专项/全量/vet和桌面/移动Playwright通过 | Base64 URI解析继续作为服务商忽略格式协商时的自动兜底 |
 
 ### 2.5 Code执行证据
 - 状态: 已完成
@@ -576,8 +592,10 @@ flowchart LR
 - `special_exit`私有快照升级为v2，仅含`version/node_id/revision/sha256/rules/proxies`；每条规则仅含`id/target/domains`，v1快照不兼容并由特殊探针拒绝。
 - `nodeStatus/probeReportPayload`：报告`build_kind`以及desired/applied revision/hash、`exit_ready`、健康、版本、会话、字节和错误。
 - 管理接口：SpecialExits CRUD、Clash配置刷新和状态保留在路由管理；写入DTO仅接受`node_id/subscriptions/rules`，规则仅含`id/target/domains`；响应只返回配置状态和脱敏节点名称。`/mng/api/probe/node/install`仍由探针管理页生成特殊出口原生/Docker安装信息。
-- 多订阅接口：SpecialExits配置使用稳定ID订阅源数组；管理响应逐源只返回configured/headers_configured及刷新状态；旧`subscription_url/subscription_headers`加载和编辑时自动迁移。
+- 多订阅接口：SpecialExits配置使用稳定ID订阅源数组；管理响应逐源只返回configured及刷新状态；管理写入只接受`id/name/enabled/url`，旧请求头字段明确拒绝，旧持久化请求头加载时忽略并在后续保存时移除。
+- 订阅抓取接口：每次请求由主控固定设置`User-Agent: clash.meta`和接受YAML的`Accept`，不读取用户请求头；管理页和API不存在手工覆盖入口。
 - 订阅解析接口：先尝试标准Clash/Mihomo YAML中的`proxies`或`payload`，再尝试明文或Base64代理URI列表；AnyTLS URI按官方字段映射为规范代理对象，错误只报告格式或协议类别，不拼接原始订阅内容、URI或密码。
+- Reality兼容过滤：URI解析结果附带`SkippedProxyCount`，刷新响应增加`skipped_proxy_count`；混合源只过滤Mihomo不支持的AnyTLS+Reality节点，过滤后为零节点则返回脱敏错误并保持原revision/快照。
 - `probeVirtualRouterExitTarget`和build-tag TCP/UDP接缝：特殊版将恢复的域名交给受管理Mihomo，普通版保持原解析/直连语义。
 - 发布与升级：新增仅Linux amd64特殊资产、配对manifest和Mihomo伴随升级事务。
 - 旧版升级兼容：主控根据特殊探针运行版本选择升级模式；v0.3.316及更早版本通过认证代理取得兼容资产名，v0.3.317及以后继续遵循节点直连配置。
@@ -589,22 +607,26 @@ flowchart LR
 - Mihomo固定回环SOCKS 17890、REST 17891，随机API/SOCKS秘密、无TUN；`log/mihomo.log`复用2 MiB滚动writer。
 
 #### 2.5.3 执行报告
-- TASK-PEN-000至013全部实现；同一`probe_node`源码形成`normal`和`mihomo_exit`两个产品，特殊版仅Linux amd64且不启动普通本地控制台、代理、系统DNS、同步、DDNS或平台TUN。
+- TASK-PEN-000至015全部实现；同一`probe_node`源码形成`normal`和`mihomo_exit`两个产品，特殊版仅Linux amd64且不启动普通本地控制台、代理、系统DNS、同步、DDNS或平台TUN。
 - 每特殊探针派生唯一`special-exit:<node_id>`规则；普通探针仅见聚合域名和出口节点，具体Mihomo节点及凭据透明。
-- 主控每特殊探针支持最多32个订阅源；每源请求头可选，公开订阅只需HTTPS URL；仅允许HTTPS 443、固定公共解析IP、禁重定向/代理/私网/保留地址/远程provider，单源8 MiB上限；失败文本不含URL。
-- 订阅刷新以全部源ID、名称、启用状态、URL和请求头的稳定指纹绑定下载结果；启用源并发抓取并在全部结束后统一判定，任一失败或跨源节点重名均保留last-known-good代理快照和revision；特殊配置在串行持久化锁内修改深拷贝，磁盘成功后才提交内存。
+- 主控每特殊探针支持最多32个订阅源；每源只需HTTPS URL，抓取器固定发送`User-Agent: clash.meta`和YAML `Accept`；仅允许HTTPS 443、固定公共解析IP、禁重定向/代理/私网/保留地址/远程provider，单源8 MiB上限；失败文本不含URL。
+- 订阅刷新以全部源ID、名称、启用状态和URL的稳定指纹绑定下载结果；启用源并发抓取并在全部结束后统一判定，任一失败或跨源节点重名均保留last-known-good代理快照和revision；特殊配置在串行持久化锁内修改深拷贝，磁盘成功后才提交内存。
 - Mihomo候选先`-t`校验，再加载和健康检查，成功后提交快照；进程退出或连续三次健康失败均按5至60秒退避重启，首次失败即关闭`exit_ready`且不回落直连。
 - 原生和Docker首次安装都使用配对manifest；程序升级自行校验并替换程序/Mihomo，失败成对回滚。Mihomo MIT许可证随Release与镜像交付。
 - 主控探针管理页统一创建两类探针；创建只登记节点，不弹安装方式。特殊出口编辑页可选择Linux/Docker，节点行内独立“安装”按钮按所选版本默认生成安装信息。二次分流页不再创建探针或生成安装信息。
 - 二次分流页不自动选择探针；选择后按Clash配置、出口节点、域名分流、聚合路由规则、运行状态展开。Clash刷新后的节点名形成下拉节点池，每条域名组只选择一个具体节点；页面不再显示基础配置、多动作、端口或网络条件。聚合及状态按当前node_id投影，状态只有在主控desired与探针applied revision/hash一致且探针/Mihomo健康时才显示就绪。
 - 线上日志确认升级命令已执行并下载22,354,413字节特殊资产，失败点为裸二进制候选名称识别；整改后特殊解包器按产品ServiceName识别，且主控提供旧版本无需手工覆盖的代理自救路径。
 - 对Base64 AnyTLS订阅的`!!str`解析失败已修复：主控自动识别Base64内容并解析URI；订阅URL输入保持可见便于核对，但保存后的管理响应仍只返回configured状态，节点连接密码只进入主控私有代理快照。
+- Mihomo官方不支持AnyTLS+Reality；主控不再让单个Reality节点阻塞整个混合订阅，而是跳过该节点并向页面返回数量。过滤后没有兼容节点时失败关闭，不替换last-known-good。
+- 用户不再配置订阅请求头；主控自动请求Clash/Mihomo YAML，页面保存载荷的订阅字段严格收敛为`id/name/enabled/url`。服务商忽略协商并返回Base64 URI时继续走既有自动兜底。
 
 #### 2.5.4 影响文件
 - 主控：`probe_special_exit*.go`、route/node store与handlers、runtime/report/WS、`server.go`、`mng_pages/probe.html`、`mng_pages/route.html`、嵌入式安装脚本及测试。
 - 本次升级整改：`probe_controller/internal/core/probe_command.go`、`probe_controller/internal/core/probe_upgrade_mihomo_compat_test.go`、`probe_node/upgrade.go`、`probe_node/product_profile_mihomo_exit_test.go`。
 - 本次交互简化：`probe_controller/internal/core/probe_special_exit.go`、`probe_special_exit_mng.go`、`mng_pages/route.html`、`probe_special_exit_test.go`、`probe_node/probe_special_exit_mihomo.go`及测试。
 - 本次订阅格式整改：`probe_controller/internal/core/probe_special_exit_mng.go`、`mng_pages/route.html`、`probe_special_exit_test.go`、`README.md`、`doc/install_upgrade.md`和本协作文档。
+- 本次Reality兼容整改：沿用上述订阅格式整改文件，不修改配置存储结构、探针私有快照版本或Mihomo数据面。
+- 本次自动格式协商整改：`probe_controller/internal/core/probe_special_exit.go`、`probe_special_exit_mng.go`、`mng_pages/route.html`、`probe_special_exit_test.go`、`README.md`、`doc/install_upgrade.md`和本协作文档；不修改探针程序或Mihomo数据面。
 - 探针：产品profile、特殊入口、路由同步、末跳目标/传输、Mihomo运行时、升级伴随组件、`go.mod/go.sum`及测试；原VRoute线协议文件仅增加出口接缝。
 - 发布部署：`.github/workflows/release.yml`、`docker/probe_exit_node/`、`THIRD_PARTY_LICENSES/mihomo-LICENSE`。
 - 文档：`README.md`、`doc/install_upgrade.md`（补充v0.3.316及更早版本的先主控后探针迁移顺序）、本协作文档。
@@ -624,6 +646,8 @@ flowchart LR
 - TEST-PEN-011：`cd probe_controller; go test ./internal/core -run 'TestProbe(UpgradeModeUsesProxyToRescueLegacyMihomoExit|UpgradeAssetNameAliasesOnlyLegacyMihomoExit|VersionAtLeast)' -count=1; go test ./...; go vet ./...`；`cd probe_node; go test -tags mihomo_exit ./... -run 'TestMihomoExitUpgrade(AssetCannotSelectOrdinaryProbe|ExtractsRawReleaseBinary)' -count=1; go test ./...; go test -tags mihomo_exit ./...`。
 - TEST-PEN-012：`cd probe_controller; go test ./... -count=1; go vet ./...`；`cd probe_node; go test ./... -count=1; go test -tags mihomo_exit ./... -count=1`；提取`route.html`内联脚本后由Node解析；隔离控制器Playwright依次完成添加Clash配置、提取节点、添加域名组、选择具体节点和保存，并检查精确请求字段及桌面/移动布局。
 - TEST-PEN-013：`cd probe_controller; go test ./internal/core -run \"Test(ParseProbeSpecialExitSubscription|MngRoutePageIncludesSpecialExitWorkflow)\" -count=1; go test ./... -count=1; go vet ./...`；隔离控制器Playwright与Edge验证URL明文输入、提取请求后脱敏重载，以及桌面1440和移动390布局、控制台和页面错误。
+- TEST-PEN-014：`cd probe_controller; go test ./internal/core -run \"Test(ParseProbeSpecialExitSubscription|RefreshSpecialExit(SkipsAnyTLSRealityAndReportsCount|RealityOnlyPreservesLastGood|MergesMultipleSubscriptionsAtomically)|MngRoutePageIncludesSpecialExitWorkflow)\" -count=1; go test ./... -count=1; go vet ./...`；隔离控制器Playwright与Edge模拟`skipped_proxy_count=1`并实际点击提取节点，验证状态提示、桌面1440/移动390布局、控制台和页面错误。
+- TEST-PEN-015：`cd probe_controller; go test ./internal/core -run \"Test(NormalizeProbeSpecialExitSubscriptions|RefreshSpecialExit|ApplyProbeSpecialExitSubscriptionRequestHeaders|FetchProbeSpecialExitSubscription|MngSpecialExit|UpsertMngSpecialExit|MngRoutePageIncludesSpecialExitWorkflow|ParseProbeSpecialExitSubscription)\" -count=1; go test ./... -count=1; go vet ./...; git diff --check`；隔离控制器Playwright与Edge验证无手工请求头UI、订阅保存字段、五区顺序及桌面1440/移动390布局。
 
 #### 2.5.6 自测结果
 - 通过：控制端全量测试和`go vet ./...`。
@@ -637,12 +661,16 @@ flowchart LR
 - 通过：TEST-PEN-011专项测试、主控全量/vet、特殊tag全量；普通探针全量首次出现既有网络/TUN非确定失败，立即独立全量复跑通过。
 - 通过：统一创建/安装定向测试；特殊节点类型不可修改且只允许Linux；最终控制器全量/vet、普通探针全量、特殊tag全量复跑均通过。
 - 通过：Playwright桌面和390px移动端真实流程；创建特殊出口后不弹安装，点击节点行内“安装”后原生/Docker配置可切换，路由页不存在创建/安装控件，无控制台错误、警告或横向溢出。
-- 通过：多订阅专项测试、控制器全量和vet；隔离控制器Playwright桌面1440和移动390真实保存两源，请求头为空可保存，URL/请求头仅回显配置状态，五个区域固定单列，无横向溢出、控制台错误或控件重叠。
+- 通过：多订阅专项测试、控制器全量和vet；隔离控制器Playwright桌面1440和移动390真实保存两源，URL仅回显配置状态，五个区域固定单列，无横向溢出、控制台错误或控件重叠；手工请求头能力由后续TEST-PEN-015确认移除。
 - 通过：探针选择器初始为空且详情隐藏；选择后配置、订阅、规则、聚合、状态顺序正确，切换探针时状态不混入其他节点；顶部摘要不再提前显示就绪数量；桌面/移动无溢出、控制台错误或控件重叠。
 - 通过：简化管理API正负向测试、Mihomo快照/编译测试、控制器全量/vet、普通探针全量和特殊tag串行全量；旧动作、端口、网络及不存在节点均拒绝，编译结果仅含域名到具体节点及`MATCH,DIRECT`。
 - 通过：Playwright在1440x1000和390x844完成完整简化流程；保存请求只有`node_id/subscriptions/rules`及规则`id/target/domains`，五区顺序正确，无旧控件、横向溢出、内容重叠、控制台或页面错误。
 - 通过：Base64和明文AnyTLS解析专项测试、控制器全量及vet；覆盖编码密码、IPv6、默认端口、SNI、指纹、ALPN、UDP、证书校验、不支持协议和非法内容，错误断言确认不含连接秘密。
 - 通过：Playwright与Edge在1440x1000和390x844验证订阅URL为可见`type=url`输入，刷新后URL不由管理响应回显；无横向溢出、控制台消息或页面错误，隔离QA监听已停止。
+- 通过：混合Base64 URI源提取兼容AnyTLS节点并准确报告1个Reality跳过；全Reality源返回脱敏错误且last-known-good和revision不变；控制器全量和vet通过。
+- 通过：Playwright与Edge实际点击“提取节点”，状态栏显示“已跳过 1 个 Mihomo 不支持的 AnyTLS+Reality 节点”；1440x1000和390x844均无横向溢出、控制台或页面错误，隔离QA监听已停止。
+- 通过：自动请求标识、旧持久化字段丢弃、旧API字段拒绝、YAML/Base64/SSRF/原子刷新专项测试；控制器全量14.8秒和vet 10.1秒通过，`git diff --check`通过。
+- 通过：Playwright与Edge保存两次配置；订阅载荷字段精确为`enabled/id/name/url`，页面不存在请求设置或请求头控件；1440x1000和390x844五区顺序正确、无横向溢出、控制台或页面错误，隔离QA监听已停止且15030端口已清空。
 - 仓库全平台探针`go vet`仍有既有mobilecore复制Mutex与Windows unsafe.Pointer告警；本次Linux特殊目标和新增代码vet通过。
 
 #### 2.5.7 未执行测试原因
@@ -659,23 +687,26 @@ flowchart LR
 - 旧特殊探针自身含有候选名称缺陷，无法仅靠新探针程序直接修复；必须先把主控升级到含兼容代理的版本，再重新下发特殊探针升级。代码与本地协议测试已完成，真实生产升级复测需在新Release发布后执行。
 - 二次分流快照已直接升级为v2且不迁移旧动作模型；升级主控和特殊探针后，需要在新页面重新保存现有二次分流配置并重新提取节点。v1探针会拒绝v2快照，v2探针也会拒绝v1快照，因此两端应在同一维护窗口完成升级。
 - URI列表首期只实现AnyTLS；其他协议仍可通过标准Clash/Mihomo YAML的`proxies`数组导入，若以URI列表提供则会显式报告不支持并保留last-known-good，后续协议须逐项按官方URI语义扩展和测试。
+- Mihomo当前明确不支持AnyTLS+Reality；这类节点不会出现在可选出口节点池。订阅若全部为该组合将无法用于特殊出口，需要服务端提供普通AnyTLS或Mihomo支持的其他协议配置。
 
 #### 2.5.9 回滚方案
 - 主控先禁用或删除特殊出口配置，使派生规则消失并停止向特殊探针提供可用快照；普通探针继续使用既有人工规则。
 - 发布回滚：停止发布特殊资产和Docker标签；特殊探针程序/Mihomo由伴随升级器恢复`.bak`成对版本，原生安装事务恢复旧程序、Mihomo、许可证、环境和service unit。
 - 代码回滚：移除新增特殊出口、profile/传输/运行时/升级伴随文件，回退2.5.4列出的接缝和CI/UI修改；主控旧版本会忽略不认识的`special_exits`字段，普通VRoute协议不需迁移。
 - 订阅格式整改可独立回滚`probe_special_exit_mng.go`中的URI识别分支、对应测试和`route.html`的输入类型，不涉及已保存配置结构或探针私有快照版本。
+- Reality过滤可独立回滚解析结果计数、刷新响应字段和页面提示；回滚后混合订阅会恢复为遇到首个Reality节点即整源失败。
+- 自动格式协商整改可独立回滚订阅DTO、抓取器固定请求头和页面删除项；回滚会重新暴露手工请求头配置，不影响探针私有快照或Mihomo数据面。
 - 持久数据回滚前备份`data/`和`log/`；`temp/`可直接重建。
 
 #### 2.5.10 结论
-- TASK-PEN-000至013及DEFECT-PEN-009至017代码整改全部完成；二次分流已收敛为“Clash配置提取节点、域名组选择具体节点”，并可从标准YAML、明文或Base64 AnyTLS订阅提取；本地专项、全量和桌面/移动浏览器证据通过，Architect最终门禁已放行。
+- TASK-PEN-000至015及DEFECT-PEN-009至019代码整改全部完成；自动Clash/Mihomo格式协商、标准YAML、明文/Base64 AnyTLS以及Reality兼容过滤均闭合，本地专项、全量和桌面/移动浏览器证据通过，Architect最终门禁已放行。
 
 ### 2.6 Code任务反馈
 - 状态: 已完成
 
 | 反馈编号 | 任务编号 | 反馈类型 | 反馈描述 | 阻塞影响 | Code建议 | Architect处理状态 | Architect处理结论 |
 |---|---|---|---|---|---|---|---|
-| 无 | TASK-PEN-000至013 | 无 | 无未处理任务包缺口或接口冲突 | 无 | 进入最终门禁 | 已完成 | 无需整改 |
+| 无 | TASK-PEN-000至015 | 无 | 无未处理任务包缺口或接口冲突 | 无 | 进入最终门禁 | 已完成 | 无需整改 |
 
 #### 2.6.1 结论
 - Code任务全部完成，无未处理反馈；未执行项和可接受残余风险已在2.5.7至2.5.8记录。
