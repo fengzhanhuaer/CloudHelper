@@ -326,6 +326,43 @@ func TestRefreshSpecialExitMergesMultipleSubscriptionsAtomically(t *testing.T) {
 	}
 }
 
+func TestRefreshSpecialExitUsesControllerWhenFetchProbeIsUnset(t *testing.T) {
+	oldStore := ProbeRouteConfigStore
+	oldControllerFetch := probeSpecialExitFetchSubscriptionFromController
+	oldNodeFetch := probeSpecialExitFetchSubscriptionFromNode
+	library, err := normalizeProbeSpecialExitLibrary(probeSpecialExitLibrary{Subscriptions: []probeSpecialExitSubscription{
+		{ID: "controller", Name: "Controller", Enabled: true, URL: "https://controller.example/config"},
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ProbeRouteConfigStore = &probeRouteConfigStore{path: filepath.Join(t.TempDir(), "route.json"), data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), SpecialExitLibrary: library}}
+	controllerCalls := 0
+	probeSpecialExitFetchSubscriptionFromController = func(_ context.Context, rawURL string) ([]byte, error) {
+		controllerCalls++
+		if rawURL != "https://controller.example/config" {
+			return nil, fmt.Errorf("unexpected controller source")
+		}
+		return []byte("proxies:\n  - name: controller-node\n    type: socks5\n    server: controller.example\n    port: 1080\n"), nil
+	}
+	probeSpecialExitFetchSubscriptionFromNode = func(context.Context, string, string) ([]byte, error) {
+		return nil, fmt.Errorf("node fetch must not be used")
+	}
+	t.Cleanup(func() {
+		ProbeRouteConfigStore = oldStore
+		probeSpecialExitFetchSubscriptionFromController = oldControllerFetch
+		probeSpecialExitFetchSubscriptionFromNode = oldNodeFetch
+	})
+
+	result, err := refreshMngProbeSpecialExitSubscription(context.Background(), "controller", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if controllerCalls != 1 || result["proxy_count"] != 1 {
+		t.Fatalf("controllerCalls=%d result=%+v", controllerCalls, result)
+	}
+}
+
 func TestRefreshSpecialExitSkipsAnyTLSRealityAndReportsCount(t *testing.T) {
 	oldStore := ProbeRouteConfigStore
 	oldFetch := probeSpecialExitFetchSubscriptionFromNode
@@ -744,7 +781,7 @@ func TestGlobalClashLibraryIsSharedAndSnapshotsContainOnlySelectedNodes(t *testi
 	}
 }
 
-func TestSpecialExitLibraryRequiresDesktopFetchProbe(t *testing.T) {
+func TestSpecialExitLibraryAllowsControllerOrDesktopFetch(t *testing.T) {
 	oldProbeStore := ProbeStore
 	oldRouteStore := ProbeRouteConfigStore
 	ProbeStore = &probeConfigStore{data: probeConfigData{ProbeNodes: []probeNodeRecord{
@@ -755,7 +792,6 @@ func TestSpecialExitLibraryRequiresDesktopFetchProbe(t *testing.T) {
 	t.Cleanup(func() { ProbeStore = oldProbeStore; ProbeRouteConfigStore = oldRouteStore })
 
 	for _, payload := range []string{
-		`{"item":{"subscriptions":[{"id":"source-a","name":"Provider A","enabled":true,"url":"https://example.com/config","fetch_node_id":""}]}}`,
 		`{"item":{"subscriptions":[{"id":"source-a","name":"Provider A","enabled":true,"url":"https://example.com/config","fetch_node_id":"2"}]}}`,
 		`{"item":{"subscriptions":[{"id":"source-a","name":"Provider A","enabled":true,"url":"https://example.com/config","fetch_node_id":"99"}]}}`,
 	} {
@@ -763,12 +799,21 @@ func TestSpecialExitLibraryRequiresDesktopFetchProbe(t *testing.T) {
 			t.Fatalf("invalid fetch probe accepted: %s", payload)
 		}
 	}
-	result, err := upsertMngProbeSpecialExitLibrary(json.RawMessage(`{"item":{"subscriptions":[{"id":"source-a","name":"Provider A","enabled":true,"url":"https://example.com/config","fetch_node_id":"1"}]}}`), "")
+	result, err := upsertMngProbeSpecialExitLibrary(json.RawMessage(`{"item":{"subscriptions":[{"id":"source-a","name":"Provider A","enabled":true,"url":"https://example.com/config","fetch_node_id":""}]}}`), "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	view := result["library"].(map[string]interface{})
 	sources := view["subscriptions"].([]probeSpecialExitSubscriptionView)
+	if len(sources) != 1 || sources[0].FetchNodeID != "" || ProbeRouteConfigStore.data.SpecialExitLibrary.Subscriptions[0].FetchNodeID != "" {
+		t.Fatalf("controller fetch mode was not persisted: view=%+v store=%+v", sources, ProbeRouteConfigStore.data.SpecialExitLibrary.Subscriptions)
+	}
+	result, err = upsertMngProbeSpecialExitLibrary(json.RawMessage(`{"item":{"subscriptions":[{"id":"source-a","name":"Provider A","enabled":true,"url":"https://example.com/config","fetch_node_id":"1"}]}}`), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	view = result["library"].(map[string]interface{})
+	sources = view["subscriptions"].([]probeSpecialExitSubscriptionView)
 	if len(sources) != 1 || sources[0].FetchNodeID != "1" || ProbeRouteConfigStore.data.SpecialExitLibrary.Subscriptions[0].FetchNodeID != "1" {
 		t.Fatalf("fetch probe was not persisted: view=%+v store=%+v", sources, ProbeRouteConfigStore.data.SpecialExitLibrary.Subscriptions)
 	}
@@ -819,6 +864,7 @@ func TestMngRoutePageIncludesSpecialExitWorkflow(t *testing.T) {
 		`data-special-exit-tab="subscriptions"`, `data-special-exit-tab="nodes"`,
 		`id="btn-special-exit-library-save"`, `/mng/api/route/special_exit_subscriptions`, `data-se-subscription-refresh="${index}"`,
 		`data-se-subscription-fetch-node="${index}"`, `fetch_node_id: normalizeNodeID(source.fetch_node_id)`,
+		`<option value="">主控直接拉取（默认）</option>`, `item.runtime && item.runtime.online === true`,
 		`id="special-exit-proxies"`, `id="special-exit-status-list"`, `data-se-rule-target`,
 		`<span>路由规则出口</span>`, `id="special-exit-detail"`, `id="special-exit-empty"`,
 		`<option value="">请选择特殊探针</option>`, `.special-exit-layout[hidden] { display:none; }`,
@@ -856,5 +902,37 @@ func TestMngRoutePageIncludesSpecialExitWorkflow(t *testing.T) {
 			t.Fatalf("special exit sections are not in single-column order at %q", marker)
 		}
 		position = next
+	}
+}
+
+func TestMngTilePagesIncludeSharedQuickNavigation(t *testing.T) {
+	pages := map[string]string{
+		"/mng/settings":        mngSettingsPageHTML,
+		"/mng/probe":           mngProbePageHTML,
+		"/mng/backup":          mngBackupPageHTML,
+		"/mng/notepad":         mngNotepadPageHTML,
+		"/mng/controller-logs": mngControllerLogsPageHTML,
+		"/mng/route":           mngRoutePageHTML,
+		"/mng/cloudflare":      mngCloudflarePageHTML,
+		"/mng/tg":              mngTGPageHTML,
+	}
+	for path, page := range pages {
+		t.Run(path, func(t *testing.T) {
+			if !strings.Contains(page, mngQuickNavPlaceholder) {
+				t.Fatalf("page %s does not declare the shared navigation slot", path)
+			}
+			rendered := renderMngPageHTML(page, path)
+			if strings.Contains(rendered, mngQuickNavPlaceholder) || !strings.Contains(rendered, `<nav class="quick-nav" aria-label="磁贴快捷入口">`) {
+				t.Fatalf("page %s did not render shared navigation", path)
+			}
+			if strings.Count(rendered, ` aria-current="page">`) != 1 || !strings.Contains(rendered, `href="`+path+`" aria-current="page"`) {
+				t.Fatalf("page %s current navigation state is invalid", path)
+			}
+			for _, item := range mngQuickNavItems {
+				if !strings.Contains(rendered, `href="`+item.Path+`"`) || !strings.Contains(rendered, `>`+item.Label+`</a>`) {
+					t.Fatalf("page %s missing shortcut %s", path, item.Path)
+				}
+			}
+		})
 	}
 }

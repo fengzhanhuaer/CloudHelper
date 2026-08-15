@@ -60,8 +60,7 @@ func mngNotepadPageHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(mngNotepadPageHTML))
+	writeMngPageHTML(w, r, mngNotepadPageHTML)
 }
 
 func mngNotepadHandler(w http.ResponseWriter, r *http.Request) {

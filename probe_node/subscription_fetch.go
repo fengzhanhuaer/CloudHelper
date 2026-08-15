@@ -27,6 +27,7 @@ const (
 	probeSubscriptionFetchWriteLimit   = 30 * time.Second
 	probeSubscriptionFetchUserAgent    = "clash.meta"
 	probeSubscriptionFetchAccept       = "application/yaml, application/x-yaml, text/yaml, text/plain;q=0.9, */*;q=0.1"
+	probeSubscriptionFetchMaxRedirects = 5
 )
 
 type probeSubscriptionFetchResultPayload struct {
@@ -44,6 +45,7 @@ type probeSubscriptionFetchResultPayload struct {
 var probeSubscriptionFetchLookupIP = net.DefaultResolver.LookupIPAddr
 var probeSubscriptionFetchDialContext = (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext
 var probeSubscriptionFetchContent = fetchProbeSubscriptionContent
+var probeSubscriptionFetchDo = doProbeSubscriptionFetch
 
 func runProbeSubscriptionFetch(cmd probeControlMessage, identity nodeIdentity, stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex) {
 	requestID := strings.TrimSpace(cmd.RequestID)
@@ -90,10 +92,55 @@ func writeProbeSubscriptionFetchResult(stream net.Conn, encoder *json.Encoder, w
 }
 
 func fetchProbeSubscriptionContent(ctx context.Context, rawURL string, maxBytes int64) ([]byte, error) {
-	target, ips, err := validateProbeSubscriptionFetchURL(ctx, rawURL)
-	if err != nil {
-		return nil, err
+	currentURL := strings.TrimSpace(rawURL)
+	for redirects := 0; ; redirects++ {
+		target, ips, err := validateProbeSubscriptionFetchURL(ctx, currentURL)
+		if err != nil {
+			return nil, err
+		}
+		response, err := probeSubscriptionFetchDo(ctx, target, ips)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, fmt.Errorf("subscription fetch timed out or was canceled")
+			}
+			return nil, fmt.Errorf("subscription fetch failed")
+		}
+		if probeSubscriptionRedirectStatus(response.StatusCode) {
+			location := strings.TrimSpace(response.Header.Get("Location"))
+			_ = response.Body.Close()
+			if redirects >= probeSubscriptionFetchMaxRedirects {
+				return nil, fmt.Errorf("subscription exceeded %d redirects", probeSubscriptionFetchMaxRedirects)
+			}
+			if location == "" {
+				return nil, fmt.Errorf("subscription redirect is missing a location")
+			}
+			next, resolveErr := target.Parse(location)
+			if resolveErr != nil {
+				return nil, fmt.Errorf("subscription redirect is invalid")
+			}
+			currentURL = next.String()
+			continue
+		}
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			_ = response.Body.Close()
+			return nil, fmt.Errorf("subscription returned HTTP %d", response.StatusCode)
+		}
+		content, readErr := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
+		_ = response.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("subscription response could not be read")
+		}
+		if int64(len(content)) > maxBytes {
+			return nil, fmt.Errorf("subscription exceeded %d bytes", maxBytes)
+		}
+		if len(content) == 0 {
+			return nil, fmt.Errorf("subscription response is empty")
+		}
+		return content, nil
 	}
+}
+
+func doProbeSubscriptionFetch(ctx context.Context, target *url.URL, ips []netip.Addr) (*http.Response, error) {
 	port := strings.TrimSpace(target.Port())
 	if port == "" {
 		port = "443"
@@ -102,39 +149,26 @@ func fetchProbeSubscriptionContent(ctx context.Context, rawURL string, maxBytes 
 	transport.DialContext = func(dialCtx context.Context, network, _ string) (net.Conn, error) {
 		return probeSubscriptionFetchDialContext(dialCtx, network, net.JoinHostPort(ips[0].String(), port))
 	}
-	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport}
-	client.CheckRedirect = func(*http.Request, []*http.Request) error {
-		return fmt.Errorf("subscription redirects are disabled")
-	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
+		transport.CloseIdleConnections()
 		return nil, fmt.Errorf("subscription request is invalid")
 	}
 	request.Header.Set("User-Agent", probeSubscriptionFetchUserAgent)
 	request.Header.Set("Accept", probeSubscriptionFetchAccept)
+	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	response, err := client.Do(request)
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil, fmt.Errorf("subscription fetch timed out or was canceled")
-		}
-		return nil, fmt.Errorf("subscription fetch failed")
+	transport.CloseIdleConnections()
+	return response, err
+}
+
+func probeSubscriptionRedirectStatus(status int) bool {
+	switch status {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	default:
+		return false
 	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("subscription returned HTTP %d", response.StatusCode)
-	}
-	content, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("subscription response could not be read")
-	}
-	if int64(len(content)) > maxBytes {
-		return nil, fmt.Errorf("subscription exceeded %d bytes", maxBytes)
-	}
-	if len(content) == 0 {
-		return nil, fmt.Errorf("subscription response is empty")
-	}
-	return content, nil
 }
 
 func validateProbeSubscriptionFetchURL(ctx context.Context, raw string) (*url.URL, []netip.Addr, error) {

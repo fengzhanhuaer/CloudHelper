@@ -7,8 +7,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
+	"net/http"
 	"net/netip"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -97,6 +100,37 @@ func TestFetchProbeSubscriptionContentUsesConfiguredPortWithoutLeakingURL(t *tes
 	}
 	if strings.Contains(err.Error(), "do-not-leak") || strings.Contains(err.Error(), "subscription.example") {
 		t.Fatalf("subscription URL leaked in error: %v", err)
+	}
+}
+
+func TestFetchProbeSubscriptionContentFollowsSafeRedirect(t *testing.T) {
+	oldLookup := probeSubscriptionFetchLookupIP
+	oldDo := probeSubscriptionFetchDo
+	probeSubscriptionFetchLookupIP = func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("1.1.1.1")}}, nil
+	}
+	requests := []string{}
+	probeSubscriptionFetchDo = func(_ context.Context, target *url.URL, ips []netip.Addr) (*http.Response, error) {
+		requests = append(requests, target.String())
+		if len(ips) != 1 || ips[0].String() != "1.1.1.1" {
+			t.Fatalf("resolved addresses=%v", ips)
+		}
+		if len(requests) == 1 {
+			return &http.Response{StatusCode: http.StatusTemporaryRedirect, Header: http.Header{"Location": []string{"https://cdn.example/config.yaml"}}, Body: io.NopCloser(strings.NewReader(""))}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("proxies: []\n"))}, nil
+	}
+	t.Cleanup(func() {
+		probeSubscriptionFetchLookupIP = oldLookup
+		probeSubscriptionFetchDo = oldDo
+	})
+
+	content, err := fetchProbeSubscriptionContent(context.Background(), "https://subscription.example/config", 1024)
+	if err != nil || string(content) != "proxies: []\n" {
+		t.Fatalf("content=%q err=%v", content, err)
+	}
+	if len(requests) != 2 || requests[1] != "https://cdn.example/config.yaml" {
+		t.Fatalf("requests=%v", requests)
 	}
 }
 

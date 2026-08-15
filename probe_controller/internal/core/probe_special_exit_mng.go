@@ -85,6 +85,7 @@ type probeSpecialExitSubscriptionParseResult struct {
 var errProbeSpecialExitAnyTLSRealityUnsupported = errors.New("AnyTLS+Reality is not supported by Mihomo")
 
 var probeSpecialExitFetchSubscriptionFromNode = fetchProbeSpecialExitSubscriptionFromNode
+var probeSpecialExitFetchSubscriptionFromController = fetchProbeSpecialExitSubscriptionFromController
 
 func listMngProbeSpecialExits() (map[string]interface{}, error) {
 	if ProbeRouteConfigStore == nil {
@@ -266,9 +267,6 @@ func upsertMngProbeSpecialExitLibrary(payload json.RawMessage, controllerBaseURL
 func validateMngProbeSpecialExitSubscriptionFetchNodes(subscriptions []probeSpecialExitSubscription) error {
 	for index, source := range subscriptions {
 		fetchNodeID := normalizeProbeNodeID(source.FetchNodeID)
-		if source.Enabled && strings.TrimSpace(source.URL) != "" && fetchNodeID == "" {
-			return fmt.Errorf("subscriptions[%d].fetch_node_id is required", index)
-		}
 		if fetchNodeID == "" {
 			continue
 		}
@@ -438,7 +436,12 @@ func refreshMngProbeSpecialExitSubscription(ctx context.Context, subscriptionID,
 	if err != nil {
 		return nil, err
 	}
-	content, err := probeSpecialExitFetchSubscriptionFromNode(ctx, source.FetchNodeID, source.URL)
+	var content []byte
+	if normalizeProbeNodeID(source.FetchNodeID) == "" {
+		content, err = probeSpecialExitFetchSubscriptionFromController(ctx, source.URL)
+	} else {
+		content, err = probeSpecialExitFetchSubscriptionFromNode(ctx, source.FetchNodeID, source.URL)
+	}
 	if err != nil {
 		recordProbeSpecialExitRefreshError(sourceHash, source.ID, err)
 		return nil, fmt.Errorf("subscription source %q refresh failed: %w", source.Name, err)
@@ -475,9 +478,6 @@ func loadMngProbeSpecialExitSubscriptionSource(subscriptionID string) (probeSpec
 	}
 	if strings.TrimSpace(source.URL) == "" {
 		return probeSpecialExitSubscription{}, "", fmt.Errorf("subscription source %q URL is not configured", source.Name)
-	}
-	if normalizeProbeNodeID(source.FetchNodeID) == "" {
-		return probeSpecialExitSubscription{}, "", fmt.Errorf("subscription source %q fetch probe is not configured", source.Name)
 	}
 	return source, sourceHash, nil
 }

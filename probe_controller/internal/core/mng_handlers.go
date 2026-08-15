@@ -66,8 +66,7 @@ func mngSettingsHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(mngSettingsPageHTML))
+	writeMngPageHTML(w, r, mngSettingsPageHTML)
 }
 
 func mngControllerLogsPageHandler(w http.ResponseWriter, r *http.Request) {
@@ -79,8 +78,7 @@ func mngControllerLogsPageHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(mngControllerLogsPageHTML))
+	writeMngPageHTML(w, r, mngControllerLogsPageHTML)
 }
 
 func mngControllerLogsHandler(w http.ResponseWriter, r *http.Request) {

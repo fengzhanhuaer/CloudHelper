@@ -8,7 +8,9 @@
     :root { color-scheme: dark; }
     body { margin:0; font-family:Segoe UI,Roboto,Arial,sans-serif; background:#0d1117; color:#c9d1d9; }
     .wrap { width:calc(100vw - 32px); margin:3vh auto; padding:20px; box-sizing:border-box; }
-    .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; }
+    .topbar { display:flex; align-items:center; gap:12px; margin-bottom:14px; }
+    .topbar-title { flex:0 0 auto; }
+    .topbar-actions { display:flex; align-items:center; gap:6px; flex:0 0 auto; }
     h1 { margin:0; font-size:24px; }
     .sub { color:#8b949e; margin:6px 0 0; font-size:13px; }
     .btn { padding:8px 12px; border-radius:8px; border:1px solid #30363d; background:#21262d; color:#c9d1d9; cursor:pointer; transition:border-color .16s ease, background .16s ease, transform .16s ease; }
@@ -129,11 +131,12 @@
 <body>
   <div class="wrap">
     <div class="topbar">
-      <div>
+      <div class="topbar-title">
         <h1>/mng/route</h1>
         <p class="sub">路由管理：虚拟路由拓扑规则与运行状态。</p>
       </div>
-      <div>
+      <!-- mng-quick-nav -->
+      <div class="topbar-actions">
         <button id="btn-back" class="btn" type="button">返回磁贴面板</button>
         <button id="btn-logout" class="btn" type="button">退出登录</button>
       </div>
@@ -513,9 +516,11 @@
         ? payload.nodes
           .map((item) => ({
             node_no: Number.parseInt(String(item.node_no || '0'), 10),
-            node_name: String(item.node_name || '').trim(),
-            node_kind: String(item.node_kind || 'normal').trim() || 'normal',
-            target_system: String(item.target_system || 'linux').trim().toLowerCase() || 'linux',
+             node_name: String(item.node_name || '').trim(),
+             node_kind: String(item.node_kind || 'normal').trim() || 'normal',
+             target_system: String(item.target_system || 'linux').trim().toLowerCase() || 'linux',
+             online: item.runtime && item.runtime.online === true,
+             version: String(item.runtime && item.runtime.version || '').trim(),
           }))
           .filter((item) => Number.isFinite(item.node_no) && item.node_no > 0)
           .sort((a, b) => a.node_no - b.node_no)
@@ -687,7 +692,7 @@
           <div class="special-exit-subscription-grid">
             <input data-se-subscription-name="${index}" type="text" value="${escapeHTML(source.name || '')}" placeholder="配置名称" />
             <input data-se-subscription-url="${index}" class="mono" type="url" value="${escapeHTML(source.url || '')}" placeholder="Clash 配置 URL（留空保留）" autocomplete="url" />
-            <select data-se-subscription-fetch-node="${index}"><option value="">选择拉取探针</option>${missingFetchNode}${fetchNodes.map((node) => { const value = normalizeNodeID(node.node_no); return `<option value="${escapeHTML(value)}" ${value === selectedFetchNodeID ? 'selected' : ''}>${escapeHTML(nodeLabel(value))}</option>`; }).join('')}</select>
+            <select data-se-subscription-fetch-node="${index}"><option value="">主控直接拉取（默认）</option>${missingFetchNode}${fetchNodes.map((node) => { const value = normalizeNodeID(node.node_no); const availability = node.online ? '在线' : '离线'; return `<option value="${escapeHTML(value)}" ${value === selectedFetchNodeID ? 'selected' : ''}>${escapeHTML(nodeLabel(value))} · ${availability}</option>`; }).join('')}</select>
             <select data-se-subscription-enabled="${index}"><option value="true" ${source.enabled === false ? '' : 'selected'}>使用</option><option value="false" ${source.enabled === false ? 'selected' : ''}>停用</option></select>
             <button class="btn" data-se-subscription-refresh="${index}" type="button">提取节点</button>
             <button class="btn danger" data-se-subscription-remove="${index}" type="button">删除</button>

@@ -6,7 +6,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net"
+	"net/http"
+	"net/netip"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -92,6 +96,59 @@ func TestFetchProbeSpecialExitSubscriptionFromNodeRejectsAndroidAndOffline(t *te
 	}
 	if _, err := fetchProbeSpecialExitSubscriptionFromNode(context.Background(), "9", "https://example.com"); err == nil || !strings.Contains(err.Error(), "offline") {
 		t.Fatalf("offline fetch probe error=%v", err)
+	}
+}
+
+func TestFetchProbeSpecialExitSubscriptionFromControllerFollowsSafeRedirect(t *testing.T) {
+	oldLookup := probeControllerSubscriptionFetchLookupIP
+	oldDo := probeControllerSubscriptionFetchDo
+	probeControllerSubscriptionFetchLookupIP = func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("1.1.1.1")}}, nil
+	}
+	requests := []string{}
+	probeControllerSubscriptionFetchDo = func(_ context.Context, target *url.URL, ips []netip.Addr) (*http.Response, error) {
+		requests = append(requests, target.String())
+		if len(ips) != 1 || ips[0].String() != "1.1.1.1" {
+			t.Fatalf("resolved addresses=%v", ips)
+		}
+		if len(requests) == 1 {
+			return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": []string{"https://cdn.example/config.yaml"}}, Body: io.NopCloser(strings.NewReader(""))}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("proxies: []\n"))}, nil
+	}
+	t.Cleanup(func() {
+		probeControllerSubscriptionFetchLookupIP = oldLookup
+		probeControllerSubscriptionFetchDo = oldDo
+	})
+
+	content, err := fetchProbeSpecialExitSubscriptionFromController(context.Background(), "https://subscription.example/config")
+	if err != nil || string(content) != "proxies: []\n" {
+		t.Fatalf("content=%q err=%v", content, err)
+	}
+	if len(requests) != 2 || requests[0] != "https://subscription.example/config" || requests[1] != "https://cdn.example/config.yaml" {
+		t.Fatalf("requests=%v", requests)
+	}
+}
+
+func TestFetchProbeSpecialExitSubscriptionFromControllerRejectsPrivateRedirect(t *testing.T) {
+	oldLookup := probeControllerSubscriptionFetchLookupIP
+	oldDo := probeControllerSubscriptionFetchDo
+	probeControllerSubscriptionFetchLookupIP = func(_ context.Context, host string) ([]net.IPAddr, error) {
+		if host == "private.example" {
+			return []net.IPAddr{{IP: net.ParseIP("192.168.1.2")}}, nil
+		}
+		return []net.IPAddr{{IP: net.ParseIP("1.1.1.1")}}, nil
+	}
+	probeControllerSubscriptionFetchDo = func(_ context.Context, _ *url.URL, _ []netip.Addr) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": []string{"https://private.example/config"}}, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+	t.Cleanup(func() {
+		probeControllerSubscriptionFetchLookupIP = oldLookup
+		probeControllerSubscriptionFetchDo = oldDo
+	})
+
+	if _, err := fetchProbeSpecialExitSubscriptionFromController(context.Background(), "https://subscription.example/config"); err == nil || !strings.Contains(err.Error(), "non-public") {
+		t.Fatalf("private redirect error=%v", err)
 	}
 }
 

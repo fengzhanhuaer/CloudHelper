@@ -18,8 +18,7 @@ func mngTGPageHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(mngTGPageHTML))
+	writeMngPageHTML(w, r, mngTGPageHTML)
 }
 
 func mngTGSessionPageHandler(w http.ResponseWriter, r *http.Request) {
