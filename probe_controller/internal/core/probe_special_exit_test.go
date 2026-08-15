@@ -750,6 +750,7 @@ func TestMngRoutePageIncludesSpecialExitWorkflow(t *testing.T) {
 		`id="special-exit-new-node-name"`, `id="btn-special-exit-create-node"`, `id="special-exit-install-mode"`, `/mng/api/route/special_exits/install?`,
 		`id="special-exit-name"`, `id="special-exit-enabled"`, `id="special-exit-default-action"`, `data-se-rule-action`, `data-se-rule-network`, `data-se-rule-ports`,
 		`id="btn-special-exit-rule-add"`, `data-se-rule-domains`, `data-se-rule-remove`, `id="special-exit-managed-rule"`, `<span>聚合路由规则</span>`,
+		`special-exit-rule-entries`, `(rule.entries || []).map((entry)`,
 		`data-se-subscription-url="${index}" class="mono" type="password"`, `<summary>请求设置</summary>`, `data-se-subscription-headers`, `data-se-subscription-clear-headers`, `headers_configured`, `clear_headers`,
 	} {
 		if strings.Contains(mngRoutePageHTML, marker) {

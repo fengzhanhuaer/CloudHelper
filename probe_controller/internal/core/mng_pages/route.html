@@ -98,7 +98,6 @@
     .special-exit-field { display:grid; gap:6px; color:#8b949e; font-size:12px; }
     .special-exit-field textarea, .special-exit-field select { min-width:0; width:100%; box-sizing:border-box; }
     .special-exit-rule-name { color:#c9d1d9; font-weight:600; }
-    .special-exit-rule-entries { display:grid; gap:3px; margin-top:6px; color:#8b949e; font-size:12px; overflow-wrap:anywhere; }
     .special-exit-status-list { display:grid; gap:8px; margin-top:10px; }
     .special-exit-status-item { border-top:1px solid #30363d; padding-top:8px; overflow-wrap:anywhere; }
     .special-exit-subscriptions { display:grid; gap:10px; margin-top:10px; }
@@ -705,7 +704,6 @@
         .map((rule) => ({
           route_rule_id: String(rule.id || ''),
           name: String(rule.name || rule.id || ''),
-          entries: Array.isArray(rule.entries) ? rule.entries.slice() : [],
           target: targets.get(String(rule.id || '')) || 'DIRECT',
         }));
     }
@@ -724,10 +722,9 @@
         const unavailable = target !== 'DIRECT' && !proxyNames.includes(target)
           ? `<option value="${escapeHTML(target)}" selected>${escapeHTML(target)}（不可用）</option>`
           : '';
-        const entries = (rule.entries || []).map((entry) => `<div class="mono">${escapeHTML(entry)}</div>`).join('');
         return `<div class="special-exit-status-item" data-special-exit-rule="${index}">
         <div class="special-exit-rule-grid">
-          <div><div class="special-exit-rule-name">${escapeHTML(rule.name || rule.route_rule_id)}</div><div class="special-exit-rule-entries">${entries}</div></div>
+          <div class="special-exit-rule-name">${escapeHTML(rule.name || rule.route_rule_id)}</div>
           <label class="special-exit-field"><span>出口方式</span><select data-se-rule-target="${index}"><option value="DIRECT" ${target === 'DIRECT' ? 'selected' : ''}>直出</option>${unavailable}${proxyNames.map((name) => `<option value="${escapeHTML(name)}" ${name === target ? 'selected' : ''}>${escapeHTML(name)}</option>`).join('')}</select></label>
         </div>
       </div>`;
