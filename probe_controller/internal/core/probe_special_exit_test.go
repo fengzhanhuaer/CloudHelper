@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -280,17 +279,20 @@ func TestProbeSpecialExitSnapshotUsesVersionThreeRouteEntryModel(t *testing.T) {
 
 func TestRefreshSpecialExitMergesMultipleSubscriptionsAtomically(t *testing.T) {
 	oldStore := ProbeRouteConfigStore
-	oldFetch := probeSpecialExitFetchSubscription
+	oldFetch := probeSpecialExitFetchSubscriptionFromNode
 	subscriptions := []probeSpecialExitSubscription{
-		{ID: "primary", Name: "Primary", Enabled: true, URL: "https://primary.example/config"},
-		{ID: "backup", Name: "Backup", Enabled: true, URL: "https://backup.example/config"},
+		{ID: "primary", Name: "Primary", Enabled: true, URL: "https://primary.example/config", FetchNodeID: "1"},
+		{ID: "backup", Name: "Backup", Enabled: true, URL: "https://backup.example/config", FetchNodeID: "1"},
 	}
 	library, err := normalizeProbeSpecialExitLibrary(probeSpecialExitLibrary{Subscriptions: subscriptions}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ProbeRouteConfigStore = &probeRouteConfigStore{path: filepath.Join(t.TempDir(), "route.json"), data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), SpecialExitLibrary: library}}
-	probeSpecialExitFetchSubscription = func(_ context.Context, rawURL string) ([]byte, error) {
+	probeSpecialExitFetchSubscriptionFromNode = func(_ context.Context, nodeID, rawURL string) ([]byte, error) {
+		if nodeID != "1" {
+			return nil, fmt.Errorf("unexpected fetch node")
+		}
 		switch rawURL {
 		case "https://primary.example/config":
 			return []byte("proxies:\n  - name: node-a\n    type: socks5\n    server: a.example\n    port: 1080\n"), nil
@@ -300,7 +302,7 @@ func TestRefreshSpecialExitMergesMultipleSubscriptionsAtomically(t *testing.T) {
 			return nil, fmt.Errorf("unexpected source")
 		}
 	}
-	t.Cleanup(func() { ProbeRouteConfigStore = oldStore; probeSpecialExitFetchSubscription = oldFetch })
+	t.Cleanup(func() { ProbeRouteConfigStore = oldStore; probeSpecialExitFetchSubscriptionFromNode = oldFetch })
 	result, err := refreshMngProbeSpecialExitSubscription(context.Background(), "primary", "https://controller.example")
 	if err != nil {
 		t.Fatal(err)
@@ -326,20 +328,20 @@ func TestRefreshSpecialExitMergesMultipleSubscriptionsAtomically(t *testing.T) {
 
 func TestRefreshSpecialExitSkipsAnyTLSRealityAndReportsCount(t *testing.T) {
 	oldStore := ProbeRouteConfigStore
-	oldFetch := probeSpecialExitFetchSubscription
-	subscriptions := []probeSpecialExitSubscription{{ID: "mixed", Name: "Mixed", Enabled: true, URL: "https://mixed.example/config"}}
+	oldFetch := probeSpecialExitFetchSubscriptionFromNode
+	subscriptions := []probeSpecialExitSubscription{{ID: "mixed", Name: "Mixed", Enabled: true, URL: "https://mixed.example/config", FetchNodeID: "1"}}
 	proxies := []map[string]interface{}{{"name": "last-good", "type": "socks5"}}
 	library, err := normalizeProbeSpecialExitLibrary(probeSpecialExitLibrary{Subscriptions: subscriptions, Proxies: proxies, ProxySourceIDs: map[string]string{"last-good": "mixed"}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ProbeRouteConfigStore = &probeRouteConfigStore{path: filepath.Join(t.TempDir(), "route.json"), data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), SpecialExitLibrary: library}}
-	probeSpecialExitFetchSubscription = func(context.Context, string) ([]byte, error) {
+	probeSpecialExitFetchSubscriptionFromNode = func(context.Context, string, string) ([]byte, error) {
 		plain := "anytls://compatible@compatible.example:443/?sni=compatible.example#UsableNode\n" +
 			"anytls://reality-secret@reality.example:443/?security=reality&pbk=public-key-secret&sid=0123456789abcdef#Reality"
 		return []byte(base64.StdEncoding.EncodeToString([]byte(plain))), nil
 	}
-	t.Cleanup(func() { ProbeRouteConfigStore = oldStore; probeSpecialExitFetchSubscription = oldFetch })
+	t.Cleanup(func() { ProbeRouteConfigStore = oldStore; probeSpecialExitFetchSubscriptionFromNode = oldFetch })
 	result, err := refreshMngProbeSpecialExitSubscription(context.Background(), "mixed", "https://controller.example")
 	if err != nil {
 		t.Fatal(err)
@@ -357,19 +359,19 @@ func TestRefreshSpecialExitSkipsAnyTLSRealityAndReportsCount(t *testing.T) {
 
 func TestRefreshSpecialExitRealityOnlyPreservesLastGood(t *testing.T) {
 	oldStore := ProbeRouteConfigStore
-	oldFetch := probeSpecialExitFetchSubscription
-	subscriptions := []probeSpecialExitSubscription{{ID: "reality", Name: "Reality", Enabled: true, URL: "https://reality.example/config"}}
+	oldFetch := probeSpecialExitFetchSubscriptionFromNode
+	subscriptions := []probeSpecialExitSubscription{{ID: "reality", Name: "Reality", Enabled: true, URL: "https://reality.example/config", FetchNodeID: "1"}}
 	proxies := []map[string]interface{}{{"name": "last-good", "type": "socks5"}}
 	library, err := normalizeProbeSpecialExitLibrary(probeSpecialExitLibrary{Subscriptions: subscriptions, Proxies: proxies, ProxySourceIDs: map[string]string{"last-good": "reality"}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ProbeRouteConfigStore = &probeRouteConfigStore{path: filepath.Join(t.TempDir(), "route.json"), data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), SpecialExitLibrary: library}}
-	probeSpecialExitFetchSubscription = func(context.Context, string) ([]byte, error) {
+	probeSpecialExitFetchSubscriptionFromNode = func(context.Context, string, string) ([]byte, error) {
 		plain := "anytls://reality-secret@reality.example:443/?security=reality&pbk=public-key-secret&sid=0123456789abcdef#Reality"
 		return []byte(base64.StdEncoding.EncodeToString([]byte(plain))), nil
 	}
-	t.Cleanup(func() { ProbeRouteConfigStore = oldStore; probeSpecialExitFetchSubscription = oldFetch })
+	t.Cleanup(func() { ProbeRouteConfigStore = oldStore; probeSpecialExitFetchSubscriptionFromNode = oldFetch })
 	_, err = refreshMngProbeSpecialExitSubscription(context.Background(), "reality", "https://controller.example")
 	if err == nil || !strings.Contains(err.Error(), "no Mihomo-compatible proxy nodes") || strings.Contains(err.Error(), "reality-secret") || strings.Contains(err.Error(), "public-key-secret") {
 		t.Fatalf("Reality-only refresh error=%v", err)
@@ -384,10 +386,10 @@ func TestRefreshSpecialExitRealityOnlyPreservesLastGood(t *testing.T) {
 
 func TestRefreshSpecialExitRejectsDuplicateProxyAcrossSubscriptions(t *testing.T) {
 	oldStore := ProbeRouteConfigStore
-	oldFetch := probeSpecialExitFetchSubscription
+	oldFetch := probeSpecialExitFetchSubscriptionFromNode
 	subscriptions := []probeSpecialExitSubscription{
-		{ID: "one", Name: "One", Enabled: true, URL: "https://one.example/config"},
-		{ID: "two", Name: "Two", Enabled: true, URL: "https://two.example/config"},
+		{ID: "one", Name: "One", Enabled: true, URL: "https://one.example/config", FetchNodeID: "1"},
+		{ID: "two", Name: "Two", Enabled: true, URL: "https://two.example/config", FetchNodeID: "1"},
 	}
 	library, err := normalizeProbeSpecialExitLibrary(probeSpecialExitLibrary{
 		Subscriptions:  subscriptions,
@@ -398,10 +400,10 @@ func TestRefreshSpecialExitRejectsDuplicateProxyAcrossSubscriptions(t *testing.T
 		t.Fatal(err)
 	}
 	ProbeRouteConfigStore = &probeRouteConfigStore{path: filepath.Join(t.TempDir(), "route.json"), data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), SpecialExitLibrary: library}}
-	probeSpecialExitFetchSubscription = func(context.Context, string) ([]byte, error) {
+	probeSpecialExitFetchSubscriptionFromNode = func(context.Context, string, string) ([]byte, error) {
 		return []byte("proxies:\n  - name: duplicate\n    type: socks5\n    server: same.example\n    port: 1080\n"), nil
 	}
-	t.Cleanup(func() { ProbeRouteConfigStore = oldStore; probeSpecialExitFetchSubscription = oldFetch })
+	t.Cleanup(func() { ProbeRouteConfigStore = oldStore; probeSpecialExitFetchSubscriptionFromNode = oldFetch })
 	if _, err := refreshMngProbeSpecialExitSubscription(context.Background(), "two", "https://controller.example"); err == nil || !strings.Contains(err.Error(), "duplicated") {
 		t.Fatalf("duplicate proxy accepted: %v", err)
 	}
@@ -415,10 +417,10 @@ func TestRefreshSpecialExitRejectsDuplicateProxyAcrossSubscriptions(t *testing.T
 
 func TestRefreshSpecialExitSourceFailurePreservesLastGood(t *testing.T) {
 	oldStore := ProbeRouteConfigStore
-	oldFetch := probeSpecialExitFetchSubscription
+	oldFetch := probeSpecialExitFetchSubscriptionFromNode
 	subscriptions := []probeSpecialExitSubscription{
-		{ID: "good", Name: "Good", Enabled: true, URL: "https://good.example/config"},
-		{ID: "failed", Name: "Failed", Enabled: true, URL: "https://failed.example/config"},
+		{ID: "good", Name: "Good", Enabled: true, URL: "https://good.example/config", FetchNodeID: "1"},
+		{ID: "failed", Name: "Failed", Enabled: true, URL: "https://failed.example/config", FetchNodeID: "1"},
 	}
 	proxies := []map[string]interface{}{{"name": "last-good", "type": "socks5"}}
 	library, err := normalizeProbeSpecialExitLibrary(probeSpecialExitLibrary{Subscriptions: subscriptions, Proxies: proxies, ProxySourceIDs: map[string]string{"last-good": "good"}}, nil)
@@ -426,13 +428,13 @@ func TestRefreshSpecialExitSourceFailurePreservesLastGood(t *testing.T) {
 		t.Fatal(err)
 	}
 	ProbeRouteConfigStore = &probeRouteConfigStore{path: filepath.Join(t.TempDir(), "route.json"), data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), SpecialExitLibrary: library}}
-	probeSpecialExitFetchSubscription = func(_ context.Context, rawURL string) ([]byte, error) {
+	probeSpecialExitFetchSubscriptionFromNode = func(_ context.Context, _ string, rawURL string) ([]byte, error) {
 		if rawURL == "https://failed.example/config" {
 			return nil, context.DeadlineExceeded
 		}
 		return []byte("proxies:\n  - name: replacement\n    type: socks5\n    server: replacement.example\n    port: 1080\n"), nil
 	}
-	t.Cleanup(func() { ProbeRouteConfigStore = oldStore; probeSpecialExitFetchSubscription = oldFetch })
+	t.Cleanup(func() { ProbeRouteConfigStore = oldStore; probeSpecialExitFetchSubscriptionFromNode = oldFetch })
 	if _, err := refreshMngProbeSpecialExitSubscription(context.Background(), "failed", "https://controller.example"); err == nil || !strings.Contains(err.Error(), "Failed") {
 		t.Fatalf("source failure was not returned: %v", err)
 	}
@@ -575,85 +577,6 @@ func TestProbeRouteConfigStoreUpdateSerializesConcurrentChanges(t *testing.T) {
 	raw, err := os.ReadFile(store.path)
 	if err != nil || json.Unmarshal(raw, &persisted) != nil || len(persisted.SpecialExits) != 2 {
 		t.Fatalf("persisted concurrent updates invalid: items=%d err=%v raw=%s", len(persisted.SpecialExits), err, raw)
-	}
-}
-
-func TestValidateProbeSpecialExitSubscriptionURLRejectsPrivateAndReservedAddresses(t *testing.T) {
-	oldLookup := probeSpecialExitLookupIP
-	t.Cleanup(func() { probeSpecialExitLookupIP = oldLookup })
-	for _, raw := range []string{"127.0.0.1", "10.0.0.1", "198.18.0.10", "192.0.2.1", "2001:db8::1"} {
-		probeSpecialExitLookupIP = func(context.Context, string) ([]net.IPAddr, error) { return []net.IPAddr{{IP: net.ParseIP(raw)}}, nil }
-		if _, _, err := validateProbeSpecialExitSubscriptionURL(context.Background(), "https://subscription.example/config.yaml"); err == nil {
-			t.Fatalf("address %s accepted", raw)
-		}
-	}
-	probeSpecialExitLookupIP = func(context.Context, string) ([]net.IPAddr, error) {
-		return []net.IPAddr{{IP: net.ParseIP("1.1.1.1")}}, nil
-	}
-	if target, _, err := validateProbeSpecialExitSubscriptionURL(context.Background(), "https://subscription.example/config.yaml"); err != nil || target.Hostname() != "subscription.example" {
-		t.Fatalf("public subscription rejected: target=%v err=%v", target, err)
-	}
-	if target, _, err := validateProbeSpecialExitSubscriptionURL(context.Background(), "https://subscription.example:8443/config.yaml"); err != nil || target.Port() != "8443" {
-		t.Fatalf("public subscription with custom HTTPS port rejected: target=%v err=%v", target, err)
-	}
-	for _, rawURL := range []string{"https://subscription.example:0/config.yaml", "https://subscription.example:65536/config.yaml"} {
-		if _, _, err := validateProbeSpecialExitSubscriptionURL(context.Background(), rawURL); err == nil {
-			t.Fatalf("invalid subscription port accepted: %s", rawURL)
-		}
-	}
-	if _, _, err := validateProbeSpecialExitSubscriptionURL(context.Background(), "http://subscription.example/config.yaml"); err == nil {
-		t.Fatal("HTTP subscription accepted")
-	}
-}
-
-func TestFetchProbeSpecialExitSubscriptionUsesValidatedPortWithoutLeakingURL(t *testing.T) {
-	oldLookup := probeSpecialExitLookupIP
-	oldDial := probeSpecialExitDialContext
-	probeSpecialExitLookupIP = func(context.Context, string) ([]net.IPAddr, error) {
-		return []net.IPAddr{{IP: net.ParseIP("1.1.1.1")}}, nil
-	}
-	t.Cleanup(func() {
-		probeSpecialExitLookupIP = oldLookup
-		probeSpecialExitDialContext = oldDial
-	})
-	for _, testCase := range []struct {
-		name        string
-		url         string
-		wantAddress string
-	}{
-		{name: "default port", url: "https://subscription.example/config.yaml?token=do-not-leak", wantAddress: "1.1.1.1:443"},
-		{name: "custom port", url: "https://subscription.example:8443/config.yaml?token=do-not-leak", wantAddress: "1.1.1.1:8443"},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			dialAddress := ""
-			probeSpecialExitDialContext = func(_ context.Context, _, address string) (net.Conn, error) {
-				dialAddress = address
-				return nil, context.DeadlineExceeded
-			}
-			_, err := fetchProbeSpecialExitSubscription(context.Background(), testCase.url)
-			if err == nil {
-				t.Fatal("expected transport error")
-			}
-			if dialAddress != testCase.wantAddress {
-				t.Fatalf("subscription dial address=%q", dialAddress)
-			}
-			if strings.Contains(err.Error(), "do-not-leak") || strings.Contains(err.Error(), "subscription.example") {
-				t.Fatalf("subscription URL leaked in error: %v", err)
-			}
-		})
-	}
-}
-
-func TestApplyProbeSpecialExitSubscriptionRequestHeaders(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "https://subscription.example/config.yaml", nil)
-	req.Header.Set("User-Agent", "manual-client")
-	req.Header.Set("Accept", "application/json")
-	applyProbeSpecialExitSubscriptionRequestHeaders(req)
-	if got := req.Header.Get("User-Agent"); got != probeSpecialExitSubscriptionUserAgent {
-		t.Fatalf("User-Agent=%q", got)
-	}
-	if got := req.Header.Get("Accept"); got != probeSpecialExitSubscriptionAccept {
-		t.Fatalf("Accept=%q", got)
 	}
 }
 
@@ -821,6 +744,36 @@ func TestGlobalClashLibraryIsSharedAndSnapshotsContainOnlySelectedNodes(t *testi
 	}
 }
 
+func TestSpecialExitLibraryRequiresDesktopFetchProbe(t *testing.T) {
+	oldProbeStore := ProbeStore
+	oldRouteStore := ProbeRouteConfigStore
+	ProbeStore = &probeConfigStore{data: probeConfigData{ProbeNodes: []probeNodeRecord{
+		{NodeNo: 1, NodeName: "desktop", TargetSystem: "windows"},
+		{NodeNo: 2, NodeName: "phone", TargetSystem: "android"},
+	}}}
+	ProbeRouteConfigStore = &probeRouteConfigStore{path: filepath.Join(t.TempDir(), "route.json"), data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), SpecialExitLibrary: probeSpecialExitLibrary{ProxySourceIDs: map[string]string{}}}}
+	t.Cleanup(func() { ProbeStore = oldProbeStore; ProbeRouteConfigStore = oldRouteStore })
+
+	for _, payload := range []string{
+		`{"item":{"subscriptions":[{"id":"source-a","name":"Provider A","enabled":true,"url":"https://example.com/config","fetch_node_id":""}]}}`,
+		`{"item":{"subscriptions":[{"id":"source-a","name":"Provider A","enabled":true,"url":"https://example.com/config","fetch_node_id":"2"}]}}`,
+		`{"item":{"subscriptions":[{"id":"source-a","name":"Provider A","enabled":true,"url":"https://example.com/config","fetch_node_id":"99"}]}}`,
+	} {
+		if _, err := upsertMngProbeSpecialExitLibrary(json.RawMessage(payload), ""); err == nil {
+			t.Fatalf("invalid fetch probe accepted: %s", payload)
+		}
+	}
+	result, err := upsertMngProbeSpecialExitLibrary(json.RawMessage(`{"item":{"subscriptions":[{"id":"source-a","name":"Provider A","enabled":true,"url":"https://example.com/config","fetch_node_id":"1"}]}}`), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := result["library"].(map[string]interface{})
+	sources := view["subscriptions"].([]probeSpecialExitSubscriptionView)
+	if len(sources) != 1 || sources[0].FetchNodeID != "1" || ProbeRouteConfigStore.data.SpecialExitLibrary.Subscriptions[0].FetchNodeID != "1" {
+		t.Fatalf("fetch probe was not persisted: view=%+v store=%+v", sources, ProbeRouteConfigStore.data.SpecialExitLibrary.Subscriptions)
+	}
+}
+
 func TestSpecialExitStatusIncludesConnectivitySourceAndLatency(t *testing.T) {
 	oldRouteStore := ProbeRouteConfigStore
 	probeRuntimeStore.mu.Lock()
@@ -865,6 +818,7 @@ func TestMngRoutePageIncludesSpecialExitWorkflow(t *testing.T) {
 		`id="btn-special-exit-subscription-add"`, `function addSpecialExitSubscription()`,
 		`data-special-exit-tab="subscriptions"`, `data-special-exit-tab="nodes"`,
 		`id="btn-special-exit-library-save"`, `/mng/api/route/special_exit_subscriptions`, `data-se-subscription-refresh="${index}"`,
+		`data-se-subscription-fetch-node="${index}"`, `fetch_node_id: normalizeNodeID(source.fetch_node_id)`,
 		`id="special-exit-proxies"`, `id="special-exit-status-list"`, `data-se-rule-target`,
 		`<span>路由规则出口</span>`, `id="special-exit-detail"`, `id="special-exit-empty"`,
 		`<option value="">请选择特殊探针</option>`, `.special-exit-layout[hidden] { display:none; }`,
@@ -885,6 +839,7 @@ func TestMngRoutePageIncludesSpecialExitWorkflow(t *testing.T) {
 		`id="btn-special-exit-rule-add"`, `data-se-rule-domains`, `data-se-rule-remove`, `id="special-exit-managed-rule"`, `<span>聚合路由规则</span>`,
 		`special-exit-rule-entries`, `(rule.entries || []).map((entry)`,
 		`data-se-subscription-url="${index}" class="mono" type="password"`, `<summary>请求设置</summary>`, `data-se-subscription-headers`, `data-se-subscription-clear-headers`, `headers_configured`, `clear_headers`,
+		`/mng/api/route/special_exits/subscription/browser_source`, `/mng/api/route/special_exits/subscription/import`,
 	} {
 		if strings.Contains(mngRoutePageHTML, marker) {
 			t.Fatalf("route page must not include probe creation or install marker %q", marker)

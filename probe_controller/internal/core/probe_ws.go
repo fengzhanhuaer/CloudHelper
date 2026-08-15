@@ -153,6 +153,13 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			msg.NodeID = nodeID
 			consumeProbeShellSessionResult(msg)
+		case "subscription_fetch_result":
+			var msg probeSubscriptionFetchResultMessage
+			if err := json.Unmarshal(raw, &msg); err != nil {
+				continue
+			}
+			msg.NodeID = nodeID
+			consumeProbeSubscriptionFetchResult(msg)
 		case "local_console_bridge_result":
 			var msg probeLocalConsoleBridgeResultMessage
 			if err := json.Unmarshal(raw, &msg); err != nil {

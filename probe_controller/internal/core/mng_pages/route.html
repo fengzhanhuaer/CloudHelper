@@ -108,7 +108,7 @@
     .special-exit-connectivity-row:last-child { border-bottom:0; }
     .special-exit-subscriptions { display:grid; gap:10px; margin-top:10px; }
     .special-exit-subscription { border-top:1px solid #30363d; padding-top:10px; }
-    .special-exit-subscription-grid { display:grid; grid-template-columns:minmax(140px, 1fr) minmax(280px, 2fr) auto auto auto; gap:8px; align-items:center; }
+    .special-exit-subscription-grid { display:grid; grid-template-columns:minmax(140px, 1fr) minmax(260px, 2fr) minmax(170px, 1fr) auto auto auto; gap:8px; align-items:center; }
     .special-exit-subscription-grid > * { min-width:0; width:100%; box-sizing:border-box; }
     .special-exit-proxy-list { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:0 16px; max-height:240px; overflow:auto; margin-top:10px; }
     .special-exit-proxy-item { border-top:1px solid #30363d; padding:8px 0; overflow-wrap:anywhere; }
@@ -515,6 +515,7 @@
             node_no: Number.parseInt(String(item.node_no || '0'), 10),
             node_name: String(item.node_name || '').trim(),
             node_kind: String(item.node_kind || 'normal').trim() || 'normal',
+            target_system: String(item.target_system || 'linux').trim().toLowerCase() || 'linux',
           }))
           .filter((item) => Number.isFinite(item.node_no) && item.node_no > 0)
           .sort((a, b) => a.node_no - b.node_no)
@@ -589,6 +590,7 @@
           name: String(existing.name || item.name || `订阅 ${index + 1}`),
           enabled: existing.enabled === undefined ? item.enabled !== false : existing.enabled !== false,
           url: String(existing.url || ''), configured: item.configured === true,
+          fetch_node_id: normalizeNodeID(existing.fetch_node_id || item.fetch_node_id),
           last_subscription_refresh_at: String(item.last_subscription_refresh_at || ''),
           last_subscription_refresh_error: String(item.last_subscription_refresh_error || ''),
         };
@@ -672,6 +674,11 @@
         return;
       }
       host.innerHTML = subscriptions.map((source, index) => {
+        const fetchNodes = state.nodes.filter((node) => node.target_system !== 'android');
+        const selectedFetchNodeID = normalizeNodeID(source.fetch_node_id);
+        const missingFetchNode = selectedFetchNodeID && !fetchNodes.some((node) => normalizeNodeID(node.node_no) === selectedFetchNodeID)
+          ? `<option value="${escapeHTML(selectedFetchNodeID)}" selected>${escapeHTML(nodeLabel(selectedFetchNodeID))}（不可用）</option>`
+          : '';
         const configured = source.configured ? '已保存URL' : '未保存URL';
         const refresh = source.last_subscription_refresh_error
           ? `<span class="route-error">${escapeHTML(source.last_subscription_refresh_error)}</span>`
@@ -680,6 +687,7 @@
           <div class="special-exit-subscription-grid">
             <input data-se-subscription-name="${index}" type="text" value="${escapeHTML(source.name || '')}" placeholder="配置名称" />
             <input data-se-subscription-url="${index}" class="mono" type="url" value="${escapeHTML(source.url || '')}" placeholder="Clash 配置 URL（留空保留）" autocomplete="url" />
+            <select data-se-subscription-fetch-node="${index}"><option value="">选择拉取探针</option>${missingFetchNode}${fetchNodes.map((node) => { const value = normalizeNodeID(node.node_no); return `<option value="${escapeHTML(value)}" ${value === selectedFetchNodeID ? 'selected' : ''}>${escapeHTML(nodeLabel(value))}</option>`; }).join('')}</select>
             <select data-se-subscription-enabled="${index}"><option value="true" ${source.enabled === false ? '' : 'selected'}>使用</option><option value="false" ${source.enabled === false ? 'selected' : ''}>停用</option></select>
             <button class="btn" data-se-subscription-refresh="${index}" type="button">提取节点</button>
             <button class="btn danger" data-se-subscription-remove="${index}" type="button">删除</button>
@@ -700,6 +708,10 @@
       document.querySelectorAll('[data-se-subscription-enabled]').forEach((element) => element.addEventListener('change', () => {
         const index = Number(element.dataset.seSubscriptionEnabled);
         if (draft.subscriptions[index]) draft.subscriptions[index].enabled = element.value !== 'false';
+      }));
+      document.querySelectorAll('[data-se-subscription-fetch-node]').forEach((element) => element.addEventListener('change', () => {
+        const index = Number(element.dataset.seSubscriptionFetchNode);
+        if (draft.subscriptions[index]) draft.subscriptions[index].fetch_node_id = normalizeNodeID(element.value);
       }));
       document.querySelectorAll('[data-se-subscription-url]').forEach((element) => element.addEventListener('input', () => {
         const index = Number(element.dataset.seSubscriptionUrl);
@@ -722,7 +734,7 @@
       const existingIDs = new Set(draft.subscriptions.map((item) => String(item.id || '')));
       let id = '';
       do { id = `subscription-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`; } while (existingIDs.has(id));
-      draft.subscriptions.push({ id, name: `Clash 配置 ${sequence}`, enabled: true, url: '', configured: false });
+      draft.subscriptions.push({ id, name: `Clash 配置 ${sequence}`, enabled: true, url: '', configured: false, fetch_node_id: '' });
       renderSpecialExitSubscriptions();
     }
 
@@ -839,7 +851,7 @@
       if (!draft) throw new Error('Clash 订阅尚未加载');
       return {
         subscriptions: (draft.subscriptions || []).map((source) => ({
-          id: source.id, name: source.name, enabled: source.enabled !== false, url: source.url || '',
+          id: source.id, name: source.name, enabled: source.enabled !== false, url: source.url || '', fetch_node_id: normalizeNodeID(source.fetch_node_id),
         })),
       };
     }

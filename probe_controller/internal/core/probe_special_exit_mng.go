@@ -3,15 +3,12 @@ package core
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
-	"net/http"
-	"net/netip"
 	"net/url"
 	"sort"
 	"strconv"
@@ -23,11 +20,8 @@ import (
 )
 
 const (
-	probeSpecialExitSubscriptionMaxBytes  = 8 << 20
-	probeSpecialExitSubscriptionTimeout   = 20 * time.Second
-	probeSpecialExitMaxRedirects          = 5
-	probeSpecialExitSubscriptionUserAgent = "clash.meta"
-	probeSpecialExitSubscriptionAccept    = "application/yaml, application/x-yaml, text/yaml, text/plain;q=0.9, */*;q=0.1"
+	probeSpecialExitSubscriptionMaxBytes = 8 << 20
+	probeSpecialExitSubscriptionTimeout  = 20 * time.Second
 )
 
 type probeSpecialExitManagedView struct {
@@ -66,10 +60,11 @@ type probeSpecialExitLibraryInput struct {
 }
 
 type probeSpecialExitSubscriptionInput struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Enabled bool   `json:"enabled"`
-	URL     string `json:"url"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Enabled     bool   `json:"enabled"`
+	URL         string `json:"url"`
+	FetchNodeID string `json:"fetch_node_id"`
 }
 
 type probeSpecialExitSubscriptionView struct {
@@ -77,6 +72,7 @@ type probeSpecialExitSubscriptionView struct {
 	Name                       string `json:"name"`
 	Enabled                    bool   `json:"enabled"`
 	Configured                 bool   `json:"configured"`
+	FetchNodeID                string `json:"fetch_node_id,omitempty"`
 	LastSubscriptionRefreshAt  string `json:"last_subscription_refresh_at,omitempty"`
 	LastSubscriptionRefreshErr string `json:"last_subscription_refresh_error,omitempty"`
 }
@@ -88,9 +84,7 @@ type probeSpecialExitSubscriptionParseResult struct {
 
 var errProbeSpecialExitAnyTLSRealityUnsupported = errors.New("AnyTLS+Reality is not supported by Mihomo")
 
-var probeSpecialExitLookupIP = net.DefaultResolver.LookupIPAddr
-var probeSpecialExitDialContext = (&net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}).DialContext
-var probeSpecialExitFetchSubscription = fetchProbeSpecialExitSubscription
+var probeSpecialExitFetchSubscriptionFromNode = fetchProbeSpecialExitSubscriptionFromNode
 
 func listMngProbeSpecialExits() (map[string]interface{}, error) {
 	if ProbeRouteConfigStore == nil {
@@ -145,7 +139,7 @@ func mngProbeSpecialExitLibraryView(library probeSpecialExitLibrary) map[string]
 		subscriptionNames[strings.TrimSpace(source.ID)] = strings.TrimSpace(source.Name)
 		subscriptions = append(subscriptions, probeSpecialExitSubscriptionView{
 			ID: source.ID, Name: source.Name, Enabled: source.Enabled,
-			Configured: strings.TrimSpace(source.URL) != "", LastSubscriptionRefreshAt: source.LastSubscriptionRefreshAt,
+			Configured: strings.TrimSpace(source.URL) != "", FetchNodeID: source.FetchNodeID, LastSubscriptionRefreshAt: source.LastSubscriptionRefreshAt,
 			LastSubscriptionRefreshErr: source.LastSubscriptionRefreshErr,
 		})
 	}
@@ -219,7 +213,7 @@ func upsertMngProbeSpecialExitLibrary(payload json.RawMessage, controllerBaseURL
 		previous := data.SpecialExitLibrary
 		subscriptions := make([]probeSpecialExitSubscription, 0, len(req.Item.Subscriptions))
 		for _, source := range req.Item.Subscriptions {
-			subscriptions = append(subscriptions, probeSpecialExitSubscription{ID: source.ID, Name: source.Name, Enabled: source.Enabled, URL: source.URL})
+			subscriptions = append(subscriptions, probeSpecialExitSubscription{ID: source.ID, Name: source.Name, Enabled: source.Enabled, URL: source.URL, FetchNodeID: source.FetchNodeID})
 		}
 		raw := probeSpecialExitLibrary{
 			Subscriptions: subscriptions, Proxies: previous.Proxies, ProxySourceIDs: previous.ProxySourceIDs,
@@ -229,6 +223,9 @@ func upsertMngProbeSpecialExitLibrary(payload json.RawMessage, controllerBaseURL
 		var err error
 		library, err = normalizeProbeSpecialExitLibrary(raw, &previous)
 		if err != nil {
+			return err
+		}
+		if err := validateMngProbeSpecialExitSubscriptionFetchNodes(library.Subscriptions); err != nil {
 			return err
 		}
 		validSources := make(map[string]struct{}, len(library.Subscriptions))
@@ -264,6 +261,26 @@ func upsertMngProbeSpecialExitLibrary(payload json.RawMessage, controllerBaseURL
 		"ok": true, "library": mngProbeSpecialExitLibraryView(library),
 		"sync": dispatchProbeRouteConfigSyncToNodes(affected, controllerBaseURL),
 	}, nil
+}
+
+func validateMngProbeSpecialExitSubscriptionFetchNodes(subscriptions []probeSpecialExitSubscription) error {
+	for index, source := range subscriptions {
+		fetchNodeID := normalizeProbeNodeID(source.FetchNodeID)
+		if source.Enabled && strings.TrimSpace(source.URL) != "" && fetchNodeID == "" {
+			return fmt.Errorf("subscriptions[%d].fetch_node_id is required", index)
+		}
+		if fetchNodeID == "" {
+			continue
+		}
+		node, ok := getProbeNodeByID(fetchNodeID)
+		if !ok {
+			return fmt.Errorf("subscriptions[%d].fetch_node_id probe not found", index)
+		}
+		if strings.EqualFold(strings.TrimSpace(node.TargetSystem), "android") {
+			return fmt.Errorf("subscriptions[%d].fetch_node_id uses an unsupported Android probe", index)
+		}
+	}
+	return nil
 }
 
 func rebuildProbeSpecialExitsFromLibrary(items []probeSpecialExitConfig, library probeSpecialExitLibrary, now time.Time) ([]probeSpecialExitConfig, []string, error) {
@@ -417,12 +434,25 @@ func deleteMngProbeSpecialExit(nodeID string, controllerBaseURL string) (map[str
 }
 
 func refreshMngProbeSpecialExitSubscription(ctx context.Context, subscriptionID, controllerBaseURL string) (map[string]interface{}, error) {
+	source, sourceHash, err := loadMngProbeSpecialExitSubscriptionSource(subscriptionID)
+	if err != nil {
+		return nil, err
+	}
+	content, err := probeSpecialExitFetchSubscriptionFromNode(ctx, source.FetchNodeID, source.URL)
+	if err != nil {
+		recordProbeSpecialExitRefreshError(sourceHash, source.ID, err)
+		return nil, fmt.Errorf("subscription source %q refresh failed: %w", source.Name, err)
+	}
+	return applyMngProbeSpecialExitSubscriptionContent(source, sourceHash, content, controllerBaseURL)
+}
+
+func loadMngProbeSpecialExitSubscriptionSource(subscriptionID string) (probeSpecialExitSubscription, string, error) {
 	if ProbeRouteConfigStore == nil {
-		return nil, fmt.Errorf("probe route config store is not initialized")
+		return probeSpecialExitSubscription{}, "", fmt.Errorf("probe route config store is not initialized")
 	}
 	subscriptionID = strings.TrimSpace(subscriptionID)
 	if subscriptionID == "" {
-		return nil, fmt.Errorf("subscription_id is required")
+		return probeSpecialExitSubscription{}, "", fmt.Errorf("subscription_id is required")
 	}
 	ProbeRouteConfigStore.mu.RLock()
 	library := ProbeRouteConfigStore.data.SpecialExitLibrary
@@ -438,19 +468,21 @@ func refreshMngProbeSpecialExitSubscription(ctx context.Context, subscriptionID,
 		}
 	}
 	if !foundSource {
-		return nil, fmt.Errorf("subscription source %q not found", subscriptionID)
+		return probeSpecialExitSubscription{}, "", fmt.Errorf("subscription source %q not found", subscriptionID)
 	}
 	if !source.Enabled {
-		return nil, fmt.Errorf("subscription source %q is disabled", source.Name)
+		return probeSpecialExitSubscription{}, "", fmt.Errorf("subscription source %q is disabled", source.Name)
 	}
 	if strings.TrimSpace(source.URL) == "" {
-		return nil, fmt.Errorf("subscription source %q URL is not configured", source.Name)
+		return probeSpecialExitSubscription{}, "", fmt.Errorf("subscription source %q URL is not configured", source.Name)
 	}
-	content, err := probeSpecialExitFetchSubscription(ctx, source.URL)
-	if err != nil {
-		recordProbeSpecialExitRefreshError(sourceHash, source.ID, err)
-		return nil, fmt.Errorf("subscription source %q refresh failed: %w", source.Name, err)
+	if normalizeProbeNodeID(source.FetchNodeID) == "" {
+		return probeSpecialExitSubscription{}, "", fmt.Errorf("subscription source %q fetch probe is not configured", source.Name)
 	}
+	return source, sourceHash, nil
+}
+
+func applyMngProbeSpecialExitSubscriptionContent(source probeSpecialExitSubscription, sourceHash string, content []byte, controllerBaseURL string) (map[string]interface{}, error) {
 	parsed, err := parseProbeSpecialExitSubscriptionWithResult(content)
 	if err != nil {
 		recordProbeSpecialExitRefreshError(sourceHash, source.ID, err)
@@ -812,107 +844,6 @@ func probeSpecialExitYAMLValue(input interface{}) (interface{}, error) {
 	default:
 		return fmt.Sprint(value), nil
 	}
-}
-
-func fetchProbeSpecialExitSubscription(parent context.Context, rawURL string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(parent, probeSpecialExitSubscriptionTimeout)
-	defer cancel()
-	target, ips, err := validateProbeSpecialExitSubscriptionURL(ctx, rawURL)
-	if err != nil {
-		return nil, err
-	}
-	targetPort := strings.TrimSpace(target.Port())
-	if targetPort == "" {
-		targetPort = "443"
-	}
-	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: target.Hostname()}, Proxy: nil}
-	transport.DialContext = func(dialCtx context.Context, network, _ string) (net.Conn, error) {
-		return probeSpecialExitDialContext(dialCtx, network, net.JoinHostPort(ips[0].String(), targetPort))
-	}
-	client := &http.Client{Transport: transport, Timeout: probeSpecialExitSubscriptionTimeout}
-	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
-		if len(via) >= probeSpecialExitMaxRedirects {
-			return fmt.Errorf("too many subscription redirects")
-		}
-		return fmt.Errorf("subscription redirects are disabled")
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-	applyProbeSpecialExitSubscriptionRequestHeaders(req)
-	resp, err := client.Do(req)
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil, fmt.Errorf("subscription fetch timed out or was canceled")
-		}
-		return nil, fmt.Errorf("subscription fetch failed")
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("subscription returned HTTP %d", resp.StatusCode)
-	}
-	limited := io.LimitReader(resp.Body, probeSpecialExitSubscriptionMaxBytes+1)
-	content, err := io.ReadAll(limited)
-	if err != nil {
-		return nil, err
-	}
-	if len(content) > probeSpecialExitSubscriptionMaxBytes {
-		return nil, fmt.Errorf("subscription exceeded %d bytes", probeSpecialExitSubscriptionMaxBytes)
-	}
-	return content, nil
-}
-
-func applyProbeSpecialExitSubscriptionRequestHeaders(req *http.Request) {
-	if req == nil {
-		return
-	}
-	req.Header.Set("User-Agent", probeSpecialExitSubscriptionUserAgent)
-	req.Header.Set("Accept", probeSpecialExitSubscriptionAccept)
-}
-
-func validateProbeSpecialExitSubscriptionURL(ctx context.Context, raw string) (*url.URL, []netip.Addr, error) {
-	target, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || target == nil || !strings.EqualFold(target.Scheme, "https") || target.User != nil || strings.TrimSpace(target.Hostname()) == "" {
-		return nil, nil, fmt.Errorf("subscription_url must be an HTTPS URL without credentials")
-	}
-	if port := strings.TrimSpace(target.Port()); port != "" {
-		value, parseErr := strconv.Atoi(port)
-		if parseErr != nil || value < 1 || value > 65535 {
-			return nil, nil, fmt.Errorf("subscription_url port must be between 1 and 65535")
-		}
-	}
-	resolved, err := probeSpecialExitLookupIP(ctx, target.Hostname())
-	if err != nil || len(resolved) == 0 {
-		return nil, nil, fmt.Errorf("subscription host resolution failed")
-	}
-	ips := make([]netip.Addr, 0, len(resolved))
-	for _, item := range resolved {
-		addr, ok := netip.AddrFromSlice(item.IP)
-		if !ok {
-			return nil, nil, fmt.Errorf("subscription host returned an invalid address")
-		}
-		addr = addr.Unmap()
-		if !probeSpecialExitPublicAddr(addr) {
-			return nil, nil, fmt.Errorf("subscription host resolves to a non-public address")
-		}
-		ips = append(ips, addr)
-	}
-	return target, ips, nil
-}
-
-func probeSpecialExitPublicAddr(addr netip.Addr) bool {
-	if !addr.IsValid() || !addr.IsGlobalUnicast() || addr.IsUnspecified() || addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsMulticast() {
-		return false
-	}
-	blocked := []string{"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24", "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "::/128", "::1/128", "fc00::/7", "fe80::/10", "2001:db8::/32"}
-	for _, raw := range blocked {
-		prefix := netip.MustParsePrefix(raw)
-		if prefix.Contains(addr) {
-			return false
-		}
-	}
-	return true
 }
 
 func listMngProbeSpecialExitStatuses() (map[string]interface{}, error) {

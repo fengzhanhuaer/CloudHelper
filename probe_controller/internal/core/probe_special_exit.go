@@ -45,6 +45,7 @@ type probeSpecialExitSubscription struct {
 	Name                       string `json:"name"`
 	Enabled                    bool   `json:"enabled"`
 	URL                        string `json:"url,omitempty"`
+	FetchNodeID                string `json:"fetch_node_id,omitempty"`
 	LastSubscriptionRefreshAt  string `json:"last_subscription_refresh_at,omitempty"`
 	LastSubscriptionRefreshErr string `json:"last_subscription_refresh_error,omitempty"`
 }
@@ -275,6 +276,11 @@ func normalizeProbeSpecialExitSubscriptions(input, previous []probeSpecialExitSu
 		if len(url) > probeSpecialExitMaxSubscriptionURL {
 			return nil, fmt.Errorf("subscriptions[%d].url is too long", index)
 		}
+		fetchNodeIDRaw := strings.TrimSpace(raw.FetchNodeID)
+		fetchNodeID := normalizeProbeNodeID(fetchNodeIDRaw)
+		if fetchNodeIDRaw != "" && fetchNodeID == "" {
+			return nil, fmt.Errorf("subscriptions[%d].fetch_node_id is invalid", index)
+		}
 		lastRefreshAt := strings.TrimSpace(raw.LastSubscriptionRefreshAt)
 		lastRefreshErr := strings.TrimSpace(raw.LastSubscriptionRefreshErr)
 		if hadPrior {
@@ -282,7 +288,7 @@ func normalizeProbeSpecialExitSubscriptions(input, previous []probeSpecialExitSu
 			lastRefreshErr = prior.LastSubscriptionRefreshErr
 		}
 		out = append(out, probeSpecialExitSubscription{
-			ID: id, Name: name, Enabled: raw.Enabled, URL: url,
+			ID: id, Name: name, Enabled: raw.Enabled, URL: url, FetchNodeID: fetchNodeID,
 			LastSubscriptionRefreshAt: lastRefreshAt, LastSubscriptionRefreshErr: lastRefreshErr,
 		})
 	}
@@ -490,7 +496,7 @@ func probeSpecialExitLibrarySourceHash(library probeSpecialExitLibrary) string {
 	value := make([]probeSpecialExitSubscription, 0, len(library.Subscriptions))
 	for _, source := range library.Subscriptions {
 		value = append(value, probeSpecialExitSubscription{
-			ID: source.ID, Name: source.Name, Enabled: source.Enabled, URL: source.URL,
+			ID: source.ID, Name: source.Name, Enabled: source.Enabled, URL: source.URL, FetchNodeID: source.FetchNodeID,
 		})
 	}
 	content, _ := json.Marshal(value)

@@ -172,6 +172,7 @@ type probeControlMessage struct {
 	CertificateVersion  string                           `json:"certificate_version,omitempty"`
 	IntervalSec         int                              `json:"interval_sec"`
 	RequestID           string                           `json:"request_id"`
+	URL                 string                           `json:"url,omitempty"`
 	Lines               int                              `json:"lines"`
 	SinceMinutes        int                              `json:"since_minutes"`
 	MinLevel            string                           `json:"min_level"`
@@ -863,6 +864,10 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 	}
 	if typeName == "shell_session_control" {
 		go runProbeShellSessionControl(msg, identity, stream, encoder, writeMu)
+		return
+	}
+	if typeName == "subscription_fetch" {
+		go runProbeSubscriptionFetch(msg, identity, stream, encoder, writeMu)
 		return
 	}
 	if typeName == "route_config_sync" {
