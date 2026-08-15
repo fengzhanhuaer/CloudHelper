@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -185,6 +187,46 @@ func TestProbeMihomoRepeatedHealthFailuresTriggerRestartThreshold(t *testing.T) 
 	}
 	if updateProbeMihomoHealthLocked(nil) || activeProbeMihomoRuntime.healthErrors != 0 {
 		t.Fatal("healthy check did not reset failure threshold")
+	}
+}
+
+func TestSelectedProbeMihomoConnectivityTargetsDeduplicatesAndSkipsDirect(t *testing.T) {
+	targets := selectedProbeMihomoConnectivityTargets([]probeSpecialExitRule{
+		{Target: "DIRECT"}, {Target: "node-a"}, {Target: "node-a"}, {Target: "node-b"}, {Target: " direct "},
+	})
+	if len(targets) != 2 || targets[0] != "node-a" || targets[1] != "node-b" {
+		t.Fatalf("unexpected connectivity targets: %#v", targets)
+	}
+}
+
+func TestMeasureProbeMihomoConnectivityUsesDelayAPI(t *testing.T) {
+	previous := probeMihomoConnectivityAPIRequest
+	defer func() { probeMihomoConnectivityAPIRequest = previous }()
+	var requestedPath string
+	probeMihomoConnectivityAPIRequest = func(method, path string, _ []byte, _ probeMihomoRuntimeSecrets) ([]byte, error) {
+		if method != http.MethodGet {
+			t.Fatalf("method=%q", method)
+		}
+		requestedPath = path
+		return []byte(`{"delay":137}`), nil
+	}
+	result := measureProbeMihomoConnectivity("PH / Manila", probeMihomoRuntimeSecrets{APISecret: "secret"})
+	if !result.Reachable || result.LatencyMS != 137 || result.Error != "" || result.CheckedAt == "" {
+		t.Fatalf("unexpected connectivity result: %+v", result)
+	}
+	parsed, err := url.Parse(requestedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.EscapedPath() != "/proxies/PH%20%2F%20Manila/delay" || parsed.Query().Get("url") != probeMihomoConnectivityURL || parsed.Query().Get("timeout") != "5000" || parsed.Query().Get("expected") != "204" {
+		t.Fatalf("unexpected delay API path: %s", requestedPath)
+	}
+	probeMihomoConnectivityAPIRequest = func(string, string, []byte, probeMihomoRuntimeSecrets) ([]byte, error) {
+		return nil, errors.New(strings.Repeat("x", 300))
+	}
+	failed := measureProbeMihomoConnectivity("node-a", probeMihomoRuntimeSecrets{})
+	if failed.Reachable || len(failed.Error) != 240 || failed.CheckedAt == "" {
+		t.Fatalf("unexpected failed connectivity result: %+v", failed)
 	}
 }
 

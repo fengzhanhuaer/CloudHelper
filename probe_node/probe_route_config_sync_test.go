@@ -128,3 +128,27 @@ func TestFetchProbeRouteConfigRejectsExpectedNodeKindMismatchAfterHMAC(t *testin
 		t.Fatal("expected node kind check changed or bypassed HMAC request headers")
 	}
 }
+
+func TestRouteConfigSyncControlReportsAppliedStateImmediately(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	previousRequest := probeRequestRouteConfig
+	previousApply := probeApplyProductRouteConfig
+	defer func() {
+		probeRequestRouteConfig = previousRequest
+		probeApplyProductRouteConfig = previousApply
+		setProbeImmediateReporter(nil)
+	}()
+	probeRequestRouteConfig = func(context.Context, string, nodeIdentity) (probeVirtualRouterConfig, error) {
+		return probeVirtualRouterConfig{Enabled: false}, nil
+	}
+	probeApplyProductRouteConfig = func(*probeSpecialExitSnapshot, string) error { return nil }
+	reports := 0
+	setProbeImmediateReporter(func() error {
+		reports++
+		return nil
+	})
+	runProbeRouteConfigSyncControl(probeControlMessage{ControllerBaseURL: "https://controller.example"}, nodeIdentity{NodeID: "19", Secret: "secret"})
+	if reports != 1 {
+		t.Fatalf("immediate report count=%d, want 1", reports)
+	}
+}

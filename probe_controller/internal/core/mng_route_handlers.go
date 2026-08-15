@@ -113,19 +113,43 @@ func mngRouteSpecialExitsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func mngRouteSpecialExitSubscriptionsHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		result, err := getMngProbeSpecialExitLibrary()
+		writeMngRouteResult(w, result, err)
+	case http.MethodPost, http.MethodPatch:
+		payload, err := readMngRawJSONPayload(r)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+			return
+		}
+		result, err := upsertMngProbeSpecialExitLibrary(payload, controllerBaseURLFromRequest(r))
+		writeMngRouteResult(w, result, err)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
 func mngRouteSpecialExitSubscriptionRefreshHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	var req struct {
-		NodeID string `json:"node_id"`
+		SubscriptionID string `json:"subscription_id"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&req); err != nil {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
 		return
 	}
-	result, err := refreshMngProbeSpecialExitSubscription(r.Context(), req.NodeID, controllerBaseURLFromRequest(r))
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+	result, err := refreshMngProbeSpecialExitSubscription(r.Context(), req.SubscriptionID, controllerBaseURLFromRequest(r))
 	writeMngRouteResult(w, result, err)
 }
 

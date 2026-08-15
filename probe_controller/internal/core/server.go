@@ -157,6 +157,7 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("/mng/api/route/virtual_router/latency_probe", mngAuthRequiredMiddleware(mngRouteVirtualRouterLatencyProbeHandler))
 	mux.HandleFunc("/mng/api/route/virtual_router/speed_test", mngAuthRequiredMiddleware(mngRouteVirtualRouterSpeedTestHandler))
 	mux.HandleFunc("/mng/api/route/special_exits", mngAuthRequiredMiddleware(mngRouteSpecialExitsHandler))
+	mux.HandleFunc("/mng/api/route/special_exit_subscriptions", mngAuthRequiredMiddleware(mngRouteSpecialExitSubscriptionsHandler))
 	mux.HandleFunc("/mng/api/route/special_exits/subscription/refresh", mngAuthRequiredMiddleware(mngRouteSpecialExitSubscriptionRefreshHandler))
 	mux.HandleFunc("/mng/api/route/special_exits/status", mngAuthRequiredMiddleware(mngRouteSpecialExitStatusHandler))
 	mux.HandleFunc("/mng/api/route/doh", mngAuthRequiredMiddleware(mngRouteDoHHandler))

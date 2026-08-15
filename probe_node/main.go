@@ -91,16 +91,25 @@ type probeReportPayload struct {
 }
 
 type probeSpecialExitRuntimeReport struct {
-	AppliedRevision int64  `json:"applied_revision,omitempty"`
-	AppliedSHA256   string `json:"applied_sha256,omitempty"`
-	ExitReady       bool   `json:"exit_ready"`
-	Healthy         bool   `json:"healthy"`
-	MihomoVersion   string `json:"mihomo_version,omitempty"`
-	ActiveSessions  int64  `json:"active_sessions,omitempty"`
-	BytesUp         int64  `json:"bytes_up,omitempty"`
-	BytesDown       int64  `json:"bytes_down,omitempty"`
-	LastApplyError  string `json:"last_apply_error,omitempty"`
-	UpdatedAt       string `json:"updated_at,omitempty"`
+	AppliedRevision int64                                `json:"applied_revision,omitempty"`
+	AppliedSHA256   string                               `json:"applied_sha256,omitempty"`
+	ExitReady       bool                                 `json:"exit_ready"`
+	Healthy         bool                                 `json:"healthy"`
+	MihomoVersion   string                               `json:"mihomo_version,omitempty"`
+	ActiveSessions  int64                                `json:"active_sessions,omitempty"`
+	BytesUp         int64                                `json:"bytes_up,omitempty"`
+	BytesDown       int64                                `json:"bytes_down,omitempty"`
+	Connectivity    []probeSpecialExitConnectivityReport `json:"connectivity,omitempty"`
+	LastApplyError  string                               `json:"last_apply_error,omitempty"`
+	UpdatedAt       string                               `json:"updated_at,omitempty"`
+}
+
+type probeSpecialExitConnectivityReport struct {
+	Target    string `json:"target"`
+	Reachable bool   `json:"reachable"`
+	LatencyMS int64  `json:"latency_ms,omitempty"`
+	Error     string `json:"error,omitempty"`
+	CheckedAt string `json:"checked_at,omitempty"`
 }
 
 type systemStatus struct {
@@ -1032,8 +1041,14 @@ func runProbeRouteConfigSyncControl(msg probeControlMessage, identity nodeIdenti
 		return
 	}
 	logProbeInfof("probe route config sync requested by controller")
-	if err := syncProbeRouteConfig(identity, controllerBaseURL); err != nil {
-		logProbeWarnf("probe route config sync failed: err=%v", err)
+	syncErr := syncProbeRouteConfig(identity, controllerBaseURL)
+	if sent, reportErr := triggerProbeImmediateReport(); reportErr != nil {
+		logProbeWarnf("probe route config sync immediate report failed: err=%v", reportErr)
+	} else if sent {
+		logProbeInfof("probe route config sync state reported")
+	}
+	if syncErr != nil {
+		logProbeWarnf("probe route config sync failed: err=%v", syncErr)
 	}
 }
 

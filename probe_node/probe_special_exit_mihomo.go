@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,6 +37,9 @@ const (
 	probeMihomoSOCKSPort         = 17890
 	probeMihomoAPIPort           = 17891
 	probeMihomoMaxConfigBytes    = 16 << 20
+	probeMihomoDelayTimeoutMS    = 5000
+	probeMihomoConnectivityEvery = 60 * time.Second
+	probeMihomoConnectivityURL   = "https://www.gstatic.com/generate_204"
 )
 
 type probeMihomoRuntimeSecrets struct {
@@ -45,20 +49,22 @@ type probeMihomoRuntimeSecrets struct {
 }
 
 type probeMihomoProcessState struct {
-	mu           sync.RWMutex
-	applyMu      sync.Mutex
-	process      *exec.Cmd
-	processDone  chan error
-	dataDir      string
-	secrets      probeMihomoRuntimeSecrets
-	runtime      probeMihomoExitRuntimeConfig
-	report       probeSpecialExitRuntimeReport
-	nodeID       string
-	shuttingDown bool
-	healthErrors int
+	mu                  sync.RWMutex
+	applyMu             sync.Mutex
+	process             *exec.Cmd
+	processDone         chan error
+	dataDir             string
+	secrets             probeMihomoRuntimeSecrets
+	runtime             probeMihomoExitRuntimeConfig
+	report              probeSpecialExitRuntimeReport
+	nodeID              string
+	shuttingDown        bool
+	healthErrors        int
+	connectivityTargets []string
 }
 
 var activeProbeMihomoRuntime probeMihomoProcessState
+var probeMihomoConnectivityAPIRequest = probeMihomoAPIRequest
 
 func startProbeProductRuntime(nodeID string) error {
 	dataDir, err := resolveDataDir()
@@ -189,8 +195,11 @@ func applyProbeMihomoSnapshot(snapshot probeSpecialExitSnapshot, nodeID string) 
 	}
 	activeProbeMihomoRuntime.mu.Lock()
 	activeProbeMihomoRuntime.runtime = runtimeConfig
-	activeProbeMihomoRuntime.report = probeSpecialExitRuntimeReport{AppliedRevision: snapshot.Revision, AppliedSHA256: strings.ToLower(snapshot.SHA256), ExitReady: true, Healthy: true, MihomoVersion: version, UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+	targets := selectedProbeMihomoConnectivityTargets(snapshot.Rules)
+	activeProbeMihomoRuntime.connectivityTargets = append([]string(nil), targets...)
+	activeProbeMihomoRuntime.report = probeSpecialExitRuntimeReport{AppliedRevision: snapshot.Revision, AppliedSHA256: strings.ToLower(snapshot.SHA256), ExitReady: true, Healthy: true, MihomoVersion: version, Connectivity: pendingProbeMihomoConnectivity(targets), UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
 	activeProbeMihomoRuntime.mu.Unlock()
+	go refreshProbeMihomoConnectivity(snapshot.Revision, strings.ToLower(snapshot.SHA256), targets, secrets)
 	return nil
 }
 
@@ -424,12 +433,20 @@ func ensureProbeMihomoProcessLocked(binaryPath, dataDir, configPath string, secr
 			activeProbeMihomoRuntime.runtime.Healthy = false
 			activeProbeMihomoRuntime.report.ExitReady = false
 			activeProbeMihomoRuntime.report.Healthy = false
+			checkedAt := time.Now().UTC().Format(time.RFC3339)
 			activeProbeMihomoRuntime.report.LastApplyError = fmt.Sprintf("mihomo process exited: %v", waitErr)
-			activeProbeMihomoRuntime.report.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+			for index := range activeProbeMihomoRuntime.report.Connectivity {
+				activeProbeMihomoRuntime.report.Connectivity[index].Reachable = false
+				activeProbeMihomoRuntime.report.Connectivity[index].LatencyMS = 0
+				activeProbeMihomoRuntime.report.Connectivity[index].Error = "mihomo process is unavailable"
+				activeProbeMihomoRuntime.report.Connectivity[index].CheckedAt = checkedAt
+			}
+			activeProbeMihomoRuntime.report.UpdatedAt = checkedAt
 			dataDir := activeProbeMihomoRuntime.dataDir
 			nodeID := activeProbeMihomoRuntime.nodeID
 			shuttingDown := activeProbeMihomoRuntime.shuttingDown
 			activeProbeMihomoRuntime.mu.Unlock()
+			_, _ = triggerProbeImmediateReport()
 			if !shuttingDown {
 				go restartProbeMihomoAfterUnexpectedExit(dataDir, nodeID)
 			}
@@ -449,6 +466,7 @@ func ensureProbeMihomoProcessLocked(binaryPath, dataDir, configPath string, secr
 		return err
 	}
 	go monitorProbeMihomoHealth(cmd, secrets)
+	go monitorProbeMihomoConnectivity(cmd)
 	return nil
 }
 
@@ -530,6 +548,106 @@ func monitorProbeMihomoHealth(cmd *exec.Cmd, secrets probeMihomoRuntimeSecrets) 
 	}
 }
 
+func monitorProbeMihomoConnectivity(cmd *exec.Cmd) {
+	ticker := time.NewTicker(probeMihomoConnectivityEvery)
+	defer ticker.Stop()
+	for range ticker.C {
+		activeProbeMihomoRuntime.mu.RLock()
+		if activeProbeMihomoRuntime.process != cmd {
+			activeProbeMihomoRuntime.mu.RUnlock()
+			return
+		}
+		revision := activeProbeMihomoRuntime.report.AppliedRevision
+		sha256Value := activeProbeMihomoRuntime.report.AppliedSHA256
+		targets := append([]string(nil), activeProbeMihomoRuntime.connectivityTargets...)
+		secrets := activeProbeMihomoRuntime.secrets
+		activeProbeMihomoRuntime.mu.RUnlock()
+		refreshProbeMihomoConnectivity(revision, sha256Value, targets, secrets)
+	}
+}
+
+func selectedProbeMihomoConnectivityTargets(rules []probeSpecialExitRule) []string {
+	seen := make(map[string]struct{}, len(rules))
+	targets := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		target := strings.TrimSpace(rule.Target)
+		if target == "" || strings.EqualFold(target, "DIRECT") {
+			continue
+		}
+		if _, ok := seen[target]; ok {
+			continue
+		}
+		seen[target] = struct{}{}
+		targets = append(targets, target)
+	}
+	return targets
+}
+
+func pendingProbeMihomoConnectivity(targets []string) []probeSpecialExitConnectivityReport {
+	items := make([]probeSpecialExitConnectivityReport, 0, len(targets))
+	for _, target := range targets {
+		items = append(items, probeSpecialExitConnectivityReport{Target: target})
+	}
+	return items
+}
+
+func refreshProbeMihomoConnectivity(revision int64, sha256Value string, targets []string, secrets probeMihomoRuntimeSecrets) {
+	if revision <= 0 || len(targets) == 0 {
+		return
+	}
+	results := make([]probeSpecialExitConnectivityReport, len(targets))
+	semaphore := make(chan struct{}, 8)
+	var group sync.WaitGroup
+	for index, target := range targets {
+		index, target := index, target
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+			results[index] = measureProbeMihomoConnectivity(target, secrets)
+		}()
+	}
+	group.Wait()
+	activeProbeMihomoRuntime.mu.Lock()
+	if activeProbeMihomoRuntime.report.AppliedRevision != revision || !strings.EqualFold(activeProbeMihomoRuntime.report.AppliedSHA256, sha256Value) {
+		activeProbeMihomoRuntime.mu.Unlock()
+		return
+	}
+	activeProbeMihomoRuntime.report.Connectivity = results
+	activeProbeMihomoRuntime.report.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	activeProbeMihomoRuntime.mu.Unlock()
+	_, _ = triggerProbeImmediateReport()
+}
+
+func measureProbeMihomoConnectivity(target string, secrets probeMihomoRuntimeSecrets) probeSpecialExitConnectivityReport {
+	checkedAt := time.Now().UTC().Format(time.RFC3339)
+	query := url.Values{}
+	query.Set("url", probeMihomoConnectivityURL)
+	query.Set("timeout", strconv.Itoa(probeMihomoDelayTimeoutMS))
+	query.Set("expected", "204")
+	path := "/proxies/" + url.PathEscape(target) + "/delay?" + query.Encode()
+	raw, err := probeMihomoConnectivityAPIRequest(http.MethodGet, path, nil, secrets)
+	if err != nil {
+		return probeSpecialExitConnectivityReport{Target: target, Error: sanitizeProbeMihomoConnectivityError(err), CheckedAt: checkedAt}
+	}
+	var response struct {
+		Delay int64 `json:"delay"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil || response.Delay <= 0 {
+		return probeSpecialExitConnectivityReport{Target: target, Error: "mihomo delay response is invalid", CheckedAt: checkedAt}
+	}
+	return probeSpecialExitConnectivityReport{Target: target, Reachable: true, LatencyMS: response.Delay, CheckedAt: checkedAt}
+}
+
+func sanitizeProbeMihomoConnectivityError(err error) string {
+	value := strings.TrimSpace(err.Error())
+	if len(value) > 240 {
+		value = value[:240]
+	}
+	return value
+}
+
 func updateProbeMihomoHealthLocked(healthErr error) bool {
 	healthy := healthErr == nil
 	if healthy {
@@ -586,6 +704,8 @@ func stopProbeMihomoProcessLocked() {
 	activeProbeMihomoRuntime.runtime.Healthy = false
 	activeProbeMihomoRuntime.report.ExitReady = false
 	activeProbeMihomoRuntime.report.Healthy = false
+	activeProbeMihomoRuntime.connectivityTargets = nil
+	activeProbeMihomoRuntime.report.Connectivity = nil
 	activeProbeMihomoRuntime.mu.Unlock()
 	if cmd != nil && cmd.Process != nil {
 		_ = cmd.Process.Kill()
@@ -650,13 +770,16 @@ func setProbeMihomoApplyError(snapshot probeSpecialExitSnapshot, applyErr error)
 	activeProbeMihomoRuntime.mu.Lock()
 	activeProbeMihomoRuntime.runtime = probeMihomoExitRuntimeConfig{DesiredRevision: snapshot.Revision, DesiredSHA256: strings.ToLower(snapshot.SHA256), Healthy: false}
 	previous := activeProbeMihomoRuntime.report
+	activeProbeMihomoRuntime.connectivityTargets = nil
 	activeProbeMihomoRuntime.report = probeSpecialExitRuntimeReport{AppliedRevision: previous.AppliedRevision, AppliedSHA256: previous.AppliedSHA256, ExitReady: false, Healthy: false, MihomoVersion: previous.MihomoVersion, LastApplyError: applyErr.Error(), UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
 	activeProbeMihomoRuntime.mu.Unlock()
 }
 func probeProductSpecialExitReport() probeSpecialExitRuntimeReport {
 	activeProbeMihomoRuntime.mu.RLock()
 	defer activeProbeMihomoRuntime.mu.RUnlock()
-	return activeProbeMihomoRuntime.report
+	report := activeProbeMihomoRuntime.report
+	report.Connectivity = append([]probeSpecialExitConnectivityReport(nil), report.Connectivity...)
+	return report
 }
 func currentProbeMihomoRuntimeConfig() (probeMihomoExitRuntimeConfig, bool) {
 	activeProbeMihomoRuntime.mu.RLock()

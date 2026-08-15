@@ -101,10 +101,9 @@ func TestProbeRouteConfigScopesSpecialExitSnapshotAndSecrets(t *testing.T) {
 		ProbeSecrets: map[string]string{"1": "secret-1", "19": "secret-19"},
 	}}
 	item, err := normalizeProbeSpecialExitConfig(probeSpecialExitConfig{
-		NodeID:        "19",
-		Subscriptions: []probeSpecialExitSubscription{{ID: "primary", Name: "Primary", Enabled: true, URL: "https://subscription.example/secret"}},
-		Rules:         []probeSpecialExitRule{{RouteRuleID: "rr-1", Target: "proxy-a", Entries: []string{"domain_suffix:api.example.com"}}},
-		Proxies:       []map[string]interface{}{{"name": "proxy-a", "type": "socks5", "server": "proxy.example", "port": 1080, "password": "node-secret"}},
+		NodeID:  "19",
+		Rules:   []probeSpecialExitRule{{RouteRuleID: "rr-1", Target: "proxy-a", Entries: []string{"domain_suffix:api.example.com"}}},
+		Proxies: []map[string]interface{}{{"name": "proxy-a", "type": "socks5", "server": "proxy.example", "port": 1080, "password": "node-secret"}},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -223,15 +222,13 @@ func TestParseProbeSpecialExitSubscriptionRejectsUnsupportedOrInvalidURIWithoutL
 }
 
 func TestNormalizeProbeSpecialExitSubscriptionsPreservesRedactedURL(t *testing.T) {
-	previous, err := normalizeProbeSpecialExitConfig(probeSpecialExitConfig{
-		NodeID:        "19",
+	previous, err := normalizeProbeSpecialExitLibrary(probeSpecialExitLibrary{
 		Subscriptions: []probeSpecialExitSubscription{{ID: "primary", Name: "Primary", Enabled: true, URL: "https://primary.example/config"}},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	preserved, err := normalizeProbeSpecialExitConfig(probeSpecialExitConfig{
-		NodeID:        "19",
+	preserved, err := normalizeProbeSpecialExitLibrary(probeSpecialExitLibrary{
 		Subscriptions: []probeSpecialExitSubscription{{ID: "primary", Name: "Renamed", Enabled: true}},
 	}, &previous)
 	if err != nil {
@@ -243,11 +240,11 @@ func TestNormalizeProbeSpecialExitSubscriptionsPreservesRedactedURL(t *testing.T
 }
 
 func TestNormalizeProbeSpecialExitSubscriptionsDropsLegacyHeaders(t *testing.T) {
-	var raw probeSpecialExitConfig
-	if err := json.Unmarshal([]byte(`{"node_id":"19","subscriptions":[{"id":"primary","name":"Primary","enabled":true,"url":"https://primary.example/config","headers":{"Authorization":"Bearer secret"},"clear_headers":true}]}`), &raw); err != nil {
+	var raw probeSpecialExitLibrary
+	if err := json.Unmarshal([]byte(`{"subscriptions":[{"id":"primary","name":"Primary","enabled":true,"url":"https://primary.example/config","headers":{"Authorization":"Bearer secret"},"clear_headers":true}]}`), &raw); err != nil {
 		t.Fatal(err)
 	}
-	normalized, err := normalizeProbeSpecialExitConfig(raw, nil)
+	normalized, err := normalizeProbeSpecialExitLibrary(raw, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,17 +281,15 @@ func TestProbeSpecialExitSnapshotUsesVersionThreeRouteEntryModel(t *testing.T) {
 func TestRefreshSpecialExitMergesMultipleSubscriptionsAtomically(t *testing.T) {
 	oldStore := ProbeRouteConfigStore
 	oldFetch := probeSpecialExitFetchSubscription
-	item, err := normalizeProbeSpecialExitConfig(probeSpecialExitConfig{
-		NodeID: "19",
-		Subscriptions: []probeSpecialExitSubscription{
-			{ID: "primary", Name: "Primary", Enabled: true, URL: "https://primary.example/config"},
-			{ID: "backup", Name: "Backup", Enabled: true, URL: "https://backup.example/config"},
-		},
-	}, nil)
+	subscriptions := []probeSpecialExitSubscription{
+		{ID: "primary", Name: "Primary", Enabled: true, URL: "https://primary.example/config"},
+		{ID: "backup", Name: "Backup", Enabled: true, URL: "https://backup.example/config"},
+	}
+	library, err := normalizeProbeSpecialExitLibrary(probeSpecialExitLibrary{Subscriptions: subscriptions}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ProbeRouteConfigStore = &probeRouteConfigStore{path: filepath.Join(t.TempDir(), "route.json"), data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), SpecialExits: []probeSpecialExitConfig{item}}}
+	ProbeRouteConfigStore = &probeRouteConfigStore{path: filepath.Join(t.TempDir(), "route.json"), data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), SpecialExitLibrary: library}}
 	probeSpecialExitFetchSubscription = func(_ context.Context, rawURL string) ([]byte, error) {
 		switch rawURL {
 		case "https://primary.example/config":
@@ -306,15 +301,18 @@ func TestRefreshSpecialExitMergesMultipleSubscriptionsAtomically(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() { ProbeRouteConfigStore = oldStore; probeSpecialExitFetchSubscription = oldFetch })
-	result, err := refreshMngProbeSpecialExitSubscription(context.Background(), "19", "https://controller.example")
+	result, err := refreshMngProbeSpecialExitSubscription(context.Background(), "primary", "https://controller.example")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result["proxy_count"] != 2 || result["subscription_count"] != 2 {
+	if result["proxy_count"] != 1 {
 		t.Fatalf("result=%+v", result)
 	}
+	if _, err = refreshMngProbeSpecialExitSubscription(context.Background(), "backup", "https://controller.example"); err != nil {
+		t.Fatal(err)
+	}
 	ProbeRouteConfigStore.mu.RLock()
-	refreshed := ProbeRouteConfigStore.data.SpecialExits[0]
+	refreshed := ProbeRouteConfigStore.data.SpecialExitLibrary
 	ProbeRouteConfigStore.mu.RUnlock()
 	if len(refreshed.Proxies) != 2 || refreshed.Proxies[0]["name"] != "node-a" || refreshed.Proxies[1]["name"] != "node-b" {
 		t.Fatalf("merged proxies=%+v", refreshed.Proxies)
@@ -329,59 +327,57 @@ func TestRefreshSpecialExitMergesMultipleSubscriptionsAtomically(t *testing.T) {
 func TestRefreshSpecialExitSkipsAnyTLSRealityAndReportsCount(t *testing.T) {
 	oldStore := ProbeRouteConfigStore
 	oldFetch := probeSpecialExitFetchSubscription
-	item, err := normalizeProbeSpecialExitConfig(probeSpecialExitConfig{
-		NodeID: "19", Proxies: []map[string]interface{}{{"name": "last-good", "type": "socks5"}},
-		Subscriptions: []probeSpecialExitSubscription{{ID: "mixed", Name: "Mixed", Enabled: true, URL: "https://mixed.example/config"}},
-	}, nil)
+	subscriptions := []probeSpecialExitSubscription{{ID: "mixed", Name: "Mixed", Enabled: true, URL: "https://mixed.example/config"}}
+	proxies := []map[string]interface{}{{"name": "last-good", "type": "socks5"}}
+	library, err := normalizeProbeSpecialExitLibrary(probeSpecialExitLibrary{Subscriptions: subscriptions, Proxies: proxies, ProxySourceIDs: map[string]string{"last-good": "mixed"}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ProbeRouteConfigStore = &probeRouteConfigStore{path: filepath.Join(t.TempDir(), "route.json"), data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), SpecialExits: []probeSpecialExitConfig{item}}}
+	ProbeRouteConfigStore = &probeRouteConfigStore{path: filepath.Join(t.TempDir(), "route.json"), data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), SpecialExitLibrary: library}}
 	probeSpecialExitFetchSubscription = func(context.Context, string) ([]byte, error) {
 		plain := "anytls://compatible@compatible.example:443/?sni=compatible.example#UsableNode\n" +
 			"anytls://reality-secret@reality.example:443/?security=reality&pbk=public-key-secret&sid=0123456789abcdef#Reality"
 		return []byte(base64.StdEncoding.EncodeToString([]byte(plain))), nil
 	}
 	t.Cleanup(func() { ProbeRouteConfigStore = oldStore; probeSpecialExitFetchSubscription = oldFetch })
-	result, err := refreshMngProbeSpecialExitSubscription(context.Background(), "19", "https://controller.example")
+	result, err := refreshMngProbeSpecialExitSubscription(context.Background(), "mixed", "https://controller.example")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result["proxy_count"] != 1 || result["skipped_proxy_count"] != 1 || result["subscription_count"] != 1 {
+	if result["proxy_count"] != 1 || result["skipped_proxy_count"] != 1 {
 		t.Fatalf("result=%+v", result)
 	}
 	ProbeRouteConfigStore.mu.RLock()
-	after := ProbeRouteConfigStore.data.SpecialExits[0]
+	after := ProbeRouteConfigStore.data.SpecialExitLibrary
 	ProbeRouteConfigStore.mu.RUnlock()
-	if len(after.Proxies) != 1 || after.Proxies[0]["name"] != "UsableNode" || after.Revision != item.Revision+1 || after.LastSubscriptionRefreshErr != "" {
-		t.Fatalf("refreshed special exit=%+v", after)
+	if len(after.Proxies) != 1 || after.Proxies[0]["name"] != "UsableNode" || after.LastSubscriptionRefreshErr != "" || after.ProxySourceIDs["UsableNode"] != "mixed" {
+		t.Fatalf("refreshed global library=%+v", after)
 	}
 }
 
 func TestRefreshSpecialExitRealityOnlyPreservesLastGood(t *testing.T) {
 	oldStore := ProbeRouteConfigStore
 	oldFetch := probeSpecialExitFetchSubscription
-	item, err := normalizeProbeSpecialExitConfig(probeSpecialExitConfig{
-		NodeID: "19", Proxies: []map[string]interface{}{{"name": "last-good", "type": "socks5"}},
-		Subscriptions: []probeSpecialExitSubscription{{ID: "reality", Name: "Reality", Enabled: true, URL: "https://reality.example/config"}},
-	}, nil)
+	subscriptions := []probeSpecialExitSubscription{{ID: "reality", Name: "Reality", Enabled: true, URL: "https://reality.example/config"}}
+	proxies := []map[string]interface{}{{"name": "last-good", "type": "socks5"}}
+	library, err := normalizeProbeSpecialExitLibrary(probeSpecialExitLibrary{Subscriptions: subscriptions, Proxies: proxies, ProxySourceIDs: map[string]string{"last-good": "reality"}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ProbeRouteConfigStore = &probeRouteConfigStore{path: filepath.Join(t.TempDir(), "route.json"), data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), SpecialExits: []probeSpecialExitConfig{item}}}
+	ProbeRouteConfigStore = &probeRouteConfigStore{path: filepath.Join(t.TempDir(), "route.json"), data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), SpecialExitLibrary: library}}
 	probeSpecialExitFetchSubscription = func(context.Context, string) ([]byte, error) {
 		plain := "anytls://reality-secret@reality.example:443/?security=reality&pbk=public-key-secret&sid=0123456789abcdef#Reality"
 		return []byte(base64.StdEncoding.EncodeToString([]byte(plain))), nil
 	}
 	t.Cleanup(func() { ProbeRouteConfigStore = oldStore; probeSpecialExitFetchSubscription = oldFetch })
-	_, err = refreshMngProbeSpecialExitSubscription(context.Background(), "19", "https://controller.example")
+	_, err = refreshMngProbeSpecialExitSubscription(context.Background(), "reality", "https://controller.example")
 	if err == nil || !strings.Contains(err.Error(), "no Mihomo-compatible proxy nodes") || strings.Contains(err.Error(), "reality-secret") || strings.Contains(err.Error(), "public-key-secret") {
 		t.Fatalf("Reality-only refresh error=%v", err)
 	}
 	ProbeRouteConfigStore.mu.RLock()
-	after := ProbeRouteConfigStore.data.SpecialExits[0]
+	after := ProbeRouteConfigStore.data.SpecialExitLibrary
 	ProbeRouteConfigStore.mu.RUnlock()
-	if len(after.Proxies) != 1 || after.Proxies[0]["name"] != "last-good" || after.Revision != item.Revision {
+	if len(after.Proxies) != 1 || after.Proxies[0]["name"] != "last-good" {
 		t.Fatalf("Reality-only refresh overwrote last-good snapshot: %+v", after)
 	}
 }
@@ -389,28 +385,30 @@ func TestRefreshSpecialExitRealityOnlyPreservesLastGood(t *testing.T) {
 func TestRefreshSpecialExitRejectsDuplicateProxyAcrossSubscriptions(t *testing.T) {
 	oldStore := ProbeRouteConfigStore
 	oldFetch := probeSpecialExitFetchSubscription
-	item, err := normalizeProbeSpecialExitConfig(probeSpecialExitConfig{
-		NodeID: "19", Proxies: []map[string]interface{}{{"name": "last-good", "type": "socks5"}},
-		Subscriptions: []probeSpecialExitSubscription{
-			{ID: "one", Name: "One", Enabled: true, URL: "https://one.example/config"},
-			{ID: "two", Name: "Two", Enabled: true, URL: "https://two.example/config"},
-		},
+	subscriptions := []probeSpecialExitSubscription{
+		{ID: "one", Name: "One", Enabled: true, URL: "https://one.example/config"},
+		{ID: "two", Name: "Two", Enabled: true, URL: "https://two.example/config"},
+	}
+	library, err := normalizeProbeSpecialExitLibrary(probeSpecialExitLibrary{
+		Subscriptions:  subscriptions,
+		Proxies:        []map[string]interface{}{{"name": "duplicate", "type": "socks5", "server": "one.example", "port": 1080}},
+		ProxySourceIDs: map[string]string{"duplicate": "one"},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ProbeRouteConfigStore = &probeRouteConfigStore{path: filepath.Join(t.TempDir(), "route.json"), data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), SpecialExits: []probeSpecialExitConfig{item}}}
+	ProbeRouteConfigStore = &probeRouteConfigStore{path: filepath.Join(t.TempDir(), "route.json"), data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), SpecialExitLibrary: library}}
 	probeSpecialExitFetchSubscription = func(context.Context, string) ([]byte, error) {
 		return []byte("proxies:\n  - name: duplicate\n    type: socks5\n    server: same.example\n    port: 1080\n"), nil
 	}
 	t.Cleanup(func() { ProbeRouteConfigStore = oldStore; probeSpecialExitFetchSubscription = oldFetch })
-	if _, err := refreshMngProbeSpecialExitSubscription(context.Background(), "19", "https://controller.example"); err == nil || !strings.Contains(err.Error(), "duplicated") {
+	if _, err := refreshMngProbeSpecialExitSubscription(context.Background(), "two", "https://controller.example"); err == nil || !strings.Contains(err.Error(), "duplicated") {
 		t.Fatalf("duplicate proxy accepted: %v", err)
 	}
 	ProbeRouteConfigStore.mu.RLock()
-	after := ProbeRouteConfigStore.data.SpecialExits[0]
+	after := ProbeRouteConfigStore.data.SpecialExitLibrary
 	ProbeRouteConfigStore.mu.RUnlock()
-	if len(after.Proxies) != 1 || after.Proxies[0]["name"] != "last-good" {
+	if len(after.Proxies) != 1 || after.Proxies[0]["name"] != "duplicate" || after.ProxySourceIDs["duplicate"] != "one" {
 		t.Fatalf("last-good proxies were overwritten: %+v", after.Proxies)
 	}
 }
@@ -418,17 +416,16 @@ func TestRefreshSpecialExitRejectsDuplicateProxyAcrossSubscriptions(t *testing.T
 func TestRefreshSpecialExitSourceFailurePreservesLastGood(t *testing.T) {
 	oldStore := ProbeRouteConfigStore
 	oldFetch := probeSpecialExitFetchSubscription
-	item, err := normalizeProbeSpecialExitConfig(probeSpecialExitConfig{
-		NodeID: "19", Proxies: []map[string]interface{}{{"name": "last-good", "type": "socks5"}},
-		Subscriptions: []probeSpecialExitSubscription{
-			{ID: "good", Name: "Good", Enabled: true, URL: "https://good.example/config"},
-			{ID: "failed", Name: "Failed", Enabled: true, URL: "https://failed.example/config"},
-		},
-	}, nil)
+	subscriptions := []probeSpecialExitSubscription{
+		{ID: "good", Name: "Good", Enabled: true, URL: "https://good.example/config"},
+		{ID: "failed", Name: "Failed", Enabled: true, URL: "https://failed.example/config"},
+	}
+	proxies := []map[string]interface{}{{"name": "last-good", "type": "socks5"}}
+	library, err := normalizeProbeSpecialExitLibrary(probeSpecialExitLibrary{Subscriptions: subscriptions, Proxies: proxies, ProxySourceIDs: map[string]string{"last-good": "good"}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ProbeRouteConfigStore = &probeRouteConfigStore{path: filepath.Join(t.TempDir(), "route.json"), data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), SpecialExits: []probeSpecialExitConfig{item}}}
+	ProbeRouteConfigStore = &probeRouteConfigStore{path: filepath.Join(t.TempDir(), "route.json"), data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), SpecialExitLibrary: library}}
 	probeSpecialExitFetchSubscription = func(_ context.Context, rawURL string) ([]byte, error) {
 		if rawURL == "https://failed.example/config" {
 			return nil, context.DeadlineExceeded
@@ -436,13 +433,13 @@ func TestRefreshSpecialExitSourceFailurePreservesLastGood(t *testing.T) {
 		return []byte("proxies:\n  - name: replacement\n    type: socks5\n    server: replacement.example\n    port: 1080\n"), nil
 	}
 	t.Cleanup(func() { ProbeRouteConfigStore = oldStore; probeSpecialExitFetchSubscription = oldFetch })
-	if _, err := refreshMngProbeSpecialExitSubscription(context.Background(), "19", "https://controller.example"); err == nil || !strings.Contains(err.Error(), "Failed") {
+	if _, err := refreshMngProbeSpecialExitSubscription(context.Background(), "failed", "https://controller.example"); err == nil || !strings.Contains(err.Error(), "Failed") {
 		t.Fatalf("source failure was not returned: %v", err)
 	}
 	ProbeRouteConfigStore.mu.RLock()
-	after := ProbeRouteConfigStore.data.SpecialExits[0]
+	after := ProbeRouteConfigStore.data.SpecialExitLibrary
 	ProbeRouteConfigStore.mu.RUnlock()
-	if len(after.Proxies) != 1 || after.Proxies[0]["name"] != "last-good" || after.Revision != item.Revision {
+	if len(after.Proxies) != 1 || after.Proxies[0]["name"] != "last-good" {
 		t.Fatalf("source failure overwrote last-good snapshot: %+v", after)
 	}
 	if after.Subscriptions[0].LastSubscriptionRefreshErr != "" || !strings.Contains(after.Subscriptions[1].LastSubscriptionRefreshErr, "deadline") {
@@ -479,13 +476,19 @@ func TestApplySpecialExitSubscriptionRefreshMergesLatestGUIConfig(t *testing.T) 
 	latest.SHA256 = probeSpecialExitSnapshotHash(latest)
 	ProbeRouteConfigStore = &probeRouteConfigStore{
 		path: filepath.Join(t.TempDir(), "route.json"),
-		data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), SpecialExits: []probeSpecialExitConfig{latest}},
+		data: probeRouteConfigStoreData{
+			VirtualRouter:      defaultProbeVirtualRouterConfig(),
+			SpecialExitLibrary: probeSpecialExitLibrary{Subscriptions: []probeSpecialExitSubscription{{ID: "primary", Name: "Primary", Enabled: true, URL: "https://example.com/config"}}, Proxies: []map[string]interface{}{}, ProxySourceIDs: map[string]string{}},
+			SpecialExits:       []probeSpecialExitConfig{latest},
+		},
 	}
 	t.Cleanup(func() { ProbeRouteConfigStore = oldStore })
-	refreshed, err := applyProbeSpecialExitSubscriptionRefresh("19", probeSpecialExitSubscriptionSourceHash(item), []map[string]interface{}{{"name": "node-a", "type": "socks5"}}, time.Unix(100, 0).UTC())
+	library := ProbeRouteConfigStore.data.SpecialExitLibrary
+	_, _, err = applyProbeSpecialExitLibrarySubscriptionRefresh(probeSpecialExitLibrarySourceHash(library), "primary", []map[string]interface{}{{"name": "node-a", "type": "socks5"}}, time.Unix(100, 0).UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
+	refreshed := ProbeRouteConfigStore.data.SpecialExits[0]
 	if len(refreshed.Rules) != 1 || refreshed.Rules[0].RouteRuleID != "new" || refreshed.Revision != latest.Revision+1 {
 		t.Fatalf("refresh overwrote latest GUI config: %+v", refreshed)
 	}
@@ -499,10 +502,15 @@ func TestApplySpecialExitSubscriptionRefreshRollsBackMemoryWhenSaveFails(t *test
 	}
 	ProbeRouteConfigStore = &probeRouteConfigStore{
 		path: t.TempDir(), // Writing JSON to a directory forces the persistence step to fail.
-		data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), SpecialExits: []probeSpecialExitConfig{item}},
+		data: probeRouteConfigStoreData{
+			VirtualRouter:      defaultProbeVirtualRouterConfig(),
+			SpecialExitLibrary: probeSpecialExitLibrary{Subscriptions: []probeSpecialExitSubscription{{ID: "primary", Name: "Primary", Enabled: true, URL: "https://example.com/config"}}, Proxies: []map[string]interface{}{}, ProxySourceIDs: map[string]string{}},
+			SpecialExits:       []probeSpecialExitConfig{item},
+		},
 	}
 	t.Cleanup(func() { ProbeRouteConfigStore = oldStore })
-	if _, err := applyProbeSpecialExitSubscriptionRefresh("19", probeSpecialExitSubscriptionSourceHash(item), []map[string]interface{}{{"name": "node-a", "type": "socks5"}}, time.Unix(200, 0).UTC()); err == nil {
+	library := ProbeRouteConfigStore.data.SpecialExitLibrary
+	if _, _, err := applyProbeSpecialExitLibrarySubscriptionRefresh(probeSpecialExitLibrarySourceHash(library), "primary", []map[string]interface{}{{"name": "node-a", "type": "socks5"}}, time.Unix(200, 0).UTC()); err == nil {
 		t.Fatal("expected persistence failure")
 	}
 	ProbeRouteConfigStore.mu.RLock()
@@ -515,26 +523,24 @@ func TestApplySpecialExitSubscriptionRefreshRollsBackMemoryWhenSaveFails(t *test
 
 func TestApplySpecialExitSubscriptionRefreshRejectsChangedSource(t *testing.T) {
 	oldStore := ProbeRouteConfigStore
-	item, err := normalizeProbeSpecialExitConfig(probeSpecialExitConfig{NodeID: "19", Subscriptions: []probeSpecialExitSubscription{{ID: "primary", Name: "Primary", Enabled: true, URL: "https://old.example/config"}}}, nil)
+	library, err := normalizeProbeSpecialExitLibrary(probeSpecialExitLibrary{Subscriptions: []probeSpecialExitSubscription{{ID: "primary", Name: "Primary", Enabled: true, URL: "https://old.example/config"}}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(item.Subscriptions) != 1 || item.Subscriptions[0].URL != "https://old.example/config" {
-		t.Fatalf("subscription was not normalized: %+v", item.Subscriptions)
+	if len(library.Subscriptions) != 1 || library.Subscriptions[0].URL != "https://old.example/config" {
+		t.Fatalf("subscription was not normalized: %+v", library.Subscriptions)
 	}
-	oldSource := probeSpecialExitSubscriptionSourceHash(item)
-	item.Subscriptions[0].URL = "https://new.example/config"
-	item.Revision++
-	item.SHA256 = probeSpecialExitSnapshotHash(item)
-	ProbeRouteConfigStore = &probeRouteConfigStore{path: filepath.Join(t.TempDir(), "route.json"), data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), SpecialExits: []probeSpecialExitConfig{item}}}
+	oldSource := probeSpecialExitLibrarySourceHash(library)
+	library.Subscriptions[0].URL = "https://new.example/config"
+	ProbeRouteConfigStore = &probeRouteConfigStore{path: filepath.Join(t.TempDir(), "route.json"), data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), SpecialExitLibrary: library}}
 	t.Cleanup(func() { ProbeRouteConfigStore = oldStore })
-	if _, err := applyProbeSpecialExitSubscriptionRefresh("19", oldSource, []map[string]interface{}{{"name": "stale-node", "type": "socks5"}}, time.Unix(300, 0).UTC()); err == nil || !strings.Contains(err.Error(), "subscription changed") {
+	if _, _, err := applyProbeSpecialExitLibrarySubscriptionRefresh(oldSource, "primary", []map[string]interface{}{{"name": "stale-node", "type": "socks5"}}, time.Unix(300, 0).UTC()); err == nil || !strings.Contains(err.Error(), "changed") {
 		t.Fatalf("stale subscription result accepted: %v", err)
 	}
 	ProbeRouteConfigStore.mu.RLock()
-	after := ProbeRouteConfigStore.data.SpecialExits[0]
+	after := ProbeRouteConfigStore.data.SpecialExitLibrary
 	ProbeRouteConfigStore.mu.RUnlock()
-	if len(after.Subscriptions) != 1 || after.Subscriptions[0].URL != item.Subscriptions[0].URL || after.Revision != item.Revision || len(after.Proxies) != 0 {
+	if len(after.Subscriptions) != 1 || after.Subscriptions[0].URL != library.Subscriptions[0].URL || len(after.Proxies) != 0 {
 		t.Fatalf("stale result changed config: %+v", after)
 	}
 }
@@ -633,23 +639,30 @@ func TestMngSpecialExitListRedactsControllerAndProxySecrets(t *testing.T) {
 	oldRouteStore := ProbeRouteConfigStore
 	ProbeStore = &probeConfigStore{data: probeConfigData{ProbeNodes: []probeNodeRecord{{NodeNo: 19, NodeName: "exit", NodeKind: probeNodeKindMihomoExit, NodeSecret: "node-secret"}}}}
 	item, err := normalizeProbeSpecialExitConfig(probeSpecialExitConfig{
-		NodeID:        "19",
-		Subscriptions: []probeSpecialExitSubscription{{ID: "primary", Name: "Primary", Enabled: true, URL: "https://subscription.example/secret"}},
-		Rules:         []probeSpecialExitRule{{RouteRuleID: "rr-1", Target: "proxy-a", Entries: []string{"domain_suffix:example.com"}}},
-		Proxies:       []map[string]interface{}{{"name": "proxy-a", "type": "socks5", "server": "proxy.example", "password": "proxy-secret"}},
+		NodeID:  "19",
+		Rules:   []probeSpecialExitRule{{RouteRuleID: "rr-1", Target: "proxy-a", Entries: []string{"domain_suffix:example.com"}}},
+		Proxies: []map[string]interface{}{{"name": "proxy-a", "type": "socks5", "server": "proxy.example", "password": "proxy-secret"}},
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	virtualRouter := defaultProbeVirtualRouterConfig()
 	virtualRouter.RouteRules = []probeVirtualRouterRouteRule{{ID: "rr-1", Name: "Example", Action: "probe_exit", ExitNodeID: "19", Entries: []string{"domain_suffix:example.com"}}}
-	ProbeRouteConfigStore = &probeRouteConfigStore{data: probeRouteConfigStoreData{VirtualRouter: virtualRouter, SpecialExits: []probeSpecialExitConfig{item}}}
+	library, err := normalizeProbeSpecialExitLibrary(probeSpecialExitLibrary{Subscriptions: []probeSpecialExitSubscription{{ID: "primary", Name: "Primary", Enabled: true, URL: "https://subscription.example/secret"}}, Proxies: item.Proxies, ProxySourceIDs: map[string]string{"proxy-a": "primary"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ProbeRouteConfigStore = &probeRouteConfigStore{data: probeRouteConfigStoreData{VirtualRouter: virtualRouter, SpecialExitLibrary: library, SpecialExits: []probeSpecialExitConfig{item}}}
 	t.Cleanup(func() { ProbeStore = oldProbeStore; ProbeRouteConfigStore = oldRouteStore })
 	result, err := listMngProbeSpecialExits()
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoded, err := json.Marshal(result)
+	libraryResult, err := getMngProbeSpecialExitLibrary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(map[string]interface{}{"exits": result, "library": libraryResult})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -659,7 +672,7 @@ func TestMngSpecialExitListRedactsControllerAndProxySecrets(t *testing.T) {
 			t.Fatalf("secret %q leaked: %s", secret, text)
 		}
 	}
-	if !strings.Contains(text, `"subscription_configured":true`) || !strings.Contains(text, `"proxy_names":["proxy-a"]`) {
+	if !strings.Contains(text, `"configured":true`) || !strings.Contains(text, `"proxy_names":["proxy-a"]`) || !strings.Contains(text, `"subscription_name":"Primary"`) {
 		t.Fatalf("redacted metadata missing: %s", text)
 	}
 	if _, exists := result["managed_rules"]; exists {
@@ -691,11 +704,15 @@ func TestUpsertMngSpecialExitUsesAssignedRouteRuleModel(t *testing.T) {
 	}
 	ProbeRouteConfigStore = &probeRouteConfigStore{
 		path: filepath.Join(t.TempDir(), "route.json"),
-		data: probeRouteConfigStoreData{VirtualRouter: virtualRouter, SpecialExits: []probeSpecialExitConfig{previous}},
+		data: probeRouteConfigStoreData{
+			VirtualRouter:      virtualRouter,
+			SpecialExitLibrary: probeSpecialExitLibrary{Subscriptions: []probeSpecialExitSubscription{{ID: "primary", Name: "Primary", Enabled: true, URL: "https://example.com/config"}}, Proxies: previous.Proxies, ProxySourceIDs: map[string]string{"node-a": "primary"}},
+			SpecialExits:       []probeSpecialExitConfig{previous},
+		},
 	}
 	t.Cleanup(func() { ProbeStore = oldProbeStore; ProbeRouteConfigStore = oldRouteStore })
 
-	result, err := upsertMngProbeSpecialExit(json.RawMessage(`{"item":{"node_id":"19","subscriptions":[],"rules":[{"route_rule_id":"rr-1","target":"node-a"}]}}`), "")
+	result, err := upsertMngProbeSpecialExit(json.RawMessage(`{"item":{"node_id":"19","rules":[{"route_rule_id":"rr-1","target":"node-a"}]}}`), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -708,7 +725,7 @@ func TestUpsertMngSpecialExitUsesAssignedRouteRuleModel(t *testing.T) {
 	if len(stored.Rules) != 1 || stored.Rules[0].RouteRuleID != "rr-1" || stored.Rules[0].Target != "node-a" || !reflect.DeepEqual(stored.Rules[0].Entries, wantEntries) {
 		t.Fatalf("stored rule was not compiled from the assigned route rule: %+v", stored)
 	}
-	if _, err := upsertMngProbeSpecialExit(json.RawMessage(`{"item":{"node_id":"19","subscriptions":[],"rules":[{"route_rule_id":"rr-1","target":"DIRECT"}]}}`), ""); err != nil {
+	if _, err := upsertMngProbeSpecialExit(json.RawMessage(`{"item":{"node_id":"19","rules":[{"route_rule_id":"rr-1","target":"DIRECT"}]}}`), ""); err != nil {
 		t.Fatalf("direct secondary exit was rejected: %v", err)
 	}
 
@@ -730,15 +747,108 @@ func TestUpsertMngSpecialExitUsesAssignedRouteRuleModel(t *testing.T) {
 	}
 }
 
+func TestGlobalClashLibraryIsSharedAndSnapshotsContainOnlySelectedNodes(t *testing.T) {
+	oldProbeStore := ProbeStore
+	oldRouteStore := ProbeRouteConfigStore
+	ProbeStore = &probeConfigStore{data: probeConfigData{ProbeNodes: []probeNodeRecord{
+		{NodeNo: 19, NodeName: "exit-a", NodeKind: probeNodeKindMihomoExit},
+		{NodeNo: 20, NodeName: "exit-b", NodeKind: probeNodeKindMihomoExit},
+	}}}
+	virtualRouter := defaultProbeVirtualRouterConfig()
+	virtualRouter.RouteRules = []probeVirtualRouterRouteRule{
+		{ID: "rr-a", Name: "A", Action: "probe_exit", ExitNodeID: "19", Entries: []string{"domain_suffix:a.example"}},
+		{ID: "rr-b", Name: "B", Action: "probe_exit", ExitNodeID: "20", Entries: []string{"domain_suffix:b.example"}},
+	}
+	library, err := normalizeProbeSpecialExitLibrary(probeSpecialExitLibrary{
+		Subscriptions: []probeSpecialExitSubscription{{ID: "source-a", Name: "Provider A", Enabled: true}, {ID: "source-b", Name: "Provider B", Enabled: true}},
+		Proxies: []map[string]interface{}{
+			{"name": "node-a", "type": "socks5", "server": "a.example", "password": "secret-a"},
+			{"name": "node-b", "type": "socks5", "server": "b.example", "password": "secret-b"},
+		},
+		ProxySourceIDs: map[string]string{"node-a": "source-a", "node-b": "source-b"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ProbeRouteConfigStore = &probeRouteConfigStore{path: filepath.Join(t.TempDir(), "route.json"), data: probeRouteConfigStoreData{VirtualRouter: virtualRouter, SpecialExitLibrary: library}}
+	t.Cleanup(func() { ProbeStore = oldProbeStore; ProbeRouteConfigStore = oldRouteStore })
+
+	if _, err = upsertMngProbeSpecialExit(json.RawMessage(`{"item":{"node_id":"19","rules":[{"route_rule_id":"rr-a","target":"node-a"}]}}`), ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = upsertMngProbeSpecialExit(json.RawMessage(`{"item":{"node_id":"20","rules":[{"route_rule_id":"rr-b","target":"node-b"}]}}`), ""); err != nil {
+		t.Fatal(err)
+	}
+	items := ProbeRouteConfigStore.data.SpecialExits
+	if len(items) != 2 || len(items[0].Proxies) != 1 || len(items[1].Proxies) != 1 || items[0].Proxies[0]["name"] != "node-a" || items[1].Proxies[0]["name"] != "node-b" {
+		t.Fatalf("snapshots were not cropped by selected targets: %+v", items)
+	}
+	encodedA, _ := json.Marshal(probeSpecialExitSnapshotForConfig(items[0]))
+	encodedB, _ := json.Marshal(probeSpecialExitSnapshotForConfig(items[1]))
+	if strings.Contains(string(encodedA), "secret-b") || strings.Contains(string(encodedB), "secret-a") || strings.Contains(string(encodedA), "source-a") || strings.Contains(string(encodedB), "source-b") {
+		t.Fatalf("global subscription metadata or unrelated secrets leaked: a=%s b=%s", encodedA, encodedB)
+	}
+	view := mngProbeSpecialExitLibraryView(library)
+	options, ok := view["proxy_options"].([]probeSpecialExitProxyOption)
+	if !ok || len(options) != 2 || options[0].SubscriptionName != "Provider A" || options[1].SubscriptionName != "Provider B" {
+		t.Fatalf("global proxy options=%+v", view["proxy_options"])
+	}
+	if _, err := upsertMngProbeSpecialExitLibrary(json.RawMessage(`{"item":{"subscriptions":[{"id":"source-a","name":"Provider A","enabled":true,"url":"","last_subscription_refresh_at":"forged"}]}}`), ""); err == nil {
+		t.Fatal("client-controlled subscription runtime metadata was accepted")
+	}
+}
+
+func TestSpecialExitStatusIncludesConnectivitySourceAndLatency(t *testing.T) {
+	oldRouteStore := ProbeRouteConfigStore
+	probeRuntimeStore.mu.Lock()
+	oldRuntimeData := probeRuntimeStore.data
+	probeRuntimeStore.data = map[string]probeRuntimeStatus{
+		"19": {NodeID: "19", Online: true, SpecialExit: probeSpecialExitRuntimeReport{Connectivity: []probeSpecialExitConnectivityReport{{Target: "node-a", Reachable: true, LatencyMS: 88, CheckedAt: "2026-08-15T08:00:00Z"}}}},
+	}
+	probeRuntimeStore.mu.Unlock()
+	ProbeRouteConfigStore = &probeRouteConfigStore{data: probeRouteConfigStoreData{
+		SpecialExitLibrary: probeSpecialExitLibrary{Subscriptions: []probeSpecialExitSubscription{{ID: "source-a", Name: "Provider A"}}, ProxySourceIDs: map[string]string{"node-a": "source-a"}},
+		SpecialExits:       []probeSpecialExitConfig{{NodeID: "19", Revision: 1, SHA256: strings.Repeat("a", 64)}},
+	}}
+	t.Cleanup(func() {
+		ProbeRouteConfigStore = oldRouteStore
+		probeRuntimeStore.mu.Lock()
+		probeRuntimeStore.data = oldRuntimeData
+		probeRuntimeStore.mu.Unlock()
+	})
+	result, err := listMngProbeSpecialExitStatuses()
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := result["items"].([]map[string]interface{})
+	connectivity := items[0]["connectivity"].([]map[string]interface{})
+	if len(connectivity) != 1 || connectivity[0]["subscription_name"] != "Provider A" || connectivity[0]["latency_ms"] != int64(88) {
+		t.Fatalf("connectivity status=%+v", connectivity)
+	}
+}
+
+func TestGlobalSubscriptionRefreshHandlerRejectsNodeID(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/mng/api/route/special_exits/subscription/refresh", strings.NewReader(`{"node_id":"19","subscription_id":"source-a"}`))
+	rec := httptest.NewRecorder()
+	mngRouteSpecialExitSubscriptionRefreshHandler(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestMngRoutePageIncludesSpecialExitWorkflow(t *testing.T) {
 	for _, marker := range []string{
 		`data-tab="special-exits"`, `id="section-special-exits"`, `id="special-exit-subscriptions"`,
 		`id="btn-special-exit-subscription-add"`, `function addSpecialExitSubscription()`,
+		`data-special-exit-tab="subscriptions"`, `data-special-exit-tab="nodes"`,
+		`id="btn-special-exit-library-save"`, `/mng/api/route/special_exit_subscriptions`, `data-se-subscription-refresh="${index}"`,
 		`id="special-exit-proxies"`, `id="special-exit-status-list"`, `data-se-rule-target`,
 		`<span>路由规则出口</span>`, `id="special-exit-detail"`, `id="special-exit-empty"`,
 		`<option value="">请选择特殊探针</option>`, `.special-exit-layout[hidden] { display:none; }`,
 		`state.specialExitStatuses.find((status) => normalizeNodeID(status.node_id) === nodeID)`,
 		`/mng/api/route/special_exits/subscription/refresh`,
+		`body: JSON.stringify({ subscription_id: subscriptionID })`,
+		`${escapeHTML(source)} / ${escapeHTML(name)}`,
 		`data-se-subscription-url="${index}" class="mono" type="url"`,
 		`result.skipped_proxy_count`, `Mihomo 不支持的 AnyTLS+Reality 节点`,
 	} {
@@ -760,7 +870,7 @@ func TestMngRoutePageIncludesSpecialExitWorkflow(t *testing.T) {
 	if !strings.Contains(mngRoutePageHTML, `.special-exit-layout { display:grid; grid-template-columns:minmax(0, 1fr);`) {
 		t.Fatal("special exit workflow must use a single-column layout")
 	}
-	ordered := []string{`<label for="special-exit-node">特殊探针</label>`, `<span>Clash 配置</span>`, `<span>出口节点</span>`, `<span>路由规则出口</span>`, `<span>运行状态</span>`}
+	ordered := []string{`<span>Clash 订阅</span>`, `<span>已提取节点</span>`, `<label for="special-exit-node">特殊探针</label>`, `<span>路由规则出口</span>`, `<span>运行状态</span>`}
 	position := -1
 	for _, marker := range ordered {
 		next := strings.Index(mngRoutePageHTML, marker)

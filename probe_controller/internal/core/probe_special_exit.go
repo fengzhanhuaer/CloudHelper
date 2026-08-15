@@ -23,12 +23,18 @@ const (
 )
 
 type probeSpecialExitConfig struct {
-	NodeID                     string                         `json:"node_id"`
+	NodeID    string                   `json:"node_id"`
+	Rules     []probeSpecialExitRule   `json:"rules,omitempty"`
+	Proxies   []map[string]interface{} `json:"proxies,omitempty"`
+	Revision  int64                    `json:"revision"`
+	SHA256    string                   `json:"sha256"`
+	UpdatedAt string                   `json:"updated_at,omitempty"`
+}
+
+type probeSpecialExitLibrary struct {
 	Subscriptions              []probeSpecialExitSubscription `json:"subscriptions,omitempty"`
-	Rules                      []probeSpecialExitRule         `json:"rules,omitempty"`
 	Proxies                    []map[string]interface{}       `json:"proxies,omitempty"`
-	Revision                   int64                          `json:"revision"`
-	SHA256                     string                         `json:"sha256"`
+	ProxySourceIDs             map[string]string              `json:"proxy_source_ids,omitempty"`
 	LastSubscriptionRefreshAt  string                         `json:"last_subscription_refresh_at,omitempty"`
 	LastSubscriptionRefreshErr string                         `json:"last_subscription_refresh_error,omitempty"`
 	UpdatedAt                  string                         `json:"updated_at,omitempty"`
@@ -59,16 +65,25 @@ type probeSpecialExitSnapshot struct {
 }
 
 type probeSpecialExitRuntimeReport struct {
-	AppliedRevision int64  `json:"applied_revision,omitempty"`
-	AppliedSHA256   string `json:"applied_sha256,omitempty"`
-	ExitReady       bool   `json:"exit_ready"`
-	Healthy         bool   `json:"healthy"`
-	MihomoVersion   string `json:"mihomo_version,omitempty"`
-	ActiveSessions  int64  `json:"active_sessions,omitempty"`
-	BytesUp         int64  `json:"bytes_up,omitempty"`
-	BytesDown       int64  `json:"bytes_down,omitempty"`
-	LastApplyError  string `json:"last_apply_error,omitempty"`
-	UpdatedAt       string `json:"updated_at,omitempty"`
+	AppliedRevision int64                                `json:"applied_revision,omitempty"`
+	AppliedSHA256   string                               `json:"applied_sha256,omitempty"`
+	ExitReady       bool                                 `json:"exit_ready"`
+	Healthy         bool                                 `json:"healthy"`
+	MihomoVersion   string                               `json:"mihomo_version,omitempty"`
+	ActiveSessions  int64                                `json:"active_sessions,omitempty"`
+	BytesUp         int64                                `json:"bytes_up,omitempty"`
+	BytesDown       int64                                `json:"bytes_down,omitempty"`
+	Connectivity    []probeSpecialExitConnectivityReport `json:"connectivity,omitempty"`
+	LastApplyError  string                               `json:"last_apply_error,omitempty"`
+	UpdatedAt       string                               `json:"updated_at,omitempty"`
+}
+
+type probeSpecialExitConnectivityReport struct {
+	Target    string `json:"target"`
+	Reachable bool   `json:"reachable"`
+	LatencyMS int64  `json:"latency_ms,omitempty"`
+	Error     string `json:"error,omitempty"`
+	CheckedAt string `json:"checked_at,omitempty"`
 }
 
 func normalizeProbeNodeKind(raw string) string {
@@ -104,11 +119,54 @@ func normalizeProbeSpecialExitConfigs(items []probeSpecialExitConfig) []probeSpe
 	return out
 }
 
-func normalizeProbeSpecialExitConfig(raw probeSpecialExitConfig, previous *probeSpecialExitConfig) (probeSpecialExitConfig, error) {
+func normalizeProbeSpecialExitConfig(raw probeSpecialExitConfig, _ *probeSpecialExitConfig) (probeSpecialExitConfig, error) {
 	nodeID := normalizeProbeNodeID(raw.NodeID)
 	if nodeID == "" {
 		return probeSpecialExitConfig{}, fmt.Errorf("node_id is required")
 	}
+	rules, err := normalizeProbeSpecialExitRules(raw.Rules)
+	if err != nil {
+		return probeSpecialExitConfig{}, err
+	}
+	proxies, err := normalizeProbeSpecialExitProxies(raw.Proxies)
+	if err != nil {
+		return probeSpecialExitConfig{}, err
+	}
+	updatedAt := strings.TrimSpace(raw.UpdatedAt)
+	if updatedAt == "" {
+		updatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	item := probeSpecialExitConfig{NodeID: nodeID, Rules: rules, Proxies: proxies, Revision: raw.Revision, UpdatedAt: updatedAt}
+	if item.Revision <= 0 {
+		item.Revision = 1
+	}
+	item.SHA256 = probeSpecialExitSnapshotHash(item)
+	return item, nil
+}
+
+func normalizeProbeSpecialExitProxySourceIDs(input map[string]string, proxies []map[string]interface{}) map[string]string {
+	if len(input) == 0 || len(proxies) == 0 {
+		return map[string]string{}
+	}
+	validNames := make(map[string]struct{}, len(proxies))
+	for _, proxy := range proxies {
+		if name := strings.TrimSpace(fmt.Sprint(proxy["name"])); name != "" {
+			validNames[name] = struct{}{}
+		}
+	}
+	out := make(map[string]string, len(input))
+	for rawName, rawSourceID := range input {
+		name := strings.TrimSpace(rawName)
+		sourceID := strings.TrimSpace(rawSourceID)
+		if _, ok := validNames[name]; !ok || sourceID == "" || len(sourceID) > 128 || strings.ContainsAny(sourceID, "\r\n") {
+			continue
+		}
+		out[name] = sourceID
+	}
+	return out
+}
+
+func normalizeProbeSpecialExitLibrary(raw probeSpecialExitLibrary, previous *probeSpecialExitLibrary) (probeSpecialExitLibrary, error) {
 	previousSubscriptions := []probeSpecialExitSubscription(nil)
 	if previous != nil {
 		previousSubscriptions = previous.Subscriptions
@@ -123,35 +181,58 @@ func normalizeProbeSpecialExitConfig(raw probeSpecialExitConfig, previous *probe
 	}
 	subscriptions, err := normalizeProbeSpecialExitSubscriptions(rawSubscriptions, previousSubscriptions)
 	if err != nil {
-		return probeSpecialExitConfig{}, err
-	}
-	rules, err := normalizeProbeSpecialExitRules(raw.Rules)
-	if err != nil {
-		return probeSpecialExitConfig{}, err
+		return probeSpecialExitLibrary{}, err
 	}
 	proxies, err := normalizeProbeSpecialExitProxies(raw.Proxies)
 	if err != nil {
-		return probeSpecialExitConfig{}, err
+		return probeSpecialExitLibrary{}, err
+	}
+	proxySourceIDs := raw.ProxySourceIDs
+	if proxySourceIDs == nil && previous != nil {
+		proxySourceIDs = previous.ProxySourceIDs
 	}
 	updatedAt := strings.TrimSpace(raw.UpdatedAt)
 	if updatedAt == "" {
 		updatedAt = time.Now().UTC().Format(time.RFC3339)
 	}
-	item := probeSpecialExitConfig{
-		NodeID:                     nodeID,
+	return probeSpecialExitLibrary{
 		Subscriptions:              subscriptions,
-		Rules:                      rules,
 		Proxies:                    proxies,
-		Revision:                   raw.Revision,
+		ProxySourceIDs:             normalizeProbeSpecialExitProxySourceIDs(proxySourceIDs, proxies),
 		LastSubscriptionRefreshAt:  strings.TrimSpace(raw.LastSubscriptionRefreshAt),
 		LastSubscriptionRefreshErr: strings.TrimSpace(raw.LastSubscriptionRefreshErr),
 		UpdatedAt:                  updatedAt,
+	}, nil
+}
+
+func resolveProbeSpecialExitProxies(rules []probeSpecialExitRule, library []map[string]interface{}) ([]map[string]interface{}, error) {
+	wanted := make(map[string]struct{})
+	for _, rule := range rules {
+		target := normalizeProbeSpecialExitTarget(rule.Target)
+		if target != probeSpecialExitDirectTarget {
+			wanted[target] = struct{}{}
+		}
 	}
-	if item.Revision <= 0 {
-		item.Revision = 1
+	if len(wanted) == 0 {
+		return []map[string]interface{}{}, nil
 	}
-	item.SHA256 = probeSpecialExitSnapshotHash(item)
-	return item, nil
+	resolved := make([]map[string]interface{}, 0, len(wanted))
+	for _, proxy := range library {
+		name := strings.TrimSpace(fmt.Sprint(proxy["name"]))
+		if _, ok := wanted[name]; ok {
+			resolved = append(resolved, proxy)
+			delete(wanted, name)
+		}
+	}
+	if len(wanted) > 0 {
+		missing := make([]string, 0, len(wanted))
+		for name := range wanted {
+			missing = append(missing, name)
+		}
+		sort.Strings(missing)
+		return nil, fmt.Errorf("rule target %q is not present in the global Clash node library", missing[0])
+	}
+	return normalizeProbeSpecialExitProxies(resolved)
 }
 
 func normalizeProbeSpecialExitSubscriptions(input, previous []probeSpecialExitSubscription) ([]probeSpecialExitSubscription, error) {
@@ -405,16 +486,15 @@ func probeSpecialExitSemanticHash(item probeSpecialExitConfig) string {
 	return probeSpecialExitSnapshotHash(item)
 }
 
-func probeSpecialExitSubscriptionSourceHash(item probeSpecialExitConfig) string {
-	value := make([]probeSpecialExitSubscription, 0, len(item.Subscriptions))
-	for _, source := range item.Subscriptions {
+func probeSpecialExitLibrarySourceHash(library probeSpecialExitLibrary) string {
+	value := make([]probeSpecialExitSubscription, 0, len(library.Subscriptions))
+	for _, source := range library.Subscriptions {
 		value = append(value, probeSpecialExitSubscription{
-			ID: strings.TrimSpace(source.ID), Name: strings.TrimSpace(source.Name), Enabled: source.Enabled,
-			URL: strings.TrimSpace(source.URL),
+			ID: source.ID, Name: source.Name, Enabled: source.Enabled, URL: source.URL,
 		})
 	}
-	encoded, _ := json.Marshal(value)
-	sum := sha256.Sum256(encoded)
+	content, _ := json.Marshal(value)
+	sum := sha256.Sum256(content)
 	return hex.EncodeToString(sum[:])
 }
 

@@ -51,6 +51,20 @@ func updateProbeRuntimeProductStatus(nodeID string, buildKind string, status pro
 	status.MihomoVersion = strings.TrimSpace(status.MihomoVersion)
 	status.LastApplyError = strings.TrimSpace(status.LastApplyError)
 	status.UpdatedAt = strings.TrimSpace(status.UpdatedAt)
+	connectivity := make([]probeSpecialExitConnectivityReport, 0, len(status.Connectivity))
+	for _, item := range status.Connectivity {
+		item.Target = strings.TrimSpace(item.Target)
+		item.Error = strings.TrimSpace(item.Error)
+		item.CheckedAt = strings.TrimSpace(item.CheckedAt)
+		if item.Target == "" || len(item.Target) > 256 || item.LatencyMS < 0 {
+			continue
+		}
+		if len(item.Error) > 240 {
+			item.Error = item.Error[:240]
+		}
+		connectivity = append(connectivity, item)
+	}
+	status.Connectivity = connectivity
 	current.SpecialExit = status
 	probeRuntimeStore.data[nodeID] = current
 	probeRuntimeStore.mu.Unlock()

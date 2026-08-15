@@ -20,6 +20,7 @@ type probeRouteConfigStore struct {
 type probeRouteConfigStoreData struct {
 	VirtualRouter       probeVirtualRouterConfig        `json:"virtual_router,omitempty"`
 	VirtualRouterFakeIP probeVirtualRouterFakeIPLibrary `json:"virtual_router_fake_ip,omitempty"`
+	SpecialExitLibrary  probeSpecialExitLibrary         `json:"special_exit_library,omitempty"`
 	SpecialExits        []probeSpecialExitConfig        `json:"special_exits,omitempty"`
 	DoH                 probeControllerDoHConfig        `json:"doh,omitempty"`
 }
@@ -33,6 +34,7 @@ func initProbeRouteConfigStore() {
 		data: probeRouteConfigStoreData{
 			VirtualRouter:       defaultProbeVirtualRouterConfig(),
 			VirtualRouterFakeIP: defaultProbeVirtualRouterFakeIPLibrary(),
+			SpecialExitLibrary:  probeSpecialExitLibrary{Subscriptions: []probeSpecialExitSubscription{}, Proxies: []map[string]interface{}{}, ProxySourceIDs: map[string]string{}},
 			SpecialExits:        []probeSpecialExitConfig{},
 			DoH:                 defaultProbeControllerDoHConfig(),
 		},
@@ -50,6 +52,11 @@ func initProbeRouteConfigStore() {
 			}
 			ProbeRouteConfigStore.data.VirtualRouter = normalizeProbeVirtualRouterConfig(raw.VirtualRouter)
 			ProbeRouteConfigStore.data.VirtualRouterFakeIP = normalizeProbeVirtualRouterFakeIPLibrary(raw.VirtualRouterFakeIP)
+			library, libraryErr := normalizeProbeSpecialExitLibrary(raw.SpecialExitLibrary, nil)
+			if libraryErr != nil {
+				log.Fatalf("failed to normalize probe special exit library: %v", libraryErr)
+			}
+			ProbeRouteConfigStore.data.SpecialExitLibrary = library
 			ProbeRouteConfigStore.data.SpecialExits = normalizeProbeSpecialExitConfigs(raw.SpecialExits)
 			ProbeRouteConfigStore.data.DoH = normalizeProbeControllerDoHConfig(raw.DoH)
 		}
