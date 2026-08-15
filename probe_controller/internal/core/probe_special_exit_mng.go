@@ -821,9 +821,13 @@ func fetchProbeSpecialExitSubscription(parent context.Context, rawURL string) ([
 	if err != nil {
 		return nil, err
 	}
+	targetPort := strings.TrimSpace(target.Port())
+	if targetPort == "" {
+		targetPort = "443"
+	}
 	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: target.Hostname()}, Proxy: nil}
 	transport.DialContext = func(dialCtx context.Context, network, _ string) (net.Conn, error) {
-		return probeSpecialExitDialContext(dialCtx, network, net.JoinHostPort(ips[0].String(), "443"))
+		return probeSpecialExitDialContext(dialCtx, network, net.JoinHostPort(ips[0].String(), targetPort))
 	}
 	client := &http.Client{Transport: transport, Timeout: probeSpecialExitSubscriptionTimeout}
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
@@ -872,8 +876,11 @@ func validateProbeSpecialExitSubscriptionURL(ctx context.Context, raw string) (*
 	if err != nil || target == nil || !strings.EqualFold(target.Scheme, "https") || target.User != nil || strings.TrimSpace(target.Hostname()) == "" {
 		return nil, nil, fmt.Errorf("subscription_url must be an HTTPS URL without credentials")
 	}
-	if port := strings.TrimSpace(target.Port()); port != "" && port != "443" {
-		return nil, nil, fmt.Errorf("subscription_url port must be 443")
+	if port := strings.TrimSpace(target.Port()); port != "" {
+		value, parseErr := strconv.Atoi(port)
+		if parseErr != nil || value < 1 || value > 65535 {
+			return nil, nil, fmt.Errorf("subscription_url port must be between 1 and 65535")
+		}
 	}
 	resolved, err := probeSpecialExitLookupIP(ctx, target.Hostname())
 	if err != nil || len(resolved) == 0 {

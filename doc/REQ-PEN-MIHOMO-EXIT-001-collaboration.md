@@ -401,6 +401,7 @@ flowchart LR
 | TASK-PEN-017 | R06 | UNIT-PEN-05 | `probe_controller/internal/core/mng_pages/route.html`、`probe_controller/internal/core/probe_special_exit_test.go`、本协作文档 | 修改 | 路由规则出口列表仅渲染规则名称和出口选择；不渲染匹配条目；保存载荷和v3私有快照保持不变；页面专项、脚本语法和桌面/移动Playwright通过 |
 | TASK-PEN-018 | R18 | UNIT-PEN-18 | `probe_controller/internal/core/probe_special_exit_mng.go`、`probe_command.go`及测试；`probe_node/main.go`、`probe_route_config_sync_test.go`；`mng_pages/route.html`、页面测试和本协作文档 | 修改 | 保存/刷新只下发当前特殊探针；应用成功立即报告；页面展示下发结果并等待desired/applied一致；控制器、普通/特殊探针和浏览器回归通过 |
 | TASK-PEN-019 | R19 | UNIT-PEN-05,19 | `probe_special_exit.go`、`probe_special_exit_mng.go`、`probe_route_config_store.go`、`mng_route_handlers.go`、`probe_runtime.go`、`mng_pages/route.html`及测试；`probe_node/main.go`、`probe_special_exit_mihomo.go`及tag测试；本协作文档 | 修改 | 订阅迁移为全局`special_exit_library`并形成独立子Tab；每订阅独立提取并原子替换自身节点；节点按订阅分组；每探针快照仅含实际选中节点；下拉显示订阅/节点；探针通过Mihomo delay API探测实际已选节点并上报；运行状态磁贴正确显示可达性和延迟 |
+| TASK-PEN-020 | R10 | UNIT-PEN-04 | `probe_special_exit_mng.go`、`probe_special_exit_test.go`及本协作文档 | 修改 | 订阅抓取支持HTTPS URL显式合法端口；下载仍固定到校验后的公开IP并保留TLS SNI、禁代理和禁重定向；默认端口保持443 |
 
 #### 1.4.3 源码修改规则
 - 修改源代码时必须注意可能存在的 GBK 编码并保持原文件编码，避免乱码或误转码。
@@ -598,6 +599,7 @@ flowchart LR
 | TEST-PEN-017 | R06 | TASK-PEN-017 | 路由规则出口仅显示规则名 | 页面marker负向测试、内联JS语法、控制器全量/vet、Playwright桌面1440与移动390真实交互 | 已完成 | `GitHub APIs`规则名和出口选择可见；三个domain/CIDR条目均不在DOM；DIRECT/US-Node载荷仍精确为`route_rule_id/target`；无溢出或浏览器错误 | 无 | Browser插件当前不可调用，使用本机Playwright与Edge；隔离控制器已停止且15030端口清空 |
 | TEST-PEN-018 | R18 | TASK-PEN-018 | 保存定向下发和立即同步状态 | 控制器目标下发、探针即时报告、页面状态轮询、全量和浏览器交互 | 已完成 | 特殊配置POST响应`total=1/dispatched=1`时页面轮询到applied revision/hash一致并显示“已保存并同步”；探针成功或失败应用后均调用即时报告器 | 无 | 离线、失败和超时分别保留警告状态 |
 | TEST-PEN-019 | R19 | TASK-PEN-019 | 全局订阅来源和已选节点实际延迟 | 双订阅逐源替换/跨源重名/全局共享/快照裁剪单测、Mihomo delay API正负向/tag测试、状态API、桌面/移动磁贴 | 已完成 | 两个探针共享同一节点库且各自快照只含实际选择节点；逐行提取载荷只有`subscription_id`；delay API返回137ms及错误截断均通过；1440x1000和390x844无溢出或浏览器错误 | 无 | 官方API为`GET /proxies/{name}/delay?url=...&timeout=5000`；Browser插件不可用，使用本机Playwright与Edge |
+| TEST-PEN-020 | R10 | TASK-PEN-020 | 非443 HTTPS订阅端口 | URL校验和固定IP拨号单测、控制器全量及vet | 已完成 | `https://subscription.example:8443`通过校验并拨号`1.1.1.1:8443`；端口0和65536拒绝；默认端口仍为443 | 无 | 不放宽HTTP、私网/保留地址、代理或重定向限制 |
 
 ### 2.4 Code缺陷跟踪矩阵
 - 状态: 已完成
@@ -627,6 +629,7 @@ flowchart LR
 | DEFECT-PEN-021 | R06 | TEST-PEN-017 | 二次分流的路由规则出口曾逐行展示全部匹配条目，信息冗余并使单条规则占用过大高度 | 低 | 已完成 | 删除条目DOM、客户端投影字段和专用样式；页面负向断言以及桌面/移动Playwright确认只显示规则名与出口选择 | 后端仍按原规则条目编译v3快照，数据面语义不变 |
 | DEFECT-PEN-022 | R18 | TEST-PEN-018 | 保存虽已下发但页面立即读取旧的周期报告，最长60秒错误显示“配置未同步”；下发范围还包含无关节点 | 中 | 已完成 | CRUD定向下发当前节点；探针同步完成后立即报告成功或失败状态；页面按desired revision/hash短轮询并区分离线、失败和等待 | 全局订阅刷新仅通知代理内容实际变化的探针 |
 | DEFECT-PEN-023 | R06,R10,R13,R19 | TEST-PEN-019 | 订阅曾嵌套在每个特殊探针配置中，无法作为所有探针共用资源；节点无稳定来源标签且缺少实际出口延迟 | 高 | 已完成 | 新增唯一`special_exit_library`全局存储和独立子Tab；逐源原子刷新及跨源重名保护；探针快照裁剪实际选中节点；Mihomo delay结果即时上报并在磁贴显示 | 探针配置结构已删除subscriptions及来源字段，不保留伪全局副本 |
+| DEFECT-PEN-024 | R10 | TEST-PEN-020 | 订阅URL校验和固定IP下载器都强制使用443，导致合法的非443 HTTPS订阅无法提取节点 | 中 | 已完成 | 允许显式1至65535端口并将校验后的端口传给固定IP拨号；默认仍为443；边界和拨号回归通过 | SSRF、TLS和脱敏边界保持不变 |
 
 ### 2.5 Code执行证据
 - 状态: 已完成
@@ -652,9 +655,9 @@ flowchart LR
 - Mihomo固定回环SOCKS 17890、REST 17891，随机API/SOCKS秘密、无TUN；`log/mihomo.log`复用2 MiB滚动writer。
 
 #### 2.5.3 执行报告
-- TASK-PEN-000至019全部实现；同一`probe_node`源码形成`normal`和`mihomo_exit`两个产品，特殊版仅Linux amd64且不启动普通本地控制台、代理、系统DNS、同步、DDNS或平台TUN。
+- TASK-PEN-000至020全部实现；同一`probe_node`源码形成`normal`和`mihomo_exit`两个产品，特殊版仅Linux amd64且不启动普通本地控制台、代理、系统DNS、同步、DDNS或平台TUN。
 - 原`VirtualRouter.RouteRules`是唯一主路由和二次匹配来源，不生成`special-exit:<node_id>`或其他聚合规则；普通探针只见原规则和特殊出口节点，具体Mihomo节点及凭据透明。
-- 主控维护一份供所有特殊探针共用、最多32个来源的全局订阅库；每源只需HTTPS URL，抓取器固定发送`User-Agent: clash.meta`和YAML `Accept`；仅允许HTTPS 443、固定公共解析IP、禁重定向/代理/私网/保留地址/远程provider，单源8 MiB上限；失败文本不含URL。
+- 主控维护一份供所有特殊探针共用、最多32个来源的全局订阅库；每源只需HTTPS URL，抓取器固定发送`User-Agent: clash.meta`和YAML `Accept`；未显式填写端口时使用443，显式端口允许1至65535并固定到校验后的公共解析IP；禁重定向/代理/私网/保留地址/远程provider，单源8 MiB上限；失败文本不含URL。
 - 每行“提取节点”只下载并原子替换该来源节点；订阅源指纹在提交时复核，失败、源变更或跨源节点重名均保留last-known-good。变更后按每探针实际规则目标裁剪私有代理集合，只有内容变化的探针增加revision并接收同步命令。
 - Mihomo候选先`-t`校验，再加载和健康检查，成功后提交快照；进程退出或连续三次健康失败均按5至60秒退避重启，首次失败即关闭`exit_ready`且不回落直连。
 - 原生和Docker首次安装都使用配对manifest；程序升级自行校验并替换程序/Mihomo，失败成对回滚。Mihomo MIT许可证随Release与镜像交付。
@@ -726,6 +729,7 @@ flowchart LR
 - 通过：TASK-PEN-018定向同步和即时回报；保存响应在线目标`dispatched=1`后页面轮询到applied revision/hash一致，离线、失败和超时不会伪装成功。
 - 通过：TASK-PEN-019全局订阅库；两个特殊探针共享节点候选而私有快照各自只含实际选择节点；逐源提取请求仅`subscription_id`，跨源重名和失败保持last-known-good；Mihomo delay API正负向结果及240字符错误上限通过。
 - 通过：Playwright与Edge在1440x1000及390x844验证“Clash订阅/探针出口”子Tab、每订阅“提取节点”、按来源节点分组、“订阅名称 / 节点名称”选项和出口连通性83ms磁贴；四个视图均无横向溢出，控制台和页面错误为空，隔离控制器及15030监听已停止。
+- 通过：TEST-PEN-020非443 HTTPS订阅端口；8443校验及固定公共IP拨号通过，0和65536拒绝；控制器全量及vet通过。
 - 仓库全平台探针`go vet`仍有既有mobilecore复制Mutex与Windows unsafe.Pointer告警；本次Linux特殊目标和新增代码vet通过。
 
 #### 2.5.7 未执行测试原因

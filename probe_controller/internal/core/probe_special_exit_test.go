@@ -593,31 +593,54 @@ func TestValidateProbeSpecialExitSubscriptionURLRejectsPrivateAndReservedAddress
 	if target, _, err := validateProbeSpecialExitSubscriptionURL(context.Background(), "https://subscription.example/config.yaml"); err != nil || target.Hostname() != "subscription.example" {
 		t.Fatalf("public subscription rejected: target=%v err=%v", target, err)
 	}
+	if target, _, err := validateProbeSpecialExitSubscriptionURL(context.Background(), "https://subscription.example:8443/config.yaml"); err != nil || target.Port() != "8443" {
+		t.Fatalf("public subscription with custom HTTPS port rejected: target=%v err=%v", target, err)
+	}
+	for _, rawURL := range []string{"https://subscription.example:0/config.yaml", "https://subscription.example:65536/config.yaml"} {
+		if _, _, err := validateProbeSpecialExitSubscriptionURL(context.Background(), rawURL); err == nil {
+			t.Fatalf("invalid subscription port accepted: %s", rawURL)
+		}
+	}
 	if _, _, err := validateProbeSpecialExitSubscriptionURL(context.Background(), "http://subscription.example/config.yaml"); err == nil {
 		t.Fatal("HTTP subscription accepted")
 	}
 }
 
-func TestFetchProbeSpecialExitSubscriptionDoesNotLeakURLOnTransportError(t *testing.T) {
+func TestFetchProbeSpecialExitSubscriptionUsesValidatedPortWithoutLeakingURL(t *testing.T) {
 	oldLookup := probeSpecialExitLookupIP
 	oldDial := probeSpecialExitDialContext
 	probeSpecialExitLookupIP = func(context.Context, string) ([]net.IPAddr, error) {
 		return []net.IPAddr{{IP: net.ParseIP("1.1.1.1")}}, nil
 	}
-	probeSpecialExitDialContext = func(context.Context, string, string) (net.Conn, error) {
-		return nil, context.DeadlineExceeded
-	}
 	t.Cleanup(func() {
 		probeSpecialExitLookupIP = oldLookup
 		probeSpecialExitDialContext = oldDial
 	})
-	secretURL := "https://subscription.example/config.yaml?token=do-not-leak"
-	_, err := fetchProbeSpecialExitSubscription(context.Background(), secretURL)
-	if err == nil {
-		t.Fatal("expected transport error")
-	}
-	if strings.Contains(err.Error(), "do-not-leak") || strings.Contains(err.Error(), "subscription.example") {
-		t.Fatalf("subscription URL leaked in error: %v", err)
+	for _, testCase := range []struct {
+		name        string
+		url         string
+		wantAddress string
+	}{
+		{name: "default port", url: "https://subscription.example/config.yaml?token=do-not-leak", wantAddress: "1.1.1.1:443"},
+		{name: "custom port", url: "https://subscription.example:8443/config.yaml?token=do-not-leak", wantAddress: "1.1.1.1:8443"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			dialAddress := ""
+			probeSpecialExitDialContext = func(_ context.Context, _, address string) (net.Conn, error) {
+				dialAddress = address
+				return nil, context.DeadlineExceeded
+			}
+			_, err := fetchProbeSpecialExitSubscription(context.Background(), testCase.url)
+			if err == nil {
+				t.Fatal("expected transport error")
+			}
+			if dialAddress != testCase.wantAddress {
+				t.Fatalf("subscription dial address=%q", dialAddress)
+			}
+			if strings.Contains(err.Error(), "do-not-leak") || strings.Contains(err.Error(), "subscription.example") {
+				t.Fatalf("subscription URL leaked in error: %v", err)
+			}
+		})
 	}
 }
 
