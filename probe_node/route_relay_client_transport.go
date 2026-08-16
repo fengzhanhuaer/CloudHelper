@@ -1318,9 +1318,6 @@ func probeRouteHTTP3StreamOpenTimeout(openTimeout time.Duration) time.Duration {
 	if openTimeout <= 0 {
 		return probeRouteRelayProtocolProbeTimeout
 	}
-	if openTimeout > probeRouteRelayProtocolProbeTimeout {
-		return probeRouteRelayProtocolProbeTimeout
-	}
 	return openTimeout
 }
 

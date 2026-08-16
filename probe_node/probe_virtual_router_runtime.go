@@ -781,6 +781,7 @@ func probeVirtualRouterConnFromH3(w http.ResponseWriter, r *http.Request, label 
 		return nil, false
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
+	w.WriteHeader(http.StatusOK)
 	stream := streamer.HTTPStream()
 	return &probeVirtualRouterH3Conn{
 		stream: stream,

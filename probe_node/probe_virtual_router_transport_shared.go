@@ -175,6 +175,8 @@ const (
 	probeRouteRelayQUICMaxConnectionWindow     = 8 * 1024 * 1024
 	probeRouteRelayQUICMaxIncomingStreams      = 1024
 	probeRouteRelayQUICDatagramMaxPayloadBytes = 1200
+	probeRouteRelayQUICKeepAlivePeriod         = 15 * time.Second
+	probeRouteRelayQUICMaxIdleTimeout          = 2 * time.Minute
 	probeRouteAuthReplayFileName               = "probe_vroute_auth_replay.json"
 
 	probeRouteAuthPacketType        = "github_copilot_auth_request"
@@ -451,6 +453,8 @@ func newProbeRouteQUICConfig(maxIncomingStreams int64) *quic.Config {
 		MaxConnectionReceiveWindow:     probeRouteRelayQUICMaxConnectionWindow,
 		MaxIncomingStreams:             maxIncomingStreams,
 		EnableDatagrams:                true,
+		KeepAlivePeriod:                probeRouteRelayQUICKeepAlivePeriod,
+		MaxIdleTimeout:                 probeRouteRelayQUICMaxIdleTimeout,
 	}
 }
 
