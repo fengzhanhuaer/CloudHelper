@@ -1403,6 +1403,7 @@
         return;
       }
       if (!Array.isArray(state.virtualRouter.topology_rules)) state.virtualRouter.topology_rules = [];
+      const newRuleIndex = state.virtualRouter.topology_rules.length;
       state.virtualRouter.topology_rules.push({
         id: '',
         name: '',
@@ -1417,6 +1418,12 @@
         enabled: true,
       });
       renderVirtualRouter();
+      const fromControl = document.querySelector(`[data-vr-rule-from="${newRuleIndex}"]`);
+      if (fromControl) {
+        fromControl.scrollIntoView({ block: 'nearest' });
+        fromControl.focus();
+      }
+      setStatus('已添加拓扑规则，请配置后保存', 'ok');
     }
 
     function virtualRouterRulePayload(rule) {

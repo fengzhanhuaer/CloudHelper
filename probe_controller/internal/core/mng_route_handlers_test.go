@@ -12,6 +12,21 @@ import (
 	"time"
 )
 
+func TestMngRoutePageAddVirtualRouterRuleRevealsNewRule(t *testing.T) {
+	markers := []string{
+		"const newRuleIndex = state.virtualRouter.topology_rules.length;",
+		"document.querySelector(`[data-vr-rule-from=\"${newRuleIndex}\"]`)",
+		"fromControl.scrollIntoView({ block: 'nearest' });",
+		"fromControl.focus();",
+		"已添加拓扑规则，请配置后保存",
+	}
+	for _, marker := range markers {
+		if !strings.Contains(mngRoutePageHTML, marker) {
+			t.Fatalf("route page missing add-rule reveal behavior marker %q", marker)
+		}
+	}
+}
+
 func TestMngVirtualRouterSideStatsErrorIgnoresStaleErrorAfterBridgeReconnect(t *testing.T) {
 	side := mngVirtualRouterRouteSideStatus{
 		VirtualRouter: &probeVirtualRouterRuntimeStats{
