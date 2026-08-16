@@ -233,6 +233,140 @@ func TestResolveProbeVirtualRouterDNSResponseReject(t *testing.T) {
 	}
 }
 
+func TestResolveProbeVirtualRouterDNSDirectResponsePreparesBypass(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDNSServiceForTest()
+	resetProbeVirtualRouterLocalSettingsForTest()
+	enableProbeVirtualRouterLocalSettingsForTest(true, true)
+	restore := setProbeVirtualRouterDNSConfigForTest(t, probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+	})
+	defer restore()
+	t.Cleanup(func() {
+		resetProbeLocalDNSServiceForTest()
+		resetProbeVirtualRouterLocalSettingsForTest()
+	})
+
+	oldResolve := probeVirtualRouterDNSResolveRealPacket
+	oldEnsure := probeVirtualRouterEnsureDirectBypass
+	response := []byte{1, 2, 3}
+	probeVirtualRouterDNSResolveRealPacket = func([]byte, string) ([]byte, []string, error) {
+		return response, []string{"203.0.113.10", "203.0.113.11"}, nil
+	}
+	var targets []string
+	probeVirtualRouterEnsureDirectBypass = func(target string) error {
+		targets = append(targets, target)
+		return nil
+	}
+	t.Cleanup(func() {
+		probeVirtualRouterDNSResolveRealPacket = oldResolve
+		probeVirtualRouterEnsureDirectBypass = oldEnsure
+	})
+
+	packet, err := buildProbeLocalDNSQueryA("direct.example.com")
+	if err != nil {
+		t.Fatalf("build direct dns query failed: %v", err)
+	}
+	result, err := resolveProbeVirtualRouterDNSPacket(packet)
+	if err != nil {
+		t.Fatalf("resolve direct dns failed: %v", err)
+	}
+	if string(result.Response) != string(response) {
+		t.Fatalf("response=%v, want %v", result.Response, response)
+	}
+	if got := strings.Join(targets, ","); got != "203.0.113.10:0,203.0.113.11:0" {
+		t.Fatalf("direct bypass targets=%q", got)
+	}
+}
+
+func TestResolveProbeVirtualRouterDNSDirectResponseWaitsForBypass(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDNSServiceForTest()
+	resetProbeVirtualRouterLocalSettingsForTest()
+	enableProbeVirtualRouterLocalSettingsForTest(true, true)
+	restore := setProbeVirtualRouterDNSConfigForTest(t, probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+	})
+	defer restore()
+	t.Cleanup(func() {
+		resetProbeLocalDNSServiceForTest()
+		resetProbeVirtualRouterLocalSettingsForTest()
+	})
+
+	oldResolve := probeVirtualRouterDNSResolveRealPacket
+	oldEnsure := probeVirtualRouterEnsureDirectBypass
+	probeVirtualRouterDNSResolveRealPacket = func([]byte, string) ([]byte, []string, error) {
+		return []byte{1, 2, 3}, []string{"203.0.113.10"}, nil
+	}
+	probeVirtualRouterEnsureDirectBypass = func(string) error {
+		return errors.New("route create failed")
+	}
+	t.Cleanup(func() {
+		probeVirtualRouterDNSResolveRealPacket = oldResolve
+		probeVirtualRouterEnsureDirectBypass = oldEnsure
+	})
+
+	packet, err := buildProbeLocalDNSQueryA("direct.example.com")
+	if err != nil {
+		t.Fatalf("build direct dns query failed: %v", err)
+	}
+	result, err := resolveProbeVirtualRouterDNSPacket(packet)
+	if err == nil || !strings.Contains(err.Error(), "route create failed") {
+		t.Fatalf("resolve direct dns err=%v", err)
+	}
+	if len(result.Response) != 0 {
+		t.Fatalf("dns answer must not be published before bypass is ready: %v", result.Response)
+	}
+}
+
+func TestResolveProbeVirtualRouterDNSDirectResponsePreservesIPExitRule(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDNSServiceForTest()
+	resetProbeVirtualRouterLocalSettingsForTest()
+	enableProbeVirtualRouterLocalSettingsForTest(true, true)
+	restore := setProbeVirtualRouterDNSConfigForTest(t, probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		RouteRules: []probeVirtualRouterRouteRule{{
+			ID:         "rr-ip-exit",
+			Name:       "IP exit",
+			Action:     "probe_exit",
+			ExitNodeID: "9",
+			Entries:    []string{"cidr:203.0.113.0/24"},
+		}},
+	})
+	defer restore()
+	t.Cleanup(func() {
+		resetProbeLocalDNSServiceForTest()
+		resetProbeVirtualRouterLocalSettingsForTest()
+	})
+
+	oldResolve := probeVirtualRouterDNSResolveRealPacket
+	oldEnsure := probeVirtualRouterEnsureDirectBypass
+	probeVirtualRouterDNSResolveRealPacket = func([]byte, string) ([]byte, []string, error) {
+		return []byte{1, 2, 3}, []string{"203.0.113.10"}, nil
+	}
+	probeVirtualRouterEnsureDirectBypass = func(target string) error {
+		t.Fatalf("ip-routed exit target must not receive a direct bypass: %s", target)
+		return nil
+	}
+	t.Cleanup(func() {
+		probeVirtualRouterDNSResolveRealPacket = oldResolve
+		probeVirtualRouterEnsureDirectBypass = oldEnsure
+	})
+
+	packet, err := buildProbeLocalDNSQueryA("unmatched.example.com")
+	if err != nil {
+		t.Fatalf("build dns query failed: %v", err)
+	}
+	result, err := resolveProbeVirtualRouterDNSPacket(packet)
+	if err != nil || len(result.Response) == 0 {
+		t.Fatalf("resolve ip-routed dns response failed: response=%v err=%v", result.Response, err)
+	}
+}
+
 func setProbeVirtualRouterDNSConfigForTest(t *testing.T, config probeVirtualRouterConfig) func() {
 	t.Helper()
 	probeVirtualRouterState.mu.Lock()

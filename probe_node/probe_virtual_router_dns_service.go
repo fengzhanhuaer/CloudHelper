@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strconv"
@@ -50,6 +51,7 @@ var probeVirtualRouterDNSListen = net.Listen
 var probeVirtualRouterApplySystemDNS = applyProbeVirtualRouterSystemDNS
 var probeVirtualRouterRestoreSystemDNS = restoreProbeVirtualRouterSystemDNS
 var probeVirtualRouterDNSAfterTUNReady = ensureProbeVirtualRouterDNSRuntime
+var probeVirtualRouterDNSResolveRealPacket = resolveProbeVirtualRouterDNSRealPacket
 
 func ensureProbeVirtualRouterDNSRuntime() {
 	_ = reconcileProbeVirtualRouterDNSRuntime()
@@ -283,7 +285,7 @@ func resolveProbeVirtualRouterDNSPacket(packet []byte) (result probeVirtualRoute
 	}
 	rule, matched := currentProbeVirtualRouterRouteRuleForDomain(cleanDomain)
 	if !matched {
-		response, realIPs, err := resolveProbeVirtualRouterDNSRealPacket(packet, cleanDomain)
+		response, realIPs, err := resolveProbeVirtualRouterDNSDirectPacket(packet, cleanDomain)
 		result.Response = response
 		result.RealIPs = realIPs
 		return result, err
@@ -297,7 +299,7 @@ func resolveProbeVirtualRouterDNSPacket(packet []byte) (result probeVirtualRoute
 		trackingAction = "fake_ip"
 		trackingExitNodeID = normalizeProbeRouteNodeID(rule.ExitNodeID)
 		if qType != dnsmessage.TypeA {
-			response, realIPs, err := resolveProbeVirtualRouterDNSRealPacket(packet, cleanDomain)
+			response, realIPs, err := probeVirtualRouterDNSResolveRealPacket(packet, cleanDomain)
 			result.Response = response
 			result.RealIPs = realIPs
 			return result, err
@@ -311,11 +313,39 @@ func resolveProbeVirtualRouterDNSPacket(packet []byte) (result probeVirtualRoute
 		result.Response = buildProbeLocalDNSSuccessA(packet, item.FakeIP)
 		return result, nil
 	default:
-		response, realIPs, err := resolveProbeVirtualRouterDNSRealPacket(packet, cleanDomain)
+		response, realIPs, err := resolveProbeVirtualRouterDNSDirectPacket(packet, cleanDomain)
 		result.Response = response
 		result.RealIPs = realIPs
 		return result, err
 	}
+}
+
+func resolveProbeVirtualRouterDNSDirectPacket(packet []byte, domain string) ([]byte, []string, error) {
+	response, realIPs, err := probeVirtualRouterDNSResolveRealPacket(packet, domain)
+	if err != nil {
+		return response, realIPs, err
+	}
+	if err := ensureProbeVirtualRouterDNSDirectBypasses(realIPs); err != nil {
+		return nil, realIPs, err
+	}
+	return response, realIPs, nil
+}
+
+func ensureProbeVirtualRouterDNSDirectBypasses(realIPs []string) error {
+	if !probeVirtualRouterLocalEntryEnabled() {
+		return nil
+	}
+	var allErr error
+	for _, ipText := range filterProbeLocalIPv4StringsFromList(realIPs) {
+		if rule, ok := currentProbeVirtualRouterRouteRuleForIP(ipText); ok && sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) == "probe_exit" {
+			continue
+		}
+		target := net.JoinHostPort(ipText, "0")
+		if err := probeVirtualRouterEnsureDirectBypass(target); err != nil {
+			allErr = errors.Join(allErr, fmt.Errorf("prepare direct dns bypass for %s: %w", ipText, err))
+		}
+	}
+	return allErr
 }
 
 func resolveProbeVirtualRouterDNSRealPacket(packet []byte, domain string) ([]byte, []string, error) {
