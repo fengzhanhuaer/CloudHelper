@@ -123,7 +123,19 @@ func mngProbeNodeInstallHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	result, err := buildMngProbeSpecialExitInstallInfo(r.URL.Query().Get("node_id"), r.URL.Query().Get("mode"), controllerBaseURLFromRequest(r))
+	nodeID := r.URL.Query().Get("node_id")
+	node, ok := getProbeNodeByID(nodeID)
+	if !ok {
+		writeMngRouteResult(w, nil, fmt.Errorf("node %q not found", normalizeProbeNodeID(nodeID)))
+		return
+	}
+	var result map[string]interface{}
+	var err error
+	if normalizeProbeNodeKind(node.NodeKind) == probeNodeKindLinuxRouter {
+		result, err = buildMngProbeLinuxRouterInstallInfo(nodeID, controllerBaseURLFromRequest(r))
+	} else {
+		result, err = buildMngProbeSpecialExitInstallInfo(nodeID, r.URL.Query().Get("mode"), controllerBaseURLFromRequest(r))
+	}
 	writeMngRouteResult(w, result, err)
 }
 

@@ -26,6 +26,7 @@ type probeRouteConfigResponse struct {
 	NodeID           string                    `json:"node_id"`
 	ExpectedNodeKind string                    `json:"expected_node_kind,omitempty"`
 	SpecialExit      *probeSpecialExitSnapshot `json:"special_exit,omitempty"`
+	LinuxRouter      *probeLinuxRouterSnapshot `json:"linux_router,omitempty"`
 	VirtualRouter    probeVirtualRouterConfig  `json:"virtual_router,omitempty"`
 }
 
@@ -42,6 +43,30 @@ type probeSpecialExitRule struct {
 	RouteRuleID string   `json:"route_rule_id"`
 	Target      string   `json:"target"`
 	Entries     []string `json:"entries"`
+}
+
+type probeLinuxRouterGatewayConfig struct {
+	Enabled         bool     `json:"enabled"`
+	Interface       string   `json:"interface"`
+	GatewayAddress  string   `json:"gateway_address"`
+	UpstreamGateway string   `json:"upstream_gateway"`
+	LANCIDRs        []string `json:"lan_cidrs"`
+	DNSEnabled      bool     `json:"dns_enabled"`
+}
+
+type probeLinuxRouterLocalIPConfig struct {
+	Enabled        bool     `json:"enabled"`
+	PublishedCIDRs []string `json:"published_cidrs"`
+	AllowedNodeIDs []string `json:"allowed_node_ids"`
+}
+
+type probeLinuxRouterSnapshot struct {
+	Version      int                           `json:"version"`
+	NodeID       string                        `json:"node_id"`
+	Revision     int64                         `json:"revision"`
+	SHA256       string                        `json:"sha256"`
+	GatewayProxy probeLinuxRouterGatewayConfig `json:"gateway_proxy"`
+	LocalIPProxy probeLinuxRouterLocalIPConfig `json:"local_ip_proxy"`
 }
 
 type probeVirtualRouterConfig struct {
@@ -124,6 +149,7 @@ type probeRouteFakeIPResolveResponse struct {
 var (
 	probeRequestRouteConfig      = requestProbeRouteConfig
 	probeApplyProductRouteConfig = applyProbeProductRouteConfig
+	probeApplyLinuxRouterConfig  = applyProbeLinuxRouterRouteConfig
 	probeRequestRouteFakeIP      = requestProbeRouteFakeIP
 	probeRequestRouteFakeIPByIP  = requestProbeRouteFakeIPByIP
 )
@@ -251,10 +277,14 @@ func requestProbeRouteConfig(ctx context.Context, controllerBaseURL string, iden
 	}
 	if err := validateProbeExpectedNodeKind(payload.ExpectedNodeKind); err != nil {
 		_ = probeApplyProductRouteConfig(nil, identity.NodeID)
+		_ = probeApplyLinuxRouterConfig(nil, identity.NodeID)
 		return probeVirtualRouterConfig{}, fmt.Errorf("route config rejected: expected_node_kind=%s build_kind=%s: %w", strings.TrimSpace(payload.ExpectedNodeKind), currentProbeBuildKind(), err)
 	}
 	if err := probeApplyProductRouteConfig(payload.SpecialExit, identity.NodeID); err != nil {
 		return probeVirtualRouterConfig{}, fmt.Errorf("route config rejected: special_exit: %w", err)
+	}
+	if err := probeApplyLinuxRouterConfig(payload.LinuxRouter, identity.NodeID); err != nil {
+		return probeVirtualRouterConfig{}, fmt.Errorf("route config rejected: linux_router: %w", err)
 	}
 	return sanitizeProbeVirtualRouterConfigForCache(payload.VirtualRouter), nil
 }

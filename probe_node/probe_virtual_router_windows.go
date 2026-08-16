@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -18,10 +20,11 @@ const (
 )
 
 var probeVirtualRouterWindowsRouteState = struct {
-	mu                sync.Mutex
-	fakeRouteDef      probeRouteWindowsRouteDef
-	fakeApplied       bool
-	takeoverRouteDefs []probeRouteWindowsRouteDef
+	mu                 sync.Mutex
+	fakeRouteDef       probeRouteWindowsRouteDef
+	fakeApplied        bool
+	takeoverRouteDefs  []probeRouteWindowsRouteDef
+	publishedRouteDefs []probeRouteWindowsRouteDef
 }{}
 
 func ensureProbeVirtualRouterPlatformInterfaceIP(ip string) error {
@@ -68,13 +71,107 @@ func ensureProbeVirtualRouterWindowsRoutes(interfaceLUID uint64, ifIndex int) er
 	if err := ensureProbeVirtualRouterWindowsFakeIPRoute(interfaceLUID, ifIndex); err != nil {
 		return err
 	}
-	if !probeVirtualRouterLocalEntryEnabled() {
+	if err := ensureProbeVirtualRouterWindowsPublishedRoutes(interfaceLUID, ifIndex); err != nil {
+		return err
+	}
+	if !probeProductVRouteTakeoverEnabled() || !probeVirtualRouterLocalEntryEnabled() {
 		return cleanupProbeVirtualRouterWindowsTakeoverRoutes()
 	}
 	if err := ensureProbeVirtualRouterWindowsTakeoverRoutes(interfaceLUID, ifIndex); err != nil {
 		return err
 	}
 	cleanupProbeRouteDirectBypassForVirtualRouterRules(currentProbeVirtualRouterConfig())
+	return nil
+}
+
+func ensureProbeVirtualRouterWindowsPublishedRoutes(interfaceLUID uint64, ifIndex int) error {
+	routeDefs := buildProbeVirtualRouterWindowsPublishedRouteDefs(interfaceLUID, ifIndex)
+	probeVirtualRouterWindowsRouteState.mu.Lock()
+	oldRouteDefs := append([]probeRouteWindowsRouteDef(nil), probeVirtualRouterWindowsRouteState.publishedRouteDefs...)
+	if probeVirtualRouterWindowsRouteDefsEqual(oldRouteDefs, routeDefs) {
+		probeVirtualRouterWindowsRouteState.mu.Unlock()
+		return nil
+	}
+	probeVirtualRouterWindowsRouteState.mu.Unlock()
+	var allErr error
+	for _, oldRouteDef := range oldRouteDefs {
+		if err := deleteProbeVirtualRouterWindowsRoute(oldRouteDef); err != nil {
+			allErr = errors.Join(allErr, err)
+		}
+	}
+	for _, routeDef := range routeDefs {
+		if err := rejectProbeVirtualRouterWindowsPublishedRouteCollision(routeDef, ifIndex); err != nil {
+			allErr = errors.Join(allErr, err)
+			continue
+		}
+		if _, err := ensureProbeVirtualRouterWindowsRoute(routeDef); err != nil {
+			allErr = errors.Join(allErr, err)
+		}
+	}
+	if allErr != nil {
+		return allErr
+	}
+	probeVirtualRouterWindowsRouteState.mu.Lock()
+	probeVirtualRouterWindowsRouteState.publishedRouteDefs = append([]probeRouteWindowsRouteDef(nil), routeDefs...)
+	probeVirtualRouterWindowsRouteState.mu.Unlock()
+	return nil
+}
+
+func buildProbeVirtualRouterWindowsPublishedRouteDefs(interfaceLUID uint64, ifIndex int) []probeRouteWindowsRouteDef {
+	config := currentProbeVirtualRouterConfig()
+	seen := make(map[string]struct{})
+	out := make([]probeRouteWindowsRouteDef, 0)
+	for _, rule := range config.RouteRules {
+		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(rule.ID)), "linux-router-") || sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) != "probe_exit" {
+			continue
+		}
+		for _, entry := range rule.Entries {
+			key, value, ok := strings.Cut(strings.TrimSpace(entry), ":")
+			if !ok || (strings.ToLower(strings.TrimSpace(key)) != "cidr" && strings.ToLower(strings.TrimSpace(key)) != "ip_cidr") {
+				continue
+			}
+			prefix, err := netip.ParsePrefix(strings.TrimSpace(value))
+			if err != nil || !prefix.Addr().Is4() {
+				continue
+			}
+			prefix = prefix.Masked()
+			if _, exists := seen[prefix.String()]; exists {
+				continue
+			}
+			seen[prefix.String()] = struct{}{}
+			mask := net.IP(net.CIDRMask(prefix.Bits(), 32)).String()
+			out = append(out, probeRouteWindowsRouteDef{Prefix: prefix.Addr().String(), Mask: mask, Gateway: probeLocalTUNRouteGatewayIPv4, InterfaceLUID: interfaceLUID, IfIndex: ifIndex})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Prefix+out[i].Mask < out[j].Prefix+out[j].Mask })
+	return out
+}
+
+func rejectProbeVirtualRouterWindowsPublishedRouteCollision(routeDef probeRouteWindowsRouteDef, tunIfIndex int) error {
+	prefixLength, err := probeLocalIPv4PrefixLengthFromMask(routeDef.Mask)
+	if err != nil {
+		return err
+	}
+	candidate, err := netip.ParsePrefix(fmt.Sprintf("%s/%d", routeDef.Prefix, prefixLength))
+	if err != nil {
+		return err
+	}
+	entries, err := probeLocalListWindowsRouteEntries()
+	if err != nil {
+		return fmt.Errorf("inspect windows routes for published subnet: %w", err)
+	}
+	for _, item := range entries {
+		if item.PrefixLength == 0 || item.IfIndex == tunIfIndex {
+			continue
+		}
+		existing, parseErr := netip.ParsePrefix(fmt.Sprintf("%s/%d", item.Prefix, item.PrefixLength))
+		if parseErr != nil {
+			continue
+		}
+		if candidate.Contains(existing.Addr()) || existing.Contains(candidate.Addr()) {
+			return fmt.Errorf("published subnet %s overlaps local route %s", candidate.String(), existing.String())
+		}
+	}
 	return nil
 }
 
@@ -163,13 +260,20 @@ func cleanupProbeVirtualRouterWindowsRoutes() error {
 	fakeRouteDef := probeVirtualRouterWindowsRouteState.fakeRouteDef
 	fakeApplied := probeVirtualRouterWindowsRouteState.fakeApplied
 	takeoverRouteDefs := append([]probeRouteWindowsRouteDef(nil), probeVirtualRouterWindowsRouteState.takeoverRouteDefs...)
+	publishedRouteDefs := append([]probeRouteWindowsRouteDef(nil), probeVirtualRouterWindowsRouteState.publishedRouteDefs...)
 	probeVirtualRouterWindowsRouteState.fakeRouteDef = probeRouteWindowsRouteDef{}
 	probeVirtualRouterWindowsRouteState.fakeApplied = false
 	probeVirtualRouterWindowsRouteState.takeoverRouteDefs = nil
+	probeVirtualRouterWindowsRouteState.publishedRouteDefs = nil
 	probeVirtualRouterWindowsRouteState.mu.Unlock()
 
 	var allErr error
 	for _, routeDef := range takeoverRouteDefs {
+		if err := deleteProbeVirtualRouterWindowsRoute(routeDef); err != nil {
+			allErr = errors.Join(allErr, err)
+		}
+	}
+	for _, routeDef := range publishedRouteDefs {
 		if err := deleteProbeVirtualRouterWindowsRoute(routeDef); err != nil {
 			allErr = errors.Join(allErr, err)
 		}

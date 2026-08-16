@@ -1544,7 +1544,7 @@ func createProbeUpgradeWorkspace() (string, error) {
 }
 
 func probeUpgradeWorkspaceBaseDir() (string, error) {
-	if currentProbeBuildKind() == probeBuildKindMihomoExit {
+	if currentProbeBuildKind() != probeBuildKindNormal {
 		return resolveProbeProductWorkingPath(activeProbeProductProfile.TempDir)
 	}
 	exePath, err := os.Executable()

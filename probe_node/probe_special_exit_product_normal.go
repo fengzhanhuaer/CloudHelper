@@ -1,4 +1,4 @@
-//go:build !mihomo_exit
+//go:build !mihomo_exit && !linux_router
 
 package main
 

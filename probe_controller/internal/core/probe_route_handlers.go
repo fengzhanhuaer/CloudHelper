@@ -12,6 +12,7 @@ type probeRouteConfigResponse struct {
 	ExpectedNodeKind string                    `json:"expected_node_kind,omitempty"`
 	VirtualRouter    probeVirtualRouterConfig  `json:"virtual_router,omitempty"`
 	SpecialExit      *probeSpecialExitSnapshot `json:"special_exit,omitempty"`
+	LinuxRouter      *probeLinuxRouterSnapshot `json:"linux_router,omitempty"`
 }
 
 type probeRouteFakeIPResolveResponse struct {
@@ -48,6 +49,7 @@ func ProbeRouteConfigHandler(w http.ResponseWriter, r *http.Request) {
 	ProbeRouteConfigStore.mu.RLock()
 	virtualRouter := buildProbeVirtualRouterConfigForNodeLocked(nodeID)
 	specialExit, hasSpecialExit := findProbeSpecialExitByNodeID(ProbeRouteConfigStore.data.SpecialExits, nodeID)
+	linuxRouter, hasLinuxRouter := findProbeLinuxRouterConfig(ProbeRouteConfigStore.data.LinuxRouters, nodeID)
 	ProbeRouteConfigStore.mu.RUnlock()
 	expectedNodeKind := probeNodeKindNormal
 	if node, ok := getProbeNodeByID(nodeID); ok {
@@ -58,11 +60,21 @@ func ProbeRouteConfigHandler(w http.ResponseWriter, r *http.Request) {
 		value := probeSpecialExitSnapshotForConfig(specialExit)
 		snapshot = &value
 	}
+	var routerSnapshot *probeLinuxRouterSnapshot
+	if expectedNodeKind == probeNodeKindLinuxRouter {
+		if !hasLinuxRouter {
+			linuxRouter = defaultProbeLinuxRouterConfig(nodeID)
+			linuxRouter.SHA256 = probeLinuxRouterConfigSHA256(linuxRouter)
+		}
+		value := probeLinuxRouterSnapshotForConfig(linuxRouter)
+		routerSnapshot = &value
+	}
 	writeJSON(w, http.StatusOK, probeRouteConfigResponse{
 		NodeID:           nodeID,
 		ExpectedNodeKind: expectedNodeKind,
 		VirtualRouter:    virtualRouter,
 		SpecialExit:      snapshot,
+		LinuxRouter:      routerSnapshot,
 	})
 }
 

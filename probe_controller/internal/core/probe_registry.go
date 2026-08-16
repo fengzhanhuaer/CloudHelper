@@ -717,6 +717,9 @@ func updateProbeNodeLocked(req probeNodeUpdateRequest) (probeNodeRecord, error) 
 	if existingKind == probeNodeKindMihomoExit && system != "linux" && system != "docker" {
 		return probeNodeRecord{}, fmt.Errorf("mihomo exit node target system must be linux or docker")
 	}
+	if existingKind == probeNodeKindLinuxRouter && system != "linux" {
+		return probeNodeRecord{}, fmt.Errorf("linux router node target system must be linux")
+	}
 
 	nodes[found].NodeName = name
 	nodes[found].NodeKind = existingKind

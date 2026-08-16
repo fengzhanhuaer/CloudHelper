@@ -8,6 +8,9 @@ import (
 )
 
 func TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsAppliesTakeoverAndLocalBypassRoutes(t *testing.T) {
+	if !probeProductVRouteTakeoverEnabled() {
+		t.Skip("active product deliberately disables host takeover routes")
+	}
 	resetProbeLocalTUNInstallWindowsHooksForTest()
 	resetProbeVirtualRouterTUNDataPlaneHooksForTest()
 	resetProbeRouteWindowsStateForTest()

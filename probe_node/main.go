@@ -86,6 +86,7 @@ type probeReportPayload struct {
 	Version              string                        `json:"version,omitempty"`
 	BuildKind            string                        `json:"build_kind,omitempty"`
 	SpecialExit          probeSpecialExitRuntimeReport `json:"special_exit,omitempty"`
+	LinuxRouter          probeLinuxRouterRuntimeReport `json:"linux_router,omitempty"`
 	RelayStatus          []probeRouteRelayReportItem   `json:"relay_status,omitempty"`
 	Timestamp            string                        `json:"timestamp"`
 }
@@ -110,6 +111,25 @@ type probeSpecialExitConnectivityReport struct {
 	LatencyMS int64  `json:"latency_ms,omitempty"`
 	Error     string `json:"error,omitempty"`
 	CheckedAt string `json:"checked_at,omitempty"`
+}
+
+type probeLinuxRouterRuntimeReport struct {
+	AppliedRevision     int64    `json:"applied_revision,omitempty"`
+	AppliedSHA256       string   `json:"applied_sha256,omitempty"`
+	GatewayProxyEnabled bool     `json:"gateway_proxy_enabled"`
+	LocalIPProxyEnabled bool     `json:"local_ip_proxy_enabled"`
+	Healthy             bool     `json:"healthy"`
+	FailOpen            bool     `json:"fail_open"`
+	Interface           string   `json:"interface,omitempty"`
+	GatewayAddress      string   `json:"gateway_address,omitempty"`
+	PublishedCIDRs      []string `json:"published_cidrs,omitempty"`
+	TUNRXPackets        uint64   `json:"tun_rx_packets,omitempty"`
+	TUNRXBytes          uint64   `json:"tun_rx_bytes,omitempty"`
+	TUNTXPackets        uint64   `json:"tun_tx_packets,omitempty"`
+	TUNTXBytes          uint64   `json:"tun_tx_bytes,omitempty"`
+	LatencyMS           int64    `json:"latency_ms,omitempty"`
+	LastApplyError      string   `json:"last_apply_error,omitempty"`
+	UpdatedAt           string   `json:"updated_at,omitempty"`
 }
 
 type systemStatus struct {
@@ -275,7 +295,7 @@ func main() {
 }
 
 func initProbeNodeRuntimeLogger() func() {
-	if currentProbeBuildKind() == probeBuildKindMihomoExit {
+	if currentProbeBuildKind() != probeBuildKindNormal {
 		logDir, err := resolveProbeProductWorkingPath(activeProbeProductProfile.RuntimeLogDir)
 		if err != nil {
 			initProbeLoggerWithStderrMirror()
@@ -591,7 +611,7 @@ func resolveNodeIdentity(explicitNodeID string, explicitSecret string) (nodeIden
 }
 
 func resolveDataDir() (string, error) {
-	if currentProbeBuildKind() == probeBuildKindMihomoExit {
+	if currentProbeBuildKind() != probeBuildKindNormal {
 		if envDir := strings.TrimSpace(os.Getenv("PROBE_NODE_DATA_DIR")); envDir != "" {
 			dataDir, err := filepath.Abs(envDir)
 			if err != nil {
@@ -806,6 +826,7 @@ func sendProbeReport(stream net.Conn, encoder *json.Encoder, identity nodeIdenti
 		Version:              BuildVersion,
 		BuildKind:            currentProbeBuildKind(),
 		SpecialExit:          probeProductSpecialExitReport(),
+		LinuxRouter:          probeProductLinuxRouterReport(),
 		RelayStatus:          snapshotProbeRouteRelayReports(),
 		Timestamp:            time.Now().UTC().Format(time.RFC3339),
 	}

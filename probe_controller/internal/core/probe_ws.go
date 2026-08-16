@@ -23,6 +23,7 @@ type probeReportMessage struct {
 	Version              string                        `json:"version,omitempty"`
 	BuildKind            string                        `json:"build_kind,omitempty"`
 	SpecialExit          probeSpecialExitRuntimeReport `json:"special_exit,omitempty"`
+	LinuxRouter          probeLinuxRouterRuntimeReport `json:"linux_router,omitempty"`
 	RelayStatus          []probeRelayStatusItem        `json:"relay_status,omitempty"`
 	Timestamp            string                        `json:"timestamp,omitempty"`
 }
@@ -111,7 +112,7 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 
 			msg.NodeID = nodeID
 			updateProbeRuntimeReportWithPlatform(nodeID, msg.IPv4, msg.IPv6, msg.System, msg.Version, msg.Platform, msg.OS, msg.Arch, msg.MachineUptimeSeconds, msg.RelayStatus)
-			updateProbeRuntimeProductStatus(nodeID, msg.BuildKind, msg.SpecialExit)
+			updateProbeRuntimeProductStatus(nodeID, msg.BuildKind, msg.SpecialExit, msg.LinuxRouter)
 
 			_ = probeSession.writeJSON(probeAckMessage{
 				Type:      "ack",

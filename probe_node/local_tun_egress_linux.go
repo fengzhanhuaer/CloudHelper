@@ -317,7 +317,7 @@ func refreshProbeRouteLinuxSelectedEgress() error {
 	if err := rebindProbeRouteLinuxDirectBypasses(target); err != nil {
 		return err
 	}
-	if probeVirtualRouterLocalEntryEnabled() {
+	if probeProductVRouteTakeoverEnabled() && probeVirtualRouterLocalEntryEnabled() {
 		localIP := currentProbeVirtualRouterLocalIP()
 		if localIP != "" {
 			return ensureProbeVirtualRouterLinuxTakeoverRoutes(probeRouteLinuxTUNDeviceName(), localIP)

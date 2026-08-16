@@ -1,4 +1,4 @@
-//go:build !mihomo_exit
+//go:build !mihomo_exit && !linux_router
 
 package main
 
@@ -9,7 +9,7 @@ func TestNormalProductProfilePreservesExistingCapabilities(t *testing.T) {
 	if profile.BuildKind != probeBuildKindNormal || profile.RuntimeLogDir != "logs" || profile.UpgradeAssetPrefix != "cloudhelper-probe-node" {
 		t.Fatalf("unexpected normal profile: %+v", profile)
 	}
-	if !profile.AllowLocalTUNInstall || !profile.EnableLocalConsole || !profile.EnableLocalProxy || !profile.EnableSystemDNS || !profile.EnableSyncScheduler || !profile.EnableDDNSScheduler || !profile.EnableLocalTUNStartupRecovery || !profile.EnableVRoutePlatformInterface {
+	if !profile.AllowLocalTUNInstall || !profile.EnableLocalConsole || !profile.EnableLocalProxy || !profile.EnableSystemDNS || !profile.EnableSyncScheduler || !profile.EnableDDNSScheduler || !profile.EnableLocalTUNStartupRecovery || !profile.EnableVRoutePlatformInterface || !profile.EnableVRouteTakeoverRoutes {
 		t.Fatalf("normal profile lost an existing capability: %+v", profile)
 	}
 	if err := validateProbeExpectedNodeKind(probeBuildKindNormal); err != nil {

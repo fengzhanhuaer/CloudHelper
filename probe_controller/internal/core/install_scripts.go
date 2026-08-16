@@ -14,4 +14,7 @@ var (
 
 	//go:embed install_scripts/install_probe_exit_node_service.sh
 	probeExitNodeInstallScriptLinux string
+
+	//go:embed install_scripts/install_probe_router_service.sh
+	probeRouterInstallScriptLinux string
 )

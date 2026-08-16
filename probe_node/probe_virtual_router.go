@@ -3035,6 +3035,10 @@ func probeVirtualRouterPacketTargetsLocalDelivery(runtime *probeVirtualRouterRun
 	if probeVirtualRouterPacketTargetsLocalIP(runtime, dstIP) {
 		return true
 	}
+	if probeProductTargetsLocalDelivery(dstIP) {
+		localNodeID := currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)
+		return localNodeID != "" && (len(path) == 0 || normalizeProbeRouteNodeID(path[len(path)-1]) == localNodeID)
+	}
 	entry, ok := currentProbeVirtualRouterFakeIPEntryByIP(dstIP)
 	if !ok {
 		return false
@@ -3517,7 +3521,7 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 		return true
 	}
 	path := currentProbeVirtualRouterPathForPacket(packet, dstIP)
-	if !probeVirtualRouterLocalEntryEnabled() && !probeVirtualRouterTUNPacketAllowedWhenEntryDisabled(dstIP, path) {
+	if !probeVirtualRouterLocalEntryEnabled() && !probeVirtualRouterTUNPacketAllowedWhenEntryDisabled(dstIP, path) && !probeProductAllowsForwardedTUNPacket(packet, dstIP, path) {
 		return false
 	}
 	if len(path) < 2 && probeVirtualRouterIPInCurrentFakeCIDR(dstIP) {
@@ -3528,6 +3532,10 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 		log.Printf("probe virtual router icmp tun rx: trace_code=icmp-trace-v2 kind=%s src=%s dst=%s id=%d seq=%d local_node=%s path=%s bytes=%d", info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, currentProbeVirtualRouterLocalNodeID(), strings.Join(path, ">"), len(packet))
 	}
 	if len(path) < 2 {
+		if probeProductHandleDirectTUNPacket(packet, dstIP) {
+			recordProbeVirtualRouterRecentPacket("tun_rx", "direct_reinject", nil, packet, path, false, nil)
+			return true
+		}
 		if handled, directErr := probeVirtualRouterEnsureDirectBypassForOrdinaryTarget(packet, dstIP); handled {
 			action := "direct"
 			if directErr != nil {
@@ -6661,6 +6669,10 @@ func handleProbeVirtualRouterIPFrame(runtime *probeVirtualRouterRuntime, link *p
 	localIP := currentProbeVirtualRouterLocalIPForRuntime(runtime)
 	localMatch := probeVirtualRouterPacketTargetsLocalDelivery(runtime, dstIP, path)
 	if !localMatch && probeVirtualRouterFrameTargetsLocalFakeIP(dstIP, path, currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)) {
+		if scheduleProbeVirtualRouterFakeIPFirstPacketRecovery(runtime, packet, path) {
+			recordProbeVirtualRouterRecentPacket("frame_rx", "wait_fake_mapping", runtime, packet, path, false, nil)
+			return nil
+		}
 		err := fmt.Errorf("fake ip final-hop mapping unavailable: fake_ip=%s path=%s", dstIP, strings.Join(cleanProbeVirtualRouterPath(path), ">"))
 		scheduleProbeVirtualRouterFakeIPItemRefreshByIP(dstIP)
 		recordProbeVirtualRouterRuntimeDeliveryError(runtime, err)

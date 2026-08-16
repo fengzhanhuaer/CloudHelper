@@ -163,6 +163,45 @@ jobs:
           name: cloudhelper-probe-exit-node-linux-amd64
           path: probe_node/cloudhelper-probe-exit-node-linux-amd64
 
+  build-probe-router:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goarch: amd64
+            output: cloudhelper-probe-router-linux-amd64
+          - goarch: arm64
+            output: cloudhelper-probe-router-linux-arm64
+    steps:
+      - name: Checkout Tagged Source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          ref: v${{ needs.prepare-release.outputs.new_version }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.4'
+          cache-dependency-path: probe_node/go.sum
+
+      - name: Build Linux Router Probe (${{ matrix.goarch }})
+        working-directory: probe_node
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+          NEW_VERSION: ${{ needs.prepare-release.outputs.new_version }}
+        shell: bash
+        run: go build -tags linux_router -ldflags "-X main.BuildVersion=v${NEW_VERSION}" -o ${{ matrix.output }} .
+
+      - name: Upload Linux Router Probe Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output }}
+          path: probe_node/${{ matrix.output }}
+
   build-probe-node-docker:
     needs: prepare-release
     runs-on: ubuntu-latest
@@ -440,6 +479,7 @@ jobs:
       - build-probe-controller
       - build-probe-node
       - build-probe-exit-node
+      - build-probe-router
       - build-probe-node-docker
       - build-probe-exit-node-docker
       - build-probe-node-android
@@ -481,6 +521,18 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: cloudhelper-probe-exit-node-linux-amd64
+          path: release-assets
+
+      - name: Download Linux Router Probe Artifact (linux amd64)
+        uses: actions/download-artifact@v4
+        with:
+          name: cloudhelper-probe-router-linux-amd64
+          path: release-assets
+
+      - name: Download Linux Router Probe Artifact (linux arm64)
+        uses: actions/download-artifact@v4
+        with:
+          name: cloudhelper-probe-router-linux-arm64
           path: release-assets
 
       - name: Download Probe Node Android Artifact (arm64)
@@ -528,6 +580,8 @@ jobs:
             release-assets/cloudhelper-probe-node-linux-arm64
             release-assets/cloudhelper-probe-node-windows-amd64.exe
             release-assets/cloudhelper-probe-exit-node-linux-amd64
+            release-assets/cloudhelper-probe-router-linux-amd64
+            release-assets/cloudhelper-probe-router-linux-arm64
             release-assets/cloudhelper-probe-exit-node-manifest.json
             release-assets/mihomo-LICENSE
             release-assets/cloudhelper-probe-node-android-arm64.apk

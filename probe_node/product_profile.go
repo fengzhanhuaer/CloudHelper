@@ -8,8 +8,9 @@ import (
 )
 
 const (
-	probeBuildKindNormal     = "normal"
-	probeBuildKindMihomoExit = "mihomo_exit"
+	probeBuildKindNormal      = "normal"
+	probeBuildKindMihomoExit  = "mihomo_exit"
+	probeBuildKindLinuxRouter = "linux_router"
 )
 
 type probeProductProfile struct {
@@ -28,7 +29,9 @@ type probeProductProfile struct {
 	EnableDDNSScheduler           bool
 	EnableLocalTUNStartupRecovery bool
 	EnableVRoutePlatformInterface bool
+	EnableVRouteTakeoverRoutes    bool
 	LinuxAMD64Only                bool
+	LinuxAMD64OrARM64Only         bool
 }
 
 type probeProductUpgradeCompanion struct {
@@ -39,18 +42,54 @@ type probeProductUpgradeCompanion struct {
 
 var activeProbeProductProfile = buildProbeProductProfile()
 
+var probeProductLinuxRouterReport = func() probeLinuxRouterRuntimeReport {
+	return probeLinuxRouterRuntimeReport{}
+}
+
+var probeLinuxRouterRouteConfigApplier = func(snapshot *probeLinuxRouterSnapshot, nodeID string) error {
+	return nil
+}
+
+var probeProductAllowsForwardedTUNPacket = func(packet []byte, dstIP string, path []string) bool {
+	return false
+}
+
+var probeProductHandleDirectTUNPacket = func(packet []byte, dstIP string) bool {
+	return false
+}
+
+var probeProductTargetsLocalDelivery = func(dstIP string) bool {
+	return false
+}
+
+func applyProbeLinuxRouterRouteConfig(snapshot *probeLinuxRouterSnapshot, nodeID string) error {
+	return probeLinuxRouterRouteConfigApplier(snapshot, nodeID)
+}
+
+func probeProductVRouteTakeoverEnabled() bool {
+	return activeProbeProductProfile.EnableVRouteTakeoverRoutes
+}
+
 func currentProbeBuildKind() string {
 	return strings.TrimSpace(activeProbeProductProfile.BuildKind)
 }
 
 func validateProbeProductPlatform(goos string, goarch string) error {
-	if !activeProbeProductProfile.LinuxAMD64Only {
+	if !activeProbeProductProfile.LinuxAMD64Only && !activeProbeProductProfile.LinuxAMD64OrARM64Only {
 		return nil
 	}
-	if strings.EqualFold(strings.TrimSpace(goos), "linux") && strings.EqualFold(strings.TrimSpace(goarch), "amd64") {
+	osName := strings.ToLower(strings.TrimSpace(goos))
+	arch := strings.ToLower(strings.TrimSpace(goarch))
+	if activeProbeProductProfile.LinuxAMD64Only && osName == "linux" && arch == "amd64" {
 		return nil
 	}
-	return errors.New("mihomo exit probe supports linux amd64 only")
+	if activeProbeProductProfile.LinuxAMD64OrARM64Only && osName == "linux" && (arch == "amd64" || arch == "arm64") {
+		return nil
+	}
+	if activeProbeProductProfile.LinuxAMD64Only {
+		return errors.New("mihomo exit probe supports linux amd64 only")
+	}
+	return errors.New("linux router probe supports linux amd64 and arm64 only")
 }
 
 func validateProbeExpectedNodeKind(expected string) error {

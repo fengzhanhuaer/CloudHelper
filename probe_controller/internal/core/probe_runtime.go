@@ -33,12 +33,13 @@ type probeRuntimeStatus struct {
 	Version              string                        `json:"version,omitempty"`
 	BuildKind            string                        `json:"build_kind,omitempty"`
 	SpecialExit          probeSpecialExitRuntimeReport `json:"special_exit,omitempty"`
+	LinuxRouter          probeLinuxRouterRuntimeReport `json:"linux_router,omitempty"`
 	System               probeSystemMetrics            `json:"system"`
 	MachineUptimeSeconds int64                         `json:"machine_uptime_seconds,omitempty"`
 	RelayStatus          []probeRelayStatusItem        `json:"relay_status,omitempty"`
 }
 
-func updateProbeRuntimeProductStatus(nodeID string, buildKind string, status probeSpecialExitRuntimeReport) {
+func updateProbeRuntimeProductStatus(nodeID string, buildKind string, status probeSpecialExitRuntimeReport, routerStatus probeLinuxRouterRuntimeReport) {
 	nodeID = normalizeProbeNodeID(nodeID)
 	if nodeID == "" {
 		return
@@ -66,6 +67,16 @@ func updateProbeRuntimeProductStatus(nodeID string, buildKind string, status pro
 	}
 	status.Connectivity = connectivity
 	current.SpecialExit = status
+	routerStatus.AppliedSHA256 = strings.ToLower(strings.TrimSpace(routerStatus.AppliedSHA256))
+	routerStatus.Interface = strings.TrimSpace(routerStatus.Interface)
+	routerStatus.GatewayAddress = strings.TrimSpace(routerStatus.GatewayAddress)
+	routerStatus.PublishedCIDRs = compactStrings(routerStatus.PublishedCIDRs)
+	routerStatus.LastApplyError = strings.TrimSpace(routerStatus.LastApplyError)
+	if len(routerStatus.LastApplyError) > 512 {
+		routerStatus.LastApplyError = routerStatus.LastApplyError[:512]
+	}
+	routerStatus.UpdatedAt = strings.TrimSpace(routerStatus.UpdatedAt)
+	current.LinuxRouter = routerStatus
 	probeRuntimeStore.data[nodeID] = current
 	probeRuntimeStore.mu.Unlock()
 }

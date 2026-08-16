@@ -1,4 +1,4 @@
-//go:build !mihomo_exit
+//go:build !mihomo_exit && !linux_router
 
 package main
 
@@ -19,5 +19,6 @@ func buildProbeProductProfile() probeProductProfile {
 		EnableDDNSScheduler:           true,
 		EnableLocalTUNStartupRecovery: true,
 		EnableVRoutePlatformInterface: true,
+		EnableVRouteTakeoverRoutes:    true,
 	}
 }

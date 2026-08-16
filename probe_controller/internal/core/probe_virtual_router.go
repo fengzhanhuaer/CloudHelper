@@ -188,6 +188,7 @@ func buildProbeVirtualRouterConfigForNodeLocked(nodeID string) probeVirtualRoute
 	config = enrichProbeVirtualRouterAuthTickets(config)
 	config = enrichProbeVirtualRouterProbeIPDisplayNames(config)
 	config = scopeProbeVirtualRouterCredentialsForNode(config, nodeID)
+	config.RouteRules = appendProbeLinuxRouterPublishedRouteRules(config.RouteRules, ProbeRouteConfigStore.data.LinuxRouters, nodeID)
 	config.FakeIPLibrary = probeVirtualRouterFakeIPLibrary{}
 	if !config.Enabled {
 		config.ProbeIPs = []probeVirtualRouterProbeIP{}
@@ -195,6 +196,48 @@ func buildProbeVirtualRouterConfigForNodeLocked(nodeID string) probeVirtualRoute
 		return config
 	}
 	return config
+}
+
+func appendProbeLinuxRouterPublishedRouteRules(rules []probeVirtualRouterRouteRule, routers []probeLinuxRouterConfig, nodeID string) []probeVirtualRouterRouteRule {
+	nodeID = normalizeProbeNodeID(nodeID)
+	out := append([]probeVirtualRouterRouteRule(nil), rules...)
+	for _, router := range routers {
+		routerNodeID := normalizeProbeNodeID(router.NodeID)
+		if !router.LocalIPProxy.Enabled || routerNodeID == "" || routerNodeID == nodeID || !probeLinuxRouterNodeAllowed(router.LocalIPProxy.AllowedNodeIDs, nodeID) || !probeLinuxRouterPublishedRouteAvailable(routerNodeID) {
+			continue
+		}
+		for _, cidr := range router.LocalIPProxy.PublishedCIDRs {
+			sum := sha256.Sum256([]byte(routerNodeID + "|" + cidr))
+			out = append(out, probeVirtualRouterRouteRule{
+				ID:         "linux-router-" + routerNodeID + "-" + hex.EncodeToString(sum[:6]),
+				Name:       "旁路由 " + routerNodeID + " / " + cidr,
+				Action:     probeVirtualRouterRouteRuleActionExit,
+				ExitNodeID: routerNodeID,
+				Entries:    []string{"cidr:" + cidr},
+				Note:       "由旁路由本地IP代理自动聚合",
+				UpdatedAt:  router.UpdatedAt,
+			})
+		}
+	}
+	return normalizeProbeVirtualRouterRouteRules(out)
+}
+
+func probeLinuxRouterPublishedRouteAvailable(nodeID string) bool {
+	runtime, found := getProbeRuntime(nodeID)
+	return !found || runtime.Online
+}
+
+func probeLinuxRouterNodeAllowed(allowed []string, nodeID string) bool {
+	nodeID = normalizeProbeNodeID(nodeID)
+	if nodeID == "" {
+		return false
+	}
+	for _, raw := range allowed {
+		if normalizeProbeNodeID(raw) == nodeID {
+			return true
+		}
+	}
+	return false
 }
 
 func scopeProbeVirtualRouterCredentialsForNode(config probeVirtualRouterConfig, nodeID string) probeVirtualRouterConfig {

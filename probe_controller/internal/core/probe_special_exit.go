@@ -14,6 +14,7 @@ import (
 const (
 	probeNodeKindNormal                = "normal"
 	probeNodeKindMihomoExit            = "mihomo_exit"
+	probeNodeKindLinuxRouter           = "linux_router"
 	probeSpecialExitDirectTarget       = "DIRECT"
 	probeSpecialExitMaxCount           = 128
 	probeSpecialExitMaxRules           = 2048
@@ -89,8 +90,8 @@ type probeSpecialExitConnectivityReport struct {
 
 func normalizeProbeNodeKind(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case probeNodeKindMihomoExit:
-		return probeNodeKindMihomoExit
+	case probeNodeKindMihomoExit, probeNodeKindLinuxRouter:
+		return strings.ToLower(strings.TrimSpace(raw))
 	default:
 		return probeNodeKindNormal
 	}
