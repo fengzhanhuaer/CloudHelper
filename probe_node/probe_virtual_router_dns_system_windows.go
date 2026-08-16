@@ -26,8 +26,9 @@ type probeVirtualRouterDNSBackup struct {
 }
 
 type probeVirtualRouterPersistentDNS struct {
-	Servers   []string
-	Automatic bool
+	Servers     []string
+	DHCPServers []string
+	Automatic   bool
 }
 
 var (
@@ -53,8 +54,8 @@ func applyProbeVirtualRouterSystemDNS() error {
 	}
 	desired := []string{probeVirtualRouterDNSListenHost}
 	backup, ok := loadProbeVirtualRouterDNSBackupBestEffort()
-	if ok && strings.EqualFold(strings.TrimSpace(backup.InterfaceGUID), strings.TrimSpace(adapter.AdapterGUID)) && backup.Automatic == nil {
-		backup, err = migrateProbeVirtualRouterDNSBackupMode(backup)
+	if ok && strings.EqualFold(strings.TrimSpace(backup.InterfaceGUID), strings.TrimSpace(adapter.AdapterGUID)) {
+		backup, err = reconcileProbeVirtualRouterDNSBackupMode(backup)
 		if err != nil {
 			return err
 		}
@@ -96,9 +97,9 @@ func restoreProbeVirtualRouterSystemDNS() error {
 		if err := persistProbeVirtualRouterDNSBackup(backup); err != nil {
 			return err
 		}
-	} else if backup.Automatic == nil {
+	} else {
 		var err error
-		backup, err = migrateProbeVirtualRouterDNSBackupMode(backup)
+		backup, err = reconcileProbeVirtualRouterDNSBackupMode(backup)
 		if err != nil {
 			return err
 		}
@@ -135,13 +136,17 @@ func snapshotProbeVirtualRouterDNSBackup(adapter windowsAdapterInfo, desired []s
 	if len(servers) == 0 {
 		servers = filterProbeLocalSystemDNSUpstreamServers(persistent.Servers)
 	}
-	if len(servers) == 0 && !persistent.Automatic {
+	automatic := persistentErr == nil && persistent.Automatic
+	if persistentErr == nil && probeVirtualRouterPersistentDNSIsAppliedOverride(persistent, desired) {
+		automatic = true
+		servers = filterProbeLocalSystemDNSUpstreamServers(persistent.DHCPServers)
+	}
+	if len(servers) == 0 && !automatic {
 		if persistentErr != nil {
 			return probeVirtualRouterDNSBackup{}, persistentErr
 		}
 		return probeVirtualRouterDNSBackup{}, errors.New("original primary dns configuration is unavailable")
 	}
-	automatic := persistentErr == nil && persistent.Automatic
 	return probeVirtualRouterDNSBackup{
 		InterfaceGUID:  adapter.AdapterGUID,
 		InterfaceIndex: adapter.InterfaceIndex,
@@ -152,17 +157,34 @@ func snapshotProbeVirtualRouterDNSBackup(adapter windowsAdapterInfo, desired []s
 	}, nil
 }
 
-func migrateProbeVirtualRouterDNSBackupMode(backup probeVirtualRouterDNSBackup) (probeVirtualRouterDNSBackup, error) {
-	if backup.Automatic != nil {
+func reconcileProbeVirtualRouterDNSBackupMode(backup probeVirtualRouterDNSBackup) (probeVirtualRouterDNSBackup, error) {
+	if probeVirtualRouterDNSBackupAutomatic(backup) {
 		return backup, nil
 	}
-	automatic := false
 	persistent, err := probeVirtualRouterReadPersistentDNS(backup.InterfaceGUID)
+	if backup.Automatic != nil {
+		if err != nil || !probeVirtualRouterDNSBackupWasAutomatic(backup, persistent) {
+			return backup, nil
+		}
+		automatic := true
+		backup.Automatic = &automatic
+		if err := persistProbeVirtualRouterDNSBackup(backup); err != nil {
+			return backup, err
+		}
+		logProbeInfof("probe virtual router dns backup repaired as automatic: if_index=%d dns=%s", backup.InterfaceIndex, strings.Join(backup.DNSServers, ","))
+		return backup, nil
+	}
+
+	automatic := false
 	if err != nil {
 		logProbeWarnf("probe virtual router legacy dns backup mode detection failed; preserving static restore: if_index=%d err=%v", backup.InterfaceIndex, err)
 	} else {
-		automatic = persistent.Automatic
-		if servers := filterProbeLocalSystemDNSUpstreamServers(persistent.Servers); len(servers) > 0 {
+		automatic = persistent.Automatic || probeVirtualRouterDNSBackupWasAutomatic(backup, persistent)
+		servers := filterProbeLocalSystemDNSUpstreamServers(persistent.Servers)
+		if probeVirtualRouterPersistentDNSIsAppliedOverride(persistent, backup.AppliedDNS) {
+			servers = filterProbeLocalSystemDNSUpstreamServers(persistent.DHCPServers)
+		}
+		if len(servers) > 0 {
 			backup.DNSServers = servers
 		}
 	}
@@ -172,6 +194,19 @@ func migrateProbeVirtualRouterDNSBackupMode(backup probeVirtualRouterDNSBackup) 
 		return backup, err
 	}
 	return backup, nil
+}
+
+func probeVirtualRouterDNSBackupWasAutomatic(backup probeVirtualRouterDNSBackup, persistent probeVirtualRouterPersistentDNS) bool {
+	return len(backup.DNSServers) > 0 &&
+		probeVirtualRouterPersistentDNSIsAppliedOverride(persistent, backup.AppliedDNS) &&
+		sameProbeVirtualRouterDNSServers(backup.DNSServers, persistent.DHCPServers)
+}
+
+func probeVirtualRouterPersistentDNSIsAppliedOverride(persistent probeVirtualRouterPersistentDNS, applied []string) bool {
+	return !persistent.Automatic &&
+		len(persistent.Servers) > 0 &&
+		len(persistent.DHCPServers) > 0 &&
+		sameProbeVirtualRouterDNSServers(persistent.Servers, applied)
 }
 
 func probeVirtualRouterDNSBackupAutomatic(backup probeVirtualRouterDNSBackup) bool {
@@ -193,14 +228,14 @@ func readProbeVirtualRouterPersistentDNS(interfaceGUID string) (probeVirtualRout
 	if err != nil {
 		return probeVirtualRouterPersistentDNS{}, err
 	}
-	if len(staticServers) > 0 {
-		return probeVirtualRouterPersistentDNS{Servers: staticServers}, nil
-	}
 	dhcpServers, err := readProbeVirtualRouterDNSRegistryValue(key, "DhcpNameServer")
 	if err != nil {
 		return probeVirtualRouterPersistentDNS{}, err
 	}
-	return probeVirtualRouterPersistentDNS{Servers: dhcpServers, Automatic: true}, nil
+	if len(staticServers) > 0 {
+		return probeVirtualRouterPersistentDNS{Servers: staticServers, DHCPServers: dhcpServers}, nil
+	}
+	return probeVirtualRouterPersistentDNS{Servers: dhcpServers, DHCPServers: dhcpServers, Automatic: true}, nil
 }
 
 func readProbeVirtualRouterDNSRegistryValue(key registry.Key, name string) ([]string, error) {

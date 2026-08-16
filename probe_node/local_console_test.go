@@ -380,9 +380,11 @@ func TestProbeLocalVirtualRouterSettingsHandlerConfiguresProxy(t *testing.T) {
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
 	oldSet := probeVRouteSystemProxySet
 	oldRestore := probeVRouteSystemProxyRestore
+	oldDNSRestore := probeVirtualRouterRestoreSystemDNS
 	t.Cleanup(func() {
 		probeVRouteSystemProxySet = oldSet
 		probeVRouteSystemProxyRestore = oldRestore
+		probeVirtualRouterRestoreSystemDNS = oldDNSRestore
 	})
 	applied := make(chan [2]string, 1)
 	probeVRouteSystemProxySet = func(httpAddress string, socks5Address string) error {
@@ -390,6 +392,10 @@ func TestProbeLocalVirtualRouterSettingsHandlerConfiguresProxy(t *testing.T) {
 		return nil
 	}
 	probeVRouteSystemProxyRestore = func() error { return nil }
+	probeVirtualRouterRestoreSystemDNS = func() error {
+		t.Fatal("proxy-only settings must not change system DNS")
+		return nil
+	}
 	t.Cleanup(stopProbeVRouteProxyRuntime)
 	httpListen := reserveProbeVRouteProxyTCPAddress(t)
 	socks5Listen := reserveProbeVRouteProxyTCPUDPAddress(t)

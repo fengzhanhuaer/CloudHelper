@@ -38,7 +38,10 @@ func TestApplyProbeVirtualRouterSystemDNSRebuildsMissingAutomaticBackup(t *testi
 		}, nil
 	}
 	probeVirtualRouterReadPersistentDNS = func(string) (probeVirtualRouterPersistentDNS, error) {
-		return probeVirtualRouterPersistentDNS{Servers: []string{"172.20.10.11", "172.20.10.14"}, Automatic: true}, nil
+		return probeVirtualRouterPersistentDNS{
+			Servers:     []string{"198.18.0.2"},
+			DHCPServers: []string{"172.20.10.11", "172.20.10.14"},
+		}, nil
 	}
 	probeVirtualRouterSetInterfaceDNS = func(string, []string) error {
 		t.Fatal("already-applied DNS should not be written again")
@@ -79,7 +82,10 @@ func TestApplyProbeVirtualRouterSystemDNSMigratesLegacyAutomaticBackup(t *testin
 		}, nil
 	}
 	probeVirtualRouterReadPersistentDNS = func(string) (probeVirtualRouterPersistentDNS, error) {
-		return probeVirtualRouterPersistentDNS{Servers: []string{"172.20.10.11", "172.20.10.14"}, Automatic: true}, nil
+		return probeVirtualRouterPersistentDNS{
+			Servers:     []string{"198.18.0.2"},
+			DHCPServers: []string{"172.20.10.11", "172.20.10.14"},
+		}, nil
 	}
 	probeVirtualRouterSetInterfaceDNS = func(string, []string) error {
 		t.Fatal("already-applied DNS should not be written again")
@@ -213,7 +219,10 @@ func TestRestoreProbeVirtualRouterSystemDNSMigratesLegacyAutomaticBackup(t *test
 		t.Fatalf("persist legacy DNS backup: %v", err)
 	}
 	probeVirtualRouterReadPersistentDNS = func(string) (probeVirtualRouterPersistentDNS, error) {
-		return probeVirtualRouterPersistentDNS{Servers: []string{"172.20.10.11", "172.20.10.14"}, Automatic: true}, nil
+		return probeVirtualRouterPersistentDNS{
+			Servers:     []string{"198.18.0.2"},
+			DHCPServers: []string{"172.20.10.11", "172.20.10.14"},
+		}, nil
 	}
 	resetGUID := ""
 	probeVirtualRouterResetInterfaceDNS = func(interfaceGUID string) error {
@@ -222,6 +231,46 @@ func TestRestoreProbeVirtualRouterSystemDNSMigratesLegacyAutomaticBackup(t *test
 	}
 	probeVirtualRouterSetInterfaceDNS = func(string, []string) error {
 		t.Fatal("legacy automatic DNS backup should clear the override")
+		return nil
+	}
+
+	if err := restoreProbeVirtualRouterSystemDNS(); err != nil {
+		t.Fatalf("restoreProbeVirtualRouterSystemDNS returned error: %v", err)
+	}
+	if resetGUID != probeVirtualRouterTestDNSAdapterGUID {
+		t.Fatalf("reset interface guid=%q", resetGUID)
+	}
+}
+
+func TestRestoreProbeVirtualRouterSystemDNSRepairsMisclassifiedAutomaticBackup(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeVirtualRouterDNSSystemHooksForTest()
+	t.Cleanup(resetProbeVirtualRouterDNSSystemHooksForTest)
+
+	automatic := false
+	backup := probeVirtualRouterDNSBackup{
+		InterfaceGUID:  probeVirtualRouterTestDNSAdapterGUID,
+		InterfaceIndex: 15,
+		DNSServers:     []string{"172.20.10.11", "172.20.10.14"},
+		AppliedDNS:     []string{"198.18.0.2"},
+		Automatic:      &automatic,
+	}
+	if err := persistProbeVirtualRouterDNSBackup(backup); err != nil {
+		t.Fatalf("persist DNS backup: %v", err)
+	}
+	probeVirtualRouterReadPersistentDNS = func(string) (probeVirtualRouterPersistentDNS, error) {
+		return probeVirtualRouterPersistentDNS{
+			Servers:     []string{"198.18.0.2"},
+			DHCPServers: []string{"172.20.10.11", "172.20.10.14"},
+		}, nil
+	}
+	resetGUID := ""
+	probeVirtualRouterResetInterfaceDNS = func(interfaceGUID string) error {
+		resetGUID = interfaceGUID
+		return nil
+	}
+	probeVirtualRouterSetInterfaceDNS = func(string, []string) error {
+		t.Fatal("misclassified automatic DNS backup should clear the override")
 		return nil
 	}
 
@@ -248,6 +297,12 @@ func TestRestoreProbeVirtualRouterSystemDNSPreservesStaticBackup(t *testing.T) {
 	}
 	if err := persistProbeVirtualRouterDNSBackup(backup); err != nil {
 		t.Fatalf("persist DNS backup: %v", err)
+	}
+	probeVirtualRouterReadPersistentDNS = func(string) (probeVirtualRouterPersistentDNS, error) {
+		return probeVirtualRouterPersistentDNS{
+			Servers:     []string{"198.18.0.2"},
+			DHCPServers: []string{"172.20.10.11", "172.20.10.14"},
+		}, nil
 	}
 	var restored []string
 	probeVirtualRouterSetInterfaceDNS = func(interfaceGUID string, dnsServers []string) error {
