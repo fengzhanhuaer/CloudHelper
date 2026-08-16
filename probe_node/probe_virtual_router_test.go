@@ -3890,10 +3890,11 @@ func TestProbeVirtualRouterTransportTUNDropLogThrottleAggregatesByFlow(t *testin
 	}
 }
 
-func TestProbeVirtualRouterFinalHopFakeIPMissDropsWithoutSourceSync(t *testing.T) {
-	t.Skip("disabled: final-hop fake-ip miss edge-case test is excluded from the default regression suite")
+func TestProbeVirtualRouterFinalHopFakeIPMissRecoversFirstSYN(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
+	resetProbeVirtualRouterFakeIPRecoveryForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(resetProbeVirtualRouterFakeIPRecoveryForTest)
 
 	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
 		Enabled:    true,
@@ -3907,25 +3908,69 @@ func TestProbeVirtualRouterFinalHopFakeIPMissDropsWithoutSourceSync(t *testing.T
 		},
 	}, "19")
 
-	oldWriter := probeVirtualRouterLocalTUNPacketWriter
-	var tunWrites int
-	probeVirtualRouterLocalTUNPacketWriter = func(packet []byte) error {
-		tunWrites++
-		return nil
+	probeVirtualRouterControllerState.mu.Lock()
+	probeVirtualRouterControllerState.identity = nodeIdentity{NodeID: "19", Secret: "secret-19"}
+	probeVirtualRouterControllerState.controllerBaseURL = "https://controller.example.test"
+	probeVirtualRouterControllerState.mu.Unlock()
+
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	requestCalls := 0
+	oldRequestByIP := probeRequestRouteFakeIPByIP
+	probeRequestRouteFakeIPByIP = func(ctx context.Context, controllerBaseURL string, identity nodeIdentity, fakeIP string) (probeVirtualRouterFakeIPEntry, error) {
+		requestCalls++
+		close(requestStarted)
+		<-releaseRequest
+		return probeVirtualRouterFakeIPEntry{
+			Domain:     "api.example.com",
+			FakeIP:     fakeIP,
+			Action:     "probe_exit",
+			ExitNodeID: "19",
+			ExpiresAt:  time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+		}, nil
 	}
-	t.Cleanup(func() { probeVirtualRouterLocalTUNPacketWriter = oldWriter })
+	t.Cleanup(func() { probeRequestRouteFakeIPByIP = oldRequestByIP })
+
+	replayed := make(chan []byte, 2)
+	oldRecover := probeVirtualRouterRecoverFakeIPExitPacketHook
+	probeVirtualRouterRecoverFakeIPExitPacketHook = func(runtime *probeVirtualRouterRuntime, link *probeVirtualRouterFrameLink, packet []byte, path []string) bool {
+		if entry, ok := currentProbeVirtualRouterFakeIPEntryByIP("198.18.4.9"); !ok || entry.Domain != "api.example.com" {
+			t.Errorf("mapping must be available before replay: entry=%+v ok=%v", entry, ok)
+		}
+		replayed <- append([]byte(nil), packet...)
+		return true
+	}
+	t.Cleanup(func() { probeVirtualRouterRecoverFakeIPExitPacketHook = oldRecover })
 
 	rt := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-16-19", identity: nodeIdentity{NodeID: "19"}, peerNodeID: "16"}}
 	packet := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.18", "198.18.4.9", 49152, 443)
 	if err := handleProbeVirtualRouterIPFrame(rt, nil, packet, []string{"16", "19"}, nil); err != nil {
-		t.Fatalf("final-hop fake ip miss should be dropped without rx error: %v", err)
+		t.Fatalf("final-hop fake ip miss should queue recovery without rx error: %v", err)
 	}
-	if tunWrites != 0 {
-		t.Fatalf("final-hop fake ip miss must not be written to local TUN, writes=%d", tunWrites)
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("fake ip mapping refresh did not start")
 	}
-	items := snapshotProbeVirtualRouterRecentPackets()
-	if len(items) != 1 || items[0].Action != "drop" {
-		t.Fatalf("missing fake ip packet should be dropped, items=%+v", items)
+	if err := handleProbeVirtualRouterIPFrame(rt, nil, packet, []string{"16", "19"}, nil); err != nil {
+		t.Fatalf("retransmitted SYN should join pending recovery: %v", err)
+	}
+	close(releaseRequest)
+	select {
+	case got := <-replayed:
+		if !bytes.Equal(got, packet) {
+			t.Fatalf("replayed packet mismatch: got=%x want=%x", got, packet)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first SYN was not replayed after mapping refresh")
+	}
+	select {
+	case <-replayed:
+		t.Fatal("duplicate SYN must not be replayed twice")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if requestCalls != 1 {
+		t.Fatalf("controller mapping requests=%d, want 1", requestCalls)
 	}
 }
 

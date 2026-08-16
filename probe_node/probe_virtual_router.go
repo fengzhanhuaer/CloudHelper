@@ -6661,6 +6661,10 @@ func handleProbeVirtualRouterIPFrame(runtime *probeVirtualRouterRuntime, link *p
 	localIP := currentProbeVirtualRouterLocalIPForRuntime(runtime)
 	localMatch := probeVirtualRouterPacketTargetsLocalDelivery(runtime, dstIP, path)
 	if !localMatch && probeVirtualRouterFrameTargetsLocalFakeIP(dstIP, path, currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)) {
+		if scheduleProbeVirtualRouterFakeIPFirstPacketRecovery(runtime, packet, path) {
+			recordProbeVirtualRouterRecentPacket("frame_rx", "wait_fake_mapping", runtime, packet, path, false, nil)
+			return nil
+		}
 		err := fmt.Errorf("fake ip final-hop mapping unavailable: fake_ip=%s path=%s", dstIP, strings.Join(cleanProbeVirtualRouterPath(path), ">"))
 		scheduleProbeVirtualRouterFakeIPItemRefreshByIP(dstIP)
 		recordProbeVirtualRouterRuntimeDeliveryError(runtime, err)
