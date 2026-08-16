@@ -99,7 +99,7 @@
     .special-exit-subtab.active { color:#58a6ff; border-bottom-color:#58a6ff; }
     .special-exit-subpane[hidden] { display:none; }
     .special-exit-layout textarea { min-height:88px; }
-    .special-exit-rule-grid { display:grid; grid-template-columns:minmax(260px, 2fr) minmax(220px, 1fr); gap:12px; align-items:end; }
+    .special-exit-rule-grid { display:grid; grid-template-columns:minmax(220px, 2fr) minmax(180px, 1fr) minmax(220px, 1.2fr); gap:12px; align-items:end; }
     .special-exit-rule-grid > * { min-width:0; width:100%; box-sizing:border-box; }
     .special-exit-field { display:grid; gap:6px; color:#8b949e; font-size:12px; }
     .special-exit-field textarea, .special-exit-field select { min-width:0; width:100%; box-sizing:border-box; }
@@ -778,17 +778,39 @@
         host.innerHTML = '<div class="muted small">暂无指向当前探针的路由规则。</div>';
         return;
       }
+      const subscriptions = Array.isArray(state.specialExitLibrary.subscriptions) ? state.specialExitLibrary.subscriptions : [];
       const proxyOptions = Array.isArray(state.specialExitLibrary.proxy_options) ? state.specialExitLibrary.proxy_options : [];
-      const proxyNames = proxyOptions.map((option) => String(option.name || ''));
+      const proxyOptionsBySubscription = new Map();
+      proxyOptions.forEach((option) => {
+        const subscriptionID = String(option.subscription_id || '').trim();
+        if (!subscriptionID) return;
+        if (!proxyOptionsBySubscription.has(subscriptionID)) proxyOptionsBySubscription.set(subscriptionID, []);
+        proxyOptionsBySubscription.get(subscriptionID).push(option);
+      });
       host.innerHTML = rules.map((rule, index) => {
         const target = String(rule.target || 'DIRECT').trim() || 'DIRECT';
-        const unavailable = target !== 'DIRECT' && !proxyNames.includes(target)
-          ? `<option value="${escapeHTML(target)}" selected>${escapeHTML(target)}（不可用）</option>`
-          : '';
+        const selectedProxy = target === 'DIRECT' ? null : proxyOptions.find((option) => String(option.name || '') === target);
+        const selectedSubscriptionID = selectedProxy ? String(selectedProxy.subscription_id || '').trim() : '';
+        const selectedSubscriptionExists = subscriptions.some((subscription) => String(subscription.id || '').trim() === selectedSubscriptionID);
+        const sourceUnavailable = target !== 'DIRECT' && (!selectedSubscriptionID || !selectedSubscriptionExists);
+        const subscriptionOptions = subscriptions.map((subscription) => {
+          const subscriptionID = String(subscription.id || '').trim();
+          if (!subscriptionID) return '';
+          const name = String(subscription.name || subscriptionID);
+          const hasNodes = (proxyOptionsBySubscription.get(subscriptionID) || []).length > 0;
+          return `<option value="${escapeHTML(subscriptionID)}" ${subscriptionID === selectedSubscriptionID ? 'selected' : ''} ${hasNodes ? '' : 'disabled'}>${escapeHTML(name)}${hasNodes ? '' : '（无节点）'}</option>`;
+        }).join('');
+        const selectedNodes = proxyOptionsBySubscription.get(selectedSubscriptionID) || [];
+        const nodeOptions = target === 'DIRECT'
+          ? '<option value="">无需选择节点</option>'
+          : sourceUnavailable
+            ? `<option value="${escapeHTML(target)}" selected>${escapeHTML(target)}（不可用）</option>`
+            : selectedNodes.map((option) => { const name = String(option.name || ''); return `<option value="${escapeHTML(name)}" ${name === target ? 'selected' : ''}>${escapeHTML(name)}</option>`; }).join('');
         return `<div class="special-exit-status-item" data-special-exit-rule="${index}">
         <div class="special-exit-rule-grid">
           <div class="special-exit-rule-name">${escapeHTML(rule.name || rule.route_rule_id)}</div>
-          <label class="special-exit-field"><span>出口方式</span><select data-se-rule-target="${index}"><option value="DIRECT" ${target === 'DIRECT' ? 'selected' : ''}>直出</option>${unavailable}${proxyOptions.map((option) => { const name = String(option.name || ''); const source = String(option.subscription_name || '未标记来源'); return `<option value="${escapeHTML(name)}" ${name === target ? 'selected' : ''}>${escapeHTML(source)} / ${escapeHTML(name)}</option>`; }).join('')}</select></label>
+          <label class="special-exit-field"><span>出口方式</span><select data-se-rule-source="${index}"><option value="DIRECT" ${target === 'DIRECT' ? 'selected' : ''}>直出</option>${sourceUnavailable ? '<option value="UNAVAILABLE" selected disabled>原节点不可用</option>' : ''}${subscriptionOptions}</select></label>
+          <label class="special-exit-field"><span>节点</span><select data-se-rule-target="${index}" ${target === 'DIRECT' || sourceUnavailable ? 'disabled' : ''}>${nodeOptions}</select></label>
         </div>
       </div>`;
       }).join('');
@@ -827,14 +849,27 @@
     function bindSpecialExitRuleEvents() {
       const draft = currentSpecialExitDraft();
       if (!draft) return;
-      const setValue = (selector, field, transform) => document.querySelectorAll(selector).forEach((element) => {
-        const apply = () => {
-          const index = Number.parseInt(element.getAttribute(selector.slice(1, -1)) || '-1', 10);
-          if (index >= 0 && index < draft.rules.length) draft.rules[index][field] = transform(element);
-        };
-        element.addEventListener(element.tagName === 'TEXTAREA' || element.tagName === 'INPUT' ? 'input' : 'change', apply);
+      const proxyOptions = Array.isArray(state.specialExitLibrary.proxy_options) ? state.specialExitLibrary.proxy_options : [];
+      document.querySelectorAll('[data-se-rule-source]').forEach((element) => {
+        element.addEventListener('change', () => {
+          const index = Number.parseInt(element.getAttribute('data-se-rule-source') || '-1', 10);
+          if (index < 0 || index >= draft.rules.length) return;
+          const subscriptionID = String(element.value || '').trim();
+          if (subscriptionID === 'DIRECT') {
+            draft.rules[index].target = 'DIRECT';
+          } else {
+            const firstNode = proxyOptions.find((option) => String(option.subscription_id || '').trim() === subscriptionID && String(option.name || '').trim());
+            draft.rules[index].target = firstNode ? String(firstNode.name || '').trim() : 'DIRECT';
+          }
+          renderSpecialExitRules(draft);
+        });
       });
-      setValue('[data-se-rule-target]', 'target', (element) => String(element.value || '').trim());
+      document.querySelectorAll('[data-se-rule-target]').forEach((element) => {
+        element.addEventListener('change', () => {
+          const index = Number.parseInt(element.getAttribute('data-se-rule-target') || '-1', 10);
+          if (index >= 0 && index < draft.rules.length) draft.rules[index].target = String(element.value || '').trim();
+        });
+      });
     }
 
     function captureSpecialExitPayload() {
