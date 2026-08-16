@@ -2,9 +2,47 @@ package main
 
 import (
 	"errors"
+	"io"
 	"testing"
 	"time"
+
+	"github.com/quic-go/quic-go"
 )
+
+type probeVirtualRouterCancelTrackingH3Stream struct {
+	cancelReadCalls  int
+	cancelWriteCalls int
+	closeCalls       int
+}
+
+func (s *probeVirtualRouterCancelTrackingH3Stream) Read([]byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (s *probeVirtualRouterCancelTrackingH3Stream) Write(payload []byte) (int, error) {
+	return len(payload), nil
+}
+
+func (s *probeVirtualRouterCancelTrackingH3Stream) Close() error {
+	s.closeCalls++
+	return nil
+}
+
+func (s *probeVirtualRouterCancelTrackingH3Stream) CancelRead(quic.StreamErrorCode) {
+	s.cancelReadCalls++
+}
+
+func (s *probeVirtualRouterCancelTrackingH3Stream) CancelWrite(quic.StreamErrorCode) {
+	s.cancelWriteCalls++
+}
+
+func (s *probeVirtualRouterCancelTrackingH3Stream) SetReadDeadline(time.Time) error {
+	return nil
+}
+
+func (s *probeVirtualRouterCancelTrackingH3Stream) SetWriteDeadline(time.Time) error {
+	return nil
+}
 
 func TestProbeRouteTCPConnTuningShouldLog(t *testing.T) {
 	if probeRouteTCPConnTuningShouldLog("ok", nil, nil) {
@@ -44,5 +82,20 @@ func TestNewProbeRouteQUICConfigKeepsIdleCarriersAlive(t *testing.T) {
 	}
 	if config.MaxIncomingStreams != 7 {
 		t.Fatalf("max incoming streams=%d, want 7", config.MaxIncomingStreams)
+	}
+}
+
+func TestProbeVirtualRouterH3ConnCloseCancelsBothDirectionsOnce(t *testing.T) {
+	stream := &probeVirtualRouterCancelTrackingH3Stream{}
+	conn := &probeVirtualRouterH3Conn{stream: stream}
+
+	if err := conn.Close(); err != nil {
+		t.Fatalf("first close failed: %v", err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("second close failed: %v", err)
+	}
+	if stream.cancelReadCalls != 1 || stream.cancelWriteCalls != 1 || stream.closeCalls != 1 {
+		t.Fatalf("close calls read=%d write=%d close=%d, want 1/1/1", stream.cancelReadCalls, stream.cancelWriteCalls, stream.closeCalls)
 	}
 }

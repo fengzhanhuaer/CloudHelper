@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 )
 
@@ -97,12 +98,15 @@ type probeVirtualRouterH3Conn struct {
 		Read([]byte) (int, error)
 		Write([]byte) (int, error)
 		Close() error
+		CancelRead(quic.StreamErrorCode)
+		CancelWrite(quic.StreamErrorCode)
 		SetReadDeadline(time.Time) error
 		SetWriteDeadline(time.Time) error
 	}
-	local   net.Addr
-	remote  net.Addr
-	closeFn func() error
+	local     net.Addr
+	remote    net.Addr
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func (c *probeVirtualRouterH3Conn) Read(p []byte) (int, error) {
@@ -123,10 +127,12 @@ func (c *probeVirtualRouterH3Conn) Close() error {
 	if c == nil || c.stream == nil {
 		return nil
 	}
-	if c.closeFn != nil {
-		return c.closeFn()
-	}
-	return c.stream.Close()
+	c.closeOnce.Do(func() {
+		c.stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+		c.stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
+		c.closeErr = c.stream.Close()
+	})
+	return c.closeErr
 }
 
 func (c *probeVirtualRouterH3Conn) LocalAddr() net.Addr {
@@ -787,9 +793,6 @@ func probeVirtualRouterConnFromH3(w http.ResponseWriter, r *http.Request, label 
 		stream: stream,
 		local:  probeRouteRelayNetAddr{label: strings.TrimSpace(label)},
 		remote: probeRouteRelayNetAddr{label: strings.TrimSpace(r.RemoteAddr)},
-		closeFn: func() error {
-			return stream.Close()
-		},
 	}, true
 }
 
