@@ -152,15 +152,18 @@ func TestFetchProbeSpecialExitSubscriptionFromControllerRejectsPrivateRedirect(t
 	}
 }
 
-func TestFetchProbeSpecialExitSubscriptionFromControllerRetriesClientProfilesOnForbidden(t *testing.T) {
+func TestFetchProbeSpecialExitSubscriptionFromControllerDoesNotRetryForbidden(t *testing.T) {
 	oldLookup := probeControllerSubscriptionFetchLookupIP
 	oldHTTPDo := probeControllerSubscriptionFetchHTTPDo
 	probeControllerSubscriptionFetchLookupIP = func(context.Context, string) ([]net.IPAddr, error) {
 		return []net.IPAddr{{IP: net.ParseIP("1.1.1.1")}}, nil
 	}
-	userAgents := []string{}
+	requests := 0
 	probeControllerSubscriptionFetchHTTPDo = func(_ *http.Client, request *http.Request) (*http.Response, error) {
-		userAgents = append(userAgents, request.Header.Get("User-Agent"))
+		requests++
+		if request.Header.Get("User-Agent") != probeSubscriptionFetchUserAgent {
+			t.Fatalf("User-Agent=%q", request.Header.Get("User-Agent"))
+		}
 		if request.Header.Get("Accept") != probeSubscriptionFetchAccept {
 			t.Fatalf("Accept=%q", request.Header.Get("Accept"))
 		}
@@ -172,11 +175,11 @@ func TestFetchProbeSpecialExitSubscriptionFromControllerRetriesClientProfilesOnF
 	})
 
 	_, err := fetchProbeSpecialExitSubscriptionFromController(context.Background(), "https://subscription.example/config?token=do-not-leak")
-	if err == nil || !strings.Contains(err.Error(), "HTTP 403 after Clash/Mihomo client retries") {
+	if err == nil || !strings.Contains(err.Error(), "HTTP 403") || !strings.Contains(err.Error(), "temporarily rate-limited") {
 		t.Fatalf("forbidden error=%v", err)
 	}
-	if got, want := strings.Join(userAgents, ","), strings.Join(probeControllerSubscriptionFetchUserAgents, ","); got != want {
-		t.Fatalf("User-Agent sequence=%q want=%q", got, want)
+	if requests != 1 {
+		t.Fatalf("requests=%d want=1", requests)
 	}
 	if strings.Contains(err.Error(), "do-not-leak") || strings.Contains(err.Error(), "subscription.example") {
 		t.Fatalf("subscription URL leaked in forbidden error: %v", err)

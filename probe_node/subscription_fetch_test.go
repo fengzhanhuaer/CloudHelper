@@ -172,7 +172,7 @@ func TestFetchProbeSubscriptionContentDoesNotAddBypassWithoutTUN(t *testing.T) {
 	}
 }
 
-func TestFetchProbeSubscriptionContentRetriesClientProfilesOnForbidden(t *testing.T) {
+func TestFetchProbeSubscriptionContentDoesNotRetryForbidden(t *testing.T) {
 	oldLookup := probeSubscriptionFetchLookupIP
 	oldHTTPDo := probeSubscriptionFetchHTTPDo
 	oldEnsureBypass := probeSubscriptionFetchEnsureDirectBypass
@@ -182,9 +182,12 @@ func TestFetchProbeSubscriptionContentRetriesClientProfilesOnForbidden(t *testin
 	}
 	probeSubscriptionFetchEnsureDirectBypass = func(string) error { return nil }
 	probeSubscriptionFetchTUNRunning = func() bool { return true }
-	userAgents := []string{}
+	requests := 0
 	probeSubscriptionFetchHTTPDo = func(_ *http.Client, request *http.Request) (*http.Response, error) {
-		userAgents = append(userAgents, request.Header.Get("User-Agent"))
+		requests++
+		if request.Header.Get("User-Agent") != probeSubscriptionFetchUserAgent {
+			t.Fatalf("User-Agent=%q", request.Header.Get("User-Agent"))
+		}
 		if request.Header.Get("Accept") != probeSubscriptionFetchAccept {
 			t.Fatalf("Accept=%q", request.Header.Get("Accept"))
 		}
@@ -198,11 +201,11 @@ func TestFetchProbeSubscriptionContentRetriesClientProfilesOnForbidden(t *testin
 	})
 
 	_, err := fetchProbeSubscriptionContent(context.Background(), "https://subscription.example/config?token=do-not-leak", 1024)
-	if err == nil || !strings.Contains(err.Error(), "HTTP 403 after Clash/Mihomo client retries") {
+	if err == nil || !strings.Contains(err.Error(), "HTTP 403") || !strings.Contains(err.Error(), "temporarily rate-limited") {
 		t.Fatalf("forbidden error=%v", err)
 	}
-	if got, want := strings.Join(userAgents, ","), strings.Join(probeSubscriptionFetchUserAgents, ","); got != want {
-		t.Fatalf("User-Agent sequence=%q want=%q", got, want)
+	if requests != 1 {
+		t.Fatalf("requests=%d want=1", requests)
 	}
 	if strings.Contains(err.Error(), "do-not-leak") || strings.Contains(err.Error(), "subscription.example") {
 		t.Fatalf("subscription URL leaked in forbidden error: %v", err)

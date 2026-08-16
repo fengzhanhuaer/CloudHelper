@@ -53,12 +53,6 @@ var probeSubscriptionFetchTUNRunning = probeVirtualRouterTUNDataPlaneRunning
 var probeSubscriptionFetchContent = fetchProbeSubscriptionContent
 var probeSubscriptionFetchDo = doProbeSubscriptionFetch
 
-var probeSubscriptionFetchUserAgents = []string{
-	probeSubscriptionFetchUserAgent,
-	"mihomo/1.19.29",
-	"Clash.Meta",
-}
-
 type probeSubscriptionFetchRequestError struct {
 	message string
 }
@@ -144,7 +138,7 @@ func fetchProbeSubscriptionContent(ctx context.Context, rawURL string, maxBytes 
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
 			_ = response.Body.Close()
 			if response.StatusCode == http.StatusForbidden {
-				return nil, fmt.Errorf("subscription returned HTTP 403 after Clash/Mihomo client retries; the fetch egress may be blocked by the provider")
+				return nil, fmt.Errorf("subscription returned HTTP 403; the provider rejected or temporarily rate-limited this egress IP")
 			}
 			return nil, fmt.Errorf("subscription returned HTTP %d", response.StatusCode)
 		}
@@ -186,23 +180,17 @@ func doProbeSubscriptionFetch(ctx context.Context, target *url.URL, ips []netip.
 	}
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	defer transport.CloseIdleConnections()
-	for index, userAgent := range probeSubscriptionFetchUserAgents {
-		request, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
-		if requestErr != nil {
-			return nil, &probeSubscriptionFetchRequestError{message: "subscription request is invalid"}
-		}
-		request.Header.Set("User-Agent", userAgent)
-		request.Header.Set("Accept", probeSubscriptionFetchAccept)
-		response, requestErr := probeSubscriptionFetchHTTPDo(client, request)
-		if requestErr != nil {
-			return nil, classifyProbeSubscriptionFetchRequestError(requestErr)
-		}
-		if response.StatusCode != http.StatusForbidden || index == len(probeSubscriptionFetchUserAgents)-1 {
-			return response, nil
-		}
-		_ = response.Body.Close()
+	request, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	if requestErr != nil {
+		return nil, &probeSubscriptionFetchRequestError{message: "subscription request is invalid"}
 	}
-	return nil, &probeSubscriptionFetchRequestError{message: "subscription request failed"}
+	request.Header.Set("User-Agent", probeSubscriptionFetchUserAgent)
+	request.Header.Set("Accept", probeSubscriptionFetchAccept)
+	response, requestErr := probeSubscriptionFetchHTTPDo(client, request)
+	if requestErr != nil {
+		return nil, classifyProbeSubscriptionFetchRequestError(requestErr)
+	}
+	return response, nil
 }
 
 func prepareProbeSubscriptionFetchDialAddresses(ips []netip.Addr, port string) ([]string, error) {
