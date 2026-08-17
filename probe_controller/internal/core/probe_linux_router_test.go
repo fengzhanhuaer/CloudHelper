@@ -107,8 +107,11 @@ func TestBuildMngProbeLinuxRouterInstallInfoSupportsTwoArchitectures(t *testing.
 		t.Fatalf("architectures = %#v", info["architectures"])
 	}
 	command := info["command"].(string)
-	if !strings.Contains(command, "/api/probe/proxy/probe-router/install-script") || !strings.HasSuffix(command, " sh") {
+	if !strings.Contains(command, "/api/probe/proxy/probe-router/install-script") || !strings.Contains(command, "command -v curl") || !strings.Contains(command, "wget -qO-") || !strings.HasSuffix(command, " sh") {
 		t.Fatalf("unexpected command: %s", command)
+	}
+	if strings.Contains(command, "sudo") {
+		t.Fatalf("clean Alpine install command must not require sudo: %s", command)
 	}
 }
 
@@ -126,7 +129,10 @@ func TestMngPagesExposeLinuxRouterWorkflow(t *testing.T) {
 }
 
 func TestLinuxRouterInstallerIsAlpineOpenRCAndDualArchitecture(t *testing.T) {
-	for _, marker := range []string{"command -v apk", "command -v rc-service", "x86_64", "aarch64|arm64", "cloudhelper-probe-router-linux-${GOARCH}", "/opt/cloudhelper/probe_router", "--upgrade-verify-build-kind=linux_router", "rc-update add", "PROBE_ROUTER_WEB_LISTEN", "0.0.0.0:18080", "probe_local_setup_token"} {
+	if strings.Contains(probeRouterInstallScriptLinux, "\r") {
+		t.Fatal("router installer must use LF line endings for Alpine /bin/sh")
+	}
+	for _, marker := range []string{"command -v apk", "apk add --no-cache", "kmod", "rc-service rc-update ip nft sysctl", "command -v \"${required_command}\"", "modprobe tun", "/dev/net/tun", "ip tuntap add", "x86_64", "aarch64|arm64", "cloudhelper-probe-router-linux-${GOARCH}", "PROBE_ROUTER_PROGRAM_URL", "/opt/cloudhelper/probe_router", "--upgrade-verify-build-kind=linux_router", "rc-update add", "PROBE_ROUTER_WEB_LISTEN", "0.0.0.0:18080", "curl -fsS --noproxy", "/local/router", "probe_local_setup_token"} {
 		if !strings.Contains(probeRouterInstallScriptLinux, marker) {
 			t.Fatalf("router installer missing %q", marker)
 		}

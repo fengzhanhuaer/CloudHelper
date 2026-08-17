@@ -6,6 +6,7 @@ RELEASE_TAG="${RELEASE_TAG:-latest}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/cloudhelper/probe_router}"
 SERVICE_NAME="${SERVICE_NAME:-probe_router}"
 PROBE_ROUTER_WEB_LISTEN="${PROBE_ROUTER_WEB_LISTEN:-0.0.0.0:18080}"
+PROBE_ROUTER_PROGRAM_URL="${PROBE_ROUTER_PROGRAM_URL:-}"
 
 log() { echo "[cloudhelper-probe-router] $*"; }
 die() { echo "[cloudhelper-probe-router][ERROR] $*" >&2; exit 1; }
@@ -13,7 +14,6 @@ die() { echo "[cloudhelper-probe-router][ERROR] $*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "please run as root"
 [ "$(uname -s)" = "Linux" ] || die "probe_router supports Linux only"
 command -v apk >/dev/null 2>&1 || die "probe_router native installation requires Alpine Linux"
-command -v rc-service >/dev/null 2>&1 || die "OpenRC is required"
 [ -n "${PROBE_NODE_ID:-}" ] || die "PROBE_NODE_ID is required"
 [ -n "${PROBE_NODE_SECRET:-}" ] || die "PROBE_NODE_SECRET is required"
 case "${PROBE_CONTROLLER_URL:-}" in https://*) ;; *) die "PROBE_CONTROLLER_URL must use HTTPS" ;; esac
@@ -25,15 +25,48 @@ case "$(uname -m)" in
 esac
 PROGRAM_ASSET="cloudhelper-probe-router-linux-${GOARCH}"
 
-apk add --no-cache ca-certificates curl iproute2 nftables openrc
+log "installing Alpine runtime dependencies"
+apk add --no-cache ca-certificates curl iproute2 kmod nftables openrc
 update-ca-certificates >/dev/null 2>&1 || true
+for required_command in rc-service rc-update ip nft sysctl; do
+  command -v "${required_command}" >/dev/null 2>&1 || die "required command is unavailable after dependency installation: ${required_command}"
+done
+
+ensure_tun_support() {
+  mkdir -p /dev/net
+  if command -v modprobe >/dev/null 2>&1 && modprobe tun >/dev/null 2>&1; then
+    touch /etc/modules
+    if ! grep -Eq '^[[:space:]]*tun([[:space:]]|$)' /etc/modules; then
+      printf '%s\n' tun >> /etc/modules
+    fi
+    if [ -x /etc/init.d/modules ]; then
+      rc-update add modules boot >/dev/null 2>&1 || true
+    fi
+  fi
+  if [ ! -c /dev/net/tun ] && grep -Eq '(^|[[:space:]])tun$' /proc/misc 2>/dev/null; then
+    mknod /dev/net/tun c 10 200
+    chmod 0600 /dev/net/tun
+  fi
+  [ -c /dev/net/tun ] || die "/dev/net/tun is unavailable; install a kernel with TUN support"
+
+  tun_probe_dev="chp$$"
+  ip link delete dev "${tun_probe_dev}" >/dev/null 2>&1 || true
+  if ! ip tuntap add dev "${tun_probe_dev}" mode tun; then
+    die "the kernel rejected TUN device creation"
+  fi
+  ip link delete dev "${tun_probe_dev}" >/dev/null 2>&1 || die "failed to remove temporary TUN device ${tun_probe_dev}"
+}
+
+ensure_tun_support
 mkdir -p "${INSTALL_DIR}/data" "${INSTALL_DIR}/log" "${INSTALL_DIR}/temp"
 chmod 0700 "${INSTALL_DIR}/data"
 work_dir="$(mktemp -d "${INSTALL_DIR}/temp/install.XXXXXX")"
 cleanup() { rm -rf "${work_dir}"; }
 trap cleanup EXIT INT TERM
 
-if [ "${RELEASE_TAG}" = "latest" ]; then
+if [ -n "${PROBE_ROUTER_PROGRAM_URL}" ]; then
+  program_url="${PROBE_ROUTER_PROGRAM_URL}"
+elif [ "${RELEASE_TAG}" = "latest" ]; then
   program_url="https://github.com/${RELEASE_REPO}/releases/latest/download/${PROGRAM_ASSET}"
 else
   program_url="https://github.com/${RELEASE_REPO}/releases/download/${RELEASE_TAG}/${PROGRAM_ASSET}"
@@ -100,6 +133,25 @@ chmod 0755 "/etc/init.d/${SERVICE_NAME}"
 if ! rc-update add "${SERVICE_NAME}" default >/dev/null 2>&1 || ! rc-service "${SERVICE_NAME}" restart; then
   rollback
   die "OpenRC service failed to start"
+fi
+
+health_host="${PROBE_ROUTER_WEB_LISTEN%:*}"
+health_port="${PROBE_ROUTER_WEB_LISTEN##*:}"
+[ "${health_host}" = "0.0.0.0" ] && health_host="127.0.0.1"
+service_ready=0
+attempt=0
+while [ "${attempt}" -lt 15 ]; do
+  if rc-service "${SERVICE_NAME}" status >/dev/null 2>&1 && curl -fsS --noproxy '*' "http://${health_host}:${health_port}/local/router" >/dev/null 2>&1; then
+    service_ready=1
+    break
+  fi
+  attempt=$((attempt + 1))
+  sleep 1
+done
+if [ "${service_ready}" -ne 1 ]; then
+  tail -n 50 "${INSTALL_DIR}/log/openrc.log" >&2 2>/dev/null || true
+  rollback
+  die "probe_router did not become healthy at http://${health_host}:${health_port}/local/router"
 fi
 log "installed ${PROGRAM_ASSET} at ${INSTALL_DIR}"
 log "local rescue web listens on http://${PROBE_ROUTER_WEB_LISTEN} (private IPv4 clients and IP hosts only)"
