@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CloudHelper 旁路由</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f4;
+      --surface: #ffffff;
+      --text: #17211b;
+      --muted: #647069;
+      --line: #d8ded9;
+      --green: #18794e;
+      --green-soft: #e6f4ec;
+      --amber: #946200;
+      --amber-soft: #fff4d6;
+      --red: #b42318;
+      --red-soft: #feeceb;
+      --ink: #27312b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    }
+    button, input, textarea { font: inherit; letter-spacing: 0; }
+    button { cursor: pointer; }
+    button:disabled { cursor: wait; opacity: .6; }
+    .hidden { display: none !important; }
+    .shell { width: min(1120px, calc(100% - 32px)); margin: 0 auto; }
+    .topbar { background: var(--surface); border-bottom: 1px solid var(--line); }
+    .topbar-inner {
+      min-height: 72px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .brand-mark {
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      border-radius: 6px;
+      background: var(--ink);
+      color: #fff;
+      font: 700 13px/1 Consolas, monospace;
+      flex: 0 0 auto;
+    }
+    h1 { margin: 0; font-size: 20px; font-weight: 700; }
+    .subline { margin-top: 3px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .btn {
+      min-height: 36px;
+      padding: 7px 12px;
+      border: 1px solid #bfc8c1;
+      border-radius: 5px;
+      background: var(--surface);
+      color: var(--text);
+      font-weight: 600;
+    }
+    .btn:hover { border-color: #839087; background: #f8faf8; }
+    .btn.primary { background: var(--green); border-color: var(--green); color: #fff; }
+    .btn.danger { background: var(--red-soft); border-color: #efb5b0; color: var(--red); }
+    .btn.warn { background: var(--amber-soft); border-color: #e7cf8d; color: #765000; }
+    .notice { margin: 18px 0 0; padding: 11px 14px; border-left: 4px solid var(--amber); background: var(--amber-soft); color: #684800; }
+    .notice.error { border-color: var(--red); background: var(--red-soft); color: var(--red); }
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin: 20px 0 0;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .status-item { min-height: 92px; padding: 16px; border-right: 1px solid var(--line); }
+    .status-item:last-child { border-right: 0; }
+    .label { color: var(--muted); font-size: 12px; }
+    .value { margin-top: 8px; font-size: 18px; font-weight: 700; overflow-wrap: anywhere; }
+    .ok { color: var(--green); }
+    .warn-text { color: var(--amber); }
+    .error-text { color: var(--red); }
+    .section { padding: 24px 0; border-bottom: 1px solid var(--line); }
+    .section-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 18px; }
+    h2 { margin: 0; font-size: 17px; }
+    .section-meta { color: var(--muted); font-size: 12px; text-align: right; overflow-wrap: anywhere; }
+    .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 20px; }
+    .field { min-width: 0; }
+    .field.full { grid-column: 1 / -1; }
+    label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
+    input[type="text"], input[type="password"], textarea {
+      width: 100%;
+      border: 1px solid #bfc8c1;
+      border-radius: 5px;
+      background: var(--surface);
+      color: var(--text);
+      padding: 9px 10px;
+      outline: none;
+    }
+    input:focus, textarea:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(24, 121, 78, .12); }
+    textarea { min-height: 82px; resize: vertical; font-family: Consolas, monospace; }
+    .switches { display: flex; gap: 24px; flex-wrap: wrap; align-items: center; min-height: 38px; }
+    .check { display: inline-flex; align-items: center; gap: 8px; color: var(--text); font-size: 14px; font-weight: 600; }
+    .check input { width: 18px; height: 18px; accent-color: var(--green); }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
+    .runtime-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); }
+    .runtime-item { min-height: 78px; background: var(--surface); padding: 13px; }
+    .runtime-item .value { font-size: 15px; font-family: Consolas, monospace; }
+    pre {
+      margin: 0;
+      min-height: 220px;
+      max-height: 420px;
+      overflow: auto;
+      padding: 14px;
+      border: 1px solid #2f3933;
+      border-radius: 5px;
+      background: #17211b;
+      color: #dce5df;
+      font: 12px/1.55 Consolas, monospace;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .auth-wrap { width: min(440px, calc(100% - 32px)); margin: 8vh auto; }
+    .auth-panel { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 24px; }
+    .auth-panel h1 { margin-bottom: 6px; }
+    .auth-panel .field { margin-top: 14px; }
+    .auth-panel .btn { width: 100%; margin-top: 18px; }
+    .message { min-height: 20px; margin: 12px 0 0; color: var(--muted); font-size: 13px; }
+    @media (max-width: 760px) {
+      .shell { width: min(100% - 24px, 1120px); }
+      .topbar-inner { align-items: flex-start; flex-direction: column; padding: 14px 0; }
+      .status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .status-item:nth-child(2) { border-right: 0; }
+      .status-item:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+      .form-grid, .runtime-grid { grid-template-columns: 1fr; }
+      .field.full { grid-column: auto; }
+      .section-head { flex-direction: column; }
+      .section-meta { text-align: left; }
+    }
+    @media (max-width: 420px) {
+      .status-grid { grid-template-columns: 1fr; }
+      .status-item { border-right: 0; border-bottom: 1px solid var(--line); }
+      .status-item:last-child { border-bottom: 0; }
+      .toolbar, .actions { width: 100%; }
+      .toolbar .btn, .actions .btn { flex: 1 1 auto; }
+    }
+  </style>
+</head>
+<body>
+  <main id="authView" class="auth-wrap hidden">
+    <section class="auth-panel">
+      <div class="brand">
+        <div class="brand-mark">CH</div>
+        <div>
+          <h1>CloudHelper 旁路由</h1>
+          <div class="subline">本地管理</div>
+        </div>
+      </div>
+      <form id="registerForm" class="hidden">
+        <div class="field"><label for="setupToken">初始化令牌</label><input id="setupToken" type="password" autocomplete="off" required /></div>
+        <div class="field"><label for="registerUsername">用户名</label><input id="registerUsername" type="text" maxlength="64" required /></div>
+        <div class="field"><label for="registerPassword">密码</label><input id="registerPassword" type="password" minlength="8" maxlength="128" required /></div>
+        <div class="field"><label for="registerConfirm">确认密码</label><input id="registerConfirm" type="password" minlength="8" maxlength="128" required /></div>
+        <button class="btn primary" type="submit">创建本地账号</button>
+      </form>
+      <form id="loginForm" class="hidden">
+        <div class="field"><label for="loginUsername">用户名</label><input id="loginUsername" type="text" maxlength="64" required /></div>
+        <div class="field"><label for="loginPassword">密码</label><input id="loginPassword" type="password" maxlength="128" required /></div>
+        <button class="btn primary" type="submit">登录</button>
+      </form>
+      <p id="authMessage" class="message"></p>
+    </section>
+  </main>
+
+  <div id="appView" class="hidden">
+    <header class="topbar">
+      <div class="shell topbar-inner">
+        <div class="brand">
+          <div class="brand-mark">CH</div>
+          <div>
+            <h1>CloudHelper 旁路由</h1>
+            <div id="nodeSummary" class="subline">--</div>
+          </div>
+        </div>
+        <div class="toolbar">
+          <button id="refreshBtn" class="btn" type="button">刷新</button>
+          <button id="logoutBtn" class="btn" type="button">退出</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="shell">
+      <div id="notice" class="notice hidden"></div>
+      <section class="status-grid" aria-label="运行状态">
+        <div class="status-item"><div class="label">主控连接</div><div id="controllerStatus" class="value">--</div></div>
+        <div class="status-item"><div class="label">数据面</div><div id="dataPlaneStatus" class="value">--</div></div>
+        <div class="status-item"><div class="label">网关代理</div><div id="gatewayStatus" class="value">--</div></div>
+        <div class="status-item"><div class="label">本地 IP 代理</div><div id="localIPStatus" class="value">--</div></div>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <h2>网关配置</h2>
+          <div id="configSource" class="section-meta">--</div>
+        </div>
+        <form id="configForm">
+          <div class="form-grid">
+            <div class="field full switches">
+              <label class="check"><input id="gatewayEnabled" type="checkbox" />网关代理</label>
+              <label class="check"><input id="dnsEnabled" type="checkbox" />LAN DNS</label>
+            </div>
+            <div class="field"><label for="interfaceName">LAN 网卡</label><input id="interfaceName" type="text" maxlength="32" /></div>
+            <div class="field"><label for="gatewayAddress">网关地址</label><input id="gatewayAddress" type="text" maxlength="32" /></div>
+            <div class="field"><label for="upstreamGateway">上游网关</label><input id="upstreamGateway" type="text" maxlength="32" /></div>
+            <div class="field full"><label for="lanCIDRs">LAN 网段</label><textarea id="lanCIDRs"></textarea></div>
+          </div>
+          <div class="actions">
+            <button id="saveBtn" class="btn primary" type="submit">保存并应用</button>
+            <button id="failOpenBtn" class="btn warn" type="button">故障直通</button>
+            <button id="resumeBtn" class="btn danger hidden" type="button">恢复数据面</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="section">
+        <div class="section-head"><h2>运行数据</h2><div id="updatedAt" class="section-meta">--</div></div>
+        <div class="runtime-grid">
+          <div class="runtime-item"><div class="label">应用修订</div><div id="revision" class="value">--</div></div>
+          <div class="runtime-item"><div class="label">运行网卡</div><div id="runtimeInterface" class="value">--</div></div>
+          <div class="runtime-item"><div class="label">网关地址</div><div id="runtimeGateway" class="value">--</div></div>
+          <div class="runtime-item"><div class="label">TUN 接收</div><div id="tunRx" class="value">--</div></div>
+          <div class="runtime-item"><div class="label">TUN 发送</div><div id="tunTx" class="value">--</div></div>
+          <div class="runtime-item"><div class="label">最优邻接延迟</div><div id="latency" class="value">--</div></div>
+          <div class="runtime-item"><div class="label">发布网段</div><div id="publishedCIDRs" class="value">--</div></div>
+          <div class="runtime-item"><div class="label">本地 Web</div><div id="listenAddr" class="value">--</div></div>
+          <div class="runtime-item"><div class="label">运行时间</div><div id="uptime" class="value">--</div></div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head"><h2>运行日志</h2><button id="logsBtn" class="btn" type="button">刷新日志</button></div>
+        <pre id="logs">--</pre>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let currentStatus = null;
+
+    async function requestJSON(url, options = {}) {
+      const response = await fetch(url, {
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+      });
+      let payload = {};
+      try { payload = await response.json(); } catch (_) { payload = {}; }
+      if (!response.ok) {
+        const error = new Error(payload.error || ('HTTP ' + response.status));
+        error.status = response.status;
+        throw error;
+      }
+      return payload;
+    }
+
+    function setAuthMessage(text, failed) {
+      $('authMessage').textContent = text || '';
+      $('authMessage').className = 'message' + (failed ? ' error-text' : '');
+    }
+
+    function showAuth(registered) {
+      $('appView').classList.add('hidden');
+      $('authView').classList.remove('hidden');
+      $('registerForm').classList.toggle('hidden', registered);
+      $('loginForm').classList.toggle('hidden', !registered);
+    }
+
+    function showApp() {
+      $('authView').classList.add('hidden');
+      $('appView').classList.remove('hidden');
+    }
+
+    function formatBytes(value) {
+      const bytes = Number(value || 0);
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KiB';
+      if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MiB';
+      return (bytes / 1024 / 1024 / 1024).toFixed(1) + ' GiB';
+    }
+
+    function formatDuration(seconds) {
+      const value = Math.max(0, Number(seconds || 0));
+      const days = Math.floor(value / 86400);
+      const hours = Math.floor((value % 86400) / 3600);
+      const minutes = Math.floor((value % 3600) / 60);
+      return (days ? days + ' 天 ' : '') + hours + ' 小时 ' + minutes + ' 分';
+    }
+
+    function setState(id, text, kind) {
+      const element = $(id);
+      element.textContent = text;
+      element.className = 'value' + (kind ? ' ' + kind : '');
+    }
+
+    function renderStatus(data) {
+      currentStatus = data;
+      const config = data.config || {};
+      const gateway = config.gateway_proxy || {};
+      const localIP = config.local_ip_proxy || {};
+      const runtime = data.runtime || {};
+      $('nodeSummary').textContent = '#' + (data.node_id || '-') + ' · ' + (data.hostname || '-') + ' · ' + (data.architecture || '-') + ' · ' + (data.version || 'dev');
+      setState('controllerStatus', data.controller_connected ? '已连接' : '未连接', data.controller_connected ? 'ok' : 'warn-text');
+      setState('dataPlaneStatus', data.manual_fail_open || runtime.fail_open ? '故障直通' : (runtime.healthy ? '正常' : '异常'), data.manual_fail_open || runtime.fail_open ? 'warn-text' : (runtime.healthy ? 'ok' : 'error-text'));
+      setState('gatewayStatus', gateway.enabled ? '已启用' : '已关闭', gateway.enabled ? 'ok' : '');
+      setState('localIPStatus', localIP.enabled ? '已启用' : '已关闭', localIP.enabled ? 'ok' : '');
+      $('configSource').textContent = data.local_override ? '本地临时配置' : '主控配置';
+      $('gatewayEnabled').checked = gateway.enabled === true;
+      $('dnsEnabled').checked = gateway.dns_enabled !== false;
+      $('interfaceName').value = gateway.interface || 'auto';
+      $('gatewayAddress').value = gateway.gateway_address || '192.168.1.150/24';
+      $('upstreamGateway').value = gateway.upstream_gateway || '192.168.1.1';
+      $('lanCIDRs').value = (gateway.lan_cidrs || ['192.168.1.0/24']).join('\n');
+      $('revision').textContent = 'r' + Number(runtime.applied_revision || config.revision || 0);
+      $('runtimeInterface').textContent = runtime.interface || '-';
+      $('runtimeGateway').textContent = runtime.gateway_address || gateway.gateway_address || '-';
+      $('tunRx').textContent = Number(runtime.tun_rx_packets || 0) + ' 包 / ' + formatBytes(runtime.tun_rx_bytes);
+      $('tunTx').textContent = Number(runtime.tun_tx_packets || 0) + ' 包 / ' + formatBytes(runtime.tun_tx_bytes);
+      $('latency').textContent = Number(runtime.latency_ms || 0) > 0 ? runtime.latency_ms + ' ms' : '-';
+      $('publishedCIDRs').textContent = (runtime.published_cidrs || localIP.published_cidrs || []).join(', ') || '-';
+      $('listenAddr').textContent = data.listen_addr || '0.0.0.0:18080';
+      $('uptime').textContent = formatDuration(data.uptime_seconds);
+      $('updatedAt').textContent = runtime.updated_at ? new Date(runtime.updated_at).toLocaleString() : '-';
+      $('failOpenBtn').classList.toggle('hidden', data.manual_fail_open === true);
+      $('resumeBtn').classList.toggle('hidden', data.manual_fail_open !== true);
+      const error = runtime.last_apply_error || '';
+      const notice = $('notice');
+      if (error) {
+        notice.textContent = error;
+        notice.className = 'notice error';
+      } else if (data.manual_fail_open) {
+        notice.textContent = '故障直通已启用';
+        notice.className = 'notice';
+      } else if (data.local_override) {
+        notice.textContent = '当前使用本地临时配置';
+        notice.className = 'notice';
+      } else {
+        notice.textContent = '';
+        notice.className = 'notice hidden';
+      }
+    }
+
+    async function loadStatus() {
+      try {
+        const data = await requestJSON('/local/router/api/status');
+        showApp();
+        renderStatus(data);
+        return true;
+      } catch (error) {
+        if (error.status === 401) {
+          const bootstrap = await requestJSON('/local/api/auth/bootstrap');
+          showAuth(bootstrap.registered === true);
+          return false;
+        }
+        throw error;
+      }
+    }
+
+    async function loadLogs() {
+      const data = await requestJSON('/local/router/api/logs?lines=200');
+      $('logs').textContent = data.content || '--';
+    }
+
+    function showActionError(error) {
+      $('notice').textContent = error.message;
+      $('notice').className = 'notice error';
+    }
+
+    $('registerForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      setAuthMessage('');
+      try {
+        await requestJSON('/local/api/auth/register', { method: 'POST', body: JSON.stringify({
+          setup_token: $('setupToken').value,
+          username: $('registerUsername').value,
+          password: $('registerPassword').value,
+          confirm_password: $('registerConfirm').value,
+        }) });
+        $('loginUsername').value = $('registerUsername').value;
+        showAuth(true);
+      } catch (error) { setAuthMessage(error.message, true); }
+    });
+
+    $('loginForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      setAuthMessage('');
+      try {
+        await requestJSON('/local/api/auth/login', { method: 'POST', body: JSON.stringify({ username: $('loginUsername').value, password: $('loginPassword').value }) });
+        await loadStatus();
+        await loadLogs();
+      } catch (error) { setAuthMessage(error.message, true); }
+    });
+
+    $('configForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!window.confirm('保存并应用本地网关配置？')) return;
+      $('saveBtn').disabled = true;
+      try {
+        await requestJSON('/local/router/api/config', { method: 'POST', body: JSON.stringify({
+          enabled: $('gatewayEnabled').checked,
+          dns_enabled: $('dnsEnabled').checked,
+          interface: $('interfaceName').value.trim(),
+          gateway_address: $('gatewayAddress').value.trim(),
+          upstream_gateway: $('upstreamGateway').value.trim(),
+          lan_cidrs: $('lanCIDRs').value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
+        }) });
+        await loadStatus();
+      } catch (error) {
+        $('notice').textContent = error.message;
+        $('notice').className = 'notice error';
+      } finally { $('saveBtn').disabled = false; }
+    });
+
+    $('failOpenBtn').addEventListener('click', async () => {
+      if (!window.confirm('立即进入故障直通？')) return;
+      try {
+        await requestJSON('/local/router/api/fail-open', { method: 'POST', body: '{}' });
+        await loadStatus();
+      } catch (error) { showActionError(error); }
+    });
+    $('resumeBtn').addEventListener('click', async () => {
+      if (!window.confirm('恢复旁路由数据面？')) return;
+      try {
+        await requestJSON('/local/router/api/resume', { method: 'POST', body: '{}' });
+        await loadStatus();
+      } catch (error) { showActionError(error); }
+    });
+    $('refreshBtn').addEventListener('click', async () => { try { await loadStatus(); } catch (error) { showActionError(error); } });
+    $('logsBtn').addEventListener('click', async () => { try { await loadLogs(); } catch (error) { showActionError(error); } });
+    $('logoutBtn').addEventListener('click', async () => {
+      try { await requestJSON('/local/api/auth/logout', { method: 'POST', body: '{}' }); } catch (_) {}
+      showAuth(true);
+    });
+
+    loadStatus().then((authenticated) => authenticated ? loadLogs() : null).catch((error) => {
+      $('authView').classList.remove('hidden');
+      setAuthMessage(error.message, true);
+    });
+    setInterval(() => {
+      if (!currentStatus || document.hidden || $('configForm').contains(document.activeElement)) return;
+      loadStatus().catch(() => {});
+    }, 5000);
+  </script>
+</body>
+</html>

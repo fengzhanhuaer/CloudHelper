@@ -35,13 +35,27 @@ var (
 )
 
 var probeLinuxRouterRuntimeState = struct {
-	mu      sync.RWMutex
-	nodeID  string
-	desired *probeLinuxRouterSnapshot
-	report  probeLinuxRouterRuntimeReport
-	stopCh  chan struct{}
-	running bool
+	mu             sync.RWMutex
+	nodeID         string
+	desired        *probeLinuxRouterSnapshot
+	report         probeLinuxRouterRuntimeReport
+	stopCh         chan struct{}
+	running        bool
+	manualFailOpen bool
+	localOverride  bool
 }{}
+
+type probeLinuxRouterLocalConfigError struct {
+	err error
+}
+
+func (e *probeLinuxRouterLocalConfigError) Error() string {
+	return e.err.Error()
+}
+
+func (e *probeLinuxRouterLocalConfigError) Unwrap() error {
+	return e.err
+}
 
 func init() {
 	probeLinuxRouterRouteConfigApplier = applyProbeLinuxRouterSnapshot
@@ -103,6 +117,8 @@ func applyProbeLinuxRouterSnapshot(snapshot *probeLinuxRouterSnapshot, nodeID st
 		probeLinuxRouterRuntimeState.mu.Lock()
 		previous := cloneProbeLinuxRouterSnapshot(probeLinuxRouterRuntimeState.desired)
 		probeLinuxRouterRuntimeState.desired = nil
+		probeLinuxRouterRuntimeState.manualFailOpen = false
+		probeLinuxRouterRuntimeState.localOverride = false
 		probeLinuxRouterRuntimeState.mu.Unlock()
 		_ = removeProbeLinuxRouterSnapshot()
 		if err := probeLinuxRouterPlatformCleanup(previous); err != nil {
@@ -121,6 +137,7 @@ func applyProbeLinuxRouterSnapshot(snapshot *probeLinuxRouterSnapshot, nodeID st
 	probeLinuxRouterRuntimeState.mu.Lock()
 	probeLinuxRouterRuntimeState.nodeID = strings.TrimSpace(nodeID)
 	probeLinuxRouterRuntimeState.desired = cloneProbeLinuxRouterSnapshot(snapshot)
+	probeLinuxRouterRuntimeState.localOverride = false
 	probeLinuxRouterRuntimeState.mu.Unlock()
 	go func() {
 		reconcileProbeLinuxRouterRuntime()
@@ -130,17 +147,23 @@ func applyProbeLinuxRouterSnapshot(snapshot *probeLinuxRouterSnapshot, nodeID st
 	return nil
 }
 
-func reconcileProbeLinuxRouterRuntime() {
+func reconcileProbeLinuxRouterRuntime() error {
 	probeLinuxRouterRuntimeState.mu.RLock()
 	desired := cloneProbeLinuxRouterSnapshot(probeLinuxRouterRuntimeState.desired)
+	manualFailOpen := probeLinuxRouterRuntimeState.manualFailOpen
 	probeLinuxRouterRuntimeState.mu.RUnlock()
 	if desired == nil {
-		return
+		return nil
+	}
+	if manualFailOpen {
+		err := probeLinuxRouterPlatformFailOpen(*desired)
+		setProbeLinuxRouterReport(desired, currentProbeLinuxRouterReport().Interface, true, err)
+		return err
 	}
 	if !desired.GatewayProxy.Enabled && !desired.LocalIPProxy.Enabled {
 		err := probeLinuxRouterPlatformCleanup(desired)
 		setProbeLinuxRouterReport(desired, "", false, err)
-		return
+		return err
 	}
 	iface, err := probeLinuxRouterPlatformApply(*desired)
 	if err != nil {
@@ -154,9 +177,10 @@ func reconcileProbeLinuxRouterRuntime() {
 			err = errors.Join(err, fmt.Errorf("cleanup failed local IP proxy state: %w", cleanupErr))
 		}
 		setProbeLinuxRouterReport(desired, iface, failOpen, err)
-		return
+		return err
 	}
 	setProbeLinuxRouterReport(desired, iface, false, nil)
+	return nil
 }
 
 func probeLinuxRouterHealthLoop(stopCh <-chan struct{}) {
@@ -170,8 +194,9 @@ func probeLinuxRouterHealthLoop(stopCh <-chan struct{}) {
 			probeLinuxRouterRuntimeState.mu.RLock()
 			desired := cloneProbeLinuxRouterSnapshot(probeLinuxRouterRuntimeState.desired)
 			report := probeLinuxRouterRuntimeState.report
+			manualFailOpen := probeLinuxRouterRuntimeState.manualFailOpen
 			probeLinuxRouterRuntimeState.mu.RUnlock()
-			if desired == nil || (!desired.GatewayProxy.Enabled && !desired.LocalIPProxy.Enabled) {
+			if manualFailOpen || desired == nil || (!desired.GatewayProxy.Enabled && !desired.LocalIPProxy.Enabled) {
 				continue
 			}
 			if err := probeLinuxRouterPlatformHealthy(*desired); err != nil {
@@ -186,6 +211,92 @@ func probeLinuxRouterHealthLoop(stopCh <-chan struct{}) {
 			}
 		}
 	}
+}
+
+func currentProbeLinuxRouterLocalState() (*probeLinuxRouterSnapshot, bool, bool, string) {
+	probeLinuxRouterRuntimeState.mu.RLock()
+	defer probeLinuxRouterRuntimeState.mu.RUnlock()
+	return cloneProbeLinuxRouterSnapshot(probeLinuxRouterRuntimeState.desired), probeLinuxRouterRuntimeState.manualFailOpen, probeLinuxRouterRuntimeState.localOverride, probeLinuxRouterRuntimeState.nodeID
+}
+
+func setProbeLinuxRouterManualFailOpen(enabled bool) error {
+	probeLinuxRouterRuntimeState.mu.Lock()
+	desired := cloneProbeLinuxRouterSnapshot(probeLinuxRouterRuntimeState.desired)
+	if desired == nil {
+		probeLinuxRouterRuntimeState.mu.Unlock()
+		return errors.New("router config is not available")
+	}
+	if enabled && !desired.GatewayProxy.Enabled && !desired.LocalIPProxy.Enabled {
+		probeLinuxRouterRuntimeState.mu.Unlock()
+		return errors.New("router data plane is already disabled")
+	}
+	probeLinuxRouterRuntimeState.manualFailOpen = enabled
+	probeLinuxRouterRuntimeState.mu.Unlock()
+	return reconcileProbeLinuxRouterRuntime()
+}
+
+func applyProbeLinuxRouterLocalGatewayConfig(config probeLinuxRouterGatewayConfig) error {
+	config.Interface = strings.TrimSpace(config.Interface)
+	if config.Interface == "" {
+		config.Interface = "auto"
+	}
+	config.GatewayAddress = strings.TrimSpace(config.GatewayAddress)
+	config.UpstreamGateway = strings.TrimSpace(config.UpstreamGateway)
+	config.LANCIDRs = normalizeProbeLinuxRouterLocalCIDRs(config.LANCIDRs)
+	if len(config.LANCIDRs) == 0 {
+		return &probeLinuxRouterLocalConfigError{err: errors.New("at least one LAN CIDR is required")}
+	}
+
+	probeLinuxRouterRuntimeState.mu.RLock()
+	nodeID := strings.TrimSpace(probeLinuxRouterRuntimeState.nodeID)
+	desired := cloneProbeLinuxRouterSnapshot(probeLinuxRouterRuntimeState.desired)
+	probeLinuxRouterRuntimeState.mu.RUnlock()
+	if nodeID == "" {
+		return errors.New("router identity is not available")
+	}
+	if desired == nil {
+		desired = &probeLinuxRouterSnapshot{
+			Version: 1, NodeID: nodeID, Revision: 1,
+		}
+	}
+	desired.GatewayProxy = config
+	desired.SHA256 = probeLinuxRouterSnapshotSHA256(*desired)
+	if err := validateProbeLinuxRouterSnapshot(desired, nodeID); err != nil {
+		return &probeLinuxRouterLocalConfigError{err: err}
+	}
+	if err := persistProbeLinuxRouterSnapshot(desired); err != nil {
+		return err
+	}
+
+	probeLinuxRouterRuntimeState.mu.Lock()
+	probeLinuxRouterRuntimeState.desired = cloneProbeLinuxRouterSnapshot(desired)
+	probeLinuxRouterRuntimeState.localOverride = true
+	probeLinuxRouterRuntimeState.manualFailOpen = false
+	probeLinuxRouterRuntimeState.mu.Unlock()
+	return reconcileProbeLinuxRouterRuntime()
+}
+
+func normalizeProbeLinuxRouterLocalCIDRs(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, raw := range values {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(raw))
+		if err != nil {
+			value := strings.TrimSpace(raw)
+			if value != "" {
+				out = append(out, value)
+			}
+			continue
+		}
+		value := prefix.Masked().String()
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func setProbeLinuxRouterReport(snapshot *probeLinuxRouterSnapshot, iface string, failOpen bool, applyErr error) {

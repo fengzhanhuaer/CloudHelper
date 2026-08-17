@@ -126,7 +126,7 @@ func TestMngPagesExposeLinuxRouterWorkflow(t *testing.T) {
 }
 
 func TestLinuxRouterInstallerIsAlpineOpenRCAndDualArchitecture(t *testing.T) {
-	for _, marker := range []string{"command -v apk", "command -v rc-service", "x86_64", "aarch64|arm64", "cloudhelper-probe-router-linux-${GOARCH}", "/opt/cloudhelper/probe_router", "--upgrade-verify-build-kind=linux_router", "rc-update add"} {
+	for _, marker := range []string{"command -v apk", "command -v rc-service", "x86_64", "aarch64|arm64", "cloudhelper-probe-router-linux-${GOARCH}", "/opt/cloudhelper/probe_router", "--upgrade-verify-build-kind=linux_router", "rc-update add", "PROBE_ROUTER_WEB_LISTEN", "0.0.0.0:18080", "probe_local_setup_token"} {
 		if !strings.Contains(probeRouterInstallScriptLinux, marker) {
 			t.Fatalf("router installer missing %q", marker)
 		}

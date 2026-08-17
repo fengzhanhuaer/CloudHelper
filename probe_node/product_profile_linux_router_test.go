@@ -15,8 +15,11 @@ func TestLinuxRouterProductProfile(t *testing.T) {
 	if profile.DataDir != "data" || profile.RuntimeLogDir != "log" || profile.TempDir != "temp" {
 		t.Fatalf("unexpected working directories: %+v", profile)
 	}
-	if !profile.EnableVRoutePlatformInterface || !profile.LinuxAMD64OrARM64Only {
+	if !profile.EnableProductLocalWeb || !profile.EnableVRoutePlatformInterface || !profile.LinuxAMD64OrARM64Only {
 		t.Fatalf("router platform flags are incomplete: %+v", profile)
+	}
+	if profile.EnableLocalConsole {
+		t.Fatalf("router product must not expose the generic probe console: %+v", profile)
 	}
 	if profile.EnableVRouteTakeoverRoutes {
 		t.Fatalf("router product must never install host takeover routes: %+v", profile)

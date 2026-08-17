@@ -5,6 +5,7 @@ RELEASE_REPO="${RELEASE_REPO:-fengzhanhuaer/CloudHelper}"
 RELEASE_TAG="${RELEASE_TAG:-latest}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/cloudhelper/probe_router}"
 SERVICE_NAME="${SERVICE_NAME:-probe_router}"
+PROBE_ROUTER_WEB_LISTEN="${PROBE_ROUTER_WEB_LISTEN:-0.0.0.0:18080}"
 
 log() { echo "[cloudhelper-probe-router] $*"; }
 die() { echo "[cloudhelper-probe-router][ERROR] $*" >&2; exit 1; }
@@ -73,6 +74,7 @@ escape_conf() { printf '%s' "$1" | sed "s/'/'\\\\''/g"; }
   echo "PROBE_NODE_ID='$(escape_conf "${PROBE_NODE_ID}")'"
   echo "PROBE_NODE_SECRET='$(escape_conf "${PROBE_NODE_SECRET}")'"
   echo "PROBE_CONTROLLER_URL='$(escape_conf "${PROBE_CONTROLLER_URL}")'"
+  echo "PROBE_ROUTER_WEB_LISTEN='$(escape_conf "${PROBE_ROUTER_WEB_LISTEN}")'"
 } > "/etc/conf.d/${SERVICE_NAME}"
 chmod 0600 "/etc/conf.d/${SERVICE_NAME}"
 
@@ -86,7 +88,7 @@ directory="${INSTALL_DIR}"
 pidfile="/run/\${RC_SVCNAME}.pid"
 output_log="${INSTALL_DIR}/log/openrc.log"
 error_log="${INSTALL_DIR}/log/openrc.log"
-export PROBE_NODE_ID PROBE_NODE_SECRET PROBE_CONTROLLER_URL
+export PROBE_NODE_ID PROBE_NODE_SECRET PROBE_CONTROLLER_URL PROBE_ROUTER_WEB_LISTEN
 
 depend() {
   need net
@@ -100,3 +102,5 @@ if ! rc-update add "${SERVICE_NAME}" default >/dev/null 2>&1 || ! rc-service "${
   die "OpenRC service failed to start"
 fi
 log "installed ${PROGRAM_ASSET} at ${INSTALL_DIR}"
+log "local rescue web listens on http://${PROBE_ROUTER_WEB_LISTEN} (private IPv4 clients and IP hosts only)"
+log "first registration token: ${INSTALL_DIR}/data/probe_local_setup_token"

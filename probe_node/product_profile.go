@@ -23,6 +23,7 @@ type probeProductProfile struct {
 	TempDir                       string
 	AllowLocalTUNInstall          bool
 	EnableLocalConsole            bool
+	EnableProductLocalWeb         bool
 	EnableLocalProxy              bool
 	EnableSystemDNS               bool
 	EnableSyncScheduler           bool
@@ -33,6 +34,11 @@ type probeProductProfile struct {
 	LinuxAMD64Only                bool
 	LinuxAMD64OrARM64Only         bool
 }
+
+var (
+	probeProductLocalWebStart = func(string) error { return nil }
+	probeProductLocalWebStop  = func() {}
+)
 
 type probeProductUpgradeCompanion struct {
 	CandidatePath string

@@ -11,6 +11,7 @@ func buildProbeProductProfile() probeProductProfile {
 		RuntimeLogFile:                "probe_router.runtime.log",
 		DataDir:                       "data",
 		TempDir:                       "temp",
+		EnableProductLocalWeb:         true,
 		EnableVRoutePlatformInterface: true,
 		LinuxAMD64OrARM64Only:         true,
 	}
