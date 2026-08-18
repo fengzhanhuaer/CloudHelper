@@ -585,3 +585,36 @@ jobs:
             release-assets/cloudhelper-probe-exit-node-manifest.json
             release-assets/mihomo-LICENSE
             release-assets/cloudhelper-probe-node-android-arm64.apk
+
+      - name: Keep Latest 10 Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          stale_tags_file="$RUNNER_TEMP/cloudhelper-stale-release-tags"
+          gh api --paginate "/repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            | jq -sr '[.[][] | select(.draft == false)] | sort_by(.published_at) | reverse | .[10:] | .[].tag_name' \
+            > "$stale_tags_file"
+          delete_release() {
+            local tag="$1"
+            local delay=2
+            local attempt
+            for attempt in 1 2 3 4 5 6 7; do
+              if gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes; then
+                return 0
+              fi
+              if [ "$attempt" -eq 7 ]; then
+                return 1
+              fi
+              echo "Delete was rate-limited; retrying $tag in ${delay}s"
+              sleep "$delay"
+              delay=$((delay * 2))
+            done
+          }
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            echo "Deleting stale release and tag: $tag"
+            delete_release "$tag"
+            sleep 1
+          done < "$stale_tags_file"

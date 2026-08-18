@@ -170,25 +170,34 @@ func probeLinuxRouterHealthLoop(stopCh <-chan struct{}) {
 		case <-stopCh:
 			return
 		case <-ticker.C:
-			probeLinuxRouterRuntimeState.mu.RLock()
-			desired := cloneProbeLinuxRouterSnapshot(probeLinuxRouterRuntimeState.desired)
-			report := probeLinuxRouterRuntimeState.report
-			manualFailOpen := probeLinuxRouterRuntimeState.manualFailOpen
-			probeLinuxRouterRuntimeState.mu.RUnlock()
-			if manualFailOpen || desired == nil || (!desired.GatewayProxy.Enabled && !desired.LocalIPProxy.Enabled) {
-				continue
-			}
-			if err := probeLinuxRouterPlatformHealthy(*desired); err != nil {
-				if desired.GatewayProxy.Enabled {
-					_ = probeLinuxRouterPlatformFailOpen(*desired)
-				}
-				setProbeLinuxRouterReport(desired, report.Interface, desired.GatewayProxy.Enabled, err)
-				continue
-			}
-			if report.FailOpen || !report.Healthy {
-				reconcileProbeLinuxRouterRuntime()
-			}
+			probeLinuxRouterHealthCheckOnce()
 		}
+	}
+}
+
+func probeLinuxRouterHealthCheckOnce() {
+	probeLinuxRouterRuntimeState.mu.RLock()
+	desired := cloneProbeLinuxRouterSnapshot(probeLinuxRouterRuntimeState.desired)
+	report := probeLinuxRouterRuntimeState.report
+	manualFailOpen := probeLinuxRouterRuntimeState.manualFailOpen
+	probeLinuxRouterRuntimeState.mu.RUnlock()
+	if manualFailOpen || desired == nil || (!desired.GatewayProxy.Enabled && !desired.LocalIPProxy.Enabled) {
+		return
+	}
+
+	// Fail-open intentionally removes policy rules. Rebuild them before checking
+	// health so a startup attempt made before the TUN is ready can recover.
+	if report.FailOpen || !report.Healthy {
+		if err := reconcileProbeLinuxRouterRuntime(); err != nil {
+			return
+		}
+		report = currentProbeLinuxRouterReport()
+	}
+	if err := probeLinuxRouterPlatformHealthy(*desired); err != nil {
+		if desired.GatewayProxy.Enabled {
+			_ = probeLinuxRouterPlatformFailOpen(*desired)
+		}
+		setProbeLinuxRouterReport(desired, report.Interface, desired.GatewayProxy.Enabled, err)
 	}
 }
 

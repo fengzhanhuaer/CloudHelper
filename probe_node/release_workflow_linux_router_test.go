@@ -29,6 +29,12 @@ func TestReleaseWorkflowDefinesLinuxRouterArtifacts(t *testing.T) {
 		"go build -tags linux_router",
 		"cloudhelper-probe-router-linux-amd64",
 		"cloudhelper-probe-router-linux-arm64",
+		"Keep Latest 10 Releases",
+		"gh api --paginate",
+		"reverse | .[10:]",
+		"gh release delete",
+		"--cleanup-tag --yes",
+		"Delete was rate-limited",
 	} {
 		if !strings.Contains(content, marker) {
 			t.Fatalf("release workflow missing %q", marker)

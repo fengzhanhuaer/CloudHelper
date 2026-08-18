@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/binary"
+	"reflect"
 	"testing"
 )
 
@@ -136,5 +137,60 @@ func TestProbeLinuxRouterIgnoresControllerSnapshot(t *testing.T) {
 	desired, _, _ = currentProbeLinuxRouterLocalState()
 	if desired == nil || desired.Revision != 3 {
 		t.Fatalf("nil controller snapshot cleared local config: %+v", desired)
+	}
+}
+
+func TestProbeLinuxRouterHealthCheckRebuildsFailOpenBeforeHealth(t *testing.T) {
+	probeLinuxRouterRuntimeState.mu.Lock()
+	oldDesired := cloneProbeLinuxRouterSnapshot(probeLinuxRouterRuntimeState.desired)
+	oldReport := probeLinuxRouterRuntimeState.report
+	oldManualFailOpen := probeLinuxRouterRuntimeState.manualFailOpen
+	probeLinuxRouterRuntimeState.desired = &probeLinuxRouterSnapshot{
+		Version: 1,
+		NodeID:  "21",
+		GatewayProxy: probeLinuxRouterGatewayConfig{
+			Enabled: true,
+		},
+	}
+	probeLinuxRouterRuntimeState.report = probeLinuxRouterRuntimeReport{Healthy: false, FailOpen: true}
+	probeLinuxRouterRuntimeState.manualFailOpen = false
+	probeLinuxRouterRuntimeState.mu.Unlock()
+
+	oldApply := probeLinuxRouterPlatformApply
+	oldFailOpen := probeLinuxRouterPlatformFailOpen
+	oldHealthy := probeLinuxRouterPlatformHealthy
+	t.Cleanup(func() {
+		probeLinuxRouterRuntimeState.mu.Lock()
+		probeLinuxRouterRuntimeState.desired = oldDesired
+		probeLinuxRouterRuntimeState.report = oldReport
+		probeLinuxRouterRuntimeState.manualFailOpen = oldManualFailOpen
+		probeLinuxRouterRuntimeState.mu.Unlock()
+		probeLinuxRouterPlatformApply = oldApply
+		probeLinuxRouterPlatformFailOpen = oldFailOpen
+		probeLinuxRouterPlatformHealthy = oldHealthy
+	})
+
+	var calls []string
+	probeLinuxRouterPlatformApply = func(probeLinuxRouterSnapshot) (string, error) {
+		calls = append(calls, "apply")
+		return "eth0", nil
+	}
+	probeLinuxRouterPlatformHealthy = func(probeLinuxRouterSnapshot) error {
+		calls = append(calls, "health")
+		return nil
+	}
+	probeLinuxRouterPlatformFailOpen = func(probeLinuxRouterSnapshot) error {
+		calls = append(calls, "fail-open")
+		return nil
+	}
+
+	probeLinuxRouterHealthCheckOnce()
+
+	if !reflect.DeepEqual(calls, []string{"apply", "health"}) {
+		t.Fatalf("calls=%v, want apply before health", calls)
+	}
+	report := currentProbeLinuxRouterReport()
+	if !report.Healthy || report.FailOpen || report.Interface != "eth0" {
+		t.Fatalf("unexpected recovered report: %+v", report)
 	}
 }
