@@ -190,10 +190,10 @@ func TestProbeLinuxRouterWebConfigAndFailOpenFlow(t *testing.T) {
 	cookie := registerAndLoginProbeLinuxRouterWeb(t, handler)
 	config := map[string]any{
 		"gateway_proxy": map[string]any{
-			"enabled": true, "dns_enabled": true, "interface": "eth0", "gateway_address": "192.168.1.150/24", "upstream_gateway": "192.168.1.1", "lan_cidrs": []string{"192.168.1.0/24", "192.168.1.0/24"},
+			"enabled": true, "dns_enabled": true, "interface": "eth0", "gateway_address": "192.168.1.150", "upstream_gateway": "192.168.1.1",
 		},
 		"local_ip_proxy": map[string]any{
-			"enabled": true, "published_cidrs": []string{"192.168.50.0/24"}, "allowed_node_ids": []string{"1", "1"},
+			"enabled": true, "allowed_node_ids": []string{"1", "1"},
 		},
 	}
 	saved := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/config", "192.168.1.150:18080", "192.168.1.20:43210", config, cookie)
@@ -201,7 +201,7 @@ func TestProbeLinuxRouterWebConfigAndFailOpenFlow(t *testing.T) {
 		t.Fatalf("save status=%d body=%s", saved.Code, saved.Body.String())
 	}
 	desired, manualFailOpen, _ := currentProbeLinuxRouterLocalState()
-	if desired == nil || !desired.GatewayProxy.Enabled || len(desired.GatewayProxy.LANCIDRs) != 1 || !desired.LocalIPProxy.Enabled || len(desired.LocalIPProxy.AllowedNodeIDs) != 1 || manualFailOpen {
+	if desired == nil || desired.GatewayProxy.GatewayAddress != "192.168.1.150/24" || len(desired.GatewayProxy.LANCIDRs) != 1 || desired.GatewayProxy.LANCIDRs[0] != "192.168.1.0/24" || !desired.LocalIPProxy.Enabled || len(desired.LocalIPProxy.PublishedCIDRs) != 1 || desired.LocalIPProxy.PublishedCIDRs[0] != "192.168.1.0/24" || len(desired.LocalIPProxy.AllowedNodeIDs) != 1 || manualFailOpen {
 		t.Fatalf("unexpected local state: desired=%+v fail_open=%t", desired, manualFailOpen)
 	}
 	if _, err := os.Stat(resolveProbeLinuxRouterConfigPathForTest(t)); err != nil {
@@ -242,12 +242,12 @@ func TestProbeLinuxRouterWebRejectsInvalidGatewayConfig(t *testing.T) {
 }
 
 func TestProbeLinuxRouterWebUsesLocalConfigAndShowsConnections(t *testing.T) {
-	for _, marker := range []string{"本地配置", `<select id="interfaceName">`, `id="allowedNodeIDs"`, `id="connectionRows"`, `id="upgradeBtn"`, "/local/router/api/upgrade/check", "gateway_proxy", "local_ip_proxy"} {
+	for _, marker := range []string{"本地配置", `<select id="interfaceName">`, `id="availableNodeID"`, `id="addAllowedNodeBtn"`, `id="allowedNodeList"`, `id="connectionRows"`, `id="upgradeBtn"`, "/local/router/api/upgrade/check", "gateway_proxy", "local_ip_proxy", "let configDirty = false", "statusRequestSequence", "allowedNodeSelection", "有未保存的更改", "配置已保存并应用", "beforeunload", ">LAN IP<", ".split('/')[0]"} {
 		if !strings.Contains(probeLinuxRouterWebPageHTML, marker) {
 			t.Fatalf("router page missing %q", marker)
 		}
 	}
-	for _, forbidden := range []string{"本地临时配置", "主控配置", "local_override"} {
+	for _, forbidden := range []string{"本地临时配置", "主控配置", "local_override", `id="lanCIDRs"`, `id="publishedCIDRs"`, `id="allowedNodeIDs"`} {
 		if strings.Contains(probeLinuxRouterWebPageHTML, forbidden) {
 			t.Fatalf("router page still contains %q", forbidden)
 		}

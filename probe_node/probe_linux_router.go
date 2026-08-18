@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -218,13 +219,18 @@ func applyProbeLinuxRouterLocalConfig(config probeLinuxRouterLocalConfig) error 
 	if config.GatewayProxy.Interface == "" {
 		config.GatewayProxy.Interface = "auto"
 	}
-	config.GatewayProxy.GatewayAddress = strings.TrimSpace(config.GatewayProxy.GatewayAddress)
+	config.GatewayProxy.GatewayAddress = normalizeProbeLinuxRouterGatewayAddress(config.GatewayProxy.GatewayAddress, config.GatewayProxy.Interface)
 	config.GatewayProxy.UpstreamGateway = strings.TrimSpace(config.GatewayProxy.UpstreamGateway)
 	config.GatewayProxy.LANCIDRs = normalizeProbeLinuxRouterLocalCIDRs(config.GatewayProxy.LANCIDRs)
 	if len(config.GatewayProxy.LANCIDRs) == 0 {
-		return &probeLinuxRouterLocalConfigError{err: errors.New("at least one LAN CIDR is required")}
+		if subnet := probeLinuxRouterGatewaySubnet(config.GatewayProxy.GatewayAddress); subnet != "" {
+			config.GatewayProxy.LANCIDRs = []string{subnet}
+		}
 	}
 	config.LocalIPProxy.PublishedCIDRs = normalizeProbeLinuxRouterLocalCIDRs(config.LocalIPProxy.PublishedCIDRs)
+	if len(config.LocalIPProxy.PublishedCIDRs) == 0 {
+		config.LocalIPProxy.PublishedCIDRs = append([]string(nil), config.GatewayProxy.LANCIDRs...)
+	}
 	config.LocalIPProxy.AllowedNodeIDs = normalizeProbeLinuxRouterLocalNodeIDs(config.LocalIPProxy.AllowedNodeIDs)
 	if config.LocalIPProxy.Enabled && len(config.LocalIPProxy.PublishedCIDRs) == 0 {
 		return &probeLinuxRouterLocalConfigError{err: errors.New("at least one published CIDR is required when local IP proxy is enabled")}
@@ -270,6 +276,48 @@ func applyProbeLinuxRouterLocalConfig(config probeLinuxRouterLocalConfig) error 
 	probeLinuxRouterRuntimeState.manualFailOpen = false
 	probeLinuxRouterRuntimeState.mu.Unlock()
 	return reconcileProbeLinuxRouterRuntime()
+}
+
+func normalizeProbeLinuxRouterGatewayAddress(value, interfaceName string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.Contains(value, "/") {
+		return value
+	}
+	address, err := netip.ParseAddr(value)
+	if err != nil || !address.Is4() {
+		return value
+	}
+
+	prefixBits := 24
+	interfaces, err := net.Interfaces()
+	if err == nil {
+		selectedInterface := strings.TrimSpace(interfaceName)
+		for _, iface := range interfaces {
+			if selectedInterface != "" && selectedInterface != "auto" && iface.Name != selectedInterface {
+				continue
+			}
+			interfaceAddresses, addressErr := iface.Addrs()
+			if addressErr != nil {
+				continue
+			}
+			for _, interfaceAddress := range interfaceAddresses {
+				prefix, parseErr := netip.ParsePrefix(strings.TrimSpace(interfaceAddress.String()))
+				if parseErr == nil && prefix.Addr().Is4() && prefix.Contains(address) {
+					prefixBits = prefix.Bits()
+					return netip.PrefixFrom(address, prefixBits).String()
+				}
+			}
+		}
+	}
+	return netip.PrefixFrom(address, prefixBits).String()
+}
+
+func probeLinuxRouterGatewaySubnet(value string) string {
+	prefix, err := netip.ParsePrefix(strings.TrimSpace(value))
+	if err != nil || !prefix.Addr().Is4() {
+		return ""
+	}
+	return prefix.Masked().String()
 }
 
 func normalizeProbeLinuxRouterLocalNodeIDs(values []string) []string {

@@ -110,6 +110,12 @@
     .switches { display: flex; gap: 24px; flex-wrap: wrap; align-items: center; min-height: 38px; }
     .check { display: inline-flex; align-items: center; gap: 8px; color: var(--text); font-size: 14px; font-weight: 600; }
     .check input { width: 18px; height: 18px; accent-color: var(--green); }
+    .allowed-picker { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+    .allowed-list { display: flex; flex-wrap: wrap; gap: 8px; min-height: 30px; margin-top: 10px; }
+    .allowed-item { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 4px 5px 4px 9px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); font-size: 13px; }
+    .allowed-item span { overflow-wrap: anywhere; }
+    .allowed-remove { width: 24px; height: 24px; border: 0; background: transparent; color: var(--muted); font-size: 18px; line-height: 1; }
+    .allowed-empty { color: var(--muted); font-size: 13px; align-self: center; }
     .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
     .runtime-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); }
     .runtime-item { min-height: 78px; background: var(--surface); padding: 13px; }
@@ -234,14 +240,19 @@
               <label class="check"><input id="dnsEnabled" type="checkbox" />LAN DNS</label>
             </div>
             <div class="field"><label for="interfaceName">LAN 网卡</label><select id="interfaceName"></select></div>
-            <div class="field"><label for="gatewayAddress">网关地址</label><input id="gatewayAddress" type="text" maxlength="32" /></div>
+            <div class="field"><label for="gatewayAddress">LAN IP</label><input id="gatewayAddress" type="text" maxlength="32" /></div>
             <div class="field"><label for="upstreamGateway">上游网关</label><input id="upstreamGateway" type="text" maxlength="32" /></div>
-            <div class="field full"><label for="lanCIDRs">LAN 网段</label><textarea id="lanCIDRs"></textarea></div>
             <div class="field full switches">
               <label class="check"><input id="localIPEnabled" type="checkbox" />本地 IP 代理</label>
             </div>
-            <div class="field"><label for="publishedCIDRs">发布网段</label><textarea id="publishedCIDRs"></textarea></div>
-            <div class="field"><label for="allowedNodeIDs">允许访问的探针</label><select id="allowedNodeIDs" multiple size="6"></select></div>
+            <div class="field full">
+              <label for="availableNodeID">允许访问的探针</label>
+              <div class="allowed-picker">
+                <select id="availableNodeID"></select>
+                <button id="addAllowedNodeBtn" class="btn" type="button">添加</button>
+              </div>
+              <div id="allowedNodeList" class="allowed-list"></div>
+            </div>
           </div>
           <div class="actions">
             <button id="saveBtn" class="btn primary" type="submit">保存并应用</button>
@@ -285,6 +296,12 @@
     const $ = (id) => document.getElementById(id);
     let currentStatus = null;
     let upgradeStatusTimer = null;
+    let configDirty = false;
+    let configSaveInFlight = false;
+    let configNotice = '';
+    let statusRequestSequence = 0;
+    let appliedStatusSequence = 0;
+    let allowedNodeSelection = new Set();
 
     async function requestJSON(url, options = {}) {
       const response = await fetch(url, {
@@ -345,14 +362,22 @@
       return String(value == null ? '' : value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
     }
 
-    function renderConnections(connections, allowedNodeIDs) {
+    function renderConnections(connections, allowedNodeIDs, updateSelector = true) {
       const items = Array.isArray(connections) ? connections : [];
       const allowed = new Set((Array.isArray(allowedNodeIDs) ? allowedNodeIDs : []).map((value) => String(value || '').trim()).filter(Boolean));
+      if (updateSelector) allowedNodeSelection = allowed;
       const known = new Map(items.map((item) => [String(item.target_node_id || '').trim(), String(item.target_node_name || '').trim()]));
-      allowed.forEach((nodeID) => { if (!known.has(nodeID)) known.set(nodeID, ''); });
-      $('allowedNodeIDs').innerHTML = Array.from(known.entries()).sort((left, right) => left[0].localeCompare(right[0], undefined, { numeric: true })).map(([nodeID, nodeName]) =>
-        `<option value="${escapeHTML(nodeID)}" ${allowed.has(nodeID) ? 'selected' : ''}>#${escapeHTML(nodeID)}${nodeName ? ' ' + escapeHTML(nodeName) : ''}</option>`
+      allowedNodeSelection.forEach((nodeID) => { if (!known.has(nodeID)) known.set(nodeID, ''); });
+      const available = Array.from(known.entries()).filter(([nodeID]) => nodeID && !allowedNodeSelection.has(nodeID)).sort((left, right) => left[0].localeCompare(right[0], undefined, { numeric: true }));
+      $('availableNodeID').innerHTML = '<option value="">选择探针</option>' + available.map(([nodeID, nodeName]) =>
+        `<option value="${escapeHTML(nodeID)}">#${escapeHTML(nodeID)}${nodeName ? ' ' + escapeHTML(nodeName) : ''}</option>`
       ).join('');
+      $('addAllowedNodeBtn').disabled = available.length === 0;
+      const selected = Array.from(allowedNodeSelection).sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
+      $('allowedNodeList').innerHTML = selected.length ? selected.map((nodeID) => {
+        const nodeName = known.get(nodeID) || '';
+        return `<div class="allowed-item"><span>#${escapeHTML(nodeID)}${nodeName ? ' ' + escapeHTML(nodeName) : ''}</span><button class="allowed-remove" type="button" data-node-id="${escapeHTML(nodeID)}" title="移除">×</button></div>`;
+      }).join('') : '<span class="allowed-empty">未添加探针</span>';
 
       const healthy = items.filter((item) => item.status === 'running').length;
       $('connectionSummary').textContent = `${healthy}/${items.length} 可达`;
@@ -389,27 +414,29 @@
       setState('gatewayStatus', gateway.enabled ? '已启用' : '已关闭', gateway.enabled ? 'ok' : '');
       setState('localIPStatus', localIP.enabled ? '已启用' : '已关闭', localIP.enabled ? 'ok' : '');
       $('configSource').textContent = '本地配置';
-      $('gatewayEnabled').checked = gateway.enabled === true;
-      $('dnsEnabled').checked = gateway.dns_enabled !== false;
-      const configuredInterface = String(gateway.interface || 'auto');
-      const interfaces = Array.isArray(data.interfaces) ? data.interfaces : [];
-      const interfaceNames = new Set(interfaces.map((item) => String(item.name || '').trim()).filter(Boolean));
-      const interfaceOptions = [{ name: 'auto', label: '自动选择' }].concat(interfaces.map((item) => {
-        const name = String(item.name || '').trim();
-        const addresses = Array.isArray(item.addresses) ? item.addresses.join(', ') : '';
-        return { name, label: addresses ? `${name} · ${addresses}` : name };
-      }));
-      if (configuredInterface !== 'auto' && !interfaceNames.has(configuredInterface)) {
-        interfaceOptions.push({ name: configuredInterface, label: `${configuredInterface} · 当前配置` });
+      const preserveForm = configDirty || configSaveInFlight;
+      if (!preserveForm) {
+        $('gatewayEnabled').checked = gateway.enabled === true;
+        $('dnsEnabled').checked = gateway.dns_enabled !== false;
+        const configuredInterface = String(gateway.interface || 'auto');
+        const interfaces = Array.isArray(data.interfaces) ? data.interfaces : [];
+        const interfaceNames = new Set(interfaces.map((item) => String(item.name || '').trim()).filter(Boolean));
+        const interfaceOptions = [{ name: 'auto', label: '自动选择' }].concat(interfaces.map((item) => {
+          const name = String(item.name || '').trim();
+          const addresses = Array.isArray(item.addresses) ? item.addresses.join(', ') : '';
+          return { name, label: addresses ? `${name} · ${addresses}` : name };
+        }));
+        if (configuredInterface !== 'auto' && !interfaceNames.has(configuredInterface)) {
+          interfaceOptions.push({ name: configuredInterface, label: `${configuredInterface} · 当前配置` });
+        }
+        $('interfaceName').innerHTML = interfaceOptions.map((item) => `<option value="${escapeHTML(item.name)}">${escapeHTML(item.label)}</option>`).join('');
+        $('interfaceName').value = configuredInterface;
+        $('gatewayAddress').value = String(gateway.gateway_address || '192.168.1.150/24').split('/')[0];
+        $('upstreamGateway').value = gateway.upstream_gateway || '192.168.1.1';
+        $('localIPEnabled').checked = localIP.enabled === true;
       }
-      $('interfaceName').innerHTML = interfaceOptions.map((item) => `<option value="${escapeHTML(item.name)}">${escapeHTML(item.label)}</option>`).join('');
-      $('interfaceName').value = configuredInterface;
-      $('gatewayAddress').value = gateway.gateway_address || '192.168.1.150/24';
-      $('upstreamGateway').value = gateway.upstream_gateway || '192.168.1.1';
-      $('lanCIDRs').value = (gateway.lan_cidrs || ['192.168.1.0/24']).join('\n');
-      $('localIPEnabled').checked = localIP.enabled === true;
-      $('publishedCIDRs').value = (localIP.published_cidrs || ['192.168.1.0/24']).join('\n');
-      renderConnections(data.connections, localIP.allowed_node_ids);
+      const allowedNodeIDs = preserveForm ? Array.from(allowedNodeSelection) : localIP.allowed_node_ids;
+      renderConnections(data.connections, allowedNodeIDs, !preserveForm);
       $('revision').textContent = 'r' + Number(runtime.applied_revision || config.revision || 0);
       $('runtimeInterface').textContent = runtime.interface || '-';
       $('runtimeGateway').textContent = runtime.gateway_address || gateway.gateway_address || '-';
@@ -430,6 +457,9 @@
       } else if (data.manual_fail_open) {
         notice.textContent = '故障直通已启用';
         notice.className = 'notice';
+      } else if (configNotice) {
+        notice.textContent = configNotice;
+        notice.className = 'notice';
       } else {
         notice.textContent = '';
         notice.className = 'notice hidden';
@@ -437,8 +467,11 @@
     }
 
     async function loadStatus() {
+      const requestSequence = ++statusRequestSequence;
       try {
         const data = await requestJSON('/local/router/api/status');
+        if (requestSequence < appliedStatusSequence) return true;
+        appliedStatusSequence = requestSequence;
         showApp();
         renderStatus(data);
         return true;
@@ -551,6 +584,7 @@
       event.preventDefault();
       if (!window.confirm('保存并应用本地旁路由配置？')) return;
       $('saveBtn').disabled = true;
+      configSaveInFlight = true;
       try {
         await requestJSON('/local/router/api/config', { method: 'POST', body: JSON.stringify({
           gateway_proxy: {
@@ -559,19 +593,57 @@
             interface: $('interfaceName').value.trim(),
             gateway_address: $('gatewayAddress').value.trim(),
             upstream_gateway: $('upstreamGateway').value.trim(),
-            lan_cidrs: $('lanCIDRs').value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
           },
           local_ip_proxy: {
             enabled: $('localIPEnabled').checked,
-            published_cidrs: $('publishedCIDRs').value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
-            allowed_node_ids: Array.from($('allowedNodeIDs').selectedOptions).map((option) => option.value),
+            allowed_node_ids: Array.from(allowedNodeSelection),
           },
         }) });
+        configDirty = false;
+        configNotice = '配置已保存并应用';
         await loadStatus();
       } catch (error) {
+        configNotice = error.message;
         $('notice').textContent = error.message;
         $('notice').className = 'notice error';
-      } finally { $('saveBtn').disabled = false; }
+      } finally {
+        configSaveInFlight = false;
+        $('saveBtn').disabled = false;
+        if (currentStatus) renderStatus(currentStatus);
+      }
+    });
+
+    function markConfigDirty() {
+      configDirty = true;
+      configNotice = '有未保存的更改';
+      if (currentStatus) renderStatus(currentStatus);
+    }
+    $('configForm').addEventListener('input', (event) => {
+      if (event.target === $('availableNodeID')) return;
+      markConfigDirty();
+    });
+    $('configForm').addEventListener('change', (event) => {
+      if (event.target === $('availableNodeID')) return;
+      markConfigDirty();
+    });
+    $('addAllowedNodeBtn').addEventListener('click', () => {
+      const nodeID = $('availableNodeID').value.trim();
+      if (!nodeID) return;
+      allowedNodeSelection.add(nodeID);
+      renderConnections(currentStatus && currentStatus.connections, Array.from(allowedNodeSelection), false);
+      markConfigDirty();
+    });
+    $('allowedNodeList').addEventListener('click', (event) => {
+      const button = event.target.closest('.allowed-remove');
+      if (!button) return;
+      allowedNodeSelection.delete(String(button.dataset.nodeId || '').trim());
+      renderConnections(currentStatus && currentStatus.connections, Array.from(allowedNodeSelection), false);
+      markConfigDirty();
+    });
+    window.addEventListener('beforeunload', (event) => {
+      if (!configDirty) return;
+      event.preventDefault();
+      event.returnValue = '';
     });
 
     $('failOpenBtn').addEventListener('click', async () => {

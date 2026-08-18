@@ -33,6 +33,21 @@ func TestValidateProbeLinuxRouterSnapshotSHA(t *testing.T) {
 	}
 }
 
+func TestNormalizeProbeLinuxRouterGatewayAddressAcceptsPlainIPv4(t *testing.T) {
+	if got := normalizeProbeLinuxRouterGatewayAddress("192.0.2.123", "auto"); got != "192.0.2.123/24" {
+		t.Fatalf("plain gateway address=%q, want /24 CIDR", got)
+	}
+	if got := normalizeProbeLinuxRouterGatewayAddress("192.0.2.123/27", "auto"); got != "192.0.2.123/27" {
+		t.Fatalf("explicit gateway prefix changed to %q", got)
+	}
+}
+
+func TestProbeLinuxRouterGatewaySubnet(t *testing.T) {
+	if got := probeLinuxRouterGatewaySubnet("192.168.51.105/24"); got != "192.168.51.0/24" {
+		t.Fatalf("gateway subnet=%q", got)
+	}
+}
+
 func TestProbeLinuxRouterOnlyAllowsConfiguredLANSource(t *testing.T) {
 	oldDesired := cloneProbeLinuxRouterSnapshot(probeLinuxRouterRuntimeState.desired)
 	t.Cleanup(func() {
