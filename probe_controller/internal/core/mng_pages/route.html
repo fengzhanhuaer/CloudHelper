@@ -254,7 +254,6 @@
         <div class="toolbar">
           <div class="toolbar-actions">
             <button id="btn-linux-router-refresh" class="btn" type="button">刷新</button>
-            <button id="btn-linux-router-save" class="btn primary" type="button">保存配置</button>
           </div>
           <span id="linux-router-summary" class="summary-pill small">未加载</span>
         </div>
@@ -267,35 +266,7 @@
         <div id="linux-router-empty" class="box muted small">请选择旁路由探针。</div>
         <div id="linux-router-detail" class="router-stack" hidden>
           <div class="box">
-            <div class="box-title"><span>网关代理</span></div>
-            <div class="router-fields" style="margin-top:12px;">
-              <label for="linux-router-gateway-enabled">启用</label>
-              <input id="linux-router-gateway-enabled" type="checkbox" />
-              <label for="linux-router-interface">LAN 网卡</label>
-              <input id="linux-router-interface" class="mono" value="auto" />
-              <label for="linux-router-gateway-address">网关地址</label>
-              <input id="linux-router-gateway-address" class="mono" value="192.168.1.150/24" />
-              <label for="linux-router-upstream">上游网关</label>
-              <input id="linux-router-upstream" class="mono" value="192.168.1.1" />
-              <label for="linux-router-lan-cidrs">LAN 网段</label>
-              <textarea id="linux-router-lan-cidrs" class="mono">192.168.1.0/24</textarea>
-              <label for="linux-router-dns-enabled">LAN DNS</label>
-              <input id="linux-router-dns-enabled" type="checkbox" checked />
-            </div>
-          </div>
-          <div class="box">
-            <div class="box-title"><span>本地 IP 代理</span></div>
-            <div class="router-fields" style="margin-top:12px;">
-              <label for="linux-router-local-enabled">启用</label>
-              <input id="linux-router-local-enabled" type="checkbox" />
-              <label for="linux-router-published-cidrs">发布网段</label>
-              <textarea id="linux-router-published-cidrs" class="mono">192.168.1.0/24</textarea>
-              <label for="linux-router-allowed-nodes">允许访问的探针</label>
-              <select id="linux-router-allowed-nodes" multiple size="6"></select>
-            </div>
-          </div>
-          <div class="box">
-            <div class="box-title"><span>旁路由运行状态</span></div>
+            <div class="box-title"><span>旁路由运行状态</span><span class="muted small">配置来源：本地 Web</span></div>
             <div id="linux-router-runtime" class="router-status-grid" style="margin-top:12px;"></div>
           </div>
         </div>
@@ -606,7 +577,7 @@
         state.selectedLinuxRouterNodeID = '';
       }
       renderLinuxRouters();
-      if (!silent) setStatus(`旁路由配置已刷新：${state.linuxRouters.length} 个节点`, 'ok');
+      if (!silent) setStatus(`旁路由状态已刷新：${state.linuxRouters.length} 个节点`, 'ok');
     }
 
     function currentLinuxRouter() {
@@ -626,81 +597,32 @@
       const empty = document.getElementById('linux-router-empty');
       empty.hidden = !!item;
       empty.textContent = candidates.length ? '请选择旁路由探针。' : '暂无旁路由探针。';
-      document.getElementById('btn-linux-router-save').disabled = !item;
       document.getElementById('linux-router-summary').textContent = `${state.linuxRouters.length} 个旁路由`;
       if (!item) return;
-      const gateway = item.gateway_proxy || {};
-      const localIP = item.local_ip_proxy || {};
-      document.getElementById('linux-router-gateway-enabled').checked = gateway.enabled === true;
-      document.getElementById('linux-router-interface').value = String(gateway.interface || 'auto');
-      document.getElementById('linux-router-gateway-address').value = String(gateway.gateway_address || '192.168.1.150/24');
-      document.getElementById('linux-router-upstream').value = String(gateway.upstream_gateway || '192.168.1.1');
-      document.getElementById('linux-router-lan-cidrs').value = (Array.isArray(gateway.lan_cidrs) ? gateway.lan_cidrs : ['192.168.1.0/24']).join('\n');
-      document.getElementById('linux-router-dns-enabled').checked = gateway.dns_enabled !== false;
-      document.getElementById('linux-router-local-enabled').checked = localIP.enabled === true;
-      document.getElementById('linux-router-published-cidrs').value = (Array.isArray(localIP.published_cidrs) ? localIP.published_cidrs : ['192.168.1.0/24']).join('\n');
-      const allowed = new Set((Array.isArray(localIP.allowed_node_ids) ? localIP.allowed_node_ids : []).map(normalizeNodeID));
-      const allowedSelect = document.getElementById('linux-router-allowed-nodes');
-      allowedSelect.innerHTML = state.nodes
-        .filter((node) => normalizeNodeID(node.node_no) !== normalizeNodeID(item.node_id))
-        .map((node) => `<option value="${escapeHTML(node.node_no)}" ${allowed.has(normalizeNodeID(node.node_no)) ? 'selected' : ''}>${escapeHTML(nodeLabel(node.node_no))}${node.online ? ' · 在线' : ' · 离线'}</option>`)
-        .join('');
       renderLinuxRouterRuntime(item);
     }
 
     function renderLinuxRouterRuntime(item) {
       const runtime = item && item.runtime ? item.runtime : {};
-      const desiredRevision = Number(item && item.revision || 0);
       const appliedRevision = Number(runtime.applied_revision || 0);
-      const synchronized = item && item.online === true && desiredRevision > 0 && desiredRevision === appliedRevision && String(item.sha256 || '').toLowerCase() === String(runtime.applied_sha256 || '').toLowerCase();
       const health = runtime.fail_open === true ? '故障直通' : (runtime.healthy === true ? '正常' : (item && item.online ? '待应用' : '离线'));
       document.getElementById('linux-router-runtime').innerHTML = [
         ['连接', item && item.online ? '在线' : '离线'],
-        ['配置', synchronized ? `已同步 r${appliedRevision}` : `期望 r${desiredRevision} / 已应用 r${appliedRevision}`],
+        ['配置', appliedRevision > 0 ? `本地 r${appliedRevision}` : '-'],
         ['数据面', health],
         ['架构', `${escapeHTML(item && item.build_kind || '-')} · ${escapeHTML(item && item.version || '-')}`],
+        ['网关代理', runtime.gateway_proxy_enabled === true ? '已启用' : '已关闭'],
+        ['本地 IP 代理', runtime.local_ip_proxy_enabled === true ? '已启用' : '已关闭'],
         ['LAN 网卡', escapeHTML(runtime.interface || '-')],
         ['网关地址', escapeHTML(runtime.gateway_address || '-')],
         ['发布网段', escapeHTML((Array.isArray(runtime.published_cidrs) ? runtime.published_cidrs : []).join(', ') || '-')],
+        ['允许节点', escapeHTML((Array.isArray(runtime.allowed_node_ids) ? runtime.allowed_node_ids : []).map((nodeID) => `#${nodeID}`).join(', ') || '-')],
         ['TUN 流量', `RX ${escapeHTML(runtime.tun_rx_packets || 0)} / ${escapeHTML(formatBytes(runtime.tun_rx_bytes || 0))} · TX ${escapeHTML(runtime.tun_tx_packets || 0)} / ${escapeHTML(formatBytes(runtime.tun_tx_bytes || 0))}`],
         ['最优邻接延迟', Number(runtime.latency_ms || 0) > 0 ? `${escapeHTML(runtime.latency_ms)} ms` : '-'],
         ['最近错误', escapeHTML(runtime.last_apply_error || '-')],
       ].map(([label, value]) => `<div class="router-status-item"><span class="muted small">${label}</span><span>${value}</span></div>`).join('');
     }
 
-    function linuxRouterCIDRLines(id) {
-      return String(document.getElementById(id).value || '').split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
-    }
-
-    async function saveLinuxRouter() {
-      const item = currentLinuxRouter();
-      if (!item) throw new Error('请选择旁路由探针');
-      const allowedNodeIDs = Array.from(document.getElementById('linux-router-allowed-nodes').selectedOptions).map((option) => normalizeNodeID(option.value)).filter(Boolean);
-      const payload = {
-        node_id: normalizeNodeID(item.node_id),
-        gateway_proxy: {
-          enabled: document.getElementById('linux-router-gateway-enabled').checked === true,
-          interface: String(document.getElementById('linux-router-interface').value || '').trim(),
-          gateway_address: String(document.getElementById('linux-router-gateway-address').value || '').trim(),
-          upstream_gateway: String(document.getElementById('linux-router-upstream').value || '').trim(),
-          lan_cidrs: linuxRouterCIDRLines('linux-router-lan-cidrs'),
-          dns_enabled: document.getElementById('linux-router-dns-enabled').checked === true,
-        },
-        local_ip_proxy: {
-          enabled: document.getElementById('linux-router-local-enabled').checked === true,
-          published_cidrs: linuxRouterCIDRLines('linux-router-published-cidrs'),
-          allowed_node_ids: allowedNodeIDs,
-        },
-      };
-      const result = await requestJSON('/mng/api/route/linux_router', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const sync = result.sync || {};
-      await loadLinuxRouters(true);
-      setStatus(`旁路由配置已保存，已通知在线探针 ${Number(sync.dispatched || 0)}/${Number(sync.total || 0)}，离线 ${Number(sync.offline || 0)}，失败 ${Number(sync.failed || 0)}`, Number(sync.failed || 0) > 0 ? 'warn' : 'ok');
-    }
 
     async function loadVirtualRouter(silent) {
       const payload = await requestJSON('/mng/api/route/virtual_router');
@@ -2219,9 +2141,6 @@
       });
       document.getElementById('btn-linux-router-refresh').addEventListener('click', () => {
         loadNodes().then(() => loadLinuxRouters(false)).catch((err) => setStatus(`刷新旁路由失败：${err.message || err}`, 'err'));
-      });
-      document.getElementById('btn-linux-router-save').addEventListener('click', () => {
-        saveLinuxRouter().catch((err) => setStatus(`保存旁路由失败：${err.message || err}`, 'err'));
       });
       document.getElementById('linux-router-node').addEventListener('change', (event) => {
         state.selectedLinuxRouterNodeID = normalizeNodeID(event.target.value);

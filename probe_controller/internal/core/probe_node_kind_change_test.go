@@ -20,10 +20,6 @@ func TestClearProbeNodeKindConfigsRemovesOnlyConvertedNode(t *testing.T) {
 				{NodeID: "19"},
 				{NodeID: "20"},
 			},
-			LinuxRouters: []probeLinuxRouterConfig{
-				{NodeID: "19"},
-				{NodeID: "21"},
-			},
 		},
 	}
 	t.Cleanup(func() { ProbeRouteConfigStore = oldStore })
@@ -33,9 +29,6 @@ func TestClearProbeNodeKindConfigsRemovesOnlyConvertedNode(t *testing.T) {
 	}
 	if len(ProbeRouteConfigStore.data.SpecialExits) != 1 || ProbeRouteConfigStore.data.SpecialExits[0].NodeID != "20" {
 		t.Fatalf("special exits = %+v", ProbeRouteConfigStore.data.SpecialExits)
-	}
-	if len(ProbeRouteConfigStore.data.LinuxRouters) != 1 || ProbeRouteConfigStore.data.LinuxRouters[0].NodeID != "21" {
-		t.Fatalf("linux routers = %+v", ProbeRouteConfigStore.data.LinuxRouters)
 	}
 }
 

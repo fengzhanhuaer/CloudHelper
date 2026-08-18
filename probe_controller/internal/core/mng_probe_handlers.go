@@ -225,14 +225,6 @@ func clearProbeNodeKindConfigs(nodeID string) error {
 			break
 		}
 	}
-	if !hasConfig {
-		for _, item := range ProbeRouteConfigStore.data.LinuxRouters {
-			if normalizeProbeNodeID(item.NodeID) == nodeID {
-				hasConfig = true
-				break
-			}
-		}
-	}
 	ProbeRouteConfigStore.mu.RUnlock()
 	if !hasConfig {
 		return nil
@@ -245,14 +237,7 @@ func clearProbeNodeKindConfigs(nodeID string) error {
 				specialExits = append(specialExits, item)
 			}
 		}
-		linuxRouters := make([]probeLinuxRouterConfig, 0, len(data.LinuxRouters))
-		for _, item := range data.LinuxRouters {
-			if normalizeProbeNodeID(item.NodeID) != nodeID {
-				linuxRouters = append(linuxRouters, item)
-			}
-		}
 		data.SpecialExits = specialExits
-		data.LinuxRouters = linuxRouters
 		data.VirtualRouterFakeIP, _ = reconcileProbeVirtualRouterFakeIPLibraryWithRouteRules(data.VirtualRouterFakeIP, data.VirtualRouter.RouteRules, time.Now().UTC())
 		return nil
 	})

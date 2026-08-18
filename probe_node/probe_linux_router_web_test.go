@@ -4,12 +4,15 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func setupProbeLinuxRouterWebTest(t *testing.T) http.Handler {
@@ -22,12 +25,10 @@ func setupProbeLinuxRouterWebTest(t *testing.T) http.Handler {
 	oldDesired := cloneProbeLinuxRouterSnapshot(probeLinuxRouterRuntimeState.desired)
 	oldReport := probeLinuxRouterRuntimeState.report
 	oldManualFailOpen := probeLinuxRouterRuntimeState.manualFailOpen
-	oldLocalOverride := probeLinuxRouterRuntimeState.localOverride
 	probeLinuxRouterRuntimeState.nodeID = "21"
 	probeLinuxRouterRuntimeState.desired = nil
 	probeLinuxRouterRuntimeState.report = probeLinuxRouterRuntimeReport{}
 	probeLinuxRouterRuntimeState.manualFailOpen = false
-	probeLinuxRouterRuntimeState.localOverride = false
 	probeLinuxRouterRuntimeState.mu.Unlock()
 	oldApply := probeLinuxRouterPlatformApply
 	oldFailOpen := probeLinuxRouterPlatformFailOpen
@@ -43,7 +44,6 @@ func setupProbeLinuxRouterWebTest(t *testing.T) http.Handler {
 		probeLinuxRouterRuntimeState.desired = oldDesired
 		probeLinuxRouterRuntimeState.report = oldReport
 		probeLinuxRouterRuntimeState.manualFailOpen = oldManualFailOpen
-		probeLinuxRouterRuntimeState.localOverride = oldLocalOverride
 		probeLinuxRouterRuntimeState.mu.Unlock()
 		probeLinuxRouterPlatformApply = oldApply
 		probeLinuxRouterPlatformFailOpen = oldFailOpen
@@ -179,21 +179,30 @@ func TestProbeLinuxRouterWebDoesNotExposeGenericConsole(t *testing.T) {
 	if status.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated status endpoint=%d", status.Code)
 	}
+	upgrade := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/upgrade/check", "192.168.1.150:18080", "192.168.1.20:43210", map[string]any{"mode": "proxy"})
+	if upgrade.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated upgrade endpoint=%d", upgrade.Code)
+	}
 }
 
 func TestProbeLinuxRouterWebConfigAndFailOpenFlow(t *testing.T) {
 	handler := setupProbeLinuxRouterWebTest(t)
 	cookie := registerAndLoginProbeLinuxRouterWeb(t, handler)
 	config := map[string]any{
-		"enabled": true, "dns_enabled": true, "interface": "eth0", "gateway_address": "192.168.1.150/24", "upstream_gateway": "192.168.1.1", "lan_cidrs": []string{"192.168.1.0/24", "192.168.1.0/24"},
+		"gateway_proxy": map[string]any{
+			"enabled": true, "dns_enabled": true, "interface": "eth0", "gateway_address": "192.168.1.150/24", "upstream_gateway": "192.168.1.1", "lan_cidrs": []string{"192.168.1.0/24", "192.168.1.0/24"},
+		},
+		"local_ip_proxy": map[string]any{
+			"enabled": true, "published_cidrs": []string{"192.168.50.0/24"}, "allowed_node_ids": []string{"1", "1"},
+		},
 	}
 	saved := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/config", "192.168.1.150:18080", "192.168.1.20:43210", config, cookie)
 	if saved.Code != http.StatusOK {
 		t.Fatalf("save status=%d body=%s", saved.Code, saved.Body.String())
 	}
-	desired, manualFailOpen, localOverride, _ := currentProbeLinuxRouterLocalState()
-	if desired == nil || !desired.GatewayProxy.Enabled || len(desired.GatewayProxy.LANCIDRs) != 1 || manualFailOpen || !localOverride {
-		t.Fatalf("unexpected local state: desired=%+v fail_open=%t override=%t", desired, manualFailOpen, localOverride)
+	desired, manualFailOpen, _ := currentProbeLinuxRouterLocalState()
+	if desired == nil || !desired.GatewayProxy.Enabled || len(desired.GatewayProxy.LANCIDRs) != 1 || !desired.LocalIPProxy.Enabled || len(desired.LocalIPProxy.AllowedNodeIDs) != 1 || manualFailOpen {
+		t.Fatalf("unexpected local state: desired=%+v fail_open=%t", desired, manualFailOpen)
 	}
 	if _, err := os.Stat(resolveProbeLinuxRouterConfigPathForTest(t)); err != nil {
 		t.Fatalf("saved config missing: %v", err)
@@ -203,7 +212,7 @@ func TestProbeLinuxRouterWebConfigAndFailOpenFlow(t *testing.T) {
 	if failOpen.Code != http.StatusOK {
 		t.Fatalf("fail-open status=%d body=%s", failOpen.Code, failOpen.Body.String())
 	}
-	_, manualFailOpen, _, _ = currentProbeLinuxRouterLocalState()
+	_, manualFailOpen, _ = currentProbeLinuxRouterLocalState()
 	if !manualFailOpen {
 		t.Fatal("manual fail-open was not enabled")
 	}
@@ -211,7 +220,7 @@ func TestProbeLinuxRouterWebConfigAndFailOpenFlow(t *testing.T) {
 	if resume.Code != http.StatusOK {
 		t.Fatalf("resume status=%d body=%s", resume.Code, resume.Body.String())
 	}
-	_, manualFailOpen, _, _ = currentProbeLinuxRouterLocalState()
+	_, manualFailOpen, _ = currentProbeLinuxRouterLocalState()
 	if manualFailOpen {
 		t.Fatal("manual fail-open was not cleared")
 	}
@@ -221,11 +230,68 @@ func TestProbeLinuxRouterWebRejectsInvalidGatewayConfig(t *testing.T) {
 	handler := setupProbeLinuxRouterWebTest(t)
 	cookie := registerAndLoginProbeLinuxRouterWeb(t, handler)
 	config := map[string]any{
-		"enabled": true, "dns_enabled": true, "interface": "eth0", "gateway_address": "203.0.113.10/24", "upstream_gateway": "203.0.113.1", "lan_cidrs": []string{"192.168.1.0/24"},
+		"gateway_proxy": map[string]any{
+			"enabled": true, "dns_enabled": true, "interface": "eth0", "gateway_address": "203.0.113.10/24", "upstream_gateway": "203.0.113.1", "lan_cidrs": []string{"192.168.1.0/24"},
+		},
+		"local_ip_proxy": map[string]any{"enabled": false, "published_cidrs": []string{"192.168.50.0/24"}},
 	}
 	response := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/config", "192.168.1.150:18080", "192.168.1.20:43210", config, cookie)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("invalid config status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestProbeLinuxRouterWebUsesLocalConfigAndShowsConnections(t *testing.T) {
+	for _, marker := range []string{"本地配置", `<select id="interfaceName">`, `id="allowedNodeIDs"`, `id="connectionRows"`, `id="upgradeBtn"`, "/local/router/api/upgrade/check", "gateway_proxy", "local_ip_proxy"} {
+		if !strings.Contains(probeLinuxRouterWebPageHTML, marker) {
+			t.Fatalf("router page missing %q", marker)
+		}
+	}
+	for _, forbidden := range []string{"本地临时配置", "主控配置", "local_override"} {
+		if strings.Contains(probeLinuxRouterWebPageHTML, forbidden) {
+			t.Fatalf("router page still contains %q", forbidden)
+		}
+	}
+}
+
+func TestProbeLinuxRouterWebUpgradeUsesControllerProxy(t *testing.T) {
+	handler := setupProbeLinuxRouterWebTest(t)
+	cookie := registerAndLoginProbeLinuxRouterWeb(t, handler)
+	setprobeLocalRouteRuntimeContext(nodeIdentity{NodeID: "21", Secret: "router-secret"}, "https://controller.example")
+	probeLocalFetchRelease = func(_ context.Context, mode, repo, controllerBase string, identity nodeIdentity) (releaseInfo, error) {
+		if mode != "proxy" || repo != "fengzhanhuaer/CloudHelper" || controllerBase != "https://controller.example" || identity.NodeID != "21" {
+			t.Fatalf("unexpected upgrade check: mode=%q repo=%q controller=%q identity=%+v", mode, repo, controllerBase, identity)
+		}
+		return releaseInfo{TagName: "v9.9.9", Assets: []releaseAsset{{
+			Name: "cloudhelper-probe-router-" + runtime.GOOS + "-" + runtime.GOARCH + ".zip", DownloadURL: "https://example.com/router.zip",
+		}}}, nil
+	}
+	upgradeCommands := make(chan probeControlMessage, 1)
+	probeLocalRunUpgrade = func(command probeControlMessage, _ nodeIdentity) { upgradeCommands <- command }
+	t.Cleanup(func() {
+		resetProbeLocalUpgradeHooksForTest()
+		setprobeLocalRouteRuntimeContext(nodeIdentity{}, "")
+	})
+
+	check := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/upgrade/check", "192.168.1.150:18080", "192.168.1.20:43210", map[string]any{
+		"mode": "proxy", "release_repo": "fengzhanhuaer/CloudHelper",
+	}, cookie)
+	if check.Code != http.StatusOK || !strings.Contains(check.Body.String(), `"upgradeable":true`) || !strings.Contains(check.Body.String(), "cloudhelper-probe-router-") {
+		t.Fatalf("upgrade check status=%d body=%s", check.Code, check.Body.String())
+	}
+	upgrade := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/upgrade", "192.168.1.150:18080", "192.168.1.20:43210", map[string]any{
+		"mode": "proxy", "release_repo": "fengzhanhuaer/CloudHelper",
+	}, cookie)
+	if upgrade.Code != http.StatusOK {
+		t.Fatalf("upgrade status=%d body=%s", upgrade.Code, upgrade.Body.String())
+	}
+	select {
+	case command := <-upgradeCommands:
+		if command.Mode != "proxy" || command.ControllerBaseURL != "https://controller.example" {
+			t.Fatalf("unexpected upgrade command: %+v", command)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("router upgrade command was not started")
 	}
 }
 

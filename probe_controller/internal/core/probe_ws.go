@@ -112,7 +112,9 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 
 			msg.NodeID = nodeID
 			updateProbeRuntimeReportWithPlatform(nodeID, msg.IPv4, msg.IPv6, msg.System, msg.Version, msg.Platform, msg.OS, msg.Arch, msg.MachineUptimeSeconds, msg.RelayStatus)
-			updateProbeRuntimeProductStatus(nodeID, msg.BuildKind, msg.SpecialExit, msg.LinuxRouter)
+			if updateProbeRuntimeProductStatus(nodeID, msg.BuildKind, msg.SpecialExit, msg.LinuxRouter) {
+				go dispatchProbeRouteConfigSyncToKnownNodes("")
+			}
 
 			_ = probeSession.writeJSON(probeAckMessage{
 				Type:      "ack",

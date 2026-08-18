@@ -91,3 +91,35 @@ func TestCurrentProbeLinuxRouterReportUsesBestHealthyAdjacentLatency(t *testing.
 		t.Fatalf("latency_ms=%d, want best healthy adjacent RTT 17", got)
 	}
 }
+
+func TestProbeLinuxRouterIgnoresControllerSnapshot(t *testing.T) {
+	probeLinuxRouterRuntimeState.mu.Lock()
+	oldNodeID := probeLinuxRouterRuntimeState.nodeID
+	oldDesired := cloneProbeLinuxRouterSnapshot(probeLinuxRouterRuntimeState.desired)
+	local := &probeLinuxRouterSnapshot{Version: 1, NodeID: "21", Revision: 3, GatewayProxy: probeLinuxRouterGatewayConfig{GatewayAddress: "192.168.1.150/24"}}
+	probeLinuxRouterRuntimeState.nodeID = "21"
+	probeLinuxRouterRuntimeState.desired = cloneProbeLinuxRouterSnapshot(local)
+	probeLinuxRouterRuntimeState.mu.Unlock()
+	t.Cleanup(func() {
+		probeLinuxRouterRuntimeState.mu.Lock()
+		probeLinuxRouterRuntimeState.nodeID = oldNodeID
+		probeLinuxRouterRuntimeState.desired = oldDesired
+		probeLinuxRouterRuntimeState.mu.Unlock()
+	})
+
+	controller := &probeLinuxRouterSnapshot{Version: 1, NodeID: "21", Revision: 99, GatewayProxy: probeLinuxRouterGatewayConfig{GatewayAddress: "192.168.99.1/24"}}
+	if err := applyProbeLinuxRouterSnapshot(controller, "21"); err != nil {
+		t.Fatal(err)
+	}
+	desired, _, _ := currentProbeLinuxRouterLocalState()
+	if desired == nil || desired.Revision != 3 || desired.GatewayProxy.GatewayAddress != "192.168.1.150/24" {
+		t.Fatalf("controller snapshot changed local config: %+v", desired)
+	}
+	if err := applyProbeLinuxRouterSnapshot(nil, "21"); err != nil {
+		t.Fatal(err)
+	}
+	desired, _, _ = currentProbeLinuxRouterLocalState()
+	if desired == nil || desired.Revision != 3 {
+		t.Fatalf("nil controller snapshot cleared local config: %+v", desired)
+	}
+}

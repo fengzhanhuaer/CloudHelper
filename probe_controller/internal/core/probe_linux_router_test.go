@@ -16,7 +16,7 @@ func setupProbeLinuxRouterTestStores(t *testing.T) {
 		},
 		ProbeSecrets: map[string]string{"1": "client-secret", "21": "router-secret"},
 	}}
-	ProbeRouteConfigStore = &probeRouteConfigStore{data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig(), LinuxRouters: []probeLinuxRouterConfig{}}}
+	ProbeRouteConfigStore = &probeRouteConfigStore{data: probeRouteConfigStoreData{VirtualRouter: defaultProbeVirtualRouterConfig()}}
 	t.Cleanup(func() {
 		ProbeStore = oldProbeStore
 		ProbeRouteConfigStore = oldRouteStore
@@ -29,80 +29,97 @@ func TestNormalizeProbeNodeKindPreservesLinuxRouter(t *testing.T) {
 	}
 }
 
-func TestNormalizeProbeLinuxRouterConfigDefaultsAndRevision(t *testing.T) {
-	setupProbeLinuxRouterTestStores(t)
-	item, err := normalizeProbeLinuxRouterConfig(probeLinuxRouterConfig{NodeID: "21"}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if item.GatewayProxy.Enabled || item.LocalIPProxy.Enabled {
-		t.Fatalf("switches must default off: %+v", item)
-	}
-	if item.GatewayProxy.GatewayAddress != "192.168.1.150/24" || item.GatewayProxy.UpstreamGateway != "192.168.1.1" {
-		t.Fatalf("unexpected gateway defaults: %+v", item.GatewayProxy)
-	}
-	if item.Revision != 1 || len(item.SHA256) != 64 {
-		t.Fatalf("invalid revision/hash: %+v", item)
-	}
-	repeated, err := normalizeProbeLinuxRouterConfig(item, &item)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if repeated.Revision != item.Revision {
-		t.Fatalf("unchanged config revision changed: %d -> %d", item.Revision, repeated.Revision)
-	}
-}
-
-func TestNormalizeProbeLinuxRouterConfigRequiresACLAndRejectsFakePool(t *testing.T) {
-	setupProbeLinuxRouterTestStores(t)
-	raw := defaultProbeLinuxRouterConfig("21")
-	raw.LocalIPProxy.Enabled = true
-	if _, err := normalizeProbeLinuxRouterConfig(raw, nil); err == nil || !strings.Contains(err.Error(), "allowed_node_ids") {
-		t.Fatalf("missing ACL error = %v", err)
-	}
-	raw.LocalIPProxy.AllowedNodeIDs = []string{"1"}
-	raw.LocalIPProxy.PublishedCIDRs = []string{"198.18.0.0/15"}
-	if _, err := normalizeProbeLinuxRouterConfig(raw, nil); err == nil {
-		t.Fatal("fake IP pool overlap unexpectedly accepted")
-	}
-}
-
 func TestAppendProbeLinuxRouterPublishedRouteRulesScopesByACL(t *testing.T) {
 	setupProbeLinuxRouterTestStores(t)
-	router := defaultProbeLinuxRouterConfig("21")
-	router.LocalIPProxy.Enabled = true
-	router.LocalIPProxy.PublishedCIDRs = []string{"192.168.50.0/24"}
-	router.LocalIPProxy.AllowedNodeIDs = []string{"1"}
-	rules := appendProbeLinuxRouterPublishedRouteRules(nil, []probeLinuxRouterConfig{router}, "1")
+	router := probeRuntimeStatus{NodeID: "21", Online: true, LinuxRouter: probeLinuxRouterRuntimeReport{
+		AppliedRevision: 2, LocalIPProxyEnabled: true, Healthy: true,
+		PublishedCIDRs: []string{"192.168.50.0/24"}, AllowedNodeIDs: []string{"1"}, UpdatedAt: "2026-08-18T00:00:00Z",
+	}}
+	rules := appendProbeLinuxRouterPublishedRouteRules(nil, []probeRuntimeStatus{router}, "1")
 	if len(rules) != 1 || rules[0].ExitNodeID != "21" || len(rules[0].Entries) != 1 || rules[0].Entries[0] != "cidr:192.168.50.0/24" {
 		t.Fatalf("unexpected aggregated rules: %+v", rules)
 	}
-	if denied := appendProbeLinuxRouterPublishedRouteRules(nil, []probeLinuxRouterConfig{router}, "2"); len(denied) != 0 {
+	if denied := appendProbeLinuxRouterPublishedRouteRules(nil, []probeRuntimeStatus{router}, "2"); len(denied) != 0 {
 		t.Fatalf("unauthorized node received rules: %+v", denied)
 	}
-	if self := appendProbeLinuxRouterPublishedRouteRules(nil, []probeLinuxRouterConfig{router}, "21"); len(self) != 0 {
+	if self := appendProbeLinuxRouterPublishedRouteRules(nil, []probeRuntimeStatus{router}, "21"); len(self) != 0 {
 		t.Fatalf("router received its own published rule: %+v", self)
 	}
 	ProbeStore.mu.Lock()
 	ProbeStore.data.ProbeNodes[1].NodeKind = probeNodeKindNormal
 	ProbeStore.mu.Unlock()
-	if changedKind := appendProbeLinuxRouterPublishedRouteRules(nil, []probeLinuxRouterConfig{router}, "1"); len(changedKind) != 0 {
+	if changedKind := appendProbeLinuxRouterPublishedRouteRules(nil, []probeRuntimeStatus{router}, "1"); len(changedKind) != 0 {
 		t.Fatalf("stale router config remained active after kind change: %+v", changedKind)
 	}
 	ProbeStore.mu.Lock()
 	ProbeStore.data.ProbeNodes[1].NodeKind = probeNodeKindLinuxRouter
 	ProbeStore.mu.Unlock()
+	router.Online = false
+	if offline := appendProbeLinuxRouterPublishedRouteRules(nil, []probeRuntimeStatus{router}, "1"); len(offline) != 0 {
+		t.Fatalf("offline router still published routes: %+v", offline)
+	}
+}
+
+func TestUpdateProbeRuntimeProductStatusAcceptsOnlyValidatedLocalRouterRoutes(t *testing.T) {
+	setupProbeLinuxRouterTestStores(t)
 	probeRuntimeStore.mu.Lock()
-	previousRuntime := probeRuntimeStore.data
-	probeRuntimeStore.data = map[string]probeRuntimeStatus{"21": {NodeID: "21", Online: false}}
+	previous := probeRuntimeStore.data
+	probeRuntimeStore.data = make(map[string]probeRuntimeStatus)
 	probeRuntimeStore.mu.Unlock()
 	t.Cleanup(func() {
 		probeRuntimeStore.mu.Lock()
-		probeRuntimeStore.data = previousRuntime
+		probeRuntimeStore.data = previous
 		probeRuntimeStore.mu.Unlock()
 	})
-	if offline := appendProbeLinuxRouterPublishedRouteRules(nil, []probeLinuxRouterConfig{router}, "1"); len(offline) != 0 {
-		t.Fatalf("offline router still published routes: %+v", offline)
+
+	report := probeLinuxRouterRuntimeReport{
+		AppliedRevision: 4, AppliedSHA256: "ABC", LocalIPProxyEnabled: true, Healthy: true,
+		PublishedCIDRs: []string{"192.168.50.20/24", "192.168.50.0/24"},
+		AllowedNodeIDs: []string{"1", "21", "999"},
+	}
+	if changed := updateProbeRuntimeProductStatus("21", probeNodeKindLinuxRouter, probeSpecialExitRuntimeReport{}, report); !changed {
+		t.Fatal("initial local router report did not trigger route refresh")
+	}
+	runtime, ok := getProbeRuntime("21")
+	if !ok || len(runtime.LinuxRouter.PublishedCIDRs) != 1 || runtime.LinuxRouter.PublishedCIDRs[0] != "192.168.50.0/24" {
+		t.Fatalf("published CIDRs were not normalized: %+v", runtime.LinuxRouter)
+	}
+	if len(runtime.LinuxRouter.AllowedNodeIDs) != 1 || runtime.LinuxRouter.AllowedNodeIDs[0] != "1" {
+		t.Fatalf("allowed nodes were not scoped to known peers: %+v", runtime.LinuxRouter.AllowedNodeIDs)
+	}
+
+	report.PublishedCIDRs = []string{"198.18.0.0/15"}
+	if changed := updateProbeRuntimeProductStatus("21", probeNodeKindLinuxRouter, probeSpecialExitRuntimeReport{}, report); !changed {
+		t.Fatal("invalid local route withdrawal did not trigger route refresh")
+	}
+	runtime, _ = getProbeRuntime("21")
+	if runtime.LinuxRouter.LocalIPProxyEnabled || runtime.LinuxRouter.Healthy || len(runtime.LinuxRouter.PublishedCIDRs) != 0 {
+		t.Fatalf("invalid local route remained active: %+v", runtime.LinuxRouter)
+	}
+}
+
+func TestLinuxRouterRuntimeReconnectWaitsForFreshLocalConfigReport(t *testing.T) {
+	probeRuntimeStore.mu.Lock()
+	previous := probeRuntimeStore.data
+	probeRuntimeStore.data = map[string]probeRuntimeStatus{
+		"21": {NodeID: "21", Online: true, BuildKind: probeNodeKindLinuxRouter, LinuxRouter: probeLinuxRouterRuntimeReport{LocalIPProxyEnabled: true, Healthy: true, PublishedCIDRs: []string{"192.168.50.0/24"}}},
+	}
+	probeRuntimeStore.mu.Unlock()
+	t.Cleanup(func() {
+		probeRuntimeStore.mu.Lock()
+		probeRuntimeStore.data = previous
+		probeRuntimeStore.mu.Unlock()
+	})
+
+	if changed := setProbeRuntimeOnline("21", false); !changed {
+		t.Fatal("router disconnect did not request route withdrawal")
+	}
+	if changed := setProbeRuntimeOnline("21", true); changed {
+		t.Fatal("router reconnect published stale routes before a fresh report")
+	}
+	runtime, _ := getProbeRuntime("21")
+	if runtime.LinuxRouter.LocalIPProxyEnabled || len(runtime.LinuxRouter.PublishedCIDRs) != 0 {
+		t.Fatalf("stale local router report survived reconnect: %+v", runtime.LinuxRouter)
 	}
 }
 
@@ -131,9 +148,14 @@ func TestMngPagesExposeLinuxRouterWorkflow(t *testing.T) {
 			t.Fatalf("probe page missing %q", marker)
 		}
 	}
-	for _, marker := range []string{`data-tab="linux-router"`, `id="linux-router-node"`, `id="linux-router-gateway-enabled"`, `id="linux-router-local-enabled"`, `/mng/api/route/linux_router`, `旁路由运行状态`, `最优邻接延迟`, `runtime.latency_ms`} {
+	for _, marker := range []string{`data-tab="linux-router"`, `id="linux-router-node"`, `/mng/api/route/linux_router`, `旁路由运行状态`, `配置来源：本地 Web`, `最优邻接延迟`, `runtime.latency_ms`, `runtime.allowed_node_ids`} {
 		if !strings.Contains(mngRoutePageHTML, marker) {
 			t.Fatalf("route page missing %q", marker)
+		}
+	}
+	for _, forbidden := range []string{`id="btn-linux-router-save"`, `id="linux-router-gateway-enabled"`, `id="linux-router-local-enabled"`} {
+		if strings.Contains(mngRoutePageHTML, forbidden) {
+			t.Fatalf("route page still exposes controller router config %q", forbidden)
 		}
 	}
 }

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -39,10 +40,10 @@ type probeRuntimeStatus struct {
 	RelayStatus          []probeRelayStatusItem        `json:"relay_status,omitempty"`
 }
 
-func updateProbeRuntimeProductStatus(nodeID string, buildKind string, status probeSpecialExitRuntimeReport, routerStatus probeLinuxRouterRuntimeReport) {
+func updateProbeRuntimeProductStatus(nodeID string, buildKind string, status probeSpecialExitRuntimeReport, routerStatus probeLinuxRouterRuntimeReport) bool {
 	nodeID = normalizeProbeNodeID(nodeID)
 	if nodeID == "" {
-		return
+		return false
 	}
 	probeRuntimeStore.mu.Lock()
 	current := probeRuntimeStore.data[nodeID]
@@ -70,15 +71,35 @@ func updateProbeRuntimeProductStatus(nodeID string, buildKind string, status pro
 	routerStatus.AppliedSHA256 = strings.ToLower(strings.TrimSpace(routerStatus.AppliedSHA256))
 	routerStatus.Interface = strings.TrimSpace(routerStatus.Interface)
 	routerStatus.GatewayAddress = strings.TrimSpace(routerStatus.GatewayAddress)
-	routerStatus.PublishedCIDRs = compactStrings(routerStatus.PublishedCIDRs)
+	if cidrs, err := normalizeProbeLinuxRouterCIDRs(routerStatus.PublishedCIDRs); err == nil {
+		routerStatus.PublishedCIDRs = cidrs
+	} else {
+		routerStatus.PublishedCIDRs = nil
+		routerStatus.LocalIPProxyEnabled = false
+		routerStatus.Healthy = false
+		routerStatus.LastApplyError = "invalid published CIDRs: " + err.Error()
+	}
+	routerStatus.AllowedNodeIDs = normalizeProbeLinuxRouterAllowedNodes(routerStatus.AllowedNodeIDs, nodeID)
 	routerStatus.LastApplyError = strings.TrimSpace(routerStatus.LastApplyError)
 	if len(routerStatus.LastApplyError) > 512 {
 		routerStatus.LastApplyError = routerStatus.LastApplyError[:512]
 	}
 	routerStatus.UpdatedAt = strings.TrimSpace(routerStatus.UpdatedAt)
+	previousRouterStatus := current.LinuxRouter
 	current.LinuxRouter = routerStatus
 	probeRuntimeStore.data[nodeID] = current
 	probeRuntimeStore.mu.Unlock()
+	return current.BuildKind == probeNodeKindLinuxRouter && probeLinuxRouterRoutingReportChanged(previousRouterStatus, routerStatus)
+}
+
+func probeLinuxRouterRoutingReportChanged(previous, current probeLinuxRouterRuntimeReport) bool {
+	return previous.AppliedRevision != current.AppliedRevision ||
+		!strings.EqualFold(previous.AppliedSHA256, current.AppliedSHA256) ||
+		previous.LocalIPProxyEnabled != current.LocalIPProxyEnabled ||
+		previous.Healthy != current.Healthy ||
+		previous.FailOpen != current.FailOpen ||
+		!slices.Equal(previous.PublishedCIDRs, current.PublishedCIDRs) ||
+		!slices.Equal(previous.AllowedNodeIDs, current.AllowedNodeIDs)
 }
 
 type probeRelayProtocolQuality struct {
@@ -177,18 +198,22 @@ var probeRuntimeStore = struct {
 	data map[string]probeRuntimeStatus
 }{data: make(map[string]probeRuntimeStatus)}
 
-func setProbeRuntimeOnline(nodeID string, online bool) {
+func setProbeRuntimeOnline(nodeID string, online bool) bool {
 	nodeID = normalizeProbeNodeID(nodeID)
 	if nodeID == "" {
-		return
+		return false
 	}
 	probeRuntimeStore.mu.Lock()
 	current, existed := probeRuntimeStore.data[nodeID]
 	prevOnline := current.Online
+	routerRouteChanged := prevOnline && !online && current.BuildKind == probeNodeKindLinuxRouter && current.LinuxRouter.LocalIPProxyEnabled
 	current.NodeID = nodeID
 	current.Online = online
 	if online {
 		current.LastSeen = time.Now().UTC().Format(time.RFC3339)
+		if !prevOnline && current.BuildKind == probeNodeKindLinuxRouter {
+			current.LinuxRouter = probeLinuxRouterRuntimeReport{}
+		}
 	}
 	probeRuntimeStore.data[nodeID] = current
 	probeRuntimeStore.mu.Unlock()
@@ -198,6 +223,7 @@ func setProbeRuntimeOnline(nodeID string, online bool) {
 	if existed && prevOnline != online {
 		onProbeRuntimeTransition(nodeID, online)
 	}
+	return routerRouteChanged
 }
 
 func updateProbeRuntimeReport(nodeID string, ipv4 []string, ipv6 []string, metrics probeSystemMetrics, version string) {

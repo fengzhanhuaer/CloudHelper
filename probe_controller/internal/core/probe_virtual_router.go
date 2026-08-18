@@ -188,7 +188,7 @@ func buildProbeVirtualRouterConfigForNodeLocked(nodeID string) probeVirtualRoute
 	config = enrichProbeVirtualRouterAuthTickets(config)
 	config = enrichProbeVirtualRouterProbeIPDisplayNames(config)
 	config = scopeProbeVirtualRouterCredentialsForNode(config, nodeID)
-	config.RouteRules = appendProbeLinuxRouterPublishedRouteRules(config.RouteRules, ProbeRouteConfigStore.data.LinuxRouters, nodeID)
+	config.RouteRules = appendProbeLinuxRouterPublishedRouteRules(config.RouteRules, listProbeRuntimes(), nodeID)
 	config.FakeIPLibrary = probeVirtualRouterFakeIPLibrary{}
 	if !config.Enabled {
 		config.ProbeIPs = []probeVirtualRouterProbeIP{}
@@ -198,15 +198,17 @@ func buildProbeVirtualRouterConfigForNodeLocked(nodeID string) probeVirtualRoute
 	return config
 }
 
-func appendProbeLinuxRouterPublishedRouteRules(rules []probeVirtualRouterRouteRule, routers []probeLinuxRouterConfig, nodeID string) []probeVirtualRouterRouteRule {
+func appendProbeLinuxRouterPublishedRouteRules(rules []probeVirtualRouterRouteRule, runtimes []probeRuntimeStatus, nodeID string) []probeVirtualRouterRouteRule {
 	nodeID = normalizeProbeNodeID(nodeID)
 	out := append([]probeVirtualRouterRouteRule(nil), rules...)
-	for _, router := range routers {
-		routerNodeID := normalizeProbeNodeID(router.NodeID)
-		if !router.LocalIPProxy.Enabled || routerNodeID == "" || routerNodeID == nodeID || !probeLinuxRouterNodeAllowed(router.LocalIPProxy.AllowedNodeIDs, nodeID) || !probeLinuxRouterPublishedRouteAvailable(routerNodeID) {
+	for _, runtime := range runtimes {
+		routerNodeID := normalizeProbeNodeID(runtime.NodeID)
+		report := runtime.LinuxRouter
+		routerNode, routerFound := getProbeNodeByID(routerNodeID)
+		if !routerFound || normalizeProbeNodeKind(routerNode.NodeKind) != probeNodeKindLinuxRouter || !runtime.Online || !report.Healthy || report.FailOpen || !report.LocalIPProxyEnabled || routerNodeID == "" || routerNodeID == nodeID || !probeLinuxRouterNodeAllowed(report.AllowedNodeIDs, nodeID) {
 			continue
 		}
-		for _, cidr := range router.LocalIPProxy.PublishedCIDRs {
+		for _, cidr := range report.PublishedCIDRs {
 			sum := sha256.Sum256([]byte(routerNodeID + "|" + cidr))
 			out = append(out, probeVirtualRouterRouteRule{
 				ID:         "linux-router-" + routerNodeID + "-" + hex.EncodeToString(sum[:6]),
@@ -215,20 +217,11 @@ func appendProbeLinuxRouterPublishedRouteRules(rules []probeVirtualRouterRouteRu
 				ExitNodeID: routerNodeID,
 				Entries:    []string{"cidr:" + cidr},
 				Note:       "由旁路由本地IP代理自动聚合",
-				UpdatedAt:  router.UpdatedAt,
+				UpdatedAt:  report.UpdatedAt,
 			})
 		}
 	}
 	return normalizeProbeVirtualRouterRouteRules(out)
-}
-
-func probeLinuxRouterPublishedRouteAvailable(nodeID string) bool {
-	node, found := getProbeNodeByID(normalizeProbeNodeID(nodeID))
-	if !found || normalizeProbeNodeKind(node.NodeKind) != probeNodeKindLinuxRouter {
-		return false
-	}
-	runtime, found := getProbeRuntime(nodeID)
-	return !found || runtime.Online
 }
 
 func probeLinuxRouterNodeAllowed(allowed []string, nodeID string) bool {

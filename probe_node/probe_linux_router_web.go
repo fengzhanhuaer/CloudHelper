@@ -145,6 +145,9 @@ func buildProbeLinuxRouterWebHandler() http.Handler {
 	mux.HandleFunc("/local/router/api/fail-open", probeLinuxRouterWebFailOpenHandler)
 	mux.HandleFunc("/local/router/api/resume", probeLinuxRouterWebResumeHandler)
 	mux.HandleFunc("/local/router/api/logs", probeLinuxRouterWebLogsHandler)
+	mux.HandleFunc("/local/router/api/upgrade", probeLocalSystemUpgradeHandler)
+	mux.HandleFunc("/local/router/api/upgrade/check", probeLocalSystemUpgradeCheckHandler)
+	mux.HandleFunc("/local/router/api/upgrade/status", probeLocalSystemUpgradeStatusHandler)
 	return probeLinuxRouterLANOnlyMiddleware(mux)
 }
 
@@ -263,7 +266,7 @@ func probeLinuxRouterWebStatusHandler(w http.ResponseWriter, r *http.Request) {
 	if _, ok := requireProbeLocalSession(w, r); !ok {
 		return
 	}
-	desired, manualFailOpen, localOverride, nodeID := currentProbeLinuxRouterLocalState()
+	desired, manualFailOpen, nodeID := currentProbeLinuxRouterLocalState()
 	report := currentProbeLinuxRouterReport()
 	probeReporterRPCState.mu.Lock()
 	controllerConnected := probeReporterRPCState.stream != nil && probeReporterRPCState.encoder != nil
@@ -286,10 +289,32 @@ func probeLinuxRouterWebStatusHandler(w http.ResponseWriter, r *http.Request) {
 		"uptime_seconds":       uptimeSeconds,
 		"controller_connected": controllerConnected,
 		"manual_fail_open":     manualFailOpen,
-		"local_override":       localOverride,
 		"config":               desired,
 		"runtime":              report,
+		"connections":          probeLocalVirtualRouterPathStatusPayloads(),
+		"interfaces":           listProbeLinuxRouterWebInterfaces(),
 	})
+}
+
+func listProbeLinuxRouterWebInterfaces() []map[string]any {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return []map[string]any{}
+	}
+	out := make([]map[string]any, 0, len(interfaces))
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || strings.TrimSpace(iface.Name) == "" {
+			continue
+		}
+		addresses := make([]string, 0)
+		if values, addrErr := iface.Addrs(); addrErr == nil {
+			for _, value := range values {
+				addresses = append(addresses, value.String())
+			}
+		}
+		out = append(out, map[string]any{"name": iface.Name, "addresses": addresses})
+	}
+	return out
 }
 
 func probeLinuxRouterWebConfigHandler(w http.ResponseWriter, r *http.Request) {
@@ -302,12 +327,12 @@ func probeLinuxRouterWebConfigHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	body := http.MaxBytesReader(w, r.Body, probeLinuxRouterWebBodyLimit)
 	defer body.Close()
-	var config probeLinuxRouterGatewayConfig
+	var config probeLinuxRouterLocalConfig
 	if err := decodeProbeLinuxRouterWebJSON(body, &config); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
-	if err := applyProbeLinuxRouterLocalGatewayConfig(config); err != nil {
+	if err := applyProbeLinuxRouterLocalConfig(config); err != nil {
 		var configErr *probeLinuxRouterLocalConfigError
 		if errors.As(err, &configErr) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": configErr.Error()})

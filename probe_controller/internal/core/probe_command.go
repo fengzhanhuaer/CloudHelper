@@ -283,16 +283,19 @@ func registerProbeSession(nodeID string, stream net.Conn) *probeSession {
 
 func unregisterProbeSession(nodeID string, session *probeSession) {
 	probeSessions.mu.Lock()
-	defer probeSessions.mu.Unlock()
 	current, ok := probeSessions.data[nodeID]
 	if !ok || current != session {
+		probeSessions.mu.Unlock()
 		return
 	}
 	delete(probeSessions.data, nodeID)
 	if current.stream != nil {
 		_ = current.stream.Close()
 	}
-	setProbeRuntimeOnline(nodeID, false)
+	probeSessions.mu.Unlock()
+	if setProbeRuntimeOnline(nodeID, false) {
+		go dispatchProbeRouteConfigSyncToKnownNodes("")
+	}
 }
 
 func getProbeSession(nodeID string) (*probeSession, bool) {

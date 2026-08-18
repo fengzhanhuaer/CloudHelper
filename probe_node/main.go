@@ -123,6 +123,7 @@ type probeLinuxRouterRuntimeReport struct {
 	Interface           string   `json:"interface,omitempty"`
 	GatewayAddress      string   `json:"gateway_address,omitempty"`
 	PublishedCIDRs      []string `json:"published_cidrs,omitempty"`
+	AllowedNodeIDs      []string `json:"allowed_node_ids,omitempty"`
 	TUNRXPackets        uint64   `json:"tun_rx_packets,omitempty"`
 	TUNRXBytes          uint64   `json:"tun_rx_bytes,omitempty"`
 	TUNTXPackets        uint64   `json:"tun_tx_packets,omitempty"`

@@ -22,7 +22,6 @@ type probeRouteConfigStoreData struct {
 	VirtualRouterFakeIP probeVirtualRouterFakeIPLibrary `json:"virtual_router_fake_ip,omitempty"`
 	SpecialExitLibrary  probeSpecialExitLibrary         `json:"special_exit_library,omitempty"`
 	SpecialExits        []probeSpecialExitConfig        `json:"special_exits,omitempty"`
-	LinuxRouters        []probeLinuxRouterConfig        `json:"linux_routers,omitempty"`
 	DoH                 probeControllerDoHConfig        `json:"doh,omitempty"`
 }
 
@@ -37,7 +36,6 @@ func initProbeRouteConfigStore() {
 			VirtualRouterFakeIP: defaultProbeVirtualRouterFakeIPLibrary(),
 			SpecialExitLibrary:  probeSpecialExitLibrary{Subscriptions: []probeSpecialExitSubscription{}, Proxies: []map[string]interface{}{}, ProxySourceIDs: map[string]string{}},
 			SpecialExits:        []probeSpecialExitConfig{},
-			LinuxRouters:        []probeLinuxRouterConfig{},
 			DoH:                 defaultProbeControllerDoHConfig(),
 		},
 	}
@@ -60,8 +58,15 @@ func initProbeRouteConfigStore() {
 			}
 			ProbeRouteConfigStore.data.SpecialExitLibrary = library
 			ProbeRouteConfigStore.data.SpecialExits = normalizeProbeSpecialExitConfigs(raw.SpecialExits)
-			ProbeRouteConfigStore.data.LinuxRouters = normalizeProbeLinuxRouterConfigs(raw.LinuxRouters)
 			ProbeRouteConfigStore.data.DoH = normalizeProbeControllerDoHConfig(raw.DoH)
+			var storedFields map[string]json.RawMessage
+			if mapErr := json.Unmarshal(content, &storedFields); mapErr == nil {
+				if _, hadLegacyLinuxRouters := storedFields["linux_routers"]; hadLegacyLinuxRouters {
+					if saveErr := ProbeRouteConfigStore.SaveWithoutAutoBackup(); saveErr != nil {
+						log.Fatalf("failed to remove legacy controller linux router config: %v", saveErr)
+					}
+				}
+			}
 		}
 	} else if os.IsNotExist(err) {
 		if saveErr := ProbeRouteConfigStore.Save(); saveErr != nil {

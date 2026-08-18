@@ -28,7 +28,7 @@
       color: var(--text);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
     }
-    button, input, textarea { font: inherit; letter-spacing: 0; }
+    button, input, textarea, select { font: inherit; letter-spacing: 0; }
     button { cursor: pointer; }
     button:disabled { cursor: wait; opacity: .6; }
     .hidden { display: none !important; }
@@ -95,7 +95,7 @@
     .field { min-width: 0; }
     .field.full { grid-column: 1 / -1; }
     label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
-    input[type="text"], input[type="password"], textarea {
+    input[type="text"], input[type="password"], textarea, select {
       width: 100%;
       border: 1px solid #bfc8c1;
       border-radius: 5px;
@@ -104,8 +104,9 @@
       padding: 9px 10px;
       outline: none;
     }
-    input:focus, textarea:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(24, 121, 78, .12); }
+    input:focus, textarea:focus, select:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(24, 121, 78, .12); }
     textarea { min-height: 82px; resize: vertical; font-family: Consolas, monospace; }
+    select[multiple] { min-height: 126px; font-family: Consolas, monospace; }
     .switches { display: flex; gap: 24px; flex-wrap: wrap; align-items: center; min-height: 38px; }
     .check { display: inline-flex; align-items: center; gap: 8px; color: var(--text); font-size: 14px; font-weight: 600; }
     .check input { width: 18px; height: 18px; accent-color: var(--green); }
@@ -113,6 +114,13 @@
     .runtime-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); }
     .runtime-item { min-height: 78px; background: var(--surface); padding: 13px; }
     .runtime-item .value { font-size: 15px; font-family: Consolas, monospace; }
+    .connection-list { border: 1px solid var(--line); background: var(--surface); overflow-x: auto; }
+    .connection-row { display: grid; grid-template-columns: minmax(150px, 1fr) 110px minmax(180px, 1.5fr) 100px minmax(180px, 1.4fr); gap: 12px; align-items: center; min-width: 760px; padding: 11px 13px; border-bottom: 1px solid var(--line); }
+    .connection-row:last-child { border-bottom: 0; }
+    .connection-row.header { background: #f8faf8; color: var(--muted); font-size: 12px; font-weight: 600; }
+    .connection-node { font-weight: 700; }
+    .connection-detail { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .connection-empty { padding: 18px 13px; color: var(--muted); }
     pre {
       margin: 0;
       min-height: 220px;
@@ -143,6 +151,14 @@
       .field.full { grid-column: auto; }
       .section-head { flex-direction: column; }
       .section-meta { text-align: left; }
+      .connection-list { overflow-x: visible; }
+      .connection-row.header { display: none; }
+      .connection-row { min-width: 0; grid-template-columns: minmax(0, 1fr) auto; gap: 7px 12px; }
+      .connection-path, .connection-latency, .connection-result { grid-column: 1 / -1; }
+      .connection-path::before, .connection-latency::before, .connection-result::before { color: var(--muted); font-size: 12px; font-weight: 400; }
+      .connection-path::before { content: "路径 "; }
+      .connection-latency::before { content: "延迟 "; }
+      .connection-result::before { content: "最近结果 "; }
     }
     @media (max-width: 420px) {
       .status-grid { grid-template-columns: 1fr; }
@@ -189,6 +205,7 @@
           </div>
         </div>
         <div class="toolbar">
+          <button id="upgradeBtn" class="btn" type="button">升级</button>
           <button id="refreshBtn" class="btn" type="button">刷新</button>
           <button id="logoutBtn" class="btn" type="button">退出</button>
         </div>
@@ -197,6 +214,7 @@
 
     <main class="shell">
       <div id="notice" class="notice hidden"></div>
+      <div id="upgradeNotice" class="notice hidden"></div>
       <section class="status-grid" aria-label="运行状态">
         <div class="status-item"><div class="label">主控连接</div><div id="controllerStatus" class="value">--</div></div>
         <div class="status-item"><div class="label">数据面</div><div id="dataPlaneStatus" class="value">--</div></div>
@@ -206,8 +224,8 @@
 
       <section class="section">
         <div class="section-head">
-          <h2>网关配置</h2>
-          <div id="configSource" class="section-meta">--</div>
+          <h2>旁路由配置</h2>
+          <div id="configSource" class="section-meta">本地配置</div>
         </div>
         <form id="configForm">
           <div class="form-grid">
@@ -215,10 +233,15 @@
               <label class="check"><input id="gatewayEnabled" type="checkbox" />网关代理</label>
               <label class="check"><input id="dnsEnabled" type="checkbox" />LAN DNS</label>
             </div>
-            <div class="field"><label for="interfaceName">LAN 网卡</label><input id="interfaceName" type="text" maxlength="32" /></div>
+            <div class="field"><label for="interfaceName">LAN 网卡</label><select id="interfaceName"></select></div>
             <div class="field"><label for="gatewayAddress">网关地址</label><input id="gatewayAddress" type="text" maxlength="32" /></div>
             <div class="field"><label for="upstreamGateway">上游网关</label><input id="upstreamGateway" type="text" maxlength="32" /></div>
             <div class="field full"><label for="lanCIDRs">LAN 网段</label><textarea id="lanCIDRs"></textarea></div>
+            <div class="field full switches">
+              <label class="check"><input id="localIPEnabled" type="checkbox" />本地 IP 代理</label>
+            </div>
+            <div class="field"><label for="publishedCIDRs">发布网段</label><textarea id="publishedCIDRs"></textarea></div>
+            <div class="field"><label for="allowedNodeIDs">允许访问的探针</label><select id="allowedNodeIDs" multiple size="6"></select></div>
           </div>
           <div class="actions">
             <button id="saveBtn" class="btn primary" type="submit">保存并应用</button>
@@ -226,6 +249,14 @@
             <button id="resumeBtn" class="btn danger hidden" type="button">恢复数据面</button>
           </div>
         </form>
+      </section>
+
+      <section class="section">
+        <div class="section-head"><h2>节点连接</h2><div id="connectionSummary" class="section-meta">--</div></div>
+        <div class="connection-list">
+          <div class="connection-row header"><span>节点</span><span>状态</span><span>路径</span><span>延迟</span><span>最近结果</span></div>
+          <div id="connectionRows"></div>
+        </div>
       </section>
 
       <section class="section">
@@ -237,7 +268,7 @@
           <div class="runtime-item"><div class="label">TUN 接收</div><div id="tunRx" class="value">--</div></div>
           <div class="runtime-item"><div class="label">TUN 发送</div><div id="tunTx" class="value">--</div></div>
           <div class="runtime-item"><div class="label">最优邻接延迟</div><div id="latency" class="value">--</div></div>
-          <div class="runtime-item"><div class="label">发布网段</div><div id="publishedCIDRs" class="value">--</div></div>
+          <div class="runtime-item"><div class="label">运行发布网段</div><div id="runtimePublishedCIDRs" class="value">--</div></div>
           <div class="runtime-item"><div class="label">本地 Web</div><div id="listenAddr" class="value">--</div></div>
           <div class="runtime-item"><div class="label">运行时间</div><div id="uptime" class="value">--</div></div>
         </div>
@@ -253,6 +284,7 @@
   <script>
     const $ = (id) => document.getElementById(id);
     let currentStatus = null;
+    let upgradeStatusTimer = null;
 
     async function requestJSON(url, options = {}) {
       const response = await fetch(url, {
@@ -309,6 +341,42 @@
       element.className = 'value' + (kind ? ' ' + kind : '');
     }
 
+    function escapeHTML(value) {
+      return String(value == null ? '' : value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
+    }
+
+    function renderConnections(connections, allowedNodeIDs) {
+      const items = Array.isArray(connections) ? connections : [];
+      const allowed = new Set((Array.isArray(allowedNodeIDs) ? allowedNodeIDs : []).map((value) => String(value || '').trim()).filter(Boolean));
+      const known = new Map(items.map((item) => [String(item.target_node_id || '').trim(), String(item.target_node_name || '').trim()]));
+      allowed.forEach((nodeID) => { if (!known.has(nodeID)) known.set(nodeID, ''); });
+      $('allowedNodeIDs').innerHTML = Array.from(known.entries()).sort((left, right) => left[0].localeCompare(right[0], undefined, { numeric: true })).map(([nodeID, nodeName]) =>
+        `<option value="${escapeHTML(nodeID)}" ${allowed.has(nodeID) ? 'selected' : ''}>#${escapeHTML(nodeID)}${nodeName ? ' ' + escapeHTML(nodeName) : ''}</option>`
+      ).join('');
+
+      const healthy = items.filter((item) => item.status === 'running').length;
+      $('connectionSummary').textContent = `${healthy}/${items.length} 可达`;
+      if (!items.length) {
+        $('connectionRows').innerHTML = '<div class="connection-empty">暂无其他虚拟路由节点</div>';
+        return;
+      }
+      const statusLabels = { running: '可达', degraded: '异常', quarantined: '已隔离', unavailable: '不可达' };
+      $('connectionRows').innerHTML = items.map((item) => {
+        const status = String(item.status || 'unavailable');
+        const statusClass = status === 'running' ? 'ok' : (status === 'degraded' ? 'warn-text' : 'error-text');
+        const path = (Array.isArray(item.path) ? item.path : []).map((node) => `#${String(node.node_id || '').trim()}`).join(' > ') || '-';
+        const observed = item.last_observed_at ? new Date(item.last_observed_at).toLocaleString() : '-';
+        const detail = item.last_error ? `${observed} · ${item.last_error}` : observed;
+        return `<div class="connection-row">
+          <div><div class="connection-node">#${escapeHTML(item.target_node_id || '-')} ${escapeHTML(item.target_node_name || '')}</div><div class="connection-detail">${escapeHTML(item.target_ip || '-')}</div></div>
+          <span class="${statusClass}">${escapeHTML(statusLabels[status] || status)}</span>
+          <span class="connection-detail connection-path">${escapeHTML(path)}</span>
+          <span class="connection-latency">${Number(item.rtt_ms || 0) > 0 ? escapeHTML(item.rtt_ms) + ' ms' : '-'}</span>
+          <span class="connection-detail connection-result">${escapeHTML(detail)}</span>
+        </div>`;
+      }).join('');
+    }
+
     function renderStatus(data) {
       currentStatus = data;
       const config = data.config || {};
@@ -320,20 +388,35 @@
       setState('dataPlaneStatus', data.manual_fail_open || runtime.fail_open ? '故障直通' : (runtime.healthy ? '正常' : '异常'), data.manual_fail_open || runtime.fail_open ? 'warn-text' : (runtime.healthy ? 'ok' : 'error-text'));
       setState('gatewayStatus', gateway.enabled ? '已启用' : '已关闭', gateway.enabled ? 'ok' : '');
       setState('localIPStatus', localIP.enabled ? '已启用' : '已关闭', localIP.enabled ? 'ok' : '');
-      $('configSource').textContent = data.local_override ? '本地临时配置' : '主控配置';
+      $('configSource').textContent = '本地配置';
       $('gatewayEnabled').checked = gateway.enabled === true;
       $('dnsEnabled').checked = gateway.dns_enabled !== false;
-      $('interfaceName').value = gateway.interface || 'auto';
+      const configuredInterface = String(gateway.interface || 'auto');
+      const interfaces = Array.isArray(data.interfaces) ? data.interfaces : [];
+      const interfaceNames = new Set(interfaces.map((item) => String(item.name || '').trim()).filter(Boolean));
+      const interfaceOptions = [{ name: 'auto', label: '自动选择' }].concat(interfaces.map((item) => {
+        const name = String(item.name || '').trim();
+        const addresses = Array.isArray(item.addresses) ? item.addresses.join(', ') : '';
+        return { name, label: addresses ? `${name} · ${addresses}` : name };
+      }));
+      if (configuredInterface !== 'auto' && !interfaceNames.has(configuredInterface)) {
+        interfaceOptions.push({ name: configuredInterface, label: `${configuredInterface} · 当前配置` });
+      }
+      $('interfaceName').innerHTML = interfaceOptions.map((item) => `<option value="${escapeHTML(item.name)}">${escapeHTML(item.label)}</option>`).join('');
+      $('interfaceName').value = configuredInterface;
       $('gatewayAddress').value = gateway.gateway_address || '192.168.1.150/24';
       $('upstreamGateway').value = gateway.upstream_gateway || '192.168.1.1';
       $('lanCIDRs').value = (gateway.lan_cidrs || ['192.168.1.0/24']).join('\n');
+      $('localIPEnabled').checked = localIP.enabled === true;
+      $('publishedCIDRs').value = (localIP.published_cidrs || ['192.168.1.0/24']).join('\n');
+      renderConnections(data.connections, localIP.allowed_node_ids);
       $('revision').textContent = 'r' + Number(runtime.applied_revision || config.revision || 0);
       $('runtimeInterface').textContent = runtime.interface || '-';
       $('runtimeGateway').textContent = runtime.gateway_address || gateway.gateway_address || '-';
       $('tunRx').textContent = Number(runtime.tun_rx_packets || 0) + ' 包 / ' + formatBytes(runtime.tun_rx_bytes);
       $('tunTx').textContent = Number(runtime.tun_tx_packets || 0) + ' 包 / ' + formatBytes(runtime.tun_tx_bytes);
       $('latency').textContent = Number(runtime.latency_ms || 0) > 0 ? runtime.latency_ms + ' ms' : '-';
-      $('publishedCIDRs').textContent = (runtime.published_cidrs || localIP.published_cidrs || []).join(', ') || '-';
+      $('runtimePublishedCIDRs').textContent = (runtime.published_cidrs || localIP.published_cidrs || []).join(', ') || '-';
       $('listenAddr').textContent = data.listen_addr || '0.0.0.0:18080';
       $('uptime').textContent = formatDuration(data.uptime_seconds);
       $('updatedAt').textContent = runtime.updated_at ? new Date(runtime.updated_at).toLocaleString() : '-';
@@ -346,9 +429,6 @@
         notice.className = 'notice error';
       } else if (data.manual_fail_open) {
         notice.textContent = '故障直通已启用';
-        notice.className = 'notice';
-      } else if (data.local_override) {
-        notice.textContent = '当前使用本地临时配置';
         notice.className = 'notice';
       } else {
         notice.textContent = '';
@@ -382,6 +462,67 @@
       $('notice').className = 'notice error';
     }
 
+    function setUpgradeNotice(text, kind) {
+      const notice = $('upgradeNotice');
+      notice.textContent = text || '';
+      notice.className = 'notice' + (kind === 'error' ? ' error' : '') + (text ? '' : ' hidden');
+    }
+
+    function upgradeStatusText(data) {
+      const status = String(data && data.status || 'idle');
+      const progress = Math.max(0, Math.min(100, Math.trunc(Number(data && data.progress || 0))));
+      const message = String(data && (data.error || data.message) || '').trim();
+      return `升级：${status}${progress > 0 ? ` ${progress}%` : ''}${message ? ` · ${message}` : ''}`;
+    }
+
+    async function pollUpgradeStatus() {
+      try {
+        const data = await requestJSON('/local/router/api/upgrade/status');
+        const status = String(data && data.status || 'idle');
+        const busy = status === 'accepted' || status === 'running';
+        $('upgradeBtn').disabled = busy;
+        setUpgradeNotice(upgradeStatusText(data), status === 'failed' ? 'error' : '');
+        if (!busy && upgradeStatusTimer) {
+          clearInterval(upgradeStatusTimer);
+          upgradeStatusTimer = null;
+        }
+      } catch (error) {
+        if (upgradeStatusTimer) {
+          setUpgradeNotice('升级程序正在重启，页面连接暂时中断');
+        }
+      }
+    }
+
+    async function startUpgrade() {
+      $('upgradeBtn').disabled = true;
+      setUpgradeNotice('正在通过主控检查新版本');
+      try {
+        const check = await requestJSON('/local/router/api/upgrade/check', {
+          method: 'POST',
+          body: JSON.stringify({ mode: 'proxy', release_repo: 'fengzhanhuaer/CloudHelper' }),
+        });
+        if (!check.upgradeable) {
+          setUpgradeNotice(`当前已是最新版本 ${check.current_version || ''}`.trim());
+          return;
+        }
+        if (!check.asset_name) throw new Error(check.asset_error || '未找到匹配的旁路由升级包');
+        if (!window.confirm(`升级 ${check.current_version || ''} 到 ${check.latest_version || ''}？`)) {
+          setUpgradeNotice('已取消升级');
+          return;
+        }
+        await requestJSON('/local/router/api/upgrade', {
+          method: 'POST',
+          body: JSON.stringify({ mode: 'proxy', release_repo: 'fengzhanhuaer/CloudHelper' }),
+        });
+        await pollUpgradeStatus();
+        if (!upgradeStatusTimer) upgradeStatusTimer = setInterval(pollUpgradeStatus, 1500);
+      } catch (error) {
+        setUpgradeNotice('升级失败：' + error.message, 'error');
+      } finally {
+        if (!upgradeStatusTimer) $('upgradeBtn').disabled = false;
+      }
+    }
+
     $('registerForm').addEventListener('submit', async (event) => {
       event.preventDefault();
       setAuthMessage('');
@@ -408,16 +549,23 @@
 
     $('configForm').addEventListener('submit', async (event) => {
       event.preventDefault();
-      if (!window.confirm('保存并应用本地网关配置？')) return;
+      if (!window.confirm('保存并应用本地旁路由配置？')) return;
       $('saveBtn').disabled = true;
       try {
         await requestJSON('/local/router/api/config', { method: 'POST', body: JSON.stringify({
-          enabled: $('gatewayEnabled').checked,
-          dns_enabled: $('dnsEnabled').checked,
-          interface: $('interfaceName').value.trim(),
-          gateway_address: $('gatewayAddress').value.trim(),
-          upstream_gateway: $('upstreamGateway').value.trim(),
-          lan_cidrs: $('lanCIDRs').value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
+          gateway_proxy: {
+            enabled: $('gatewayEnabled').checked,
+            dns_enabled: $('dnsEnabled').checked,
+            interface: $('interfaceName').value.trim(),
+            gateway_address: $('gatewayAddress').value.trim(),
+            upstream_gateway: $('upstreamGateway').value.trim(),
+            lan_cidrs: $('lanCIDRs').value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
+          },
+          local_ip_proxy: {
+            enabled: $('localIPEnabled').checked,
+            published_cidrs: $('publishedCIDRs').value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
+            allowed_node_ids: Array.from($('allowedNodeIDs').selectedOptions).map((option) => option.value),
+          },
         }) });
         await loadStatus();
       } catch (error) {
@@ -441,6 +589,7 @@
       } catch (error) { showActionError(error); }
     });
     $('refreshBtn').addEventListener('click', async () => { try { await loadStatus(); } catch (error) { showActionError(error); } });
+    $('upgradeBtn').addEventListener('click', startUpgrade);
     $('logsBtn').addEventListener('click', async () => { try { await loadLogs(); } catch (error) { showActionError(error); } });
     $('logoutBtn').addEventListener('click', async () => {
       try { await requestJSON('/local/api/auth/logout', { method: 'POST', body: '{}' }); } catch (_) {}

@@ -42,8 +42,12 @@ var probeLinuxRouterRuntimeState = struct {
 	stopCh         chan struct{}
 	running        bool
 	manualFailOpen bool
-	localOverride  bool
 }{}
+
+type probeLinuxRouterLocalConfig struct {
+	GatewayProxy probeLinuxRouterGatewayConfig `json:"gateway_proxy"`
+	LocalIPProxy probeLinuxRouterLocalIPConfig `json:"local_ip_proxy"`
+}
 
 type probeLinuxRouterLocalConfigError struct {
 	err error
@@ -112,38 +116,12 @@ func stopProbeProductRuntime() {
 	}
 }
 
-func applyProbeLinuxRouterSnapshot(snapshot *probeLinuxRouterSnapshot, nodeID string) error {
-	if snapshot == nil {
-		probeLinuxRouterRuntimeState.mu.Lock()
-		previous := cloneProbeLinuxRouterSnapshot(probeLinuxRouterRuntimeState.desired)
-		probeLinuxRouterRuntimeState.desired = nil
-		probeLinuxRouterRuntimeState.manualFailOpen = false
-		probeLinuxRouterRuntimeState.localOverride = false
-		probeLinuxRouterRuntimeState.mu.Unlock()
-		_ = removeProbeLinuxRouterSnapshot()
-		if err := probeLinuxRouterPlatformCleanup(previous); err != nil {
-			setProbeLinuxRouterReport(nil, "", false, err)
-			return err
-		}
-		setProbeLinuxRouterReport(nil, "", false, nil)
-		return nil
-	}
-	if err := validateProbeLinuxRouterSnapshot(snapshot, nodeID); err != nil {
-		return err
-	}
-	if err := persistProbeLinuxRouterSnapshot(snapshot); err != nil {
-		return err
-	}
+func applyProbeLinuxRouterSnapshot(_ *probeLinuxRouterSnapshot, nodeID string) error {
+	// Router settings are local-only. Ignore controller snapshots so an older
+	// controller cannot overwrite the local file during a rolling upgrade.
 	probeLinuxRouterRuntimeState.mu.Lock()
 	probeLinuxRouterRuntimeState.nodeID = strings.TrimSpace(nodeID)
-	probeLinuxRouterRuntimeState.desired = cloneProbeLinuxRouterSnapshot(snapshot)
-	probeLinuxRouterRuntimeState.localOverride = false
 	probeLinuxRouterRuntimeState.mu.Unlock()
-	go func() {
-		reconcileProbeLinuxRouterRuntime()
-		time.Sleep(750 * time.Millisecond)
-		reconcileProbeLinuxRouterRuntime()
-	}()
 	return nil
 }
 
@@ -213,10 +191,10 @@ func probeLinuxRouterHealthLoop(stopCh <-chan struct{}) {
 	}
 }
 
-func currentProbeLinuxRouterLocalState() (*probeLinuxRouterSnapshot, bool, bool, string) {
+func currentProbeLinuxRouterLocalState() (*probeLinuxRouterSnapshot, bool, string) {
 	probeLinuxRouterRuntimeState.mu.RLock()
 	defer probeLinuxRouterRuntimeState.mu.RUnlock()
-	return cloneProbeLinuxRouterSnapshot(probeLinuxRouterRuntimeState.desired), probeLinuxRouterRuntimeState.manualFailOpen, probeLinuxRouterRuntimeState.localOverride, probeLinuxRouterRuntimeState.nodeID
+	return cloneProbeLinuxRouterSnapshot(probeLinuxRouterRuntimeState.desired), probeLinuxRouterRuntimeState.manualFailOpen, probeLinuxRouterRuntimeState.nodeID
 }
 
 func setProbeLinuxRouterManualFailOpen(enabled bool) error {
@@ -235,16 +213,24 @@ func setProbeLinuxRouterManualFailOpen(enabled bool) error {
 	return reconcileProbeLinuxRouterRuntime()
 }
 
-func applyProbeLinuxRouterLocalGatewayConfig(config probeLinuxRouterGatewayConfig) error {
-	config.Interface = strings.TrimSpace(config.Interface)
-	if config.Interface == "" {
-		config.Interface = "auto"
+func applyProbeLinuxRouterLocalConfig(config probeLinuxRouterLocalConfig) error {
+	config.GatewayProxy.Interface = strings.TrimSpace(config.GatewayProxy.Interface)
+	if config.GatewayProxy.Interface == "" {
+		config.GatewayProxy.Interface = "auto"
 	}
-	config.GatewayAddress = strings.TrimSpace(config.GatewayAddress)
-	config.UpstreamGateway = strings.TrimSpace(config.UpstreamGateway)
-	config.LANCIDRs = normalizeProbeLinuxRouterLocalCIDRs(config.LANCIDRs)
-	if len(config.LANCIDRs) == 0 {
+	config.GatewayProxy.GatewayAddress = strings.TrimSpace(config.GatewayProxy.GatewayAddress)
+	config.GatewayProxy.UpstreamGateway = strings.TrimSpace(config.GatewayProxy.UpstreamGateway)
+	config.GatewayProxy.LANCIDRs = normalizeProbeLinuxRouterLocalCIDRs(config.GatewayProxy.LANCIDRs)
+	if len(config.GatewayProxy.LANCIDRs) == 0 {
 		return &probeLinuxRouterLocalConfigError{err: errors.New("at least one LAN CIDR is required")}
+	}
+	config.LocalIPProxy.PublishedCIDRs = normalizeProbeLinuxRouterLocalCIDRs(config.LocalIPProxy.PublishedCIDRs)
+	config.LocalIPProxy.AllowedNodeIDs = normalizeProbeLinuxRouterLocalNodeIDs(config.LocalIPProxy.AllowedNodeIDs)
+	if config.LocalIPProxy.Enabled && len(config.LocalIPProxy.PublishedCIDRs) == 0 {
+		return &probeLinuxRouterLocalConfigError{err: errors.New("at least one published CIDR is required when local IP proxy is enabled")}
+	}
+	if config.LocalIPProxy.Enabled && len(config.LocalIPProxy.AllowedNodeIDs) == 0 {
+		return &probeLinuxRouterLocalConfigError{err: errors.New("at least one allowed node is required when local IP proxy is enabled")}
 	}
 
 	probeLinuxRouterRuntimeState.mu.RLock()
@@ -259,8 +245,19 @@ func applyProbeLinuxRouterLocalGatewayConfig(config probeLinuxRouterGatewayConfi
 			Version: 1, NodeID: nodeID, Revision: 1,
 		}
 	}
-	desired.GatewayProxy = config
-	desired.SHA256 = probeLinuxRouterSnapshotSHA256(*desired)
+	previousSHA := strings.ToLower(strings.TrimSpace(desired.SHA256))
+	desired.Version = 1
+	desired.NodeID = nodeID
+	desired.GatewayProxy = config.GatewayProxy
+	desired.LocalIPProxy = config.LocalIPProxy
+	nextSHA := probeLinuxRouterSnapshotSHA256(*desired)
+	if previousSHA != "" && !strings.EqualFold(previousSHA, nextSHA) {
+		desired.Revision++
+	}
+	if desired.Revision < 1 {
+		desired.Revision = 1
+	}
+	desired.SHA256 = nextSHA
 	if err := validateProbeLinuxRouterSnapshot(desired, nodeID); err != nil {
 		return &probeLinuxRouterLocalConfigError{err: err}
 	}
@@ -270,10 +267,30 @@ func applyProbeLinuxRouterLocalGatewayConfig(config probeLinuxRouterGatewayConfi
 
 	probeLinuxRouterRuntimeState.mu.Lock()
 	probeLinuxRouterRuntimeState.desired = cloneProbeLinuxRouterSnapshot(desired)
-	probeLinuxRouterRuntimeState.localOverride = true
 	probeLinuxRouterRuntimeState.manualFailOpen = false
 	probeLinuxRouterRuntimeState.mu.Unlock()
 	return reconcileProbeLinuxRouterRuntime()
+}
+
+func normalizeProbeLinuxRouterLocalNodeIDs(values []string) []string {
+	probeLinuxRouterRuntimeState.mu.RLock()
+	localNodeID := normalizeProbeRouteNodeID(probeLinuxRouterRuntimeState.nodeID)
+	probeLinuxRouterRuntimeState.mu.RUnlock()
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, raw := range values {
+		nodeID := normalizeProbeRouteNodeID(raw)
+		if nodeID == "" || nodeID == localNodeID {
+			continue
+		}
+		if _, ok := seen[nodeID]; ok {
+			continue
+		}
+		seen[nodeID] = struct{}{}
+		out = append(out, nodeID)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func normalizeProbeLinuxRouterLocalCIDRs(values []string) []string {
@@ -308,6 +325,7 @@ func setProbeLinuxRouterReport(snapshot *probeLinuxRouterSnapshot, iface string,
 		report.LocalIPProxyEnabled = snapshot.LocalIPProxy.Enabled
 		report.GatewayAddress = snapshot.GatewayProxy.GatewayAddress
 		report.PublishedCIDRs = append([]string(nil), snapshot.LocalIPProxy.PublishedCIDRs...)
+		report.AllowedNodeIDs = append([]string(nil), snapshot.LocalIPProxy.AllowedNodeIDs...)
 	}
 	if applyErr != nil {
 		report.LastApplyError = strings.TrimSpace(applyErr.Error())
@@ -323,6 +341,7 @@ func currentProbeLinuxRouterReport() probeLinuxRouterRuntimeReport {
 	defer probeLinuxRouterRuntimeState.mu.RUnlock()
 	report := probeLinuxRouterRuntimeState.report
 	report.PublishedCIDRs = append([]string(nil), report.PublishedCIDRs...)
+	report.AllowedNodeIDs = append([]string(nil), report.AllowedNodeIDs...)
 	stats := probeVirtualRouterTUNDataPlaneStatsSnapshot()
 	report.TUNRXPackets = stats.RXPackets
 	report.TUNRXBytes = stats.RXBytes
@@ -429,13 +448,27 @@ func validateProbeLinuxRouterSnapshot(snapshot *probeLinuxRouterSnapshot, nodeID
 	if err != nil || !gateway.Masked().Contains(upstream) || upstream == gateway.Addr() {
 		return errors.New("router upstream_gateway is outside the gateway subnet")
 	}
+	fakePool := netip.MustParsePrefix("198.18.0.0/15")
 	for _, values := range [][]string{snapshot.GatewayProxy.LANCIDRs, snapshot.LocalIPProxy.PublishedCIDRs} {
+		if len(values) > 32 {
+			return errors.New("router config allows at most 32 CIDRs per list")
+		}
 		for _, raw := range values {
 			prefix, err := netip.ParsePrefix(strings.TrimSpace(raw))
-			if err != nil || !prefix.Addr().Is4() || !prefix.Addr().IsPrivate() {
+			if err != nil || !prefix.Addr().Is4() || !prefix.Addr().IsPrivate() || prefix.Bits() < 8 {
 				return fmt.Errorf("router CIDR %q is invalid", raw)
 			}
+			prefix = prefix.Masked()
+			if prefix.Contains(fakePool.Addr()) || fakePool.Contains(prefix.Addr()) {
+				return fmt.Errorf("router CIDR %q overlaps the virtual router fake IP pool", raw)
+			}
 		}
+	}
+	if snapshot.LocalIPProxy.Enabled && len(snapshot.LocalIPProxy.PublishedCIDRs) == 0 {
+		return errors.New("router published CIDRs are required when local IP proxy is enabled")
+	}
+	if snapshot.LocalIPProxy.Enabled && len(snapshot.LocalIPProxy.AllowedNodeIDs) == 0 {
+		return errors.New("router allowed node IDs are required when local IP proxy is enabled")
 	}
 	expectedSHA := probeLinuxRouterSnapshotSHA256(*snapshot)
 	if strings.TrimSpace(snapshot.SHA256) == "" || !strings.EqualFold(snapshot.SHA256, expectedSHA) {
@@ -481,18 +514,6 @@ func loadProbeLinuxRouterSnapshot() (*probeLinuxRouterSnapshot, error) {
 		return nil, err
 	}
 	return &snapshot, nil
-}
-
-func removeProbeLinuxRouterSnapshot() error {
-	dataDir, err := resolveDataDir()
-	if err != nil {
-		return err
-	}
-	err = os.Remove(filepath.Join(dataDir, probeLinuxRouterConfigFileName))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	return err
 }
 
 func cloneProbeLinuxRouterSnapshot(snapshot *probeLinuxRouterSnapshot) *probeLinuxRouterSnapshot {
