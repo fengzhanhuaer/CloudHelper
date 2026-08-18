@@ -78,12 +78,8 @@ func doProbeLinuxRouterWebRequest(t *testing.T, handler http.Handler, method, pa
 
 func registerAndLoginProbeLinuxRouterWeb(t *testing.T, handler http.Handler) *http.Cookie {
 	t.Helper()
-	token, err := ensureProbeLocalSetupToken()
-	if err != nil {
-		t.Fatal(err)
-	}
 	register := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/api/auth/register", "192.168.1.150:18080", "192.168.1.20:43210", map[string]any{
-		"username": "admin", "password": "secret1234", "confirm_password": "secret1234", "setup_token": token,
+		"username": "admin", "password": "secret1234", "confirm_password": "secret1234",
 	})
 	if register.Code != http.StatusOK {
 		t.Fatalf("register status=%d body=%s", register.Code, register.Body.String())
@@ -99,6 +95,43 @@ func registerAndLoginProbeLinuxRouterWeb(t *testing.T, handler http.Handler) *ht
 		t.Fatal("login did not return a session cookie")
 	}
 	return cookie
+}
+
+func TestProbeLinuxRouterWebRegistrationDoesNotRequireSetupToken(t *testing.T) {
+	handler := setupProbeLinuxRouterWebTest(t)
+	bootstrap := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/api/auth/bootstrap", "192.168.1.150:18080", "192.168.1.20:43210", nil)
+	if bootstrap.Code != http.StatusOK {
+		t.Fatalf("bootstrap status=%d body=%s", bootstrap.Code, bootstrap.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(bootstrap.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["registered"] != false || payload["setup_token_required"] != false {
+		t.Fatalf("unexpected bootstrap payload: %#v", payload)
+	}
+	dataDir, err := resolveDataDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dataDir + string(os.PathSeparator) + probeLocalSetupTokenFile); !os.IsNotExist(err) {
+		t.Fatalf("router bootstrap created a setup token: %v", err)
+	}
+	register := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/api/auth/register", "192.168.1.150:18080", "192.168.1.20:43210", map[string]any{
+		"username": "admin", "password": "secret1234", "confirm_password": "secret1234",
+	})
+	if register.Code != http.StatusOK {
+		t.Fatalf("register status=%d body=%s", register.Code, register.Body.String())
+	}
+	repeated := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/api/auth/register", "192.168.1.150:18080", "192.168.1.20:43210", map[string]any{
+		"username": "other", "password": "otherpass123", "confirm_password": "otherpass123",
+	})
+	if repeated.Code != http.StatusForbidden {
+		t.Fatalf("repeated register status=%d body=%s", repeated.Code, repeated.Body.String())
+	}
+	if strings.Contains(probeLinuxRouterWebPageHTML, "setupToken") || strings.Contains(probeLinuxRouterWebPageHTML, "初始化令牌") {
+		t.Fatal("router page still exposes the setup token field")
+	}
 }
 
 func TestProbeLinuxRouterWebListenDefaults(t *testing.T) {

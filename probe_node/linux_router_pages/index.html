@@ -164,7 +164,6 @@
         </div>
       </div>
       <form id="registerForm" class="hidden">
-        <div class="field"><label for="setupToken">初始化令牌</label><input id="setupToken" type="password" autocomplete="off" required /></div>
         <div class="field"><label for="registerUsername">用户名</label><input id="registerUsername" type="text" maxlength="64" required /></div>
         <div class="field"><label for="registerPassword">密码</label><input id="registerPassword" type="password" minlength="8" maxlength="128" required /></div>
         <div class="field"><label for="registerConfirm">确认密码</label><input id="registerConfirm" type="password" minlength="8" maxlength="128" required /></div>
@@ -388,7 +387,6 @@
       setAuthMessage('');
       try {
         await requestJSON('/local/api/auth/register', { method: 'POST', body: JSON.stringify({
-          setup_token: $('setupToken').value,
           username: $('registerUsername').value,
           password: $('registerPassword').value,
           confirm_password: $('registerConfirm').value,

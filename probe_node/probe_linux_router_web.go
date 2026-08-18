@@ -64,15 +64,10 @@ func startProbeLinuxRouterWeb(nodeID string) error {
 	if strings.TrimSpace(nodeID) == "" {
 		return errors.New("router web requires a node identity")
 	}
-	authManager, err := ensureProbeLocalAuthManager()
-	if err != nil {
+	if _, err := ensureProbeLocalAuthManager(); err != nil {
 		return err
 	}
-	if !authManager.registered() {
-		if _, err := ensureProbeLocalSetupToken(); err != nil {
-			return err
-		}
-	}
+	consumeProbeLocalSetupToken()
 	addr, err := resolveProbeLinuxRouterWebListenAddr()
 	if err != nil {
 		return err
@@ -140,8 +135,8 @@ func buildProbeLinuxRouterWebHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", probeLinuxRouterWebRootHandler)
 	mux.HandleFunc("/local/router", probeLinuxRouterWebPageHandler)
-	mux.HandleFunc("/local/api/auth/bootstrap", probeLocalAuthBootstrapHandler)
-	mux.HandleFunc("/local/api/auth/register", probeLocalAuthRegisterHandler)
+	mux.HandleFunc("/local/api/auth/bootstrap", probeLinuxRouterAuthBootstrapHandler)
+	mux.HandleFunc("/local/api/auth/register", probeLinuxRouterAuthRegisterHandler)
 	mux.HandleFunc("/local/api/auth/login", probeLocalAuthLoginHandler)
 	mux.HandleFunc("/local/api/auth/logout", probeLocalAuthLogoutHandler)
 	mux.HandleFunc("/local/api/auth/session", probeLocalAuthSessionHandler)
@@ -151,6 +146,49 @@ func buildProbeLinuxRouterWebHandler() http.Handler {
 	mux.HandleFunc("/local/router/api/resume", probeLinuxRouterWebResumeHandler)
 	mux.HandleFunc("/local/router/api/logs", probeLinuxRouterWebLogsHandler)
 	return probeLinuxRouterLANOnlyMiddleware(mux)
+}
+
+func probeLinuxRouterAuthBootstrapHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	mgr, err := ensureProbeLocalAuthManager()
+	if err != nil {
+		writeProbeLocalError(w, err)
+		return
+	}
+	payload := mgr.bootstrap()
+	payload["setup_token_required"] = false
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func probeLinuxRouterAuthRegisterHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	mgr, err := ensureProbeLocalAuthManager()
+	if err != nil {
+		writeProbeLocalError(w, err)
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, probeLocalAuthReadBodyMaxLen)
+	defer body.Close()
+	var req probeLocalRegisterRequest
+	if err := json.NewDecoder(body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if mgr.registered() {
+		writeProbeLocalError(w, &probeLocalHTTPError{Status: http.StatusForbidden, Message: "registration is closed"})
+		return
+	}
+	if err := mgr.register(req.Username, req.Password, req.ConfirmPassword); err != nil {
+		writeProbeLocalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "registered": true})
 }
 
 func probeLinuxRouterLANOnlyMiddleware(next http.Handler) http.Handler {

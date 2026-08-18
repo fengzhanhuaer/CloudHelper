@@ -162,4 +162,3 @@ if [ "${service_ready}" -ne 1 ]; then
 fi
 log "installed ${PROGRAM_ASSET} at ${INSTALL_DIR}"
 log "local rescue web listens on http://${PROBE_ROUTER_WEB_LISTEN} (private IPv4 clients and IP hosts only)"
-log "first registration token: ${INSTALL_DIR}/data/probe_local_setup_token"
