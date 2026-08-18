@@ -72,8 +72,15 @@ else
   program_url="https://github.com/${RELEASE_REPO}/releases/download/${RELEASE_TAG}/${PROGRAM_ASSET}"
 fi
 
-log "downloading ${PROGRAM_ASSET}"
-curl -fL --retry 5 --connect-timeout 15 "${program_url}" -o "${work_dir}/probe_router"
+proxy_download_url="${PROBE_CONTROLLER_URL%/}/api/probe/proxy/download"
+log "downloading ${PROGRAM_ASSET} through controller proxy"
+curl -fL --retry 5 --connect-timeout 15 \
+  --get \
+  --data-urlencode "node_id=${PROBE_NODE_ID}" \
+  --data-urlencode "secret=${PROBE_NODE_SECRET}" \
+  -H "X-CloudHelper-Download-URL: ${program_url}" \
+  "${proxy_download_url}" \
+  -o "${work_dir}/probe_router"
 chmod 0755 "${work_dir}/probe_router"
 "${work_dir}/probe_router" --upgrade-verify --upgrade-verify-duration=5 --upgrade-verify-build-kind=linux_router
 
