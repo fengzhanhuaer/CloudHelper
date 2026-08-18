@@ -16,8 +16,8 @@ func TestBuildProbeLinuxRouterNFTScriptOnlyMarksLANIngress(t *testing.T) {
 		GatewayProxy: probeLinuxRouterGatewayConfig{Enabled: true, DNSEnabled: true, GatewayAddress: "192.168.1.150/24", LANCIDRs: []string{"192.168.1.0/24"}},
 		LocalIPProxy: probeLinuxRouterLocalIPConfig{Enabled: true, PublishedCIDRs: []string{"192.168.50.0/24"}},
 	}
-	script := buildProbeLinuxRouterNFTScript(snapshot, "eth0", "cloudhelper0", "198.18.0.2", false)
-	for _, marker := range []string{`iifname "eth0" ip saddr @lan4`, "meta mark set 0x4348", `iifname "cloudhelper0" ip daddr @published4 ct mark set 0x4349`, `iifname "eth0" ct mark 0x4349`, `iifname "cloudhelper0" oifname "eth0"`, "dnat to 198.18.0.2:53"} {
+	script := buildProbeLinuxRouterNFTScript(snapshot, "eth0", "cloudhelper0", "198.18.0.15", []string{"198.18.0.0/15", "149.154.160.0/20"}, false)
+	for _, marker := range []string{`iifname "eth0" ip saddr @lan4`, "meta mark set 0x4348", `iifname "cloudhelper0" ip daddr @published4 ct mark set 0x4349`, `iifname "eth0" ct mark 0x4349`, `iifname "cloudhelper0" oifname "eth0"`, "dnat to 198.18.0.2:53", "149.154.160.0/20", `oifname "cloudhelper0" ip saddr @lan4 ip daddr @routed4 snat to 198.18.0.15`} {
 		if !strings.Contains(script, marker) {
 			t.Fatalf("nft script missing %q:\n%s", marker, script)
 		}
@@ -39,7 +39,7 @@ func TestBuildProbeLinuxRouterNFTScriptPassesNFTCheck(t *testing.T) {
 		LocalIPProxy: probeLinuxRouterLocalIPConfig{Enabled: true, PublishedCIDRs: []string{"192.168.50.0/24"}},
 	}
 	cmd := exec.Command("nft", "--check", "-f", "-")
-	cmd.Stdin = strings.NewReader(buildProbeLinuxRouterNFTScript(snapshot, "chlan0", "chprobe0", "198.18.0.2", false))
+	cmd.Stdin = strings.NewReader(buildProbeLinuxRouterNFTScript(snapshot, "chlan0", "chprobe0", "198.18.0.21", []string{"198.18.0.0/15"}, false))
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("nft check failed: %v: %s", err, strings.TrimSpace(string(output)))
 	}
@@ -109,8 +109,8 @@ func TestProbeLinuxRouterSysctlsRestoreOriginalValues(t *testing.T) {
 
 func TestBuildProbeLinuxRouterFailOpenNFTScriptRemovesTUNMarkAndDNSRedirect(t *testing.T) {
 	snapshot := probeLinuxRouterSnapshot{GatewayProxy: probeLinuxRouterGatewayConfig{Enabled: true, DNSEnabled: true, GatewayAddress: "192.168.1.150/24", LANCIDRs: []string{"192.168.1.0/24"}}}
-	script := buildProbeLinuxRouterNFTScript(snapshot, "eth0", "cloudhelper0", "198.18.0.2", true)
-	if strings.Contains(script, "meta mark set") || strings.Contains(script, "dnat to") {
+	script := buildProbeLinuxRouterNFTScript(snapshot, "eth0", "cloudhelper0", "", nil, true)
+	if strings.Contains(script, "meta mark set") || strings.Contains(script, "dnat to") || strings.Contains(script, "snat to") {
 		t.Fatalf("fail-open script still redirects traffic:\n%s", script)
 	}
 	if !strings.Contains(script, `oifname "eth0" ip saddr @lan4 masquerade`) {
@@ -155,7 +155,7 @@ func TestProbeLinuxRouterNetworkNamespacePolicy(t *testing.T) {
 	if err := applyProbeLinuxRouterPolicyRouting(snapshot, "chlan0", "chprobe0"); err != nil {
 		t.Fatal(err)
 	}
-	if err := replaceProbeLinuxRouterNFTTable(buildProbeLinuxRouterNFTScript(snapshot, "chlan0", "chprobe0", "198.18.0.2", false)); err != nil {
+	if err := replaceProbeLinuxRouterNFTTable(buildProbeLinuxRouterNFTScript(snapshot, "chlan0", "chprobe0", "198.18.0.21", []string{"198.18.0.0/15"}, false)); err != nil {
 		t.Fatal(err)
 	}
 	mainAfter := mustRun("ip", "-4", "route", "show", "table", "main")

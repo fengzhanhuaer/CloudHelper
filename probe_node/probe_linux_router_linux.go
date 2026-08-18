@@ -27,10 +27,11 @@ const (
 )
 
 var probeLinuxRouterLinuxState = struct {
-	mu             sync.Mutex
-	interfaceName  string
-	gatewayAddress string
-	sysctlOriginal map[string]string
+	mu                 sync.Mutex
+	interfaceName      string
+	gatewayAddress     string
+	sysctlOriginal     map[string]string
+	snatCIDRsSignature string
 }{}
 
 var probeLinuxRouterRunCommand = probeLocalLinuxRunCommand
@@ -75,7 +76,8 @@ func applyProbeLinuxRouterPlatform(snapshot probeLinuxRouterSnapshot) (string, e
 	if err := applyProbeLinuxRouterPolicyRouting(snapshot, iface, tunDev); err != nil {
 		return iface, err
 	}
-	if err := replaceProbeLinuxRouterNFTTable(buildProbeLinuxRouterNFTScript(snapshot, iface, tunDev, tunIP, false)); err != nil {
+	snatCIDRs := probeLinuxRouterSNATCIDRs(currentProbeVirtualRouterConfig())
+	if err := replaceProbeLinuxRouterNFTTable(buildProbeLinuxRouterNFTScript(snapshot, iface, tunDev, tunIP, snatCIDRs, false)); err != nil {
 		return iface, err
 	}
 	if snapshot.GatewayProxy.Enabled && snapshot.GatewayProxy.DNSEnabled {
@@ -92,6 +94,7 @@ func applyProbeLinuxRouterPlatform(snapshot probeLinuxRouterSnapshot) (string, e
 	} else {
 		probeLinuxRouterLinuxState.gatewayAddress = ""
 	}
+	probeLinuxRouterLinuxState.snatCIDRsSignature = strings.Join(snatCIDRs, ",")
 	probeLinuxRouterLinuxState.mu.Unlock()
 	return iface, nil
 }
@@ -112,7 +115,10 @@ func applyProbeLinuxRouterFailOpen(snapshot probeLinuxRouterSnapshot) error {
 		return err
 	}
 	stopProbeVirtualRouterDNSService()
-	return replaceProbeLinuxRouterNFTTable(buildProbeLinuxRouterNFTScript(snapshot, iface, tunDev, probeLocalTUNInterfaceIPv4, true))
+	probeLinuxRouterLinuxState.mu.Lock()
+	probeLinuxRouterLinuxState.snatCIDRsSignature = ""
+	probeLinuxRouterLinuxState.mu.Unlock()
+	return replaceProbeLinuxRouterNFTTable(buildProbeLinuxRouterNFTScript(snapshot, iface, tunDev, "", nil, true))
 }
 
 func cleanupProbeLinuxRouterPlatform(snapshot *probeLinuxRouterSnapshot) error {
@@ -129,6 +135,7 @@ func cleanupProbeLinuxRouterPlatform(snapshot *probeLinuxRouterSnapshot) error {
 	address := probeLinuxRouterLinuxState.gatewayAddress
 	probeLinuxRouterLinuxState.interfaceName = ""
 	probeLinuxRouterLinuxState.gatewayAddress = ""
+	probeLinuxRouterLinuxState.snatCIDRsSignature = ""
 	probeLinuxRouterLinuxState.mu.Unlock()
 	if address == "" && snapshot != nil && snapshot.GatewayProxy.Enabled {
 		address = snapshot.GatewayProxy.GatewayAddress
@@ -209,6 +216,13 @@ func probeLinuxRouterPlatformHealth(snapshot probeLinuxRouterSnapshot) error {
 	}
 	if _, err := probeLinuxRouterRunCommand(5*time.Second, "nft", "list", "table", "ip", probeLinuxRouterNFTTable); err != nil {
 		return fmt.Errorf("router nftables state is unavailable: %w", err)
+	}
+	expectedSNATCIDRs := strings.Join(probeLinuxRouterSNATCIDRs(currentProbeVirtualRouterConfig()), ",")
+	probeLinuxRouterLinuxState.mu.Lock()
+	appliedSNATCIDRs := probeLinuxRouterLinuxState.snatCIDRsSignature
+	probeLinuxRouterLinuxState.mu.Unlock()
+	if expectedSNATCIDRs != appliedSNATCIDRs {
+		return errors.New("router proxy CIDR selection changed")
 	}
 	if snapshot.GatewayProxy.Enabled || snapshot.LocalIPProxy.Enabled {
 		output, err := probeLinuxRouterRunCommand(5*time.Second, "ip", "-4", "rule", "show", "priority", probeLinuxRouterRulePriority)
@@ -324,14 +338,18 @@ func replaceProbeLinuxRouterNFTTable(script string) error {
 	return nil
 }
 
-func buildProbeLinuxRouterNFTScript(snapshot probeLinuxRouterSnapshot, iface string, tunDev string, tunIP string, failOpen bool) string {
+func buildProbeLinuxRouterNFTScript(snapshot probeLinuxRouterSnapshot, iface string, tunDev string, localIP string, snatCIDRs []string, failOpen bool) string {
 	lanElements := strings.Join(snapshot.GatewayProxy.LANCIDRs, ", ")
 	publishedElements := strings.Join(snapshot.LocalIPProxy.PublishedCIDRs, ", ")
+	snatElements := strings.Join(snatCIDRs, ", ")
 	if lanElements == "" {
 		lanElements = "192.168.1.0/24"
 	}
 	if publishedElements == "" {
 		publishedElements = "192.168.1.0/24"
+	}
+	if snatElements == "" {
+		snatElements = probeLocalFakeIPDefaultCIDR
 	}
 	ifaceQuote := strconv.Quote(iface)
 	tunQuote := strconv.Quote(tunDev)
@@ -340,13 +358,14 @@ func buildProbeLinuxRouterNFTScript(snapshot probeLinuxRouterSnapshot, iface str
 		"table ip "+probeLinuxRouterNFTTable+" {",
 		"  set lan4 { type ipv4_addr; flags interval; elements = { "+lanElements+" } }",
 		"  set published4 { type ipv4_addr; flags interval; elements = { "+publishedElements+" } }",
+		"  set routed4 { type ipv4_addr; flags interval; elements = { "+snatElements+" } }",
 	)
 	if snapshot.GatewayProxy.Enabled && snapshot.GatewayProxy.DNSEnabled && !failOpen {
 		gateway, _ := netip.ParsePrefix(snapshot.GatewayProxy.GatewayAddress)
 		rules = append(rules,
 			"  chain dstnat { type nat hook prerouting priority dstnat; policy accept;",
-			"    iifname "+ifaceQuote+" ip daddr "+gateway.Addr().String()+" udp dport 53 dnat to "+tunIP+":53",
-			"    iifname "+ifaceQuote+" ip daddr "+gateway.Addr().String()+" tcp dport 53 dnat to "+tunIP+":53",
+			"    iifname "+ifaceQuote+" ip daddr "+gateway.Addr().String()+" udp dport 53 dnat to "+probeVirtualRouterDNSListenHost+":53",
+			"    iifname "+ifaceQuote+" ip daddr "+gateway.Addr().String()+" tcp dport 53 dnat to "+probeVirtualRouterDNSListenHost+":53",
 			"  }",
 		)
 	}
@@ -367,6 +386,9 @@ func buildProbeLinuxRouterNFTScript(snapshot probeLinuxRouterSnapshot, iface str
 	}
 	rules = append(rules, "  chain postrouting { type nat hook postrouting priority srcnat; policy accept;")
 	if snapshot.GatewayProxy.Enabled {
+		if !failOpen && strings.TrimSpace(localIP) != "" {
+			rules = append(rules, "    oifname "+tunQuote+" ip saddr @lan4 ip daddr @routed4 snat to "+strings.TrimSpace(localIP))
+		}
 		rules = append(rules, "    oifname "+ifaceQuote+" ip saddr @lan4 masquerade")
 	}
 	if snapshot.LocalIPProxy.Enabled && !failOpen {

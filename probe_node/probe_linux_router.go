@@ -194,11 +194,56 @@ func probeLinuxRouterHealthCheckOnce() {
 		report = currentProbeLinuxRouterReport()
 	}
 	if err := probeLinuxRouterPlatformHealthy(*desired); err != nil {
+		if reconcileErr := reconcileProbeLinuxRouterRuntime(); reconcileErr == nil {
+			if retryErr := probeLinuxRouterPlatformHealthy(*desired); retryErr == nil {
+				return
+			} else {
+				err = retryErr
+			}
+		} else {
+			return
+		}
 		if desired.GatewayProxy.Enabled {
 			_ = probeLinuxRouterPlatformFailOpen(*desired)
 		}
 		setProbeLinuxRouterReport(desired, report.Interface, desired.GatewayProxy.Enabled, err)
 	}
+}
+
+func probeLinuxRouterSNATCIDRs(config probeVirtualRouterConfig) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	appendCIDR := func(raw string) {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(raw))
+		if err != nil || !prefix.Addr().Is4() {
+			return
+		}
+		value := prefix.Masked().String()
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	if cidr := strings.TrimSpace(config.FakeIPCIDR); cidr != "" {
+		appendCIDR(cidr)
+	} else {
+		appendCIDR(probeLocalFakeIPDefaultCIDR)
+	}
+	for _, rule := range config.RouteRules {
+		action := sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID)
+		if action != "probe_exit" && action != "reject" {
+			continue
+		}
+		for _, entry := range rule.Entries {
+			kind, value, ok := strings.Cut(strings.TrimSpace(entry), ":")
+			if ok && strings.EqualFold(strings.TrimSpace(kind), "cidr") {
+				appendCIDR(value)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func currentProbeLinuxRouterLocalState() (*probeLinuxRouterSnapshot, bool, string) {

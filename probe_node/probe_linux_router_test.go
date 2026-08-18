@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/binary"
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -46,6 +47,21 @@ func TestNormalizeProbeLinuxRouterGatewayAddressAcceptsPlainIPv4(t *testing.T) {
 func TestProbeLinuxRouterGatewaySubnet(t *testing.T) {
 	if got := probeLinuxRouterGatewaySubnet("192.168.51.105/24"); got != "192.168.51.0/24" {
 		t.Fatalf("gateway subnet=%q", got)
+	}
+}
+
+func TestProbeLinuxRouterSNATCIDRsIncludeFakeIPAndRoutedCIDRs(t *testing.T) {
+	config := probeVirtualRouterConfig{
+		FakeIPCIDR: "198.18.0.0/15",
+		RouteRules: []probeVirtualRouterRouteRule{
+			{Action: "probe_exit", ExitNodeID: "17", Entries: []string{"domain_suffix:openai.com", "cidr:149.154.160.0/20"}},
+			{Action: "reject", Entries: []string{"cidr:203.0.113.9/32"}},
+			{Action: "direct", Entries: []string{"cidr:192.0.2.0/24"}},
+		},
+	}
+	want := []string{"149.154.160.0/20", "198.18.0.0/15", "203.0.113.9/32"}
+	if got := probeLinuxRouterSNATCIDRs(config); !reflect.DeepEqual(got, want) {
+		t.Fatalf("SNAT CIDRs=%v, want %v", got, want)
 	}
 }
 
@@ -192,5 +208,63 @@ func TestProbeLinuxRouterHealthCheckRebuildsFailOpenBeforeHealth(t *testing.T) {
 	report := currentProbeLinuxRouterReport()
 	if !report.Healthy || report.FailOpen || report.Interface != "eth0" {
 		t.Fatalf("unexpected recovered report: %+v", report)
+	}
+}
+
+func TestProbeLinuxRouterHealthCheckRepairsDriftBeforeFailOpen(t *testing.T) {
+	probeLinuxRouterRuntimeState.mu.Lock()
+	oldDesired := cloneProbeLinuxRouterSnapshot(probeLinuxRouterRuntimeState.desired)
+	oldReport := probeLinuxRouterRuntimeState.report
+	oldManualFailOpen := probeLinuxRouterRuntimeState.manualFailOpen
+	probeLinuxRouterRuntimeState.desired = &probeLinuxRouterSnapshot{
+		Version:      1,
+		NodeID:       "21",
+		GatewayProxy: probeLinuxRouterGatewayConfig{Enabled: true},
+	}
+	probeLinuxRouterRuntimeState.report = probeLinuxRouterRuntimeReport{Healthy: true, Interface: "eth0"}
+	probeLinuxRouterRuntimeState.manualFailOpen = false
+	probeLinuxRouterRuntimeState.mu.Unlock()
+
+	oldApply := probeLinuxRouterPlatformApply
+	oldFailOpen := probeLinuxRouterPlatformFailOpen
+	oldHealthy := probeLinuxRouterPlatformHealthy
+	t.Cleanup(func() {
+		probeLinuxRouterRuntimeState.mu.Lock()
+		probeLinuxRouterRuntimeState.desired = oldDesired
+		probeLinuxRouterRuntimeState.report = oldReport
+		probeLinuxRouterRuntimeState.manualFailOpen = oldManualFailOpen
+		probeLinuxRouterRuntimeState.mu.Unlock()
+		probeLinuxRouterPlatformApply = oldApply
+		probeLinuxRouterPlatformFailOpen = oldFailOpen
+		probeLinuxRouterPlatformHealthy = oldHealthy
+	})
+
+	var calls []string
+	probeLinuxRouterPlatformApply = func(probeLinuxRouterSnapshot) (string, error) {
+		calls = append(calls, "apply")
+		return "eth0", nil
+	}
+	healthChecks := 0
+	probeLinuxRouterPlatformHealthy = func(probeLinuxRouterSnapshot) error {
+		calls = append(calls, "health")
+		healthChecks++
+		if healthChecks == 1 {
+			return errors.New("router proxy CIDR selection changed")
+		}
+		return nil
+	}
+	probeLinuxRouterPlatformFailOpen = func(probeLinuxRouterSnapshot) error {
+		calls = append(calls, "fail-open")
+		return nil
+	}
+
+	probeLinuxRouterHealthCheckOnce()
+
+	if !reflect.DeepEqual(calls, []string{"health", "apply", "health"}) {
+		t.Fatalf("calls=%v, want health, apply, health", calls)
+	}
+	report := currentProbeLinuxRouterReport()
+	if !report.Healthy || report.FailOpen || report.Interface != "eth0" {
+		t.Fatalf("unexpected repaired report: %+v", report)
 	}
 }
