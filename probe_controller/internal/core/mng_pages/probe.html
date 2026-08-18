@@ -48,7 +48,11 @@
     .version-cell { display:flex; flex-direction:column; align-items:flex-start; gap:4px; min-width:112px; }
     pre { background:#0d1117; border:1px solid #30363d; border-radius:8px; padding:10px; max-height:420px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
     .split { display:grid; grid-template-columns:2fr 1fr; gap:10px; }
-    .card { border:1px solid #30363d; border-radius:10px; padding:10px; background:#0d1117; }
+    .card { min-width:0; border:1px solid #30363d; border-radius:10px; padding:10px; background:#0d1117; }
+    .shell-terminal { min-height:320px; max-height:56vh; margin:0 0 10px; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .shell-input-row { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:start; gap:8px; }
+    .shell-prompt { min-width:34px; padding-top:8px; color:#7ee787; font-family:Consolas,monospace; }
+    #shell-command { min-height:38px; height:38px; box-sizing:border-box; font-family:Consolas,monospace; resize:vertical; }
     ul { margin:6px 0; padding-left:18px; }
     .ip-list { display:flex; flex-direction:column; gap:4px; margin:4px 0 6px; }
     .ip-copy-btn { display:block; width:100%; text-align:left; padding:4px 6px; border-radius:6px; border:1px solid #30363d; background:#0d1117; color:#c9d1d9; cursor:pointer; }
@@ -57,6 +61,7 @@
     .vendor-link:hover { text-decoration:underline; }
     .modal-backdrop { position:fixed; inset:0; background:rgba(1,4,9,.72); display:flex; align-items:center; justify-content:center; padding:16px; z-index:1000; }
     .modal-backdrop[hidden] { display:none; }
+    #install-mode-row[hidden] { display:none; }
     .modal { width:min(760px, 100%); max-height:90vh; overflow:auto; border:1px solid #30363d; border-radius:12px; background:#161b22; padding:14px; }
     .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
     .form-field { display:flex; flex-direction:column; gap:6px; }
@@ -73,6 +78,17 @@
     .probe-check-item .name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .compact-input { width:90px; }
     .result-summary { margin:8px 0; color:#8b949e; font-size:13px; }
+    @media (max-width:760px) {
+      .wrap { width:100%; margin:0; padding:12px; }
+      .topbar { align-items:flex-start; flex-direction:column; }
+      .panel { padding:10px; }
+      #section-list, #section-status, #section-network { max-width:100%; overflow-x:auto; }
+      .split, .form-grid { grid-template-columns:1fr; }
+      .form-field.full { grid-column:auto; }
+      .shell-terminal { min-height:280px; max-height:48vh; }
+      .shell-input-row { grid-template-columns:auto minmax(0,1fr); }
+      .shell-input-row .btn { grid-column:2; justify-self:end; }
+    }
   </style>
 </head>
 <body>
@@ -243,16 +259,17 @@
           <div class="card">
             <div class="row">
               <select id="shell-node-id"></select>
-              <input id="shell-timeout" value="60" placeholder="timeout_sec" />
+              <span id="shell-platform" class="pill">sh</span>
               <button id="btn-shell-start" class="btn" type="button">启动会话</button>
               <button id="btn-shell-stop" class="btn warn" type="button">停止会话</button>
             </div>
             <div class="row muted">会话ID：<span id="shell-session-id" class="mono">-</span></div>
-            <textarea id="shell-command" placeholder="输入命令后执行"></textarea>
-            <div class="row">
-              <button id="btn-shell-exec" class="btn primary" type="button">执行命令</button>
+            <pre id="shell-output" class="shell-terminal" aria-live="polite"></pre>
+            <div class="shell-input-row">
+              <span id="shell-prompt" class="shell-prompt">$</span>
+              <textarea id="shell-command" rows="1" placeholder="输入命令"></textarea>
+              <button id="btn-shell-exec" class="btn primary" type="button">发送</button>
             </div>
-            <pre id="shell-output"></pre>
           </div>
           <div class="card">
             <h4 style="margin-top:0">快捷命令</h4>
@@ -275,6 +292,14 @@
         <div class="form-field">
           <label for="edit-node-name">node_name</label>
           <input id="edit-node-name" />
+        </div>
+        <div class="form-field">
+          <label for="edit-node-kind">node_kind</label>
+          <select id="edit-node-kind">
+            <option value="normal">普通探针</option>
+            <option value="mihomo_exit">Mihomo 出口探针</option>
+            <option value="linux_router">Linux 旁路由探针</option>
+          </select>
         </div>
         <div class="form-field">
           <label for="edit-target-system">target_system</label>
@@ -364,6 +389,11 @@
       probeVersionCheckError: '',
       probeVersionCheckPromise: null,
       shellSessionID: '',
+      shellSessionNodeID: '',
+      shellCursor: 0,
+      shellPollGeneration: 0,
+      shellHistory: [],
+      shellHistoryIndex: 0,
       statusTimer: null,
       shellShortcuts: [],
       editingNodeNo: 0,
@@ -736,9 +766,17 @@
 
 
     function renderNodeSelect() {
+      const logsSelect = document.getElementById('logs-node-id');
+      const shellSelect = document.getElementById('shell-node-id');
+      const previousLogsNodeID = String(logsSelect.value || '');
+      const previousShellNodeID = state.shellSessionNodeID || String(shellSelect.value || '');
       const options = state.nodes.map((node) => `<option value="${escapeHTML(node.node_no)}">${escapeHTML(node.node_no)} - ${escapeHTML(node.node_name)}</option>`).join('');
-      document.getElementById('logs-node-id').innerHTML = options || '<option value="">(无节点)</option>';
-      document.getElementById('shell-node-id').innerHTML = options || '<option value="">(无节点)</option>';
+      logsSelect.innerHTML = options || '<option value="">(无节点)</option>';
+      shellSelect.innerHTML = options || '<option value="">(无节点)</option>';
+      if (previousLogsNodeID && state.nodes.some((node) => String(node.node_no) === previousLogsNodeID)) logsSelect.value = previousLogsNodeID;
+      if (previousShellNodeID && state.nodes.some((node) => String(node.node_no) === previousShellNodeID)) shellSelect.value = previousShellNodeID;
+      shellSelect.disabled = Boolean(state.shellSessionID);
+      updateShellPlatform();
     }
 
     function nodeRuntimeOnline(nodeNo) {
@@ -1236,6 +1274,57 @@
       setStatus('网络测试任务已删除并下发', 'ok');
     }
 
+    function updateShellPlatform() {
+      const nodeID = String(document.getElementById('shell-node-id').value || '').trim();
+      const node = state.nodes.find((item) => String(item.node_no) === nodeID);
+      const isWindows = String((node && node.target_system) || '').toLowerCase() === 'windows';
+      document.getElementById('shell-platform').textContent = isWindows ? 'PowerShell' : 'sh';
+      document.getElementById('shell-prompt').textContent = isWindows ? 'PS>' : '$';
+    }
+
+    function appendShellOutput(value) {
+      const output = document.getElementById('shell-output');
+      output.textContent += String(value || '');
+      output.scrollTop = output.scrollHeight;
+    }
+
+    function setShellSessionActive(active) {
+      document.getElementById('shell-node-id').disabled = active;
+      document.getElementById('btn-shell-start').disabled = active;
+      document.getElementById('btn-shell-stop').disabled = !active;
+      document.getElementById('btn-shell-exec').disabled = !active;
+      document.getElementById('shell-command').disabled = !active;
+    }
+
+    function finishShellSession(message) {
+      state.shellPollGeneration += 1;
+      state.shellSessionID = '';
+      state.shellSessionNodeID = '';
+      document.getElementById('shell-session-id').textContent = '-';
+      setShellSessionActive(false);
+      if (message) appendShellOutput(`\n[${message}]\n`);
+    }
+
+    async function pollShellOutput(generation) {
+      while (state.shellSessionID && generation === state.shellPollGeneration) {
+        const payload = await requestJSON('/mng/api/probe/shell/session/read', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ node_id: state.shellSessionNodeID, session_id: state.shellSessionID, cursor: state.shellCursor }),
+        });
+        if (generation !== state.shellPollGeneration) return;
+        if (payload.truncated) appendShellOutput('\n[较早输出已截断]\n');
+        if (payload.output) appendShellOutput(String(payload.output));
+        state.shellCursor = Number(payload.cursor) || state.shellCursor;
+        if (payload.closed) {
+          const message = payload.error ? `会话已结束：${payload.error}` : '会话已结束';
+          finishShellSession(message);
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+
     async function startShellSession() {
       const nodeID = String(document.getElementById('shell-node-id').value || '').trim();
       if (!nodeID) {
@@ -1248,13 +1337,26 @@
         body: JSON.stringify({ node_id: nodeID }),
       });
       state.shellSessionID = String(payload.session_id || '');
+      state.shellSessionNodeID = nodeID;
+      state.shellCursor = 0;
+      state.shellPollGeneration += 1;
+      state.shellHistoryIndex = state.shellHistory.length;
       document.getElementById('shell-session-id').textContent = state.shellSessionID || '-';
-      document.getElementById('shell-output').textContent = `会话已启动：${state.shellSessionID}\n`;
+      document.getElementById('shell-output').textContent = '';
+      setShellSessionActive(true);
+      updateShellPlatform();
+      const generation = state.shellPollGeneration;
+      pollShellOutput(generation).catch((err) => {
+        if (generation !== state.shellPollGeneration) return;
+        finishShellSession(`读取失败：${err.message || err}`);
+        setStatus(`Shell 输出读取失败：${err.message || err}`, 'err');
+      });
+      document.getElementById('shell-command').focus();
       setStatus(payload.message || 'Shell 会话已启动', 'ok');
     }
 
     async function stopShellSession() {
-      const nodeID = String(document.getElementById('shell-node-id').value || '').trim();
+      const nodeID = state.shellSessionNodeID;
       if (!nodeID || !state.shellSessionID) {
         setStatus('当前无可停止的会话', 'warn');
         return;
@@ -1264,16 +1366,14 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ node_id: nodeID, session_id: state.shellSessionID }),
       });
-      document.getElementById('shell-output').textContent += `\n[stop] ${payload.message || '会话已停止'}`;
-      state.shellSessionID = '';
-      document.getElementById('shell-session-id').textContent = '-';
+      finishShellSession(payload.message || '会话已停止');
       setStatus(payload.message || 'Shell 会话已停止', 'ok');
     }
 
     async function execShellCommand() {
-      const nodeID = String(document.getElementById('shell-node-id').value || '').trim();
-      const command = String(document.getElementById('shell-command').value || '').trim();
-      const timeoutSec = Number.parseInt(String(document.getElementById('shell-timeout').value || '60'), 10) || 60;
+      const nodeID = state.shellSessionNodeID;
+      const commandInput = document.getElementById('shell-command');
+      const command = String(commandInput.value || '').trim();
       if (!nodeID) {
         setStatus('请选择 Shell 节点', 'warn');
         return;
@@ -1286,19 +1386,18 @@
         setStatus('请输入命令', 'warn');
         return;
       }
-      const payload = await requestJSON('/mng/api/probe/shell/session/exec', {
+      const prompt = document.getElementById('shell-prompt').textContent || '$';
+      appendShellOutput(`${prompt} ${command}\n`);
+      commandInput.value = '';
+      state.shellHistory.push(command);
+      if (state.shellHistory.length > 100) state.shellHistory.shift();
+      state.shellHistoryIndex = state.shellHistory.length;
+      await requestJSON('/mng/api/probe/shell/session/input', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ node_id: nodeID, session_id: state.shellSessionID, command, timeout_sec: timeoutSec }),
+        body: JSON.stringify({ node_id: nodeID, session_id: state.shellSessionID, command }),
       });
-      const output = [
-        `\n$ ${command}`,
-        payload.stdout ? String(payload.stdout) : '',
-        payload.stderr ? String(payload.stderr) : '',
-        payload.error ? `[error] ${payload.error}` : '',
-      ].filter(Boolean).join('\n');
-      document.getElementById('shell-output').textContent += output + '\n';
-      setStatus(payload.error ? '命令执行返回错误（见输出）' : '命令执行完成', payload.error ? 'warn' : 'ok');
+      commandInput.focus();
     }
 
     async function loadShellShortcuts() {
@@ -1338,7 +1437,8 @@
 
     function runShortcut(command) {
       document.getElementById('shell-command').value = String(command || '');
-      setStatus('已填充快捷命令，点击“执行命令”即可运行', 'ok');
+      document.getElementById('shell-command').focus();
+      setStatus('已填充快捷命令', 'ok');
     }
 
     async function copyText(value) {
@@ -1457,18 +1557,13 @@
       document.getElementById('edit-node-name').value = String(node.node_name || '');
       document.getElementById('edit-remark').value = String(node.remark || '');
       document.getElementById('edit-ddns').value = String(node.ddns || '');
+      document.getElementById('edit-node-kind').value = normalizeNodeKind(node);
       const targetSystem = String(node.target_system || 'linux').toLowerCase();
       const targetSystemSelect = document.getElementById('edit-target-system');
-      const isSpecialExit = normalizeNodeKind(node) === 'mihomo_exit';
-      const isLinuxRouter = normalizeNodeKind(node) === 'linux_router';
-      Array.from(targetSystemSelect.options).forEach((option) => {
-        option.disabled = isSpecialExit && option.value !== 'linux' && option.value !== 'docker';
-        if (isLinuxRouter && option.value !== 'linux') option.disabled = true;
-      });
-      targetSystemSelect.disabled = false;
       targetSystemSelect.value = targetSystem === 'windows'
         ? 'windows'
         : (targetSystem === 'android' ? 'android' : (targetSystem === 'docker' ? 'docker' : 'linux'));
+      applyEditNodeKindConstraints();
       document.getElementById('edit-direct-connect').checked = node.direct_connect === true;
       document.getElementById('edit-local-console-enabled').checked = node.local_console_enabled === true;
       document.getElementById('edit-payment-cycle').value = String(node.payment_cycle || '');
@@ -1478,6 +1573,21 @@
       document.getElementById('edit-vendor-url').value = String(node.vendor_url || '');
       const modal = document.getElementById('node-edit-modal');
       modal.removeAttribute('hidden');
+    }
+
+    function applyEditNodeKindConstraints() {
+      const nodeKind = String(document.getElementById('edit-node-kind').value || 'normal');
+      const targetSystemSelect = document.getElementById('edit-target-system');
+      Array.from(targetSystemSelect.options).forEach((option) => {
+        option.disabled = (nodeKind === 'mihomo_exit' && option.value !== 'linux' && option.value !== 'docker')
+          || (nodeKind === 'linux_router' && option.value !== 'linux');
+      });
+      if (nodeKind === 'linux_router') {
+        targetSystemSelect.value = 'linux';
+      } else if (nodeKind === 'mihomo_exit' && targetSystemSelect.value !== 'linux' && targetSystemSelect.value !== 'docker') {
+        targetSystemSelect.value = 'linux';
+      }
+      targetSystemSelect.disabled = false;
     }
 
     function buildEditValidationError(message) {
@@ -1501,8 +1611,14 @@
       if (message.includes('target system must be linux, windows, android or docker')) {
         return `保存失败：目标系统只能是 linux、windows、android 或 docker（${raw}）`;
       }
+      if (message.includes('node kind must be normal, mihomo_exit or linux_router')) {
+        return `保存失败：探针类型无效（${raw}）`;
+      }
       if (message.includes('mihomo exit node target system must be linux or docker')) {
         return `保存失败：Mihomo 出口探针只能选择 Linux 或 Docker（${raw}）`;
+      }
+      if (message.includes('linux router node target system must be linux')) {
+        return `保存失败：Linux 旁路由探针只能选择 Linux（${raw}）`;
       }
       if (message.includes('invalid node number')) {
         return `保存失败：节点编号无效（${raw}）`;
@@ -1526,7 +1642,7 @@
       if (targetSystem !== 'linux' && targetSystem !== 'windows' && targetSystem !== 'android' && targetSystem !== 'docker') {
         throw buildEditValidationError('target_system 只能是 linux、windows、android 或 docker');
       }
-      const nodeKind = normalizeNodeKind(state.nodes.find((item) => Number(item.node_no) === Number(state.editingNodeNo)));
+      const nodeKind = String(document.getElementById('edit-node-kind').value || 'normal');
       if (nodeKind === 'mihomo_exit' && targetSystem !== 'linux' && targetSystem !== 'docker') {
         throw buildEditValidationError('Mihomo 出口探针只能选择 Linux 或 Docker');
       }
@@ -1558,14 +1674,23 @@
         throw buildEditValidationError('未选择可编辑的探针');
       }
       const payload = collectEditNodePayload();
-      await requestJSON('/mng/api/probe/node/update', {
+      const previousNode = state.nodes.find((item) => Number(item.node_no) === Number(payload.node_no));
+      const kindChanged = normalizeNodeKind(previousNode) !== payload.node_kind;
+      if (kindChanged && !confirm('修改探针类型会轮换密钥、断开当前连接，保存后必须重装。确认继续？')) return;
+      const result = await requestJSON('/mng/api/probe/node/update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
       closeEditNodeModal();
       await refreshNodes(true);
-      setStatus(`探针已更新：#${payload.node_no}`, 'ok');
+      if (result.reinstall_required) {
+        const cleanupWarning = result.config_cleanup_error ? `；旧类型配置清理失败：${result.config_cleanup_error}` : '';
+        setStatus(`探针类型已更新：#${payload.node_no}，请使用新安装信息重装${cleanupWarning}`, 'warn');
+        await copyNodeInstallCommand(payload.node_no);
+      } else {
+        setStatus(`探针已更新：#${payload.node_no}`, 'ok');
+      }
     }
 
     async function editNode(nodeNo) {
@@ -1666,6 +1791,20 @@
     document.getElementById('btn-shell-start').addEventListener('click', () => { startShellSession().catch((err) => setStatus(`会话启动失败：${err.message || err}`, 'err')); });
     document.getElementById('btn-shell-stop').addEventListener('click', () => { stopShellSession().catch((err) => setStatus(`会话停止失败：${err.message || err}`, 'err')); });
     document.getElementById('btn-shell-exec').addEventListener('click', () => { execShellCommand().catch((err) => setStatus(`命令执行失败：${err.message || err}`, 'err')); });
+    document.getElementById('shell-node-id').addEventListener('change', updateShellPlatform);
+    document.getElementById('shell-command').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        execShellCommand().catch((err) => setStatus(`命令发送失败：${err.message || err}`, 'err'));
+        return;
+      }
+      if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && state.shellHistory.length > 0) {
+        event.preventDefault();
+        state.shellHistoryIndex += event.key === 'ArrowUp' ? -1 : 1;
+        state.shellHistoryIndex = Math.max(0, Math.min(state.shellHistory.length, state.shellHistoryIndex));
+        event.currentTarget.value = state.shellHistoryIndex < state.shellHistory.length ? state.shellHistory[state.shellHistoryIndex] : '';
+      }
+    });
     document.getElementById('btn-shortcut-upsert').addEventListener('click', () => { upsertShortcut().catch((err) => setStatus(`快捷命令保存失败：${err.message || err}`, 'err')); });
 
     document.getElementById('btn-edit-node-cancel').addEventListener('click', () => {
@@ -1674,6 +1813,7 @@
     document.getElementById('btn-edit-node-save').addEventListener('click', () => {
       saveEditedNode().catch((err) => setStatus(formatEditSaveError(err), 'err'));
     });
+    document.getElementById('edit-node-kind').addEventListener('change', applyEditNodeKindConstraints);
     document.getElementById('node-edit-modal').addEventListener('click', (event) => {
       if (event.target === event.currentTarget) {
         closeEditNodeModal();
@@ -1786,6 +1926,8 @@
         }
       }
     });
+
+    setShellSessionActive(false);
 
     (async function init() {
       try {

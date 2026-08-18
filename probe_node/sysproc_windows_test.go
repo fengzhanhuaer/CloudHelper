@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -31,6 +32,13 @@ func TestBuildProbeInteractiveShellCommandSetsHiddenWindowAttrOnWindows(t *testi
 	}
 	if !cmd.SysProcAttr.HideWindow {
 		t.Fatalf("expected HideWindow=true on windows")
+	}
+	if !strings.EqualFold(cmd.Path, "powershell") && !strings.HasSuffix(strings.ToLower(cmd.Path), `\powershell.exe`) {
+		t.Fatalf("expected PowerShell executable, got %q", cmd.Path)
+	}
+	args := strings.Join(cmd.Args, " ")
+	if !strings.Contains(args, "-NoProfile") || !strings.Contains(args, "-Command -") {
+		t.Fatalf("unexpected PowerShell args: %q", args)
 	}
 }
 

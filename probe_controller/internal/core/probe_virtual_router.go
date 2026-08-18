@@ -223,6 +223,10 @@ func appendProbeLinuxRouterPublishedRouteRules(rules []probeVirtualRouterRouteRu
 }
 
 func probeLinuxRouterPublishedRouteAvailable(nodeID string) bool {
+	node, found := getProbeNodeByID(normalizeProbeNodeID(nodeID))
+	if !found || normalizeProbeNodeKind(node.NodeKind) != probeNodeKindLinuxRouter {
+		return false
+	}
 	runtime, found := getProbeRuntime(nodeID)
 	return !found || runtime.Online
 }

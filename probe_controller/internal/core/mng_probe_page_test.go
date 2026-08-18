@@ -53,7 +53,7 @@ func TestProbePageCreatesMihomoExitAndUsesDedicatedInstallButton(t *testing.T) {
 		`data-action="node-install-command"`,
 		`Mihomo 出口探针`,
 		`${kindLabel}安装信息`,
-		`option.disabled = isSpecialExit && option.value !== 'linux' && option.value !== 'docker'`,
+		`nodeKind === 'mihomo_exit' && option.value !== 'linux' && option.value !== 'docker'`,
 		`targetSystemSelect.disabled = false`,
 		`String(node.target_system || '').toLowerCase() === 'docker' ? 'docker' : 'native'`,
 		`copyNodeInstallCommand(state.installingNodeNo, event.target.value)`,
@@ -74,5 +74,26 @@ func TestProbePageCreatesMihomoExitAndUsesDedicatedInstallButton(t *testing.T) {
 	createBody := mngProbePageHTML[createStart : createStart+createEnd]
 	if strings.Contains(createBody, "copyNodeInstallCommand") {
 		t.Fatal("creating a probe must not open the install dialog")
+	}
+}
+
+func TestProbePageSupportsKindReinstallAndStreamingShell(t *testing.T) {
+	required := []string{
+		`id="edit-node-kind"`,
+		`value="linux_router"`,
+		`node_kind: nodeKind`,
+		`reinstall_required`,
+		`修改探针类型会轮换密钥`,
+		`copyNodeInstallCommand(payload.node_no)`,
+		`/mng/api/probe/shell/session/input`,
+		`/mng/api/probe/shell/session/read`,
+		`async function pollShellOutput`,
+		`isWindows ? 'PowerShell' : 'sh'`,
+		`event.key === 'Enter' && !event.shiftKey`,
+	}
+	for _, item := range required {
+		if !strings.Contains(mngProbePageHTML, item) {
+			t.Fatalf("probe page type conversion or streaming shell missing %q", item)
+		}
 	}
 }

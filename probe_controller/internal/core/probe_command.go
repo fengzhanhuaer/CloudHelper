@@ -144,6 +144,7 @@ type probeShellSessionControlCommand struct {
 	Action     string `json:"action"`
 	SessionID  string `json:"session_id,omitempty"`
 	Command    string `json:"command,omitempty"`
+	Cursor     int64  `json:"cursor,omitempty"`
 	TimeoutSec int    `json:"timeout_sec,omitempty"`
 	Timestamp  string `json:"timestamp"`
 }
@@ -217,6 +218,10 @@ type probeShellSessionResultMessage struct {
 	OK         bool   `json:"ok"`
 	Stdout     string `json:"stdout,omitempty"`
 	Stderr     string `json:"stderr,omitempty"`
+	Output     string `json:"output,omitempty"`
+	Cursor     int64  `json:"cursor,omitempty"`
+	Truncated  bool   `json:"truncated,omitempty"`
+	Closed     bool   `json:"closed,omitempty"`
 	Error      string `json:"error,omitempty"`
 	Message    string `json:"message,omitempty"`
 	StartedAt  string `json:"started_at,omitempty"`
@@ -1196,7 +1201,7 @@ func consumeProbeShellExecResult(result probeShellExecResultMessage) {
 	}
 }
 
-func dispatchProbeShellSessionControl(nodeID string, action string, sessionID string, command string, timeoutSec int) (probeShellSessionResultMessage, error) {
+func dispatchProbeShellSessionControl(nodeID string, action string, sessionID string, command string, timeoutSec int, cursor int64) (probeShellSessionResultMessage, error) {
 	normalizedID := normalizeProbeNodeID(nodeID)
 	if normalizedID == "" {
 		return probeShellSessionResultMessage{}, fmt.Errorf("node_id is required")
@@ -1208,7 +1213,7 @@ func dispatchProbeShellSessionControl(nodeID string, action string, sessionID st
 
 	normalizedSessionID := strings.TrimSpace(sessionID)
 	commandText := command
-	if normalizedAction == "exec" {
+	if normalizedAction == "exec" || normalizedAction == "input" {
 		if strings.TrimSpace(commandText) == "" {
 			return probeShellSessionResultMessage{}, fmt.Errorf("command is required")
 		}
@@ -1216,7 +1221,7 @@ func dispatchProbeShellSessionControl(nodeID string, action string, sessionID st
 			return probeShellSessionResultMessage{}, fmt.Errorf("session_id is required")
 		}
 	}
-	if normalizedAction == "stop" && normalizedSessionID == "" {
+	if (normalizedAction == "stop" || normalizedAction == "read") && normalizedSessionID == "" {
 		return probeShellSessionResultMessage{}, fmt.Errorf("session_id is required")
 	}
 
@@ -1248,10 +1253,11 @@ func dispatchProbeShellSessionControl(nodeID string, action string, sessionID st
 		Action:     normalizedAction,
 		SessionID:  normalizedSessionID,
 		Command:    commandText,
+		Cursor:     cursor,
 		TimeoutSec: safeTimeoutSec,
 		Timestamp:  time.Now().UTC().Format(time.RFC3339),
 	}
-	if normalizedAction != "exec" {
+	if normalizedAction != "exec" && normalizedAction != "input" {
 		cmd.Command = ""
 	}
 
@@ -1269,6 +1275,9 @@ func dispatchProbeShellSessionControl(nodeID string, action string, sessionID st
 	}
 	if normalizedAction == "stop" {
 		waitTimeout = 10 * time.Second
+	}
+	if normalizedAction == "input" || normalizedAction == "read" {
+		waitTimeout = 8 * time.Second
 	}
 	timer := time.NewTimer(waitTimeout)
 	defer timer.Stop()
@@ -1359,6 +1368,10 @@ func normalizeProbeShellSessionAction(raw string) string {
 		return "start"
 	case "exec":
 		return "exec"
+	case "input":
+		return "input"
+	case "read":
+		return "read"
 	case "stop":
 		return "stop"
 	default:

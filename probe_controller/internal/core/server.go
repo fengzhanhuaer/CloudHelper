@@ -111,6 +111,8 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("/mng/api/probe/upgrade/all", mngAuthRequiredMiddleware(mngProbeUpgradeAllHandler))
 	mux.HandleFunc("/mng/api/probe/shell/session/start", mngAuthRequiredMiddleware(mngProbeShellSessionStartHandler))
 	mux.HandleFunc("/mng/api/probe/shell/session/exec", mngAuthRequiredMiddleware(mngProbeShellSessionExecHandler))
+	mux.HandleFunc("/mng/api/probe/shell/session/input", mngAuthRequiredMiddleware(mngProbeShellSessionInputHandler))
+	mux.HandleFunc("/mng/api/probe/shell/session/read", mngAuthRequiredMiddleware(mngProbeShellSessionReadHandler))
 	mux.HandleFunc("/mng/api/probe/shell/session/stop", mngAuthRequiredMiddleware(mngProbeShellSessionStopHandler))
 	mux.HandleFunc("/mng/api/probe/shell/shortcuts", mngAuthRequiredMiddleware(mngProbeShellShortcutsGetHandler))
 	mux.HandleFunc("/mng/api/probe/shell/shortcuts/upsert", mngAuthRequiredMiddleware(mngProbeShellShortcutsUpsertHandler))

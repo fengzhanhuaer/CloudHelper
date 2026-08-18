@@ -68,6 +68,7 @@ func TestNormalizeProbeLinuxRouterConfigRequiresACLAndRejectsFakePool(t *testing
 }
 
 func TestAppendProbeLinuxRouterPublishedRouteRulesScopesByACL(t *testing.T) {
+	setupProbeLinuxRouterTestStores(t)
 	router := defaultProbeLinuxRouterConfig("21")
 	router.LocalIPProxy.Enabled = true
 	router.LocalIPProxy.PublishedCIDRs = []string{"192.168.50.0/24"}
@@ -82,6 +83,15 @@ func TestAppendProbeLinuxRouterPublishedRouteRulesScopesByACL(t *testing.T) {
 	if self := appendProbeLinuxRouterPublishedRouteRules(nil, []probeLinuxRouterConfig{router}, "21"); len(self) != 0 {
 		t.Fatalf("router received its own published rule: %+v", self)
 	}
+	ProbeStore.mu.Lock()
+	ProbeStore.data.ProbeNodes[1].NodeKind = probeNodeKindNormal
+	ProbeStore.mu.Unlock()
+	if changedKind := appendProbeLinuxRouterPublishedRouteRules(nil, []probeLinuxRouterConfig{router}, "1"); len(changedKind) != 0 {
+		t.Fatalf("stale router config remained active after kind change: %+v", changedKind)
+	}
+	ProbeStore.mu.Lock()
+	ProbeStore.data.ProbeNodes[1].NodeKind = probeNodeKindLinuxRouter
+	ProbeStore.mu.Unlock()
 	probeRuntimeStore.mu.Lock()
 	previousRuntime := probeRuntimeStore.data
 	probeRuntimeStore.data = map[string]probeRuntimeStatus{"21": {NodeID: "21", Online: false}}

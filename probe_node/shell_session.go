@@ -30,6 +30,10 @@ type probeShellSessionControlResultPayload struct {
 	OK         bool   `json:"ok"`
 	Stdout     string `json:"stdout,omitempty"`
 	Stderr     string `json:"stderr,omitempty"`
+	Output     string `json:"output,omitempty"`
+	Cursor     int64  `json:"cursor,omitempty"`
+	Truncated  bool   `json:"truncated,omitempty"`
+	Closed     bool   `json:"closed,omitempty"`
 	Error      string `json:"error,omitempty"`
 	Message    string `json:"message,omitempty"`
 	StartedAt  string `json:"started_at,omitempty"`
@@ -44,13 +48,16 @@ type probeShellSessionRuntime struct {
 	cmd       *exec.Cmd
 	stdin     io.WriteCloser
 
-	execMu   sync.Mutex
-	outputMu sync.Mutex
-	stdout   bytes.Buffer
-	stderr   bytes.Buffer
-	closed   bool
-	doneErr  error
-	doneCh   chan struct{}
+	execMu     sync.Mutex
+	outputMu   sync.Mutex
+	stdout     bytes.Buffer
+	stderr     bytes.Buffer
+	stream     []byte
+	streamBase int64
+	streamNext int64
+	closed     bool
+	doneErr    error
+	doneCh     chan struct{}
 
 	lastActive atomic.Int64
 	closeOnce  sync.Once
@@ -119,6 +126,34 @@ func runProbeShellSessionControl(cmd probeControlMessage, identity nodeIdentity,
 		result.OK = true
 		sendProbeShellSessionControlResult(stream, encoder, writeMu, result)
 		return
+	case "input":
+		session, err := getProbeShellSessionForCommand(nodeID, cmd.SessionID)
+		if err != nil {
+			result.Error = err.Error()
+			sendProbeShellSessionControlResult(stream, encoder, writeMu, result)
+			return
+		}
+		result.SessionID = strings.TrimSpace(session.sessionID)
+		if err := session.writeInput(cmd.Command); err != nil {
+			result.Error = err.Error()
+			sendProbeShellSessionControlResult(stream, encoder, writeMu, result)
+			return
+		}
+		result.OK = true
+		sendProbeShellSessionControlResult(stream, encoder, writeMu, result)
+		return
+	case "read":
+		session, err := getProbeShellSessionForCommand(nodeID, cmd.SessionID)
+		if err != nil {
+			result.Error = err.Error()
+			sendProbeShellSessionControlResult(stream, encoder, writeMu, result)
+			return
+		}
+		result.SessionID = strings.TrimSpace(session.sessionID)
+		result.Output, result.Cursor, result.Truncated, result.Closed, result.Error = session.readOutput(cmd.Cursor)
+		result.OK = true
+		sendProbeShellSessionControlResult(stream, encoder, writeMu, result)
+		return
 	case "stop":
 		stoppedSessionID, stopped, err := stopProbeShellSession(nodeID, cmd.SessionID, "requested by controller")
 		if err != nil {
@@ -177,6 +212,9 @@ func startProbeShellSession(nodeID string) (*probeShellSessionRuntime, error) {
 	}
 	go func(session *probeShellSessionRuntime) {
 		<-session.doneCh
+		timer := time.NewTimer(time.Minute)
+		defer timer.Stop()
+		<-timer.C
 		unregisterProbeShellSession(session.sessionID, session)
 	}(runtimeSession)
 
@@ -357,6 +395,51 @@ func (session *probeShellSessionRuntime) exec(commandText string, timeoutSec int
 	}
 }
 
+func (session *probeShellSessionRuntime) writeInput(commandText string) error {
+	if strings.TrimSpace(commandText) == "" {
+		return fmt.Errorf("command is required")
+	}
+	session.execMu.Lock()
+	defer session.execMu.Unlock()
+	if err := session.ensureAlive(); err != nil {
+		return err
+	}
+	payload := commandText
+	if !strings.HasSuffix(payload, "\n") {
+		payload += "\n"
+	}
+	if _, err := io.WriteString(session.stdin, payload); err != nil {
+		session.stop("shell stdin write failed")
+		return fmt.Errorf("write shell command failed: %w", err)
+	}
+	session.touch()
+	return nil
+}
+
+func (session *probeShellSessionRuntime) readOutput(cursor int64) (output string, nextCursor int64, truncated bool, closed bool, errText string) {
+	session.outputMu.Lock()
+	if cursor < session.streamBase {
+		cursor = session.streamBase
+		truncated = true
+	}
+	if cursor > session.streamNext {
+		cursor = session.streamNext
+		truncated = true
+	}
+	start := cursor - session.streamBase
+	if start >= 0 && start < int64(len(session.stream)) {
+		output = string(session.stream[start:])
+	}
+	nextCursor = session.streamNext
+	closed = session.closed
+	if session.doneErr != nil {
+		errText = session.doneErr.Error()
+	}
+	session.outputMu.Unlock()
+	session.touch()
+	return
+}
+
 func (session *probeShellSessionRuntime) ensureAlive() error {
 	_, _, closed, doneErr := session.snapshotOutput()
 	if !closed {
@@ -396,12 +479,31 @@ func (session *probeShellSessionRuntime) captureOutput(reader io.Reader, isStdou
 			} else {
 				appendOutputBufferWithLimit(&session.stderr, buf[:n], probeShellSessionOutputBufferBytes)
 			}
+			session.appendStreamOutputLocked(buf[:n])
 			session.outputMu.Unlock()
 		}
 		if readErr != nil {
 			return
 		}
 	}
+}
+
+func (session *probeShellSessionRuntime) appendStreamOutputLocked(chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
+	session.streamNext += int64(len(chunk))
+	if len(chunk) >= probeShellSessionOutputBufferBytes {
+		session.stream = append(session.stream[:0], chunk[len(chunk)-probeShellSessionOutputBufferBytes:]...)
+		session.streamBase = session.streamNext - int64(len(session.stream))
+		return
+	}
+	session.stream = append(session.stream, chunk...)
+	if overflow := len(session.stream) - probeShellSessionOutputBufferBytes; overflow > 0 {
+		copy(session.stream, session.stream[overflow:])
+		session.stream = session.stream[:len(session.stream)-overflow]
+	}
+	session.streamBase = session.streamNext - int64(len(session.stream))
 }
 
 func appendOutputBufferWithLimit(buffer *bytes.Buffer, chunk []byte, maxBytes int) {

@@ -31,13 +31,20 @@ func TestNormalizeProbeNodesDefaultsKindAndPreservesSpecialKind(t *testing.T) {
 	}
 }
 
-func TestMihomoExitNodeKindIsImmutableAndSupportsLinuxOrDocker(t *testing.T) {
+func TestMihomoExitNodeKindConversionRotatesSecretAndValidatesTargetSystem(t *testing.T) {
 	oldStore := ProbeStore
-	ProbeStore = &probeConfigStore{data: probeConfigData{ProbeNodes: []probeNodeRecord{{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindMihomoExit, TargetSystem: "linux"}}}}
+	ProbeStore = &probeConfigStore{data: probeConfigData{
+		ProbeNodes:   []probeNodeRecord{{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindMihomoExit, TargetSystem: "linux", NodeSecret: "old-secret"}},
+		ProbeSecrets: map[string]string{"2": "old-secret"},
+	}}
 	t.Cleanup(func() { ProbeStore = oldStore })
 
-	if _, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindNormal, TargetSystem: "linux"}); err == nil || !strings.Contains(err.Error(), "cannot be changed") {
-		t.Fatalf("expected immutable node kind error, got %v", err)
+	converted, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindNormal, TargetSystem: "linux"})
+	if err != nil || converted.NodeKind != probeNodeKindNormal {
+		t.Fatalf("expected normal conversion: item=%+v err=%v", converted, err)
+	}
+	if converted.NodeSecret == "" || converted.NodeSecret == "old-secret" || ProbeStore.data.ProbeSecrets["2"] != converted.NodeSecret {
+		t.Fatalf("expected node secret rotation: item=%+v secrets=%+v", converted, ProbeStore.data.ProbeSecrets)
 	}
 	updated, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindMihomoExit, TargetSystem: "docker"})
 	if err != nil || updated.TargetSystem != "docker" {
@@ -45,6 +52,9 @@ func TestMihomoExitNodeKindIsImmutableAndSupportsLinuxOrDocker(t *testing.T) {
 	}
 	if _, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindMihomoExit, TargetSystem: "windows"}); err == nil || !strings.Contains(err.Error(), "linux or docker") {
 		t.Fatalf("expected linux-or-docker error, got %v", err)
+	}
+	if _, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "exit", NodeKind: "invalid", TargetSystem: "linux"}); err == nil || !strings.Contains(err.Error(), "node kind must be") {
+		t.Fatalf("expected invalid node kind error, got %v", err)
 	}
 }
 

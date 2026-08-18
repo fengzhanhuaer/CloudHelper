@@ -711,18 +711,23 @@ func updateProbeNodeLocked(req probeNodeUpdateRequest) (probeNodeRecord, error) 
 		return probeNodeRecord{}, fmt.Errorf("node %d not found", req.NodeNo)
 	}
 	existingKind := normalizeProbeNodeKind(nodes[found].NodeKind)
-	if requestedKind := strings.TrimSpace(req.NodeKind); requestedKind != "" && normalizeProbeNodeKind(requestedKind) != existingKind {
-		return probeNodeRecord{}, fmt.Errorf("node kind cannot be changed after creation")
+	requestedKind := existingKind
+	if rawKind := strings.ToLower(strings.TrimSpace(req.NodeKind)); rawKind != "" {
+		if rawKind != probeNodeKindNormal && rawKind != probeNodeKindMihomoExit && rawKind != probeNodeKindLinuxRouter {
+			return probeNodeRecord{}, fmt.Errorf("node kind must be normal, mihomo_exit or linux_router")
+		}
+		requestedKind = rawKind
 	}
-	if existingKind == probeNodeKindMihomoExit && system != "linux" && system != "docker" {
+	if requestedKind == probeNodeKindMihomoExit && system != "linux" && system != "docker" {
 		return probeNodeRecord{}, fmt.Errorf("mihomo exit node target system must be linux or docker")
 	}
-	if existingKind == probeNodeKindLinuxRouter && system != "linux" {
+	if requestedKind == probeNodeKindLinuxRouter && system != "linux" {
 		return probeNodeRecord{}, fmt.Errorf("linux router node target system must be linux")
 	}
+	kindChanged := requestedKind != existingKind
 
 	nodes[found].NodeName = name
-	nodes[found].NodeKind = existingKind
+	nodes[found].NodeKind = requestedKind
 	nodes[found].Remark = strings.TrimSpace(req.Remark)
 	nodes[found].DDNS = strings.TrimSpace(req.DDNS)
 	nodes[found].TargetSystem = system
@@ -737,7 +742,7 @@ func updateProbeNodeLocked(req probeNodeUpdateRequest) (probeNodeRecord, error) 
 	if strings.TrimSpace(nodes[found].CreatedAt) == "" {
 		nodes[found].CreatedAt = nodes[found].UpdatedAt
 	}
-	if strings.TrimSpace(nodes[found].NodeSecret) == "" {
+	if kindChanged || strings.TrimSpace(nodes[found].NodeSecret) == "" {
 		nodes[found].NodeSecret = randomProbeNodeSecret(32)
 	}
 

@@ -186,6 +186,7 @@ type probeControlMessage struct {
 	NextAuthMode        string                           `json:"next_auth_mode"`
 	SessionID           string                           `json:"session_id"`
 	Command             string                           `json:"command"`
+	Cursor              int64                            `json:"cursor"`
 	TimeoutSec          int                              `json:"timeout_sec"`
 	ReleaseRepo         string                           `json:"release_repo"`
 	ControllerBaseURL   string                           `json:"controller_base_url"`

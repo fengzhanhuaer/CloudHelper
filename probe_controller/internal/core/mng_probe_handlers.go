@@ -19,6 +19,18 @@ type mngProbeShellSessionExecRequest struct {
 	TimeoutSec int    `json:"timeout_sec"`
 }
 
+type mngProbeShellSessionInputRequest struct {
+	NodeID    string `json:"node_id"`
+	SessionID string `json:"session_id"`
+	Command   string `json:"command"`
+}
+
+type mngProbeShellSessionReadRequest struct {
+	NodeID    string `json:"node_id"`
+	SessionID string `json:"session_id"`
+	Cursor    int64  `json:"cursor"`
+}
+
 type mngProbeShellSessionStopRequest struct {
 	NodeID    string `json:"node_id"`
 	SessionID string `json:"session_id"`
@@ -152,6 +164,13 @@ func mngProbeNodeUpdateHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ProbeStore.mu.Lock()
+	previousKind := probeNodeKindNormal
+	for _, item := range loadProbeNodesLocked() {
+		if item.NodeNo == req.NodeNo {
+			previousKind = normalizeProbeNodeKind(item.NodeKind)
+			break
+		}
+	}
 	node, err := updateProbeNodeLocked(req)
 	ProbeStore.mu.Unlock()
 	if err != nil {
@@ -163,13 +182,80 @@ func mngProbeNodeUpdateHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := map[string]interface{}{"node": node}
-	if dispatched, dispatchErr := dispatchProbeLocalConsoleControl(node); dispatchErr != nil {
-		response["local_console_dispatch_error"] = dispatchErr.Error()
+	currentKind := normalizeProbeNodeKind(node.NodeKind)
+	kindChanged := previousKind != currentKind
+	response := map[string]interface{}{
+		"node":               node,
+		"node_kind_changed":  kindChanged,
+		"previous_node_kind": previousKind,
+		"reinstall_required": kindChanged,
+	}
+	if kindChanged {
+		response["node_secret_rotated"] = true
+		nodeID := normalizeProbeNodeID(fmt.Sprint(node.NodeNo))
+		if session, ok := getProbeSession(nodeID); ok {
+			unregisterProbeSession(nodeID, session)
+			response["previous_session_closed"] = true
+		}
+		if cleanupErr := clearProbeNodeKindConfigs(nodeID); cleanupErr != nil {
+			response["config_cleanup_error"] = cleanupErr.Error()
+		} else {
+			response["route_config_sync"] = dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURLFromRequest(r))
+		}
 	} else {
-		response["local_console_dispatched"] = dispatched
+		if dispatched, dispatchErr := dispatchProbeLocalConsoleControl(node); dispatchErr != nil {
+			response["local_console_dispatch_error"] = dispatchErr.Error()
+		} else {
+			response["local_console_dispatched"] = dispatched
+		}
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func clearProbeNodeKindConfigs(nodeID string) error {
+	if ProbeRouteConfigStore == nil {
+		return nil
+	}
+	nodeID = normalizeProbeNodeID(nodeID)
+	ProbeRouteConfigStore.mu.RLock()
+	hasConfig := false
+	for _, item := range ProbeRouteConfigStore.data.SpecialExits {
+		if normalizeProbeNodeID(item.NodeID) == nodeID {
+			hasConfig = true
+			break
+		}
+	}
+	if !hasConfig {
+		for _, item := range ProbeRouteConfigStore.data.LinuxRouters {
+			if normalizeProbeNodeID(item.NodeID) == nodeID {
+				hasConfig = true
+				break
+			}
+		}
+	}
+	ProbeRouteConfigStore.mu.RUnlock()
+	if !hasConfig {
+		return nil
+	}
+
+	return ProbeRouteConfigStore.update(func(data *probeRouteConfigStoreData) error {
+		specialExits := make([]probeSpecialExitConfig, 0, len(data.SpecialExits))
+		for _, item := range data.SpecialExits {
+			if normalizeProbeNodeID(item.NodeID) != nodeID {
+				specialExits = append(specialExits, item)
+			}
+		}
+		linuxRouters := make([]probeLinuxRouterConfig, 0, len(data.LinuxRouters))
+		for _, item := range data.LinuxRouters {
+			if normalizeProbeNodeID(item.NodeID) != nodeID {
+				linuxRouters = append(linuxRouters, item)
+			}
+		}
+		data.SpecialExits = specialExits
+		data.LinuxRouters = linuxRouters
+		data.VirtualRouterFakeIP, _ = reconcileProbeVirtualRouterFakeIPLibraryWithRouteRules(data.VirtualRouterFakeIP, data.VirtualRouter.RouteRules, time.Now().UTC())
+		return nil
+	})
 }
 
 func mngProbeNodeDeleteHandler(w http.ResponseWriter, r *http.Request) {
@@ -512,7 +598,7 @@ func mngProbeShellSessionStartHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := dispatchProbeShellSessionControl(nodeID, "start", "", "", 0)
+	result, err := dispatchProbeShellSessionControl(nodeID, "start", "", "", 0, 0)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
@@ -550,7 +636,7 @@ func mngProbeShellSessionExecHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := dispatchProbeShellSessionControl(nodeID, "exec", req.SessionID, req.Command, req.TimeoutSec)
+	result, err := dispatchProbeShellSessionControl(nodeID, "exec", req.SessionID, req.Command, req.TimeoutSec, 0)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"ok":          false,
@@ -585,6 +671,70 @@ func mngProbeShellSessionExecHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func mngProbeShellSessionInputHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req mngProbeShellSessionInputRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+	nodeID := normalizeProbeNodeID(req.NodeID)
+	if nodeID == "" || strings.TrimSpace(req.SessionID) == "" || strings.TrimSpace(req.Command) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node_id, session_id and command are required"})
+		return
+	}
+	if _, ok := getProbeNodeByID(nodeID); !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "probe node not found"})
+		return
+	}
+	result, err := dispatchProbeShellSessionControl(nodeID, "input", req.SessionID, req.Command, 0, 0)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok": true, "node_id": nodeID, "action": "input",
+		"session_id": strings.TrimSpace(result.SessionID), "timestamp": strings.TrimSpace(result.Timestamp),
+	})
+}
+
+func mngProbeShellSessionReadHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req mngProbeShellSessionReadRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+	nodeID := normalizeProbeNodeID(req.NodeID)
+	if nodeID == "" || strings.TrimSpace(req.SessionID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node_id and session_id are required"})
+		return
+	}
+	if _, ok := getProbeNodeByID(nodeID); !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "probe node not found"})
+		return
+	}
+	result, err := dispatchProbeShellSessionControl(nodeID, "read", req.SessionID, "", 0, req.Cursor)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok": true, "node_id": nodeID, "action": "read",
+		"session_id": strings.TrimSpace(result.SessionID), "output": result.Output,
+		"cursor": result.Cursor, "truncated": result.Truncated, "closed": result.Closed,
+		"error": strings.TrimSpace(result.Error), "timestamp": strings.TrimSpace(result.Timestamp),
+	})
+}
+
 func mngProbeShellSessionStopHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -607,7 +757,7 @@ func mngProbeShellSessionStopHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := dispatchProbeShellSessionControl(nodeID, "stop", req.SessionID, "", 0)
+	result, err := dispatchProbeShellSessionControl(nodeID, "stop", req.SessionID, "", 0, 0)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
 		return
