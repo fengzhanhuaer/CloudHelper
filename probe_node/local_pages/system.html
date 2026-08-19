@@ -199,6 +199,20 @@
       </section>
 
       <section class="card">
+        <h2>Web 控制台</h2>
+        <div class="kv" style="align-items: center;">
+          <div>监听 IP</div><div><select id="webListenIPSelect"></select></div>
+          <div>端口</div><div id="webListenPortText">16032</div>
+          <div>当前监听</div><div id="webListenActiveText">-</div>
+          <div>配置来源</div><div id="webListenSourceText">-</div>
+        </div>
+        <div class="actions">
+          <button id="webListenSaveBtn" disabled>保存监听 IP</button>
+          <button id="webListenRefreshBtn" class="secondary">刷新</button>
+        </div>
+      </section>
+
+      <section class="card">
         <h2>路由认证黑名单</h2>
         <p class="hint">每行一个源 IP，保存后写入本地 data/probe_route_auth_blacklist.json。</p>
         <div class="kv">
@@ -267,7 +281,9 @@
     const ipReportInterfacesEl = document.getElementById('ipReportInterfaces');
     const routeAuthBlacklistContentEl = document.getElementById('routeAuthBlacklistContent');
     const ddnsInterfaceSelectEl = document.getElementById('ddnsInterfaceSelect');
+    const webListenIPSelectEl = document.getElementById('webListenIPSelect');
     let ipReportSavedSelection = new Set();
+    let webListenSavedIP = '';
     let upgradeStatusPollingTimer = null;
 
     function setMessage(text, type) {
@@ -328,6 +344,48 @@
 
     function isIPv4Text(value) {
       return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(String(value || '').trim());
+    }
+
+    function updateWebListenSaveState() {
+      const saveBtn = document.getElementById('webListenSaveBtn');
+      saveBtn.disabled = webListenIPSelectEl.disabled || webListenIPSelectEl.value === webListenSavedIP;
+    }
+
+    function renderWebListenSettings(data) {
+      const options = Array.isArray(data && data.options) ? data.options : [];
+      const listenIP = String(data && data.listen_ip || '').trim();
+      const editable = data && data.editable !== false;
+      webListenIPSelectEl.innerHTML = '';
+      options.forEach((item) => {
+        const ip = String(item && item.ip || '').trim();
+        if (!ip) return;
+        const option = document.createElement('option');
+        option.value = ip;
+        option.textContent = String(item && item.label || ip);
+        option.disabled = item && item.available === false;
+        option.selected = ip === listenIP;
+        webListenIPSelectEl.appendChild(option);
+      });
+      webListenSavedIP = listenIP;
+      webListenIPSelectEl.disabled = !editable || options.length === 0;
+      setText('webListenPortText', data && data.listen_port || 16032);
+      setText('webListenActiveText', data && data.active_listen || '-');
+      setText('webListenSourceText', data && data.environment_override ? '环境变量' : '本地配置');
+      updateWebListenSaveState();
+    }
+
+    async function loadWebListenSettings() {
+      const data = await requestJSON('/local/api/system/web_listen', { method: 'GET' });
+      renderWebListenSettings(data || {});
+    }
+
+    async function saveWebListenSettings() {
+      const data = await requestJSON('/local/api/system/web_listen', {
+        method: 'POST',
+        body: JSON.stringify({ listen_ip: webListenIPSelectEl.value }),
+      });
+      renderWebListenSettings(data || {});
+      setMessage(data && data.restarting ? '监听 IP 已保存，Web 服务正在重启' : '监听 IP 未变化', 'success');
     }
 
     function ipReportDisplayIPs(values) {
@@ -604,6 +662,7 @@
     async function refreshAll() {
       const ok = await ensureSession();
       if (!ok) return;
+      await loadWebListenSettings();
       await loadIPReportSettings();
       await loadDDNSSettings();
       await loadUpgradeStatus();
@@ -627,6 +686,9 @@
       try { await requestJSON('/local/api/auth/logout', { method: 'POST', body: '{}' }); } catch (_) {}
       window.location.href = '/local/login';
     });
+    webListenIPSelectEl.addEventListener('change', updateWebListenSaveState);
+    document.getElementById('webListenSaveBtn').addEventListener('click', () => saveWebListenSettings().catch((err) => setMessage('保存监听 IP 失败：' + err.message, 'error')));
+    document.getElementById('webListenRefreshBtn').addEventListener('click', () => loadWebListenSettings().then(() => setMessage('监听状态已刷新', 'success')).catch((err) => setMessage('刷新监听状态失败：' + err.message, 'error')));
     document.getElementById('ipReportSaveBtn').addEventListener('click', () => saveIPReportSettings().catch((err) => setMessage('保存 IP 上送设置失败：' + err.message, 'error')));
     document.getElementById('ipReportRefreshBtn').addEventListener('click', () => loadIPReportSettings().then(() => setMessage('网卡已刷新', 'success')).catch((err) => setMessage('刷新网卡失败：' + err.message, 'error')));
     document.getElementById('ipReportSelectAllBtn').addEventListener('click', () => setAllIPReportInterfacesSelected(true));

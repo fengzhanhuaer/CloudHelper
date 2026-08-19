@@ -13,10 +13,11 @@ func TestProbeLocalListenConfig(t *testing.T) {
 
 	// ensure writes defaults into the file.
 	ensureProbeLocalListenConfigDefaults()
-	if got := resolveProbeLocalConfiguredListenAddr(); got != probeLocalListenAddrDefault {
-		t.Fatalf("expected default configured addr %q, got %q", probeLocalListenAddrDefault, got)
+	defaultListen := probeLocalConsoleDefaultListenAddr()
+	if got := resolveProbeLocalConfiguredListenAddr(); got != defaultListen {
+		t.Fatalf("expected default configured addr %q, got %q", defaultListen, got)
 	}
-	if got := resolveProbeLocalListenAddr(""); got != probeLocalListenAddrDefault {
+	if got := resolveProbeLocalListenAddr(""); got != defaultListen {
 		t.Fatalf("resolve should use config default, got %q", got)
 	}
 
@@ -39,8 +40,12 @@ func TestProbeLocalListenConfig(t *testing.T) {
 
 	// explicit and env still override the config.
 	t.Setenv("PROBE_LOCAL_LISTEN", "127.0.0.1:17777")
-	if got := resolveProbeLocalListenAddr(""); got != "127.0.0.1:17777" {
-		t.Fatalf("env should override config, got %q", got)
+	wantEnvironmentResult := "127.0.0.1:17777"
+	if activeProbeProductProfile.PreferLocalConsoleConfig {
+		wantEnvironmentResult = "0.0.0.0:18080"
+	}
+	if got := resolveProbeLocalListenAddr(""); got != wantEnvironmentResult {
+		t.Fatalf("listen priority result=%q want=%q", got, wantEnvironmentResult)
 	}
 	if got := resolveProbeLocalListenAddr("127.0.0.1:18888"); got != "127.0.0.1:18888" {
 		t.Fatalf("explicit should override config, got %q", got)
@@ -70,7 +75,8 @@ func TestProbeLocalListenConfigPreservesAuthFields(t *testing.T) {
 	if !state.Registered || state.Username != "admin" || state.PasswordHash != "hash" || state.PasswordSalt != "salt" {
 		t.Fatalf("auth fields not preserved: %+v", state)
 	}
-	if state.ListenIP != probeLocalListenDefaultHost || state.ListenPort != probeLocalListenDefaultPort {
+	defaultHost, defaultPort := probeLocalConsoleDefaultHostPort()
+	if state.ListenIP != defaultHost || state.ListenPort != defaultPort {
 		t.Fatalf("listen defaults not written: ip=%q port=%d", state.ListenIP, state.ListenPort)
 	}
 }

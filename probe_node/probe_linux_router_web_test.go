@@ -49,7 +49,7 @@ func setupProbeLinuxRouterWebTest(t *testing.T) http.Handler {
 		probeLinuxRouterPlatformFailOpen = oldFailOpen
 		probeLinuxRouterPlatformCleanup = oldCleanup
 	})
-	return buildProbeLinuxRouterWebHandler()
+	return buildProbeLocalConsoleHandler()
 }
 
 func doProbeLinuxRouterWebRequest(t *testing.T, handler http.Handler, method, path, host, remote string, payload any, cookies ...*http.Cookie) *httptest.ResponseRecorder {
@@ -78,13 +78,13 @@ func doProbeLinuxRouterWebRequest(t *testing.T, handler http.Handler, method, pa
 
 func registerAndLoginProbeLinuxRouterWeb(t *testing.T, handler http.Handler) *http.Cookie {
 	t.Helper()
-	register := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/api/auth/register", "192.168.1.150:18080", "192.168.1.20:43210", map[string]any{
+	register := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/api/auth/register", "192.168.1.150:16032", "192.168.1.20:43210", map[string]any{
 		"username": "admin", "password": "secret1234", "confirm_password": "secret1234",
 	})
 	if register.Code != http.StatusOK {
 		t.Fatalf("register status=%d body=%s", register.Code, register.Body.String())
 	}
-	login := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/api/auth/login", "192.168.1.150:18080", "192.168.1.20:43210", map[string]any{
+	login := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/api/auth/login", "192.168.1.150:16032", "192.168.1.20:43210", map[string]any{
 		"username": "admin", "password": "secret1234",
 	})
 	if login.Code != http.StatusOK {
@@ -99,7 +99,7 @@ func registerAndLoginProbeLinuxRouterWeb(t *testing.T, handler http.Handler) *ht
 
 func TestProbeLinuxRouterWebRegistrationDoesNotRequireSetupToken(t *testing.T) {
 	handler := setupProbeLinuxRouterWebTest(t)
-	bootstrap := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/api/auth/bootstrap", "192.168.1.150:18080", "192.168.1.20:43210", nil)
+	bootstrap := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/api/auth/bootstrap", "192.168.1.150:16032", "192.168.1.20:43210", nil)
 	if bootstrap.Code != http.StatusOK {
 		t.Fatalf("bootstrap status=%d body=%s", bootstrap.Code, bootstrap.Body.String())
 	}
@@ -117,13 +117,13 @@ func TestProbeLinuxRouterWebRegistrationDoesNotRequireSetupToken(t *testing.T) {
 	if _, err := os.Stat(dataDir + string(os.PathSeparator) + probeLocalSetupTokenFile); !os.IsNotExist(err) {
 		t.Fatalf("router bootstrap created a setup token: %v", err)
 	}
-	register := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/api/auth/register", "192.168.1.150:18080", "192.168.1.20:43210", map[string]any{
+	register := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/api/auth/register", "192.168.1.150:16032", "192.168.1.20:43210", map[string]any{
 		"username": "admin", "password": "secret1234", "confirm_password": "secret1234",
 	})
 	if register.Code != http.StatusOK {
 		t.Fatalf("register status=%d body=%s", register.Code, register.Body.String())
 	}
-	repeated := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/api/auth/register", "192.168.1.150:18080", "192.168.1.20:43210", map[string]any{
+	repeated := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/api/auth/register", "192.168.1.150:16032", "192.168.1.20:43210", map[string]any{
 		"username": "other", "password": "otherpass123", "confirm_password": "otherpass123",
 	})
 	if repeated.Code != http.StatusForbidden {
@@ -134,56 +134,63 @@ func TestProbeLinuxRouterWebRegistrationDoesNotRequireSetupToken(t *testing.T) {
 	}
 }
 
-func TestProbeLinuxRouterWebListenDefaults(t *testing.T) {
-	t.Setenv(probeLinuxRouterWebListenEnv, "")
-	addr, err := resolveProbeLinuxRouterWebListenAddr()
-	if err != nil {
-		t.Fatal(err)
+func TestProbeLinuxRouterUsesSharedLocalConsoleDefaults(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	t.Setenv("PROBE_LOCAL_LISTEN", "")
+	if got := resolveProbeLocalListenAddr(""); got != "0.0.0.0:16032" {
+		t.Fatalf("listen=%q want=%q", got, "0.0.0.0:16032")
 	}
-	if addr != probeLinuxRouterWebListenDefault {
-		t.Fatalf("listen=%q want=%q", addr, probeLinuxRouterWebListenDefault)
-	}
-	t.Setenv(probeLinuxRouterWebListenEnv, "8.8.8.8:18080")
-	if _, err := resolveProbeLinuxRouterWebListenAddr(); err == nil {
-		t.Fatal("public listen address unexpectedly accepted")
+	profile := buildProbeProductProfile()
+	if !profile.EnableLocalConsole || !profile.EnableLocalConsoleByDefault {
+		t.Fatalf("router must use the shared local console: %+v", profile)
 	}
 }
 
 func TestProbeLinuxRouterWebOnlyAllowsLANAndVirtualIPClientsAndHosts(t *testing.T) {
 	handler := setupProbeLinuxRouterWebTest(t)
-	allowed := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/router", "192.168.1.150:18080", "192.168.1.20:43210", nil)
+	cookie := registerAndLoginProbeLinuxRouterWeb(t, handler)
+	allowed := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/router", "192.168.1.150:16032", "192.168.1.20:43210", nil, cookie)
 	if allowed.Code != http.StatusOK || !strings.Contains(allowed.Body.String(), "CloudHelper 旁路由") {
 		t.Fatalf("private request status=%d body=%s", allowed.Code, allowed.Body.String())
 	}
-	virtual := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/router", "198.18.0.15:18080", "198.18.0.7:43210", nil)
+	virtual := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/router", "198.18.0.15:16032", "198.18.0.7:43210", nil, cookie)
 	if virtual.Code != http.StatusOK || !strings.Contains(virtual.Body.String(), "CloudHelper 旁路由") {
 		t.Fatalf("virtual request status=%d body=%s", virtual.Code, virtual.Body.String())
 	}
-	publicClient := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/router", "192.168.1.150:18080", "8.8.8.8:43210", nil)
+	publicClient := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/router", "192.168.1.150:16032", "8.8.8.8:43210", nil)
 	if publicClient.Code != http.StatusForbidden {
 		t.Fatalf("public client status=%d", publicClient.Code)
 	}
-	publicHost := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/router", "8.8.8.8:18080", "192.168.1.20:43210", nil)
+	publicHost := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/router", "8.8.8.8:16032", "192.168.1.20:43210", nil)
 	if publicHost.Code != http.StatusForbidden {
 		t.Fatalf("public host status=%d", publicHost.Code)
 	}
-	hostname := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/router", "router.local:18080", "192.168.1.20:43210", nil)
+	hostname := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/router", "router.local:16032", "192.168.1.20:43210", nil)
 	if hostname.Code != http.StatusForbidden {
 		t.Fatalf("hostname status=%d", hostname.Code)
 	}
 }
 
-func TestProbeLinuxRouterWebDoesNotExposeGenericConsole(t *testing.T) {
+func TestProbeLinuxRouterWebIsIntegratedIntoGenericConsole(t *testing.T) {
 	handler := setupProbeLinuxRouterWebTest(t)
-	response := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/shell", "192.168.1.150:18080", "192.168.1.20:43210", nil)
-	if response.Code != http.StatusNotFound {
-		t.Fatalf("generic console route status=%d", response.Code)
+	cookie := registerAndLoginProbeLinuxRouterWeb(t, handler)
+	response := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/shell", "192.168.1.150:16032", "192.168.1.20:43210", nil, cookie)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Shell") {
+		t.Fatalf("generic console route status=%d body=%s", response.Code, response.Body.String())
 	}
-	status := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/router/api/status", "192.168.1.150:18080", "192.168.1.20:43210", nil)
+	routerPage := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/router", "192.168.1.150:16032", "192.168.1.20:43210", nil, cookie)
+	if routerPage.Code != http.StatusOK || !strings.Contains(routerPage.Body.String(), `class="subtab active"`) {
+		t.Fatalf("router tab status=%d body=%s", routerPage.Code, routerPage.Body.String())
+	}
+	virtualRouterPage := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/virtual-router", "192.168.1.150:16032", "192.168.1.20:43210", nil, cookie)
+	if virtualRouterPage.Code != http.StatusOK || !strings.Contains(virtualRouterPage.Body.String(), `href="/local/router"`) {
+		t.Fatalf("virtual router page missing router subtab: status=%d", virtualRouterPage.Code)
+	}
+	status := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/router/api/status", "192.168.1.150:16032", "192.168.1.20:43210", nil)
 	if status.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated status endpoint=%d", status.Code)
 	}
-	upgrade := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/upgrade/check", "192.168.1.150:18080", "192.168.1.20:43210", map[string]any{"mode": "proxy"})
+	upgrade := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/upgrade/check", "192.168.1.150:16032", "192.168.1.20:43210", map[string]any{"mode": "proxy"})
 	if upgrade.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated upgrade endpoint=%d", upgrade.Code)
 	}
@@ -200,7 +207,7 @@ func TestProbeLinuxRouterWebConfigAndFailOpenFlow(t *testing.T) {
 			"enabled": true, "allowed_node_ids": []string{"1", "1"},
 		},
 	}
-	saved := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/config", "192.168.1.150:18080", "192.168.1.20:43210", config, cookie)
+	saved := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/config", "192.168.1.150:16032", "192.168.1.20:43210", config, cookie)
 	if saved.Code != http.StatusOK {
 		t.Fatalf("save status=%d body=%s", saved.Code, saved.Body.String())
 	}
@@ -212,7 +219,7 @@ func TestProbeLinuxRouterWebConfigAndFailOpenFlow(t *testing.T) {
 		t.Fatalf("saved config missing: %v", err)
 	}
 
-	failOpen := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/fail-open", "192.168.1.150:18080", "192.168.1.20:43210", map[string]any{}, cookie)
+	failOpen := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/fail-open", "192.168.1.150:16032", "192.168.1.20:43210", map[string]any{}, cookie)
 	if failOpen.Code != http.StatusOK {
 		t.Fatalf("fail-open status=%d body=%s", failOpen.Code, failOpen.Body.String())
 	}
@@ -220,7 +227,7 @@ func TestProbeLinuxRouterWebConfigAndFailOpenFlow(t *testing.T) {
 	if !manualFailOpen {
 		t.Fatal("manual fail-open was not enabled")
 	}
-	resume := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/resume", "192.168.1.150:18080", "192.168.1.20:43210", map[string]any{}, cookie)
+	resume := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/resume", "192.168.1.150:16032", "192.168.1.20:43210", map[string]any{}, cookie)
 	if resume.Code != http.StatusOK {
 		t.Fatalf("resume status=%d body=%s", resume.Code, resume.Body.String())
 	}
@@ -239,19 +246,19 @@ func TestProbeLinuxRouterWebRejectsInvalidGatewayConfig(t *testing.T) {
 		},
 		"local_ip_proxy": map[string]any{"enabled": false, "published_cidrs": []string{"192.168.50.0/24"}},
 	}
-	response := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/config", "192.168.1.150:18080", "192.168.1.20:43210", config, cookie)
+	response := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/config", "192.168.1.150:16032", "192.168.1.20:43210", config, cookie)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("invalid config status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
 func TestProbeLinuxRouterWebUsesLocalConfigAndShowsConnections(t *testing.T) {
-	for _, marker := range []string{"本地配置", `<select id="interfaceName">`, `id="availableNodeID"`, `id="addAllowedNodeBtn"`, `id="allowedNodeList"`, `id="connectionRows"`, `id="upgradeBtn"`, "/local/router/api/upgrade/check", "gateway_proxy", "local_ip_proxy", "let configDirty = false", "statusRequestSequence", "allowedNodeSelection", "有未保存的更改", "配置已保存并应用", "beforeunload", ">LAN IP<", ".split('/')[0]"} {
+	for _, marker := range []string{"本地配置", `<select id="interfaceName">`, `id="availableNodeID"`, `id="addAllowedNodeBtn"`, `id="allowedNodeList"`, `id="connectionRows"`, `id="upgradeBtn"`, "/local/router/api/upgrade/check", `href="/local/virtual-router"`, `class="subtab active"`, "gateway_proxy", "local_ip_proxy", "let configDirty = false", "statusRequestSequence", "allowedNodeSelection", "有未保存的更改", "配置已保存并应用", "beforeunload", ">LAN IP<", ".split('/')[0]"} {
 		if !strings.Contains(probeLinuxRouterWebPageHTML, marker) {
 			t.Fatalf("router page missing %q", marker)
 		}
 	}
-	for _, forbidden := range []string{"本地临时配置", "主控配置", "local_override", `id="lanCIDRs"`, `id="publishedCIDRs"`, `id="allowedNodeIDs"`} {
+	for _, forbidden := range []string{"本地临时配置", "主控配置", "local_override", `id="authView"`, `id="registerForm"`, `id="loginForm"`, "0.0.0.0:18080", `id="lanCIDRs"`, `id="publishedCIDRs"`, `id="allowedNodeIDs"`} {
 		if strings.Contains(probeLinuxRouterWebPageHTML, forbidden) {
 			t.Fatalf("router page still contains %q", forbidden)
 		}
@@ -277,13 +284,13 @@ func TestProbeLinuxRouterWebUpgradeUsesControllerProxy(t *testing.T) {
 		setprobeLocalRouteRuntimeContext(nodeIdentity{}, "")
 	})
 
-	check := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/upgrade/check", "192.168.1.150:18080", "192.168.1.20:43210", map[string]any{
+	check := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/upgrade/check", "192.168.1.150:16032", "192.168.1.20:43210", map[string]any{
 		"mode": "proxy", "release_repo": "fengzhanhuaer/CloudHelper",
 	}, cookie)
 	if check.Code != http.StatusOK || !strings.Contains(check.Body.String(), `"upgradeable":true`) || !strings.Contains(check.Body.String(), "cloudhelper-probe-router-") {
 		t.Fatalf("upgrade check status=%d body=%s", check.Code, check.Body.String())
 	}
-	upgrade := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/upgrade", "192.168.1.150:18080", "192.168.1.20:43210", map[string]any{
+	upgrade := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/upgrade", "192.168.1.150:16032", "192.168.1.20:43210", map[string]any{
 		"mode": "proxy", "release_repo": "fengzhanhuaer/CloudHelper",
 	}, cookie)
 	if upgrade.Code != http.StatusOK {

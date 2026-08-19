@@ -3,11 +3,9 @@
 package main
 
 import (
-	"context"
 	_ "embed"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -16,130 +14,26 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
-const (
-	probeLinuxRouterWebListenEnv     = "PROBE_ROUTER_WEB_LISTEN"
-	probeLinuxRouterWebListenDefault = "0.0.0.0:18080"
-	probeLinuxRouterWebBodyLimit     = 64 * 1024
-)
+const probeLinuxRouterWebBodyLimit = 64 * 1024
 
 //go:embed linux_router_pages/index.html
 var probeLinuxRouterWebPageHTML string
 
-var probeLinuxRouterWebState = struct {
-	sync.Mutex
-	server     *http.Server
-	listenAddr string
-	startedAt  time.Time
-}{}
-
 func init() {
-	probeProductLocalWebStart = startProbeLinuxRouterWeb
-	probeProductLocalWebStop = stopProbeLinuxRouterWeb
+	probeProductRegisterLocalConsoleRoutes = registerProbeLinuxRouterLocalConsoleRoutes
+	probeProductDecorateLocalConsolePage = decorateProbeLinuxRouterLocalConsolePage
+	probeProductWrapLocalConsoleHandler = probeLinuxRouterLANOnlyMiddleware
+	probeProductLocalAuthSetupTokenRequired = func() bool { return false }
 }
 
-func resolveProbeLinuxRouterWebListenAddr() (string, error) {
-	addr := strings.TrimSpace(os.Getenv(probeLinuxRouterWebListenEnv))
-	if addr == "" {
-		addr = probeLinuxRouterWebListenDefault
-	}
-	host, portRaw, err := net.SplitHostPort(addr)
-	if err != nil {
-		return "", fmt.Errorf("invalid router web listen address %q: %w", addr, err)
-	}
-	port, err := strconv.Atoi(portRaw)
-	if err != nil || port < 1 || port > 65535 {
-		return "", fmt.Errorf("invalid router web listen port %q", portRaw)
-	}
-	if host != "0.0.0.0" && !isProbeLinuxRouterLocalIPv4(host) {
-		return "", errors.New("router web listen host must be 0.0.0.0, loopback, LAN, or a CloudHelper virtual IPv4 address")
-	}
-	return net.JoinHostPort(host, strconv.Itoa(port)), nil
-}
-
-func startProbeLinuxRouterWeb(nodeID string) error {
-	if strings.TrimSpace(nodeID) == "" {
-		return errors.New("router web requires a node identity")
-	}
-	if _, err := ensureProbeLocalAuthManager(); err != nil {
-		return err
-	}
-	consumeProbeLocalSetupToken()
-	addr, err := resolveProbeLinuxRouterWebListenAddr()
-	if err != nil {
-		return err
-	}
-
-	probeLinuxRouterWebState.Lock()
-	if probeLinuxRouterWebState.server != nil {
-		probeLinuxRouterWebState.Unlock()
-		return nil
-	}
-	listener, err := net.Listen("tcp4", addr)
-	if err != nil {
-		probeLinuxRouterWebState.Unlock()
-		return err
-	}
-	server := &http.Server{
-		Handler:           buildProbeLinuxRouterWebHandler(),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
-	probeLinuxRouterWebState.server = server
-	probeLinuxRouterWebState.listenAddr = listener.Addr().String()
-	probeLinuxRouterWebState.startedAt = time.Now()
-	listenAddr := probeLinuxRouterWebState.listenAddr
-	probeLinuxRouterWebState.Unlock()
-
-	logProbeInfof("linux router local web listening on http://%s (private IPv4 access only)", listenAddr)
-	go func() {
-		err := server.Serve(listener)
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logProbeErrorf("linux router local web exited: listen=%s err=%v", listenAddr, err)
-		}
-		probeLinuxRouterWebState.Lock()
-		if probeLinuxRouterWebState.server == server {
-			probeLinuxRouterWebState.server = nil
-			probeLinuxRouterWebState.listenAddr = ""
-			probeLinuxRouterWebState.startedAt = time.Time{}
-		}
-		probeLinuxRouterWebState.Unlock()
-	}()
-	return nil
-}
-
-func stopProbeLinuxRouterWeb() {
-	probeLinuxRouterWebState.Lock()
-	server := probeLinuxRouterWebState.server
-	probeLinuxRouterWebState.server = nil
-	probeLinuxRouterWebState.listenAddr = ""
-	probeLinuxRouterWebState.startedAt = time.Time{}
-	probeLinuxRouterWebState.Unlock()
-	if server == nil {
+func registerProbeLinuxRouterLocalConsoleRoutes(mux *http.ServeMux) {
+	if mux == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if err := server.Shutdown(ctx); err != nil {
-		_ = server.Close()
-		logProbeWarnf("linux router local web forced closed: %v", err)
-	}
-}
-
-func buildProbeLinuxRouterWebHandler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", probeLinuxRouterWebRootHandler)
 	mux.HandleFunc("/local/router", probeLinuxRouterWebPageHandler)
-	mux.HandleFunc("/local/api/auth/bootstrap", probeLinuxRouterAuthBootstrapHandler)
-	mux.HandleFunc("/local/api/auth/register", probeLinuxRouterAuthRegisterHandler)
-	mux.HandleFunc("/local/api/auth/login", probeLocalAuthLoginHandler)
-	mux.HandleFunc("/local/api/auth/logout", probeLocalAuthLogoutHandler)
-	mux.HandleFunc("/local/api/auth/session", probeLocalAuthSessionHandler)
 	mux.HandleFunc("/local/router/api/status", probeLinuxRouterWebStatusHandler)
 	mux.HandleFunc("/local/router/api/config", probeLinuxRouterWebConfigHandler)
 	mux.HandleFunc("/local/router/api/fail-open", probeLinuxRouterWebFailOpenHandler)
@@ -148,54 +42,23 @@ func buildProbeLinuxRouterWebHandler() http.Handler {
 	mux.HandleFunc("/local/router/api/upgrade", probeLocalSystemUpgradeHandler)
 	mux.HandleFunc("/local/router/api/upgrade/check", probeLocalSystemUpgradeCheckHandler)
 	mux.HandleFunc("/local/router/api/upgrade/status", probeLocalSystemUpgradeStatusHandler)
-	return probeLinuxRouterLANOnlyMiddleware(mux)
 }
 
-func probeLinuxRouterAuthBootstrapHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
+func decorateProbeLinuxRouterLocalConsolePage(path, pageHTML string) string {
+	if path != "/local/virtual-router" {
+		return pageHTML
 	}
-	mgr, err := ensureProbeLocalAuthManager()
-	if err != nil {
-		writeProbeLocalError(w, err)
-		return
-	}
-	payload := mgr.bootstrap()
-	payload["setup_token_required"] = false
-	writeJSON(w, http.StatusOK, payload)
-}
-
-func probeLinuxRouterAuthRegisterHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	mgr, err := ensureProbeLocalAuthManager()
-	if err != nil {
-		writeProbeLocalError(w, err)
-		return
-	}
-	body := http.MaxBytesReader(w, r.Body, probeLocalAuthReadBodyMaxLen)
-	defer body.Close()
-	var req probeLocalRegisterRequest
-	if err := json.NewDecoder(body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
-		return
-	}
-	if mgr.registered() {
-		writeProbeLocalError(w, &probeLocalHTTPError{Status: http.StatusForbidden, Message: "registration is closed"})
-		return
-	}
-	if err := mgr.register(req.Username, req.Password, req.ConfirmPassword); err != nil {
-		writeProbeLocalError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "registered": true})
+	const marker = "<!-- product-virtual-router-subtabs -->"
+	const tab = `<a class="subtab" href="/local/router" role="tab" aria-selected="false">旁路由</a>`
+	return strings.Replace(pageHTML, marker, tab, 1)
 }
 
 func probeLinuxRouterLANOnlyMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isProbeLocalConsoleTrusted(r.Context()) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if !isProbeLinuxRouterLANRequest(r) {
 			http.Error(w, "local network access only", http.StatusForbidden)
 			return
@@ -240,29 +103,8 @@ func isProbeLinuxRouterLocalIPv4(raw string) bool {
 	return err == nil && fakeCIDR.Contains(addr)
 }
 
-func probeLinuxRouterWebRootHandler(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	http.Redirect(w, r, "/local/router", http.StatusFound)
-}
-
 func probeLinuxRouterWebPageHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if r.URL.Path != "/local/router" {
-		http.NotFound(w, r)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(probeLinuxRouterWebPageHTML))
+	serveProbeLocalHTMLPage(w, r, "/local/router", probeLinuxRouterWebPageHTML)
 }
 
 func probeLinuxRouterWebStatusHandler(w http.ResponseWriter, r *http.Request) {
@@ -278,10 +120,7 @@ func probeLinuxRouterWebStatusHandler(w http.ResponseWriter, r *http.Request) {
 	probeReporterRPCState.mu.Lock()
 	controllerConnected := probeReporterRPCState.stream != nil && probeReporterRPCState.encoder != nil
 	probeReporterRPCState.mu.Unlock()
-	probeLinuxRouterWebState.Lock()
-	listenAddr := probeLinuxRouterWebState.listenAddr
-	startedAt := probeLinuxRouterWebState.startedAt
-	probeLinuxRouterWebState.Unlock()
+	listenAddr, startedAt := currentProbeLocalConsoleRuntime()
 	hostname, _ := os.Hostname()
 	uptimeSeconds := int64(0)
 	if !startedAt.IsZero() {

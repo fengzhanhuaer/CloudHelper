@@ -1375,6 +1375,11 @@ func TestProbeLocalSystemRestartClosesLocalConsoleBeforeRestart(t *testing.T) {
 
 func TestProbeLocalConsoleRejectsNonLoopbackPlainHTTPByDefault(t *testing.T) {
 	t.Setenv("PROBE_LOCAL_ALLOW_INSECURE_HTTP", "")
+	allowInsecure := activeProbeProductProfile.AllowInsecureLocalConsoleHTTP
+	activeProbeProductProfile.AllowInsecureLocalConsoleHTTP = false
+	t.Cleanup(func() {
+		activeProbeProductProfile.AllowInsecureLocalConsoleHTTP = allowInsecure
+	})
 	if err := startProbeLocalConsoleServer(http.NewServeMux(), "0.0.0.0:16032"); err == nil {
 		cleanupProbeLocalConsoleServerForTest(t)
 		t.Fatal("non-loopback plain HTTP listener should be rejected")

@@ -83,7 +83,7 @@
     <section id="registerCard" class="card hidden">
       <h2>首次注册</h2>
       <form id="registerForm">
-        <div class="field">
+        <div id="registerSetupTokenField" class="row">
           <label for="registerSetupToken">初始化令牌</label>
           <input id="registerSetupToken" name="setup_token" type="password" required autocomplete="off" />
         </div>
@@ -125,6 +125,8 @@
     const messageEl = document.getElementById('message');
     const registerCard = document.getElementById('registerCard');
     const registerForm = document.getElementById('registerForm');
+    const registerSetupTokenField = document.getElementById('registerSetupTokenField');
+    const registerSetupTokenInput = document.getElementById('registerSetupToken');
     const loginForm = document.getElementById('loginForm');
 
     function setMessage(text, type) {
@@ -156,6 +158,10 @@
       try {
         const data = await requestJSON('/local/api/auth/bootstrap', { method: 'GET' });
         const registered = !!data.registered;
+        const setupTokenRequired = data.setup_token_required !== false;
+        registerSetupTokenField.classList.toggle('hidden', !setupTokenRequired);
+        registerSetupTokenInput.required = setupTokenRequired;
+        if (!setupTokenRequired) registerSetupTokenInput.value = '';
         if (!registered) {
           registerCard.classList.remove('hidden');
           setMessage('检测到未注册，请先完成首次注册。');

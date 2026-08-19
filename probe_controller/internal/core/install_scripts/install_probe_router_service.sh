@@ -5,7 +5,8 @@ RELEASE_REPO="${RELEASE_REPO:-fengzhanhuaer/CloudHelper}"
 RELEASE_TAG="${RELEASE_TAG:-latest}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/cloudhelper/probe_router}"
 SERVICE_NAME="${SERVICE_NAME:-probe_router}"
-PROBE_ROUTER_WEB_LISTEN="${PROBE_ROUTER_WEB_LISTEN:-0.0.0.0:18080}"
+PROBE_LOCAL_LISTEN="${PROBE_LOCAL_LISTEN:-0.0.0.0:16032}"
+PROBE_LOCAL_CONSOLE_ENABLED="${PROBE_LOCAL_CONSOLE_ENABLED:-true}"
 PROBE_ROUTER_PROGRAM_URL="${PROBE_ROUTER_PROGRAM_URL:-}"
 
 log() { echo "[cloudhelper-probe-router] $*"; }
@@ -114,7 +115,7 @@ escape_conf() { printf '%s' "$1" | sed "s/'/'\\\\''/g"; }
   echo "PROBE_NODE_ID='$(escape_conf "${PROBE_NODE_ID}")'"
   echo "PROBE_NODE_SECRET='$(escape_conf "${PROBE_NODE_SECRET}")'"
   echo "PROBE_CONTROLLER_URL='$(escape_conf "${PROBE_CONTROLLER_URL}")'"
-  echo "PROBE_ROUTER_WEB_LISTEN='$(escape_conf "${PROBE_ROUTER_WEB_LISTEN}")'"
+  echo "PROBE_LOCAL_CONSOLE_ENABLED='$(escape_conf "${PROBE_LOCAL_CONSOLE_ENABLED}")'"
 } > "/etc/conf.d/${SERVICE_NAME}"
 chmod 0600 "/etc/conf.d/${SERVICE_NAME}"
 
@@ -128,7 +129,7 @@ directory="${INSTALL_DIR}"
 pidfile="/run/\${RC_SVCNAME}.pid"
 output_log="${INSTALL_DIR}/log/openrc.log"
 error_log="${INSTALL_DIR}/log/openrc.log"
-export PROBE_NODE_ID PROBE_NODE_SECRET PROBE_CONTROLLER_URL PROBE_ROUTER_WEB_LISTEN
+export PROBE_NODE_ID PROBE_NODE_SECRET PROBE_CONTROLLER_URL PROBE_LOCAL_CONSOLE_ENABLED
 
 depend() {
   need net
@@ -142,8 +143,8 @@ if ! rc-update add "${SERVICE_NAME}" default >/dev/null 2>&1 || ! rc-service "${
   die "OpenRC service failed to start"
 fi
 
-health_host="${PROBE_ROUTER_WEB_LISTEN%:*}"
-health_port="${PROBE_ROUTER_WEB_LISTEN##*:}"
+health_host="${PROBE_LOCAL_LISTEN%:*}"
+health_port="${PROBE_LOCAL_LISTEN##*:}"
 [ "${health_host}" = "0.0.0.0" ] && health_host="127.0.0.1"
 service_ready=0
 attempt=0
@@ -161,4 +162,4 @@ if [ "${service_ready}" -ne 1 ]; then
   die "probe_router did not become healthy at http://${health_host}:${health_port}/local/router"
 fi
 log "installed ${PROGRAM_ASSET} at ${INSTALL_DIR}"
-log "local rescue web listens on http://${PROBE_ROUTER_WEB_LISTEN} (private IPv4 clients and IP hosts only)"
+log "shared probe console listens on http://${PROBE_LOCAL_LISTEN}; router settings are available under /local/router"

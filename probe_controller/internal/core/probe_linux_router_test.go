@@ -164,13 +164,13 @@ func TestLinuxRouterInstallerIsAlpineOpenRCAndDualArchitecture(t *testing.T) {
 	if strings.Contains(probeRouterInstallScriptLinux, "\r") {
 		t.Fatal("router installer must use LF line endings for Alpine /bin/sh")
 	}
-	for _, marker := range []string{"command -v apk", "apk add --no-cache", "kmod", "rc-service rc-update ip nft sysctl", "command -v \"${required_command}\"", "modprobe tun", "/dev/net/tun", "ip tuntap add", "x86_64", "aarch64|arm64", "cloudhelper-probe-router-linux-${GOARCH}", "PROBE_ROUTER_PROGRAM_URL", "/api/probe/proxy/download", "--data-urlencode \"node_id=${PROBE_NODE_ID}\"", "--data-urlencode \"secret=${PROBE_NODE_SECRET}\"", "X-CloudHelper-Download-URL: ${program_url}", "/opt/cloudhelper/probe_router", "--upgrade-verify-build-kind=linux_router", "rc-update add", "PROBE_ROUTER_WEB_LISTEN", "0.0.0.0:18080", "curl -fsS --noproxy", "/local/router"} {
+	for _, marker := range []string{"command -v apk", "apk add --no-cache", "kmod", "rc-service rc-update ip nft sysctl", "command -v \"${required_command}\"", "modprobe tun", "/dev/net/tun", "ip tuntap add", "x86_64", "aarch64|arm64", "cloudhelper-probe-router-linux-${GOARCH}", "PROBE_ROUTER_PROGRAM_URL", "/api/probe/proxy/download", "--data-urlencode \"node_id=${PROBE_NODE_ID}\"", "--data-urlencode \"secret=${PROBE_NODE_SECRET}\"", "X-CloudHelper-Download-URL: ${program_url}", "/opt/cloudhelper/probe_router", "--upgrade-verify-build-kind=linux_router", "rc-update add", "PROBE_LOCAL_LISTEN", "PROBE_LOCAL_CONSOLE_ENABLED", "0.0.0.0:16032", "curl -fsS --noproxy", "/local/router"} {
 		if !strings.Contains(probeRouterInstallScriptLinux, marker) {
 			t.Fatalf("router installer missing %q", marker)
 		}
 	}
-	for _, forbidden := range []string{"systemctl", "mihomo", "docker"} {
-		if strings.Contains(strings.ToLower(probeRouterInstallScriptLinux), forbidden) {
+	for _, forbidden := range []string{"systemctl", "mihomo", "docker", "PROBE_ROUTER_WEB_LISTEN", "0.0.0.0:18080", `echo "PROBE_LOCAL_LISTEN='`, "export PROBE_NODE_ID PROBE_NODE_SECRET PROBE_CONTROLLER_URL PROBE_LOCAL_LISTEN"} {
+		if strings.Contains(strings.ToLower(probeRouterInstallScriptLinux), strings.ToLower(forbidden)) {
 			t.Fatalf("router installer must not contain %q", forbidden)
 		}
 	}

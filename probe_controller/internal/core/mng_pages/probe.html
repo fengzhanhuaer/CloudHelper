@@ -1563,9 +1563,9 @@
       targetSystemSelect.value = targetSystem === 'windows'
         ? 'windows'
         : (targetSystem === 'android' ? 'android' : (targetSystem === 'docker' ? 'docker' : 'linux'));
-      applyEditNodeKindConstraints();
       document.getElementById('edit-direct-connect').checked = node.direct_connect === true;
       document.getElementById('edit-local-console-enabled').checked = node.local_console_enabled === true;
+      applyEditNodeKindConstraints();
       document.getElementById('edit-payment-cycle').value = String(node.payment_cycle || '');
       document.getElementById('edit-cost').value = String(node.cost || '');
       document.getElementById('edit-expire-at').value = String(node.expire_at || '');
@@ -1588,6 +1588,9 @@
         targetSystemSelect.value = 'linux';
       }
       targetSystemSelect.disabled = false;
+      const localConsoleEnabled = document.getElementById('edit-local-console-enabled');
+      localConsoleEnabled.checked = nodeKind === 'linux_router' || localConsoleEnabled.checked;
+      localConsoleEnabled.disabled = nodeKind === 'linux_router';
     }
 
     function buildEditValidationError(message) {

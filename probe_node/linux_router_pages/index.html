@@ -6,24 +6,25 @@
   <title>CloudHelper 旁路由</title>
   <style>
     :root {
-      color-scheme: light;
-      --bg: #f4f6f4;
-      --surface: #ffffff;
-      --text: #17211b;
-      --muted: #647069;
-      --line: #d8ded9;
-      --green: #18794e;
-      --green-soft: #e6f4ec;
-      --amber: #946200;
-      --amber-soft: #fff4d6;
-      --red: #b42318;
-      --red-soft: #feeceb;
-      --ink: #27312b;
+      color-scheme: dark;
+      --bg: #0d1117;
+      --surface: rgba(22, 27, 34, 0.74);
+      --text: #c9d1d9;
+      --muted: #8b949e;
+      --line: rgba(255, 255, 255, 0.12);
+      --green: #2ea043;
+      --green-soft: rgba(46, 160, 67, .14);
+      --amber: #d29922;
+      --amber-soft: rgba(210, 153, 34, .14);
+      --red: #f85149;
+      --red-soft: rgba(248, 81, 73, .14);
+      --ink: #1f6feb;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       min-height: 100vh;
+      padding: 24px;
       background: var(--bg);
       color: var(--text);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
@@ -32,52 +33,54 @@
     button { cursor: pointer; }
     button:disabled { cursor: wait; opacity: .6; }
     .hidden { display: none !important; }
-    .shell { width: min(1120px, calc(100% - 32px)); margin: 0 auto; }
-    .topbar { background: var(--surface); border-bottom: 1px solid var(--line); }
+    .shell { width: 100%; margin: 0 auto; }
+    .topbar { margin-bottom: 14px; }
     .topbar-inner {
-      min-height: 72px;
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       justify-content: space-between;
       gap: 16px;
     }
     .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
-    .brand-mark {
-      width: 36px;
-      height: 36px;
-      display: grid;
-      place-items: center;
-      border-radius: 6px;
-      background: var(--ink);
-      color: #fff;
-      font: 700 13px/1 Consolas, monospace;
-      flex: 0 0 auto;
-    }
-    h1 { margin: 0; font-size: 20px; font-weight: 700; }
+    h1 { margin: 0; font-size: 24px; font-weight: 700; color: #fff; }
     .subline { margin-top: 3px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
     .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .btn {
       min-height: 36px;
       padding: 7px 12px;
-      border: 1px solid #bfc8c1;
-      border-radius: 5px;
-      background: var(--surface);
+      border: 1px solid rgba(255,255,255,.18);
+      border-radius: 8px;
+      background: rgba(139, 148, 158, .2);
       color: var(--text);
       font-weight: 600;
     }
-    .btn:hover { border-color: #839087; background: #f8faf8; }
+    .btn:hover { border-color: #58a6ff; background: rgba(88, 166, 255, .12); }
     .btn.primary { background: var(--green); border-color: var(--green); color: #fff; }
     .btn.danger { background: var(--red-soft); border-color: #efb5b0; color: var(--red); }
     .btn.warn { background: var(--amber-soft); border-color: #e7cf8d; color: #765000; }
-    .notice { margin: 18px 0 0; padding: 11px 14px; border-left: 4px solid var(--amber); background: var(--amber-soft); color: #684800; }
+    .notice { margin: 18px 0 0; padding: 11px 14px; border-left: 4px solid var(--amber); background: var(--amber-soft); color: #e3b341; }
     .notice.error { border-color: var(--red); background: var(--red-soft); color: var(--red); }
+    .nav { display: flex; gap: 8px; flex-wrap: wrap; }
+    .nav a {
+      padding: 8px 12px;
+      border-radius: 8px;
+      color: #d0d7de;
+      text-decoration: none;
+      border: 1px solid rgba(255,255,255,.18);
+      background: rgba(139, 148, 158, .2);
+    }
+    .nav a.active { background: linear-gradient(135deg, #58a6ff, #1f6feb); color: #fff; }
+    .subtabs { display: flex; gap: 6px; margin: 0 0 14px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+    .subtab { display: inline-flex; align-items: center; border-bottom: 2px solid transparent; color: var(--muted); padding: 10px 12px; white-space: nowrap; text-decoration: none; }
+    .subtab.active { color: #fff; border-bottom-color: #58a6ff; background: rgba(88, 166, 255, .12); }
+    .page-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
     .status-grid {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
       margin: 20px 0 0;
       background: var(--surface);
       border: 1px solid var(--line);
-      border-radius: 6px;
+      border-radius: 8px;
       overflow: hidden;
     }
     .status-item { min-height: 92px; padding: 16px; border-right: 1px solid var(--line); }
@@ -97,9 +100,9 @@
     label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
     input[type="text"], input[type="password"], textarea, select {
       width: 100%;
-      border: 1px solid #bfc8c1;
-      border-radius: 5px;
-      background: var(--surface);
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      background: rgba(13, 17, 23, .55);
       color: var(--text);
       padding: 9px 10px;
       outline: none;
@@ -112,7 +115,7 @@
     .check input { width: 18px; height: 18px; accent-color: var(--green); }
     .allowed-picker { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
     .allowed-list { display: flex; flex-wrap: wrap; gap: 8px; min-height: 30px; margin-top: 10px; }
-    .allowed-item { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 4px 5px 4px 9px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); font-size: 13px; }
+    .allowed-item { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 4px 5px 4px 9px; border: 1px solid var(--line); border-radius: 5px; background: rgba(13, 17, 23, .36); font-size: 13px; }
     .allowed-item span { overflow-wrap: anywhere; }
     .allowed-remove { width: 24px; height: 24px; border: 0; background: transparent; color: var(--muted); font-size: 18px; line-height: 1; }
     .allowed-empty { color: var(--muted); font-size: 13px; align-self: center; }
@@ -123,7 +126,7 @@
     .connection-list { border: 1px solid var(--line); background: var(--surface); overflow-x: auto; }
     .connection-row { display: grid; grid-template-columns: minmax(150px, 1fr) 110px minmax(180px, 1.5fr) 100px minmax(180px, 1.4fr); gap: 12px; align-items: center; min-width: 760px; padding: 11px 13px; border-bottom: 1px solid var(--line); }
     .connection-row:last-child { border-bottom: 0; }
-    .connection-row.header { background: #f8faf8; color: var(--muted); font-size: 12px; font-weight: 600; }
+    .connection-row.header { background: rgba(13, 17, 23, .72); color: var(--muted); font-size: 12px; font-weight: 600; }
     .connection-node { font-weight: 700; }
     .connection-detail { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
     .connection-empty { padding: 18px 13px; color: var(--muted); }
@@ -141,14 +144,9 @@
       white-space: pre-wrap;
       overflow-wrap: anywhere;
     }
-    .auth-wrap { width: min(440px, calc(100% - 32px)); margin: 8vh auto; }
-    .auth-panel { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 24px; }
-    .auth-panel h1 { margin-bottom: 6px; }
-    .auth-panel .field { margin-top: 14px; }
-    .auth-panel .btn { width: 100%; margin-top: 18px; }
     .message { min-height: 20px; margin: 12px 0 0; color: var(--muted); font-size: 13px; }
     @media (max-width: 760px) {
-      .shell { width: min(100% - 24px, 1120px); }
+      body { padding: 16px; }
       .topbar-inner { align-items: flex-start; flex-direction: column; padding: 14px 0; }
       .status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .status-item:nth-child(2) { border-right: 0; }
@@ -170,55 +168,48 @@
       .status-grid { grid-template-columns: 1fr; }
       .status-item { border-right: 0; border-bottom: 1px solid var(--line); }
       .status-item:last-child { border-bottom: 0; }
-      .toolbar, .actions { width: 100%; }
+      .toolbar, .actions, .page-toolbar { width: 100%; }
       .toolbar .btn, .actions .btn { flex: 1 1 auto; }
     }
   </style>
 </head>
 <body>
-  <main id="authView" class="auth-wrap hidden">
-    <section class="auth-panel">
-      <div class="brand">
-        <div class="brand-mark">CH</div>
-        <div>
-          <h1>CloudHelper 旁路由</h1>
-          <div class="subline">本地管理</div>
-        </div>
-      </div>
-      <form id="registerForm" class="hidden">
-        <div class="field"><label for="registerUsername">用户名</label><input id="registerUsername" type="text" maxlength="64" required /></div>
-        <div class="field"><label for="registerPassword">密码</label><input id="registerPassword" type="password" minlength="8" maxlength="128" required /></div>
-        <div class="field"><label for="registerConfirm">确认密码</label><input id="registerConfirm" type="password" minlength="8" maxlength="128" required /></div>
-        <button class="btn primary" type="submit">创建本地账号</button>
-      </form>
-      <form id="loginForm" class="hidden">
-        <div class="field"><label for="loginUsername">用户名</label><input id="loginUsername" type="text" maxlength="64" required /></div>
-        <div class="field"><label for="loginPassword">密码</label><input id="loginPassword" type="password" maxlength="128" required /></div>
-        <button class="btn primary" type="submit">登录</button>
-      </form>
-      <p id="authMessage" class="message"></p>
-    </section>
-  </main>
-
-  <div id="appView" class="hidden">
+  <main class="shell">
     <header class="topbar">
-      <div class="shell topbar-inner">
-        <div class="brand">
-          <div class="brand-mark">CH</div>
-          <div>
-            <h1>CloudHelper 旁路由</h1>
-            <div id="nodeSummary" class="subline">--</div>
-          </div>
+      <div class="topbar-inner">
+        <div>
+          <h1>虚拟路由</h1>
+          <div class="subline">旁路由配置与运行状态</div>
         </div>
-        <div class="toolbar">
-          <button id="upgradeBtn" class="btn" type="button">升级</button>
-          <button id="refreshBtn" class="btn" type="button">刷新</button>
-          <button id="logoutBtn" class="btn" type="button">退出</button>
-        </div>
+        <nav class="nav" aria-label="本地控制台导航">
+          <a href="/local/panel">首页</a>
+          <a href="/local/logs">运行日志</a>
+          <a href="/local/virtual-router" class="active">虚拟路由</a>
+          <a href="/local/system">系统设置</a>
+          <a href="/local/sync">通用同步</a>
+          <a href="/local/shell">Shell</a>
+          <a href="/local/information">信息框</a>
+        </nav>
       </div>
     </header>
 
-    <main class="shell">
+    <div class="subtabs" role="tablist">
+      <a class="subtab" href="/local/virtual-router" role="tab" aria-selected="false">路由设置</a>
+      <a class="subtab" href="/local/virtual-router" role="tab" aria-selected="false">路由状态</a>
+      <a class="subtab" href="/local/virtual-router" role="tab" aria-selected="false">最近连接</a>
+      <a class="subtab" href="/local/virtual-router" role="tab" aria-selected="false">最近报文</a>
+      <a class="subtab" href="/local/virtual-router" role="tab" aria-selected="false">路由测试</a>
+      <a class="subtab active" href="/local/router" role="tab" aria-selected="true">旁路由</a>
+    </div>
+
+    <div class="page-toolbar">
+      <div id="nodeSummary" class="subline">--</div>
+      <div class="toolbar">
+        <button id="upgradeBtn" class="btn" type="button">升级</button>
+        <button id="refreshBtn" class="btn" type="button">刷新</button>
+      </div>
+    </div>
+
       <div id="notice" class="notice hidden"></div>
       <div id="upgradeNotice" class="notice hidden"></div>
       <section class="status-grid" aria-label="运行状态">
@@ -280,7 +271,7 @@
           <div class="runtime-item"><div class="label">TUN 发送</div><div id="tunTx" class="value">--</div></div>
           <div class="runtime-item"><div class="label">最优邻接延迟</div><div id="latency" class="value">--</div></div>
           <div class="runtime-item"><div class="label">运行发布网段</div><div id="runtimePublishedCIDRs" class="value">--</div></div>
-          <div class="runtime-item"><div class="label">本地 Web</div><div id="listenAddr" class="value">--</div></div>
+          <div class="runtime-item"><div class="label">控制台入口</div><div id="listenAddr" class="value">--</div></div>
           <div class="runtime-item"><div class="label">运行时间</div><div id="uptime" class="value">--</div></div>
         </div>
       </section>
@@ -289,8 +280,7 @@
         <div class="section-head"><h2>运行日志</h2><button id="logsBtn" class="btn" type="button">刷新日志</button></div>
         <pre id="logs">--</pre>
       </section>
-    </main>
-  </div>
+  </main>
 
   <script>
     const $ = (id) => document.getElementById(id);
@@ -317,23 +307,6 @@
         throw error;
       }
       return payload;
-    }
-
-    function setAuthMessage(text, failed) {
-      $('authMessage').textContent = text || '';
-      $('authMessage').className = 'message' + (failed ? ' error-text' : '');
-    }
-
-    function showAuth(registered) {
-      $('appView').classList.add('hidden');
-      $('authView').classList.remove('hidden');
-      $('registerForm').classList.toggle('hidden', registered);
-      $('loginForm').classList.toggle('hidden', !registered);
-    }
-
-    function showApp() {
-      $('authView').classList.add('hidden');
-      $('appView').classList.remove('hidden');
     }
 
     function formatBytes(value) {
@@ -444,7 +417,7 @@
       $('tunTx').textContent = Number(runtime.tun_tx_packets || 0) + ' 包 / ' + formatBytes(runtime.tun_tx_bytes);
       $('latency').textContent = Number(runtime.latency_ms || 0) > 0 ? runtime.latency_ms + ' ms' : '-';
       $('runtimePublishedCIDRs').textContent = (runtime.published_cidrs || localIP.published_cidrs || []).join(', ') || '-';
-      $('listenAddr').textContent = data.listen_addr || '0.0.0.0:18080';
+      $('listenAddr').textContent = data.listen_addr || '主控 WSS';
       $('uptime').textContent = formatDuration(data.uptime_seconds);
       $('updatedAt').textContent = runtime.updated_at ? new Date(runtime.updated_at).toLocaleString() : '-';
       $('failOpenBtn').classList.toggle('hidden', data.manual_fail_open === true);
@@ -472,13 +445,11 @@
         const data = await requestJSON('/local/router/api/status');
         if (requestSequence < appliedStatusSequence) return true;
         appliedStatusSequence = requestSequence;
-        showApp();
         renderStatus(data);
         return true;
       } catch (error) {
         if (error.status === 401) {
-          const bootstrap = await requestJSON('/local/api/auth/bootstrap');
-          showAuth(bootstrap.registered === true);
+          window.location.href = '/local/login';
           return false;
         }
         throw error;
@@ -555,30 +526,6 @@
         if (!upgradeStatusTimer) $('upgradeBtn').disabled = false;
       }
     }
-
-    $('registerForm').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      setAuthMessage('');
-      try {
-        await requestJSON('/local/api/auth/register', { method: 'POST', body: JSON.stringify({
-          username: $('registerUsername').value,
-          password: $('registerPassword').value,
-          confirm_password: $('registerConfirm').value,
-        }) });
-        $('loginUsername').value = $('registerUsername').value;
-        showAuth(true);
-      } catch (error) { setAuthMessage(error.message, true); }
-    });
-
-    $('loginForm').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      setAuthMessage('');
-      try {
-        await requestJSON('/local/api/auth/login', { method: 'POST', body: JSON.stringify({ username: $('loginUsername').value, password: $('loginPassword').value }) });
-        await loadStatus();
-        await loadLogs();
-      } catch (error) { setAuthMessage(error.message, true); }
-    });
 
     $('configForm').addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -663,14 +610,11 @@
     $('refreshBtn').addEventListener('click', async () => { try { await loadStatus(); } catch (error) { showActionError(error); } });
     $('upgradeBtn').addEventListener('click', startUpgrade);
     $('logsBtn').addEventListener('click', async () => { try { await loadLogs(); } catch (error) { showActionError(error); } });
-    $('logoutBtn').addEventListener('click', async () => {
-      try { await requestJSON('/local/api/auth/logout', { method: 'POST', body: '{}' }); } catch (_) {}
-      showAuth(true);
+    requestAnimationFrame(() => {
+      document.querySelector('.subtab.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     });
-
     loadStatus().then((authenticated) => authenticated ? loadLogs() : null).catch((error) => {
-      $('authView').classList.remove('hidden');
-      setAuthMessage(error.message, true);
+      showActionError(error);
     });
     setInterval(() => {
       if (!currentStatus || document.hidden || $('configForm').contains(document.activeElement)) return;

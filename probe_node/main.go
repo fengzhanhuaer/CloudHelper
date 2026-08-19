@@ -388,7 +388,7 @@ func runProbeNode(options probeLaunchOptions) error {
 	if err := startProbeProductRuntime(identity.NodeID); err != nil {
 		logProbeWarnf("probe product runtime startup pending: %v", err)
 	}
-	if activeProbeProductProfile.EnableLocalConsole || activeProbeProductProfile.EnableProductLocalWeb || activeProbeProductProfile.EnableLocalProxy {
+	if activeProbeProductProfile.EnableLocalConsole || activeProbeProductProfile.EnableLocalProxy {
 		if _, err := ensureProbeLocalAuthManager(); err != nil {
 			return fmt.Errorf("failed to initialize local console auth: %w", err)
 		}
@@ -407,12 +407,6 @@ func runProbeNode(options probeLaunchOptions) error {
 	}
 	controllerBaseURL := resolveProbeControllerBaseURL(strings.TrimSpace(options.ControllerURL), strings.TrimSpace(options.ControllerWS))
 	setprobeLocalRouteRuntimeContext(identity, controllerBaseURL)
-	if activeProbeProductProfile.EnableProductLocalWeb {
-		if err := probeProductLocalWebStart(identity.NodeID); err != nil {
-			return fmt.Errorf("failed to start product local web: %w", err)
-		}
-		defer probeProductLocalWebStop()
-	}
 	if activeProbeProductProfile.EnableLocalProxy {
 		if err := reconcileProbeVRouteProxyRuntime(loadProbeVirtualRouterLocalSettings()); err != nil {
 			logProbeWarnf("probe vroute proxy startup failed: %v", err)
@@ -423,7 +417,7 @@ func runProbeNode(options probeLaunchOptions) error {
 	if activeProbeProductProfile.EnableLocalConsole {
 		ensureProbeLocalListenConfigDefaults()
 	}
-	if activeProbeProductProfile.EnableLocalConsole && options.LocalConsoleEnabled {
+	if activeProbeProductProfile.EnableLocalConsole && (options.LocalConsoleEnabled || activeProbeProductProfile.EnableLocalConsoleByDefault) {
 		if err := applyProbeLocalConsoleListenerEnabled(true, strings.TrimSpace(options.LocalListenAddr), "startup"); err != nil {
 			return fmt.Errorf("failed to start local console: %w", err)
 		}

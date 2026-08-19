@@ -447,6 +447,9 @@ func normalizeProbeNodes(items []probeNodeRecord) ([]probeNodeRecord, map[string
 		node := item
 		node.NodeName = strings.TrimSpace(node.NodeName)
 		node.NodeKind = normalizeProbeNodeKind(node.NodeKind)
+		if node.NodeKind == probeNodeKindLinuxRouter {
+			node.LocalConsoleEnabled = true
+		}
 		node.Remark = strings.TrimSpace(node.Remark)
 		node.DDNS = strings.TrimSpace(node.DDNS)
 		node.CloudflareDDNSRecords = normalizeCloudflareRecords(node.CloudflareDDNSRecords)
@@ -567,6 +570,9 @@ func createProbeNodeWithKindLocked(nodeName string, nodeKind string) (probeNodeR
 		VendorURL:     "",
 		CreatedAt:     now,
 		UpdatedAt:     now,
+	}
+	if node.NodeKind == probeNodeKindLinuxRouter {
+		node.LocalConsoleEnabled = true
 	}
 
 	nodes = append(nodes, node)
@@ -732,7 +738,7 @@ func updateProbeNodeLocked(req probeNodeUpdateRequest) (probeNodeRecord, error) 
 	nodes[found].DDNS = strings.TrimSpace(req.DDNS)
 	nodes[found].TargetSystem = system
 	nodes[found].DirectConnect = req.DirectConnect
-	nodes[found].LocalConsoleEnabled = req.LocalConsoleEnabled
+	nodes[found].LocalConsoleEnabled = req.LocalConsoleEnabled || requestedKind == probeNodeKindLinuxRouter
 	nodes[found].PaymentCycle = strings.TrimSpace(req.PaymentCycle)
 	nodes[found].Cost = strings.TrimSpace(req.Cost)
 	nodes[found].ExpireAt = strings.TrimSpace(req.ExpireAt)

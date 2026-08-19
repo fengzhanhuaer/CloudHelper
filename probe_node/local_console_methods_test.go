@@ -33,6 +33,7 @@ func TestProbeLocalAPIMethodGuards(t *testing.T) {
 		{name: "system upgrade check should only allow POST", method: http.MethodGet, path: "/local/api/system/upgrade/check", body: nil},
 		{name: "system upgrade status should only allow GET", method: http.MethodPost, path: "/local/api/system/upgrade/status", body: map[string]any{}},
 		{name: "system restart should only allow POST", method: http.MethodGet, path: "/local/api/system/restart", body: nil},
+		{name: "system web listen should reject put", method: http.MethodPut, path: "/local/api/system/web_listen", body: map[string]any{}},
 		{name: "system ip report settings should reject put", method: http.MethodPut, path: "/local/api/system/ip_report_settings", body: map[string]any{}},
 	}
 

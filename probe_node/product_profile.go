@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"net/http"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -23,7 +24,10 @@ type probeProductProfile struct {
 	TempDir                       string
 	AllowLocalTUNInstall          bool
 	EnableLocalConsole            bool
-	EnableProductLocalWeb         bool
+	EnableLocalConsoleByDefault   bool
+	LocalConsoleDefaultListen     string
+	AllowInsecureLocalConsoleHTTP bool
+	PreferLocalConsoleConfig      bool
 	EnableLocalProxy              bool
 	EnableSystemDNS               bool
 	EnableSyncScheduler           bool
@@ -35,10 +39,19 @@ type probeProductProfile struct {
 	LinuxAMD64OrARM64Only         bool
 }
 
-var (
-	probeProductLocalWebStart = func(string) error { return nil }
-	probeProductLocalWebStop  = func() {}
-)
+var probeProductRegisterLocalConsoleRoutes = func(*http.ServeMux) {}
+
+var probeProductDecorateLocalConsolePage = func(_ string, pageHTML string) string {
+	return pageHTML
+}
+
+var probeProductWrapLocalConsoleHandler = func(handler http.Handler) http.Handler {
+	return handler
+}
+
+var probeProductLocalAuthSetupTokenRequired = func() bool {
+	return true
+}
 
 type probeProductUpgradeCompanion struct {
 	CandidatePath string

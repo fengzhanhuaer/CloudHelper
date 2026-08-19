@@ -56,7 +56,7 @@ var (
 // controller-bridged requests in-process (no extra TCP listener / loopback dial).
 func probeLocalConsoleBridgeHandler() http.Handler {
 	probeLocalConsoleBridgeMuxOnce.Do(func() {
-		probeLocalConsoleBridgeMux = buildProbeLocalConsoleMux()
+		probeLocalConsoleBridgeMux = buildProbeLocalConsoleHandler()
 	})
 	return probeLocalConsoleBridgeMux
 }

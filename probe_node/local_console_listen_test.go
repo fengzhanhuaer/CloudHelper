@@ -35,6 +35,7 @@ func TestNormalizeProbeLocalListenAddr(t *testing.T) {
 }
 
 func TestResolveProbeLocalListenAddrPriority(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	t.Run("explicit takes priority", func(t *testing.T) {
 		t.Setenv("PROBE_LOCAL_LISTEN", "127.0.0.1:19999")
 		got := resolveProbeLocalListenAddr("127.0.0.1:18888")
@@ -54,8 +55,9 @@ func TestResolveProbeLocalListenAddrPriority(t *testing.T) {
 	t.Run("default when explicit and env invalid", func(t *testing.T) {
 		t.Setenv("PROBE_LOCAL_LISTEN", "bad")
 		got := resolveProbeLocalListenAddr("invalid")
-		if got != probeLocalListenAddrDefault {
-			t.Fatalf("resolve default fallback got=%q want=%q", got, probeLocalListenAddrDefault)
+		want := probeLocalConsoleDefaultListenAddr()
+		if got != want {
+			t.Fatalf("resolve default fallback got=%q want=%q", got, want)
 		}
 	})
 }
@@ -67,8 +69,9 @@ func TestResolveProbeLocalListenAddrIgnoresProbeNodeListen(t *testing.T) {
 		t.Setenv("PROBE_NODE_LISTEN", ":26030")
 		t.Setenv("PROBE_LOCAL_LISTEN", "")
 		got := resolveProbeLocalListenAddr("")
-		if got != probeLocalListenAddrDefault {
-			t.Fatalf("local listen should stay default, got=%q want=%q", got, probeLocalListenAddrDefault)
+		want := probeLocalConsoleDefaultListenAddr()
+		if got != want {
+			t.Fatalf("local listen should stay default, got=%q want=%q", got, want)
 		}
 	})
 

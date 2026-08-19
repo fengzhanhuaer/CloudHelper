@@ -81,16 +81,49 @@ func TestNormalizeProbeNodesKeepsLocalConsoleDefaultDisabled(t *testing.T) {
 			TargetSystem:        "linux",
 			LocalConsoleEnabled: true,
 		},
+		{
+			NodeNo:       3,
+			NodeName:     "router-c",
+			NodeKind:     probeNodeKindLinuxRouter,
+			NodeSecret:   "secret",
+			TargetSystem: "linux",
+		},
 	})
 
-	if len(nodes) != 2 {
-		t.Fatalf("expected 2 nodes, got %d", len(nodes))
+	if len(nodes) != 3 {
+		t.Fatalf("expected 3 nodes, got %d", len(nodes))
 	}
 	if nodes[0].LocalConsoleEnabled {
 		t.Fatalf("expected local console disabled by default")
 	}
 	if !nodes[1].LocalConsoleEnabled {
 		t.Fatalf("expected local console enabled value to be preserved")
+	}
+	if !nodes[2].LocalConsoleEnabled {
+		t.Fatalf("expected Linux router shared console enabled")
+	}
+}
+
+func TestUpdateLinuxRouterKeepsSharedConsoleEnabled(t *testing.T) {
+	oldStore := ProbeStore
+	ProbeStore = &probeConfigStore{data: probeConfigData{
+		ProbeNodes: []probeNodeRecord{{
+			NodeNo: 3, NodeName: "router-c", NodeKind: probeNodeKindLinuxRouter, NodeSecret: "secret", TargetSystem: "linux",
+		}},
+		ProbeSecrets: map[string]string{"3": "secret"},
+	}}
+	defer func() { ProbeStore = oldStore }()
+
+	ProbeStore.mu.Lock()
+	node, err := updateProbeNodeLocked(probeNodeUpdateRequest{
+		NodeNo: 3, NodeName: "router-c", NodeKind: probeNodeKindLinuxRouter, TargetSystem: "linux", LocalConsoleEnabled: false,
+	})
+	ProbeStore.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !node.LocalConsoleEnabled {
+		t.Fatal("Linux router shared console was disabled")
 	}
 }
 

@@ -869,6 +869,7 @@ var probeLocalConsoleState = struct {
 	mu         sync.Mutex
 	server     *http.Server
 	listenAddr string
+	startedAt  time.Time
 }{}
 
 func ensureProbeLocalAuthManager() (*probeLocalAuthManager, error) {
@@ -971,7 +972,7 @@ func loadProbeLocalAuthStateRaw() (state probeLocalAuthState, existed bool, err 
 
 // resolveProbeLocalConfiguredListenAddr returns the local console listen address
 // configured in probe_local_auth.json, or "" when none is set. A missing IP or port
-// falls back to the loopback host / default port for that part.
+// falls back to the current product defaults for that part.
 func resolveProbeLocalConfiguredListenAddr() string {
 	state, _, err := loadProbeLocalAuthStateRaw()
 	if err != nil {
@@ -982,11 +983,12 @@ func resolveProbeLocalConfiguredListenAddr() string {
 	if ip == "" && (port <= 0 || port > 65535) {
 		return ""
 	}
+	defaultHost, defaultPort := probeLocalConsoleDefaultHostPort()
 	if ip == "" {
-		ip = probeLocalListenDefaultHost
+		ip = defaultHost
 	}
 	if port <= 0 || port > 65535 {
-		port = probeLocalListenDefaultPort
+		port = defaultPort
 	}
 	return net.JoinHostPort(ip, strconv.Itoa(port))
 }
@@ -1001,12 +1003,13 @@ func ensureProbeLocalListenConfigDefaults() {
 		return
 	}
 	changed := false
+	defaultHost, defaultPort := probeLocalConsoleDefaultHostPort()
 	if strings.TrimSpace(state.ListenIP) == "" {
-		state.ListenIP = probeLocalListenDefaultHost
+		state.ListenIP = defaultHost
 		changed = true
 	}
 	if state.ListenPort <= 0 || state.ListenPort > 65535 {
-		state.ListenPort = probeLocalListenDefaultPort
+		state.ListenPort = defaultPort
 		changed = true
 	}
 	if !changed {
@@ -1019,6 +1022,27 @@ func ensureProbeLocalListenConfigDefaults() {
 	if !existed {
 		logProbeInfof("probe local listen config initialized: %s", net.JoinHostPort(state.ListenIP, strconv.Itoa(state.ListenPort)))
 	}
+}
+
+func probeLocalConsoleDefaultHostPort() (string, int) {
+	addr := normalizeProbeLocalListenAddr(activeProbeProductProfile.LocalConsoleDefaultListen)
+	if addr == "" {
+		return probeLocalListenDefaultHost, probeLocalListenDefaultPort
+	}
+	host, portText, err := net.SplitHostPort(addr)
+	if err != nil {
+		return probeLocalListenDefaultHost, probeLocalListenDefaultPort
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port <= 0 || port > 65535 {
+		return probeLocalListenDefaultHost, probeLocalListenDefaultPort
+	}
+	return host, port
+}
+
+func probeLocalConsoleDefaultListenAddr() string {
+	host, port := probeLocalConsoleDefaultHostPort()
+	return net.JoinHostPort(host, strconv.Itoa(port))
 }
 
 // isProbeLocalLoopbackHost reports whether host is a loopback address. An empty host
@@ -1593,17 +1617,25 @@ func normalizeProbeLocalListenAddr(raw string) string {
 }
 
 func resolveProbeLocalListenAddr(explicit string) string {
-	candidate := firstNonEmpty(
-		strings.TrimSpace(explicit),
-		strings.TrimSpace(os.Getenv("PROBE_LOCAL_LISTEN")),
-		strings.TrimSpace(resolveProbeLocalConfiguredListenAddr()),
-		probeLocalListenAddrDefault,
-	)
+	explicit = strings.TrimSpace(explicit)
+	environment := strings.TrimSpace(os.Getenv("PROBE_LOCAL_LISTEN"))
+	configured := strings.TrimSpace(resolveProbeLocalConfiguredListenAddr())
+	candidate := ""
+	if activeProbeProductProfile.PreferLocalConsoleConfig {
+		candidate = firstNonEmpty(explicit, configured, environment, probeLocalConsoleDefaultListenAddr())
+	} else {
+		candidate = firstNonEmpty(explicit, environment, configured, probeLocalConsoleDefaultListenAddr())
+	}
 	normalized := normalizeProbeLocalListenAddr(candidate)
 	if normalized != "" {
 		return normalized
 	}
-	return probeLocalListenAddrDefault
+	return probeLocalConsoleDefaultListenAddr()
+}
+
+func probeLocalConsoleAllowsNonLoopbackHTTP() bool {
+	return activeProbeProductProfile.AllowInsecureLocalConsoleHTTP ||
+		strings.EqualFold(strings.TrimSpace(os.Getenv("PROBE_LOCAL_ALLOW_INSECURE_HTTP")), "true")
 }
 
 func probeLocalListenFallbackCandidates(addr string) []string {
@@ -1651,7 +1683,7 @@ func startProbeLocalConsoleServer(handler http.Handler, explicitListen string) e
 	}
 	addr := resolveProbeLocalListenAddr(explicitListen)
 	if host, _, splitErr := net.SplitHostPort(addr); splitErr == nil && !isProbeLocalLoopbackHost(host) {
-		if !strings.EqualFold(strings.TrimSpace(os.Getenv("PROBE_LOCAL_ALLOW_INSECURE_HTTP")), "true") {
+		if !probeLocalConsoleAllowsNonLoopbackHTTP() {
 			return fmt.Errorf("refusing insecure local console HTTP on non-loopback address %s; use a TLS reverse proxy or explicitly set PROBE_LOCAL_ALLOW_INSECURE_HTTP=true", addr)
 		}
 		logProbeWarnf("probe local console insecure HTTP explicitly enabled on non-loopback address: %s", addr)
@@ -1670,6 +1702,7 @@ func startProbeLocalConsoleServer(handler http.Handler, explicitListen string) e
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 	probeLocalConsoleState.server = server
 	probeLocalConsoleState.listenAddr = listenAddr
+	probeLocalConsoleState.startedAt = time.Now()
 	probeLocalConsoleState.mu.Unlock()
 
 	logProbeInfof("probe local console listening on http://%s", listenAddr)
@@ -1682,6 +1715,7 @@ func startProbeLocalConsoleServer(handler http.Handler, explicitListen string) e
 		if probeLocalConsoleState.server == s {
 			probeLocalConsoleState.server = nil
 			probeLocalConsoleState.listenAddr = ""
+			probeLocalConsoleState.startedAt = time.Time{}
 		}
 		probeLocalConsoleState.mu.Unlock()
 	}(server, listener, listenAddr)
@@ -1694,7 +1728,7 @@ func applyProbeLocalConsoleListenerEnabled(enabled bool, explicitListen string, 
 		stopProbeLocalConsoleServer(reason)
 		return nil
 	}
-	return startProbeLocalConsoleServer(buildProbeLocalConsoleMux(), explicitListen)
+	return startProbeLocalConsoleServer(buildProbeLocalConsoleHandler(), explicitListen)
 }
 
 func stopProbeLocalConsoleServer(reason string) {
@@ -1703,6 +1737,7 @@ func stopProbeLocalConsoleServer(reason string) {
 	addr := probeLocalConsoleState.listenAddr
 	probeLocalConsoleState.server = nil
 	probeLocalConsoleState.listenAddr = ""
+	probeLocalConsoleState.startedAt = time.Time{}
 	probeLocalConsoleState.mu.Unlock()
 	if server == nil {
 		return
@@ -1722,7 +1757,12 @@ func buildProbeLocalConsoleMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", probeLocalRootHandler)
 	registerProbeLocalConsoleRoutes(mux)
+	probeProductRegisterLocalConsoleRoutes(mux)
 	return mux
+}
+
+func buildProbeLocalConsoleHandler() http.Handler {
+	return probeProductWrapLocalConsoleHandler(buildProbeLocalConsoleMux())
 }
 
 func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
@@ -1764,6 +1804,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/system/upgrade/check", probeLocalSystemUpgradeCheckHandler)
 	mux.HandleFunc("/local/api/system/upgrade/status", probeLocalSystemUpgradeStatusHandler)
 	mux.HandleFunc("/local/api/system/restart", probeLocalSystemRestartHandler)
+	mux.HandleFunc("/local/api/system/web_listen", probeLocalSystemWebListenHandler)
 	mux.HandleFunc("/local/api/system/ip_report_settings", probeLocalSystemIPReportSettingsHandler)
 	mux.HandleFunc("/local/api/system/ddns", probeLocalSystemDDNSHandler)
 	mux.HandleFunc("/local/api/system/route_auth_blacklist", probeLocalSystemRouteAuthBlacklistHandler)
@@ -1951,7 +1992,7 @@ func serveProbeLocalHTMLPage(w http.ResponseWriter, r *http.Request, expectedPat
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	_, _ = w.Write([]byte(pageHTML))
+	_, _ = w.Write([]byte(probeProductDecorateLocalConsolePage(expectedPath, pageHTML)))
 }
 
 func probeLocalAuthBootstrapHandler(w http.ResponseWriter, r *http.Request) {
@@ -1964,13 +2005,16 @@ func probeLocalAuthBootstrapHandler(w http.ResponseWriter, r *http.Request) {
 		writeProbeLocalError(w, err)
 		return
 	}
-	if !mgr.registered() {
+	setupTokenRequired := probeProductLocalAuthSetupTokenRequired()
+	if !mgr.registered() && setupTokenRequired {
 		if _, err := ensureProbeLocalSetupToken(); err != nil {
 			writeProbeLocalError(w, err)
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, mgr.bootstrap())
+	payload := mgr.bootstrap()
+	payload["setup_token_required"] = !mgr.registered() && setupTokenRequired
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func probeLocalAuthRegisterHandler(w http.ResponseWriter, r *http.Request) {
@@ -1994,15 +2038,19 @@ func probeLocalAuthRegisterHandler(w http.ResponseWriter, r *http.Request) {
 		writeProbeLocalError(w, &probeLocalHTTPError{Status: http.StatusForbidden, Message: "registration is closed"})
 		return
 	}
-	if err := verifyProbeLocalSetupToken(req.SetupToken); err != nil {
-		writeProbeLocalError(w, err)
-		return
+	if probeProductLocalAuthSetupTokenRequired() {
+		if err := verifyProbeLocalSetupToken(req.SetupToken); err != nil {
+			writeProbeLocalError(w, err)
+			return
+		}
 	}
 	if err := mgr.register(req.Username, req.Password, req.ConfirmPassword); err != nil {
 		writeProbeLocalError(w, err)
 		return
 	}
-	consumeProbeLocalSetupToken()
+	if probeProductLocalAuthSetupTokenRequired() {
+		consumeProbeLocalSetupToken()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "registered": true})
 }
 
@@ -3765,9 +3813,14 @@ func resetProbeLocalUpgradeRuntimeStateForTest() {
 }
 
 func currentProbeLocalConsoleListen() string {
+	addr, _ := currentProbeLocalConsoleRuntime()
+	return addr
+}
+
+func currentProbeLocalConsoleRuntime() (string, time.Time) {
 	probeLocalConsoleState.mu.Lock()
 	defer probeLocalConsoleState.mu.Unlock()
-	return strings.TrimSpace(probeLocalConsoleState.listenAddr)
+	return strings.TrimSpace(probeLocalConsoleState.listenAddr), probeLocalConsoleState.startedAt
 }
 
 func resolveProbeLocalConsoleURL() string {
