@@ -93,9 +93,7 @@ func updateProbeRuntimeProductStatus(nodeID string, buildKind string, status pro
 }
 
 func probeLinuxRouterRoutingReportChanged(previous, current probeLinuxRouterRuntimeReport) bool {
-	return previous.AppliedRevision != current.AppliedRevision ||
-		!strings.EqualFold(previous.AppliedSHA256, current.AppliedSHA256) ||
-		previous.LocalIPProxyEnabled != current.LocalIPProxyEnabled ||
+	return previous.LocalIPProxyEnabled != current.LocalIPProxyEnabled ||
 		!slices.Equal(previous.PublishedCIDRs, current.PublishedCIDRs) ||
 		!slices.Equal(previous.AllowedNodeIDs, current.AllowedNodeIDs)
 }

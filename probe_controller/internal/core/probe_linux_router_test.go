@@ -88,6 +88,12 @@ func TestUpdateProbeRuntimeProductStatusAcceptsOnlyValidatedLocalRouterRoutes(t 
 		t.Fatalf("allowed nodes were not scoped to known peers: %+v", runtime.LinuxRouter.AllowedNodeIDs)
 	}
 
+	report.AppliedRevision++
+	report.AppliedSHA256 = "DEF"
+	if changed := updateProbeRuntimeProductStatus("21", probeNodeKindLinuxRouter, probeSpecialExitRuntimeReport{}, report); changed {
+		t.Fatal("router applied version-only change triggered route config sync")
+	}
+
 	report.Healthy = false
 	report.FailOpen = true
 	if changed := updateProbeRuntimeProductStatus("21", probeNodeKindLinuxRouter, probeSpecialExitRuntimeReport{}, report); changed {
