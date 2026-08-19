@@ -104,11 +104,16 @@ func TestUpdateProbeRuntimeProductStatusAcceptsOnlyValidatedLocalRouterRoutes(t 
 	}
 }
 
-func TestLinuxRouterRuntimeReconnectWaitsForFreshLocalConfigReport(t *testing.T) {
+func TestLinuxRouterRuntimeReconnectPreservesLocalConfigReport(t *testing.T) {
+	setupProbeLinuxRouterTestStores(t)
+	report := probeLinuxRouterRuntimeReport{
+		AppliedRevision: 4, AppliedSHA256: "abc", LocalIPProxyEnabled: true, Healthy: true,
+		PublishedCIDRs: []string{"192.168.50.0/24"}, AllowedNodeIDs: []string{"1"},
+	}
 	probeRuntimeStore.mu.Lock()
 	previous := probeRuntimeStore.data
 	probeRuntimeStore.data = map[string]probeRuntimeStatus{
-		"21": {NodeID: "21", Online: true, BuildKind: probeNodeKindLinuxRouter, LinuxRouter: probeLinuxRouterRuntimeReport{LocalIPProxyEnabled: true, Healthy: true, PublishedCIDRs: []string{"192.168.50.0/24"}}},
+		"21": {NodeID: "21", Online: true, BuildKind: probeNodeKindLinuxRouter, LinuxRouter: report},
 	}
 	probeRuntimeStore.mu.Unlock()
 	t.Cleanup(func() {
@@ -128,8 +133,11 @@ func TestLinuxRouterRuntimeReconnectWaitsForFreshLocalConfigReport(t *testing.T)
 
 	setProbeRuntimeOnline("21", true)
 	runtime, _ = getProbeRuntime("21")
-	if runtime.LinuxRouter.LocalIPProxyEnabled || len(runtime.LinuxRouter.PublishedCIDRs) != 0 {
-		t.Fatalf("stale local router report survived reconnect: %+v", runtime.LinuxRouter)
+	if !runtime.LinuxRouter.LocalIPProxyEnabled || len(runtime.LinuxRouter.PublishedCIDRs) != 1 {
+		t.Fatalf("router reconnect unexpectedly cleared local config: %+v", runtime.LinuxRouter)
+	}
+	if changed := updateProbeRuntimeProductStatus("21", probeNodeKindLinuxRouter, probeSpecialExitRuntimeReport{}, report); changed {
+		t.Fatal("unchanged local router report triggered route refresh after reconnect")
 	}
 }
 

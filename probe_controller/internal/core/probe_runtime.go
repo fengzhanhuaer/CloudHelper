@@ -208,9 +208,6 @@ func setProbeRuntimeOnline(nodeID string, online bool) {
 	current.Online = online
 	if online {
 		current.LastSeen = time.Now().UTC().Format(time.RFC3339)
-		if !prevOnline && current.BuildKind == probeNodeKindLinuxRouter {
-			current.LinuxRouter = probeLinuxRouterRuntimeReport{}
-		}
 	}
 	probeRuntimeStore.data[nodeID] = current
 	probeRuntimeStore.mu.Unlock()
