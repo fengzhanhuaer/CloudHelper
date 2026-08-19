@@ -149,11 +149,15 @@ func TestProbeLinuxRouterWebListenDefaults(t *testing.T) {
 	}
 }
 
-func TestProbeLinuxRouterWebOnlyAllowsPrivateIPClientsAndHosts(t *testing.T) {
+func TestProbeLinuxRouterWebOnlyAllowsLANAndVirtualIPClientsAndHosts(t *testing.T) {
 	handler := setupProbeLinuxRouterWebTest(t)
 	allowed := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/router", "192.168.1.150:18080", "192.168.1.20:43210", nil)
 	if allowed.Code != http.StatusOK || !strings.Contains(allowed.Body.String(), "CloudHelper 旁路由") {
 		t.Fatalf("private request status=%d body=%s", allowed.Code, allowed.Body.String())
+	}
+	virtual := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/router", "198.18.0.15:18080", "198.18.0.7:43210", nil)
+	if virtual.Code != http.StatusOK || !strings.Contains(virtual.Body.String(), "CloudHelper 旁路由") {
+		t.Fatalf("virtual request status=%d body=%s", virtual.Code, virtual.Body.String())
 	}
 	publicClient := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/router", "192.168.1.150:18080", "8.8.8.8:43210", nil)
 	if publicClient.Code != http.StatusForbidden {

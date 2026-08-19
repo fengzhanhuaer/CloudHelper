@@ -54,8 +54,8 @@ func resolveProbeLinuxRouterWebListenAddr() (string, error) {
 	if err != nil || port < 1 || port > 65535 {
 		return "", fmt.Errorf("invalid router web listen port %q", portRaw)
 	}
-	if host != "0.0.0.0" && !isProbeLinuxRouterPrivateIPv4(host) {
-		return "", errors.New("router web listen host must be 0.0.0.0, loopback, or a private IPv4 address")
+	if host != "0.0.0.0" && !isProbeLinuxRouterLocalIPv4(host) {
+		return "", errors.New("router web listen host must be 0.0.0.0, loopback, LAN, or a CloudHelper virtual IPv4 address")
 	}
 	return net.JoinHostPort(host, strconv.Itoa(port)), nil
 }
@@ -214,23 +214,30 @@ func isProbeLinuxRouterLANRequest(r *http.Request) bool {
 		return false
 	}
 	remoteHost, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
-	if err != nil || !isProbeLinuxRouterPrivateIPv4(remoteHost) {
+	if err != nil || !isProbeLinuxRouterLocalIPv4(remoteHost) {
 		return false
 	}
 	host := strings.TrimSpace(r.Host)
 	if parsedHost, _, splitErr := net.SplitHostPort(host); splitErr == nil {
 		host = parsedHost
 	}
-	return isProbeLinuxRouterPrivateIPv4(host)
+	return isProbeLinuxRouterLocalIPv4(host)
 }
 
-func isProbeLinuxRouterPrivateIPv4(raw string) bool {
+func isProbeLinuxRouterLocalIPv4(raw string) bool {
 	addr, err := netip.ParseAddr(strings.Trim(strings.TrimSpace(raw), "[]"))
 	if err != nil {
 		return false
 	}
 	addr = addr.Unmap()
-	return addr.Is4() && (addr.IsPrivate() || addr.IsLoopback())
+	if !addr.Is4() {
+		return false
+	}
+	if addr.IsPrivate() || addr.IsLoopback() {
+		return true
+	}
+	fakeCIDR, err := netip.ParsePrefix(currentProbeVirtualRouterFakeIPCIDR())
+	return err == nil && fakeCIDR.Contains(addr)
 }
 
 func probeLinuxRouterWebRootHandler(w http.ResponseWriter, r *http.Request) {
