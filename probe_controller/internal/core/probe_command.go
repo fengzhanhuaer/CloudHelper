@@ -9,10 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
 	"path"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -147,6 +149,33 @@ func (s *probeRouteConfigSyncScheduler) runLoop() {
 var automaticProbeRouteConfigSyncScheduler = newProbeRouteConfigSyncScheduler(func() {
 	dispatchProbeRouteConfigSyncToKnownNodes("")
 })
+
+var probeRouteConfigSyncSourceLog = struct {
+	mu   sync.Mutex
+	last map[string]time.Time
+}{last: make(map[string]time.Time)}
+
+func logProbeRouteConfigSyncSource(source string) {
+	if !shouldLogProbeRouteConfigSyncSource(source, time.Now()) {
+		return
+	}
+	log.Printf("probe route config sync source: %s", strings.TrimSpace(source))
+}
+
+func shouldLogProbeRouteConfigSyncSource(source string, now time.Time) bool {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return false
+	}
+	probeRouteConfigSyncSourceLog.mu.Lock()
+	defer probeRouteConfigSyncSourceLog.mu.Unlock()
+	last := probeRouteConfigSyncSourceLog.last[source]
+	if !last.IsZero() && now.Sub(last) < 10*time.Second {
+		return false
+	}
+	probeRouteConfigSyncSourceLog.last[source] = now
+	return true
+}
 
 func scheduleProbeRouteConfigSyncToKnownNodes() {
 	automaticProbeRouteConfigSyncScheduler.Schedule()
@@ -364,6 +393,13 @@ func (s *probeSession) writeJSON(v interface{}) error {
 }
 
 func dispatchProbeRouteConfigSyncToKnownNodes(controllerBaseURL string) probeRouteConfigSyncDispatchResult {
+	source := "unknown"
+	if pc, _, _, ok := runtime.Caller(1); ok {
+		if fn := runtime.FuncForPC(pc); fn != nil {
+			source = fn.Name()
+		}
+	}
+	logProbeRouteConfigSyncSource("dispatch:" + source)
 	return dispatchProbeRouteConfigSyncToNodes(listProbeVirtualRouterKnownNodeIDs(), controllerBaseURL)
 }
 

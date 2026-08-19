@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -113,6 +114,7 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 			msg.NodeID = nodeID
 			updateProbeRuntimeReportWithPlatform(nodeID, msg.IPv4, msg.IPv6, msg.System, msg.Version, msg.Platform, msg.OS, msg.Arch, msg.MachineUptimeSeconds, msg.RelayStatus)
 			if updateProbeRuntimeProductStatus(nodeID, msg.BuildKind, msg.SpecialExit, msg.LinuxRouter) {
+				logProbeRouteConfigSyncSource(fmt.Sprintf("schedule:linux_router_report node_id=%s local_ip_proxy=%t published_cidrs=%s allowed_nodes=%s", nodeID, msg.LinuxRouter.LocalIPProxyEnabled, strings.Join(msg.LinuxRouter.PublishedCIDRs, ","), strings.Join(msg.LinuxRouter.AllowedNodeIDs, ",")))
 				scheduleProbeRouteConfigSyncToKnownNodes()
 			}
 

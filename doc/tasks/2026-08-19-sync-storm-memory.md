@@ -109,9 +109,9 @@ netcup2o 只有约 1.9 GiB RAM 且没有 Swap。日志确认 2026-08-18 至 2026
 - 当前阶段：验证
 - 当前计划步骤：TASK-006 发布重连修复、在线升级测试环境并复验
 - 当前门禁：准备门禁通过
-- 最近完成检查点：v0.4.4 已发布并在线升级 netcup2o，但每 15 秒广播仍存在；最终定位为 router 应用主控配置后的 revision/SHA 变化被误判为 LAN 路由变化，已修复且定向测试 100 轮、controller 全测、vet 与 Linux 构建通过。
-- 工作区状态：分支 `mapledev` 落后远端 1 个自动版本提交；2 个 controller 文件和本账本有本任务未提交修改。
-- 下一步唯一动作：提交 revision/SHA 反馈环修复并触发新版本发布。
+- 最近完成检查点：v0.4.5 已发布并在线升级 netcup2o，但同步仍持续；#23 在线且路由语义字段采样稳定，证实此前 revision/SHA 结论不完整。已加入限频同步来源日志，controller 定向测试、全测、vet 与 Linux 构建通过。
+- 工作区状态：分支 `mapledev` 与远端一致；3 个 controller 文件和本账本有本任务未提交修改。
+- 下一步唯一动作：发布诊断版并从 netcup2o 日志确定 #23 对应的真实触发入口。
 - 恢复时先读取：本账本、`git status`、`probe_command.go`、`probe_runtime.go`、`probe_node/main.go`。
 
 ### 4.2 任务计划
@@ -137,6 +137,7 @@ netcup2o 只有约 1.9 GiB RAM 且没有 Swap。日志确认 2026-08-18 至 2026
 | controller `probe_runtime.go` | health/fail-open 抖动不触发全网同步 | 避免运行状态形成反馈环 | REQ-003 / TASK-003 | TEST-002, TEST-005 | RB-002 |
 | controller `probe_runtime.go`、`probe_linux_router_test.go` | 重连保留已有 Linux router 报告，同一报告不触发同步 | 消除路由探针短连导致的固定周期广播 | REQ-002, REQ-003 / TASK-003 | TEST-002, TEST-005, TEST-007 | RB-002 |
 | controller `probe_runtime.go`、`probe_linux_router_test.go` | 应用 revision/SHA 变化不再触发广播，只比较本地代理开关、发布 CIDR 与 ACL | 切断主控广播导致 router 应用版本更新、再触发广播的反馈环 | REQ-002, REQ-003 / TASK-003 | TEST-002, TEST-005, TEST-007 | RB-002 |
+| controller `probe_command.go`、`probe_ws.go` | 限频记录路由同步分发调用方和 Linux router 报告触发节点 | 在不放大日志压力的前提下定位 v0.4.5 遗留触发链 | REQ-003, REQ-006 / TASK-006 | TEST-005, TEST-007 | RB-002 |
 | probe `main.go`、`probe_route_config_sync.go` | 控制同步单飞合并、底层同步串行化 | 消除 node/exit node 重复拉取和回报 | REQ-004 / TASK-004 | TEST-004, TEST-006 | RB-002 |
 
 ## 五、测试与验证
@@ -190,7 +191,7 @@ netcup2o 只有约 1.9 GiB RAM 且没有 Swap。日志确认 2026-08-18 至 2026
 | DEF-001 | REQ-002, REQ-003 / TEST-002, TEST-003 | 严重 | 掉线和 router 状态变化直接启动无界全节点广播 goroutine | 已修复 | controller core | 定向 20 轮及全测通过 |
 | DEF-002 | REQ-004 / TEST-004 | 严重 | 节点对每条同步命令并发执行拉取与即时回报，无合并边界 | 已修复 | probe node | normal/router 定向 20 轮及全测通过 |
 | DEF-003 | REQ-001 / TEST-001 | 高 | 约 1.9 GiB 主机无 Swap，内存峰值直接触发 OOM | 已修复 | netcup2o | `swapfile.swap` active |
-| DEF-004 | REQ-002, REQ-003 / TEST-002, TEST-007 | 严重 | v0.4.3/v0.4.4 实机每 15 秒广播；重连清空是风险点，持续反馈环的根因是 router 应用主控配置后 revision/SHA 变化又被误判为 LAN 路由变化 | 已修复，待发布复验 | controller `probe_runtime.go` | 非路由语义变化定向测试 100 轮、controller 全测通过 |
+| DEF-004 | REQ-002, REQ-003 / TEST-002, TEST-007 | 严重 | v0.4.3 至 v0.4.5 实机仍持续广播；已排除断线清空、revision/SHA 单独变化及证书轮换，#23 路由语义字段采样稳定，真实触发入口待诊断日志确认 | 定位中 | controller core | v0.4.5 实机日志、#22/#23 50 秒状态采样 |
 
 ## 九、回滚方案
 
@@ -213,6 +214,7 @@ netcup2o 只有约 1.9 GiB RAM 且没有 Swap。日志确认 2026-08-18 至 2026
 | FACT-008 | 自动同步入口均经过协调器 | `rg` 无直接 `go dispatch...` 或 `go runProbeRouteConfigSyncControl` | 无旁路入口 |
 | FACT-009 | v0.4.3 在线升级后 #1、#21 均成功回报新版本，但剩余同步严格每 15 秒一次 | netcup2o runtime API 与 exit runtime log | single-flight 限制了并发，但重连清空仍会持续触发 |
 | FACT-010 | v0.4.4 保留重连报告后仍每 15 秒同步，主控约 5 分钟升至约 400 MiB 并导致管理登录超时 | netcup2o systemd、runtime log 与管理 API | 排除单纯重连清空，确认存在配置应用反馈环 |
+| FACT-011 | v0.4.5 忽略 revision/SHA 后同步仍持续，且 #23 在线报告的代理开关、CIDR、ACL 在 50 秒多轮采样中稳定 | netcup2o runtime API 与 exit runtime log | revision/SHA 并非完整根因，需要记录精确分发调用方 |
 
 ## 十一、风险与阻塞
 
@@ -264,6 +266,7 @@ netcup2o 只有约 1.9 GiB RAM 且没有 Swap。日志确认 2026-08-18 至 2026
 | 2026-08-19 | 完成发布前验证 | probe vet 仅有既有告警；其余测试和发布目标构建通过 | TASK-005 完成，进入发布 | 提交并同步 origin/mapledev |
 | 2026-08-19 | 发布 v0.4.3，主控及 #1/#21 在线升级成功 | 同步从每分钟数百次降至固定每 15 秒一次；定位到路由重连清空报告 | 新增 DEF-004，阻止 TASK-006 关闭 | 修复重连清空并再次发布 |
 | 2026-08-19 | 发布并升级 v0.4.4 | 重连报告保留后仍每 15 秒广播；revision/SHA 随主控配置应用变化形成反馈 | 修正 DEF-004 根因，主控临时停止防止再次 OOM | 忽略非路由语义版本变化并发布复验 |
+| 2026-08-19 | 发布并升级 v0.4.5，采样 #22/#23 | 同步仍持续；#23 在线但路由语义字段稳定，#22 离线且状态稳定 | 推翻“revision/SHA 是最终根因”，增加限频来源日志 | 发布诊断版并捕获真实调用入口 |
 
 ## 十四、完成摘要
 
@@ -273,4 +276,4 @@ netcup2o 只有约 1.9 GiB RAM 且没有 Swap。日志确认 2026-08-18 至 2026
 - 缺陷与风险：见 DEF-001 至 DEF-003、RISK-001 至 RISK-002
 - 回滚说明：见 RB-001、RB-002
 - 完成门禁：不通过
-- 下一步唯一动作：提交并同步 origin/mapledev
+- 下一步唯一动作：发布诊断版并捕获真实调用入口
