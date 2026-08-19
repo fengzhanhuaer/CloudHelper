@@ -104,6 +104,54 @@ type probeRouteConfigSyncDispatchResult struct {
 	Failures   []string `json:"failures,omitempty"`
 }
 
+type probeRouteConfigSyncScheduler struct {
+	mu      sync.Mutex
+	running bool
+	pending bool
+	run     func()
+}
+
+func newProbeRouteConfigSyncScheduler(run func()) *probeRouteConfigSyncScheduler {
+	return &probeRouteConfigSyncScheduler{run: run}
+}
+
+func (s *probeRouteConfigSyncScheduler) Schedule() {
+	if s == nil || s.run == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.running {
+		s.pending = true
+		s.mu.Unlock()
+		return
+	}
+	s.running = true
+	s.mu.Unlock()
+	go s.runLoop()
+}
+
+func (s *probeRouteConfigSyncScheduler) runLoop() {
+	for {
+		s.run()
+		s.mu.Lock()
+		if !s.pending {
+			s.running = false
+			s.mu.Unlock()
+			return
+		}
+		s.pending = false
+		s.mu.Unlock()
+	}
+}
+
+var automaticProbeRouteConfigSyncScheduler = newProbeRouteConfigSyncScheduler(func() {
+	dispatchProbeRouteConfigSyncToKnownNodes("")
+})
+
+func scheduleProbeRouteConfigSyncToKnownNodes() {
+	automaticProbeRouteConfigSyncScheduler.Schedule()
+}
+
 type probeLogEntry struct {
 	Time    string `json:"time"`
 	Level   string `json:"level"`
@@ -293,9 +341,7 @@ func unregisterProbeSession(nodeID string, session *probeSession) {
 		_ = current.stream.Close()
 	}
 	probeSessions.mu.Unlock()
-	if setProbeRuntimeOnline(nodeID, false) {
-		go dispatchProbeRouteConfigSyncToKnownNodes("")
-	}
+	setProbeRuntimeOnline(nodeID, false)
 }
 
 func getProbeSession(nodeID string) (*probeSession, bool) {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -154,6 +155,66 @@ var (
 	probeRequestRouteFakeIPByIP  = requestProbeRouteFakeIPByIP
 )
 
+var probeRouteConfigSyncMu sync.Mutex
+
+type probeRouteConfigSyncControlRequest struct {
+	message  probeControlMessage
+	identity nodeIdentity
+}
+
+type probeRouteConfigSyncControlScheduler struct {
+	mu      sync.Mutex
+	running bool
+	pending bool
+	latest  probeRouteConfigSyncControlRequest
+	run     func(probeControlMessage, nodeIdentity)
+}
+
+func newProbeRouteConfigSyncControlScheduler(run func(probeControlMessage, nodeIdentity)) *probeRouteConfigSyncControlScheduler {
+	return &probeRouteConfigSyncControlScheduler{run: run}
+}
+
+func (s *probeRouteConfigSyncControlScheduler) Schedule(message probeControlMessage, identity nodeIdentity) {
+	if s == nil || s.run == nil {
+		return
+	}
+	s.mu.Lock()
+	s.latest = probeRouteConfigSyncControlRequest{message: message, identity: identity}
+	if s.running {
+		s.pending = true
+		s.mu.Unlock()
+		return
+	}
+	s.running = true
+	s.mu.Unlock()
+	go s.runLoop()
+}
+
+func (s *probeRouteConfigSyncControlScheduler) runLoop() {
+	for {
+		s.mu.Lock()
+		request := s.latest
+		s.pending = false
+		s.mu.Unlock()
+
+		s.run(request.message, request.identity)
+
+		s.mu.Lock()
+		if !s.pending {
+			s.running = false
+			s.mu.Unlock()
+			return
+		}
+		s.mu.Unlock()
+	}
+}
+
+var routeConfigSyncControlScheduler = newProbeRouteConfigSyncControlScheduler(runProbeRouteConfigSyncControl)
+
+func scheduleProbeRouteConfigSyncControl(message probeControlMessage, identity nodeIdentity) {
+	routeConfigSyncControlScheduler.Schedule(message, identity)
+}
+
 func startProbeRouteConfigSyncLoop(identity nodeIdentity, controllerBaseURL string) {
 	go func() {
 		base := strings.TrimSpace(controllerBaseURL)
@@ -177,6 +238,9 @@ func startProbeRouteConfigSyncLoop(identity nodeIdentity, controllerBaseURL stri
 }
 
 func syncProbeRouteConfig(identity nodeIdentity, controllerBaseURL string) error {
+	probeRouteConfigSyncMu.Lock()
+	defer probeRouteConfigSyncMu.Unlock()
+
 	rememberProbeVirtualRouterController(identity, controllerBaseURL)
 	ctx, cancel := context.WithTimeout(context.Background(), probeRouteConfigSyncFetchTimeout)
 	config, err := fetchProbeRouteConfig(ctx, controllerBaseURL, identity)

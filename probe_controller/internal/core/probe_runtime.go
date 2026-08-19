@@ -96,8 +96,6 @@ func probeLinuxRouterRoutingReportChanged(previous, current probeLinuxRouterRunt
 	return previous.AppliedRevision != current.AppliedRevision ||
 		!strings.EqualFold(previous.AppliedSHA256, current.AppliedSHA256) ||
 		previous.LocalIPProxyEnabled != current.LocalIPProxyEnabled ||
-		previous.Healthy != current.Healthy ||
-		previous.FailOpen != current.FailOpen ||
 		!slices.Equal(previous.PublishedCIDRs, current.PublishedCIDRs) ||
 		!slices.Equal(previous.AllowedNodeIDs, current.AllowedNodeIDs)
 }
@@ -198,15 +196,14 @@ var probeRuntimeStore = struct {
 	data map[string]probeRuntimeStatus
 }{data: make(map[string]probeRuntimeStatus)}
 
-func setProbeRuntimeOnline(nodeID string, online bool) bool {
+func setProbeRuntimeOnline(nodeID string, online bool) {
 	nodeID = normalizeProbeNodeID(nodeID)
 	if nodeID == "" {
-		return false
+		return
 	}
 	probeRuntimeStore.mu.Lock()
 	current, existed := probeRuntimeStore.data[nodeID]
 	prevOnline := current.Online
-	routerRouteChanged := prevOnline && !online && current.BuildKind == probeNodeKindLinuxRouter && current.LinuxRouter.LocalIPProxyEnabled
 	current.NodeID = nodeID
 	current.Online = online
 	if online {
@@ -223,7 +220,6 @@ func setProbeRuntimeOnline(nodeID string, online bool) bool {
 	if existed && prevOnline != online {
 		onProbeRuntimeTransition(nodeID, online)
 	}
-	return routerRouteChanged
 }
 
 func updateProbeRuntimeReport(nodeID string, ipv4 []string, ipv6 []string, metrics probeSystemMetrics, version string) {

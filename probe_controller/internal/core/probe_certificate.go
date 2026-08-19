@@ -253,7 +253,7 @@ func notifyProbeCertificateRotation(cert probeIssuedCertificate) {
 		return
 	}
 	time.Sleep(3 * time.Second)
-	dispatchProbeRouteConfigSyncToKnownNodes("")
+	scheduleProbeRouteConfigSyncToKnownNodes()
 }
 
 func (m *probeCertificateManager) readStoredNodeCertificate(nodeID string) (probeIssuedCertificate, error) {

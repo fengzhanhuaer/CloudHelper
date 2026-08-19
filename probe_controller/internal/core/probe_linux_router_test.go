@@ -88,6 +88,12 @@ func TestUpdateProbeRuntimeProductStatusAcceptsOnlyValidatedLocalRouterRoutes(t 
 		t.Fatalf("allowed nodes were not scoped to known peers: %+v", runtime.LinuxRouter.AllowedNodeIDs)
 	}
 
+	report.Healthy = false
+	report.FailOpen = true
+	if changed := updateProbeRuntimeProductStatus("21", probeNodeKindLinuxRouter, probeSpecialExitRuntimeReport{}, report); changed {
+		t.Fatal("router health-only change triggered route config sync")
+	}
+
 	report.PublishedCIDRs = []string{"198.18.0.0/15"}
 	if changed := updateProbeRuntimeProductStatus("21", probeNodeKindLinuxRouter, probeSpecialExitRuntimeReport{}, report); !changed {
 		t.Fatal("invalid local route withdrawal did not trigger route refresh")
@@ -111,13 +117,17 @@ func TestLinuxRouterRuntimeReconnectWaitsForFreshLocalConfigReport(t *testing.T)
 		probeRuntimeStore.mu.Unlock()
 	})
 
-	if changed := setProbeRuntimeOnline("21", false); !changed {
-		t.Fatal("router disconnect did not request route withdrawal")
-	}
-	if changed := setProbeRuntimeOnline("21", true); changed {
-		t.Fatal("router reconnect published stale routes before a fresh report")
-	}
+	setProbeRuntimeOnline("21", false)
 	runtime, _ := getProbeRuntime("21")
+	if runtime.Online {
+		t.Fatal("router remained online after disconnect")
+	}
+	if !runtime.LinuxRouter.LocalIPProxyEnabled || len(runtime.LinuxRouter.PublishedCIDRs) != 1 {
+		t.Fatalf("router disconnect unexpectedly cleared local config: %+v", runtime.LinuxRouter)
+	}
+
+	setProbeRuntimeOnline("21", true)
+	runtime, _ = getProbeRuntime("21")
 	if runtime.LinuxRouter.LocalIPProxyEnabled || len(runtime.LinuxRouter.PublishedCIDRs) != 0 {
 		t.Fatalf("stale local router report survived reconnect: %+v", runtime.LinuxRouter)
 	}

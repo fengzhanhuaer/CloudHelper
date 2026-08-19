@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestNormalizeProbeRouteNodeID(t *testing.T) {
@@ -151,4 +154,80 @@ func TestRouteConfigSyncControlReportsAppliedStateImmediately(t *testing.T) {
 	if reports != 1 {
 		t.Fatalf("immediate report count=%d, want 1", reports)
 	}
+}
+
+func TestRouteConfigSyncControlSchedulerCoalescesBurstAndKeepsLatest(t *testing.T) {
+	started := make(chan string, 2)
+	release := make(chan struct{})
+	var runs atomic.Int32
+	var active atomic.Int32
+	var maxActive atomic.Int32
+	var urlsMu sync.Mutex
+	var urls []string
+	scheduler := newProbeRouteConfigSyncControlScheduler(func(message probeControlMessage, _ nodeIdentity) {
+		runs.Add(1)
+		current := active.Add(1)
+		for {
+			maximum := maxActive.Load()
+			if current <= maximum || maxActive.CompareAndSwap(maximum, current) {
+				break
+			}
+		}
+		urlsMu.Lock()
+		urls = append(urls, message.ControllerBaseURL)
+		urlsMu.Unlock()
+		started <- message.ControllerBaseURL
+		<-release
+		active.Add(-1)
+	})
+
+	scheduler.Schedule(probeControlMessage{ControllerBaseURL: "https://first.example"}, nodeIdentity{NodeID: "1"})
+	waitProbeRouteConfigControlRun(t, started, "https://first.example")
+	for i := 0; i < 99; i++ {
+		scheduler.Schedule(probeControlMessage{ControllerBaseURL: "https://stale.example"}, nodeIdentity{NodeID: "1"})
+	}
+	scheduler.Schedule(probeControlMessage{ControllerBaseURL: "https://latest.example"}, nodeIdentity{NodeID: "1"})
+	release <- struct{}{}
+	waitProbeRouteConfigControlRun(t, started, "https://latest.example")
+	release <- struct{}{}
+	waitProbeRouteConfigControlSchedulerIdle(t, scheduler)
+
+	if got := runs.Load(); got != 2 {
+		t.Fatalf("runs=%d, want 2", got)
+	}
+	if got := maxActive.Load(); got != 1 {
+		t.Fatalf("max active=%d, want 1", got)
+	}
+	urlsMu.Lock()
+	defer urlsMu.Unlock()
+	if len(urls) != 2 || urls[0] != "https://first.example" || urls[1] != "https://latest.example" {
+		t.Fatalf("urls=%v", urls)
+	}
+}
+
+func waitProbeRouteConfigControlRun(t *testing.T, started <-chan string, want string) {
+	t.Helper()
+	select {
+	case got := <-started:
+		if got != want {
+			t.Fatalf("controller URL=%q, want %q", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for %q", want)
+	}
+}
+
+func waitProbeRouteConfigControlSchedulerIdle(t *testing.T, scheduler *probeRouteConfigSyncControlScheduler) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		scheduler.mu.Lock()
+		idle := !scheduler.running && !scheduler.pending
+		scheduler.mu.Unlock()
+		if idle {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("scheduler did not become idle")
 }

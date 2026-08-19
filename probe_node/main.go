@@ -894,7 +894,7 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 		return
 	}
 	if typeName == "route_config_sync" {
-		go runProbeRouteConfigSyncControl(msg, identity)
+		scheduleProbeRouteConfigSyncControl(msg, identity)
 		return
 	}
 	if typeName == "certificate_sync" {
