@@ -240,7 +240,8 @@ func updateProbeRuntimeReportWithPlatform(nodeID string, ipv4 []string, ipv6 []s
 	seenIPs := map[string]struct{}{}
 
 	probeRuntimeStore.mu.Lock()
-	if current, ok := probeRuntimeStore.data[nodeID]; ok {
+	current, ok := probeRuntimeStore.data[nodeID]
+	if ok {
 		previousIPv4 = append(previousIPv4, current.IPv4...)
 		previousIPv6 = append(previousIPv6, current.IPv6...)
 		for _, ip := range append(append([]string{}, nextIPv4...), nextIPv6...) {
@@ -281,21 +282,20 @@ func updateProbeRuntimeReportWithPlatform(nodeID string, ipv4 []string, ipv6 []s
 			pendingResolveIPs = append(pendingResolveIPs, ip)
 		}
 	}
-	probeRuntimeStore.data[nodeID] = probeRuntimeStatus{
-		NodeID:               nodeID,
-		Online:               true,
-		LastSeen:             time.Now().UTC().Format(time.RFC3339),
-		Platform:             normalizeProbeRuntimePlatform(platform, osName),
-		OS:                   normalizeProbeRuntimeOS(osName),
-		Arch:                 normalizeProbeRuntimeArch(arch),
-		IPv4:                 nextIPv4,
-		IPv6:                 nextIPv6,
-		IPLocations:          nextIPLocations,
-		Version:              strings.TrimSpace(version),
-		System:               metrics,
-		MachineUptimeSeconds: normalizeProbeMachineUptimeSeconds(machineUptimeSeconds),
-		RelayStatus:          cloneProbeRelayStatusItems(relayStatus),
-	}
+	current.NodeID = nodeID
+	current.Online = true
+	current.LastSeen = time.Now().UTC().Format(time.RFC3339)
+	current.Platform = normalizeProbeRuntimePlatform(platform, osName)
+	current.OS = normalizeProbeRuntimeOS(osName)
+	current.Arch = normalizeProbeRuntimeArch(arch)
+	current.IPv4 = nextIPv4
+	current.IPv6 = nextIPv6
+	current.IPLocations = nextIPLocations
+	current.Version = strings.TrimSpace(version)
+	current.System = metrics
+	current.MachineUptimeSeconds = normalizeProbeMachineUptimeSeconds(machineUptimeSeconds)
+	current.RelayStatus = cloneProbeRelayStatusItems(relayStatus)
+	probeRuntimeStore.data[nodeID] = current
 	probeRuntimeStore.mu.Unlock()
 
 	if len(pendingResolveIPs) > 0 {

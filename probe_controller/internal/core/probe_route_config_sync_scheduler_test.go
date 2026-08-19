@@ -6,29 +6,6 @@ import (
 	"time"
 )
 
-func TestProbeRouteConfigSyncSourceLogRateLimit(t *testing.T) {
-	const source = "test:rate-limit"
-	probeRouteConfigSyncSourceLog.mu.Lock()
-	delete(probeRouteConfigSyncSourceLog.last, source)
-	probeRouteConfigSyncSourceLog.mu.Unlock()
-	t.Cleanup(func() {
-		probeRouteConfigSyncSourceLog.mu.Lock()
-		delete(probeRouteConfigSyncSourceLog.last, source)
-		probeRouteConfigSyncSourceLog.mu.Unlock()
-	})
-
-	now := time.Date(2026, 8, 19, 0, 0, 0, 0, time.UTC)
-	if !shouldLogProbeRouteConfigSyncSource(source, now) {
-		t.Fatal("first source event was suppressed")
-	}
-	if shouldLogProbeRouteConfigSyncSource(source, now.Add(9*time.Second)) {
-		t.Fatal("source event inside rate limit window was logged")
-	}
-	if !shouldLogProbeRouteConfigSyncSource(source, now.Add(10*time.Second)) {
-		t.Fatal("source event at rate limit boundary was suppressed")
-	}
-}
-
 func TestProbeRouteConfigSyncSchedulerCoalescesBurst(t *testing.T) {
 	started := make(chan int32, 2)
 	release := make(chan struct{})

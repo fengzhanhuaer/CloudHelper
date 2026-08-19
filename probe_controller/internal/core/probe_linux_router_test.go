@@ -147,6 +147,36 @@ func TestLinuxRouterRuntimeReconnectPreservesLocalConfigReport(t *testing.T) {
 	}
 }
 
+func TestProbeRuntimeHeartbeatPreservesLinuxRouterProductStatus(t *testing.T) {
+	setupProbeLinuxRouterTestStores(t)
+	report := probeLinuxRouterRuntimeReport{
+		AppliedRevision: 7, AppliedSHA256: "abc", LocalIPProxyEnabled: true, Healthy: true,
+		PublishedCIDRs: []string{"192.168.50.0/24"}, AllowedNodeIDs: []string{"1"},
+	}
+	probeRuntimeStore.mu.Lock()
+	previous := probeRuntimeStore.data
+	probeRuntimeStore.data = make(map[string]probeRuntimeStatus)
+	probeRuntimeStore.mu.Unlock()
+	t.Cleanup(func() {
+		probeRuntimeStore.mu.Lock()
+		probeRuntimeStore.data = previous
+		probeRuntimeStore.mu.Unlock()
+	})
+
+	if changed := updateProbeRuntimeProductStatus("21", probeNodeKindLinuxRouter, probeSpecialExitRuntimeReport{}, report); !changed {
+		t.Fatal("initial local router report did not trigger route refresh")
+	}
+	updateProbeRuntimeReportWithPlatform("21", []string{"192.0.2.21"}, nil, probeSystemMetrics{}, "v0.4.6", "linux", "linux", "amd64", 60, nil)
+
+	runtime, ok := getProbeRuntime("21")
+	if !ok || runtime.BuildKind != probeNodeKindLinuxRouter || !runtime.LinuxRouter.LocalIPProxyEnabled || len(runtime.LinuxRouter.PublishedCIDRs) != 1 {
+		t.Fatalf("base heartbeat cleared router product status: %+v", runtime)
+	}
+	if changed := updateProbeRuntimeProductStatus("21", probeNodeKindLinuxRouter, probeSpecialExitRuntimeReport{}, report); changed {
+		t.Fatal("unchanged router report triggered route refresh after base heartbeat")
+	}
+}
+
 func TestBuildMngProbeLinuxRouterInstallInfoSupportsTwoArchitectures(t *testing.T) {
 	setupProbeLinuxRouterTestStores(t)
 	info, err := buildMngProbeLinuxRouterInstallInfo("21", "https://controller.example")
