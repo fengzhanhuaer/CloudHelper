@@ -118,6 +118,92 @@ func TestBuildProbeLinuxRouterFailOpenNFTScriptRemovesTUNMarkAndDNSRedirect(t *t
 	}
 }
 
+func TestReconcileProbeLinuxRouterDNSRuntimeAppliesSystemDNS(t *testing.T) {
+	resetProbeLinuxRouterDNSHooksForTest(t)
+	var calls []string
+	probeLinuxRouterVirtualDNSConfigured = func() bool { return false }
+	probeLinuxRouterStartDNSService = func() error {
+		calls = append(calls, "start")
+		return nil
+	}
+	probeLinuxRouterApplySystemDNS = func() error {
+		calls = append(calls, "apply")
+		return nil
+	}
+	probeLinuxRouterStopDNSService = func() { calls = append(calls, "stop") }
+	probeLinuxRouterRestoreSystemDNS = func() error {
+		calls = append(calls, "restore")
+		return nil
+	}
+
+	if err := reconcileProbeLinuxRouterDNSRuntime(true); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(calls, ","); got != "start,apply" {
+		t.Fatalf("DNS enable calls=%q", got)
+	}
+}
+
+func TestReconcileProbeLinuxRouterDNSRuntimeRestoresSystemDNS(t *testing.T) {
+	resetProbeLinuxRouterDNSHooksForTest(t)
+	var calls []string
+	probeLinuxRouterVirtualDNSConfigured = func() bool { return false }
+	probeLinuxRouterStopDNSService = func() { calls = append(calls, "stop") }
+	probeLinuxRouterRestoreSystemDNS = func() error {
+		calls = append(calls, "restore")
+		return nil
+	}
+
+	if err := reconcileProbeLinuxRouterDNSRuntime(false); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(calls, ","); got != "stop,restore" {
+		t.Fatalf("DNS disable calls=%q", got)
+	}
+}
+
+func TestReconcileProbeLinuxRouterDNSRuntimeKeepsVirtualDNSOwner(t *testing.T) {
+	resetProbeLinuxRouterDNSHooksForTest(t)
+	var calls []string
+	probeLinuxRouterVirtualDNSConfigured = func() bool { return true }
+	probeLinuxRouterStartDNSService = func() error {
+		calls = append(calls, "start")
+		return nil
+	}
+	probeLinuxRouterApplySystemDNS = func() error {
+		calls = append(calls, "apply")
+		return nil
+	}
+	probeLinuxRouterStopDNSService = func() { calls = append(calls, "stop") }
+	probeLinuxRouterRestoreSystemDNS = func() error {
+		calls = append(calls, "restore")
+		return nil
+	}
+
+	if err := reconcileProbeLinuxRouterDNSRuntime(false); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(calls, ","); got != "start,apply" {
+		t.Fatalf("shared DNS disable calls=%q", got)
+	}
+}
+
+func resetProbeLinuxRouterDNSHooksForTest(t *testing.T) {
+	t.Helper()
+	oldStart := probeLinuxRouterStartDNSService
+	oldStop := probeLinuxRouterStopDNSService
+	oldApply := probeLinuxRouterApplySystemDNS
+	oldRestore := probeLinuxRouterRestoreSystemDNS
+	oldConfigured := probeLinuxRouterVirtualDNSConfigured
+	t.Cleanup(func() {
+		probeLinuxRouterStartDNSService = oldStart
+		probeLinuxRouterStopDNSService = oldStop
+		probeLinuxRouterApplySystemDNS = oldApply
+		probeLinuxRouterRestoreSystemDNS = oldRestore
+		probeLinuxRouterVirtualDNSConfigured = oldConfigured
+	})
+}
+
 func TestProbeLinuxRouterNetworkNamespacePolicy(t *testing.T) {
 	if os.Getenv("CLOUDHELPER_ROUTER_NETNS_TEST") != "1" || os.Geteuid() != 0 {
 		t.Skip("set CLOUDHELPER_ROUTER_NETNS_TEST=1 and run as root inside an isolated network namespace")

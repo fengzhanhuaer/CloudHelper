@@ -38,8 +38,9 @@ var (
 	probeVirtualRouterLinuxDNSWriteFile = func(path string, data []byte, mode os.FileMode) error {
 		return os.WriteFile(path, data, mode)
 	}
-	probeVirtualRouterLinuxDNSStat     = os.Stat
-	probeVirtualRouterLinuxDNSReadlink = os.Readlink
+	probeVirtualRouterLinuxDNSStat        = os.Stat
+	probeVirtualRouterLinuxDNSReadlink    = os.Readlink
+	probeVirtualRouterLinuxInterfaceAddrs = net.InterfaceAddrs
 )
 
 func applyProbeVirtualRouterSystemDNS() error {
@@ -322,17 +323,42 @@ func filterProbeVirtualRouterLinuxDNSUpstreams(items []string) []string {
 	seen := make(map[string]struct{}, len(items))
 	out := make([]string, 0, len(items))
 	desired := net.ParseIP(strings.TrimSpace(probeVirtualRouterDNSListenHost)).To4()
+	localAddresses := currentProbeVirtualRouterLinuxIPv4Addresses()
 	for _, raw := range items {
 		ip4 := net.ParseIP(strings.TrimSpace(raw)).To4()
 		if ip4 == nil || ip4[0] == 127 || (desired != nil && ip4.Equal(desired)) {
 			continue
 		}
 		value := ip4.String()
+		if _, local := localAddresses[value]; local {
+			continue
+		}
 		if _, ok := seen[value]; ok {
 			continue
 		}
 		seen[value] = struct{}{}
 		out = append(out, value)
+	}
+	return out
+}
+
+func currentProbeVirtualRouterLinuxIPv4Addresses() map[string]struct{} {
+	out := make(map[string]struct{})
+	addresses, err := probeVirtualRouterLinuxInterfaceAddrs()
+	if err != nil {
+		return out
+	}
+	for _, address := range addresses {
+		if address == nil {
+			continue
+		}
+		raw := strings.TrimSpace(address.String())
+		if prefix, _, splitErr := net.ParseCIDR(raw); splitErr == nil {
+			raw = prefix.String()
+		}
+		if ip4 := net.ParseIP(raw).To4(); ip4 != nil {
+			out[ip4.String()] = struct{}{}
+		}
 	}
 	return out
 }

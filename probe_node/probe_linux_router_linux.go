@@ -36,6 +36,11 @@ var probeLinuxRouterLinuxState = struct {
 
 var probeLinuxRouterRunCommand = probeLocalLinuxRunCommand
 var probeLinuxRouterApplyNFTScript = runProbeLinuxRouterNFTScript
+var probeLinuxRouterStartDNSService = startProbeVirtualRouterDNSService
+var probeLinuxRouterStopDNSService = stopProbeVirtualRouterDNSService
+var probeLinuxRouterApplySystemDNS = func() error { return probeVirtualRouterApplySystemDNS() }
+var probeLinuxRouterRestoreSystemDNS = func() error { return probeVirtualRouterRestoreSystemDNS() }
+var probeLinuxRouterVirtualDNSConfigured = probeVirtualRouterLocalDNSEnabled
 
 func init() {
 	probeLinuxRouterPlatformApply = applyProbeLinuxRouterPlatform
@@ -80,12 +85,8 @@ func applyProbeLinuxRouterPlatform(snapshot probeLinuxRouterSnapshot) (string, e
 	if err := replaceProbeLinuxRouterNFTTable(buildProbeLinuxRouterNFTScript(snapshot, iface, tunDev, tunIP, snatCIDRs, false)); err != nil {
 		return iface, err
 	}
-	if snapshot.GatewayProxy.Enabled && snapshot.GatewayProxy.DNSEnabled {
-		if err := startProbeVirtualRouterDNSService(); err != nil {
-			return iface, fmt.Errorf("start LAN DNS: %w", err)
-		}
-	} else {
-		stopProbeVirtualRouterDNSService()
+	if err := reconcileProbeLinuxRouterDNSRuntime(snapshot.GatewayProxy.Enabled && snapshot.GatewayProxy.DNSEnabled); err != nil {
+		return iface, err
 	}
 	probeLinuxRouterLinuxState.mu.Lock()
 	probeLinuxRouterLinuxState.interfaceName = iface
@@ -114,11 +115,12 @@ func applyProbeLinuxRouterFailOpen(snapshot probeLinuxRouterSnapshot) error {
 	if err := cleanupProbeLinuxRouterPolicyRouting(); err != nil {
 		return err
 	}
-	stopProbeVirtualRouterDNSService()
+	dnsErr := reconcileProbeLinuxRouterDNSRuntime(false)
 	probeLinuxRouterLinuxState.mu.Lock()
 	probeLinuxRouterLinuxState.snatCIDRsSignature = ""
 	probeLinuxRouterLinuxState.mu.Unlock()
-	return replaceProbeLinuxRouterNFTTable(buildProbeLinuxRouterNFTScript(snapshot, iface, tunDev, "", nil, true))
+	nftErr := replaceProbeLinuxRouterNFTTable(buildProbeLinuxRouterNFTScript(snapshot, iface, tunDev, "", nil, true))
+	return errors.Join(dnsErr, nftErr)
 }
 
 func cleanupProbeLinuxRouterPlatform(snapshot *probeLinuxRouterSnapshot) error {
@@ -129,7 +131,9 @@ func cleanupProbeLinuxRouterPlatform(snapshot *probeLinuxRouterSnapshot) error {
 	if _, err := probeLinuxRouterRunCommand(5*time.Second, "nft", "delete", "table", "ip", probeLinuxRouterNFTTable); err != nil && !probeLinuxRouterCommandMissingObject(err) {
 		allErr = errors.Join(allErr, err)
 	}
-	stopProbeVirtualRouterDNSService()
+	if err := reconcileProbeLinuxRouterDNSRuntime(false); err != nil {
+		allErr = errors.Join(allErr, err)
+	}
 	probeLinuxRouterLinuxState.mu.Lock()
 	iface := probeLinuxRouterLinuxState.interfaceName
 	address := probeLinuxRouterLinuxState.gatewayAddress
@@ -153,6 +157,23 @@ func cleanupProbeLinuxRouterPlatform(snapshot *probeLinuxRouterSnapshot) error {
 		allErr = errors.Join(allErr, err)
 	}
 	return allErr
+}
+
+func reconcileProbeLinuxRouterDNSRuntime(enabled bool) error {
+	if enabled || probeLinuxRouterVirtualDNSConfigured() {
+		if err := probeLinuxRouterStartDNSService(); err != nil {
+			return fmt.Errorf("start LAN DNS: %w", err)
+		}
+		if err := probeLinuxRouterApplySystemDNS(); err != nil {
+			return fmt.Errorf("apply router system DNS: %w", err)
+		}
+		return nil
+	}
+	probeLinuxRouterStopDNSService()
+	if err := probeLinuxRouterRestoreSystemDNS(); err != nil {
+		return fmt.Errorf("restore router system DNS: %w", err)
+	}
+	return nil
 }
 
 func applyProbeLinuxRouterSysctls(settings [][2]string) error {
@@ -213,6 +234,9 @@ func restoreProbeLinuxRouterSysctls() error {
 func probeLinuxRouterPlatformHealth(snapshot probeLinuxRouterSnapshot) error {
 	if !probeVirtualRouterTUNDataPlaneRunning() {
 		return errors.New("virtual router TUN data plane is not running")
+	}
+	if snapshot.GatewayProxy.Enabled && snapshot.GatewayProxy.DNSEnabled && !currentProbeVirtualRouterDNSStatus().Enabled {
+		return errors.New("router DNS service is not running")
 	}
 	if _, err := probeLinuxRouterRunCommand(5*time.Second, "nft", "list", "table", "ip", probeLinuxRouterNFTTable); err != nil {
 		return fmt.Errorf("router nftables state is unavailable: %w", err)

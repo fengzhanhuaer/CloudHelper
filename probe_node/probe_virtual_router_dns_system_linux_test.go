@@ -128,6 +128,19 @@ func TestFilterProbeVirtualRouterLinuxDNSUpstreamsRemovesLoopback(t *testing.T) 
 	}
 }
 
+func TestFilterProbeVirtualRouterLinuxDNSUpstreamsRemovesLocalInterfaceAddress(t *testing.T) {
+	resetProbeVirtualRouterLinuxDNSHooksForTest(t)
+	probeVirtualRouterLinuxInterfaceAddrs = func() ([]net.Addr, error) {
+		return []net.Addr{
+			&net.IPNet{IP: net.ParseIP("192.168.50.94"), Mask: net.CIDRMask(24, 32)},
+		}, nil
+	}
+	got := filterProbeVirtualRouterLinuxDNSUpstreams([]string{"192.168.50.94", "192.168.50.1", "1.1.1.1"})
+	if !reflect.DeepEqual(got, []string{"192.168.50.1", "1.1.1.1"}) {
+		t.Fatalf("filtered upstreams=%v", got)
+	}
+}
+
 func TestProbeVirtualRouterLinuxResolvedAvailableRejectsUnconnectedResolvConf(t *testing.T) {
 	resetProbeVirtualRouterLinuxDNSHooksForTest(t)
 	probeVirtualRouterLinuxDNSLookPath = func(string) (string, error) { return "/usr/bin/resolvectl", nil }
@@ -295,6 +308,7 @@ func resetProbeVirtualRouterLinuxDNSHooksForTest(t *testing.T) {
 	oldWriteFile := probeVirtualRouterLinuxDNSWriteFile
 	oldStat := probeVirtualRouterLinuxDNSStat
 	oldReadlink := probeVirtualRouterLinuxDNSReadlink
+	oldInterfaceAddrs := probeVirtualRouterLinuxInterfaceAddrs
 	oldDBusAvailable := probeVirtualRouterLinuxResolvedDBusAvailable
 	oldDBusCommand := probeVirtualRouterLinuxResolvedDBusCommand
 	t.Cleanup(func() {
@@ -304,6 +318,7 @@ func resetProbeVirtualRouterLinuxDNSHooksForTest(t *testing.T) {
 		probeVirtualRouterLinuxDNSWriteFile = oldWriteFile
 		probeVirtualRouterLinuxDNSStat = oldStat
 		probeVirtualRouterLinuxDNSReadlink = oldReadlink
+		probeVirtualRouterLinuxInterfaceAddrs = oldInterfaceAddrs
 		probeVirtualRouterLinuxResolvedDBusAvailable = oldDBusAvailable
 		probeVirtualRouterLinuxResolvedDBusCommand = oldDBusCommand
 	})
