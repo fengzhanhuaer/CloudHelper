@@ -60,4 +60,40 @@ func TestReleaseWorkflowDefinesLinuxRouterArtifacts(t *testing.T) {
 			t.Fatalf("release workflow still contains standalone Mihomo marker %q", forbidden)
 		}
 	}
+	for _, action := range []string{
+		"actions/checkout@v7",
+		"actions/setup-go@v7",
+		"actions/setup-java@v5",
+		"actions/cache@v6",
+		"actions/upload-artifact@v7",
+		"actions/download-artifact@v8",
+		"android-actions/setup-android@v4",
+		"gradle/actions/setup-gradle@v6",
+		"docker/setup-buildx-action@v4",
+		"docker/login-action@v4",
+		"docker/build-push-action@v7",
+		"softprops/action-gh-release@v3",
+	} {
+		if !strings.Contains(content, action) {
+			t.Fatalf("release workflow missing Node.js 24 action %q", action)
+		}
+	}
+	for _, action := range []string{
+		"actions/checkout@v4",
+		"actions/setup-go@v5",
+		"actions/setup-java@v4",
+		"actions/cache@v4",
+		"actions/upload-artifact@v4",
+		"actions/download-artifact@v4",
+		"android-actions/setup-android@v3",
+		"gradle/actions/setup-gradle@v4",
+		"docker/setup-buildx-action@v3",
+		"docker/login-action@v3",
+		"docker/build-push-action@v6",
+		"softprops/action-gh-release@v2",
+	} {
+		if strings.Contains(content, action) {
+			t.Fatalf("release workflow still contains Node.js 20 action %q", action)
+		}
+	}
 }
