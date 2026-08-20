@@ -8,6 +8,7 @@ SERVICE_NAME="${SERVICE_NAME:-probe_router}"
 PROBE_LOCAL_LISTEN="${PROBE_LOCAL_LISTEN:-0.0.0.0:16032}"
 PROBE_LOCAL_CONSOLE_ENABLED="${PROBE_LOCAL_CONSOLE_ENABLED:-true}"
 PROBE_ROUTER_PROGRAM_URL="${PROBE_ROUTER_PROGRAM_URL:-}"
+PROBE_ROUTER_MANIFEST_URL="${PROBE_ROUTER_MANIFEST_URL:-}"
 
 log() { echo "[cloudhelper-probe-router] $*"; }
 die() { echo "[cloudhelper-probe-router][ERROR] $*" >&2; exit 1; }
@@ -25,9 +26,10 @@ case "$(uname -m)" in
   *) die "unsupported architecture: $(uname -m); only x86_64 and aarch64 are supported" ;;
 esac
 PROGRAM_ASSET="cloudhelper-probe-router-linux-${GOARCH}"
+MANIFEST_ASSET="${PROGRAM_ASSET}-manifest.json"
 
 log "installing Alpine runtime dependencies"
-apk add --no-cache ca-certificates curl iproute2 kmod nftables openrc
+apk add --no-cache ca-certificates curl gzip iproute2 jq kmod nftables openrc
 update-ca-certificates >/dev/null 2>&1 || true
 for required_command in rc-service rc-update ip nft sysctl; do
   command -v "${required_command}" >/dev/null 2>&1 || die "required command is unavailable after dependency installation: ${required_command}"
@@ -72,24 +74,65 @@ elif [ "${RELEASE_TAG}" = "latest" ]; then
 else
   program_url="https://github.com/${RELEASE_REPO}/releases/download/${RELEASE_TAG}/${PROGRAM_ASSET}"
 fi
+if [ -n "${PROBE_ROUTER_MANIFEST_URL}" ]; then
+  manifest_url="${PROBE_ROUTER_MANIFEST_URL}"
+elif [ "${RELEASE_TAG}" = "latest" ]; then
+  manifest_url="https://github.com/${RELEASE_REPO}/releases/latest/download/${MANIFEST_ASSET}"
+else
+  manifest_url="https://github.com/${RELEASE_REPO}/releases/download/${RELEASE_TAG}/${MANIFEST_ASSET}"
+fi
 
 proxy_download_url="${PROBE_CONTROLLER_URL%/}/api/probe/proxy/download"
-log "downloading ${PROGRAM_ASSET} through controller proxy"
-curl -fL --retry 5 --connect-timeout 15 \
-  --get \
-  --data-urlencode "node_id=${PROBE_NODE_ID}" \
-  --data-urlencode "secret=${PROBE_NODE_SECRET}" \
-  -H "X-CloudHelper-Download-URL: ${program_url}" \
-  "${proxy_download_url}" \
-  -o "${work_dir}/probe_router"
+download_via_controller() {
+  remote_url="$1"
+  output_path="$2"
+  curl -fL --retry 5 --connect-timeout 15 \
+    --get \
+    --data-urlencode "node_id=${PROBE_NODE_ID}" \
+    --data-urlencode "secret=${PROBE_NODE_SECRET}" \
+    -H "X-CloudHelper-Download-URL: ${remote_url}" \
+    "${proxy_download_url}" \
+    -o "${output_path}"
+}
+
+log "downloading ${PROGRAM_ASSET} and paired Mihomo manifest through controller proxy"
+download_via_controller "${program_url}" "${work_dir}/probe_router"
+download_via_controller "${manifest_url}" "${work_dir}/${MANIFEST_ASSET}"
+jq -e --arg arch "${GOARCH}" --arg program "${PROGRAM_ASSET}" '
+  .schema_version == 1 and
+  .build_kind == "linux_router" and
+  .os == "linux" and
+  .arch == $arch and
+  .program.asset == $program and
+  (.program.sha256 | test("^[0-9a-f]{64}$")) and
+  (.mihomo.asset | endswith(".gz")) and
+  (.mihomo.url | startswith("https://github.com/MetaCubeX/mihomo/releases/download/")) and
+  (.mihomo.sha256 | test("^[0-9a-f]{64}$"))
+' "${work_dir}/${MANIFEST_ASSET}" >/dev/null || die "paired upgrade manifest is invalid"
+program_sha256="$(jq -r '.program.sha256' "${work_dir}/${MANIFEST_ASSET}")"
+mihomo_asset="$(jq -r '.mihomo.asset' "${work_dir}/${MANIFEST_ASSET}")"
+mihomo_url="$(jq -r '.mihomo.url' "${work_dir}/${MANIFEST_ASSET}")"
+mihomo_sha256="$(jq -r '.mihomo.sha256' "${work_dir}/${MANIFEST_ASSET}")"
+[ "${mihomo_url##*/}" = "${mihomo_asset}" ] || die "paired Mihomo URL does not match its asset"
+printf '%s  %s\n' "${program_sha256}" "${work_dir}/probe_router" | sha256sum -c - >/dev/null || die "router program sha256 mismatch"
+download_via_controller "${mihomo_url}" "${work_dir}/${mihomo_asset}"
+printf '%s  %s\n' "${mihomo_sha256}" "${work_dir}/${mihomo_asset}" | sha256sum -c - >/dev/null || die "Mihomo archive sha256 mismatch"
+gzip -dc "${work_dir}/${mihomo_asset}" > "${work_dir}/mihomo"
 chmod 0755 "${work_dir}/probe_router"
+chmod 0755 "${work_dir}/mihomo"
 "${work_dir}/probe_router" --upgrade-verify --upgrade-verify-duration=5 --upgrade-verify-build-kind=linux_router
+"${work_dir}/mihomo" -v 2>&1 | grep -qi mihomo || die "Mihomo candidate version output is invalid"
 
 had_program=0
+had_mihomo=0
 was_started=0
 if [ -f "${INSTALL_DIR}/probe_router" ]; then
   had_program=1
   cp -p "${INSTALL_DIR}/probe_router" "${work_dir}/probe_router.backup"
+fi
+if [ -f "${INSTALL_DIR}/data/mihomo" ]; then
+  had_mihomo=1
+  cp -p "${INSTALL_DIR}/data/mihomo" "${work_dir}/mihomo.backup"
 fi
 if rc-service "${SERVICE_NAME}" status >/dev/null 2>&1; then
   was_started=1
@@ -105,10 +148,20 @@ rollback() {
   else
     rm -f "${INSTALL_DIR}/probe_router"
   fi
+  if [ "${had_mihomo}" -eq 1 ]; then
+    install -m 0755 "${work_dir}/mihomo.backup" "${INSTALL_DIR}/data/mihomo"
+  else
+    rm -f "${INSTALL_DIR}/data/mihomo"
+  fi
 }
 
-install -m 0755 "${work_dir}/probe_router" "${INSTALL_DIR}/probe_router.new"
-mv -f "${INSTALL_DIR}/probe_router.new" "${INSTALL_DIR}/probe_router"
+if ! install -m 0755 "${work_dir}/probe_router" "${INSTALL_DIR}/probe_router.new" \
+  || ! install -m 0755 "${work_dir}/mihomo" "${INSTALL_DIR}/data/mihomo.new" \
+  || ! mv -f "${INSTALL_DIR}/probe_router.new" "${INSTALL_DIR}/probe_router" \
+  || ! mv -f "${INSTALL_DIR}/data/mihomo.new" "${INSTALL_DIR}/data/mihomo"; then
+  rollback
+  die "failed to install paired router programs"
+fi
 
 escape_conf() { printf '%s' "$1" | sed "s/'/'\\\\''/g"; }
 {
@@ -116,6 +169,7 @@ escape_conf() { printf '%s' "$1" | sed "s/'/'\\\\''/g"; }
   echo "PROBE_NODE_SECRET='$(escape_conf "${PROBE_NODE_SECRET}")'"
   echo "PROBE_CONTROLLER_URL='$(escape_conf "${PROBE_CONTROLLER_URL}")'"
   echo "PROBE_LOCAL_CONSOLE_ENABLED='$(escape_conf "${PROBE_LOCAL_CONSOLE_ENABLED}")'"
+  echo "PROBE_LOCAL_LISTEN='$(escape_conf "${PROBE_LOCAL_LISTEN}")'"
 } > "/etc/conf.d/${SERVICE_NAME}"
 chmod 0600 "/etc/conf.d/${SERVICE_NAME}"
 
@@ -129,7 +183,7 @@ directory="${INSTALL_DIR}"
 pidfile="/run/\${RC_SVCNAME}.pid"
 output_log="${INSTALL_DIR}/log/openrc.log"
 error_log="${INSTALL_DIR}/log/openrc.log"
-export PROBE_NODE_ID PROBE_NODE_SECRET PROBE_CONTROLLER_URL PROBE_LOCAL_CONSOLE_ENABLED
+export PROBE_NODE_ID PROBE_NODE_SECRET PROBE_CONTROLLER_URL PROBE_LOCAL_CONSOLE_ENABLED PROBE_LOCAL_LISTEN
 
 depend() {
   need net
@@ -161,5 +215,5 @@ if [ "${service_ready}" -ne 1 ]; then
   rollback
   die "probe_router did not become healthy at http://${health_host}:${health_port}/local/router"
 fi
-log "installed ${PROGRAM_ASSET} at ${INSTALL_DIR}"
+log "installed ${PROGRAM_ASSET} with paired Mihomo at ${INSTALL_DIR}"
 log "shared probe console listens on http://${PROBE_LOCAL_LISTEN}; router settings are available under /local/router"

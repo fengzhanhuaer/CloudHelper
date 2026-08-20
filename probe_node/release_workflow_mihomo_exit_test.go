@@ -10,7 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestReleaseWorkflowDefinesMihomoExitLinuxAMD64Artifacts(t *testing.T) {
+func TestReleaseWorkflowDoesNotPublishStandaloneMihomoExitArtifacts(t *testing.T) {
 	_, sourcePath, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("cannot resolve test source path")
@@ -28,15 +28,13 @@ func TestReleaseWorkflowDefinesMihomoExitLinuxAMD64Artifacts(t *testing.T) {
 	for _, marker := range []string{
 		"build-probe-exit-node:",
 		"build-probe-exit-node-docker:",
-		"GOOS: linux",
-		"GOARCH: amd64",
 		"go build -tags mihomo_exit",
 		"cloudhelper-probe-exit-node-linux-amd64",
 		"cloudhelper-probe-exit-node-manifest.json",
 		"cloudhelper-probe-exit-node-shell",
 	} {
-		if !strings.Contains(content, marker) {
-			t.Fatalf("release workflow missing %q", marker)
+		if strings.Contains(content, marker) {
+			t.Fatalf("release workflow still contains standalone Mihomo marker %q", marker)
 		}
 	}
 }

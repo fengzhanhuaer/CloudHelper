@@ -54,7 +54,7 @@ func ProbeRouteConfigHandler(w http.ResponseWriter, r *http.Request) {
 		expectedNodeKind = normalizeProbeNodeKind(node.NodeKind)
 	}
 	var snapshot *probeSpecialExitSnapshot
-	if hasSpecialExit && expectedNodeKind == probeNodeKindMihomoExit {
+	if hasSpecialExit && probeNodeSupportsSpecialExit(expectedNodeKind) {
 		value := probeSpecialExitSnapshotForConfig(specialExit)
 		snapshot = &value
 	}

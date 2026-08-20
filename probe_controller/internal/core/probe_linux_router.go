@@ -146,6 +146,10 @@ func buildMngProbeLinuxRouterInstallInfo(nodeID string, controllerBaseURL string
 		"node_id": nodeID, "mode": "native", "environment": env,
 		"platform": "linux", "architectures": []string{"amd64", "arm64"},
 		"script_url": scriptURL,
-		"command":    "if command -v curl >/dev/null 2>&1; then curl -fsSL " + shellQuoteProbeSpecialExit(scriptURL) + "; else wget -qO- " + shellQuoteProbeSpecialExit(scriptURL) + "; fi | env PROBE_NODE_ID=" + shellQuoteProbeSpecialExit(nodeID) + " PROBE_NODE_SECRET=" + shellQuoteProbeSpecialExit(node.NodeSecret) + " PROBE_CONTROLLER_URL=" + shellQuoteProbeSpecialExit(base) + " sh",
+		"command":    "if command -v curl >/dev/null 2>&1; then curl -fsSL " + shellQuoteProbeRouter(scriptURL) + "; else wget -qO- " + shellQuoteProbeRouter(scriptURL) + "; fi | env PROBE_NODE_ID=" + shellQuoteProbeRouter(nodeID) + " PROBE_NODE_SECRET=" + shellQuoteProbeRouter(node.NodeSecret) + " PROBE_CONTROLLER_URL=" + shellQuoteProbeRouter(base) + " sh",
 	}, nil
+}
+
+func shellQuoteProbeRouter(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }

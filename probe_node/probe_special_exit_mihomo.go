@@ -1,4 +1,4 @@
-//go:build mihomo_exit
+//go:build mihomo_exit || linux_router
 
 package main
 
@@ -66,7 +66,7 @@ type probeMihomoProcessState struct {
 var activeProbeMihomoRuntime probeMihomoProcessState
 var probeMihomoConnectivityAPIRequest = probeMihomoAPIRequest
 
-func startProbeProductRuntime(nodeID string) error {
+func startProbeMihomoRuntime(nodeID string, snapshotRequired bool) error {
 	dataDir, err := resolveDataDir()
 	if err != nil {
 		return err
@@ -84,14 +84,17 @@ func startProbeProductRuntime(nodeID string) error {
 	snapshot, err := loadProbeMihomoSnapshot(dataDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return errors.New("special exit snapshot has not been received")
+			if snapshotRequired {
+				return errors.New("special exit snapshot has not been received")
+			}
+			return nil
 		}
 		return err
 	}
 	return applyProbeMihomoSnapshot(snapshot, nodeID)
 }
 
-func stopProbeProductRuntime() {
+func stopProbeMihomoRuntime() {
 	activeProbeMihomoRuntime.applyMu.Lock()
 	defer activeProbeMihomoRuntime.applyMu.Unlock()
 	activeProbeMihomoRuntime.mu.Lock()
@@ -100,8 +103,11 @@ func stopProbeProductRuntime() {
 	stopProbeMihomoProcessLocked()
 }
 
-func applyProbeProductRouteConfig(snapshot *probeSpecialExitSnapshot, nodeID string) error {
+func applyProbeMihomoRouteConfig(snapshot *probeSpecialExitSnapshot, nodeID string, snapshotRequired bool) error {
 	if snapshot == nil {
+		if !snapshotRequired {
+			return disableProbeMihomoRuntime()
+		}
 		applyErr := errors.New("controller did not provide the special exit snapshot")
 		activeProbeMihomoRuntime.applyMu.Lock()
 		defer activeProbeMihomoRuntime.applyMu.Unlock()
@@ -110,6 +116,27 @@ func applyProbeProductRouteConfig(snapshot *probeSpecialExitSnapshot, nodeID str
 		return applyErr
 	}
 	return applyProbeMihomoSnapshot(*snapshot, nodeID)
+}
+
+func disableProbeMihomoRuntime() error {
+	activeProbeMihomoRuntime.applyMu.Lock()
+	defer activeProbeMihomoRuntime.applyMu.Unlock()
+	stopProbeMihomoProcessLocked()
+	activeProbeMihomoRuntime.mu.Lock()
+	dataDir := activeProbeMihomoRuntime.dataDir
+	activeProbeMihomoRuntime.runtime = probeMihomoExitRuntimeConfig{}
+	activeProbeMihomoRuntime.report = probeSpecialExitRuntimeReport{}
+	activeProbeMihomoRuntime.mu.Unlock()
+	if dataDir == "" {
+		return nil
+	}
+	var removeErr error
+	for _, name := range []string{probeMihomoSnapshotFileName, probeMihomoConfigFileName, probeMihomoCandidateFileName} {
+		if err := os.Remove(filepath.Join(dataDir, name)); err != nil && !os.IsNotExist(err) {
+			removeErr = errors.Join(removeErr, err)
+		}
+	}
+	return removeErr
 }
 
 func applyProbeMihomoSnapshot(snapshot probeSpecialExitSnapshot, nodeID string) error {
@@ -774,7 +801,7 @@ func setProbeMihomoApplyError(snapshot probeSpecialExitSnapshot, applyErr error)
 	activeProbeMihomoRuntime.report = probeSpecialExitRuntimeReport{AppliedRevision: previous.AppliedRevision, AppliedSHA256: previous.AppliedSHA256, ExitReady: false, Healthy: false, MihomoVersion: previous.MihomoVersion, LastApplyError: applyErr.Error(), UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
 	activeProbeMihomoRuntime.mu.Unlock()
 }
-func probeProductSpecialExitReport() probeSpecialExitRuntimeReport {
+func probeMihomoSpecialExitReport() probeSpecialExitRuntimeReport {
 	activeProbeMihomoRuntime.mu.RLock()
 	defer activeProbeMihomoRuntime.mu.RUnlock()
 	report := activeProbeMihomoRuntime.report

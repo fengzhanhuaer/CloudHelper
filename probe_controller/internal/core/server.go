@@ -52,7 +52,6 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("/api/probe/proxy/github/latest", ProbeProxyGitHubLatestHandler)
 	mux.HandleFunc("/api/probe/proxy/download", ProbeProxyDownloadHandler)
 	mux.HandleFunc("/api/probe/proxy/probe-node/install-script", ProbeProxyInstallScriptHandler)
-	mux.HandleFunc("/api/probe/proxy/probe-exit-node/install-script", ProbeProxyExitNodeInstallScriptHandler)
 	mux.HandleFunc("/api/probe/proxy/probe-router/install-script", ProbeProxyRouterInstallScriptHandler)
 	mux.HandleFunc("/api/probe/auth/challenge", ProbeAuthChallengeHandler)
 	mux.HandleFunc("/api/probe/route/config", ProbeRouteConfigHandler)

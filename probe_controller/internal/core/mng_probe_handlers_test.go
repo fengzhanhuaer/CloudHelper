@@ -66,7 +66,7 @@ func TestMngProbeNodesHandlerIncludesRuntimeVersionWithoutStatusCall(t *testing.
 	}
 }
 
-func TestMngProbeNodeInstallHandlerServesMihomoExitFromProbeManagement(t *testing.T) {
+func TestMngProbeNodeInstallHandlerRejectsLegacyMihomoExitInstallation(t *testing.T) {
 	oldStore := ProbeStore
 	ProbeStore = &probeConfigStore{data: probeConfigData{ProbeNodes: []probeNodeRecord{{NodeNo: 19, NodeName: "exit", NodeKind: probeNodeKindMihomoExit, NodeSecret: "node-secret"}}}}
 	t.Cleanup(func() { ProbeStore = oldStore })
@@ -74,13 +74,11 @@ func TestMngProbeNodeInstallHandlerServesMihomoExitFromProbeManagement(t *testin
 	req := httptest.NewRequest(http.MethodGet, "https://controller.example/mng/api/probe/node/install?node_id=19&mode=native", nil)
 	rr := httptest.NewRecorder()
 	mngProbeNodeInstallHandler(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rr.Code, rr.Body.String())
 	}
-	for _, marker := range []string{`"mode":"native"`, `"platform":"linux"`, `"architecture":"amd64"`, "/api/probe/proxy/probe-exit-node/install-script"} {
-		if !strings.Contains(rr.Body.String(), marker) {
-			t.Fatalf("probe install response missing %q: %s", marker, rr.Body.String())
-		}
+	if !strings.Contains(rr.Body.String(), "change the node kind to linux_router") {
+		t.Fatalf("migration guidance missing: %s", rr.Body.String())
 	}
 }
 

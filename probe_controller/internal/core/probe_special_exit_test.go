@@ -31,7 +31,24 @@ func TestNormalizeProbeNodesDefaultsKindAndPreservesSpecialKind(t *testing.T) {
 	}
 }
 
-func TestMihomoExitNodeKindConversionRotatesSecretAndValidatesTargetSystem(t *testing.T) {
+func TestStandaloneMihomoCannotBeCreatedOrSelectedForNewSpecialExit(t *testing.T) {
+	oldStore := ProbeStore
+	ProbeStore = &probeConfigStore{data: probeConfigData{ProbeNodes: []probeNodeRecord{
+		{NodeNo: 19, NodeName: "legacy", NodeKind: probeNodeKindMihomoExit, NodeSecret: "legacy-secret"},
+		{NodeNo: 20, NodeName: "router", NodeKind: probeNodeKindLinuxRouter, NodeSecret: "router-secret"},
+	}}}
+	t.Cleanup(func() { ProbeStore = oldStore })
+
+	if _, err := createProbeNodeWithKindLocked("new-exit", probeNodeKindMihomoExit); err == nil || !strings.Contains(err.Error(), "normal or linux_router") {
+		t.Fatalf("standalone Mihomo creation was not rejected: %v", err)
+	}
+	candidates := listMngProbeSpecialExitCandidateNodes()
+	if len(candidates) != 1 || candidates[0].NodeNo != 20 || candidates[0].NodeKind != probeNodeKindLinuxRouter {
+		t.Fatalf("special exit candidates=%+v", candidates)
+	}
+}
+
+func TestLegacyMihomoExitConvertsToLinuxRouterAndCannotBeCreatedAgain(t *testing.T) {
 	oldStore := ProbeStore
 	ProbeStore = &probeConfigStore{data: probeConfigData{
 		ProbeNodes:   []probeNodeRecord{{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindMihomoExit, TargetSystem: "linux", NodeSecret: "old-secret"}},
@@ -39,19 +56,18 @@ func TestMihomoExitNodeKindConversionRotatesSecretAndValidatesTargetSystem(t *te
 	}}
 	t.Cleanup(func() { ProbeStore = oldStore })
 
-	converted, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindNormal, TargetSystem: "linux"})
-	if err != nil || converted.NodeKind != probeNodeKindNormal {
-		t.Fatalf("expected normal conversion: item=%+v err=%v", converted, err)
+	converted, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindLinuxRouter, TargetSystem: "linux"})
+	if err != nil || converted.NodeKind != probeNodeKindLinuxRouter {
+		t.Fatalf("expected linux router conversion: item=%+v err=%v", converted, err)
 	}
 	if converted.NodeSecret == "" || converted.NodeSecret == "old-secret" || ProbeStore.data.ProbeSecrets["2"] != converted.NodeSecret {
 		t.Fatalf("expected node secret rotation: item=%+v secrets=%+v", converted, ProbeStore.data.ProbeSecrets)
 	}
-	updated, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindMihomoExit, TargetSystem: "docker"})
-	if err != nil || updated.TargetSystem != "docker" {
-		t.Fatalf("expected docker target to be accepted: item=%+v err=%v", updated, err)
+	if _, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindMihomoExit, TargetSystem: "linux"}); err == nil || !strings.Contains(err.Error(), "legacy node kind") {
+		t.Fatalf("expected legacy kind rejection, got %v", err)
 	}
-	if _, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindMihomoExit, TargetSystem: "windows"}); err == nil || !strings.Contains(err.Error(), "linux or docker") {
-		t.Fatalf("expected linux-or-docker error, got %v", err)
+	if _, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindLinuxRouter, TargetSystem: "windows"}); err == nil || !strings.Contains(err.Error(), "must be linux") {
+		t.Fatalf("expected linux router target error, got %v", err)
 	}
 	if _, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "exit", NodeKind: "invalid", TargetSystem: "linux"}); err == nil || !strings.Contains(err.Error(), "node kind must be") {
 		t.Fatalf("expected invalid node kind error, got %v", err)
@@ -156,6 +172,48 @@ func TestProbeRouteConfigScopesSpecialExitSnapshotAndSecrets(t *testing.T) {
 	}
 	if len(exit.SpecialExit.Proxies) != 1 || exit.SpecialExit.Proxies[0]["password"] != "node-secret" {
 		t.Fatalf("private proxy snapshot missing: %+v", exit.SpecialExit)
+	}
+}
+
+func TestProbeRouteConfigSendsSpecialExitSnapshotToLinuxRouter(t *testing.T) {
+	oldProbeStore := ProbeStore
+	oldRouteStore := ProbeRouteConfigStore
+	ProbeStore = &probeConfigStore{data: probeConfigData{
+		ProbeNodes:   []probeNodeRecord{{NodeNo: 20, NodeName: "router", NodeKind: probeNodeKindLinuxRouter, NodeSecret: "secret-20"}},
+		ProbeSecrets: map[string]string{"20": "secret-20"},
+	}}
+	item, err := normalizeProbeSpecialExitConfig(probeSpecialExitConfig{
+		NodeID:  "20",
+		Rules:   []probeSpecialExitRule{{RouteRuleID: "rr-20", Target: "DIRECT", Entries: []string{"domain_suffix:router.example"}}},
+		Proxies: []map[string]interface{}{},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	virtualRouter := defaultProbeVirtualRouterConfig()
+	virtualRouter.RouteRules = []probeVirtualRouterRouteRule{{ID: "rr-20", Name: "Router", Action: "probe_exit", ExitNodeID: "20", Entries: []string{"domain_suffix:router.example"}}}
+	ProbeRouteConfigStore = &probeRouteConfigStore{data: probeRouteConfigStoreData{VirtualRouter: virtualRouter, SpecialExits: []probeSpecialExitConfig{item}}}
+	resetProbeAuthChallengeStateForTest()
+	t.Cleanup(func() {
+		ProbeStore = oldProbeStore
+		ProbeRouteConfigStore = oldRouteStore
+		resetProbeAuthChallengeStateForTest()
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/probe/route/config", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	applyProbeChallengeAuthForTest(t, req, "20", "secret-20")
+	rec := httptest.NewRecorder()
+	ProbeRouteConfigHandler(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload probeRouteConfigResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.ExpectedNodeKind != probeNodeKindLinuxRouter || payload.SpecialExit == nil || payload.SpecialExit.Revision != item.Revision || payload.SpecialExit.SHA256 != item.SHA256 {
+		t.Fatalf("router response=%+v", payload)
 	}
 }
 
@@ -878,7 +936,7 @@ func TestMngRoutePageIncludesSpecialExitWorkflow(t *testing.T) {
 		`id="special-exit-proxies"`, `id="special-exit-status-list"`, `data-se-rule-source`, `data-se-rule-target`,
 		`<span>出口方式</span>`, `<span>节点</span>`, `proxyOptionsBySubscription`,
 		`<span>路由规则出口</span>`, `id="special-exit-detail"`, `id="special-exit-empty"`,
-		`<option value="">请选择特殊探针</option>`, `.special-exit-layout[hidden] { display:none; }`,
+		`<option value="">请选择出口软路由</option>`, `.special-exit-layout[hidden] { display:none; }`,
 		`state.specialExitStatuses.find((status) => normalizeNodeID(status.node_id) === nodeID)`,
 		`/mng/api/route/special_exits/subscription/refresh`,
 		`body: JSON.stringify({ subscription_id: subscriptionID })`,
@@ -905,7 +963,7 @@ func TestMngRoutePageIncludesSpecialExitWorkflow(t *testing.T) {
 	if !strings.Contains(mngRoutePageHTML, `.special-exit-layout { display:grid; grid-template-columns:minmax(0, 1fr);`) {
 		t.Fatal("special exit workflow must use a single-column layout")
 	}
-	ordered := []string{`<span>Clash 订阅</span>`, `<span>已提取节点</span>`, `<label for="special-exit-node">特殊探针</label>`, `<span>路由规则出口</span>`, `<span>运行状态</span>`}
+	ordered := []string{`<span>Clash 订阅</span>`, `<span>已提取节点</span>`, `<label for="special-exit-node">出口软路由</label>`, `<span>路由规则出口</span>`, `<span>运行状态</span>`}
 	position := -1
 	for _, marker := range ordered {
 		next := strings.Index(mngRoutePageHTML, marker)

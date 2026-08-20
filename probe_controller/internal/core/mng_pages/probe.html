@@ -61,7 +61,6 @@
     .vendor-link:hover { text-decoration:underline; }
     .modal-backdrop { position:fixed; inset:0; background:rgba(1,4,9,.72); display:flex; align-items:center; justify-content:center; padding:16px; z-index:1000; }
     .modal-backdrop[hidden] { display:none; }
-    #install-mode-row[hidden] { display:none; }
     .modal { width:min(760px, 100%); max-height:90vh; overflow:auto; border:1px solid #30363d; border-radius:12px; background:#161b22; padding:14px; }
     .form-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
     .form-field { display:flex; flex-direction:column; gap:6px; }
@@ -121,7 +120,6 @@
           <input id="create-node-name" placeholder="新探针名称" />
           <select id="create-node-kind" aria-label="探针类型">
             <option value="normal">普通探针</option>
-            <option value="mihomo_exit">Mihomo 出口探针</option>
             <option value="linux_router">Linux 旁路由探针</option>
           </select>
           <button id="btn-create-node" class="btn primary" type="button">创建</button>
@@ -297,7 +295,7 @@
           <label for="edit-node-kind">node_kind</label>
           <select id="edit-node-kind">
             <option value="normal">普通探针</option>
-            <option value="mihomo_exit">Mihomo 出口探针</option>
+            <option value="mihomo_exit" disabled>旧 Mihomo 出口（请迁移）</option>
             <option value="linux_router">Linux 旁路由探针</option>
           </select>
         </div>
@@ -363,13 +361,6 @@
   <div id="node-install-modal" class="modal-backdrop" hidden>
     <div class="modal">
       <h3 id="install-modal-title">探针安装信息</h3>
-      <div id="install-mode-row" class="row" hidden>
-        <label class="muted" for="install-mode">安装方式</label>
-        <select id="install-mode">
-          <option value="native">Linux x64</option>
-          <option value="docker">Docker</option>
-        </select>
-      </div>
       <pre id="install-modal-content" class="mono"></pre>
       <div class="row" style="margin-top:12px; justify-content:flex-end;">
         <button id="btn-install-copy" class="btn primary" type="button">复制</button>
@@ -708,46 +699,17 @@
       return value === 'mihomo_exit' || value === 'linux_router' ? value : 'normal';
     }
 
-    function formatSpecialExitInstallInfo(info) {
-      if (String(info && info.mode || '') === 'native') {
-        return String(info && info.command || '').trim();
-      }
-      const environment = info && info.environment ? info.environment : {};
-      return [
-        'services:',
-        '  cloudhelper-probe-exit-node:',
-        '    image: ghcr.io/fengzhanhuaer/cloudhelper-probe-exit-node-shell:latest',
-        '    container_name: cloudhelper-probe-exit-node',
-        '    restart: unless-stopped',
-        '    network_mode: host',
-        '    mem_limit: 1g',
-        '    pids_limit: 512',
-        '    ulimits:',
-        '      nofile:',
-        '        soft: 262144',
-        '        hard: 262144',
-        '    environment:',
-        `      PROBE_NODE_ID: ${JSON.stringify(String(environment.PROBE_NODE_ID || ''))}`,
-        `      PROBE_NODE_SECRET: ${JSON.stringify(String(environment.PROBE_NODE_SECRET || ''))}`,
-        `      PROBE_CONTROLLER_URL: ${JSON.stringify(String(environment.PROBE_CONTROLLER_URL || ''))}`,
-        '    volumes:',
-        '      - ./program:/opt/cloudhelper/probe_exit_node/program',
-        '      - ./data:/opt/cloudhelper/probe_exit_node/data',
-        '      - ./log:/opt/cloudhelper/probe_exit_node/log',
-        '      - ./temp:/opt/cloudhelper/probe_exit_node/temp',
-      ].join('\n');
-    }
-
-    async function buildNodeInstallCommand(node, mode) {
+    async function buildNodeInstallCommand(node) {
       const nodeKind = normalizeNodeKind(node);
       if (nodeKind === 'normal') {
         return buildProbeInstallCommand(node, window.location.origin);
       }
+      if (nodeKind === 'mihomo_exit') {
+        throw new Error('独立 Mihomo 出口已取消，请先将类型改为 Linux 旁路由并重装');
+      }
       const nodeID = String(Number(node && node.node_no) || '').trim();
-      const modeQuery = nodeKind === 'mihomo_exit' ? `&mode=${encodeURIComponent(mode || 'native')}` : '';
-      const result = await requestJSON(`/mng/api/probe/node/install?node_id=${encodeURIComponent(nodeID)}${modeQuery}`);
-      if (nodeKind === 'linux_router') return String(result && result.command || '').trim();
-      return formatSpecialExitInstallInfo(result);
+      const result = await requestJSON(`/mng/api/probe/node/install?node_id=${encodeURIComponent(nodeID)}`);
+      return String(result && result.command || '').trim();
     }
 
     function renderIPLines(family, list) {
@@ -840,6 +802,12 @@
             : (nodeKind === 'mihomo_exit'
             ? (String(item.target_system || '').toLowerCase() === 'docker' ? 'Docker' : 'Linux x64')
             : escapeHTML(item.target_system || '-'));
+          const installButton = nodeKind === 'mihomo_exit'
+            ? ''
+            : `<button class="btn" type="button" data-action="node-install-command" data-node-no="${item.node_no}">安装</button>`;
+          const upgradeButton = nodeKind === 'mihomo_exit'
+            ? ''
+            : `<button class="btn" type="button" data-action="node-upgrade" data-node-no="${item.node_no}">升级</button>`;
           return `<tr>
             <td>${escapeHTML(item.node_no)}</td>
             <td>${escapeHTML(item.node_name || '-')}${kindLabel}</td>
@@ -848,9 +816,9 @@
             <td>${renderProbeVersion(version, online)}<span class="muted">${escapeHTML(formatTime(item.updated_at))}</span></td>
             <td>
               <button class="btn" type="button" data-action="node-edit" data-node-no="${item.node_no}">编辑</button>
-              <button class="btn" type="button" data-action="node-upgrade" data-node-no="${item.node_no}">升级</button>
+              ${upgradeButton}
               <button class="btn" type="button" data-action="node-console" data-node-no="${item.node_no}">控制台</button>
-              <button class="btn" type="button" data-action="node-install-command" data-node-no="${item.node_no}">安装</button>
+              ${installButton}
               <button class="btn warn" type="button" data-action="node-delete" data-node-no="${item.node_no}">删除</button>
             </td>
           </tr>`;
@@ -1469,26 +1437,14 @@
       }
     }
 
-    async function copyNodeInstallCommand(nodeNo, requestedMode) {
+    async function copyNodeInstallCommand(nodeNo) {
       const node = state.nodes.find((item) => Number(item.node_no) === Number(nodeNo));
       if (!node) {
         setStatus(`未找到探针：#${nodeNo}`, 'warn');
         return;
       }
       state.installingNodeNo = Number(nodeNo);
-      const isSpecialExit = normalizeNodeKind(node) === 'mihomo_exit';
-      const modeRow = document.getElementById('install-mode-row');
-      if (isSpecialExit) {
-        modeRow.removeAttribute('hidden');
-        const installMode = document.getElementById('install-mode');
-        installMode.value = requestedMode === 'docker' || requestedMode === 'native'
-          ? requestedMode
-          : (String(node.target_system || '').toLowerCase() === 'docker' ? 'docker' : 'native');
-      } else {
-        modeRow.setAttribute('hidden', 'hidden');
-      }
-      const mode = isSpecialExit ? document.getElementById('install-mode').value : '';
-      const command = await buildNodeInstallCommand(node, mode);
+      const command = await buildNodeInstallCommand(node);
       if (!command) {
         setStatus(`探针 #${nodeNo} 缺少 node_secret，无法生成安装命令`, 'warn');
         return;
@@ -1530,7 +1486,7 @@
     async function createNode() {
       const nodeName = String(document.getElementById('create-node-name').value || '').trim();
       const selectedKind = document.getElementById('create-node-kind').value;
-      const nodeKind = selectedKind === 'mihomo_exit' || selectedKind === 'linux_router' ? selectedKind : 'normal';
+      const nodeKind = selectedKind === 'linux_router' ? selectedKind : 'normal';
       if (!nodeName) {
         setStatus('请输入探针名称', 'warn');
         return;
@@ -1542,7 +1498,7 @@
       });
       document.getElementById('create-node-name').value = '';
       await refreshNodes(true);
-      const kindLabel = nodeKind === 'mihomo_exit' ? 'Mihomo 出口探针' : (nodeKind === 'linux_router' ? 'Linux 旁路由探针' : '普通探针');
+      const kindLabel = nodeKind === 'linux_router' ? 'Linux 旁路由探针' : '普通探针';
       setStatus(`${kindLabel}创建成功：${payload.node && payload.node.node_name ? payload.node.node_name : nodeName}`, 'ok');
     }
 
@@ -1614,7 +1570,7 @@
       if (message.includes('target system must be linux, windows, android or docker')) {
         return `保存失败：目标系统只能是 linux、windows、android 或 docker（${raw}）`;
       }
-      if (message.includes('node kind must be normal, mihomo_exit or linux_router')) {
+      if (message.includes('node kind must be normal or linux_router')) {
         return `保存失败：探针类型无效（${raw}）`;
       }
       if (message.includes('mihomo exit node target system must be linux or docker')) {
@@ -1824,11 +1780,6 @@
     });
     document.getElementById('btn-install-copy').addEventListener('click', () => {
       copyCurrentInstallInfo().catch((err) => setStatus(`复制安装信息失败：${err.message || err}`, 'err'));
-    });
-    document.getElementById('install-mode').addEventListener('change', (event) => {
-      if (state.installingNodeNo > 0) {
-        copyNodeInstallCommand(state.installingNodeNo, event.target.value).catch((err) => setStatus(`生成安装信息失败：${err.message || err}`, 'err'));
-      }
     });
     document.getElementById('btn-install-close').addEventListener('click', () => {
       closeNodeInstallModal();

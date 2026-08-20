@@ -43,24 +43,31 @@ func TestProbePageVersionColumnsShowUpgradeAvailability(t *testing.T) {
 	}
 }
 
-func TestProbePageCreatesMihomoExitAndUsesDedicatedInstallButton(t *testing.T) {
+func TestProbePageCreatesLinuxRouterAndKeepsLegacyMihomoReadOnly(t *testing.T) {
 	required := []string{
 		`id="create-node-kind"`,
-		`value="mihomo_exit"`,
+		`value="linux_router"`,
+		`value="mihomo_exit" disabled`,
 		`JSON.stringify({ node_name: nodeName, node_kind: nodeKind })`,
 		`/mng/api/probe/node/install?node_id=`,
-		`id="install-mode"`,
 		`data-action="node-install-command"`,
-		`Mihomo 出口探针`,
+		`Linux 旁路由探针`,
 		`${kindLabel}安装信息`,
-		`nodeKind === 'mihomo_exit' && option.value !== 'linux' && option.value !== 'docker'`,
 		`targetSystemSelect.disabled = false`,
-		`String(node.target_system || '').toLowerCase() === 'docker' ? 'docker' : 'native'`,
-		`copyNodeInstallCommand(state.installingNodeNo, event.target.value)`,
 	}
 	for _, item := range required {
 		if !strings.Contains(mngProbePageHTML, item) {
-			t.Fatalf("probe page mihomo exit workflow missing %q", item)
+			t.Fatalf("probe page unified router workflow missing %q", item)
+		}
+	}
+	createSelectStart := strings.Index(mngProbePageHTML, `id="create-node-kind"`)
+	createSelectEnd := strings.Index(mngProbePageHTML[createSelectStart:], `</select>`)
+	if createSelectStart < 0 || createSelectEnd < 0 || strings.Contains(mngProbePageHTML[createSelectStart:createSelectStart+createSelectEnd], `value="mihomo_exit"`) {
+		t.Fatal("new probe form must not expose the legacy mihomo_exit kind")
+	}
+	for _, forbidden := range []string{"cloudhelper-probe-exit-node-shell", `id="install-mode"`, "formatSpecialExitInstallInfo"} {
+		if strings.Contains(mngProbePageHTML, forbidden) {
+			t.Fatalf("probe page still contains standalone Mihomo install marker %q", forbidden)
 		}
 	}
 	createStart := strings.Index(mngProbePageHTML, "async function createNode()")

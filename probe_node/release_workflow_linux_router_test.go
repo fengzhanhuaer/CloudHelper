@@ -29,6 +29,10 @@ func TestReleaseWorkflowDefinesLinuxRouterArtifacts(t *testing.T) {
 		"go build -tags linux_router",
 		"cloudhelper-probe-router-linux-amd64",
 		"cloudhelper-probe-router-linux-arm64",
+		"cloudhelper-probe-router-linux-amd64-manifest.json",
+		"cloudhelper-probe-router-linux-arm64-manifest.json",
+		"mihomo-linux-amd64-compatible-v1.19.29.gz",
+		"mihomo-linux-arm64-v1.19.29.gz",
 		"Keep Latest 10 Releases",
 		"workflow_dispatch:",
 		"Explicit release version must use major.minor.patch format",
@@ -42,6 +46,18 @@ func TestReleaseWorkflowDefinesLinuxRouterArtifacts(t *testing.T) {
 	} {
 		if !strings.Contains(content, marker) {
 			t.Fatalf("release workflow missing %q", marker)
+		}
+	}
+	for _, forbidden := range []string{
+		"build-probe-exit-node:",
+		"build-probe-exit-node-docker:",
+		"go build -tags mihomo_exit",
+		"cloudhelper-probe-exit-node-linux-amd64",
+		"cloudhelper-probe-exit-node-manifest.json",
+		"cloudhelper-probe-exit-node-shell",
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("release workflow still contains standalone Mihomo marker %q", forbidden)
 		}
 	}
 }

@@ -97,6 +97,11 @@ func normalizeProbeNodeKind(raw string) string {
 	}
 }
 
+func probeNodeSupportsSpecialExit(raw string) bool {
+	kind := normalizeProbeNodeKind(raw)
+	return kind == probeNodeKindLinuxRouter || kind == probeNodeKindMihomoExit
+}
+
 func normalizeProbeSpecialExitConfigs(items []probeSpecialExitConfig) []probeSpecialExitConfig {
 	if len(items) == 0 {
 		return []probeSpecialExitConfig{}

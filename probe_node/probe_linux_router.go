@@ -71,14 +71,17 @@ func init() {
 }
 
 func applyProbeProductRouteConfig(snapshot *probeSpecialExitSnapshot, nodeID string) error {
-	return nil
+	return applyProbeMihomoRouteConfig(snapshot, nodeID, false)
 }
 
 func probeProductSpecialExitReport() probeSpecialExitRuntimeReport {
-	return probeSpecialExitRuntimeReport{}
+	return probeMihomoSpecialExitReport()
 }
 
 func startProbeProductRuntime(nodeID string) error {
+	// The router dataplane remains available even when the optional Mihomo
+	// companion has no snapshot yet or cannot start.
+	_ = startProbeMihomoRuntime(nodeID, false)
 	probeLinuxRouterRuntimeState.mu.Lock()
 	probeLinuxRouterRuntimeState.nodeID = strings.TrimSpace(nodeID)
 	if !probeLinuxRouterRuntimeState.running {
@@ -103,6 +106,7 @@ func startProbeProductRuntime(nodeID string) error {
 }
 
 func stopProbeProductRuntime() {
+	stopProbeMihomoRuntime()
 	probeLinuxRouterRuntimeState.mu.Lock()
 	if probeLinuxRouterRuntimeState.running {
 		close(probeLinuxRouterRuntimeState.stopCh)

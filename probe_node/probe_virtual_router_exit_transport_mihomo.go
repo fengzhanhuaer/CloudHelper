@@ -1,4 +1,4 @@
-//go:build mihomo_exit
+//go:build mihomo_exit || linux_router
 
 package main
 
@@ -107,11 +107,33 @@ func validProbeMihomoExitSHA256(value string) bool {
 }
 
 func dialProbeVirtualRouterProductExitTCP(target probeVirtualRouterExitTarget) (net.Conn, error) {
+	if probeLinuxRouterUsesDirectExit() {
+		targets, err := probeVirtualRouterExitAddressesForTarget(target)
+		if err != nil {
+			return nil, err
+		}
+		return dialProbeVirtualRouterExitTCP(targets)
+	}
 	return dialProbeMihomoExitSOCKS("tcp", target)
 }
 
 func dialProbeVirtualRouterProductExitUDP(target probeVirtualRouterExitTarget) (net.Conn, error) {
+	if probeLinuxRouterUsesDirectExit() {
+		targets, err := probeVirtualRouterExitAddressesForTarget(target)
+		if err != nil {
+			return nil, err
+		}
+		return dialProbeVirtualRouterExitUDP(targets)
+	}
 	return dialProbeMihomoExitSOCKS("udp", target)
+}
+
+func probeLinuxRouterUsesDirectExit() bool {
+	if currentProbeBuildKind() != probeBuildKindLinuxRouter {
+		return false
+	}
+	_, configured := currentProbeMihomoRuntimeConfig()
+	return !configured
 }
 
 func dialProbeMihomoExitSOCKS(network string, target probeVirtualRouterExitTarget) (net.Conn, error) {
@@ -174,5 +196,5 @@ func (conn *probeMihomoTrackedConn) Close() error {
 }
 
 func probeProductAllowsPhysicalICMPExit() bool {
-	return false
+	return currentProbeBuildKind() == probeBuildKindLinuxRouter && probeLinuxRouterUsesDirectExit()
 }

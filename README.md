@@ -102,29 +102,13 @@ Compose 会将 `docker/probe_node/` 目录整体挂载到容器的 `/opt/cloudhe
 - `PROBE_NODE_FORCE_INSTALL=true`：启动时强制重新下载探针二进制
 - `PROBE_LOCAL_CONSOLE_ENABLED=true`、`PROBE_LOCAL_LISTEN=0.0.0.0:16032`：需要开放本地控制台时再追加
 
-## Mihomo 特殊出口探针
+## Linux 旁路由与 Mihomo 二次分流
 
-主控 `/mng/probe` 的探针列表使用与普通探针相同的入口创建 `mihomo_exit` 节点：填写名称、选择“Mihomo 出口探针”并创建。创建只登记节点，不弹出安装方式；在“编辑”中将 `target_system` 选择为 `linux`或`docker`，随后点击该节点行内独立的“安装”按钮生成对应的 Linux x64 原生命令或完整 Docker Compose。Mihomo出口不支持Windows或Android。路由匹配仍只在 `/mng/route` 的“路由规则”Tab配置：将规则处理方式设为“探针出口”并选择Mihomo出口探针。随后在“二次分流”Tab选择该探针，页面按单列展示Clash配置、提取出的出口节点、已分配路由规则的出口方式和运行状态；规则名称及匹配条目只读，每条规则可选择从探针物理网络直出或经过一个具体Clash节点。二次分流不创建域名组，也不生成或聚合普通虚拟路由规则。每个特殊探针最多配置32个Clash配置源，只需提供HTTPS URL；URL使用普通可见输入，主控自动携带Clash/Mihomo格式协商请求头，不提供手工请求头配置。节点提取支持标准Clash/Mihomo YAML以及明文或Base64编码的AnyTLS URI列表。Mihomo不支持的AnyTLS+Reality节点会被跳过并显示数量，同一订阅内的兼容节点仍可提取；若没有任何兼容节点则刷新失败并保留上一次有效节点快照。刷新时所有启用源原子合并，任一源失败、未知URI协议或节点重名也保留上一次有效节点快照。新分配给该探针的路由规则默认直出；主规则新增、修改、删除或改派出口时，主控会重编译对应私有快照。普通探针只接收原路由规则，不会收到配置URL、代理节点、凭据或二级出口选择。二次分流私有快照为v3且不兼容旧域名组模型；升级主控和特殊探针后需在新页面重新保存配置并重新提取节点。
+`linux_router` 是唯一的新建软路由产品，同时提供旁路由接入、普通探针级联和 Mihomo 代理出口。主控 `/mng/probe` 不再提供独立 `mihomo_exit` 类型；已有旧节点仅保留在线兼容，需改成 `linux_router` 后重装才能继续升级。
 
-特殊探针仅发布 `cloudhelper-probe-exit-node-linux-amd64`，不提供 Windows、ARM 或 Android 版本，也不会创建 CloudHelper/Mihomo TUN。最终出口通过受认证的 `127.0.0.1` SOCKS5 listener 交给受管理的 Mihomo，支持 TCP、UDP 和基于 UDP 的 QUIC。
+在 `/mng/route` 的“路由规则”中将业务规则指向 Linux 旁路由，再到“二次分流”选择同一旁路由并配置 Clash 订阅与具体出口。没有二次分流配置时，Linux router 保持原有直连出口；配置已下发但 Mihomo 不健康时代理出口失败关闭，不会回退直连。
 
-原生安装：在“探针管理”页创建或选中Mihomo出口探针，点击“安装”，选择 `Linux x64`并执行弹窗生成的命令。默认目录为 `/opt/cloudhelper/probe_exit_node`：
-
-- `data/`：节点身份、私有规范快照、Mihomo程序/配置和运行秘密，升级保留。
-- `log/`：特殊探针与Mihomo日志，升级保留。
-- `temp/`：下载和升级工作区，可删除重建。
-
-Docker壳：
-
-```bash
-cd docker/probe_exit_node
-vi compose.yaml
-docker compose up -d
-```
-
-`ghcr.io/fengzhanhuaer/cloudhelper-probe-exit-node-shell:latest`只提供固定Alpine环境和启动入口。Compose将 `program/`、`data/`、`log/`、`temp/`分别挂载；`probe_exit_node`位于`program/`，Mihomo和身份/快照位于`data/`。首次启动成对安装，日常升级由程序自己完成，无需重建容器。特殊Docker配置不需要 `/dev/net/tun` 或 `NET_ADMIN`。
-
-特殊探针升级使用Release中的 `cloudhelper-probe-exit-node-manifest.json`，核对构建类型、平台、版本范围和程序/Mihomo SHA-256后成对替换。任一候选校验、替换或重启失败都会回滚程序与Mihomo。Mihomo按MIT许可证分发，许可证位于 `THIRD_PARTY_LICENSES/mihomo-LICENSE`。
+Alpine 安装器支持 amd64 和 arm64，会通过主控下载代理取得 Router 程序、架构对应的配对清单和官方 Mihomo，并校验两者 SHA-256。安装目录仍为 `/opt/cloudhelper/probe_router`，Mihomo 位于 `data/mihomo`。在线升级分别使用 `cloudhelper-probe-router-linux-amd64-manifest.json` 或 `cloudhelper-probe-router-linux-arm64-manifest.json` 成对替换；任一下载、校验或替换失败都会保留或回滚当前程序。Mihomo 按 MIT 许可证分发，许可证位于 `THIRD_PARTY_LICENSES/mihomo-LICENSE`。
 
 ## Windows 一键安装（探针节点）
 

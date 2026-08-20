@@ -301,39 +301,6 @@ func TestProbeProxyInstallScriptHandlerServesEmbeddedScriptOverHTTP(t *testing.T
 	}
 }
 
-func TestProbeProxyExitNodeInstallScriptRequiresSpecialNodeKind(t *testing.T) {
-	if ProbeStore == nil {
-		ProbeStore = &probeConfigStore{data: probeConfigData{ProbeSecrets: map[string]string{}}}
-	}
-	ProbeStore.mu.Lock()
-	oldNodes := append([]probeNodeRecord(nil), ProbeStore.data.ProbeNodes...)
-	oldSecrets := make(map[string]string, len(ProbeStore.data.ProbeSecrets))
-	for key, value := range ProbeStore.data.ProbeSecrets { oldSecrets[key] = value }
-	ProbeStore.data.ProbeNodes = []probeNodeRecord{
-		{NodeNo: 1, NodeName: "normal", NodeKind: probeNodeKindNormal, NodeSecret: "secret-1"},
-		{NodeNo: 19, NodeName: "exit", NodeKind: probeNodeKindMihomoExit, NodeSecret: "secret-19"},
-	}
-	ProbeStore.data.ProbeSecrets = map[string]string{"1": "secret-1", "19": "secret-19"}
-	ProbeStore.mu.Unlock()
-	t.Cleanup(func() {
-		ProbeStore.mu.Lock()
-		ProbeStore.data.ProbeNodes = oldNodes
-		ProbeStore.data.ProbeSecrets = oldSecrets
-		ProbeStore.mu.Unlock()
-	})
-
-	normal := httptest.NewRecorder()
-	ProbeProxyExitNodeInstallScriptHandler(normal, httptest.NewRequest(http.MethodGet, "/api/probe/proxy/probe-exit-node/install-script?node_id=1&secret=secret-1", nil))
-	if normal.Code != http.StatusBadRequest { t.Fatalf("normal node status=%d body=%s", normal.Code, normal.Body.String()) }
-
-	exit := httptest.NewRecorder()
-	ProbeProxyExitNodeInstallScriptHandler(exit, httptest.NewRequest(http.MethodGet, "/api/probe/proxy/probe-exit-node/install-script?node_id=19&secret=secret-19", nil))
-	if exit.Code != http.StatusOK { t.Fatalf("special node status=%d body=%s", exit.Code, exit.Body.String()) }
-	for _, marker := range []string{"cloudhelper-probe-exit-node", "Linux x86_64 only", "mihomo-LICENSE", "MemoryMax=1G"} {
-		if !strings.Contains(exit.Body.String(), marker) { t.Fatalf("install script missing %q", marker) }
-	}
-}
-
 func TestProbeProxyDownloadHandlerAllowsHTTPAfterProbeAuth(t *testing.T) {
 	t.Setenv("PROBE_ALLOW_LEGACY_QUERY_AUTH", "true")
 	req := httptest.NewRequest(http.MethodGet, "/api/probe/proxy/download?node_id=1&secret=test-secret", nil)

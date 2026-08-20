@@ -306,11 +306,11 @@
           </div>
           <div class="box" style="margin-bottom:12px;">
             <div class="config-grid">
-              <label for="special-exit-node">特殊探针</label>
+              <label for="special-exit-node">出口软路由</label>
               <select id="special-exit-node"></select>
             </div>
           </div>
-          <div id="special-exit-empty" class="box muted small">请选择特殊探针。</div>
+          <div id="special-exit-empty" class="box muted small">请选择出口软路由。</div>
           <div id="special-exit-detail" class="special-exit-layout" hidden>
             <div class="box">
               <div class="box-title"><span>路由规则出口</span></div>
@@ -721,7 +721,7 @@
       };
       state.specialExitRouteRules = Array.isArray(configs.route_rules) ? configs.route_rules : [];
       state.specialExitStatuses = Array.isArray(statuses.items) ? statuses.items : [];
-      const candidates = state.nodes.filter((item) => item.node_kind === 'mihomo_exit');
+      const candidates = state.nodes.filter((item) => item.node_kind === 'linux_router');
       if (!candidates.some((item) => normalizeNodeID(item.node_no) === normalizeNodeID(state.selectedSpecialExitNodeID))) {
         state.selectedSpecialExitNodeID = '';
       }
@@ -739,17 +739,17 @@
       document.querySelectorAll('[data-special-exit-tab]').forEach((button) => button.classList.toggle('active', button.dataset.specialExitTab === state.specialExitSubTab));
       document.getElementById('special-exit-pane-subscriptions').hidden = state.specialExitSubTab !== 'subscriptions';
       document.getElementById('special-exit-pane-nodes').hidden = state.specialExitSubTab !== 'nodes';
-      const candidates = state.nodes.filter((item) => item.node_kind === 'mihomo_exit');
+      const candidates = state.nodes.filter((item) => item.node_kind === 'linux_router');
       const nodeSelect = document.getElementById('special-exit-node');
       nodeSelect.innerHTML = candidates.length
-        ? '<option value="">请选择特殊探针</option>' + candidates.map((item) => `<option value="${escapeHTML(item.node_no)}">#${escapeHTML(item.node_no)} ${escapeHTML(item.node_name || '')}</option>`).join('')
-        : '<option value="">暂无特殊探针</option>';
+        ? '<option value="">请选择出口软路由</option>' + candidates.map((item) => `<option value="${escapeHTML(item.node_no)}">#${escapeHTML(item.node_no)} ${escapeHTML(item.node_name || '')}</option>`).join('')
+        : '<option value="">暂无 Linux 旁路由</option>';
       nodeSelect.value = normalizeNodeID(state.selectedSpecialExitNodeID);
       const draft = currentSpecialExitDraft();
       document.getElementById('special-exit-detail').hidden = !draft;
       const empty = document.getElementById('special-exit-empty');
       empty.hidden = !!draft;
-      empty.textContent = candidates.length ? '请选择特殊探针。' : '暂无特殊探针，请先在探针管理中创建 Mihomo 出口探针。';
+      empty.textContent = candidates.length ? '请选择出口软路由。' : '暂无 Linux 旁路由，请先在探针管理中创建 Linux 旁路由探针。';
       document.getElementById('btn-special-exit-save').disabled = !draft;
       document.getElementById('btn-special-exit-delete').disabled = !draft || !state.specialExits.some((item) => normalizeNodeID(item.node_id) === normalizeNodeID(draft.node_id));
       renderSpecialExitSubscriptions();
@@ -917,7 +917,7 @@
         host.innerHTML = '<div class="muted small">当前探针暂无运行状态，保存配置并等待探针上报。</div>';
         return;
       }
-      const correctBuild = item.build_kind === 'mihomo_exit';
+      const correctBuild = item.build_kind === 'linux_router' || item.build_kind === 'mihomo_exit';
       const synchronized = Number(item.desired_revision || 0) > 0
         && Number(item.desired_revision || 0) === Number(item.applied_revision || 0)
         && String(item.desired_sha256 || '').toLowerCase() === String(item.applied_sha256 || '').toLowerCase();

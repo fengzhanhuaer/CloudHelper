@@ -535,6 +535,13 @@ func createProbeNodeWithKindLocked(nodeName string, nodeKind string) (probeNodeR
 	if name == "" {
 		return probeNodeRecord{}, fmt.Errorf("node name is required")
 	}
+	kind := strings.ToLower(strings.TrimSpace(nodeKind))
+	if kind == "" {
+		kind = probeNodeKindNormal
+	}
+	if kind != probeNodeKindNormal && kind != probeNodeKindLinuxRouter {
+		return probeNodeRecord{}, fmt.Errorf("node kind must be normal or linux_router")
+	}
 
 	nodes := loadProbeNodesLocked()
 	for _, item := range nodes {
@@ -555,7 +562,7 @@ func createProbeNodeWithKindLocked(nodeName string, nodeKind string) (probeNodeR
 	node := probeNodeRecord{
 		NodeNo:        nextNo,
 		NodeName:      name,
-		NodeKind:      normalizeProbeNodeKind(nodeKind),
+		NodeKind:      kind,
 		Remark:        "",
 		DDNS:          "",
 		NodeSecret:    randomProbeNodeSecret(32),
@@ -720,7 +727,10 @@ func updateProbeNodeLocked(req probeNodeUpdateRequest) (probeNodeRecord, error) 
 	requestedKind := existingKind
 	if rawKind := strings.ToLower(strings.TrimSpace(req.NodeKind)); rawKind != "" {
 		if rawKind != probeNodeKindNormal && rawKind != probeNodeKindMihomoExit && rawKind != probeNodeKindLinuxRouter {
-			return probeNodeRecord{}, fmt.Errorf("node kind must be normal, mihomo_exit or linux_router")
+			return probeNodeRecord{}, fmt.Errorf("node kind must be normal or linux_router")
+		}
+		if rawKind == probeNodeKindMihomoExit && existingKind != probeNodeKindMihomoExit {
+			return probeNodeRecord{}, fmt.Errorf("mihomo_exit is a legacy node kind; use linux_router")
 		}
 		requestedKind = rawKind
 	}

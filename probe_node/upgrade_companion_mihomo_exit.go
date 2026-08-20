@@ -1,4 +1,4 @@
-//go:build mihomo_exit
+//go:build mihomo_exit || linux_router
 
 package main
 
@@ -14,11 +14,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
-
-const probeMihomoUpgradeManifestAsset = "cloudhelper-probe-exit-node-manifest.json"
 
 type probeMihomoUpgradeManifest struct {
 	SchemaVersion             int    `json:"schema_version"`
@@ -43,11 +42,15 @@ type probeMihomoUpgradeManifest struct {
 }
 
 func prepareProbeProductUpgradeCompanion(ctx context.Context, mode string, release releaseInfo, controllerBase string, identity nodeIdentity, workDir string, programAssetPath string) (probeProductUpgradeCompanion, error) {
-	manifestAsset, err := findProbeUpgradeAsset(release.Assets, probeMihomoUpgradeManifestAsset)
+	manifestAssetName, err := currentProbeMihomoUpgradeManifestAsset()
 	if err != nil {
 		return probeProductUpgradeCompanion{}, err
 	}
-	manifestPath := filepath.Join(workDir, probeMihomoUpgradeManifestAsset)
+	manifestAsset, err := findProbeUpgradeAsset(release.Assets, manifestAssetName)
+	if err != nil {
+		return probeProductUpgradeCompanion{}, err
+	}
+	manifestPath := filepath.Join(workDir, manifestAssetName)
 	if err = downloadProbeAsset(ctx, mode, manifestAsset.DownloadURL, controllerBase, identity, manifestPath, nil); err != nil {
 		return probeProductUpgradeCompanion{}, err
 	}
@@ -90,7 +93,9 @@ func validateProbeMihomoUpgradeManifest(manifest probeMihomoUpgradeManifest, rel
 	if manifest.SchemaVersion != 1 {
 		return fmt.Errorf("unsupported paired upgrade manifest schema %d", manifest.SchemaVersion)
 	}
-	if manifest.BuildKind != probeBuildKindMihomoExit || manifest.OS != "linux" || manifest.Arch != "amd64" {
+	expectedKind := currentProbeBuildKind()
+	expectedArch := runtime.GOARCH
+	if manifest.BuildKind != expectedKind || manifest.OS != "linux" || manifest.Arch != expectedArch {
 		return errors.New("paired upgrade manifest build target mismatch")
 	}
 	if normalizeVersionTag(manifest.Version) != normalizeVersionTag(releaseTag) {
@@ -99,13 +104,24 @@ func validateProbeMihomoUpgradeManifest(manifest probeMihomoUpgradeManifest, rel
 	if normalizeVersionTag(manifest.CompatibleProgramVersions.Min) != normalizeVersionTag(manifest.Version) || normalizeVersionTag(manifest.CompatibleProgramVersions.Max) != normalizeVersionTag(manifest.Version) {
 		return errors.New("paired upgrade compatibility range does not include exactly the target release")
 	}
-	if manifest.Program.Asset != "cloudhelper-probe-exit-node-linux-amd64" || !validProbeMihomoExitSHA256(manifest.Program.SHA256) {
+	expectedProgramAsset := activeProbeProductProfile.UpgradeAssetPrefix + "-linux-" + expectedArch
+	if manifest.Program.Asset != expectedProgramAsset || !validProbeMihomoExitSHA256(manifest.Program.SHA256) {
 		return errors.New("paired upgrade program metadata is invalid")
 	}
 	if !strings.HasPrefix(manifest.Mihomo.URL, "https://github.com/MetaCubeX/mihomo/releases/download/") || !strings.HasSuffix(manifest.Mihomo.Asset, ".gz") || !validProbeMihomoExitSHA256(manifest.Mihomo.SHA256) {
 		return errors.New("paired upgrade mihomo metadata is invalid")
 	}
 	return nil
+}
+
+func currentProbeMihomoUpgradeManifestAsset() (string, error) {
+	if currentProbeBuildKind() == probeBuildKindMihomoExit {
+		return "cloudhelper-probe-exit-node-manifest.json", nil
+	}
+	if runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64" {
+		return "", fmt.Errorf("unsupported router upgrade architecture %s", runtime.GOARCH)
+	}
+	return activeProbeProductProfile.UpgradeAssetPrefix + "-linux-" + runtime.GOARCH + "-manifest.json", nil
 }
 
 func findProbeUpgradeAsset(assets []releaseAsset, name string) (releaseAsset, error) {

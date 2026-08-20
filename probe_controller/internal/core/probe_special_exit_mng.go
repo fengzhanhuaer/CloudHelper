@@ -185,7 +185,7 @@ func listMngProbeSpecialExitCandidateNodes() []probeNodeRecord {
 	defer ProbeStore.mu.RUnlock()
 	out := make([]probeNodeRecord, 0)
 	for _, node := range loadProbeNodesLocked() {
-		if normalizeProbeNodeKind(node.NodeKind) == probeNodeKindMihomoExit {
+		if normalizeProbeNodeKind(node.NodeKind) == probeNodeKindLinuxRouter {
 			node.NodeSecret = ""
 			out = append(out, node)
 		}
@@ -327,8 +327,8 @@ func upsertMngProbeSpecialExit(payload json.RawMessage, controllerBaseURL string
 	if !ok {
 		return nil, fmt.Errorf("node %q not found", nodeID)
 	}
-	if normalizeProbeNodeKind(node.NodeKind) != probeNodeKindMihomoExit {
-		return nil, fmt.Errorf("node %q must use node_kind mihomo_exit", nodeID)
+	if !probeNodeSupportsSpecialExit(node.NodeKind) {
+		return nil, fmt.Errorf("node %q must use node_kind linux_router", nodeID)
 	}
 
 	var item probeSpecialExitConfig
@@ -882,37 +882,4 @@ func listMngProbeSpecialExitStatuses() (map[string]interface{}, error) {
 		statuses = append(statuses, status)
 	}
 	return map[string]interface{}{"items": statuses}, nil
-}
-
-func buildMngProbeSpecialExitInstallInfo(nodeID string, mode string, controllerBaseURL string) (map[string]interface{}, error) {
-	nodeID = normalizeProbeNodeID(nodeID)
-	node, ok := getProbeNodeByID(nodeID)
-	if !ok {
-		return nil, fmt.Errorf("node %q not found", nodeID)
-	}
-	if normalizeProbeNodeKind(node.NodeKind) != probeNodeKindMihomoExit {
-		return nil, fmt.Errorf("node %q must use node_kind mihomo_exit", nodeID)
-	}
-	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode == "" {
-		mode = "native"
-	}
-	if mode != "native" && mode != "docker" {
-		return nil, fmt.Errorf("mode must be native or docker")
-	}
-	base := strings.TrimRight(strings.TrimSpace(controllerBaseURL), "/")
-	env := map[string]string{"PROBE_NODE_ID": nodeID, "PROBE_NODE_SECRET": node.NodeSecret, "PROBE_CONTROLLER_URL": base}
-	result := map[string]interface{}{"node_id": nodeID, "mode": mode, "environment": env, "platform": "linux", "architecture": "amd64"}
-	if mode == "native" {
-		scriptURL := base + "/api/probe/proxy/probe-exit-node/install-script?node_id=" + url.QueryEscape(nodeID) + "&secret=" + url.QueryEscape(node.NodeSecret)
-		result["script_url"] = scriptURL
-		result["command"] = "curl -fsSL " + shellQuoteProbeSpecialExit(scriptURL) + " | sudo env PROBE_NODE_ID=" + shellQuoteProbeSpecialExit(nodeID) + " PROBE_NODE_SECRET=" + shellQuoteProbeSpecialExit(node.NodeSecret) + " PROBE_CONTROLLER_URL=" + shellQuoteProbeSpecialExit(base) + " bash"
-	} else {
-		result["compose_directory"] = "docker/probe_exit_node"
-	}
-	return result, nil
-}
-
-func shellQuoteProbeSpecialExit(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
