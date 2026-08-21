@@ -109,9 +109,25 @@ func loadProbeIPReportSettingsBestEffort() probeIPReportSettings {
 	settings, err := loadProbeIPReportSettings()
 	if err != nil {
 		logProbeWarnf("probe ip report settings load failed: %v", err)
-		return defaultProbeIPReportSettings()
+		settings = defaultProbeIPReportSettings()
 	}
-	return settings
+	return effectiveProbeIPReportSettings(settings)
+}
+
+func effectiveProbeIPReportSettings(settings probeIPReportSettings) probeIPReportSettings {
+	settings = normalizeProbeIPReportSettings(settings)
+	settings.OnlySelectedLANInterfaces = true
+	if currentProbeBuildKind() != probeBuildKindLinuxRouter {
+		return settings
+	}
+
+	// The router's selected uplink is authoritative for LAN address reporting.
+	// Public addresses are collected separately and are not affected by this filter.
+	interfaceName := strings.TrimSpace(probeProductLinuxRouterReport().Interface)
+	if interfaceName != "" {
+		settings.SelectedInterfaceIDs = []string{"name:" + interfaceName}
+	}
+	return normalizeProbeIPReportSettings(settings)
 }
 
 func persistProbeIPReportSettings(settings probeIPReportSettings) (probeIPReportSettings, error) {
@@ -256,6 +272,7 @@ func probeReportIPFromAddr(addr net.Addr) net.IP {
 }
 
 func probeIPReportSettingsPayload(settings probeIPReportSettings) map[string]any {
+	settings = effectiveProbeIPReportSettings(settings)
 	return map[string]any{
 		"ok":         true,
 		"settings":   normalizeProbeIPReportSettings(settings),

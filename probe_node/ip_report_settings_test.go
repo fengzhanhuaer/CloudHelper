@@ -27,6 +27,53 @@ func TestProbeIPReportLANFilterOnlyAppliesToLANIPs(t *testing.T) {
 	}
 }
 
+func TestEffectiveProbeIPReportSettingsRequiresSelectionForNormalProbe(t *testing.T) {
+	oldProfile := activeProbeProductProfile
+	activeProbeProductProfile.BuildKind = probeBuildKindNormal
+	t.Cleanup(func() { activeProbeProductProfile = oldProfile })
+
+	settings := effectiveProbeIPReportSettings(probeIPReportSettings{})
+	if !settings.OnlySelectedLANInterfaces {
+		t.Fatal("normal probe must filter LAN addresses by selected interfaces")
+	}
+	if shouldIncludeProbeReportInterfaceIP(net.ParseIP("192.168.1.20"), "name:eth0", settings) {
+		t.Fatal("normal probe must not report LAN addresses before an interface is selected")
+	}
+	if !shouldIncludeProbeReportInterfaceIP(net.ParseIP("8.8.8.8"), "name:eth0", settings) {
+		t.Fatal("public address collection must remain independent from the LAN filter")
+	}
+}
+
+func TestEffectiveProbeIPReportSettingsUsesLinuxRouterInterface(t *testing.T) {
+	oldProfile := activeProbeProductProfile
+	oldReport := probeProductLinuxRouterReport
+	activeProbeProductProfile.BuildKind = probeBuildKindLinuxRouter
+	probeProductLinuxRouterReport = func() probeLinuxRouterRuntimeReport {
+		return probeLinuxRouterRuntimeReport{Interface: "eth0"}
+	}
+	t.Cleanup(func() {
+		activeProbeProductProfile = oldProfile
+		probeProductLinuxRouterReport = oldReport
+	})
+
+	settings := effectiveProbeIPReportSettings(probeIPReportSettings{})
+	if !settings.OnlySelectedLANInterfaces {
+		t.Fatal("linux router must always filter LAN addresses by its selected interface")
+	}
+	if want := []string{"name:eth0"}; !reflect.DeepEqual(settings.SelectedInterfaceIDs, want) {
+		t.Fatalf("selected interfaces=%v want=%v", settings.SelectedInterfaceIDs, want)
+	}
+	if !shouldIncludeProbeReportInterfaceIP(net.ParseIP("192.168.1.20"), "name:eth0", settings) {
+		t.Fatal("selected router interface LAN address should be included")
+	}
+	if shouldIncludeProbeReportInterfaceIP(net.ParseIP("198.18.0.17"), "name:cloudhelper0", settings) {
+		t.Fatal("virtual router address must not be reported as a router LAN address")
+	}
+	if !shouldIncludeProbeReportInterfaceIP(net.ParseIP("8.8.8.8"), "name:cloudhelper0", settings) {
+		t.Fatal("public address collection must remain independent from the LAN filter")
+	}
+}
+
 func TestProbeIPReportLANFilterAcceptsLegacyInterfaceAlias(t *testing.T) {
 	settings := probeIPReportSettings{
 		OnlySelectedLANInterfaces: true,

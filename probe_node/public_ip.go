@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	defaultPublicIPRefreshInterval = 10 * time.Minute
-	publicIPRequestTimeout         = 3 * time.Second
+	defaultPublicIPRefreshInterval            = 10 * time.Minute
+	defaultLinuxRouterPublicIPRefreshInterval = time.Minute
+	publicIPRequestTimeout                    = 3 * time.Second
 )
 
 var probePublicIPCollector = newPublicIPCollector()
@@ -71,17 +72,38 @@ func (c *publicIPCollector) collect() ([]string, []string) {
 
 func (c *publicIPCollector) refreshAsync() {
 	ipv4, ipv6, ok := sniffPublicIPs()
-	c.update(ipv4, ipv6, ok)
+	if changed := c.update(ipv4, ipv6, ok); changed {
+		if triggered, err := triggerProbeImmediateReport(); err != nil {
+			logProbeWarnf("probe public ip change report failed: %v", err)
+		} else if triggered {
+			logProbeInfof("probe public ip changed; immediate report triggered")
+		}
+	}
 }
 
-func (c *publicIPCollector) update(ipv4 []string, ipv6 []string, shouldReplace bool) {
+func (c *publicIPCollector) update(ipv4 []string, ipv6 []string, shouldReplace bool) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	changed := false
 	if shouldReplace {
+		changed = !probePublicIPListsEqual(c.ipv4, ipv4) || !probePublicIPListsEqual(c.ipv6, ipv6)
 		c.ipv4 = append([]string{}, ipv4...)
 		c.ipv6 = append([]string{}, ipv6...)
 	}
 	c.refreshing = false
+	return changed
+}
+
+func probePublicIPListsEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func isPublicIPSniffEnabled() bool {
@@ -102,16 +124,23 @@ func isPublicIPSniffEnabled() bool {
 func parsePublicIPRefreshInterval() time.Duration {
 	raw := strings.TrimSpace(os.Getenv("PROBE_PUBLIC_IP_REFRESH_SEC"))
 	if raw == "" {
-		return defaultPublicIPRefreshInterval
+		return defaultProbePublicIPRefreshInterval()
 	}
 	sec, err := time.ParseDuration(raw + "s")
 	if err != nil || sec < 15*time.Second {
-		return defaultPublicIPRefreshInterval
+		return defaultProbePublicIPRefreshInterval()
 	}
 	if sec > 30*time.Minute {
 		return 30 * time.Minute
 	}
 	return sec
+}
+
+func defaultProbePublicIPRefreshInterval() time.Duration {
+	if currentProbeBuildKind() == probeBuildKindLinuxRouter {
+		return defaultLinuxRouterPublicIPRefreshInterval
+	}
+	return defaultPublicIPRefreshInterval
 }
 
 func sniffPublicIPs() ([]string, []string, bool) {
