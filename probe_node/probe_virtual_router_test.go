@@ -1040,11 +1040,11 @@ func TestProbeVirtualRouterBridgePreserveDomainForCloudflareCopilot(t *testing.T
 	if err != nil {
 		t.Fatalf("resolve cf copilot host failed: %v", err)
 	}
-	if lookupCalled {
-		t.Fatalf("cf copilot host should preserve domain without resolving")
+	if !lookupCalled {
+		t.Fatalf("cf copilot host should use the built-in resolver")
 	}
-	if dialHost != host || hostHeader != host {
-		t.Fatalf("cf copilot host should preserve domain, dial=%q host=%q", dialHost, hostHeader)
+	if dialHost != "203.0.113.9" || hostHeader != host {
+		t.Fatalf("cf copilot should dial resolved IP while preserving domain, dial=%q host=%q", dialHost, hostHeader)
 	}
 	if got := resolveProbeRouteClientTLSServerName("websocket", dialHost, hostHeader); got != host {
 		t.Fatalf("cf copilot SNI=%q, want %q", got, host)

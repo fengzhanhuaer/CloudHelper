@@ -165,8 +165,11 @@ var (
 	}{items: make(map[string]probeRouteRelayResolveCacheEntry)}
 )
 
-func defaultProbeRouteRelayLookupIP(_ context.Context, _ string, host string) ([]net.IP, error) {
-	ips, err := resolveProbeLocalDNSIPv4s(host)
+func defaultProbeRouteRelayLookupIP(ctx context.Context, _ string, host string) ([]net.IP, error) {
+	ips, err := resolveProbeLocalDNSInternalRealIPv4sWithContext(ctx, host, probeLocalDNSRouteDecision{
+		Group:  "probe-relay",
+		Action: "direct",
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -1578,12 +1581,11 @@ func resolveProbeRouteDialIPHostWithPolicy(rawHost string, preserveDomain bool) 
 		ipText := parsed.String()
 		return ipText, ipText, nil
 	}
-	if preserveDomain {
-		return cleanHost, cleanHost, nil
-	}
 	if cachedDialHost, cachedHostHeader, ok := loadProbeRouteRelayResolveCache(cleanHost, false); ok {
-		_ = cachedHostHeader
-		return cachedDialHost, cachedDialHost, nil
+		if preserveDomain {
+			return cachedDialHost, cleanHost, nil
+		}
+		return cachedDialHost, firstNonEmpty(cachedHostHeader, cachedDialHost), nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1591,8 +1593,10 @@ func resolveProbeRouteDialIPHostWithPolicy(rawHost string, preserveDomain bool) 
 	ips, resolveErr := probeRouteRelayLookupIP(ctx, "ip", cleanHost)
 	if resolveErr != nil {
 		if cachedDialHost, cachedHostHeader, ok := loadProbeRouteRelayResolveCache(cleanHost, true); ok {
-			_ = cachedHostHeader
-			return cachedDialHost, cachedDialHost, nil
+			if preserveDomain {
+				return cachedDialHost, cleanHost, nil
+			}
+			return cachedDialHost, firstNonEmpty(cachedHostHeader, cachedDialHost), nil
 		}
 		return "", "", fmt.Errorf("resolve relay host failed: %w", resolveErr)
 	}
@@ -1602,6 +1606,9 @@ func resolveProbeRouteDialIPHostWithPolicy(rawHost string, preserveDomain bool) 
 	}
 	dialHost = ip.String()
 	hostHeader = dialHost
+	if preserveDomain {
+		hostHeader = cleanHost
+	}
 	return dialHost, hostHeader, nil
 }
 
@@ -1661,7 +1668,7 @@ func refreshProbeRouteRelayResolveCacheOnConnectSuccess(host string, dialHost st
 
 // invalidateProbeRouteRelayResolveCacheAfterFailedDial makes the next relay
 // reconnect resolve the configured domain again instead of retrying a known
-// failed cached IP. Domain-preserving relay paths have no entry to remove.
+// failed cached IP.
 func invalidateProbeRouteRelayResolveCacheAfterFailedDial(host string, dialHost string) {
 	cleanHost := strings.TrimSpace(strings.Trim(host, "[]"))
 	cleanDialHost := strings.TrimSpace(strings.Trim(dialHost, "[]"))

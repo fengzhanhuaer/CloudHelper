@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -10,6 +11,68 @@ import (
 
 	"golang.org/x/net/dns/dnsmessage"
 )
+
+func TestDefaultProbeLocalDNSUpstreamsBootstrapWithoutSystemDNS(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDNSServiceForTest()
+	t.Cleanup(resetProbeLocalDNSServiceForTest)
+
+	probeLocalDNSBootstrapLookupIPv4 = func(string) ([]string, error) {
+		t.Fatal("default encrypted DNS upstreams must not require system or plain DNS bootstrap")
+		return nil, nil
+	}
+	for _, host := range []string{"dns.alidns.com", "doh.pub", "dot.pub"} {
+		ips, err := resolveProbeLocalDNSIPv4s(host)
+		if err != nil || len(ips) == 0 || net.ParseIP(ips[0]) == nil {
+			t.Fatalf("bootstrap host=%s ips=%v err=%v", host, ips, err)
+		}
+	}
+}
+
+func TestProbeLocalDNSExternalAndRelayResolutionUseFullUpstreamChain(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDNSServiceForTest()
+	t.Cleanup(resetProbeLocalDNSServiceForTest)
+
+	queries := make([]string, 0, 2)
+	probeLocalDNSQueryUpstream = func(candidate probeLocalDNSUpstreamCandidate, packet []byte) ([]byte, error) {
+		if candidate.Kind != "doh" {
+			t.Fatalf("first built-in upstream kind=%q want doh", candidate.Kind)
+		}
+		var message dnsmessage.Message
+		if err := message.Unpack(packet); err != nil {
+			t.Fatal(err)
+		}
+		if len(message.Questions) != 1 {
+			t.Fatalf("questions=%d want 1", len(message.Questions))
+		}
+		domain := strings.TrimSuffix(message.Questions[0].Name.String(), ".")
+		queries = append(queries, domain)
+		message.Header.Response = true
+		message.Answers = []dnsmessage.Resource{{
+			Header: dnsmessage.ResourceHeader{Name: message.Questions[0].Name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: 60},
+			Body:   &dnsmessage.AResource{A: [4]byte{203, 0, 113, 40}},
+		}}
+		return message.Pack()
+	}
+
+	externalQuery, err := buildProbeLocalDNSQueryA("www.external.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, externalIPs, err := resolveProbeVirtualRouterDNSUpstreamResponse(externalQuery, "www.external.example", probeLocalDNSRouteDecision{Action: "direct"})
+	if err != nil || len(response) == 0 || len(externalIPs) != 1 || externalIPs[0] != "203.0.113.40" {
+		t.Fatalf("external resolution response=%d ips=%v err=%v", len(response), externalIPs, err)
+	}
+
+	relayIPs, err := defaultProbeRouteRelayLookupIP(context.Background(), "ip", "relay.external.example")
+	if err != nil || len(relayIPs) != 1 || relayIPs[0].String() != "203.0.113.40" {
+		t.Fatalf("relay resolution ips=%v err=%v", relayIPs, err)
+	}
+	if got := strings.Join(queries, ","); got != "www.external.example,relay.external.example" {
+		t.Fatalf("resolved domains=%q", got)
+	}
+}
 
 func TestProbeLocalDNSFakeIPPersistsOnFlushAndReloads(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())

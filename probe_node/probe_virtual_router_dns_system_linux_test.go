@@ -104,11 +104,15 @@ func TestApplyAndRestoreProbeVirtualRouterSystemDNSLinuxResolvConf(t *testing.T)
 		t.Fatalf("upstream servers=%v want original dns", got)
 	}
 
+	current = []byte("nameserver 192.168.50.94\nnameserver 192.168.50.94\n")
 	if err := applyProbeVirtualRouterSystemDNS(); err != nil {
-		t.Fatalf("reapply resolv.conf dns: %v", err)
+		t.Fatalf("repair overwritten resolv.conf dns: %v", err)
 	}
-	if writes != 1 {
-		t.Fatalf("managed resolv.conf writes=%d want 1 before restore", writes)
+	if writes != 2 {
+		t.Fatalf("managed resolv.conf writes=%d want 2 before restore", writes)
+	}
+	if got := string(current); !strings.Contains(got, "nameserver 198.18.0.2") || strings.Contains(got, "nameserver 192.168.50.94") {
+		t.Fatalf("overwritten resolv.conf was not repaired=%q", got)
 	}
 	if err := restoreProbeVirtualRouterSystemDNS(); err != nil {
 		t.Fatalf("restore resolv.conf dns: %v", err)
@@ -116,8 +120,8 @@ func TestApplyAndRestoreProbeVirtualRouterSystemDNSLinuxResolvConf(t *testing.T)
 	if !reflect.DeepEqual(current, original) {
 		t.Fatalf("restored resolv.conf=%q want=%q", current, original)
 	}
-	if writes != 2 {
-		t.Fatalf("total resolv.conf writes=%d want 2", writes)
+	if writes != 3 {
+		t.Fatalf("total resolv.conf writes=%d want 3", writes)
 	}
 }
 

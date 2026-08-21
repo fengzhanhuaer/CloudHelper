@@ -41,6 +41,7 @@ var probeLinuxRouterStopDNSService = stopProbeVirtualRouterDNSService
 var probeLinuxRouterApplySystemDNS = func() error { return probeVirtualRouterApplySystemDNS() }
 var probeLinuxRouterRestoreSystemDNS = func() error { return probeVirtualRouterRestoreSystemDNS() }
 var probeLinuxRouterVirtualDNSConfigured = probeVirtualRouterLocalDNSEnabled
+var probeLinuxRouterDNSStatus = currentProbeVirtualRouterDNSStatus
 
 func init() {
 	probeLinuxRouterPlatformApply = applyProbeLinuxRouterPlatform
@@ -235,8 +236,9 @@ func probeLinuxRouterPlatformHealth(snapshot probeLinuxRouterSnapshot) error {
 	if !probeVirtualRouterTUNDataPlaneRunning() {
 		return errors.New("virtual router TUN data plane is not running")
 	}
-	if snapshot.GatewayProxy.Enabled && snapshot.GatewayProxy.DNSEnabled && !currentProbeVirtualRouterDNSStatus().Enabled {
-		return errors.New("router DNS service is not running")
+	dnsRequired := snapshot.GatewayProxy.Enabled && snapshot.GatewayProxy.DNSEnabled || probeLinuxRouterVirtualDNSConfigured()
+	if err := ensureProbeLinuxRouterDNSHealth(dnsRequired); err != nil {
+		return err
 	}
 	if _, err := probeLinuxRouterRunCommand(5*time.Second, "nft", "list", "table", "ip", probeLinuxRouterNFTTable); err != nil {
 		return fmt.Errorf("router nftables state is unavailable: %w", err)
@@ -263,6 +265,21 @@ func probeLinuxRouterPlatformHealth(snapshot probeLinuxRouterSnapshot) error {
 		if !strings.Contains(output, probeLinuxRouterDirectTable) {
 			return errors.New("router TUN reinjection rule is unavailable: expected table 209")
 		}
+	}
+	return nil
+}
+
+func ensureProbeLinuxRouterDNSHealth(enabled bool) error {
+	if !enabled {
+		return nil
+	}
+	if !probeLinuxRouterDNSStatus().Enabled {
+		return errors.New("router DNS service is not running")
+	}
+	// DHCP clients may rewrite resolv.conf after the router has started. Keep
+	// the host resolver pointed at the DNS service bound to the virtual TUN IP.
+	if err := probeLinuxRouterApplySystemDNS(); err != nil {
+		return fmt.Errorf("maintain router system DNS: %w", err)
 	}
 	return nil
 }

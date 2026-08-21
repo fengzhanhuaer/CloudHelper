@@ -188,6 +188,38 @@ func TestReconcileProbeLinuxRouterDNSRuntimeKeepsVirtualDNSOwner(t *testing.T) {
 	}
 }
 
+func TestEnsureProbeLinuxRouterDNSHealthReappliesSystemDNS(t *testing.T) {
+	resetProbeLinuxRouterDNSHooksForTest(t)
+	applyCalls := 0
+	probeLinuxRouterDNSStatus = func() probeVirtualRouterDNSStatus {
+		return probeVirtualRouterDNSStatus{Enabled: true, ListenAddr: "198.18.0.2:53"}
+	}
+	probeLinuxRouterApplySystemDNS = func() error {
+		applyCalls++
+		return nil
+	}
+
+	if err := ensureProbeLinuxRouterDNSHealth(true); err != nil {
+		t.Fatal(err)
+	}
+	if applyCalls != 1 {
+		t.Fatalf("system DNS apply calls=%d want 1", applyCalls)
+	}
+}
+
+func TestEnsureProbeLinuxRouterDNSHealthRejectsStoppedService(t *testing.T) {
+	resetProbeLinuxRouterDNSHooksForTest(t)
+	probeLinuxRouterDNSStatus = func() probeVirtualRouterDNSStatus { return probeVirtualRouterDNSStatus{} }
+	probeLinuxRouterApplySystemDNS = func() error {
+		t.Fatal("system DNS must not be applied while the DNS service is stopped")
+		return nil
+	}
+
+	if err := ensureProbeLinuxRouterDNSHealth(true); err == nil || !strings.Contains(err.Error(), "DNS service is not running") {
+		t.Fatalf("health error=%v", err)
+	}
+}
+
 func resetProbeLinuxRouterDNSHooksForTest(t *testing.T) {
 	t.Helper()
 	oldStart := probeLinuxRouterStartDNSService
@@ -195,12 +227,14 @@ func resetProbeLinuxRouterDNSHooksForTest(t *testing.T) {
 	oldApply := probeLinuxRouterApplySystemDNS
 	oldRestore := probeLinuxRouterRestoreSystemDNS
 	oldConfigured := probeLinuxRouterVirtualDNSConfigured
+	oldStatus := probeLinuxRouterDNSStatus
 	t.Cleanup(func() {
 		probeLinuxRouterStartDNSService = oldStart
 		probeLinuxRouterStopDNSService = oldStop
 		probeLinuxRouterApplySystemDNS = oldApply
 		probeLinuxRouterRestoreSystemDNS = oldRestore
 		probeLinuxRouterVirtualDNSConfigured = oldConfigured
+		probeLinuxRouterDNSStatus = oldStatus
 	})
 }
 

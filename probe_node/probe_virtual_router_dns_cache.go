@@ -136,6 +136,7 @@ var probeLocalDNSState = struct {
 var (
 	probeLocalDNSNow              = time.Now
 	probeLocalDNSSystemServers    = currentProbeLocalSystemDNSServers
+	probeLocalDNSQueryUpstream    = defaultProbeLocalDNSQueryUpstream
 	probeLocalDNSLoadHostMappings = func() ([]probeLocalHostMapping, error) {
 		_, hosts, err := loadProbeLocalHostMappingsWithContent()
 		return hosts, err
@@ -157,6 +158,17 @@ func defaultProbeLocalDoTServers() []string {
 
 func defaultProbeLocalDoHServers() []string {
 	return []string{"https://dns.alidns.com/dns-query", "https://doh.pub/dns-query"}
+}
+
+func defaultProbeLocalDNSUpstreamHostIPv4s(host string) []string {
+	switch normalizeProbeLocalDNSDomain(host) {
+	case "dns.alidns.com":
+		return []string{"223.5.5.5", "223.6.6.6"}
+	case "doh.pub", "dot.pub":
+		return []string{"1.12.12.12", "120.53.53.53"}
+	default:
+		return nil
+	}
 }
 
 func ensureProbeLocalDNSCacheLoaded() {
@@ -243,18 +255,7 @@ func resolveProbeVirtualRouterDNSUpstreamResponse(packet []byte, domain string, 
 	}
 	var lastErr error
 	for _, candidate := range candidates {
-		var response []byte
-		var err error
-		switch candidate.Kind {
-		case "doh":
-			response, err = queryProbeLocalDNSViaDoH(candidate.Address, packet)
-		case "dot":
-			response, err = queryProbeLocalDNSViaDoT(candidate.Address, packet)
-		case "dns":
-			response, err = queryProbeLocalDNSViaPlain(candidate.Address, packet)
-		default:
-			continue
-		}
+		response, err := probeLocalDNSQueryUpstream(candidate, packet)
 		if err != nil {
 			lastErr = err
 			continue
@@ -311,6 +312,10 @@ func resolveProbeLocalDNSRealIPsForRouteDomain(domain string, decision probeLoca
 }
 
 func resolveProbeLocalDNSInternalRealIPv4s(domain string, decision probeLocalDNSRouteDecision) ([]string, error) {
+	return resolveProbeLocalDNSInternalRealIPv4sWithContext(context.Background(), domain, decision)
+}
+
+func resolveProbeLocalDNSInternalRealIPv4sWithContext(ctx context.Context, domain string, decision probeLocalDNSRouteDecision) ([]string, error) {
 	cleanDomain := normalizeProbeLocalDNSDomain(domain)
 	if cleanDomain == "" {
 		return nil, errors.New("dns domain is empty")
@@ -319,7 +324,7 @@ func resolveProbeLocalDNSInternalRealIPv4s(domain string, decision probeLocalDNS
 		storeProbeLocalDNSRouteHints(cleanDomain, staticIPs, decision)
 		return staticIPs, nil
 	}
-	ips, err := resolveProbeLocalDNSRealIPv4sFromUpstreams(cleanDomain, decision)
+	ips, err := resolveProbeLocalDNSRealIPv4sFromUpstreamsWithContext(ctx, cleanDomain, decision)
 	if err != nil {
 		return nil, err
 	}
@@ -337,6 +342,10 @@ func storeProbeLocalDNSInternalRealIPv4s(domain string, ips []string, decision p
 }
 
 func resolveProbeLocalDNSRealIPv4sFromUpstreams(domain string, decision probeLocalDNSRouteDecision) ([]string, error) {
+	return resolveProbeLocalDNSRealIPv4sFromUpstreamsWithContext(context.Background(), domain, decision)
+}
+
+func resolveProbeLocalDNSRealIPv4sFromUpstreamsWithContext(ctx context.Context, domain string, decision probeLocalDNSRouteDecision) ([]string, error) {
 	cleanDomain := normalizeProbeLocalDNSDomain(domain)
 	if cleanDomain == "" {
 		return nil, errors.New("dns domain is empty")
@@ -351,18 +360,10 @@ func resolveProbeLocalDNSRealIPv4sFromUpstreams(domain string, decision probeLoc
 	}
 	var lastErr error
 	for _, candidate := range candidates {
-		var response []byte
-		var queryErr error
-		switch candidate.Kind {
-		case "doh":
-			response, queryErr = queryProbeLocalDNSViaDoH(candidate.Address, query)
-		case "dot":
-			response, queryErr = queryProbeLocalDNSViaDoT(candidate.Address, query)
-		case "dns":
-			response, queryErr = queryProbeLocalDNSViaPlain(candidate.Address, query)
-		default:
-			continue
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
+		response, queryErr := probeLocalDNSQueryUpstream(candidate, query)
 		if queryErr != nil {
 			lastErr = queryErr
 			continue
@@ -378,6 +379,19 @@ func resolveProbeLocalDNSRealIPv4sFromUpstreams(domain string, decision probeLoc
 		lastErr = errors.New("dns upstream resolve failed")
 	}
 	return nil, lastErr
+}
+
+func defaultProbeLocalDNSQueryUpstream(candidate probeLocalDNSUpstreamCandidate, packet []byte) ([]byte, error) {
+	switch candidate.Kind {
+	case "doh":
+		return queryProbeLocalDNSViaDoH(candidate.Address, packet)
+	case "dot":
+		return queryProbeLocalDNSViaDoT(candidate.Address, packet)
+	case "dns":
+		return queryProbeLocalDNSViaPlain(candidate.Address, packet)
+	default:
+		return nil, fmt.Errorf("unsupported dns upstream kind: %s", strings.TrimSpace(candidate.Kind))
+	}
 }
 
 func currentProbeLocalDNSUpstreamCandidatesForDecision(decision probeLocalDNSRouteDecision) []probeLocalDNSUpstreamCandidate {
@@ -909,6 +923,9 @@ func resolveProbeLocalDNSIPv4s(host string) ([]string, error) {
 	}
 	if staticIPs := lookupProbeLocalDNSStaticHostIPv4ByDomain(cleanHost); len(staticIPs) > 0 {
 		return staticIPs, nil
+	}
+	if defaultIPs := defaultProbeLocalDNSUpstreamHostIPv4s(cleanHost); len(defaultIPs) > 0 {
+		return defaultIPs, nil
 	}
 	ips, err := probeLocalDNSBootstrapLookupIPv4(cleanHost)
 	if err != nil {
@@ -1709,6 +1726,7 @@ func resetProbeLocalDNSServiceForTest() {
 func resetProbeLocalDNSHooksForTest() {
 	probeLocalDNSNow = time.Now
 	probeLocalDNSSystemServers = currentProbeLocalSystemDNSServers
+	probeLocalDNSQueryUpstream = defaultProbeLocalDNSQueryUpstream
 	probeLocalDNSLoadHostMappings = func() ([]probeLocalHostMapping, error) {
 		_, hosts, err := loadProbeLocalHostMappingsWithContent()
 		return hosts, err
