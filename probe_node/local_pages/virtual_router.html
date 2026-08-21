@@ -183,7 +183,8 @@
       outline: none;
     }
     .domain-copy {
-      max-width: 320px;
+      display: inline-block;
+      max-width: 100%;
       padding: 0;
       border: 0;
       border-radius: 0;
@@ -194,12 +195,26 @@
       text-align: left;
       overflow-wrap: anywhere;
       white-space: normal;
+      line-height: 1.45;
     }
     .domain-copy:hover,
     .domain-copy:focus-visible { text-decoration: underline; outline: none; }
     .row-action { padding: 5px 9px; border-radius: 6px; font-size: 12px; }
-    .domain-table { min-width: 940px; }
+    .domain-table { min-width: 1300px; table-layout: fixed; }
     .domain-table td { vertical-align: middle; }
+    .domain-table th:nth-child(1), .domain-table td:nth-child(1) { width: 150px; }
+    .domain-table th:nth-child(2), .domain-table td:nth-child(2) { width: 250px; }
+    .domain-table th:nth-child(3), .domain-table td:nth-child(3) { width: 100px; }
+    .domain-table th:nth-child(4), .domain-table td:nth-child(4) { width: 220px; }
+    .domain-table th:nth-child(5), .domain-table td:nth-child(5) { width: 190px; }
+    .domain-table th:nth-child(6), .domain-table td:nth-child(6) { width: 90px; }
+    .domain-table th:nth-child(7), .domain-table td:nth-child(7) { width: 200px; }
+    .domain-table th:nth-child(8), .domain-table td:nth-child(8) { width: 100px; }
+    .domain-table td:nth-child(4), .domain-table td:nth-child(7) {
+      white-space: normal;
+      overflow-wrap: anywhere;
+      line-height: 1.45;
+    }
     .packet-badge {
       display: inline-flex;
       align-items: center;
