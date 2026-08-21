@@ -3524,6 +3524,10 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 	if !probeVirtualRouterLocalEntryEnabled() && !probeVirtualRouterTUNPacketAllowedWhenEntryDisabled(dstIP, path) && !probeProductAllowsForwardedTUNPacket(packet, dstIP, path) {
 		return false
 	}
+	if probeProductRejectsTUNPacket(packet, dstIP, path) {
+		recordProbeVirtualRouterRecentPacket("tun_rx", "reject_sni", nil, packet, path, false, nil)
+		return true
+	}
 	if len(path) < 2 && probeVirtualRouterIPInCurrentFakeCIDR(dstIP) {
 		scheduleProbeVirtualRouterFakeIPItemRefreshByIP(dstIP)
 	}

@@ -182,6 +182,24 @@
       text-decoration: underline;
       outline: none;
     }
+    .domain-copy {
+      max-width: 320px;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      color: var(--accent);
+      font: inherit;
+      font-weight: 600;
+      text-align: left;
+      overflow-wrap: anywhere;
+      white-space: normal;
+    }
+    .domain-copy:hover,
+    .domain-copy:focus-visible { text-decoration: underline; outline: none; }
+    .row-action { padding: 5px 9px; border-radius: 6px; font-size: 12px; }
+    .domain-table { min-width: 940px; }
+    .domain-table td { vertical-align: middle; }
     .packet-badge {
       display: inline-flex;
       align-items: center;
@@ -327,6 +345,7 @@
       <button class="subtab active" data-tab="status" type="button" role="tab" aria-selected="true">路由设置</button>
       <button class="subtab" data-tab="routeStatus" type="button" role="tab" aria-selected="false">路由状态</button>
       <button class="subtab" data-tab="connections" type="button" role="tab" aria-selected="false">最近连接</button>
+      <button class="subtab" data-tab="dnsRecords" type="button" role="tab" aria-selected="false">DNS 查询记录</button>
       <button class="subtab" data-tab="packets" type="button" role="tab" aria-selected="false">最近报文</button>
       <button class="subtab" data-tab="routeTest" type="button" role="tab" aria-selected="false">路由测试</button>
       <!-- product-virtual-router-subtabs -->
@@ -667,6 +686,52 @@
       </section>
     </div>
 
+    <div id="dnsRecordsTab" class="tab-panel">
+      <section class="card">
+        <h2>DNS 查询记录</h2>
+        <div class="packet-controls">
+          <div class="field" style="flex:0 1 240px; min-width:180px;">
+            <label for="dnsRecordSourceSelect">请求来源</label>
+            <select id="dnsRecordSourceSelect">
+              <option value="all">全部来源</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="dnsRecordFilterInput">域名搜索</label>
+            <input id="dnsRecordFilterInput" class="mono" placeholder="域名 / IP / 动作" />
+          </div>
+          <div class="packet-actions">
+            <button id="dnsRecordRefreshBtn" class="secondary" type="button">刷新</button>
+            <button id="dnsRecordAutoRefreshBtn" class="secondary" type="button">暂停刷新</button>
+            <button id="dnsRecordExportBtn" class="secondary" type="button">导出 CSV</button>
+            <span id="dnsRecordSummary" class="packet-summary">-</span>
+          </div>
+        </div>
+        <div class="section-head" style="margin-top:16px;">
+          <h2>跟踪表</h2>
+          <span id="dnsTrackingCount" class="packet-summary">0 条</span>
+        </div>
+        <div class="table-wrap">
+          <table class="domain-table">
+            <thead><tr><th>最近 / 首次请求</th><th>域名</th><th>采集来源</th><th>请求来源</th><th>命中次数</th><th>最近动作</th><th>结果</th><th>操作</th></tr></thead>
+            <tbody id="dnsTrackingRows"><tr><td colspan="8" class="hint">-</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+      <section class="card" style="margin-top:14px;">
+        <div class="section-head">
+          <h2>已放行表</h2>
+          <span id="dnsAllowedCount" class="packet-summary">0 条</span>
+        </div>
+        <div class="table-wrap">
+          <table class="domain-table">
+            <thead><tr><th>最近 / 首次请求</th><th>域名</th><th>采集来源</th><th>请求来源</th><th>命中次数</th><th>最近动作</th><th>结果</th><th>操作</th></tr></thead>
+            <tbody id="dnsAllowedRows"><tr><td colspan="8" class="hint">-</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
     <div id="routeTestTab" class="tab-panel">
       <section class="card">
         <h2>路由测试</h2>
@@ -791,7 +856,7 @@
     const proxyUsernameEl = document.getElementById('proxyUsername');
     const proxyPasswordEl = document.getElementById('proxyPassword');
     const tunEgressSelectEl = document.getElementById('tunEgressSelect');
-    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260716-vroute-proxy';
+    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260821-domain-observations';
     const REQUEST_TIMEOUT_DEFAULT_MS = 20000;
     const REQUEST_TIMEOUT_TUN_INSTALL_MS = 90000;
     let tunPollingTimer = null;
@@ -803,6 +868,10 @@
     let connectionFilterText = '';
     let connectionType = 'all';
     let connectionSnapshot = { items: [] };
+    let dnsRecordSnapshot = { items: [], sources: [] };
+    let dnsRecordAutoRefreshPaused = false;
+    let dnsRecordSource = 'all';
+    let dnsRecordFilterText = '';
     let packetAutoRefreshPaused = false;
     let packetFilterText = '';
     let packetSnapshot = { items: [] };
@@ -1514,6 +1583,109 @@
       }).join('');
     }
 
+    function domainObservationSearchText(item) {
+      return [
+        item.domain,
+        item.status,
+        item.last_source,
+        ...(Array.isArray(item.sources) ? item.sources : []),
+        ...(Array.isArray(item.observed_via) ? item.observed_via : []),
+        item.last_action,
+        ...(Array.isArray(item.resolved_ips) ? item.resolved_ips : []),
+        item.last_error,
+      ].map((value) => String(value === undefined || value === null ? '' : value).toLowerCase()).join(' ');
+    }
+
+    function filteredDomainObservations(data) {
+      const terms = String(dnsRecordFilterText || '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+      const items = Array.isArray(data && data.items) ? data.items.slice() : [];
+      return items.filter((item) => {
+        const sources = Array.isArray(item.sources) ? item.sources : [];
+        const sourceMatched = dnsRecordSource === 'all' || sources.includes(dnsRecordSource);
+        return sourceMatched && terms.every((term) => domainObservationSearchText(item).includes(term));
+      }).sort((left, right) => String(right.last_seen || '').localeCompare(String(left.last_seen || '')));
+    }
+
+    function renderDomainObservationSourceOptions(data) {
+      const select = document.getElementById('dnsRecordSourceSelect');
+      const sources = Array.isArray(data && data.sources) ? data.sources : [];
+      const options = ['<option value="all">全部来源</option>'].concat(sources.map((source) => `<option value="${escapeHTML(source)}">${escapeHTML(source)}</option>`));
+      select.innerHTML = options.join('');
+      if (dnsRecordSource !== 'all' && !sources.includes(dnsRecordSource)) dnsRecordSource = 'all';
+      select.value = dnsRecordSource;
+    }
+
+    function domainObservationRowsHTML(items, status) {
+      const filtered = items.filter((item) => String(item.status || 'tracking') === status);
+      if (!filtered.length) return '<tr><td colspan="8" class="hint">-</td></tr>';
+      return filtered.map((item) => {
+        const via = (Array.isArray(item.observed_via) ? item.observed_via : []).map((value) => String(value).toUpperCase()).join(' / ') || '-';
+        const sources = (Array.isArray(item.sources) ? item.sources : []).join(' / ') || '-';
+        const counts = [`命中 ${formatNumber(item.events || 0)}`, `DNS ${formatNumber(item.dns_queries || 0)}`, `SNI ${formatNumber(item.sni_observations || 0)}`];
+        const result = item.last_error || (Array.isArray(item.resolved_ips) && item.resolved_ips.length ? item.resolved_ips.join(' / ') : '-');
+        const nextStatus = status === 'tracking' ? 'allowed' : 'tracking';
+        const command = status === 'tracking' ? '放行' : '重新跟踪';
+        return `<tr>
+          <td class="mono">${escapeHTML(packetTime(item.last_seen))}<br><span class="hint">${escapeHTML(packetTime(item.first_seen))}</span></td>
+          <td><button class="domain-copy mono" type="button" data-copy-domain="${escapeHTML(item.domain)}" title="复制域名">${escapeHTML(item.domain)}</button></td>
+          <td>${escapeHTML(via)}</td>
+          <td class="mono">${escapeHTML(sources)}</td>
+          <td>${escapeHTML(counts.join(' / '))}</td>
+          <td>${escapeHTML(packetActionLabel(item.last_action) || item.last_action || '-')}</td>
+          <td class="mono">${escapeHTML(result)}</td>
+          <td><button class="secondary row-action" type="button" data-domain-status="${escapeHTML(nextStatus)}" data-domain="${escapeHTML(item.domain)}">${escapeHTML(command)}</button></td>
+        </tr>`;
+      }).join('');
+    }
+
+    function renderDomainObservations(data) {
+      renderDomainObservationSourceOptions(data || {});
+      const allItems = Array.isArray(data && data.items) ? data.items : [];
+      const items = filteredDomainObservations(data || {});
+      const tracking = items.filter((item) => String(item.status || 'tracking') === 'tracking');
+      const allowed = items.filter((item) => String(item.status || 'tracking') === 'allowed');
+      document.getElementById('dnsTrackingRows').innerHTML = domainObservationRowsHTML(items, 'tracking');
+      document.getElementById('dnsAllowedRows').innerHTML = domainObservationRowsHTML(items, 'allowed');
+      document.getElementById('dnsTrackingCount').textContent = `${tracking.length} 条`;
+      document.getElementById('dnsAllowedCount').textContent = `${allowed.length} 条`;
+      const paused = dnsRecordAutoRefreshPaused ? '自动刷新已停止' : '自动刷新中';
+      const filtered = dnsRecordSource !== 'all' || dnsRecordFilterText;
+      document.getElementById('dnsRecordSummary').textContent = `${filtered ? `显示 ${items.length}/${allItems.length} 条` : `${allItems.length} 条`}，${paused}`;
+    }
+
+    function csvCell(value) {
+      return `"${String(value === undefined || value === null ? '' : value).replace(/"/g, '""')}"`;
+    }
+
+    function exportDomainObservationsCSV() {
+      const items = filteredDomainObservations(dnsRecordSnapshot);
+      const header = ['状态', '最近请求', '首次请求', '域名', '采集来源', '请求来源', '总命中次数', 'DNS命中次数', 'SNI命中次数', '最近动作', '解析结果', '最近错误'];
+      const rows = items.map((item) => [
+        item.status === 'allowed' ? '已放行' : '跟踪', item.last_seen, item.first_seen, item.domain,
+        (item.observed_via || []).join(';'), (item.sources || []).join(';'), item.events, item.dns_queries,
+        item.sni_observations, item.last_action, (item.resolved_ips || []).join(';'), item.last_error,
+      ]);
+      const csv = '\ufeff' + [header, ...rows].map((row) => row.map(csvCell).join(',')).join('\r\n');
+      const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `cloudhelper-domain-observations-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setMessage(`已导出 ${items.length} 条域名记录`, 'success');
+    }
+
+    async function updateDomainObservationStatus(domain, status) {
+      await requestJSON('/local/api/virtual_router/domain_observations', {
+        method: 'POST',
+        body: JSON.stringify({ domain, status }),
+      });
+      await loadDomainObservations();
+      setMessage(status === 'allowed' ? `已放行：${domain}` : `已重新跟踪：${domain}`, 'success');
+    }
+
     function routeTestStageLabel(stage) {
       const value = String(stage || '').trim();
       const labels = {
@@ -1765,6 +1937,13 @@
       return data || {};
     }
 
+    async function loadDomainObservations() {
+      const data = await requestJSON('/local/api/virtual_router/domain_observations', { method: 'GET' });
+      dnsRecordSnapshot = data || { items: [], sources: [] };
+      renderDomainObservations(dnsRecordSnapshot);
+      return dnsRecordSnapshot;
+    }
+
     async function loadRouteStatus() {
       const data = await requestJSON('/local/api/virtual_router/status', { method: 'GET' });
       routeStatusSnapshot = data || {};
@@ -2002,12 +2181,13 @@
         loadTunStatus().catch(() => {});
         if (activeTab === 'routeStatus') loadRouteStatus().catch(() => {});
         if (activeTab === 'connections' && !connectionAutoRefreshPaused) loadConnections().catch(() => {});
+        if (activeTab === 'dnsRecords' && !dnsRecordAutoRefreshPaused) loadDomainObservations().catch(() => {});
         if (activeTab === 'packets' && !packetAutoRefreshPaused) loadPackets().catch(() => {});
       }, 3000);
     }
 
     function switchTab(tab) {
-      activeTab = tab === 'routeStatus' || tab === 'connections' || tab === 'packets' || tab === 'routeTest' ? tab : 'status';
+      activeTab = tab === 'routeStatus' || tab === 'connections' || tab === 'dnsRecords' || tab === 'packets' || tab === 'routeTest' ? tab : 'status';
       document.querySelectorAll('.subtab').forEach((btn) => {
         const active = btn.dataset.tab === activeTab;
         btn.classList.toggle('active', active);
@@ -2016,6 +2196,7 @@
       document.getElementById('statusTab').classList.toggle('active', activeTab === 'status');
       document.getElementById('routeStatusTab').classList.toggle('active', activeTab === 'routeStatus');
       document.getElementById('connectionsTab').classList.toggle('active', activeTab === 'connections');
+      document.getElementById('dnsRecordsTab').classList.toggle('active', activeTab === 'dnsRecords');
       document.getElementById('packetsTab').classList.toggle('active', activeTab === 'packets');
       document.getElementById('routeTestTab').classList.toggle('active', activeTab === 'routeTest');
       if (activeTab === 'routeStatus') {
@@ -2023,6 +2204,9 @@
       }
       if (activeTab === 'connections') {
         loadConnections().catch((err) => setMessage('读取最近连接失败：' + err.message, 'error'));
+      }
+      if (activeTab === 'dnsRecords') {
+        loadDomainObservations().catch((err) => setMessage('读取 DNS 查询记录失败：' + err.message, 'error'));
       }
       if (activeTab === 'packets') {
         loadPackets().catch((err) => setMessage('读取最近报文失败：' + err.message, 'error'));
@@ -2082,6 +2266,44 @@
       copyConnectionEndpoint(value)
         .then((copied) => setMessage(copied ? `已复制：${value}` : '复制失败', copied ? 'success' : 'error'))
         .catch((err) => setMessage('复制失败：' + err.message, 'error'));
+    });
+    document.getElementById('dnsRecordRefreshBtn').addEventListener('click', () => {
+      loadDomainObservations().then(() => setMessage('DNS 查询记录已刷新', 'success')).catch((err) => setMessage('读取 DNS 查询记录失败：' + err.message, 'error'));
+    });
+    document.getElementById('dnsRecordAutoRefreshBtn').addEventListener('click', () => {
+      dnsRecordAutoRefreshPaused = !dnsRecordAutoRefreshPaused;
+      document.getElementById('dnsRecordAutoRefreshBtn').textContent = dnsRecordAutoRefreshPaused ? '继续刷新' : '暂停刷新';
+      renderDomainObservations(dnsRecordSnapshot);
+      setMessage(dnsRecordAutoRefreshPaused ? 'DNS 查询记录自动刷新已停止' : 'DNS 查询记录自动刷新已恢复', 'success');
+      if (!dnsRecordAutoRefreshPaused && activeTab === 'dnsRecords') loadDomainObservations().catch(() => {});
+    });
+    document.getElementById('dnsRecordSourceSelect').addEventListener('change', (event) => {
+      dnsRecordSource = String(event.target.value || 'all');
+      renderDomainObservations(dnsRecordSnapshot);
+    });
+    document.getElementById('dnsRecordFilterInput').addEventListener('input', (event) => {
+      dnsRecordFilterText = String(event.target.value || '').trim();
+      renderDomainObservations(dnsRecordSnapshot);
+    });
+    document.getElementById('dnsRecordExportBtn').addEventListener('click', exportDomainObservationsCSV);
+    document.getElementById('dnsRecordsTab').addEventListener('click', (event) => {
+      const copyButton = event.target.closest('[data-copy-domain]');
+      if (copyButton) {
+        const domain = String(copyButton.dataset.copyDomain || '').trim();
+        copyConnectionEndpoint(domain)
+          .then((copied) => setMessage(copied ? `已复制：${domain}` : '复制失败', copied ? 'success' : 'error'))
+          .catch((err) => setMessage('复制失败：' + err.message, 'error'));
+        return;
+      }
+      const statusButton = event.target.closest('[data-domain-status]');
+      if (!statusButton) return;
+      const domain = String(statusButton.dataset.domain || '').trim();
+      const status = String(statusButton.dataset.domainStatus || '').trim();
+      statusButton.disabled = true;
+      updateDomainObservationStatus(domain, status).catch((err) => {
+        statusButton.disabled = false;
+        setMessage('更新域名状态失败：' + err.message, 'error');
+      });
     });
     document.getElementById('packetRefreshBtn').addEventListener('click', () => {
       loadPackets().then(() => setMessage('最近报文已刷新', 'success')).catch((err) => setMessage('读取最近报文失败：' + err.message, 'error'));

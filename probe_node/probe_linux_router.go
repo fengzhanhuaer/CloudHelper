@@ -66,6 +66,7 @@ func init() {
 	probeLinuxRouterRouteConfigApplier = applyProbeLinuxRouterSnapshot
 	probeProductLinuxRouterReport = currentProbeLinuxRouterReport
 	probeProductAllowsForwardedTUNPacket = probeLinuxRouterAllowsForwardedTUNPacket
+	probeProductRejectsTUNPacket = probeLinuxRouterRejectsTUNPacket
 	probeProductHandleDirectTUNPacket = probeLinuxRouterHandleDirectTUNPacket
 	probeProductTargetsLocalDelivery = probeLinuxRouterTargetsLocalDelivery
 }
@@ -107,6 +108,7 @@ func startProbeProductRuntime(nodeID string) error {
 
 func stopProbeProductRuntime() {
 	stopProbeMihomoRuntime()
+	resetProbeLinuxRouterSNIState()
 	probeLinuxRouterRuntimeState.mu.Lock()
 	if probeLinuxRouterRuntimeState.running {
 		close(probeLinuxRouterRuntimeState.stopCh)
@@ -498,6 +500,13 @@ func probeLinuxRouterHandleDirectTUNPacket(packet []byte, dstIP string) bool {
 		setProbeLinuxRouterReportFromCurrent(err)
 	}
 	return true
+}
+
+func probeLinuxRouterRejectsTUNPacket(packet []byte, dstIP string, path []string) bool {
+	if !probeLinuxRouterAllowsForwardedTUNPacket(packet, dstIP, path) {
+		return false
+	}
+	return probeLinuxRouterSNIRejectsPacket(packet)
 }
 
 func probeLinuxRouterTargetsLocalDelivery(dstIP string) bool {

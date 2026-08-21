@@ -189,9 +189,9 @@ func serveProbeVirtualRouterDNSUDP(conn net.PacketConn) {
 			continue
 		}
 		packet := append([]byte(nil), buf[:n]...)
-		dispatchProbeVirtualRouterDNSPacket(func(response []byte) {
+		dispatchProbeVirtualRouterDNSPacketFromSource(func(response []byte) {
 			_, _ = conn.WriteTo(response, remoteAddr)
-		}, packet)
+		}, packet, remoteAddr.String())
 	}
 }
 
@@ -217,6 +217,10 @@ func serveProbeVirtualRouterDNSTCPConn(conn net.Conn) {
 		return
 	}
 	defer conn.Close()
+	requestSource := ""
+	if conn.RemoteAddr() != nil {
+		requestSource = conn.RemoteAddr().String()
+	}
 	reader := bufio.NewReader(conn)
 	lenBuf := make([]byte, 2)
 	for {
@@ -232,7 +236,7 @@ func serveProbeVirtualRouterDNSTCPConn(conn net.Conn) {
 		if _, err := io.ReadFull(reader, packet); err != nil {
 			return
 		}
-		response := resolveProbeVirtualRouterDNSPacketBestEffort(packet)
+		response := resolveProbeVirtualRouterDNSPacketBestEffortFromSource(packet, requestSource)
 		if len(response) == 0 || len(response) > 65535 {
 			return
 		}
@@ -244,6 +248,10 @@ func serveProbeVirtualRouterDNSTCPConn(conn net.Conn) {
 }
 
 func dispatchProbeVirtualRouterDNSPacket(write func([]byte), packet []byte) {
+	dispatchProbeVirtualRouterDNSPacketFromSource(write, packet, "")
+}
+
+func dispatchProbeVirtualRouterDNSPacketFromSource(write func([]byte), packet []byte, requestSource string) {
 	if write == nil || len(packet) == 0 {
 		return
 	}
@@ -251,15 +259,19 @@ func dispatchProbeVirtualRouterDNSPacket(write func([]byte), packet []byte) {
 	case probeVirtualRouterDNSState.semaphore <- struct{}{}:
 		go func() {
 			defer func() { <-probeVirtualRouterDNSState.semaphore }()
-			write(resolveProbeVirtualRouterDNSPacketBestEffort(packet))
+			write(resolveProbeVirtualRouterDNSPacketBestEffortFromSource(packet, requestSource))
 		}()
 	default:
-		write(resolveProbeVirtualRouterDNSPacketBestEffort(packet))
+		write(resolveProbeVirtualRouterDNSPacketBestEffortFromSource(packet, requestSource))
 	}
 }
 
 func resolveProbeVirtualRouterDNSPacketBestEffort(packet []byte) []byte {
-	result, err := resolveProbeVirtualRouterDNSPacket(packet)
+	return resolveProbeVirtualRouterDNSPacketBestEffortFromSource(packet, "")
+}
+
+func resolveProbeVirtualRouterDNSPacketBestEffortFromSource(packet []byte, requestSource string) []byte {
+	result, err := resolveProbeVirtualRouterDNSPacketFromSource(packet, requestSource)
 	if err != nil {
 		logProbeWarnf("probe virtual router dns resolve failed: %v", err)
 	}
@@ -270,6 +282,10 @@ func resolveProbeVirtualRouterDNSPacketBestEffort(packet []byte) []byte {
 }
 
 func resolveProbeVirtualRouterDNSPacket(packet []byte) (result probeVirtualRouterDNSPacketResponse, err error) {
+	return resolveProbeVirtualRouterDNSPacketFromSource(packet, "")
+}
+
+func resolveProbeVirtualRouterDNSPacketFromSource(packet []byte, requestSource string) (result probeVirtualRouterDNSPacketResponse, err error) {
 	domain, qType := parseProbeLocalDNSQueryDomainAndType(packet)
 	cleanDomain := normalizeProbeVirtualRouterDomain(domain)
 	result = probeVirtualRouterDNSPacketResponse{Domain: cleanDomain}
@@ -278,6 +294,7 @@ func resolveProbeVirtualRouterDNSPacket(packet []byte) (result probeVirtualRoute
 	trackingFakeIP := ""
 	defer func() {
 		recordProbeVirtualRouterRecentDNSQuery(cleanDomain, trackingAction, trackingExitNodeID, trackingFakeIP, result.RealIPs, err)
+		recordProbeDomainObservation(cleanDomain, "dns", requestSource, trackingAction, result.RealIPs, err)
 	}()
 	if cleanDomain == "" {
 		result.Response = buildProbeLocalDNSRefused(packet)

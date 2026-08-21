@@ -243,6 +243,42 @@ func TestProbeLocalVirtualRouterConnectionsHandlerReturnsRecentConnections(t *te
 	}
 }
 
+func TestProbeLocalVirtualRouterDomainObservationsHandler(t *testing.T) {
+	resetProbeDomainObservations()
+	t.Cleanup(resetProbeDomainObservations)
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+	recordProbeDomainObservation("ads.example", "dns", "192.168.51.20:53001", "reject", nil, nil)
+	recordProbeDomainObservation("ads.example", "sni", "192.168.51.20", "reject", nil, nil)
+
+	resp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/virtual_router/domain_observations", nil, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("domain observations status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	items, ok := payload["items"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("items=%T %v", payload["items"], payload["items"])
+	}
+	item, ok := items[0].(map[string]any)
+	if !ok || item["domain"] != "ads.example" || item["events"] != float64(2) || item["dns_queries"] != float64(1) || item["sni_observations"] != float64(1) {
+		t.Fatalf("unexpected domain observation=%+v", item)
+	}
+	sources, ok := payload["sources"].([]any)
+	if !ok || len(sources) != 1 || sources[0] != "192.168.51.20" {
+		t.Fatalf("unexpected sources=%v", payload["sources"])
+	}
+
+	resp = doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/virtual_router/domain_observations", map[string]any{"domain": "ads.example", "status": "allowed"}, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("allow domain status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	observations, _, err := snapshotProbeDomainObservations()
+	if err != nil || len(observations) != 1 || observations[0].Status != "allowed" {
+		t.Fatalf("allowed items=%+v err=%v", observations, err)
+	}
+}
+
 func TestProbeLocalVirtualRouterStatusHandlerReturnsRuntimeDebugState(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
 	resetProbeVirtualRouterLocalSettingsForTest()

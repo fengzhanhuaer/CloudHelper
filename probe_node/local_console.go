@@ -1793,6 +1793,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/virtual_router/status", probeLocalVirtualRouterStatusHandler)
 	mux.HandleFunc("/local/api/virtual_router/packets", probeLocalVirtualRouterPacketsHandler)
 	mux.HandleFunc("/local/api/virtual_router/connections", probeLocalVirtualRouterConnectionsHandler)
+	mux.HandleFunc("/local/api/virtual_router/domain_observations", probeLocalVirtualRouterDomainObservationsHandler)
 	mux.HandleFunc("/local/api/virtual_router/debug", probeLocalVirtualRouterDebugHandler)
 	mux.HandleFunc("/local/api/virtual_router/debug/logs", probeLocalVirtualRouterDebugLogsHandler)
 	mux.HandleFunc("/local/api/virtual_router/path_rtt", probeLocalVirtualRouterPathRTTHandler)
@@ -2932,6 +2933,45 @@ func probeLocalVirtualRouterConnectionsHandler(w http.ResponseWriter, r *http.Re
 		"count":             len(items),
 		"retention_seconds": int(probeVirtualRouterRecentConnectionTTL / time.Second),
 	})
+}
+
+func probeLocalVirtualRouterDomainObservationsHandler(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		items, sources, err := snapshotProbeDomainObservations()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"items":       items,
+			"count":       len(items),
+			"sources":     sources,
+			"max_records": probeDomainObservationMaxRecords,
+		})
+	case http.MethodPost:
+		var request struct {
+			Domain string `json:"domain"`
+			Status string `json:"status"`
+		}
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&request); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		item, err := setProbeDomainObservationStatus(request.Domain, request.Status)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "item": item})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func probeLocalVirtualRouterRouteTestHandler(w http.ResponseWriter, r *http.Request) {

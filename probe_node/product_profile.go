@@ -73,6 +73,10 @@ var probeProductAllowsForwardedTUNPacket = func(packet []byte, dstIP string, pat
 	return false
 }
 
+var probeProductRejectsTUNPacket = func(packet []byte, dstIP string, path []string) bool {
+	return false
+}
+
 var probeProductHandleDirectTUNPacket = func(packet []byte, dstIP string) bool {
 	return false
 }
