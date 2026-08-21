@@ -1,4 +1,4 @@
-//go:build !mihomo_exit && !linux_router
+//go:build !linux_router
 
 package main
 
@@ -15,13 +15,13 @@ func TestNormalProductProfilePreservesExistingCapabilities(t *testing.T) {
 	if err := validateProbeExpectedNodeKind(probeBuildKindNormal); err != nil {
 		t.Fatalf("normal expected node kind rejected: %v", err)
 	}
-	if err := validateProbeExpectedNodeKind(probeBuildKindMihomoExit); err == nil {
-		t.Fatal("normal build accepted mihomo_exit expected node kind")
+	if err := validateProbeExpectedNodeKind(probeBuildKindLinuxRouter); err == nil {
+		t.Fatal("normal build accepted linux_router expected node kind")
 	}
 	if err := validateProbeUpgradeVerifyBuildKind(probeBuildKindNormal); err != nil {
 		t.Fatalf("normal candidate rejected: %v", err)
 	}
-	if err := validateProbeUpgradeVerifyBuildKind(probeBuildKindMihomoExit); err == nil {
-		t.Fatal("normal candidate accepted mihomo_exit expected build kind")
+	if err := validateProbeUpgradeVerifyBuildKind(probeBuildKindLinuxRouter); err == nil {
+		t.Fatal("normal candidate accepted linux_router expected build kind")
 	}
 }

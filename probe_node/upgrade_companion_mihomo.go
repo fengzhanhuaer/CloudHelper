@@ -1,4 +1,4 @@
-//go:build mihomo_exit || linux_router
+//go:build linux_router
 
 package main
 
@@ -115,9 +115,6 @@ func validateProbeMihomoUpgradeManifest(manifest probeMihomoUpgradeManifest, rel
 }
 
 func currentProbeMihomoUpgradeManifestAsset() (string, error) {
-	if currentProbeBuildKind() == probeBuildKindMihomoExit {
-		return "cloudhelper-probe-exit-node-manifest.json", nil
-	}
 	if runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64" {
 		return "", fmt.Errorf("unsupported router upgrade architecture %s", runtime.GOARCH)
 	}

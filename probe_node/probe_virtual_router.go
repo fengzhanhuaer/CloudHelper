@@ -894,6 +894,7 @@ func applyProbeVirtualRouterConfigForNode(config probeVirtualRouterConfig, nodeI
 	probeVirtualRouterState.topologySignature = signature
 	ensureLocalInterface := activeProbeProductProfile.EnableVRoutePlatformInterface && sanitized.Enabled && strings.TrimSpace(probeVirtualRouterState.localIP) != ""
 	probeVirtualRouterState.mu.Unlock()
+	probeProductVirtualRouterConfigApplied(sanitized)
 	if topologyChanged {
 		clearProbeVirtualRouterRouteCache("config updated")
 	} else if fakeIPRouteChanged {
@@ -911,6 +912,8 @@ func applyProbeVirtualRouterConfigForNode(config probeVirtualRouterConfig, nodeI
 		}
 	}
 }
+
+var probeProductVirtualRouterConfigApplied = func(probeVirtualRouterConfig) {}
 
 func buildProbeVirtualRouterTopologyIndex(config probeVirtualRouterConfig) probeVirtualRouterTopologyIndex {
 	index := probeVirtualRouterTopologyIndex{
@@ -1249,9 +1252,11 @@ func probeVirtualRouterRouteRuleEntryMatchesIP(ip net.IP, entry string) bool {
 	case "ip":
 		return target.Equal(net.ParseIP(value).To4())
 	default:
-		return false
+		return probeProductVirtualRouterRouteRuleEntryMatchesIP(target, entry)
 	}
 }
+
+var probeProductVirtualRouterRouteRuleEntryMatchesIP = func(net.IP, string) bool { return false }
 
 func currentProbeVirtualRouterFakeIPEntryByIP(ip string) (probeVirtualRouterFakeIPEntry, bool) {
 	item, ok := currentProbeVirtualRouterStoredFakeIPEntryByIP(ip)

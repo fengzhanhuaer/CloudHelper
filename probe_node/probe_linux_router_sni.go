@@ -26,10 +26,11 @@ type probeLinuxRouterSNIFlowKey struct {
 }
 
 type probeLinuxRouterSNITCPPacket struct {
-	key      probeLinuxRouterSNIFlowKey
-	sequence uint32
-	flags    byte
-	payload  []byte
+	key             probeLinuxRouterSNIFlowKey
+	sequence        uint32
+	acknowledgement uint32
+	flags           byte
+	payload         []byte
 }
 
 type probeLinuxRouterSNIFlow struct {
@@ -49,6 +50,8 @@ var probeLinuxRouterSNIState = struct {
 	flows: make(map[probeLinuxRouterSNIFlowKey]*probeLinuxRouterSNIFlow),
 }
 
+var probeLinuxRouterSNIResetWriter = writeProbeVirtualRouterLocalTUNPacket
+
 func resetProbeLinuxRouterSNIState() {
 	probeLinuxRouterSNIState.mu.Lock()
 	probeLinuxRouterSNIState.flows = make(map[probeLinuxRouterSNIFlowKey]*probeLinuxRouterSNIFlow)
@@ -66,9 +69,21 @@ func probeLinuxRouterSNIRejectsPacket(packet []byte) bool {
 	}
 	now := time.Now()
 	probeLinuxRouterSNIState.mu.Lock()
-	defer probeLinuxRouterSNIState.mu.Unlock()
 	cleanupProbeLinuxRouterSNIFlowsLocked(now)
+	reject, reset := probeLinuxRouterSNIRejectsParsedPacketLocked(parsed, now)
+	probeLinuxRouterSNIState.mu.Unlock()
+	if reset != "" {
+		resetPacket, ok := buildProbeLinuxRouterSNIResetPacket(packet)
+		if ok {
+			if err := probeLinuxRouterSNIResetWriter(resetPacket); err != nil {
+				logProbeWarnf("probe linux router SNI reject reset failed: source=%s domain=%s err=%v", probeLinuxRouterSNIFlowSource(parsed.key), reset, err)
+			}
+		}
+	}
+	return reject
+}
 
+func probeLinuxRouterSNIRejectsParsedPacketLocked(parsed probeLinuxRouterSNITCPPacket, now time.Time) (bool, string) {
 	flow := probeLinuxRouterSNIState.flows[parsed.key]
 	if parsed.flags&0x02 != 0 { // SYN starts a new incarnation of the tuple.
 		delete(probeLinuxRouterSNIState.flows, parsed.key)
@@ -77,21 +92,21 @@ func probeLinuxRouterSNIRejectsPacket(packet []byte) bool {
 	if flow != nil && flow.rejectedDomain != "" {
 		if parsed.flags&(0x01|0x04) != 0 { // Let FIN/RST close the direct socket.
 			delete(probeLinuxRouterSNIState.flows, parsed.key)
-			return false
+			return false, ""
 		}
 		flow.updatedAt = now
 		if probeLinuxRouterDomainAction(flow.rejectedDomain) == "reject" {
-			return true
+			return true, ""
 		}
 		delete(probeLinuxRouterSNIState.flows, parsed.key)
 		flow = nil
 	}
 	if len(parsed.payload) == 0 {
-		return false
+		return false, ""
 	}
 	if flow == nil {
 		if parsed.payload[0] != 0x16 {
-			return false
+			return false, ""
 		}
 		makeProbeLinuxRouterSNIFlowRoomLocked(now)
 		flow = &probeLinuxRouterSNIFlow{
@@ -105,22 +120,58 @@ func probeLinuxRouterSNIRejectsPacket(packet []byte) bool {
 	appendProbeLinuxRouterSNIPayloadLocked(flow, parsed.sequence, parsed.payload)
 	serverName, complete := tlssniff.ClientHelloServerName(flow.preface)
 	if !complete && len(flow.preface) < probeLinuxRouterSNIMaxClientHello {
-		return false
+		return false, ""
 	}
 	if !tlssniff.IsValidServerName(serverName) {
 		delete(probeLinuxRouterSNIState.flows, parsed.key)
-		return false
+		return false, ""
 	}
 	action := probeLinuxRouterDomainAction(serverName)
 	recordProbeDomainObservation(serverName, "sni", probeLinuxRouterSNIFlowSource(parsed.key), action, nil, nil)
 	if action != "reject" {
 		delete(probeLinuxRouterSNIState.flows, parsed.key)
-		return false
+		return false, ""
 	}
 	flow.rejectedDomain = serverName
 	flow.preface = nil
 	flow.pending = nil
-	return true
+	return true, serverName
+}
+
+func buildProbeLinuxRouterSNIResetPacket(packet []byte) ([]byte, bool) {
+	parsed, ok := parseProbeLinuxRouterSNITCPPacket(packet)
+	if !ok || parsed.flags&0x04 != 0 {
+		return nil, false
+	}
+	reset := make([]byte, 40)
+	reset[0] = 0x45
+	reset[1] = packet[1]
+	binary.BigEndian.PutUint16(reset[2:4], uint16(len(reset)))
+	binary.BigEndian.PutUint16(reset[6:8], 0x4000)
+	reset[8] = 64
+	reset[9] = 6
+	copy(reset[12:16], packet[16:20])
+	copy(reset[16:20], packet[12:16])
+	tcp := reset[20:]
+	binary.BigEndian.PutUint16(tcp[0:2], parsed.key.destinationPort)
+	binary.BigEndian.PutUint16(tcp[2:4], parsed.key.sourcePort)
+	tcp[12] = 5 << 4
+	if parsed.flags&0x10 != 0 {
+		binary.BigEndian.PutUint32(tcp[4:8], parsed.acknowledgement)
+		tcp[13] = 0x04
+	} else {
+		segmentLength := uint32(len(parsed.payload))
+		if parsed.flags&0x02 != 0 {
+			segmentLength++
+		}
+		if parsed.flags&0x01 != 0 {
+			segmentLength++
+		}
+		binary.BigEndian.PutUint32(tcp[8:12], parsed.sequence+segmentLength)
+		tcp[13] = 0x14
+	}
+	normalizeProbeVirtualRouterLocalTUNPacketChecksums(reset)
+	return reset, true
 }
 
 func probeLinuxRouterSNIFlowSource(key probeLinuxRouterSNIFlowKey) string {
@@ -162,9 +213,10 @@ func parseProbeLinuxRouterSNITCPPacket(packet []byte) (probeLinuxRouterSNITCPPac
 			sourcePort:      binary.BigEndian.Uint16(tcpPacket[0:2]),
 			destinationPort: binary.BigEndian.Uint16(tcpPacket[2:4]),
 		},
-		sequence: binary.BigEndian.Uint32(tcpPacket[4:8]),
-		flags:    tcpPacket[13],
-		payload:  tcpPacket[tcpHeaderLen:],
+		sequence:        binary.BigEndian.Uint32(tcpPacket[4:8]),
+		acknowledgement: binary.BigEndian.Uint32(tcpPacket[8:12]),
+		flags:           tcpPacket[13],
+		payload:         tcpPacket[tcpHeaderLen:],
 	}, true
 }
 

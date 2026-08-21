@@ -726,16 +726,10 @@ func updateProbeNodeLocked(req probeNodeUpdateRequest) (probeNodeRecord, error) 
 	existingKind := normalizeProbeNodeKind(nodes[found].NodeKind)
 	requestedKind := existingKind
 	if rawKind := strings.ToLower(strings.TrimSpace(req.NodeKind)); rawKind != "" {
-		if rawKind != probeNodeKindNormal && rawKind != probeNodeKindMihomoExit && rawKind != probeNodeKindLinuxRouter {
+		if rawKind != probeNodeKindNormal && rawKind != probeNodeKindLinuxRouter {
 			return probeNodeRecord{}, fmt.Errorf("node kind must be normal or linux_router")
 		}
-		if rawKind == probeNodeKindMihomoExit && existingKind != probeNodeKindMihomoExit {
-			return probeNodeRecord{}, fmt.Errorf("mihomo_exit is a legacy node kind; use linux_router")
-		}
 		requestedKind = rawKind
-	}
-	if requestedKind == probeNodeKindMihomoExit && system != "linux" && system != "docker" {
-		return probeNodeRecord{}, fmt.Errorf("mihomo exit node target system must be linux or docker")
 	}
 	if requestedKind == probeNodeKindLinuxRouter && system != "linux" {
 		return probeNodeRecord{}, fmt.Errorf("linux router node target system must be linux")

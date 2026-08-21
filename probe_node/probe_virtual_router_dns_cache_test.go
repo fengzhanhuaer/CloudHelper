@@ -430,6 +430,59 @@ func TestResolveProbeVirtualRouterDNSDirectResponsePreservesIPExitRule(t *testin
 	}
 }
 
+func TestResolveProbeVirtualRouterDNSExplicitDirectRuleOverridesIPExitRule(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeLocalDNSServiceForTest()
+	resetProbeVirtualRouterLocalSettingsForTest()
+	enableProbeVirtualRouterLocalSettingsForTest(true, true)
+	restore := setProbeVirtualRouterDNSConfigForTest(t, probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		RouteRules: []probeVirtualRouterRouteRule{
+			{ID: "rr-domain-direct", Name: "domain direct", Action: "direct", Entries: []string{"domain_suffix:direct.example"}},
+			{ID: "rr-ip-exit", Name: "IP exit", Action: "probe_exit", ExitNodeID: "9", Entries: []string{"cidr:203.0.113.0/24"}},
+		},
+	})
+	defer restore()
+	t.Cleanup(func() {
+		resetProbeLocalDNSServiceForTest()
+		resetProbeVirtualRouterLocalSettingsForTest()
+		probeVirtualRouterDNSDirectPriorityState.mu.Lock()
+		probeVirtualRouterDNSDirectPriorityState.ips = map[string]time.Time{}
+		probeVirtualRouterDNSDirectPriorityState.mu.Unlock()
+	})
+
+	oldResolve := probeVirtualRouterDNSResolveRealPacket
+	oldEnsure := probeVirtualRouterEnsureDirectBypass
+	probeVirtualRouterDNSResolveRealPacket = func([]byte, string) ([]byte, []string, error) {
+		return []byte{1, 2, 3}, []string{"203.0.113.10"}, nil
+	}
+	var targets []string
+	probeVirtualRouterEnsureDirectBypass = func(target string) error {
+		targets = append(targets, target)
+		return nil
+	}
+	t.Cleanup(func() {
+		probeVirtualRouterDNSResolveRealPacket = oldResolve
+		probeVirtualRouterEnsureDirectBypass = oldEnsure
+	})
+
+	packet, err := buildProbeLocalDNSQueryA("api.direct.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := resolveProbeVirtualRouterDNSPacket(packet)
+	if err != nil || len(result.Response) == 0 {
+		t.Fatalf("explicit direct domain lookup failed: response=%v err=%v", result.Response, err)
+	}
+	if strings.Join(targets, ",") != "203.0.113.10:0" {
+		t.Fatalf("explicit direct domain did not prepare bypass: %v", targets)
+	}
+	if !probeVirtualRouterDNSDirectPriorityIP(net.ParseIP("203.0.113.10")) {
+		t.Fatal("explicit direct domain IP was not protected from lower-priority IP routing")
+	}
+}
+
 func setProbeVirtualRouterDNSConfigForTest(t *testing.T, config probeVirtualRouterConfig) func() {
 	t.Helper()
 	probeVirtualRouterState.mu.Lock()

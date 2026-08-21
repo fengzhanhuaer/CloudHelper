@@ -711,6 +711,12 @@
               <option value="all">全部来源</option>
             </select>
           </div>
+          <div class="field" style="flex:0 1 200px; min-width:160px;">
+            <label for="dnsRecordActionSelect">动作</label>
+            <select id="dnsRecordActionSelect">
+              <option value="all">全部动作</option>
+            </select>
+          </div>
           <div class="field">
             <label for="dnsRecordFilterInput">域名搜索</label>
             <input id="dnsRecordFilterInput" class="mono" placeholder="域名 / IP / 动作" />
@@ -886,6 +892,7 @@
     let dnsRecordSnapshot = { items: [], sources: [] };
     let dnsRecordAutoRefreshPaused = false;
     let dnsRecordSource = 'all';
+    let dnsRecordAction = 'all';
     let dnsRecordFilterText = '';
     let packetAutoRefreshPaused = false;
     let packetFilterText = '';
@@ -1344,6 +1351,7 @@
         direct_error: '直连失败',
         proxy_error: '代理失败',
         fake_ip: '分配 Fake IP',
+        probe_exit: '探针出口',
         reject: 'DNS 拒绝',
         connected: '已建立连接',
       };
@@ -1617,7 +1625,8 @@
       return items.filter((item) => {
         const sources = Array.isArray(item.sources) ? item.sources : [];
         const sourceMatched = dnsRecordSource === 'all' || sources.includes(dnsRecordSource);
-        return sourceMatched && terms.every((term) => domainObservationSearchText(item).includes(term));
+        const actionMatched = dnsRecordAction === 'all' || String(item.last_action || '') === dnsRecordAction;
+        return sourceMatched && actionMatched && terms.every((term) => domainObservationSearchText(item).includes(term));
       }).sort((left, right) => String(right.last_seen || '').localeCompare(String(left.last_seen || '')));
     }
 
@@ -1628,6 +1637,17 @@
       select.innerHTML = options.join('');
       if (dnsRecordSource !== 'all' && !sources.includes(dnsRecordSource)) dnsRecordSource = 'all';
       select.value = dnsRecordSource;
+    }
+
+    function renderDomainObservationActionOptions(data) {
+      const select = document.getElementById('dnsRecordActionSelect');
+      const items = Array.isArray(data && data.items) ? data.items : [];
+      const actions = Array.from(new Set(items.map((item) => String(item.last_action || '').trim()).filter(Boolean)))
+        .sort((left, right) => packetActionLabel(left).localeCompare(packetActionLabel(right), 'zh-CN'));
+      const options = ['<option value="all">全部动作</option>'].concat(actions.map((action) => `<option value="${escapeHTML(action)}">${escapeHTML(packetActionLabel(action))}</option>`));
+      select.innerHTML = options.join('');
+      if (dnsRecordAction !== 'all' && !actions.includes(dnsRecordAction)) dnsRecordAction = 'all';
+      select.value = dnsRecordAction;
     }
 
     function domainObservationRowsHTML(items, status) {
@@ -1655,6 +1675,7 @@
 
     function renderDomainObservations(data) {
       renderDomainObservationSourceOptions(data || {});
+      renderDomainObservationActionOptions(data || {});
       const allItems = Array.isArray(data && data.items) ? data.items : [];
       const items = filteredDomainObservations(data || {});
       const tracking = items.filter((item) => String(item.status || 'tracking') === 'tracking');
@@ -1664,7 +1685,7 @@
       document.getElementById('dnsTrackingCount').textContent = `${tracking.length} 条`;
       document.getElementById('dnsAllowedCount').textContent = `${allowed.length} 条`;
       const paused = dnsRecordAutoRefreshPaused ? '自动刷新已停止' : '自动刷新中';
-      const filtered = dnsRecordSource !== 'all' || dnsRecordFilterText;
+      const filtered = dnsRecordSource !== 'all' || dnsRecordAction !== 'all' || dnsRecordFilterText;
       document.getElementById('dnsRecordSummary').textContent = `${filtered ? `显示 ${items.length}/${allItems.length} 条` : `${allItems.length} 条`}，${paused}`;
     }
 
@@ -2294,6 +2315,10 @@
     });
     document.getElementById('dnsRecordSourceSelect').addEventListener('change', (event) => {
       dnsRecordSource = String(event.target.value || 'all');
+      renderDomainObservations(dnsRecordSnapshot);
+    });
+    document.getElementById('dnsRecordActionSelect').addEventListener('change', (event) => {
+      dnsRecordAction = String(event.target.value || 'all');
       renderDomainObservations(dnsRecordSnapshot);
     });
     document.getElementById('dnsRecordFilterInput').addEventListener('input', (event) => {

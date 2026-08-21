@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/binary"
+	"net"
 	"testing"
 	"time"
 
@@ -17,6 +18,11 @@ func TestProbeLinuxRouterSNIRejectsSplitClientHello(t *testing.T) {
 		Action:  "reject",
 		Entries: []string{"domain_suffix:example.com"},
 	}})
+	var resets [][]byte
+	probeLinuxRouterSNIResetWriter = func(packet []byte) error {
+		resets = append(resets, append([]byte(nil), packet...))
+		return nil
+	}
 	hello := buildProbeLinuxRouterTestClientHello("ads.example.com")
 	assertProbeLinuxRouterTestClientHello(t, hello, "ads.example.com")
 	firstLen := 11
@@ -27,6 +33,19 @@ func TestProbeLinuxRouterSNIRejectsSplitClientHello(t *testing.T) {
 	if !probeLinuxRouterSNIRejectsPacket(second) {
 		t.Fatal("completed ClientHello did not match the reject rule")
 	}
+	if len(resets) != 1 {
+		t.Fatalf("reset count=%d, want 1", len(resets))
+	}
+	reset := resets[0]
+	if len(reset) != 40 || !net.IP(reset[12:16]).Equal(net.IPv4(203, 0, 113, 8)) || !net.IP(reset[16:20]).Equal(net.IPv4(192, 168, 51, 20)) {
+		t.Fatalf("unexpected reset IP packet: %v", reset)
+	}
+	if binary.BigEndian.Uint16(reset[20:22]) != 443 || binary.BigEndian.Uint16(reset[22:24]) != 43210 || binary.BigEndian.Uint32(reset[24:28]) != 9000 || reset[33] != 0x04 {
+		t.Fatalf("unexpected reset TCP header: %v", reset[20:])
+	}
+	if summary := probeVirtualRouterPacketChecksumSummary(reset); summary != "ip_checksum=ok tcp_checksum=ok" {
+		t.Fatalf("reset checksums=%q", summary)
+	}
 	observations, _, err := snapshotProbeDomainObservations()
 	if err != nil || len(observations) != 1 || observations[0].Domain != "ads.example.com" || observations[0].SNIObservations != 1 || observations[0].LastSource != "192.168.51.20" {
 		t.Fatalf("SNI observation=%+v err=%v", observations, err)
@@ -34,8 +53,25 @@ func TestProbeLinuxRouterSNIRejectsSplitClientHello(t *testing.T) {
 	if !probeLinuxRouterSNIRejectsPacket(second) {
 		t.Fatal("retransmitted packet from a rejected flow was allowed")
 	}
+	if len(resets) != 1 {
+		t.Fatalf("retransmission emitted %d resets, want one per rejected flow", len(resets))
+	}
 	if probeLinuxRouterSNIRejectsPacket(buildProbeLinuxRouterTestTCPPacket(1000+uint32(len(hello)), 0x04, nil)) {
 		t.Fatal("RST should be allowed to close the direct socket")
+	}
+}
+
+func TestBuildProbeLinuxRouterSNIResetPacketAcknowledgesUnackedSegment(t *testing.T) {
+	packet := buildProbeLinuxRouterTestTCPPacket(1200, 0x08, []byte("hello"))
+	reset, ok := buildProbeLinuxRouterSNIResetPacket(packet)
+	if !ok {
+		t.Fatal("reset packet was not built")
+	}
+	if reset[33] != 0x14 || binary.BigEndian.Uint32(reset[24:28]) != 0 || binary.BigEndian.Uint32(reset[28:32]) != 1205 {
+		t.Fatalf("unexpected RST+ACK header: %v", reset[20:])
+	}
+	if summary := probeVirtualRouterPacketChecksumSummary(reset); summary != "ip_checksum=ok tcp_checksum=ok" {
+		t.Fatalf("reset checksums=%q", summary)
 	}
 }
 
@@ -125,6 +161,8 @@ func useProbeLinuxRouterSNITestState(t *testing.T, rules []probeVirtualRouterRou
 	probeLinuxRouterSNIState.flows = make(map[probeLinuxRouterSNIFlowKey]*probeLinuxRouterSNIFlow)
 	probeLinuxRouterSNIState.lastCleanup = time.Time{}
 	probeLinuxRouterSNIState.mu.Unlock()
+	oldResetWriter := probeLinuxRouterSNIResetWriter
+	probeLinuxRouterSNIResetWriter = func([]byte) error { return nil }
 	t.Cleanup(func() {
 		resetProbeDomainObservations()
 		probeVirtualRouterState.mu.Lock()
@@ -134,6 +172,7 @@ func useProbeLinuxRouterSNITestState(t *testing.T, rules []probeVirtualRouterRou
 		probeLinuxRouterSNIState.flows = oldFlows
 		probeLinuxRouterSNIState.lastCleanup = oldCleanup
 		probeLinuxRouterSNIState.mu.Unlock()
+		probeLinuxRouterSNIResetWriter = oldResetWriter
 	})
 }
 
@@ -149,6 +188,9 @@ func buildProbeLinuxRouterTestTCPPacket(sequence uint32, flags byte, payload []b
 	binary.BigEndian.PutUint16(tcpPacket[0:2], 43210)
 	binary.BigEndian.PutUint16(tcpPacket[2:4], 443)
 	binary.BigEndian.PutUint32(tcpPacket[4:8], sequence)
+	if flags&0x10 != 0 {
+		binary.BigEndian.PutUint32(tcpPacket[8:12], 9000)
+	}
 	tcpPacket[12] = 5 << 4
 	tcpPacket[13] = flags
 	copy(tcpPacket[20:], payload)

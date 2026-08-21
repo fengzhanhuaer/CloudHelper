@@ -481,7 +481,7 @@ func cleanupProbeRouteDirectBypassForVirtualRouterRules(config probeVirtualRoute
 			continue
 		}
 		ip := net.ParseIP(strings.TrimSpace(entry.Prefix)).To4()
-		if ip == nil || !probeVirtualRouterConfigRoutesIPViaProbeExit(config, ip) {
+		if ip == nil || probeVirtualRouterDNSDirectPriorityIP(ip) || !probeVirtualRouterConfigRoutesIPViaProbeExit(config, ip) {
 			continue
 		}
 		routeDef := probeRouteWindowsRouteDef{

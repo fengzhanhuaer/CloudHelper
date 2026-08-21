@@ -1,4 +1,4 @@
-//go:build mihomo_exit || linux_router
+//go:build linux_router
 
 package main
 
@@ -29,17 +29,22 @@ import (
 )
 
 const (
-	probeMihomoRuntimeFileName   = "mihomo_runtime.json"
-	probeMihomoSnapshotFileName  = "special_exit_snapshot.json"
-	probeMihomoConfigFileName    = "mihomo.yaml"
-	probeMihomoCandidateFileName = "mihomo.candidate.yaml"
-	probeMihomoBinaryFileName    = "mihomo"
-	probeMihomoSOCKSPort         = 17890
-	probeMihomoAPIPort           = 17891
-	probeMihomoMaxConfigBytes    = 16 << 20
-	probeMihomoDelayTimeoutMS    = 5000
-	probeMihomoConnectivityEvery = 60 * time.Second
-	probeMihomoConnectivityURL   = "https://www.gstatic.com/generate_204"
+	probeMihomoRuntimeFileName     = "mihomo_runtime.json"
+	probeMihomoSnapshotFileName    = "special_exit_snapshot.json"
+	probeMihomoConfigFileName      = "mihomo.yaml"
+	probeMihomoCandidateFileName   = "mihomo.candidate.yaml"
+	probeMihomoASNCandidateName    = "mihomo.asn.candidate.yaml"
+	probeMihomoASNDatabaseFileName = "ASN.mmdb"
+	probeMihomoASNDownloadName     = "ASN.mmdb.candidate"
+	probeMihomoBinaryFileName      = "mihomo"
+	probeMihomoSOCKSPort           = 17890
+	probeMihomoAPIPort             = 17891
+	probeMihomoMaxConfigBytes      = 16 << 20
+	probeMihomoDelayTimeoutMS      = 5000
+	probeMihomoConnectivityEvery   = 60 * time.Second
+	probeMihomoConnectivityURL     = "https://www.gstatic.com/generate_204"
+	probeMihomoASNDatabaseURL      = "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb"
+	probeMihomoASNCacheMaxAge      = 24 * time.Hour
 )
 
 type probeMihomoRuntimeSecrets struct {
@@ -65,6 +70,15 @@ type probeMihomoProcessState struct {
 
 var activeProbeMihomoRuntime probeMihomoProcessState
 var probeMihomoConnectivityAPIRequest = probeMihomoAPIRequest
+var probeMihomoASNDatabaseEnabled bool
+var probeProductActivateMihomoASNDatabase = func(candidatePath, databasePath string) error {
+	return os.Rename(candidatePath, databasePath)
+}
+
+var probeMihomoASNBootstrapState = struct {
+	sync.Mutex
+	nextAttempt time.Time
+}{}
 
 func startProbeMihomoRuntime(nodeID string, snapshotRequired bool) error {
 	dataDir, err := resolveDataDir()
@@ -315,6 +329,11 @@ func compileProbeMihomoConfig(snapshot probeSpecialExitSnapshot, secrets probeMi
 			rules = append(rules, line)
 		}
 	}
+	if asn := firstProbeVirtualRouterASN(); probeMihomoASNDatabaseEnabled && asn != "" {
+		// The fallback is already DIRECT. This rule only makes Mihomo initialize
+		// and maintain the ASN.mmdb shared with the Linux router matcher.
+		rules = append(rules, "IP-ASN,"+asn+",DIRECT,no-resolve")
+	}
 	rules = append(rules, "MATCH,DIRECT")
 	config := map[string]interface{}{
 		"mode": "rule", "log-level": "warning", "ipv6": false, "allow-lan": false,
@@ -323,7 +342,89 @@ func compileProbeMihomoConfig(snapshot probeSpecialExitSnapshot, secrets probeMi
 		"dns":       map[string]interface{}{"enable": true, "ipv6": false, "enhanced-mode": "redir-host", "default-nameserver": []string{"1.1.1.1", "8.8.8.8"}, "nameserver": []string{"https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query"}, "proxy-server-nameserver": []string{"1.1.1.1", "8.8.8.8"}, "direct-nameserver": []string{"system"}},
 		"proxies":   snapshot.Proxies, "proxy-groups": []map[string]interface{}{}, "rules": rules,
 	}
+	if probeMihomoASNDatabaseEnabled {
+		config["geo-auto-update"] = true
+		config["geo-update-interval"] = 24
+		config["geox-url"] = map[string]interface{}{"asn": probeMihomoASNDatabaseURL}
+	}
 	return yaml.Marshal(config)
+}
+
+func firstProbeVirtualRouterASN() string {
+	config := currentProbeVirtualRouterConfig()
+	for _, rule := range config.RouteRules {
+		for _, entry := range rule.Entries {
+			kind, value, ok := strings.Cut(strings.TrimSpace(entry), ":")
+			if ok && strings.EqualFold(strings.TrimSpace(kind), "asn") {
+				if number, err := strconv.ParseUint(strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(value)), "AS"), 10, 32); err == nil && number > 0 {
+					return strconv.FormatUint(number, 10)
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func ensureProbeMihomoASNDatabaseCache() error {
+	probeMihomoASNBootstrapState.Lock()
+	defer probeMihomoASNBootstrapState.Unlock()
+	dataDir, err := resolveDataDir()
+	if err != nil {
+		return err
+	}
+	databasePath := filepath.Join(dataDir, probeMihomoASNDatabaseFileName)
+	info, statErr := os.Stat(databasePath)
+	cacheExists := statErr == nil && info.Size() > 0
+	if cacheExists && time.Since(info.ModTime()) < probeMihomoASNCacheMaxAge {
+		return nil
+	}
+	now := time.Now()
+	if now.Before(probeMihomoASNBootstrapState.nextAttempt) {
+		return nil
+	}
+	probeMihomoASNBootstrapState.nextAttempt = now.Add(time.Hour)
+	if identity, controllerBase, ok := currentProbeVirtualRouterController(); ok {
+		downloadPath := filepath.Join(dataDir, probeMihomoASNDownloadName)
+		_ = os.Remove(downloadPath)
+		defer os.Remove(downloadPath)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		downloadErr := downloadProbeAsset(ctx, "proxy", probeMihomoASNDatabaseURL, controllerBase, identity, downloadPath, nil)
+		cancel()
+		if downloadErr == nil {
+			downloadErr = probeProductActivateMihomoASNDatabase(downloadPath, databasePath)
+		}
+		if downloadErr == nil {
+			probeMihomoASNBootstrapState.nextAttempt = time.Time{}
+			return nil
+		}
+		if cacheExists {
+			return fmt.Errorf("controller-proxied ASN update failed; keeping cached database: %w", downloadErr)
+		}
+	}
+	if cacheExists {
+		return nil
+	}
+	secrets, err := loadOrCreateProbeMihomoRuntimeSecrets(dataDir)
+	if err != nil {
+		return err
+	}
+	config, err := compileProbeMihomoConfig(probeSpecialExitSnapshot{}, secrets)
+	if err != nil {
+		return err
+	}
+	candidatePath := filepath.Join(dataDir, probeMihomoASNCandidateName)
+	if err = writeProbeMihomoAtomic(candidatePath, config, 0o600); err != nil {
+		return err
+	}
+	defer os.Remove(candidatePath)
+	if err = validateProbeMihomoCandidate(resolveProbeMihomoBinaryPath(dataDir), dataDir, candidatePath); err != nil {
+		return err
+	}
+	if info, statErr := os.Stat(databasePath); statErr != nil || info.Size() == 0 {
+		return errors.New("mihomo did not initialize ASN.mmdb")
+	}
+	probeMihomoASNBootstrapState.nextAttempt = time.Time{}
+	return nil
 }
 
 func compileProbeMihomoRule(entry string, ports []string, network, policy string) (string, error) {

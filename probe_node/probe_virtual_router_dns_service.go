@@ -53,6 +53,11 @@ var probeVirtualRouterRestoreSystemDNS = restoreProbeVirtualRouterSystemDNS
 var probeVirtualRouterDNSAfterTUNReady = ensureProbeVirtualRouterDNSRuntime
 var probeVirtualRouterDNSResolveRealPacket = resolveProbeVirtualRouterDNSRealPacket
 
+var probeVirtualRouterDNSDirectPriorityState = struct {
+	mu  sync.Mutex
+	ips map[string]time.Time
+}{ips: map[string]time.Time{}}
+
 func ensureProbeVirtualRouterDNSRuntime() {
 	_ = reconcileProbeVirtualRouterDNSRuntime()
 }
@@ -302,7 +307,7 @@ func resolveProbeVirtualRouterDNSPacketFromSource(packet []byte, requestSource s
 	}
 	rule, matched := currentProbeVirtualRouterRouteRuleForDomain(cleanDomain)
 	if !matched {
-		response, realIPs, err := resolveProbeVirtualRouterDNSDirectPacket(packet, cleanDomain)
+		response, realIPs, err := resolveProbeVirtualRouterDNSDirectPacket(packet, cleanDomain, false)
 		result.Response = response
 		result.RealIPs = realIPs
 		return result, err
@@ -330,39 +335,75 @@ func resolveProbeVirtualRouterDNSPacketFromSource(packet []byte, requestSource s
 		result.Response = buildProbeLocalDNSSuccessA(packet, item.FakeIP)
 		return result, nil
 	default:
-		response, realIPs, err := resolveProbeVirtualRouterDNSDirectPacket(packet, cleanDomain)
+		response, realIPs, err := resolveProbeVirtualRouterDNSDirectPacket(packet, cleanDomain, true)
 		result.Response = response
 		result.RealIPs = realIPs
 		return result, err
 	}
 }
 
-func resolveProbeVirtualRouterDNSDirectPacket(packet []byte, domain string) ([]byte, []string, error) {
+func resolveProbeVirtualRouterDNSDirectPacket(packet []byte, domain string, domainRuleMatched bool) ([]byte, []string, error) {
 	response, realIPs, err := probeVirtualRouterDNSResolveRealPacket(packet, domain)
 	if err != nil {
 		return response, realIPs, err
 	}
-	if err := ensureProbeVirtualRouterDNSDirectBypasses(realIPs); err != nil {
+	if err := ensureProbeVirtualRouterDNSDirectBypasses(realIPs, domainRuleMatched); err != nil {
 		return nil, realIPs, err
 	}
 	return response, realIPs, nil
 }
 
-func ensureProbeVirtualRouterDNSDirectBypasses(realIPs []string) error {
+func ensureProbeVirtualRouterDNSDirectBypasses(realIPs []string, domainRuleMatched bool) error {
 	if !probeVirtualRouterLocalEntryEnabled() {
 		return nil
 	}
 	var allErr error
 	for _, ipText := range filterProbeLocalIPv4StringsFromList(realIPs) {
-		if rule, ok := currentProbeVirtualRouterRouteRuleForIP(ipText); ok && sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) == "probe_exit" {
-			continue
+		if !domainRuleMatched {
+			if rule, ok := currentProbeVirtualRouterRouteRuleForIP(ipText); ok && sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) == "probe_exit" {
+				continue
+			}
 		}
 		target := net.JoinHostPort(ipText, "0")
 		if err := probeVirtualRouterEnsureDirectBypass(target); err != nil {
 			allErr = errors.Join(allErr, fmt.Errorf("prepare direct dns bypass for %s: %w", ipText, err))
 		}
 	}
+	if allErr == nil && domainRuleMatched {
+		rememberProbeVirtualRouterDNSDirectPriorityIPs(realIPs)
+	}
 	return allErr
+}
+
+func rememberProbeVirtualRouterDNSDirectPriorityIPs(realIPs []string) {
+	now := time.Now().UTC()
+	probeVirtualRouterDNSDirectPriorityState.mu.Lock()
+	defer probeVirtualRouterDNSDirectPriorityState.mu.Unlock()
+	for ipText, expiresAt := range probeVirtualRouterDNSDirectPriorityState.ips {
+		if !expiresAt.After(now) {
+			delete(probeVirtualRouterDNSDirectPriorityState.ips, ipText)
+		}
+	}
+	for _, ipText := range filterProbeLocalIPv4StringsFromList(realIPs) {
+		probeVirtualRouterDNSDirectPriorityState.ips[ipText] = now.Add(probeLocalDNSCacheTTL)
+	}
+}
+
+func probeVirtualRouterDNSDirectPriorityIP(ip net.IP) bool {
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return false
+	}
+	now := time.Now().UTC()
+	key := ip4.String()
+	probeVirtualRouterDNSDirectPriorityState.mu.Lock()
+	defer probeVirtualRouterDNSDirectPriorityState.mu.Unlock()
+	expiresAt, ok := probeVirtualRouterDNSDirectPriorityState.ips[key]
+	if !ok || !expiresAt.After(now) {
+		delete(probeVirtualRouterDNSDirectPriorityState.ips, key)
+		return false
+	}
+	return true
 }
 
 func resolveProbeVirtualRouterDNSRealPacket(packet []byte, domain string) ([]byte, []string, error) {

@@ -13,7 +13,6 @@ import (
 
 const (
 	probeNodeKindNormal                = "normal"
-	probeNodeKindMihomoExit            = "mihomo_exit"
 	probeNodeKindLinuxRouter           = "linux_router"
 	probeSpecialExitDirectTarget       = "DIRECT"
 	probeSpecialExitMaxCount           = 128
@@ -90,16 +89,15 @@ type probeSpecialExitConnectivityReport struct {
 
 func normalizeProbeNodeKind(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case probeNodeKindMihomoExit, probeNodeKindLinuxRouter:
-		return strings.ToLower(strings.TrimSpace(raw))
+	case probeNodeKindLinuxRouter:
+		return probeNodeKindLinuxRouter
 	default:
 		return probeNodeKindNormal
 	}
 }
 
 func probeNodeSupportsSpecialExit(raw string) bool {
-	kind := normalizeProbeNodeKind(raw)
-	return kind == probeNodeKindLinuxRouter || kind == probeNodeKindMihomoExit
+	return normalizeProbeNodeKind(raw) == probeNodeKindLinuxRouter
 }
 
 func normalizeProbeSpecialExitConfigs(items []probeSpecialExitConfig) []probeSpecialExitConfig {

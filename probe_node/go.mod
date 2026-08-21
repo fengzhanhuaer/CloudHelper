@@ -6,6 +6,7 @@ require (
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/gorilla/websocket v1.5.3
 	github.com/hashicorp/yamux v0.1.2
+	github.com/oschwald/maxminddb-golang v1.13.1
 	github.com/quic-go/quic-go v0.60.0
 	github.com/txthinking/socks5 v0.0.0-20260601051520-339b044ab0eb
 	golang.org/x/crypto v0.53.0

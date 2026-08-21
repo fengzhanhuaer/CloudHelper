@@ -66,22 +66,6 @@ func TestMngProbeNodesHandlerIncludesRuntimeVersionWithoutStatusCall(t *testing.
 	}
 }
 
-func TestMngProbeNodeInstallHandlerRejectsLegacyMihomoExitInstallation(t *testing.T) {
-	oldStore := ProbeStore
-	ProbeStore = &probeConfigStore{data: probeConfigData{ProbeNodes: []probeNodeRecord{{NodeNo: 19, NodeName: "exit", NodeKind: probeNodeKindMihomoExit, NodeSecret: "node-secret"}}}}
-	t.Cleanup(func() { ProbeStore = oldStore })
-
-	req := httptest.NewRequest(http.MethodGet, "https://controller.example/mng/api/probe/node/install?node_id=19&mode=native", nil)
-	rr := httptest.NewRecorder()
-	mngProbeNodeInstallHandler(rr, req)
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d body=%s", rr.Code, rr.Body.String())
-	}
-	if !strings.Contains(rr.Body.String(), "change the node kind to linux_router") {
-		t.Fatalf("migration guidance missing: %s", rr.Body.String())
-	}
-}
-
 func TestMngProbeNodesHandlerIncludesAndroidRuntimePlatform(t *testing.T) {
 	oldStore := ProbeStore
 	ProbeStore = &probeConfigStore{

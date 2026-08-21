@@ -1,4 +1,4 @@
-//go:build mihomo_exit
+//go:build linux_router
 
 package main
 
@@ -250,10 +250,10 @@ func TestOfficialMihomoValidatesCompiledSpecialExitConfig(t *testing.T) {
 }
 
 func TestProbeMihomoUpgradeManifestAndPairedRollback(t *testing.T) {
-	manifest := probeMihomoUpgradeManifest{SchemaVersion: 1, Version: "v2.3.4", BuildKind: probeBuildKindMihomoExit, OS: "linux", Arch: "amd64"}
+	manifest := probeMihomoUpgradeManifest{SchemaVersion: 1, Version: "v2.3.4", BuildKind: probeBuildKindLinuxRouter, OS: "linux", Arch: "amd64"}
 	manifest.CompatibleProgramVersions.Min = "v2.3.4"
 	manifest.CompatibleProgramVersions.Max = "v2.3.4"
-	manifest.Program.Asset = "cloudhelper-probe-exit-node-linux-amd64"
+	manifest.Program.Asset = "cloudhelper-probe-router-linux-amd64"
 	manifest.Program.SHA256 = strings.Repeat("ab", 32)
 	manifest.Mihomo.Version = "v1.19.29"
 	manifest.Mihomo.Asset = "mihomo-linux-amd64-compatible-v1.19.29.gz"

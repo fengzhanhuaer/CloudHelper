@@ -43,11 +43,10 @@ func TestProbePageVersionColumnsShowUpgradeAvailability(t *testing.T) {
 	}
 }
 
-func TestProbePageCreatesLinuxRouterAndKeepsLegacyMihomoReadOnly(t *testing.T) {
+func TestProbePageCreatesLinuxRouterWithoutStandaloneMihomoProduct(t *testing.T) {
 	required := []string{
 		`id="create-node-kind"`,
 		`value="linux_router"`,
-		`value="mihomo_exit" disabled`,
 		`JSON.stringify({ node_name: nodeName, node_kind: nodeKind })`,
 		`/mng/api/probe/node/install?node_id=`,
 		`data-action="node-install-command"`,
@@ -62,10 +61,10 @@ func TestProbePageCreatesLinuxRouterAndKeepsLegacyMihomoReadOnly(t *testing.T) {
 	}
 	createSelectStart := strings.Index(mngProbePageHTML, `id="create-node-kind"`)
 	createSelectEnd := strings.Index(mngProbePageHTML[createSelectStart:], `</select>`)
-	if createSelectStart < 0 || createSelectEnd < 0 || strings.Contains(mngProbePageHTML[createSelectStart:createSelectStart+createSelectEnd], `value="mihomo_exit"`) {
-		t.Fatal("new probe form must not expose the legacy mihomo_exit kind")
+	if createSelectStart < 0 || createSelectEnd < 0 {
+		t.Fatal("new probe type selector is missing")
 	}
-	for _, forbidden := range []string{"cloudhelper-probe-exit-node-shell", `id="install-mode"`, "formatSpecialExitInstallInfo"} {
+	for _, forbidden := range []string{"mihomo_exit", "cloudhelper-probe-exit-node-shell", `id="install-mode"`, "formatSpecialExitInstallInfo"} {
 		if strings.Contains(mngProbePageHTML, forbidden) {
 			t.Fatalf("probe page still contains standalone Mihomo install marker %q", forbidden)
 		}

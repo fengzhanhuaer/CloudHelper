@@ -146,9 +146,6 @@ func mngProbeNodeInstallHandler(w http.ResponseWriter, r *http.Request) {
 	switch normalizeProbeNodeKind(node.NodeKind) {
 	case probeNodeKindLinuxRouter:
 		result, err = buildMngProbeLinuxRouterInstallInfo(nodeID, controllerBaseURLFromRequest(r))
-	case probeNodeKindMihomoExit:
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "standalone Mihomo exit installation has been removed; change the node kind to linux_router and reinstall"})
-		return
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("node %q does not use an installable managed node kind", normalizeProbeNodeID(nodeID))})
 		return

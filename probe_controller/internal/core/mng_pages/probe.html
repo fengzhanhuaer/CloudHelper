@@ -295,7 +295,6 @@
           <label for="edit-node-kind">node_kind</label>
           <select id="edit-node-kind">
             <option value="normal">普通探针</option>
-            <option value="mihomo_exit" disabled>旧 Mihomo 出口（请迁移）</option>
             <option value="linux_router">Linux 旁路由探针</option>
           </select>
         </div>
@@ -696,16 +695,13 @@
 
     function normalizeNodeKind(node) {
       const value = String((node && node.node_kind) || '').trim().toLowerCase();
-      return value === 'mihomo_exit' || value === 'linux_router' ? value : 'normal';
+      return value === 'linux_router' ? value : 'normal';
     }
 
     async function buildNodeInstallCommand(node) {
       const nodeKind = normalizeNodeKind(node);
       if (nodeKind === 'normal') {
         return buildProbeInstallCommand(node, window.location.origin);
-      }
-      if (nodeKind === 'mihomo_exit') {
-        throw new Error('独立 Mihomo 出口已取消，请先将类型改为 Linux 旁路由并重装');
       }
       const nodeID = String(Number(node && node.node_no) || '').trim();
       const result = await requestJSON(`/mng/api/probe/node/install?node_id=${encodeURIComponent(nodeID)}`);
@@ -794,20 +790,12 @@
           const ddns = escapeHTML(item.ddns || '-');
           const vendor = formatVendorLink(item.vendor_name, item.vendor_url);
           const nodeKind = normalizeNodeKind(item);
-          const kindLabel = nodeKind === 'mihomo_exit'
-            ? '<span class="pill node-kind-exit">Mihomo 出口</span>'
-            : (nodeKind === 'linux_router' ? '<span class="pill online">Linux 旁路由</span>' : '');
+          const kindLabel = nodeKind === 'linux_router' ? '<span class="pill online">Linux 旁路由</span>' : '';
           const systemLabel = nodeKind === 'linux_router'
             ? 'Alpine Linux x64/ARM64'
-            : (nodeKind === 'mihomo_exit'
-            ? (String(item.target_system || '').toLowerCase() === 'docker' ? 'Docker' : 'Linux x64')
-            : escapeHTML(item.target_system || '-'));
-          const installButton = nodeKind === 'mihomo_exit'
-            ? ''
-            : `<button class="btn" type="button" data-action="node-install-command" data-node-no="${item.node_no}">安装</button>`;
-          const upgradeButton = nodeKind === 'mihomo_exit'
-            ? ''
-            : `<button class="btn" type="button" data-action="node-upgrade" data-node-no="${item.node_no}">升级</button>`;
+            : escapeHTML(item.target_system || '-');
+          const installButton = `<button class="btn" type="button" data-action="node-install-command" data-node-no="${item.node_no}">安装</button>`;
+          const upgradeButton = `<button class="btn" type="button" data-action="node-upgrade" data-node-no="${item.node_no}">升级</button>`;
           return `<tr>
             <td>${escapeHTML(item.node_no)}</td>
             <td>${escapeHTML(item.node_name || '-')}${kindLabel}</td>
@@ -1457,7 +1445,7 @@
       const nodeName = String((node && node.node_name) || '').trim();
       state.installCommandText = String(command || '');
       const nodeKind = normalizeNodeKind(node);
-      const kindLabel = nodeKind === 'mihomo_exit' ? 'Mihomo 出口探针' : (nodeKind === 'linux_router' ? 'Linux 旁路由探针' : '普通探针');
+      const kindLabel = nodeKind === 'linux_router' ? 'Linux 旁路由探针' : '普通探针';
       document.getElementById('install-modal-title').textContent = `${kindLabel}安装信息：#${nodeNo}${nodeName ? ' ' + nodeName : ''}`;
       document.getElementById('install-modal-content').textContent = state.installCommandText;
       document.getElementById('node-install-modal').removeAttribute('hidden');
@@ -1535,12 +1523,9 @@
       const nodeKind = String(document.getElementById('edit-node-kind').value || 'normal');
       const targetSystemSelect = document.getElementById('edit-target-system');
       Array.from(targetSystemSelect.options).forEach((option) => {
-        option.disabled = (nodeKind === 'mihomo_exit' && option.value !== 'linux' && option.value !== 'docker')
-          || (nodeKind === 'linux_router' && option.value !== 'linux');
+        option.disabled = nodeKind === 'linux_router' && option.value !== 'linux';
       });
       if (nodeKind === 'linux_router') {
-        targetSystemSelect.value = 'linux';
-      } else if (nodeKind === 'mihomo_exit' && targetSystemSelect.value !== 'linux' && targetSystemSelect.value !== 'docker') {
         targetSystemSelect.value = 'linux';
       }
       targetSystemSelect.disabled = false;
@@ -1602,9 +1587,6 @@
         throw buildEditValidationError('target_system 只能是 linux、windows、android 或 docker');
       }
       const nodeKind = String(document.getElementById('edit-node-kind').value || 'normal');
-      if (nodeKind === 'mihomo_exit' && targetSystem !== 'linux' && targetSystem !== 'docker') {
-        throw buildEditValidationError('Mihomo 出口探针只能选择 Linux 或 Docker');
-      }
       if (nodeKind === 'linux_router' && targetSystem !== 'linux') {
         throw buildEditValidationError('Linux 旁路由探针只能选择 Linux');
       }

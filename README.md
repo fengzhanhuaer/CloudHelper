@@ -7,7 +7,6 @@ CloudHelper 是一个探针主控与节点项目，当前版本：`0.0.7`。
 
 - `probe_controller`：探针主控服务（Go）
 - `probe_node`：探针节点服务（Go）
-- `probe_node` 的 `mihomo_exit` 构建：特殊出口探针 `probe_exit_node`（仅 Linux amd64）
 - `scripts/install_probe_controller_service.sh`：Linux 主控一键安装脚本（systemd，公网安装入口）
 - `probe_controller/internal/core/install_scripts/install_probe_controller_service.sh`：主控安装脚本的内置副本（用于系统设置里生成自包含迁移脚本）
 - `probe_controller/internal/core/install_scripts/install_probe_node_service.sh`：Linux 探针节点安装脚本（由主控探针页分发，支持 systemd / 非 systemd）
@@ -104,7 +103,7 @@ Compose 会将 `docker/probe_node/` 目录整体挂载到容器的 `/opt/cloudhe
 
 ## Linux 旁路由与 Mihomo 二次分流
 
-`linux_router` 是唯一的新建软路由产品，同时提供旁路由接入、普通探针级联和 Mihomo 代理出口。主控 `/mng/probe` 不再提供独立 `mihomo_exit` 类型；已有旧节点仅保留在线兼容，需改成 `linux_router` 后重装才能继续升级。
+`linux_router` 是唯一的软路由产品，同时提供旁路由接入、普通探针级联和 Mihomo 代理出口。独立 Mihomo 出口产品及其兼容构建已经移除。
 
 在 `/mng/route` 的“路由规则”中将业务规则指向 Linux 旁路由，再到“二次分流”选择同一旁路由并配置 Clash 订阅与具体出口。没有二次分流配置时，Linux router 保持原有直连出口；配置已下发但 Mihomo 不健康时代理出口失败关闭，不会回退直连。
 

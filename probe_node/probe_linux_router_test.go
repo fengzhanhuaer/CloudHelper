@@ -5,6 +5,9 @@ package main
 import (
 	"encoding/binary"
 	"errors"
+	"net"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -47,6 +50,49 @@ func TestNormalizeProbeLinuxRouterGatewayAddressAcceptsPlainIPv4(t *testing.T) {
 func TestProbeLinuxRouterGatewaySubnet(t *testing.T) {
 	if got := probeLinuxRouterGatewaySubnet("192.168.51.105/24"); got != "192.168.51.0/24" {
 		t.Fatalf("gateway subnet=%q", got)
+	}
+}
+
+func TestProbeLinuxRouterMatchesASNWithLocalDatabaseLookup(t *testing.T) {
+	previous := probeLinuxRouterASNForIP
+	probeLinuxRouterASNForIP = func(ip net.IP) (uint, bool) {
+		if ip.String() != "1.1.1.1" {
+			return 0, false
+		}
+		return 13335, true
+	}
+	t.Cleanup(func() { probeLinuxRouterASNForIP = previous })
+
+	if !probeLinuxRouterRouteRuleEntryMatchesIP(net.ParseIP("1.1.1.1"), "asn:13335") {
+		t.Fatal("router did not match ASN returned by the local database")
+	}
+	if probeLinuxRouterRouteRuleEntryMatchesIP(net.ParseIP("1.1.1.1"), "asn:15169") {
+		t.Fatal("router matched a different ASN")
+	}
+	if probeLinuxRouterRouteRuleEntryMatchesIP(net.ParseIP("1.1.1.1"), "cidr:1.1.1.0/24") {
+		t.Fatal("router ASN hook must not consume non-ASN entries")
+	}
+}
+
+func TestActivateProbeLinuxRouterASNDatabaseRejectsInvalidCandidate(t *testing.T) {
+	dir := t.TempDir()
+	candidate := filepath.Join(dir, "candidate.mmdb")
+	database := filepath.Join(dir, "ASN.mmdb")
+	if err := os.WriteFile(candidate, []byte("not a maxmind database"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(database, []byte("existing cache"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := activateProbeLinuxRouterASNDatabase(candidate, database); err == nil {
+		t.Fatal("invalid ASN candidate was accepted")
+	}
+	raw, err := os.ReadFile(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "existing cache" {
+		t.Fatalf("invalid candidate replaced existing cache: %q", raw)
 	}
 }
 

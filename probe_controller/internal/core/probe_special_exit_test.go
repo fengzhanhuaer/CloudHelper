@@ -16,31 +16,31 @@ import (
 	"time"
 )
 
-func TestNormalizeProbeNodesDefaultsKindAndPreservesSpecialKind(t *testing.T) {
-	nodes, _ := normalizeProbeNodes([]probeNodeRecord{{NodeNo: 1, NodeName: "ordinary"}, {NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindMihomoExit}})
-	if len(nodes) != 2 || nodes[0].NodeKind != probeNodeKindNormal || nodes[1].NodeKind != probeNodeKindMihomoExit {
+func TestNormalizeProbeNodesDefaultsKindAndPreservesRouterKind(t *testing.T) {
+	nodes, _ := normalizeProbeNodes([]probeNodeRecord{{NodeNo: 1, NodeName: "ordinary"}, {NodeNo: 2, NodeName: "router", NodeKind: probeNodeKindLinuxRouter}})
+	if len(nodes) != 2 || nodes[0].NodeKind != probeNodeKindNormal || nodes[1].NodeKind != probeNodeKindLinuxRouter {
 		t.Fatalf("normalized nodes=%+v", nodes)
 	}
-	req := probeNodeUpdateRequest{NodeNo: 2, NodeName: "exit-renamed", TargetSystem: "linux"}
+	req := probeNodeUpdateRequest{NodeNo: 2, NodeName: "router-renamed", TargetSystem: "linux"}
 	oldStore := ProbeStore
 	ProbeStore = &probeConfigStore{data: probeConfigData{ProbeNodes: nodes}}
 	t.Cleanup(func() { ProbeStore = oldStore })
 	updated, err := updateProbeNodeLocked(req)
-	if err != nil || updated.NodeKind != probeNodeKindMihomoExit {
-		t.Fatalf("legacy update lost node kind: item=%+v err=%v", updated, err)
+	if err != nil || updated.NodeKind != probeNodeKindLinuxRouter {
+		t.Fatalf("router update lost node kind: item=%+v err=%v", updated, err)
 	}
 }
 
-func TestStandaloneMihomoCannotBeCreatedOrSelectedForNewSpecialExit(t *testing.T) {
+func TestOnlyLinuxRouterCanBeSelectedForSpecialExit(t *testing.T) {
 	oldStore := ProbeStore
 	ProbeStore = &probeConfigStore{data: probeConfigData{ProbeNodes: []probeNodeRecord{
-		{NodeNo: 19, NodeName: "legacy", NodeKind: probeNodeKindMihomoExit, NodeSecret: "legacy-secret"},
+		{NodeNo: 19, NodeName: "ordinary", NodeKind: probeNodeKindNormal, NodeSecret: "ordinary-secret"},
 		{NodeNo: 20, NodeName: "router", NodeKind: probeNodeKindLinuxRouter, NodeSecret: "router-secret"},
 	}}}
 	t.Cleanup(func() { ProbeStore = oldStore })
 
-	if _, err := createProbeNodeWithKindLocked("new-exit", probeNodeKindMihomoExit); err == nil || !strings.Contains(err.Error(), "normal or linux_router") {
-		t.Fatalf("standalone Mihomo creation was not rejected: %v", err)
+	if _, err := createProbeNodeWithKindLocked("removed-exit", "mihomo_exit"); err == nil || !strings.Contains(err.Error(), "normal or linux_router") {
+		t.Fatalf("removed standalone Mihomo kind was not rejected: %v", err)
 	}
 	candidates := listMngProbeSpecialExitCandidateNodes()
 	if len(candidates) != 1 || candidates[0].NodeNo != 20 || candidates[0].NodeKind != probeNodeKindLinuxRouter {
@@ -48,28 +48,28 @@ func TestStandaloneMihomoCannotBeCreatedOrSelectedForNewSpecialExit(t *testing.T
 	}
 }
 
-func TestLegacyMihomoExitConvertsToLinuxRouterAndCannotBeCreatedAgain(t *testing.T) {
+func TestNormalProbeConvertsToLinuxRouterAndValidatesKind(t *testing.T) {
 	oldStore := ProbeStore
 	ProbeStore = &probeConfigStore{data: probeConfigData{
-		ProbeNodes:   []probeNodeRecord{{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindMihomoExit, TargetSystem: "linux", NodeSecret: "old-secret"}},
+		ProbeNodes:   []probeNodeRecord{{NodeNo: 2, NodeName: "router", NodeKind: probeNodeKindNormal, TargetSystem: "linux", NodeSecret: "old-secret"}},
 		ProbeSecrets: map[string]string{"2": "old-secret"},
 	}}
 	t.Cleanup(func() { ProbeStore = oldStore })
 
-	converted, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindLinuxRouter, TargetSystem: "linux"})
+	converted, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "router", NodeKind: probeNodeKindLinuxRouter, TargetSystem: "linux"})
 	if err != nil || converted.NodeKind != probeNodeKindLinuxRouter {
 		t.Fatalf("expected linux router conversion: item=%+v err=%v", converted, err)
 	}
 	if converted.NodeSecret == "" || converted.NodeSecret == "old-secret" || ProbeStore.data.ProbeSecrets["2"] != converted.NodeSecret {
 		t.Fatalf("expected node secret rotation: item=%+v secrets=%+v", converted, ProbeStore.data.ProbeSecrets)
 	}
-	if _, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindMihomoExit, TargetSystem: "linux"}); err == nil || !strings.Contains(err.Error(), "legacy node kind") {
-		t.Fatalf("expected legacy kind rejection, got %v", err)
+	if _, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "router", NodeKind: "mihomo_exit", TargetSystem: "linux"}); err == nil || !strings.Contains(err.Error(), "node kind must be") {
+		t.Fatalf("expected removed kind rejection, got %v", err)
 	}
-	if _, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "exit", NodeKind: probeNodeKindLinuxRouter, TargetSystem: "windows"}); err == nil || !strings.Contains(err.Error(), "must be linux") {
+	if _, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "router", NodeKind: probeNodeKindLinuxRouter, TargetSystem: "windows"}); err == nil || !strings.Contains(err.Error(), "must be linux") {
 		t.Fatalf("expected linux router target error, got %v", err)
 	}
-	if _, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "exit", NodeKind: "invalid", TargetSystem: "linux"}); err == nil || !strings.Contains(err.Error(), "node kind must be") {
+	if _, err := updateProbeNodeLocked(probeNodeUpdateRequest{NodeNo: 2, NodeName: "router", NodeKind: "invalid", TargetSystem: "linux"}); err == nil || !strings.Contains(err.Error(), "node kind must be") {
 		t.Fatalf("expected invalid node kind error, got %v", err)
 	}
 }
@@ -122,7 +122,7 @@ func TestProbeRouteConfigScopesSpecialExitSnapshotAndSecrets(t *testing.T) {
 	oldProbeStore := ProbeStore
 	oldRouteStore := ProbeRouteConfigStore
 	ProbeStore = &probeConfigStore{data: probeConfigData{
-		ProbeNodes:   []probeNodeRecord{{NodeNo: 1, NodeName: "ordinary", NodeKind: probeNodeKindNormal, NodeSecret: "secret-1"}, {NodeNo: 19, NodeName: "exit", NodeKind: probeNodeKindMihomoExit, NodeSecret: "secret-19"}},
+		ProbeNodes:   []probeNodeRecord{{NodeNo: 1, NodeName: "ordinary", NodeKind: probeNodeKindNormal, NodeSecret: "secret-1"}, {NodeNo: 19, NodeName: "router", NodeKind: probeNodeKindLinuxRouter, NodeSecret: "secret-19"}},
 		ProbeSecrets: map[string]string{"1": "secret-1", "19": "secret-19"},
 	}}
 	item, err := normalizeProbeSpecialExitConfig(probeSpecialExitConfig{
@@ -167,7 +167,7 @@ func TestProbeRouteConfigScopesSpecialExitSnapshotAndSecrets(t *testing.T) {
 		t.Fatalf("ordinary response=%+v", ordinary)
 	}
 	exit := request("19", "secret-19")
-	if exit.ExpectedNodeKind != probeNodeKindMihomoExit || exit.SpecialExit == nil || exit.SpecialExit.Revision != item.Revision || exit.SpecialExit.SHA256 != item.SHA256 {
+	if exit.ExpectedNodeKind != probeNodeKindLinuxRouter || exit.SpecialExit == nil || exit.SpecialExit.Revision != item.Revision || exit.SpecialExit.SHA256 != item.SHA256 {
 		t.Fatalf("exit response=%+v", exit)
 	}
 	if len(exit.SpecialExit.Proxies) != 1 || exit.SpecialExit.Proxies[0]["password"] != "node-secret" {
@@ -688,7 +688,7 @@ func TestProbeRouteConfigStoreUpdateSerializesConcurrentChanges(t *testing.T) {
 func TestMngSpecialExitListRedactsControllerAndProxySecrets(t *testing.T) {
 	oldProbeStore := ProbeStore
 	oldRouteStore := ProbeRouteConfigStore
-	ProbeStore = &probeConfigStore{data: probeConfigData{ProbeNodes: []probeNodeRecord{{NodeNo: 19, NodeName: "exit", NodeKind: probeNodeKindMihomoExit, NodeSecret: "node-secret"}}}}
+	ProbeStore = &probeConfigStore{data: probeConfigData{ProbeNodes: []probeNodeRecord{{NodeNo: 19, NodeName: "router", NodeKind: probeNodeKindLinuxRouter, NodeSecret: "node-secret"}}}}
 	item, err := normalizeProbeSpecialExitConfig(probeSpecialExitConfig{
 		NodeID:  "19",
 		Rules:   []probeSpecialExitRule{{RouteRuleID: "rr-1", Target: "proxy-a", Entries: []string{"domain_suffix:example.com"}}},
@@ -740,7 +740,7 @@ func TestMngSpecialExitListRedactsControllerAndProxySecrets(t *testing.T) {
 func TestUpsertMngSpecialExitUsesAssignedRouteRuleModel(t *testing.T) {
 	oldProbeStore := ProbeStore
 	oldRouteStore := ProbeRouteConfigStore
-	ProbeStore = &probeConfigStore{data: probeConfigData{ProbeNodes: []probeNodeRecord{{NodeNo: 19, NodeName: "exit", NodeKind: probeNodeKindMihomoExit}}}}
+	ProbeStore = &probeConfigStore{data: probeConfigData{ProbeNodes: []probeNodeRecord{{NodeNo: 19, NodeName: "router", NodeKind: probeNodeKindLinuxRouter}}}}
 	previous, err := normalizeProbeSpecialExitConfig(probeSpecialExitConfig{
 		NodeID:  "19",
 		Proxies: []map[string]interface{}{{"name": "node-a", "type": "socks5", "password": "secret"}},
@@ -802,8 +802,8 @@ func TestGlobalClashLibraryIsSharedAndSnapshotsContainOnlySelectedNodes(t *testi
 	oldProbeStore := ProbeStore
 	oldRouteStore := ProbeRouteConfigStore
 	ProbeStore = &probeConfigStore{data: probeConfigData{ProbeNodes: []probeNodeRecord{
-		{NodeNo: 19, NodeName: "exit-a", NodeKind: probeNodeKindMihomoExit},
-		{NodeNo: 20, NodeName: "exit-b", NodeKind: probeNodeKindMihomoExit},
+		{NodeNo: 19, NodeName: "router-a", NodeKind: probeNodeKindLinuxRouter},
+		{NodeNo: 20, NodeName: "router-b", NodeKind: probeNodeKindLinuxRouter},
 	}}}
 	virtualRouter := defaultProbeVirtualRouterConfig()
 	virtualRouter.RouteRules = []probeVirtualRouterRouteRule{

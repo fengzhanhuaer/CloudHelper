@@ -1312,6 +1312,14 @@ func normalizeProbeVirtualRouterColonRouteRuleEntry(key string, value string) (s
 			return "", false
 		}
 		return key + ":" + prefix.Masked().String(), true
+	case "asn":
+		value = strings.ToUpper(strings.TrimSpace(value))
+		value = strings.TrimPrefix(value, "AS")
+		number, err := strconv.ParseUint(value, 10, 32)
+		if err != nil || number == 0 {
+			return "", false
+		}
+		return "asn:" + strconv.FormatUint(number, 10), true
 	default:
 		return "", false
 	}

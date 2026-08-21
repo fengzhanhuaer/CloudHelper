@@ -769,9 +769,6 @@ func ProbeProxyRouterInstallScriptHandler(w http.ResponseWriter, r *http.Request
 }
 
 func dispatchUpgradeToProbe(node probeNodeRecord, controllerBaseURL string) (probeUpgradeDispatchResult, error) {
-	if normalizeProbeNodeKind(node.NodeKind) == probeNodeKindMihomoExit {
-		return probeUpgradeDispatchResult{}, fmt.Errorf("standalone Mihomo exit upgrades have been removed; change the node kind to linux_router and reinstall")
-	}
 	nodeID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
 	session, ok := getProbeSession(nodeID)
 	if !ok {

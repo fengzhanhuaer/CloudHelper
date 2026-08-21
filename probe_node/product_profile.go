@@ -10,7 +10,6 @@ import (
 
 const (
 	probeBuildKindNormal      = "normal"
-	probeBuildKindMihomoExit  = "mihomo_exit"
 	probeBuildKindLinuxRouter = "linux_router"
 )
 
@@ -35,7 +34,6 @@ type probeProductProfile struct {
 	EnableLocalTUNStartupRecovery bool
 	EnableVRoutePlatformInterface bool
 	EnableVRouteTakeoverRoutes    bool
-	LinuxAMD64Only                bool
 	LinuxAMD64OrARM64Only         bool
 }
 
@@ -98,19 +96,13 @@ func currentProbeBuildKind() string {
 }
 
 func validateProbeProductPlatform(goos string, goarch string) error {
-	if !activeProbeProductProfile.LinuxAMD64Only && !activeProbeProductProfile.LinuxAMD64OrARM64Only {
+	if !activeProbeProductProfile.LinuxAMD64OrARM64Only {
 		return nil
 	}
 	osName := strings.ToLower(strings.TrimSpace(goos))
 	arch := strings.ToLower(strings.TrimSpace(goarch))
-	if activeProbeProductProfile.LinuxAMD64Only && osName == "linux" && arch == "amd64" {
-		return nil
-	}
 	if activeProbeProductProfile.LinuxAMD64OrARM64Only && osName == "linux" && (arch == "amd64" || arch == "arm64") {
 		return nil
-	}
-	if activeProbeProductProfile.LinuxAMD64Only {
-		return errors.New("mihomo exit probe supports linux amd64 only")
 	}
 	return errors.New("linux router probe supports linux amd64 and arm64 only")
 }

@@ -107,7 +107,7 @@ func TestFetchProbeRouteConfigRejectsExpectedNodeKindMismatchAfterHMAC(t *testin
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	mismatch := probeBuildKindNormal
 	if currentProbeBuildKind() == probeBuildKindNormal {
-		mismatch = probeBuildKindMihomoExit
+		mismatch = probeBuildKindLinuxRouter
 	}
 	authenticated := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -119,7 +119,7 @@ func cleanupProbeRouteDirectBypassForVirtualRouterRules(config probeVirtualRoute
 
 	for _, routeDef := range routes {
 		ip, _, err := net.ParseCIDR(strings.TrimSpace(routeDef.Prefix))
-		if err != nil || ip == nil || !probeVirtualRouterConfigRoutesIPViaProbeExit(config, ip) {
+		if err != nil || ip == nil || probeVirtualRouterDNSDirectPriorityIP(ip) || !probeVirtualRouterConfigRoutesIPViaProbeExit(config, ip) {
 			continue
 		}
 		if err := deleteProbeVirtualRouterLinuxRoute(routeDef); err != nil {

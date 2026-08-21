@@ -63,12 +63,16 @@ func (e *probeLinuxRouterLocalConfigError) Unwrap() error {
 }
 
 func init() {
+	probeMihomoASNDatabaseEnabled = true
+	probeProductActivateMihomoASNDatabase = activateProbeLinuxRouterASNDatabase
 	probeLinuxRouterRouteConfigApplier = applyProbeLinuxRouterSnapshot
 	probeProductLinuxRouterReport = currentProbeLinuxRouterReport
 	probeProductAllowsForwardedTUNPacket = probeLinuxRouterAllowsForwardedTUNPacket
 	probeProductRejectsTUNPacket = probeLinuxRouterRejectsTUNPacket
 	probeProductHandleDirectTUNPacket = probeLinuxRouterHandleDirectTUNPacket
 	probeProductTargetsLocalDelivery = probeLinuxRouterTargetsLocalDelivery
+	probeProductVirtualRouterConfigApplied = probeLinuxRouterVirtualRouterConfigApplied
+	probeProductVirtualRouterRouteRuleEntryMatchesIP = probeLinuxRouterRouteRuleEntryMatchesIP
 }
 
 func applyProbeProductRouteConfig(snapshot *probeSpecialExitSnapshot, nodeID string) error {
@@ -108,6 +112,7 @@ func startProbeProductRuntime(nodeID string) error {
 
 func stopProbeProductRuntime() {
 	stopProbeMihomoRuntime()
+	closeProbeLinuxRouterASNDatabase()
 	resetProbeLinuxRouterSNIState()
 	probeLinuxRouterRuntimeState.mu.Lock()
 	if probeLinuxRouterRuntimeState.running {
