@@ -1097,6 +1097,22 @@
       return date.toLocaleString([], { hour12: false });
     }
 
+    function formatBrowserLocalDateTime(value) {
+      const text = String(value || '').trim();
+      if (!text) return '-';
+      const date = new Date(text);
+      if (Number.isNaN(date.getTime())) return text;
+      return new Intl.DateTimeFormat(undefined, {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      }).format(date);
+    }
+
     function statusPillHTML(kind, text) {
       const cleanKind = String(kind || '').trim();
       const cls = cleanKind === 'ok' ? 'ok' : (cleanKind === 'bad' || cleanKind === 'error' ? 'bad' : (cleanKind === 'warn' || cleanKind === 'warning' ? 'warn' : ''));
@@ -1661,7 +1677,7 @@
         const nextStatus = status === 'tracking' ? 'allowed' : 'tracking';
         const command = status === 'tracking' ? '放行' : '重新跟踪';
         return `<tr>
-          <td class="mono">${escapeHTML(packetTime(item.last_seen))}<br><span class="hint">${escapeHTML(packetTime(item.first_seen))}</span></td>
+          <td class="mono">${escapeHTML(formatBrowserLocalDateTime(item.last_seen))}<br><span class="hint">${escapeHTML(formatBrowserLocalDateTime(item.first_seen))}</span></td>
           <td><button class="domain-copy mono" type="button" data-copy-domain="${escapeHTML(item.domain)}" title="复制域名">${escapeHTML(item.domain)}</button></td>
           <td>${escapeHTML(via)}</td>
           <td class="mono">${escapeHTML(sources)}</td>
