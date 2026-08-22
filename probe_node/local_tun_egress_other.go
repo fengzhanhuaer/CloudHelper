@@ -6,6 +6,10 @@ import (
 	"time"
 )
 
+func startProbeLocalTUNEgressGuardian() {}
+
+func stopProbeLocalTUNEgressGuardian() {}
+
 func probeLocalTUNEgressSnapshot() (probeLocalTUNEgressStatus, error) {
 	return probeLocalTUNEgressStatus{
 		APIVersion: probeLocalTUNEgressAPIVersion,

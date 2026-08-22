@@ -17,15 +17,25 @@ import (
 )
 
 const (
-	probeLocalLinuxTUNPacketBufferSize      = 65535
-	probeLocalLinuxTUNInboundQueueFrames    = 2048
-	probeLocalLinuxTUNInboundDispatchShards = 8
-	probeLocalLinuxTUNOutboundQueueFrames   = 4096
-	probeLocalLinuxTUNWriteTimeout          = 500 * time.Millisecond
-	probeLocalLinuxTUNWritePollTimeoutMS    = 50
-	probeLocalLinuxTUNSlowWriteThreshold    = 10 * time.Millisecond
-	probeLocalLinuxTUNCloseWaitTimeout      = 2 * time.Second
+	probeLocalLinuxTUNPacketBufferSize       = 65535
+	probeLocalLinuxTUNInboundQueueFrames     = 2048
+	probeLocalLinuxTUNInboundDispatchShards  = 8
+	probeLocalLinuxTUNOutboundQueueFrames    = 4096
+	probeLocalLinuxTUNWriteTimeout           = 500 * time.Millisecond
+	probeLocalLinuxTUNWritePollTimeoutMS     = 50
+	probeLocalLinuxTUNSlowWriteThreshold     = 10 * time.Millisecond
+	probeLocalLinuxTUNAbnormalWriteThreshold = 100 * time.Millisecond
+	probeLocalLinuxTUNSlowWriteLogInterval   = 5 * time.Second
+	probeLocalLinuxTUNAbnormalQueuePercent   = 75
+	probeLocalLinuxTUNCloseWaitTimeout       = 2 * time.Second
 )
+
+type probeVirtualRouterLinuxTUNSlowWriteSummary struct {
+	packets       uint64
+	maxWrite      time.Duration
+	maxBytes      int
+	maxQueueDepth int
+}
 
 var probeLocalLinuxTUNDataPlaneState = struct {
 	mu     sync.Mutex
@@ -42,22 +52,25 @@ type probeVirtualRouterLinuxTUNDataPlaneRunner struct {
 	writeMu sync.Mutex
 	closed  atomic.Bool
 
-	inboundCh       chan []byte
-	inboundDispatch []chan []byte
-	outboundCh      chan []byte
-	stopCh          chan struct{}
-	rxPackets       atomic.Uint64
-	rxBytes         atomic.Uint64
-	txPackets       atomic.Uint64
-	txBytes         atomic.Uint64
-	txDropped       atomic.Uint64
-	txErrors        atomic.Uint64
-	txSlowWrites    atomic.Uint64
-	txLastWriteMs   atomic.Uint64
-	txMaxWriteMs    atomic.Uint64
-	doneCh          chan struct{}
-	writeDoneCh     chan struct{}
-	closeOnce       sync.Once
+	inboundCh        chan []byte
+	inboundDispatch  []chan []byte
+	outboundCh       chan []byte
+	stopCh           chan struct{}
+	rxPackets        atomic.Uint64
+	rxBytes          atomic.Uint64
+	txPackets        atomic.Uint64
+	txBytes          atomic.Uint64
+	txDropped        atomic.Uint64
+	txErrors         atomic.Uint64
+	txSlowWrites     atomic.Uint64
+	txLastWriteMs    atomic.Uint64
+	txMaxWriteMs     atomic.Uint64
+	slowWrite        probeVirtualRouterLinuxTUNSlowWriteSummary
+	slowWriteEpisode bool
+	logf             func(string, ...any)
+	doneCh           chan struct{}
+	writeDoneCh      chan struct{}
+	closeOnce        sync.Once
 }
 
 func startProbeVirtualRouterTUNDataPlane() error {
@@ -167,6 +180,7 @@ func newProbeLocalLinuxTUNDataPlaneRunner(dev string) (*probeVirtualRouterLinuxT
 		inboundCh:       make(chan []byte, probeLocalLinuxTUNInboundQueueFrames),
 		inboundDispatch: makeProbeVirtualRouterTUNInboundDispatchShards(probeLocalLinuxTUNInboundDispatchShards, probeLocalLinuxTUNInboundQueueFrames),
 		outboundCh:      make(chan []byte, probeLocalLinuxTUNOutboundQueueFrames),
+		logf:            logProbeWarnf,
 		stopCh:          make(chan struct{}),
 		doneCh:          make(chan struct{}),
 		writeDoneCh:     make(chan struct{}),
@@ -319,16 +333,18 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) inboundShardWorker(shardID i
 }
 
 func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) writeLoop() {
-	defer close(r.writeDoneCh)
+	ticker := time.NewTicker(probeLocalLinuxTUNSlowWriteLogInterval)
+	defer func() {
+		ticker.Stop()
+		r.flushSlowWriteSummary()
+		close(r.writeDoneCh)
+	}()
 	for {
 		select {
 		case <-r.stopCh:
 			return
-		default:
-		}
-		select {
-		case <-r.stopCh:
-			return
+		case <-ticker.C:
+			r.flushSlowWriteSummary()
 		case packet := <-r.outboundCh:
 			if len(packet) == 0 {
 				continue
@@ -350,9 +366,47 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) writeLoop() {
 			}
 			if elapsed >= probeLocalLinuxTUNSlowWriteThreshold {
 				r.txSlowWrites.Add(1)
-				logProbeWarnf("probe local linux tun outbound packet slow write: dev=%s write_ms=%d bytes=%d queue=%d/%d", r.dev, elapsedMs, len(packet), len(r.outboundCh), cap(r.outboundCh))
+				r.recordSlowWriteSummary(len(packet), len(r.outboundCh), elapsed)
 			}
 		}
+	}
+}
+
+func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) recordSlowWriteSummary(packetBytes int, queueDepth int, elapsed time.Duration) {
+	summary := &r.slowWrite
+	summary.packets++
+	summary.maxWrite = max(summary.maxWrite, elapsed)
+	summary.maxBytes = max(summary.maxBytes, packetBytes)
+	summary.maxQueueDepth = max(summary.maxQueueDepth, queueDepth)
+}
+
+func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) flushSlowWriteSummary() {
+	summary := r.slowWrite
+	if summary.packets == 0 {
+		r.slowWriteEpisode = false
+		return
+	}
+	r.slowWrite = probeVirtualRouterLinuxTUNSlowWriteSummary{}
+	queueCapacity := cap(r.outboundCh)
+	queueAbnormal := queueCapacity > 0 && summary.maxQueueDepth*100 >= queueCapacity*probeLocalLinuxTUNAbnormalQueuePercent
+	if summary.maxWrite < probeLocalLinuxTUNAbnormalWriteThreshold && !queueAbnormal {
+		r.slowWriteEpisode = false
+		return
+	}
+	if r.slowWriteEpisode {
+		return
+	}
+	r.slowWriteEpisode = true
+	if r.logf != nil {
+		r.logf(
+			"probe local linux tun outbound stall detected: dev=%s packets=%d write_max_ms=%d bytes_max=%d queue_max=%d/%d",
+			r.dev,
+			summary.packets,
+			probeDurationMilliseconds(summary.maxWrite),
+			summary.maxBytes,
+			summary.maxQueueDepth,
+			queueCapacity,
+		)
 	}
 }
 

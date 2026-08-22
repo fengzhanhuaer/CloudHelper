@@ -301,12 +301,15 @@ func TestReconcileProbeVRouteProxyRuntimeRollsBackSystemProxyFailure(t *testing.
 
 func TestRecoverProbeVRouteProxyRuntimeAfterSystemProxyBecomesAvailable(t *testing.T) {
 	resetProbeVRouteProxyRuntimeForTest()
+	oldRequired := probeVRouteSystemProxyIsRequired
 	oldSet := probeVRouteSystemProxySet
 	oldRestore := probeVRouteSystemProxyRestore
 	t.Cleanup(func() {
+		probeVRouteSystemProxyIsRequired = oldRequired
 		probeVRouteSystemProxySet = oldSet
 		probeVRouteSystemProxyRestore = oldRestore
 	})
+	probeVRouteSystemProxyIsRequired = func() bool { return true }
 	setCalls := 0
 	probeVRouteSystemProxySet = func(string, string) error {
 		setCalls++
@@ -348,8 +351,13 @@ func TestRecoverProbeVRouteProxyRuntimeAfterSystemProxyBecomesAvailable(t *testi
 }
 
 func TestRecoverProbeVRouteProxyRuntimeCleansSystemProxyWhenDisabled(t *testing.T) {
+	oldRequired := probeVRouteSystemProxyIsRequired
 	oldRestore := probeVRouteSystemProxyRestore
-	t.Cleanup(func() { probeVRouteSystemProxyRestore = oldRestore })
+	t.Cleanup(func() {
+		probeVRouteSystemProxyIsRequired = oldRequired
+		probeVRouteSystemProxyRestore = oldRestore
+	})
+	probeVRouteSystemProxyIsRequired = func() bool { return true }
 	restoreCalls := 0
 	probeVRouteSystemProxyRestore = func() error {
 		restoreCalls++

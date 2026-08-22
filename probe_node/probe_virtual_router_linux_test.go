@@ -87,6 +87,9 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPLinuxAddsDNSAndNodeIP(t *tes
 }
 
 func TestEnsureProbeVirtualRouterPlatformInterfaceIPLinuxAppliesTakeoverAndLocalBypassRoutes(t *testing.T) {
+	if !probeProductVRouteTakeoverEnabled() {
+		t.Skip("active product deliberately disables host takeover routes")
+	}
 	oldStat := probeLocalLinuxStat
 	oldLookPath := probeLocalLinuxLookPath
 	oldRun := probeLocalLinuxRunCommand

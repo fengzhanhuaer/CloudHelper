@@ -4589,7 +4589,11 @@ func (s *probeVirtualRouterFrameLink) runTXWorker() {
 		}
 		token, err := s.currentCarrier()
 		if err != nil {
-			log.Printf("probe virtual router frame tx drop: route=%s key=%s frame=%s err=%v", probeVirtualRouterRuntimeLogRouteID(s.runtime), s.key, probeVirtualRouterFrameDebugLabel(frame, s.requestPath), err)
+			routeID := probeVirtualRouterRuntimeLogRouteID(s.runtime)
+			key := "frame_tx_drop|" + routeID + "|" + strings.TrimSpace(s.key) + "|" + strings.TrimSpace(err.Error())
+			if allowed, suppressed := takeProbeVirtualRouterLogThrottle(key, probeVirtualRouterDiagnosticLogPeriod, time.Now()); allowed {
+				log.Printf("probe virtual router frame tx drop: route=%s key=%s frame=%s suppressed=%d err=%v", routeID, s.key, probeVirtualRouterFrameDebugLabel(frame, s.requestPath), suppressed, err)
+			}
 			recordProbeVirtualRouterTXFrameFailure(s, frame, err)
 			continue
 		}

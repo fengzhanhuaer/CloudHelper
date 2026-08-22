@@ -954,7 +954,10 @@ func runProbeVirtualRouterBridgeDialer(rt *probeVirtualRouterRuntime) {
 			isProbeVirtualRouterCloudflareCopilotDomain(rt.cfg.peerHost),
 		)
 		if err != nil {
-			log.Printf("probe virtual router bridge dial failed: route=%s peer=%s:%d err=%v", rt.cfg.routeID, rt.cfg.peerHost, rt.cfg.peerPort, err)
+			key := fmt.Sprintf("bridge_dial|%s|%s:%d|%s", rt.cfg.routeID, rt.cfg.peerHost, rt.cfg.peerPort, strings.TrimSpace(err.Error()))
+			if allowed, suppressed := takeProbeVirtualRouterLogThrottle(key, probeVirtualRouterDiagnosticLogPeriod, time.Now()); allowed {
+				log.Printf("probe virtual router bridge dial failed: route=%s peer=%s:%d suppressed=%d err=%v", rt.cfg.routeID, rt.cfg.peerHost, rt.cfg.peerPort, suppressed, err)
+			}
 			sleepProbeVirtualRouterBridgeBackoff(rt, backoff)
 			backoff = nextProbeRouteBridgeBackoff(backoff)
 			continue

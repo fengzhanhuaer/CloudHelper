@@ -13,6 +13,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+func startProbeLocalTUNEgressGuardian() {}
+
+func stopProbeLocalTUNEgressGuardian() {}
+
 var probeLocalWindowsEgressRouteOptions = probeLocalWindowsPrimaryEgressRouteOptions
 
 func probeLocalTUNEgressSnapshot() (probeLocalTUNEgressStatus, error) {

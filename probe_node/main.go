@@ -401,6 +401,8 @@ func runProbeNode(options probeLaunchOptions) error {
 	}
 	if activeProbeProductProfile.EnableVRoutePlatformInterface {
 		applyProbeLocalTUNEgressPersistentState(currentProbeLocalTUNEgressPersistentStateBestEffort())
+		startProbeLocalTUNEgressGuardian()
+		defer stopProbeLocalTUNEgressGuardian()
 	}
 	if activeProbeProductProfile.EnableSystemDNS {
 		ensureProbeVirtualRouterDNSRuntime()

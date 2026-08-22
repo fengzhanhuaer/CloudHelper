@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+const probeLocalLinuxEgressGuardianInterval = 5 * time.Second
+
 var probeRouteLinuxEgressState = struct {
 	mu          sync.Mutex
 	manual      bool
@@ -22,6 +24,105 @@ var probeRouteLinuxEgressState = struct {
 }{}
 
 var probeLocalLinuxInterfaceByName = net.InterfaceByName
+
+var probeLocalLinuxEgressGuardianState = struct {
+	mu     sync.Mutex
+	stopCh chan struct{}
+	doneCh chan struct{}
+	failed bool
+}{}
+
+func startProbeLocalTUNEgressGuardian() {
+	probeLocalLinuxEgressGuardianState.mu.Lock()
+	if probeLocalLinuxEgressGuardianState.stopCh != nil {
+		probeLocalLinuxEgressGuardianState.mu.Unlock()
+		return
+	}
+	stopCh := make(chan struct{})
+	doneCh := make(chan struct{})
+	probeLocalLinuxEgressGuardianState.stopCh = stopCh
+	probeLocalLinuxEgressGuardianState.doneCh = doneCh
+	probeLocalLinuxEgressGuardianState.failed = false
+	probeLocalLinuxEgressGuardianState.mu.Unlock()
+	go runProbeLocalLinuxEgressGuardian(stopCh, doneCh)
+}
+
+func stopProbeLocalTUNEgressGuardian() {
+	probeLocalLinuxEgressGuardianState.mu.Lock()
+	stopCh := probeLocalLinuxEgressGuardianState.stopCh
+	doneCh := probeLocalLinuxEgressGuardianState.doneCh
+	probeLocalLinuxEgressGuardianState.stopCh = nil
+	probeLocalLinuxEgressGuardianState.doneCh = nil
+	probeLocalLinuxEgressGuardianState.failed = false
+	probeLocalLinuxEgressGuardianState.mu.Unlock()
+	if stopCh == nil {
+		return
+	}
+	close(stopCh)
+	if doneCh != nil {
+		<-doneCh
+	}
+}
+
+func runProbeLocalLinuxEgressGuardian(stopCh <-chan struct{}, doneCh chan<- struct{}) {
+	defer close(doneCh)
+	ticker := time.NewTicker(probeLocalLinuxEgressGuardianInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stopCh:
+			return
+		case <-ticker.C:
+			recordProbeLocalLinuxEgressGuardianResult(reconcileProbeLocalLinuxManualEgress())
+		}
+	}
+}
+
+func recordProbeLocalLinuxEgressGuardianResult(err error) {
+	probeLocalLinuxEgressGuardianState.mu.Lock()
+	wasFailed := probeLocalLinuxEgressGuardianState.failed
+	probeLocalLinuxEgressGuardianState.failed = err != nil
+	probeLocalLinuxEgressGuardianState.mu.Unlock()
+	if err != nil && !wasFailed {
+		logProbeWarnf("probe local linux tun egress recovery pending: %v", err)
+	}
+}
+
+func reconcileProbeLocalLinuxManualEgress() error {
+	state := currentProbeLocalTUNEgressPersistentStateBestEffort()
+	if !strings.EqualFold(strings.TrimSpace(state.Mode), "manual") {
+		return nil
+	}
+	options, err := probeLocalLinuxPrimaryEgressRouteOptions(probeRouteLinuxTUNDeviceName())
+	if err != nil {
+		return err
+	}
+	target := probeVirtualRouterLinuxRouteTarget{Dev: strings.TrimSpace(state.Name), Gateway: strings.TrimSpace(state.NextHop)}
+	if target.Dev == "" {
+		target.Dev = probeLocalLinuxEgressDevFromCandidateID(state.CandidateID)
+	}
+	if candidate, ok := probeLocalLinuxFindEgressCandidate(options, state.CandidateID, target); ok && probeLocalLinuxManualEgressIsEffective(options, candidate) {
+		setProbeRouteLinuxManualEgressTarget(probeLocalLinuxEgressTarget(candidate), candidate.CandidateID, probeLocalTUNEgressSelectedLabel(&candidate))
+		return nil
+	}
+	candidate, ok := probeLocalLinuxValidatedManualEgress(target, probeRouteLinuxTUNDeviceName())
+	if !ok {
+		return errors.New("selected linux egress route is unavailable")
+	}
+	if err := probeLocalLinuxForceManualEgressDefaultRoute(candidate, options); err != nil {
+		return err
+	}
+	setProbeRouteLinuxManualEgressTarget(probeLocalLinuxEgressTarget(candidate), candidate.CandidateID, probeLocalTUNEgressSelectedLabel(&candidate))
+	if err := rebindProbeRouteLinuxDirectBypasses(probeLocalLinuxEgressTarget(candidate)); err != nil {
+		return err
+	}
+	if probeVirtualRouterLocalDNSEnabled() {
+		if err := applyProbeVirtualRouterSystemDNS(); err != nil {
+			return fmt.Errorf("apply router system DNS: %w", err)
+		}
+	}
+	return nil
+}
 
 func probeLocalTUNEgressSnapshot() (probeLocalTUNEgressStatus, error) {
 	applyProbeLocalTUNEgressPersistentState(currentProbeLocalTUNEgressPersistentStateBestEffort())
@@ -49,6 +150,9 @@ func probeLocalTUNEgressSnapshot() (probeLocalTUNEgressStatus, error) {
 		manualOption.Name = firstNonEmpty(manualOption.Name, probeLocalTUNEgressNameFromLinuxLabel(manualLabel))
 		status.ManualSelected = probeLocalTUNEgressOptionFromCandidate(manualOption)
 		if candidate, ok := probeLocalLinuxFindEgressCandidate(options, manualID, manualTarget); ok {
+			status.ManualValid = true
+			status.Selected = probeLocalTUNEgressOptionFromCandidate(candidate)
+		} else if candidate, ok := probeLocalLinuxValidatedManualEgress(manualTarget, probeRouteLinuxTUNDeviceName()); ok {
 			status.ManualValid = true
 			status.Selected = probeLocalTUNEgressOptionFromCandidate(candidate)
 		} else {
@@ -113,14 +217,25 @@ func applyProbeLocalTUNEgressPersistentState(state probeLocalTUNEgressPersistent
 		if dev == "" {
 			dev = probeLocalLinuxEgressDevFromCandidateID(state.CandidateID)
 		}
+		target := probeVirtualRouterLinuxRouteTarget{Dev: dev, Gateway: strings.TrimSpace(state.NextHop)}
 		setProbeRouteLinuxManualEgressTarget(
-			probeVirtualRouterLinuxRouteTarget{Dev: dev, Gateway: strings.TrimSpace(state.NextHop)},
+			target,
 			strings.TrimSpace(state.CandidateID),
 			strings.TrimSpace(state.Label),
 		)
+		if candidate, valid := probeLocalLinuxValidatedManualEgress(target, probeRouteLinuxTUNDeviceName()); valid {
+			if forceErr := probeLocalLinuxForceManualEgressDefaultRoute(candidate, options); forceErr != nil {
+				logProbeWarnf("probe local linux tun egress restore force default route failed: %v", forceErr)
+			}
+		}
 		return
 	}
 	setProbeRouteLinuxManualEgressTarget(probeLocalLinuxEgressTarget(candidate), candidate.CandidateID, probeLocalTUNEgressSelectedLabel(&candidate))
+	if !probeLocalLinuxManualEgressIsEffective(options, candidate) {
+		if forceErr := probeLocalLinuxForceManualEgressDefaultRoute(candidate, options); forceErr != nil {
+			logProbeWarnf("probe local linux tun egress restore force selected default route failed: %v", forceErr)
+		}
+	}
 	if !probeLocalLinuxPersistentEgressMatchesCandidate(state, candidate) {
 		if err := persistProbeLocalTUNEgressManualState(candidate); err != nil {
 			logProbeWarnf("probe local linux tun egress target migration persist failed: %v", err)
@@ -295,6 +410,17 @@ func resolveProbeRouteLinuxSelectedEgressRoute(excludedDev string) (probeVirtual
 			return probeVirtualRouterLinuxRouteTarget{}, err
 		}
 		if candidate, ok := probeLocalLinuxFindEgressCandidate(options, candidateID, target); ok {
+			if !probeLocalLinuxManualEgressIsEffective(options, candidate) {
+				if err := probeLocalLinuxForceManualEgressDefaultRoute(candidate, options); err != nil {
+					return probeVirtualRouterLinuxRouteTarget{}, err
+				}
+			}
+			return probeLocalLinuxEgressTarget(candidate), nil
+		}
+		if candidate, ok := probeLocalLinuxValidatedManualEgress(target, excludedDev); ok {
+			if err := probeLocalLinuxForceManualEgressDefaultRoute(candidate, options); err != nil {
+				return probeVirtualRouterLinuxRouteTarget{}, err
+			}
 			return probeLocalLinuxEgressTarget(candidate), nil
 		}
 		return probeVirtualRouterLinuxRouteTarget{}, errors.New("selected linux egress route is unavailable")
@@ -307,6 +433,87 @@ func resolveProbeRouteLinuxSelectedEgressRoute(excludedDev string) (probeVirtual
 		return probeVirtualRouterLinuxRouteTarget{}, errors.New("usable linux virtual router ipv4 default route not found")
 	}
 	return probeLocalLinuxEgressTarget(options[0]), nil
+}
+
+func probeLocalLinuxForceManualEgressDefaultRoute(candidate probeLocalTUNEgressRouteTargetOption, defaults []probeLocalTUNEgressRouteTargetOption) error {
+	dev := strings.TrimSpace(candidate.Name)
+	gateway := strings.TrimSpace(candidate.NextHop)
+	if dev == "" || net.ParseIP(gateway).To4() == nil {
+		return errors.New("manual linux egress target is invalid")
+	}
+	metric := probeLocalLinuxManualEgressDefaultRouteMetric(defaults)
+	args := []string{"-4", "route", "replace", "default", "via", gateway, "dev", dev}
+	if metric > 0 {
+		args = append(args, "metric", strconv.FormatUint(uint64(metric), 10))
+	}
+	if _, err := probeLocalLinuxRunCommand(5*time.Second, "ip", args...); err != nil {
+		return fmt.Errorf("force selected linux egress default route via %s dev %s: %w", gateway, dev, err)
+	}
+	return nil
+}
+
+func probeLocalLinuxManualEgressDefaultRouteMetric(defaults []probeLocalTUNEgressRouteTargetOption) uint32 {
+	if len(defaults) > 0 {
+		return defaults[0].RouteMetric
+	}
+	return 0
+}
+
+func probeLocalLinuxManualEgressIsEffective(defaults []probeLocalTUNEgressRouteTargetOption, selected probeLocalTUNEgressRouteTargetOption) bool {
+	if len(defaults) == 0 {
+		return false
+	}
+	bestMetric := defaults[0].RouteMetric
+	selectedFound := false
+	for _, candidate := range defaults {
+		if candidate.RouteMetric != bestMetric {
+			break
+		}
+		if candidate.CandidateID == selected.CandidateID {
+			selectedFound = true
+			continue
+		}
+		return false
+	}
+	return selectedFound
+}
+
+func probeLocalLinuxValidatedManualEgress(target probeVirtualRouterLinuxRouteTarget, excludedDev string) (probeLocalTUNEgressRouteTargetOption, bool) {
+	dev := strings.TrimSpace(target.Dev)
+	gateway := strings.TrimSpace(target.Gateway)
+	if dev == "" || dev == strings.TrimSpace(excludedDev) || net.ParseIP(gateway).To4() == nil {
+		return probeLocalTUNEgressRouteTargetOption{}, false
+	}
+	iface, err := probeLocalLinuxInterfaceByName(dev)
+	if err != nil || iface == nil {
+		return probeLocalTUNEgressRouteTargetOption{}, false
+	}
+	output, err := probeLocalLinuxRunCommand(5*time.Second, "ip", "-4", "route", "get", gateway, "oif", dev)
+	if err != nil || !probeLocalLinuxRouteGetUsesInterface(output, gateway, dev) {
+		return probeLocalTUNEgressRouteTargetOption{}, false
+	}
+	return probeLocalLinuxEgressOption(target), true
+}
+
+func probeLocalLinuxRouteGetUsesInterface(output, gateway, dev string) bool {
+	fields := strings.Fields(strings.TrimSpace(output))
+	if len(fields) == 0 || fields[0] == "local" {
+		return false
+	}
+	selectedDev := ""
+	sourceIP := ""
+	viaGateway := ""
+	for index := 0; index+1 < len(fields); index++ {
+		switch fields[index] {
+		case "dev":
+			selectedDev = strings.TrimSpace(fields[index+1])
+		case "src":
+			sourceIP = strings.TrimSpace(fields[index+1])
+		case "via":
+			viaGateway = strings.TrimSpace(fields[index+1])
+		}
+	}
+	return selectedDev == strings.TrimSpace(dev) && viaGateway == "" && !strings.EqualFold(sourceIP, strings.TrimSpace(gateway))
 }
 
 func refreshProbeRouteLinuxSelectedEgress() error {

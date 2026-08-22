@@ -49,8 +49,9 @@ var probeVRouteProxyRuntimeState = struct {
 }{}
 
 var (
-	probeVRouteSystemProxySet     = setProbeVRouteSystemProxy
-	probeVRouteSystemProxyRestore = restoreProbeVRouteSystemProxy
+	probeVRouteSystemProxyIsRequired = probeVRouteSystemProxyRequired
+	probeVRouteSystemProxySet        = setProbeVRouteSystemProxy
+	probeVRouteSystemProxyRestore    = restoreProbeVRouteSystemProxy
 )
 
 var probeVRouteProxyRecoveryLoopOnce sync.Once
@@ -177,7 +178,7 @@ func reconcileProbeVRouteProxyRuntime(settings probeVirtualRouterLocalSettings) 
 }
 
 func startProbeVRouteProxyRecoveryLoop() {
-	if !probeVRouteSystemProxyRequired() {
+	if !probeVRouteSystemProxyIsRequired() {
 		return
 	}
 	probeVRouteProxyRecoveryLoopOnce.Do(func() {
@@ -194,7 +195,7 @@ func startProbeVRouteProxyRecoveryLoop() {
 }
 
 func recoverProbeVRouteProxyRuntimeOnce() error {
-	if !probeVRouteSystemProxyRequired() {
+	if !probeVRouteSystemProxyIsRequired() {
 		return nil
 	}
 	settings := loadProbeVirtualRouterLocalSettings()

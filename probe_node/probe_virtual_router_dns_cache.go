@@ -488,7 +488,10 @@ func ensureProbeLocalDNSUpstreamDirectBypass(kind string, address string) {
 		return
 	}
 	if err := ensureProbeRouteDirectBypass(target); err != nil {
-		logProbeWarnf("probe local dns upstream direct bypass failed: kind=%s target=%s err=%v", strings.TrimSpace(kind), target, err)
+		key := "dns_upstream_direct_bypass|" + strings.TrimSpace(err.Error())
+		if allowed, suppressed := takeProbeVirtualRouterLogThrottle(key, probeVirtualRouterDiagnosticLogPeriod, time.Now()); allowed {
+			logProbeWarnf("probe local dns upstream direct bypass failed: kind=%s target=%s suppressed=%d err=%v", strings.TrimSpace(kind), target, suppressed, err)
+		}
 	}
 }
 

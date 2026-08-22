@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -114,6 +115,178 @@ func TestApplyProbeLocalTUNEgressPersistentStateLinuxKeepsUnavailableManualTarge
 	}
 	if _, err := resolveProbeRouteLinuxSelectedEgressRoute("cloudhelper0"); err == nil {
 		t.Fatal("unavailable manual egress must not fall back automatically")
+	}
+}
+
+func TestResolveProbeRouteLinuxSelectedEgressUsesReachableSavedManualGateway(t *testing.T) {
+	calls := stubProbeLocalLinuxEgressHooks(t, []string{
+		"default via 192.168.50.94 dev eth0 metric 202",
+	})
+	baseRun := probeLocalLinuxRunCommand
+	probeLocalLinuxRunCommand = func(timeout time.Duration, name string, args ...string) (string, error) {
+		call := name + " " + strings.Join(args, " ")
+		if call == "ip -4 route get 192.168.50.1 oif eth0" {
+			return "192.168.50.1 dev eth0 src 192.168.50.94 uid 0\n", nil
+		}
+		return baseRun(timeout, name, args...)
+	}
+	resetProbeRouteLinuxEgressStateForTest()
+	t.Cleanup(resetProbeRouteLinuxEgressStateForTest)
+
+	applyProbeLocalTUNEgressPersistentState(probeLocalTUNEgressPersistentState{
+		Mode:        "manual",
+		CandidateID: probeLocalLinuxEgressCandidateID("eth0", "192.168.50.1"),
+		NextHop:     "192.168.50.1",
+		Name:        "eth0",
+	})
+	target, err := resolveProbeRouteLinuxSelectedEgressRoute("cloudhelper0")
+	if err != nil {
+		t.Fatalf("resolve reachable saved manual egress: %v", err)
+	}
+	if target.Dev != "eth0" || target.Gateway != "192.168.50.1" {
+		t.Fatalf("target=%+v, want saved eth0 gateway", target)
+	}
+	if !containsProbeLocalLinuxCall(*calls, "ip -4 route replace default via 192.168.50.1 dev eth0 metric 202") {
+		t.Fatalf("saved manual egress was not forced into the default route: calls=%v", *calls)
+	}
+}
+
+func TestResolveProbeRouteLinuxSelectedEgressRejectsSelfGateway(t *testing.T) {
+	stubProbeLocalLinuxEgressHooks(t, []string{
+		"default via 192.168.50.1 dev eth0 metric 202",
+	})
+	baseRun := probeLocalLinuxRunCommand
+	probeLocalLinuxRunCommand = func(timeout time.Duration, name string, args ...string) (string, error) {
+		call := name + " " + strings.Join(args, " ")
+		if call == "ip -4 route get 192.168.50.94 oif eth0" {
+			return "local 192.168.50.94 dev lo src 192.168.50.94 uid 0\n", nil
+		}
+		return baseRun(timeout, name, args...)
+	}
+	resetProbeRouteLinuxEgressStateForTest()
+	t.Cleanup(resetProbeRouteLinuxEgressStateForTest)
+
+	applyProbeLocalTUNEgressPersistentState(probeLocalTUNEgressPersistentState{
+		Mode:        "manual",
+		CandidateID: probeLocalLinuxEgressCandidateID("eth0", "192.168.50.94"),
+		NextHop:     "192.168.50.94",
+		Name:        "eth0",
+	})
+	if _, err := resolveProbeRouteLinuxSelectedEgressRoute("cloudhelper0"); err == nil {
+		t.Fatal("self-referential manual gateway must be rejected")
+	}
+}
+
+func TestProbeLocalLinuxManualEgressIsEffectiveRejectsConflictingBestDefault(t *testing.T) {
+	selected := probeLocalTUNEgressRouteTargetOption{
+		CandidateID: probeLocalLinuxEgressCandidateID("eth0", "192.168.50.1"),
+		Name:        "eth0",
+		NextHop:     "192.168.50.1",
+		RouteMetric: 202,
+	}
+	defaults := []probeLocalTUNEgressRouteTargetOption{
+		{
+			CandidateID: probeLocalLinuxEgressCandidateID("eth0", "192.168.50.94"),
+			Name:        "eth0",
+			NextHop:     "192.168.50.94",
+			RouteMetric: 100,
+		},
+		selected,
+	}
+	if probeLocalLinuxManualEgressIsEffective(defaults, selected) {
+		t.Fatal("lower-metric conflicting default must make the selected egress ineffective")
+	}
+	if metric := probeLocalLinuxManualEgressDefaultRouteMetric(defaults); metric != 100 {
+		t.Fatalf("force metric=%d want current best metric 100", metric)
+	}
+}
+
+func TestProbeLocalLinuxRouteGetUsesInterfaceRejectsIndirectGateway(t *testing.T) {
+	output := "192.168.50.1 via 192.168.50.94 dev eth0 src 192.168.50.94 uid 0\n"
+	if probeLocalLinuxRouteGetUsesInterface(output, "192.168.50.1", "eth0") {
+		t.Fatal("manual upstream reached through another gateway must not be treated as a direct neighbor")
+	}
+}
+
+func TestReconcileProbeLocalLinuxManualEgressRecoversAfterNetworkReturns(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeRouteLinuxEgressStateForTest()
+	resetProbeRouteLinuxDirectBypassStateForTest()
+	t.Cleanup(resetProbeRouteLinuxEgressStateForTest)
+	t.Cleanup(resetProbeRouteLinuxDirectBypassStateForTest)
+	if err := persistProbeLocalTUNEgressStateFile(probeLocalTUNEgressStateFile{
+		Version: 1,
+		TUNEgress: probeLocalTUNEgressPersistentState{
+			Mode:        "manual",
+			CandidateID: probeLocalLinuxEgressCandidateID("eth0", "192.168.50.1"),
+			NextHop:     "192.168.50.1",
+			Name:        "eth0",
+		},
+	}); err != nil {
+		t.Fatalf("persist manual egress: %v", err)
+	}
+
+	oldRun := probeLocalLinuxRunCommand
+	oldInterfaceByName := probeLocalLinuxInterfaceByName
+	networkReady := false
+	currentGateway := "192.168.50.94"
+	var calls []string
+	probeLocalLinuxInterfaceByName = func(name string) (*net.Interface, error) {
+		return &net.Interface{Index: 2, Name: name}, nil
+	}
+	probeLocalLinuxRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
+		call := name + " " + strings.Join(args, " ")
+		calls = append(calls, call)
+		switch call {
+		case "ip -4 route show default":
+			return "default via " + currentGateway + " dev eth0 metric 202\n", nil
+		case "ip -4 route get 192.168.50.1 oif eth0":
+			if !networkReady {
+				return "", errors.New("network unreachable")
+			}
+			return "192.168.50.1 dev eth0 src 192.168.50.94 uid 0\n", nil
+		case "ip -4 route replace default via 192.168.50.1 dev eth0 metric 202":
+			currentGateway = "192.168.50.1"
+			return "", nil
+		default:
+			return "", nil
+		}
+	}
+	t.Cleanup(func() {
+		probeLocalLinuxRunCommand = oldRun
+		probeLocalLinuxInterfaceByName = oldInterfaceByName
+	})
+
+	if err := reconcileProbeLocalLinuxManualEgress(); err == nil {
+		t.Fatal("network outage should leave manual egress recovery pending")
+	}
+	networkReady = true
+	if err := reconcileProbeLocalLinuxManualEgress(); err != nil {
+		t.Fatalf("recover manual egress after network returns: %v", err)
+	}
+	if currentGateway != "192.168.50.1" {
+		t.Fatalf("gateway=%s, want restored 192.168.50.1 calls=%v", currentGateway, calls)
+	}
+	forceCalls := 0
+	for _, call := range calls {
+		if call == "ip -4 route replace default via 192.168.50.1 dev eth0 metric 202" {
+			forceCalls++
+		}
+	}
+	if forceCalls != 1 {
+		t.Fatalf("force route calls=%d want 1 calls=%v", forceCalls, calls)
+	}
+	if err := reconcileProbeLocalLinuxManualEgress(); err != nil {
+		t.Fatalf("healthy manual egress reconcile: %v", err)
+	}
+	secondForceCalls := 0
+	for _, call := range calls {
+		if call == "ip -4 route replace default via 192.168.50.1 dev eth0 metric 202" {
+			secondForceCalls++
+		}
+	}
+	if secondForceCalls != 1 {
+		t.Fatalf("healthy route was rewritten again: calls=%v", calls)
 	}
 }
 

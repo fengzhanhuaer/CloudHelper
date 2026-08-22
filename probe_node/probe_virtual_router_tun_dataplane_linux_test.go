@@ -3,7 +3,9 @@
 package main
 
 import (
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -77,6 +79,74 @@ func TestStartProbeVirtualRouterTUNDataPlaneLinuxStartsRunner(t *testing.T) {
 	}
 	if err := writeProbeVirtualRouterTUNPacket([]byte{1}); err == nil {
 		t.Fatalf("expected write failure after stop, got %v", err)
+	}
+}
+
+func TestProbeVirtualRouterLinuxTUNDataPlaneAggregatesAbnormalSlowWrites(t *testing.T) {
+	var logs []string
+	runner := &probeVirtualRouterLinuxTUNDataPlaneRunner{
+		dev:        "cloudhelper0",
+		outboundCh: make(chan []byte, probeLocalLinuxTUNOutboundQueueFrames),
+		logf: func(format string, args ...any) {
+			logs = append(logs, fmt.Sprintf(format, args...))
+		},
+	}
+	runner.recordSlowWriteSummary(1375, 179, 69*time.Millisecond)
+	runner.recordSlowWriteSummary(1464, 3075, 125*time.Millisecond)
+	runner.flushSlowWriteSummary()
+	if len(logs) != 1 {
+		t.Fatalf("logs=%v, want one aggregate log", logs)
+	}
+	for _, want := range []string{
+		"outbound stall detected",
+		"dev=cloudhelper0",
+		"packets=2",
+		"write_max_ms=125",
+		"bytes_max=1464",
+		"queue_max=3075/4096",
+	} {
+		if !strings.Contains(logs[0], want) {
+			t.Fatalf("log=%q, want %q", logs[0], want)
+		}
+	}
+}
+
+func TestProbeVirtualRouterLinuxTUNDataPlaneSuppressesSchedulingJitter(t *testing.T) {
+	var logs []string
+	runner := &probeVirtualRouterLinuxTUNDataPlaneRunner{
+		outboundCh: make(chan []byte, probeLocalLinuxTUNOutboundQueueFrames),
+		logf: func(format string, args ...any) {
+			logs = append(logs, fmt.Sprintf(format, args...))
+		},
+	}
+	runner.recordSlowWriteSummary(1375, 179, 69*time.Millisecond)
+	runner.flushSlowWriteSummary()
+	if len(logs) != 0 {
+		t.Fatalf("normal scheduling jitter should stay silent: %v", logs)
+	}
+}
+
+func TestProbeVirtualRouterLinuxTUNDataPlaneLogsStallOncePerEpisode(t *testing.T) {
+	var logs []string
+	runner := &probeVirtualRouterLinuxTUNDataPlaneRunner{
+		outboundCh: make(chan []byte, probeLocalLinuxTUNOutboundQueueFrames),
+		logf: func(format string, args ...any) {
+			logs = append(logs, fmt.Sprintf(format, args...))
+		},
+	}
+	recordStall := func() {
+		runner.recordSlowWriteSummary(1464, 32, 150*time.Millisecond)
+		runner.flushSlowWriteSummary()
+	}
+	recordStall()
+	recordStall()
+	if len(logs) != 1 {
+		t.Fatalf("persistent stall logs=%v, want one per episode", logs)
+	}
+	runner.flushSlowWriteSummary()
+	recordStall()
+	if len(logs) != 2 {
+		t.Fatalf("stall after quiet interval logs=%v, want a new episode", logs)
 	}
 }
 
