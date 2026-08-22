@@ -182,6 +182,19 @@ func TestProbeLinuxRouterWebIsIntegratedIntoGenericConsole(t *testing.T) {
 	if routerPage.Code != http.StatusOK || !strings.Contains(routerPage.Body.String(), `class="subtab active"`) {
 		t.Fatalf("router tab status=%d body=%s", routerPage.Code, routerPage.Body.String())
 	}
+	for _, marker := range []string{
+		`href="/local/virtual-router#status"`,
+		`href="/local/virtual-router#routeStatus"`,
+		`href="/local/virtual-router#connections"`,
+		`href="/local/virtual-router#dnsRecords"`,
+		`>DNS 查询记录</a>`,
+		`href="/local/virtual-router#packets"`,
+		`href="/local/virtual-router#routeTest"`,
+	} {
+		if !strings.Contains(routerPage.Body.String(), marker) {
+			t.Fatalf("router page missing virtual-router subtab %q", marker)
+		}
+	}
 	virtualRouterPage := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/virtual-router", "192.168.1.150:16032", "192.168.1.20:43210", nil, cookie)
 	if virtualRouterPage.Code != http.StatusOK || !strings.Contains(virtualRouterPage.Body.String(), `href="/local/router"`) {
 		t.Fatalf("virtual router page missing router subtab: status=%d", virtualRouterPage.Code)

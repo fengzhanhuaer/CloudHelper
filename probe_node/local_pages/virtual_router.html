@@ -2238,8 +2238,19 @@
       }, 3000);
     }
 
-    function switchTab(tab) {
-      activeTab = tab === 'routeStatus' || tab === 'connections' || tab === 'dnsRecords' || tab === 'packets' || tab === 'routeTest' ? tab : 'status';
+    function normalizeTab(tab) {
+      return tab === 'routeStatus' || tab === 'connections' || tab === 'dnsRecords' || tab === 'packets' || tab === 'routeTest' ? tab : 'status';
+    }
+
+    function tabFromLocationHash() {
+      return normalizeTab(decodeURIComponent(window.location.hash.slice(1)));
+    }
+
+    function switchTab(tab, updateLocation = true) {
+      activeTab = normalizeTab(tab);
+      if (updateLocation && window.location.hash !== '#' + activeTab) {
+        window.history.replaceState(null, '', '#' + activeTab);
+      }
       document.querySelectorAll('.subtab').forEach((btn) => {
         const active = btn.dataset.tab === activeTab;
         btn.classList.toggle('active', active);
@@ -2422,7 +2433,9 @@
     document.querySelectorAll('.subtab').forEach((btn) => {
       btn.addEventListener('click', () => switchTab(btn.dataset.tab));
     });
+    window.addEventListener('hashchange', () => switchTab(tabFromLocationHash(), false));
 
+    switchTab(tabFromLocationHash(), false);
     refreshAll().catch((err) => setMessage('初始化失败：' + err.message, 'error'));
     setText('pageVersionText', VIRTUAL_ROUTER_PAGE_VERSION);
     startTunPolling();

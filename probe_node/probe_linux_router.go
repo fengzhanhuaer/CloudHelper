@@ -50,6 +50,14 @@ type probeLinuxRouterLocalConfig struct {
 	LocalIPProxy probeLinuxRouterLocalIPConfig `json:"local_ip_proxy"`
 }
 
+type probeLinuxRouterPersistedConfig struct {
+	Version      int                           `json:"version"`
+	NodeID       string                        `json:"node_id"`
+	Revision     int64                         `json:"revision"`
+	GatewayProxy probeLinuxRouterGatewayConfig `json:"gateway_proxy"`
+	LocalIPProxy probeLinuxRouterLocalIPConfig `json:"local_ip_proxy"`
+}
+
 type probeLinuxRouterLocalConfigError struct {
 	err error
 }
@@ -662,10 +670,6 @@ func validateProbeLinuxRouterSnapshot(snapshot *probeLinuxRouterSnapshot, nodeID
 	if snapshot.LocalIPProxy.Enabled && len(snapshot.LocalIPProxy.AllowedNodeIDs) == 0 {
 		return errors.New("router allowed node IDs are required when local IP proxy is enabled")
 	}
-	expectedSHA := probeLinuxRouterSnapshotSHA256(*snapshot)
-	if strings.TrimSpace(snapshot.SHA256) == "" || !strings.EqualFold(snapshot.SHA256, expectedSHA) {
-		return errors.New("router config sha256 does not match payload")
-	}
 	return nil
 }
 
@@ -685,7 +689,14 @@ func persistProbeLinuxRouterSnapshot(snapshot *probeLinuxRouterSnapshot) error {
 	if err != nil {
 		return err
 	}
-	raw, err := json.MarshalIndent(snapshot, "", "  ")
+	persisted := probeLinuxRouterPersistedConfig{
+		Version:      snapshot.Version,
+		NodeID:       snapshot.NodeID,
+		Revision:     snapshot.Revision,
+		GatewayProxy: snapshot.GatewayProxy,
+		LocalIPProxy: snapshot.LocalIPProxy,
+	}
+	raw, err := json.MarshalIndent(persisted, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -701,10 +712,18 @@ func loadProbeLinuxRouterSnapshot() (*probeLinuxRouterSnapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	var snapshot probeLinuxRouterSnapshot
-	if err := json.Unmarshal(raw, &snapshot); err != nil {
+	var persisted probeLinuxRouterPersistedConfig
+	if err := json.Unmarshal(raw, &persisted); err != nil {
 		return nil, err
 	}
+	snapshot := probeLinuxRouterSnapshot{
+		Version:      persisted.Version,
+		NodeID:       persisted.NodeID,
+		Revision:     persisted.Revision,
+		GatewayProxy: persisted.GatewayProxy,
+		LocalIPProxy: persisted.LocalIPProxy,
+	}
+	snapshot.SHA256 = probeLinuxRouterSnapshotSHA256(snapshot)
 	return &snapshot, nil
 }
 

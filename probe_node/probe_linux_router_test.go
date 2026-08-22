@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -22,19 +23,68 @@ func testProbeLinuxRouterIPv4Packet(src [4]byte, dst [4]byte) []byte {
 	return packet
 }
 
-func TestValidateProbeLinuxRouterSnapshotSHA(t *testing.T) {
+func TestValidateProbeLinuxRouterSnapshotUsesSemanticValidation(t *testing.T) {
 	snapshot := probeLinuxRouterSnapshot{
 		Version: 1, NodeID: "21", Revision: 2,
 		GatewayProxy: probeLinuxRouterGatewayConfig{Interface: "auto", GatewayAddress: "192.168.1.150/24", UpstreamGateway: "192.168.1.1", LANCIDRs: []string{"192.168.1.0/24"}, DNSEnabled: true},
 		LocalIPProxy: probeLinuxRouterLocalIPConfig{PublishedCIDRs: []string{"192.168.1.0/24"}, AllowedNodeIDs: []string{"1"}},
 	}
-	snapshot.SHA256 = probeLinuxRouterSnapshotSHA256(snapshot)
+	snapshot.SHA256 = "stale-local-fingerprint"
 	if err := validateProbeLinuxRouterSnapshot(&snapshot, "21"); err != nil {
 		t.Fatal(err)
 	}
-	snapshot.GatewayProxy.UpstreamGateway = "192.168.1.2"
+	snapshot.GatewayProxy.UpstreamGateway = "192.168.2.1"
 	if err := validateProbeLinuxRouterSnapshot(&snapshot, "21"); err == nil {
-		t.Fatal("tampered snapshot unexpectedly accepted")
+		t.Fatal("semantically invalid snapshot unexpectedly accepted")
+	}
+}
+
+func TestLoadProbeLinuxRouterSnapshotIgnoresLegacySHA(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("PROBE_NODE_DATA_DIR", dataDir)
+	const legacyConfig = `{
+  "version": 1,
+  "node_id": "21",
+  "revision": 2,
+  "sha256": "stale-after-schema-change",
+  "gateway_proxy": {
+    "enabled": true,
+    "interface": "auto",
+    "gateway_address": "192.168.1.150/24",
+    "upstream_gateway": "192.168.1.1",
+    "lan_cidrs": ["192.168.1.0/24"],
+    "dns_enabled": true
+  },
+  "local_ip_proxy": {
+    "enabled": true,
+    "published_cidrs": ["192.168.1.0/24"],
+    "allowed_node_ids": ["1"]
+  }
+}`
+	configPath := filepath.Join(dataDir, probeLinuxRouterConfigFileName)
+	if err := os.WriteFile(configPath, []byte(legacyConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := loadProbeLinuxRouterSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.SHA256 != probeLinuxRouterSnapshotSHA256(*snapshot) {
+		t.Fatal("runtime router config fingerprint was not rebuilt")
+	}
+	if err := validateProbeLinuxRouterSnapshot(snapshot, "21"); err != nil {
+		t.Fatalf("legacy router config is invalid: %v", err)
+	}
+	if err := persistProbeLinuxRouterSnapshot(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"sha256"`) {
+		t.Fatalf("local router config still persists sha256: %s", raw)
 	}
 }
 

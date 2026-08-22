@@ -112,6 +112,10 @@ func TestProbeLocalStandalonePagesServedAfterLogin(t *testing.T) {
 				"formatBrowserLocalDateTime(item.first_seen)",
 				"data-copy-domain",
 				"/local/api/virtual_router/domain_observations",
+				"function tabFromLocationHash()",
+				"window.history.replaceState(null, '', '#' + activeTab)",
+				"window.addEventListener('hashchange'",
+				"switchTab(tabFromLocationHash(), false)",
 			},
 		},
 		{
