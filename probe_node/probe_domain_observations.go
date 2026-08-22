@@ -19,19 +19,20 @@ const (
 )
 
 type probeDomainObservation struct {
-	Domain          string   `json:"domain"`
-	Status          string   `json:"status"`
-	FirstSeen       string   `json:"first_seen"`
-	LastSeen        string   `json:"last_seen"`
-	Events          int64    `json:"events"`
-	DNSQueries      int64    `json:"dns_queries"`
-	SNIObservations int64    `json:"sni_observations"`
-	ObservedVia     []string `json:"observed_via"`
-	Sources         []string `json:"sources"`
-	LastSource      string   `json:"last_source,omitempty"`
-	LastAction      string   `json:"last_action,omitempty"`
-	ResolvedIPs     []string `json:"resolved_ips,omitempty"`
-	LastError       string   `json:"last_error,omitempty"`
+	Domain           string   `json:"domain"`
+	Status           string   `json:"status"`
+	FirstSeen        string   `json:"first_seen"`
+	LastSeen         string   `json:"last_seen"`
+	Events           int64    `json:"events"`
+	DNSQueries       int64    `json:"dns_queries"`
+	SNIObservations  int64    `json:"sni_observations"`
+	QUICObservations int64    `json:"quic_observations"`
+	ObservedVia      []string `json:"observed_via"`
+	Sources          []string `json:"sources"`
+	LastSource       string   `json:"last_source,omitempty"`
+	LastAction       string   `json:"last_action,omitempty"`
+	ResolvedIPs      []string `json:"resolved_ips,omitempty"`
+	LastError        string   `json:"last_error,omitempty"`
 }
 
 type probeDomainAllowlistFile struct {
@@ -54,7 +55,7 @@ var probeDomainObservationState = struct {
 func recordProbeDomainObservation(domain string, via string, source string, action string, resolvedIPs []string, eventErr error) {
 	domain = normalizeProbeVirtualRouterDomain(domain)
 	via = strings.ToLower(strings.TrimSpace(via))
-	if domain == "" || (via != "dns" && via != "sni") {
+	if domain == "" || (via != "dns" && via != "sni" && via != "quic") {
 		return
 	}
 	source = normalizeProbeDomainObservationSource(source)
@@ -77,15 +78,19 @@ func recordProbeDomainObservation(domain string, via string, source string, acti
 	item.Events++
 	if via == "dns" {
 		item.DNSQueries++
-	} else {
+	} else if via == "sni" {
 		item.SNIObservations++
+	} else {
+		item.QUICObservations++
 	}
-	item.ObservedVia = appendProbeDomainObservationUnique(item.ObservedVia, via, 2)
+	item.ObservedVia = appendProbeDomainObservationUnique(item.ObservedVia, via, 3)
 	if source != "" {
 		item.LastSource = source
 		item.Sources = appendProbeDomainObservationUnique(item.Sources, source, probeDomainObservationMaxSources)
 	}
-	item.LastAction = strings.TrimSpace(action)
+	if cleanAction := strings.TrimSpace(action); cleanAction != "" {
+		item.LastAction = cleanAction
+	}
 	item.ResolvedIPs = sanitizeProbeDomainObservationIPs(resolvedIPs)
 	item.LastError = ""
 	if eventErr != nil {

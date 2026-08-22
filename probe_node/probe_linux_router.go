@@ -122,6 +122,7 @@ func stopProbeProductRuntime() {
 	stopProbeMihomoRuntime()
 	closeProbeLinuxRouterASNDatabase()
 	resetProbeLinuxRouterSNIState()
+	resetProbeLinuxRouterQUICState()
 	probeLinuxRouterRuntimeState.mu.Lock()
 	if probeLinuxRouterRuntimeState.running {
 		close(probeLinuxRouterRuntimeState.stopCh)
@@ -577,7 +578,7 @@ func probeLinuxRouterRejectsTUNPacket(packet []byte, dstIP string, path []string
 	if !probeLinuxRouterAllowsForwardedTUNPacket(packet, dstIP, path) {
 		return false
 	}
-	return probeLinuxRouterSNIRejectsPacket(packet)
+	return probeLinuxRouterSNIRejectsPacket(packet) || probeLinuxRouterQUICRejectsPacket(packet)
 }
 
 func probeLinuxRouterTargetsLocalDelivery(dstIP string) bool {

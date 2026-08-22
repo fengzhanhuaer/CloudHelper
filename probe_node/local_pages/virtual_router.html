@@ -1672,7 +1672,7 @@
       return filtered.map((item) => {
         const via = (Array.isArray(item.observed_via) ? item.observed_via : []).map((value) => String(value).toUpperCase()).join(' / ') || '-';
         const sources = (Array.isArray(item.sources) ? item.sources : []).join(' / ') || '-';
-        const counts = [`命中 ${formatNumber(item.events || 0)}`, `DNS ${formatNumber(item.dns_queries || 0)}`, `SNI ${formatNumber(item.sni_observations || 0)}`];
+        const counts = [`命中 ${formatNumber(item.events || 0)}`, `DNS ${formatNumber(item.dns_queries || 0)}`, `SNI ${formatNumber(item.sni_observations || 0)}`, `QUIC ${formatNumber(item.quic_observations || 0)}`];
         const result = item.last_error || (Array.isArray(item.resolved_ips) && item.resolved_ips.length ? item.resolved_ips.join(' / ') : '-');
         const nextStatus = status === 'tracking' ? 'allowed' : 'tracking';
         const command = status === 'tracking' ? '放行' : '重新跟踪';
@@ -1711,11 +1711,11 @@
 
     function exportDomainObservationsCSV() {
       const items = filteredDomainObservations(dnsRecordSnapshot);
-      const header = ['状态', '最近请求', '首次请求', '域名', '采集来源', '请求来源', '总命中次数', 'DNS命中次数', 'SNI命中次数', '最近动作', '解析结果', '最近错误'];
+      const header = ['状态', '最近请求', '首次请求', '域名', '采集来源', '请求来源', '总命中次数', 'DNS命中次数', 'SNI命中次数', 'QUIC命中次数', '最近动作', '解析结果', '最近错误'];
       const rows = items.map((item) => [
         item.status === 'allowed' ? '已放行' : '跟踪', item.last_seen, item.first_seen, item.domain,
         (item.observed_via || []).join(';'), (item.sources || []).join(';'), item.events, item.dns_queries,
-        item.sni_observations, item.last_action, (item.resolved_ips || []).join(';'), item.last_error,
+        item.sni_observations, item.quic_observations, item.last_action, (item.resolved_ips || []).join(';'), item.last_error,
       ]);
       const csv = '\ufeff' + [header, ...rows].map((row) => row.map(csvCell).join(',')).join('\r\n');
       const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));

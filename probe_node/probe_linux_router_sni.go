@@ -95,7 +95,7 @@ func probeLinuxRouterSNIRejectsParsedPacketLocked(parsed probeLinuxRouterSNITCPP
 			return false, ""
 		}
 		flow.updatedAt = now
-		if probeLinuxRouterDomainAction(flow.rejectedDomain) == "reject" {
+		if probeLinuxRouterDomainRouteAction(flow.rejectedDomain, parsed.key.destinationIP) == "reject" {
 			return true, ""
 		}
 		delete(probeLinuxRouterSNIState.flows, parsed.key)
@@ -126,7 +126,7 @@ func probeLinuxRouterSNIRejectsParsedPacketLocked(parsed probeLinuxRouterSNITCPP
 		delete(probeLinuxRouterSNIState.flows, parsed.key)
 		return false, ""
 	}
-	action := probeLinuxRouterDomainAction(serverName)
+	action := probeLinuxRouterDomainRouteAction(serverName, parsed.key.destinationIP)
 	recordProbeDomainObservation(serverName, "sni", probeLinuxRouterSNIFlowSource(parsed.key), action, nil, nil)
 	if action != "reject" {
 		delete(probeLinuxRouterSNIState.flows, parsed.key)
@@ -178,12 +178,16 @@ func probeLinuxRouterSNIFlowSource(key probeLinuxRouterSNIFlowKey) string {
 	return net.IPv4(byte(key.sourceIP>>24), byte(key.sourceIP>>16), byte(key.sourceIP>>8), byte(key.sourceIP)).String()
 }
 
-func probeLinuxRouterDomainAction(domain string) string {
+func probeLinuxRouterDomainRouteAction(domain string, destinationIP uint32) string {
 	rule, ok := currentProbeVirtualRouterRouteRuleForDomain(domain)
-	if !ok {
-		return ""
+	if ok {
+		return sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID)
 	}
-	return sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID)
+	ipText := net.IPv4(byte(destinationIP>>24), byte(destinationIP>>16), byte(destinationIP>>8), byte(destinationIP)).String()
+	if rule, ok = currentProbeVirtualRouterRouteRuleForIP(ipText); ok {
+		return sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID)
+	}
+	return "direct"
 }
 
 func parseProbeLinuxRouterSNITCPPacket(packet []byte) (probeLinuxRouterSNITCPPacket, bool) {

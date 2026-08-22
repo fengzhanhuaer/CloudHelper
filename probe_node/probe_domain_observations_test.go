@@ -17,6 +17,7 @@ func TestProbeDomainObservationsAggregateHitsAndSortByRequestTime(t *testing.T) 
 	recordProbeDomainObservation("ads.example", "dns", "192.168.51.21:53002", "reject", nil, nil)
 	recordProbeDomainObservation("ads.example", "dns", "192.168.51.20:53003", "reject", nil, nil)
 	recordProbeDomainObservation("ads.example", "sni", "192.168.51.20", "reject", nil, nil)
+	recordProbeDomainObservation("ads.example", "quic", "192.168.51.20", "reject", nil, nil)
 
 	items, sources, err := snapshotProbeDomainObservations()
 	if err != nil {
@@ -26,14 +27,31 @@ func TestProbeDomainObservationsAggregateHitsAndSortByRequestTime(t *testing.T) 
 		t.Fatalf("items=%+v, want latest domain first", items)
 	}
 	item := items[0]
-	if item.Status != "tracking" || item.Events != 3 || item.DNSQueries != 2 || item.SNIObservations != 1 {
+	if item.Status != "tracking" || item.Events != 4 || item.DNSQueries != 2 || item.SNIObservations != 1 || item.QUICObservations != 1 {
 		t.Fatalf("unexpected aggregated hits: %+v", item)
 	}
-	if !reflect.DeepEqual(item.ObservedVia, []string{"dns", "sni"}) || !reflect.DeepEqual(item.Sources, []string{"192.168.51.20", "192.168.51.21"}) {
+	if !reflect.DeepEqual(item.ObservedVia, []string{"dns", "quic", "sni"}) || !reflect.DeepEqual(item.Sources, []string{"192.168.51.20", "192.168.51.21"}) {
 		t.Fatalf("unexpected source aggregation: %+v", item)
 	}
 	if !reflect.DeepEqual(sources, []string{"192.168.51.20", "192.168.51.21"}) {
 		t.Fatalf("sources=%v", sources)
+	}
+}
+
+func TestProbeDomainObservationEmptyActionPreservesLastKnownAction(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeDomainObservations()
+	t.Cleanup(resetProbeDomainObservations)
+
+	recordProbeDomainObservation("mixed.example", "dns", "192.168.51.20:53001", "direct", nil, nil)
+	recordProbeDomainObservation("mixed.example", "sni", "192.168.51.20", "", nil, nil)
+
+	items, _, err := snapshotProbeDomainObservations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].LastAction != "direct" {
+		t.Fatalf("items=%+v, want last known action direct", items)
 	}
 }
 

@@ -53,6 +53,13 @@ func TestClientHelloServerName(t *testing.T) {
 	if host, complete := ClientHelloServerName(hello); !complete || host != "ads.example.com" {
 		t.Fatalf("complete hello host=%q complete=%t", host, complete)
 	}
+	handshake := hello[5:]
+	if host, complete := ClientHelloHandshakeServerName(handshake[:7]); complete || host != "" {
+		t.Fatalf("partial QUIC hello host=%q complete=%t", host, complete)
+	}
+	if host, complete := ClientHelloHandshakeServerName(handshake); !complete || host != "ads.example.com" {
+		t.Fatalf("complete QUIC hello host=%q complete=%t", host, complete)
+	}
 }
 
 func TestClientHelloServerNameRejectsNonTLSAndInvalidHost(t *testing.T) {

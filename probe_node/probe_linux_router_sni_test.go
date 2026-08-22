@@ -106,6 +106,9 @@ func TestProbeLinuxRouterSNIFallsThroughAndObservesRuleRemoval(t *testing.T) {
 	if probeLinuxRouterSNIRejectsPacket(buildProbeLinuxRouterTestTCPPacket(7000, 0x18, allowed)) {
 		t.Fatal("non-matching SNI was rejected")
 	}
+	if action := probeLinuxRouterDomainRouteAction("allowed.example", 0); action != "direct" {
+		t.Fatalf("non-matching SNI action=%q, want direct", action)
+	}
 
 	blocked := buildProbeLinuxRouterTestClientHello("blocked.example")
 	packet := buildProbeLinuxRouterTestTCPPacket(8000, 0x18, blocked)
@@ -126,8 +129,21 @@ func assertProbeLinuxRouterTestClientHello(t *testing.T, hello []byte, want stri
 	if !complete || host != want {
 		t.Fatalf("test ClientHello host=%q complete=%t, want %q", host, complete, want)
 	}
-	if action := probeLinuxRouterDomainAction(host); action != "reject" {
+	if action := probeLinuxRouterDomainRouteAction(host, 0); action != "reject" {
 		t.Fatalf("test ClientHello action=%q, want reject", action)
+	}
+}
+
+func TestProbeLinuxRouterSNIActionFallsBackToDestinationIPRule(t *testing.T) {
+	useProbeLinuxRouterSNITestState(t, []probeVirtualRouterRouteRule{{
+		Name:       "Route subnet",
+		Action:     "probe_exit",
+		ExitNodeID: "19",
+		Entries:    []string{"cidr:203.0.113.0/24"},
+	}})
+	destinationIP := binary.BigEndian.Uint32(net.ParseIP("203.0.113.10").To4())
+	if action := probeLinuxRouterDomainRouteAction("unmatched.example", destinationIP); action != "probe_exit" {
+		t.Fatalf("IP-matched SNI action=%q, want probe_exit", action)
 	}
 }
 

@@ -25,13 +25,28 @@ func ClientHelloServerName(data []byte) (serverName string, complete bool) {
 	if len(data) < 5+recordLen {
 		return "", false
 	}
-	offset := 5
-	if len(data[offset:]) < 4 || data[offset] != 0x01 {
+	return ClientHelloHandshakeServerName(data[5 : 5+recordLen])
+}
+
+// ClientHelloHandshakeServerName parses a TLS ClientHello handshake without
+// the TLS record header, as carried by QUIC CRYPTO frames.
+func ClientHelloHandshakeServerName(data []byte) (serverName string, complete bool) {
+	if len(data) < 4 {
+		return "", false
+	}
+	if data[0] != 0x01 {
 		return "", true
 	}
-	helloLen := int(data[offset+1])<<16 | int(data[offset+2])<<8 | int(data[offset+3])
-	offset += 4
-	if helloLen <= 0 || offset+helloLen > len(data) || offset+34 > len(data) {
+	helloLen := int(data[1])<<16 | int(data[2])<<8 | int(data[3])
+	if helloLen <= 0 {
+		return "", true
+	}
+	if len(data) < 4+helloLen {
+		return "", false
+	}
+	data = data[:4+helloLen]
+	offset := 4
+	if offset+34 > len(data) {
 		return "", true
 	}
 	offset += 34
