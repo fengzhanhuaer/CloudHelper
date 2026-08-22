@@ -47,12 +47,15 @@ type probeSpecialExitRule struct {
 }
 
 type probeLinuxRouterGatewayConfig struct {
-	Enabled         bool     `json:"enabled"`
-	Interface       string   `json:"interface"`
-	GatewayAddress  string   `json:"gateway_address"`
-	UpstreamGateway string   `json:"upstream_gateway"`
-	LANCIDRs        []string `json:"lan_cidrs"`
-	DNSEnabled      bool     `json:"dns_enabled"`
+	Enabled             bool     `json:"enabled"`
+	Interface           string   `json:"interface"`
+	GatewayAddress      string   `json:"gateway_address"`
+	UpstreamGateway     string   `json:"upstream_gateway"`
+	LANCIDRs            []string `json:"lan_cidrs"`
+	DNSEnabled          bool     `json:"dns_enabled"`
+	DNSWhitelistEnabled bool     `json:"dns_whitelist_enabled"`
+	DNSWhitelistIPs     []string `json:"dns_whitelist_ips"`
+	DNSWhitelistDomains []string `json:"dns_whitelist_domains"`
 }
 
 type probeLinuxRouterLocalIPConfig struct {

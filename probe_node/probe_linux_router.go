@@ -287,6 +287,8 @@ func applyProbeLinuxRouterLocalConfig(config probeLinuxRouterLocalConfig) error 
 	config.GatewayProxy.GatewayAddress = normalizeProbeLinuxRouterGatewayAddress(config.GatewayProxy.GatewayAddress, config.GatewayProxy.Interface)
 	config.GatewayProxy.UpstreamGateway = strings.TrimSpace(config.GatewayProxy.UpstreamGateway)
 	config.GatewayProxy.LANCIDRs = normalizeProbeLinuxRouterLocalCIDRs(config.GatewayProxy.LANCIDRs)
+	config.GatewayProxy.DNSWhitelistIPs = normalizeProbeLinuxRouterDNSWhitelistIPs(config.GatewayProxy.DNSWhitelistIPs)
+	config.GatewayProxy.DNSWhitelistDomains = normalizeProbeLinuxRouterDNSWhitelistDomains(config.GatewayProxy.DNSWhitelistDomains)
 	if len(config.GatewayProxy.LANCIDRs) == 0 {
 		if subnet := probeLinuxRouterGatewaySubnet(config.GatewayProxy.GatewayAddress); subnet != "" {
 			config.GatewayProxy.LANCIDRs = []string{subnet}
@@ -427,6 +429,62 @@ func normalizeProbeLinuxRouterLocalCIDRs(values []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func normalizeProbeLinuxRouterDNSWhitelistIPs(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		if addr, err := netip.ParseAddr(value); err == nil {
+			value = addr.Unmap().String()
+		}
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func normalizeProbeLinuxRouterDNSWhitelistDomains(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, raw := range values {
+		value := strings.ToLower(strings.Trim(strings.TrimSpace(raw), "."))
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func validateProbeLinuxRouterDNSWhitelistDomain(domain string) bool {
+	if len(domain) > 253 || !strings.Contains(domain, ".") || normalizeProbeVirtualRouterDomain(domain) != domain {
+		return false
+	}
+	for _, label := range strings.Split(domain, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, char := range label {
+			if char != '-' && (char < 'a' || char > 'z') && (char < '0' || char > '9') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func setProbeLinuxRouterReport(snapshot *probeLinuxRouterSnapshot, iface string, failOpen bool, applyErr error) {
@@ -584,6 +642,20 @@ func validateProbeLinuxRouterSnapshot(snapshot *probeLinuxRouterSnapshot, nodeID
 			}
 		}
 	}
+	if len(snapshot.GatewayProxy.DNSWhitelistIPs)+len(snapshot.GatewayProxy.DNSWhitelistDomains) > 64 {
+		return errors.New("router DNS whitelist allows at most 64 IPs and domains")
+	}
+	for _, raw := range snapshot.GatewayProxy.DNSWhitelistIPs {
+		addr, err := netip.ParseAddr(strings.TrimSpace(raw))
+		if err != nil || !addr.Is4() || addr.IsUnspecified() || addr.IsMulticast() {
+			return fmt.Errorf("router DNS whitelist IP %q is invalid", raw)
+		}
+	}
+	for _, domain := range snapshot.GatewayProxy.DNSWhitelistDomains {
+		if !validateProbeLinuxRouterDNSWhitelistDomain(domain) {
+			return fmt.Errorf("router DNS whitelist domain %q is invalid", domain)
+		}
+	}
 	if snapshot.LocalIPProxy.Enabled && len(snapshot.LocalIPProxy.PublishedCIDRs) == 0 {
 		return errors.New("router published CIDRs are required when local IP proxy is enabled")
 	}
@@ -642,9 +714,13 @@ func cloneProbeLinuxRouterSnapshot(snapshot *probeLinuxRouterSnapshot) *probeLin
 	}
 	clone := *snapshot
 	clone.GatewayProxy.LANCIDRs = append([]string(nil), snapshot.GatewayProxy.LANCIDRs...)
+	clone.GatewayProxy.DNSWhitelistIPs = append([]string(nil), snapshot.GatewayProxy.DNSWhitelistIPs...)
+	clone.GatewayProxy.DNSWhitelistDomains = append([]string(nil), snapshot.GatewayProxy.DNSWhitelistDomains...)
 	clone.LocalIPProxy.PublishedCIDRs = append([]string(nil), snapshot.LocalIPProxy.PublishedCIDRs...)
 	clone.LocalIPProxy.AllowedNodeIDs = append([]string(nil), snapshot.LocalIPProxy.AllowedNodeIDs...)
 	sort.Strings(clone.GatewayProxy.LANCIDRs)
+	sort.Strings(clone.GatewayProxy.DNSWhitelistIPs)
+	sort.Strings(clone.GatewayProxy.DNSWhitelistDomains)
 	sort.Strings(clone.LocalIPProxy.PublishedCIDRs)
 	sort.Strings(clone.LocalIPProxy.AllowedNodeIDs)
 	return &clone

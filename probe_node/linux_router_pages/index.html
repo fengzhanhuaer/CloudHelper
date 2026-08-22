@@ -229,10 +229,13 @@
             <div class="field full switches">
               <label class="check"><input id="gatewayEnabled" type="checkbox" />网关代理</label>
               <label class="check"><input id="dnsEnabled" type="checkbox" />LAN DNS</label>
+              <label class="check"><input id="dnsWhitelistEnabled" type="checkbox" />DNS 白名单</label>
             </div>
             <div class="field"><label for="interfaceName">LAN 网卡</label><select id="interfaceName"></select></div>
             <div class="field"><label for="gatewayAddress">LAN IP</label><input id="gatewayAddress" type="text" maxlength="32" /></div>
             <div class="field"><label for="upstreamGateway">上游网关</label><input id="upstreamGateway" type="text" maxlength="32" /></div>
+            <div class="field"><label for="dnsWhitelistIPs">DNS 白名单 IP</label><textarea id="dnsWhitelistIPs" spellcheck="false"></textarea></div>
+            <div class="field"><label for="dnsWhitelistDomains">DNS 白名单域名</label><textarea id="dnsWhitelistDomains" spellcheck="false"></textarea></div>
             <div class="field full switches">
               <label class="check"><input id="localIPEnabled" type="checkbox" />本地 IP 代理</label>
             </div>
@@ -331,6 +334,16 @@
       element.className = 'value' + (kind ? ' ' + kind : '');
     }
 
+    function parseConfigList(value) {
+      return Array.from(new Set(String(value || '').split(/[\s,;]+/).map((item) => item.trim()).filter(Boolean)));
+    }
+
+    function syncDNSWhitelistFields() {
+      const disabled = !$('dnsWhitelistEnabled').checked;
+      $('dnsWhitelistIPs').disabled = disabled;
+      $('dnsWhitelistDomains').disabled = disabled;
+    }
+
     function escapeHTML(value) {
       return String(value == null ? '' : value).replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
     }
@@ -391,6 +404,10 @@
       if (!preserveForm) {
         $('gatewayEnabled').checked = gateway.enabled === true;
         $('dnsEnabled').checked = gateway.dns_enabled !== false;
+        $('dnsWhitelistEnabled').checked = gateway.dns_whitelist_enabled === true;
+        $('dnsWhitelistIPs').value = (gateway.dns_whitelist_ips || []).join('\n');
+        $('dnsWhitelistDomains').value = (gateway.dns_whitelist_domains || []).join('\n');
+        syncDNSWhitelistFields();
         const configuredInterface = String(gateway.interface || 'auto');
         const interfaces = Array.isArray(data.interfaces) ? data.interfaces : [];
         const interfaceNames = new Set(interfaces.map((item) => String(item.name || '').trim()).filter(Boolean));
@@ -537,6 +554,9 @@
           gateway_proxy: {
             enabled: $('gatewayEnabled').checked,
             dns_enabled: $('dnsEnabled').checked,
+            dns_whitelist_enabled: $('dnsWhitelistEnabled').checked,
+            dns_whitelist_ips: parseConfigList($('dnsWhitelistIPs').value),
+            dns_whitelist_domains: parseConfigList($('dnsWhitelistDomains').value),
             interface: $('interfaceName').value.trim(),
             gateway_address: $('gatewayAddress').value.trim(),
             upstream_gateway: $('upstreamGateway').value.trim(),
@@ -571,6 +591,7 @@
     });
     $('configForm').addEventListener('change', (event) => {
       if (event.target === $('availableNodeID')) return;
+      if (event.target === $('dnsWhitelistEnabled')) syncDNSWhitelistFields();
       markConfigDirty();
     });
     $('addAllowedNodeBtn').addEventListener('click', () => {

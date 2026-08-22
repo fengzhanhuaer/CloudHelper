@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os/exec"
 	"sort"
@@ -27,11 +28,12 @@ const (
 )
 
 var probeLinuxRouterLinuxState = struct {
-	mu                 sync.Mutex
-	interfaceName      string
-	gatewayAddress     string
-	sysctlOriginal     map[string]string
-	snatCIDRsSignature string
+	mu                    sync.Mutex
+	interfaceName         string
+	gatewayAddress        string
+	sysctlOriginal        map[string]string
+	snatCIDRsSignature    string
+	dnsWhitelistSignature string
 }{}
 
 var probeLinuxRouterRunCommand = probeLocalLinuxRunCommand
@@ -42,6 +44,7 @@ var probeLinuxRouterApplySystemDNS = func() error { return probeVirtualRouterApp
 var probeLinuxRouterRestoreSystemDNS = func() error { return probeVirtualRouterRestoreSystemDNS() }
 var probeLinuxRouterVirtualDNSConfigured = probeVirtualRouterLocalDNSEnabled
 var probeLinuxRouterDNSStatus = currentProbeVirtualRouterDNSStatus
+var probeLinuxRouterLookupIP = net.DefaultResolver.LookupIPAddr
 
 func init() {
 	probeLinuxRouterPlatformApply = applyProbeLinuxRouterPlatform
@@ -83,7 +86,11 @@ func applyProbeLinuxRouterPlatform(snapshot probeLinuxRouterSnapshot) (string, e
 		return iface, err
 	}
 	snatCIDRs := probeLinuxRouterSNATCIDRs(currentProbeVirtualRouterConfig())
-	if err := replaceProbeLinuxRouterNFTTable(buildProbeLinuxRouterNFTScript(snapshot, iface, tunDev, tunIP, snatCIDRs, false)); err != nil {
+	dnsWhitelistIPs, err := resolveProbeLinuxRouterDNSWhitelist(snapshot.GatewayProxy)
+	if err != nil {
+		return iface, err
+	}
+	if err := replaceProbeLinuxRouterNFTTable(buildProbeLinuxRouterNFTScript(snapshot, iface, tunDev, tunIP, snatCIDRs, dnsWhitelistIPs, false)); err != nil {
 		return iface, err
 	}
 	if err := reconcileProbeLinuxRouterDNSRuntime(snapshot.GatewayProxy.Enabled && snapshot.GatewayProxy.DNSEnabled); err != nil {
@@ -97,6 +104,7 @@ func applyProbeLinuxRouterPlatform(snapshot probeLinuxRouterSnapshot) (string, e
 		probeLinuxRouterLinuxState.gatewayAddress = ""
 	}
 	probeLinuxRouterLinuxState.snatCIDRsSignature = strings.Join(snatCIDRs, ",")
+	probeLinuxRouterLinuxState.dnsWhitelistSignature = strings.Join(dnsWhitelistIPs, ",")
 	probeLinuxRouterLinuxState.mu.Unlock()
 	return iface, nil
 }
@@ -119,8 +127,9 @@ func applyProbeLinuxRouterFailOpen(snapshot probeLinuxRouterSnapshot) error {
 	dnsErr := reconcileProbeLinuxRouterDNSRuntime(false)
 	probeLinuxRouterLinuxState.mu.Lock()
 	probeLinuxRouterLinuxState.snatCIDRsSignature = ""
+	probeLinuxRouterLinuxState.dnsWhitelistSignature = ""
 	probeLinuxRouterLinuxState.mu.Unlock()
-	nftErr := replaceProbeLinuxRouterNFTTable(buildProbeLinuxRouterNFTScript(snapshot, iface, tunDev, "", nil, true))
+	nftErr := replaceProbeLinuxRouterNFTTable(buildProbeLinuxRouterNFTScript(snapshot, iface, tunDev, "", nil, nil, true))
 	return errors.Join(dnsErr, nftErr)
 }
 
@@ -141,6 +150,7 @@ func cleanupProbeLinuxRouterPlatform(snapshot *probeLinuxRouterSnapshot) error {
 	probeLinuxRouterLinuxState.interfaceName = ""
 	probeLinuxRouterLinuxState.gatewayAddress = ""
 	probeLinuxRouterLinuxState.snatCIDRsSignature = ""
+	probeLinuxRouterLinuxState.dnsWhitelistSignature = ""
 	probeLinuxRouterLinuxState.mu.Unlock()
 	if address == "" && snapshot != nil && snapshot.GatewayProxy.Enabled {
 		address = snapshot.GatewayProxy.GatewayAddress
@@ -249,6 +259,16 @@ func probeLinuxRouterPlatformHealth(snapshot probeLinuxRouterSnapshot) error {
 	probeLinuxRouterLinuxState.mu.Unlock()
 	if expectedSNATCIDRs != appliedSNATCIDRs {
 		return errors.New("router proxy CIDR selection changed")
+	}
+	if snapshot.GatewayProxy.Enabled && snapshot.GatewayProxy.DNSWhitelistEnabled && len(snapshot.GatewayProxy.DNSWhitelistDomains) > 0 {
+		if resolved, resolveErr := resolveProbeLinuxRouterDNSWhitelist(snapshot.GatewayProxy); resolveErr == nil {
+			probeLinuxRouterLinuxState.mu.Lock()
+			applied := probeLinuxRouterLinuxState.dnsWhitelistSignature
+			probeLinuxRouterLinuxState.mu.Unlock()
+			if strings.Join(resolved, ",") != applied {
+				return errors.New("router DNS whitelist addresses changed")
+			}
+		}
 	}
 	if snapshot.GatewayProxy.Enabled || snapshot.LocalIPProxy.Enabled {
 		output, err := probeLinuxRouterRunCommand(5*time.Second, "ip", "-4", "rule", "show", "priority", probeLinuxRouterRulePriority)
@@ -379,7 +399,46 @@ func replaceProbeLinuxRouterNFTTable(script string) error {
 	return nil
 }
 
-func buildProbeLinuxRouterNFTScript(snapshot probeLinuxRouterSnapshot, iface string, tunDev string, localIP string, snatCIDRs []string, failOpen bool) string {
+func resolveProbeLinuxRouterDNSWhitelist(config probeLinuxRouterGatewayConfig) ([]string, error) {
+	if !config.Enabled || !config.DNSWhitelistEnabled {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(config.DNSWhitelistIPs)+len(config.DNSWhitelistDomains)*2)
+	for _, raw := range config.DNSWhitelistIPs {
+		addr, err := netip.ParseAddr(strings.TrimSpace(raw))
+		if err == nil && addr.Is4() {
+			seen[addr.Unmap().String()] = struct{}{}
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	for _, domain := range config.DNSWhitelistDomains {
+		addresses, err := probeLinuxRouterLookupIP(ctx, domain)
+		if err != nil {
+			return nil, fmt.Errorf("resolve DNS whitelist domain %s: %w", domain, err)
+		}
+		foundIPv4 := false
+		for _, address := range addresses {
+			addr, ok := netip.AddrFromSlice(address.IP)
+			if !ok || !addr.Unmap().Is4() {
+				continue
+			}
+			foundIPv4 = true
+			seen[addr.Unmap().String()] = struct{}{}
+		}
+		if !foundIPv4 {
+			return nil, fmt.Errorf("resolve DNS whitelist domain %s: no IPv4 address", domain)
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for address := range seen {
+		out = append(out, address)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func buildProbeLinuxRouterNFTScript(snapshot probeLinuxRouterSnapshot, iface string, tunDev string, localIP string, snatCIDRs []string, dnsWhitelistIPs []string, failOpen bool) string {
 	lanElements := strings.Join(snapshot.GatewayProxy.LANCIDRs, ", ")
 	publishedElements := strings.Join(snapshot.LocalIPProxy.PublishedCIDRs, ", ")
 	snatElements := strings.Join(snatCIDRs, ", ")
@@ -401,6 +460,14 @@ func buildProbeLinuxRouterNFTScript(snapshot probeLinuxRouterSnapshot, iface str
 		"  set published4 { type ipv4_addr; flags interval; elements = { "+publishedElements+" } }",
 		"  set routed4 { type ipv4_addr; flags interval; elements = { "+snatElements+" } }",
 	)
+	if snapshot.GatewayProxy.Enabled && snapshot.GatewayProxy.DNSWhitelistEnabled && !failOpen {
+		dnsElements := strings.Join(dnsWhitelistIPs, ", ")
+		if dnsElements == "" {
+			rules = append(rules, "  set dns_allow4 { type ipv4_addr; }")
+		} else {
+			rules = append(rules, "  set dns_allow4 { type ipv4_addr; elements = { "+dnsElements+" } }")
+		}
+	}
 	if snapshot.GatewayProxy.Enabled && snapshot.GatewayProxy.DNSEnabled && !failOpen {
 		gateway, _ := netip.ParsePrefix(snapshot.GatewayProxy.GatewayAddress)
 		rules = append(rules,
@@ -424,6 +491,22 @@ func buildProbeLinuxRouterNFTScript(snapshot probeLinuxRouterSnapshot, iface str
 			rules = append(rules, "    iifname "+ifaceQuote+" ip saddr @lan4 ip daddr != @lan4 meta mark set "+probeLinuxRouterPacketMark)
 		}
 		rules = append(rules, "  }")
+	}
+	if snapshot.GatewayProxy.Enabled && snapshot.GatewayProxy.DNSWhitelistEnabled && !failOpen {
+		rules = append(rules,
+			"  chain dns_guard { type filter hook forward priority filter; policy accept;",
+		)
+		if len(dnsWhitelistIPs) > 0 {
+			rules = append(rules,
+				"    iifname "+ifaceQuote+" ip saddr @lan4 ip daddr @dns_allow4 udp dport { 53, 853 } accept",
+				"    iifname "+ifaceQuote+" ip saddr @lan4 ip daddr @dns_allow4 tcp dport { 53, 853 } accept",
+			)
+		}
+		rules = append(rules,
+			"    iifname "+ifaceQuote+" ip saddr @lan4 udp dport { 53, 853 } drop",
+			"    iifname "+ifaceQuote+" ip saddr @lan4 tcp dport { 53, 853 } drop",
+			"  }",
+		)
 	}
 	rules = append(rules, "  chain postrouting { type nat hook postrouting priority srcnat; policy accept;")
 	if snapshot.GatewayProxy.Enabled {

@@ -53,6 +53,32 @@ func TestProbeLinuxRouterGatewaySubnet(t *testing.T) {
 	}
 }
 
+func TestProbeLinuxRouterDNSWhitelistNormalizationAndValidation(t *testing.T) {
+	if got := normalizeProbeLinuxRouterDNSWhitelistIPs([]string{" 8.8.8.8 ", "8.8.8.8", "1.1.1.1"}); !reflect.DeepEqual(got, []string{"1.1.1.1", "8.8.8.8"}) {
+		t.Fatalf("normalized DNS whitelist IPs=%v", got)
+	}
+	if got := normalizeProbeLinuxRouterDNSWhitelistDomains([]string{" DNS.Google. ", "dns.google", "one.one.one.one"}); !reflect.DeepEqual(got, []string{"dns.google", "one.one.one.one"}) {
+		t.Fatalf("normalized DNS whitelist domains=%v", got)
+	}
+	if !validateProbeLinuxRouterDNSWhitelistDomain("dns.google") || validateProbeLinuxRouterDNSWhitelistDomain("https://dns.google/dns-query") {
+		t.Fatal("DNS whitelist domain validation is incorrect")
+	}
+}
+
+func TestValidateProbeLinuxRouterSnapshotRejectsInvalidDNSWhitelistEntry(t *testing.T) {
+	snapshot := probeLinuxRouterSnapshot{
+		Version: 1, NodeID: "21", Revision: 1,
+		GatewayProxy: probeLinuxRouterGatewayConfig{
+			Interface: "auto", GatewayAddress: "192.168.1.150/24", UpstreamGateway: "192.168.1.1",
+			LANCIDRs: []string{"192.168.1.0/24"}, DNSWhitelistEnabled: true, DNSWhitelistIPs: []string{"not-an-ip"},
+		},
+	}
+	snapshot.SHA256 = probeLinuxRouterSnapshotSHA256(snapshot)
+	if err := validateProbeLinuxRouterSnapshot(&snapshot, "21"); err == nil {
+		t.Fatal("invalid DNS whitelist IP unexpectedly accepted")
+	}
+}
+
 func TestProbeLinuxRouterMatchesASNWithLocalDatabaseLookup(t *testing.T) {
 	previous := probeLinuxRouterASNForIP
 	probeLinuxRouterASNForIP = func(ip net.IP) (uint, bool) {

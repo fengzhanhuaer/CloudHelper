@@ -3,7 +3,9 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -16,7 +18,7 @@ func TestBuildProbeLinuxRouterNFTScriptOnlyMarksLANIngress(t *testing.T) {
 		GatewayProxy: probeLinuxRouterGatewayConfig{Enabled: true, DNSEnabled: true, GatewayAddress: "192.168.1.150/24", LANCIDRs: []string{"192.168.1.0/24"}},
 		LocalIPProxy: probeLinuxRouterLocalIPConfig{Enabled: true, PublishedCIDRs: []string{"192.168.50.0/24"}},
 	}
-	script := buildProbeLinuxRouterNFTScript(snapshot, "eth0", "cloudhelper0", "198.18.0.15", []string{"198.18.0.0/15", "149.154.160.0/20"}, false)
+	script := buildProbeLinuxRouterNFTScript(snapshot, "eth0", "cloudhelper0", "198.18.0.15", []string{"198.18.0.0/15", "149.154.160.0/20"}, nil, false)
 	for _, marker := range []string{`iifname "eth0" ip saddr @lan4`, "meta mark set 0x4348", `iifname "cloudhelper0" ip daddr @published4 ct mark set 0x4349`, `iifname "eth0" ct mark 0x4349`, `iifname "cloudhelper0" oifname "eth0"`, "dnat to 198.18.0.2:53", "149.154.160.0/20", `oifname "cloudhelper0" ip saddr @lan4 ip daddr @routed4 snat to 198.18.0.15`} {
 		if !strings.Contains(script, marker) {
 			t.Fatalf("nft script missing %q:\n%s", marker, script)
@@ -39,7 +41,7 @@ func TestBuildProbeLinuxRouterNFTScriptPassesNFTCheck(t *testing.T) {
 		LocalIPProxy: probeLinuxRouterLocalIPConfig{Enabled: true, PublishedCIDRs: []string{"192.168.50.0/24"}},
 	}
 	cmd := exec.Command("nft", "--check", "-f", "-")
-	cmd.Stdin = strings.NewReader(buildProbeLinuxRouterNFTScript(snapshot, "chlan0", "chprobe0", "198.18.0.21", []string{"198.18.0.0/15"}, false))
+	cmd.Stdin = strings.NewReader(buildProbeLinuxRouterNFTScript(snapshot, "chlan0", "chprobe0", "198.18.0.21", []string{"198.18.0.0/15"}, nil, false))
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("nft check failed: %v: %s", err, strings.TrimSpace(string(output)))
 	}
@@ -109,12 +111,74 @@ func TestProbeLinuxRouterSysctlsRestoreOriginalValues(t *testing.T) {
 
 func TestBuildProbeLinuxRouterFailOpenNFTScriptRemovesTUNMarkAndDNSRedirect(t *testing.T) {
 	snapshot := probeLinuxRouterSnapshot{GatewayProxy: probeLinuxRouterGatewayConfig{Enabled: true, DNSEnabled: true, GatewayAddress: "192.168.1.150/24", LANCIDRs: []string{"192.168.1.0/24"}}}
-	script := buildProbeLinuxRouterNFTScript(snapshot, "eth0", "cloudhelper0", "", nil, true)
+	script := buildProbeLinuxRouterNFTScript(snapshot, "eth0", "cloudhelper0", "", nil, nil, true)
 	if strings.Contains(script, "meta mark set") || strings.Contains(script, "dnat to") || strings.Contains(script, "snat to") {
 		t.Fatalf("fail-open script still redirects traffic:\n%s", script)
 	}
 	if !strings.Contains(script, `oifname "eth0" ip saddr @lan4 masquerade`) {
 		t.Fatalf("fail-open script lacks direct NAT:\n%s", script)
+	}
+}
+
+func TestBuildProbeLinuxRouterNFTScriptRestrictsOnlyForwardedLANDNS(t *testing.T) {
+	snapshot := probeLinuxRouterSnapshot{
+		GatewayProxy: probeLinuxRouterGatewayConfig{
+			Enabled: true, DNSEnabled: true, DNSWhitelistEnabled: true,
+			GatewayAddress: "192.168.1.150/24", LANCIDRs: []string{"192.168.1.0/24"},
+		},
+	}
+	script := buildProbeLinuxRouterNFTScript(snapshot, "eth0", "cloudhelper0", "198.18.0.15", []string{"198.18.0.0/15"}, []string{"1.1.1.1", "8.8.8.8"}, false)
+	for _, marker := range []string{
+		"set dns_allow4", "1.1.1.1, 8.8.8.8",
+		"chain dns_guard { type filter hook forward priority filter; policy accept;",
+		`iifname "eth0" ip saddr @lan4 ip daddr @dns_allow4 udp dport { 53, 853 } accept`,
+		`iifname "eth0" ip saddr @lan4 tcp dport { 53, 853 } drop`,
+		"dnat to 198.18.0.2:53",
+	} {
+		if !strings.Contains(script, marker) {
+			t.Fatalf("DNS whitelist nft script missing %q:\n%s", marker, script)
+		}
+	}
+	if strings.Contains(script, "hook output") || strings.Contains(script, "hook input") {
+		t.Fatalf("DNS whitelist unexpectedly restricts router-local DNS:\n%s", script)
+	}
+}
+
+func TestBuildProbeLinuxRouterNFTScriptEmptyWhitelistBlocksDirectClientDNS(t *testing.T) {
+	snapshot := probeLinuxRouterSnapshot{
+		GatewayProxy: probeLinuxRouterGatewayConfig{
+			Enabled: true, DNSEnabled: true, DNSWhitelistEnabled: true,
+			GatewayAddress: "192.168.1.150/24", LANCIDRs: []string{"192.168.1.0/24"},
+		},
+	}
+	script := buildProbeLinuxRouterNFTScript(snapshot, "eth0", "cloudhelper0", "198.18.0.15", nil, nil, false)
+	if !strings.Contains(script, `iifname "eth0" ip saddr @lan4 udp dport { 53, 853 } drop`) {
+		t.Fatalf("empty DNS whitelist does not block direct client DNS:\n%s", script)
+	}
+	if strings.Contains(script, "ip daddr @dns_allow4 udp") {
+		t.Fatalf("empty DNS whitelist contains an allow rule:\n%s", script)
+	}
+}
+
+func TestResolveProbeLinuxRouterDNSWhitelistMergesIPsAndDomains(t *testing.T) {
+	oldLookup := probeLinuxRouterLookupIP
+	probeLinuxRouterLookupIP = func(_ context.Context, host string) ([]net.IPAddr, error) {
+		if host != "dns.example.com" {
+			return nil, fmt.Errorf("unexpected host %s", host)
+		}
+		return []net.IPAddr{{IP: net.ParseIP("8.8.8.8")}, {IP: net.ParseIP("2001:4860:4860::8888")}}, nil
+	}
+	t.Cleanup(func() { probeLinuxRouterLookupIP = oldLookup })
+
+	got, err := resolveProbeLinuxRouterDNSWhitelist(probeLinuxRouterGatewayConfig{
+		Enabled: true, DNSWhitelistEnabled: true,
+		DNSWhitelistIPs: []string{"1.1.1.1"}, DNSWhitelistDomains: []string{"dns.example.com"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined := strings.Join(got, ","); joined != "1.1.1.1,8.8.8.8" {
+		t.Fatalf("resolved DNS whitelist=%q", joined)
 	}
 }
 
@@ -275,7 +339,7 @@ func TestProbeLinuxRouterNetworkNamespacePolicy(t *testing.T) {
 	if err := applyProbeLinuxRouterPolicyRouting(snapshot, "chlan0", "chprobe0"); err != nil {
 		t.Fatal(err)
 	}
-	if err := replaceProbeLinuxRouterNFTTable(buildProbeLinuxRouterNFTScript(snapshot, "chlan0", "chprobe0", "198.18.0.21", []string{"198.18.0.0/15"}, false)); err != nil {
+	if err := replaceProbeLinuxRouterNFTTable(buildProbeLinuxRouterNFTScript(snapshot, "chlan0", "chprobe0", "198.18.0.21", []string{"198.18.0.0/15"}, nil, false)); err != nil {
 		t.Fatal(err)
 	}
 	mainAfter := mustRun("ip", "-4", "route", "show", "table", "main")
