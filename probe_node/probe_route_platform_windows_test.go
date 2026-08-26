@@ -83,6 +83,7 @@ func resetProbeLocalWindowsNativeRouteHooksForTest() {
 	probeLocalSetWindowsInterfaceDNS = setProbeLocalWindowsInterfaceDNS
 	probeLocalResetWindowsInterfaceDNS = resetProbeLocalWindowsInterfaceDNS
 	probeLocalFindWindowsAdapterByIfIndex = windowsFindAdapterByIfIndex
+	probeRouteWindowsDirectBypassRequired = shouldProbeRouteWindowsUseDirectBypass
 }
 
 func useProbeLocalWindowsCommandBackedRouteHooksForTest() {
@@ -167,6 +168,9 @@ func TestEnsureProbeRouteDirectBypassWritesHostRoute(t *testing.T) {
 	probeRouteDirectRouteTargetState.routeTarget = probeRouteWindowsDirectRouteTarget{InterfaceIndex: 13, NextHop: "192.168.51.1"}
 	probeRouteDirectRouteTargetState.ready = true
 	probeRouteDirectRouteTargetState.mu.Unlock()
+	probeLocalResolveWindowsPrimaryEgressRoute = func(excludedIfIndex int) (probeRouteWindowsDirectRouteTarget, error) {
+		return probeRouteWindowsDirectRouteTarget{InterfaceIndex: 13, NextHop: "192.168.51.1"}, nil
+	}
 	probeRouteWindowsListAdaptersIPv4 = func() ([]windowsAdapterInfo, error) {
 		return []windowsAdapterInfo{{InterfaceIndex: 13, IPv4Addrs: []string{"192.168.51.20"}}}, nil
 	}
@@ -184,6 +188,177 @@ func TestEnsureProbeRouteDirectBypassWritesHostRoute(t *testing.T) {
 	}
 	if len(created) != 1 || created[0].Prefix != "203.0.113.7" || created[0].Gateway != "192.168.51.1" || created[0].IfIndex != 13 || created[0].Metric != probeRouteWindowsDirectRouteMetric {
 		t.Fatalf("unexpected direct bypass routes=%+v", created)
+	}
+}
+
+func TestEnsureProbeRouteDirectBypassWithoutActiveTUNCleansManagedRoutes(t *testing.T) {
+	resetProbeRouteDirectBypassStateForTest()
+	probeRouteWindowsDirectBypassRequired = func() bool { return false }
+	t.Cleanup(func() {
+		resetProbeRouteDirectBypassStateForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
+	})
+
+	probeLocalListWindowsRouteEntries = func() ([]probeLocalWindowsRouteEntry, error) {
+		return []probeLocalWindowsRouteEntry{
+			{Prefix: "104.21.90.186", PrefixLength: 32, NextHop: "172.18.55.254", IfIndex: 22, Metric: probeRouteWindowsDirectRouteMetric, Protocol: probeRouteWindowsProtocolNetMgmt},
+			{Prefix: "104.21.90.186", PrefixLength: 32, NextHop: "192.168.51.1", IfIndex: 22, Metric: probeRouteWindowsDirectRouteMetric, Protocol: probeRouteWindowsProtocolNetMgmt},
+		}, nil
+	}
+	probeLocalCreateWindowsRouteEntry = func(routeDef probeRouteWindowsRouteDef) (bool, error) {
+		t.Fatalf("TUN-disabled controller dial must not create a bypass route: %+v", routeDef)
+		return false, nil
+	}
+	var deleted []probeRouteWindowsRouteDef
+	probeLocalDeleteWindowsRouteEntry = func(routeDef probeRouteWindowsRouteDef) error {
+		deleted = append(deleted, routeDef)
+		return nil
+	}
+
+	if err := ensureProbeRouteDirectBypass("104.21.90.186:443"); err != nil {
+		t.Fatalf("cleanup disabled direct bypass: %v", err)
+	}
+	if len(deleted) != 2 {
+		t.Fatalf("deleted=%+v, want all managed controller routes removed", deleted)
+	}
+}
+
+func TestShouldProbeRouteWindowsUseDirectBypassHonorsPersistedTUNIntent(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeVirtualRouterTUNDataPlaneHooksForTest()
+	t.Cleanup(resetProbeVirtualRouterTUNDataPlaneHooksForTest)
+
+	if err := persistProbeLocalTUNPersistentState(true, false); err != nil {
+		t.Fatalf("persist disabled TUN state: %v", err)
+	}
+	if shouldProbeRouteWindowsUseDirectBypass() {
+		t.Fatal("disabled TUN state unexpectedly requires direct bypass")
+	}
+
+	if err := persistProbeLocalTUNPersistentState(true, true); err != nil {
+		t.Fatalf("persist enabled TUN state: %v", err)
+	}
+	if !shouldProbeRouteWindowsUseDirectBypass() {
+		t.Fatal("enabled TUN startup intent must require direct bypass")
+	}
+}
+
+func TestEnsureProbeRouteDirectBypassRebindsManualAdapterAndRemovesStaleGateways(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	resetProbeRouteDirectBypassStateForTest()
+	oldOptions := probeLocalWindowsEgressRouteOptions
+	t.Cleanup(func() {
+		probeLocalWindowsEgressRouteOptions = oldOptions
+		resetProbeRouteDirectBypassStateForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
+	})
+
+	const interfaceGUID = "{B1D66112-83C0-4BB7-ACAE-3987F9FD2D87}"
+	setProbeRouteWindowsDirectManualRouteTarget(probeRouteWindowsDirectRouteTarget{
+		InterfaceIndex: 22,
+		InterfaceLUID:  1001,
+		InterfaceGUID:  interfaceGUID,
+		NextHop:        "172.18.55.254",
+	}, probeLocalTUNEgressCandidateID(interfaceGUID, 1001, 22, "172.18.55.254"), "physical / 172.18.55.254")
+	probeLocalWindowsEgressRouteOptions = func(int) ([]probeLocalTUNEgressRouteTargetOption, error) {
+		candidate := probeLocalTUNEgressRouteTargetOption{
+			InterfaceIndex: 22,
+			InterfaceLUID:  1001,
+			InterfaceGUID:  interfaceGUID,
+			NextHop:        "172.18.52.205",
+			Name:           "physical",
+		}
+		candidate.CandidateID = probeLocalTUNEgressCandidateID(candidate.InterfaceGUID, candidate.InterfaceLUID, candidate.InterfaceIndex, candidate.NextHop)
+		return []probeLocalTUNEgressRouteTargetOption{candidate}, nil
+	}
+	probeRouteWindowsListAdaptersIPv4 = func() ([]windowsAdapterInfo, error) {
+		return []windowsAdapterInfo{{InterfaceIndex: 22, IPv4Addrs: []string{"172.18.53.157"}}}, nil
+	}
+	probeLocalListWindowsRouteEntries = func() ([]probeLocalWindowsRouteEntry, error) {
+		return []probeLocalWindowsRouteEntry{
+			{Prefix: "0.0.0.0", PrefixLength: 0, NextHop: "172.18.52.205", IfIndex: 22},
+			{Prefix: "203.0.113.7", PrefixLength: 32, NextHop: "172.18.55.254", IfIndex: 22, Metric: probeRouteWindowsDirectRouteMetric, Protocol: probeRouteWindowsProtocolNetMgmt},
+			{Prefix: "203.0.113.7", PrefixLength: 32, NextHop: "192.168.51.1", IfIndex: 22, Metric: probeRouteWindowsDirectRouteMetric, Protocol: probeRouteWindowsProtocolNetMgmt},
+		}, nil
+	}
+	var created []probeRouteWindowsRouteDef
+	probeLocalCreateWindowsRouteEntry = func(routeDef probeRouteWindowsRouteDef) (bool, error) {
+		created = append(created, routeDef)
+		return true, nil
+	}
+	var deleted []probeRouteWindowsRouteDef
+	probeLocalDeleteWindowsRouteEntry = func(routeDef probeRouteWindowsRouteDef) error {
+		deleted = append(deleted, routeDef)
+		return nil
+	}
+
+	if err := ensureProbeRouteDirectBypass("203.0.113.7:443"); err != nil {
+		t.Fatalf("ensure direct bypass after gateway change: %v", err)
+	}
+	if len(created) != 1 || created[0].Gateway != "172.18.52.205" || created[0].IfIndex != 22 {
+		t.Fatalf("created=%+v, want one route via refreshed gateway", created)
+	}
+	if len(deleted) != 2 || deleted[0].Gateway != "172.18.55.254" || deleted[1].Gateway != "192.168.51.1" {
+		t.Fatalf("deleted=%+v, want stale routes via both old gateways", deleted)
+	}
+	refreshed, _, _, ok := currentProbeRouteWindowsDirectManualRouteTarget()
+	if !ok || refreshed.NextHop != "172.18.52.205" {
+		t.Fatalf("manual target=%+v ok=%t, want refreshed gateway", refreshed, ok)
+	}
+}
+
+func TestEnsureProbeRouteDirectBypassAutoRefreshesDefaultRoute(t *testing.T) {
+	resetProbeRouteDirectBypassStateForTest()
+	t.Cleanup(func() {
+		resetProbeRouteDirectBypassStateForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
+	})
+
+	setProbeRouteWindowsDirectRouteTarget(probeRouteWindowsDirectRouteTarget{
+		InterfaceIndex: 22,
+		InterfaceLUID:  1001,
+		InterfaceGUID:  "{B1D66112-83C0-4BB7-ACAE-3987F9FD2D87}",
+		NextHop:        "172.18.55.254",
+	})
+	probeLocalResolveWindowsPrimaryEgressRoute = func(excludedIfIndex int) (probeRouteWindowsDirectRouteTarget, error) {
+		return probeRouteWindowsDirectRouteTarget{
+			InterfaceIndex: 31,
+			InterfaceLUID:  2002,
+			InterfaceGUID:  "{36597D16-C4D3-4372-8318-AD5356F21D6D}",
+			NextHop:        "172.18.52.205",
+		}, nil
+	}
+	probeRouteWindowsListAdaptersIPv4 = func() ([]windowsAdapterInfo, error) {
+		return []windowsAdapterInfo{{InterfaceIndex: 31, IPv4Addrs: []string{"172.18.53.157"}}}, nil
+	}
+	probeLocalListWindowsRouteEntries = func() ([]probeLocalWindowsRouteEntry, error) {
+		return []probeLocalWindowsRouteEntry{
+			{Prefix: "0.0.0.0", PrefixLength: 0, NextHop: "172.18.52.205", IfIndex: 31},
+			{Prefix: "203.0.113.8", PrefixLength: 32, NextHop: "172.18.55.254", IfIndex: 22, Metric: probeRouteWindowsDirectRouteMetric, Protocol: probeRouteWindowsProtocolNetMgmt},
+		}, nil
+	}
+	var created []probeRouteWindowsRouteDef
+	probeLocalCreateWindowsRouteEntry = func(routeDef probeRouteWindowsRouteDef) (bool, error) {
+		created = append(created, routeDef)
+		return true, nil
+	}
+	var deleted []probeRouteWindowsRouteDef
+	probeLocalDeleteWindowsRouteEntry = func(routeDef probeRouteWindowsRouteDef) error {
+		deleted = append(deleted, routeDef)
+		return nil
+	}
+
+	if err := ensureProbeRouteDirectBypass("203.0.113.8:443"); err != nil {
+		t.Fatalf("ensure automatic direct bypass after default route change: %v", err)
+	}
+	if len(created) != 1 || created[0].Gateway != "172.18.52.205" || created[0].IfIndex != 31 {
+		t.Fatalf("created=%+v, want route via current automatic default", created)
+	}
+	if len(deleted) != 1 || deleted[0].Gateway != "172.18.55.254" || deleted[0].IfIndex != 22 {
+		t.Fatalf("deleted=%+v, want stale automatic route removed", deleted)
+	}
+	if _, _, _, manual := currentProbeRouteWindowsDirectManualRouteTarget(); manual {
+		t.Fatal("automatic refresh unexpectedly enabled manual mode")
 	}
 }
 
@@ -382,6 +557,9 @@ func TestEnsureProbeRouteDirectBypassSkipsPhysicalGateway(t *testing.T) {
 	probeRouteDirectRouteTargetState.routeTarget = probeRouteWindowsDirectRouteTarget{InterfaceIndex: 15, NextHop: "172.18.55.254"}
 	probeRouteDirectRouteTargetState.ready = true
 	probeRouteDirectRouteTargetState.mu.Unlock()
+	probeLocalResolveWindowsPrimaryEgressRoute = func(excludedIfIndex int) (probeRouteWindowsDirectRouteTarget, error) {
+		return probeRouteWindowsDirectRouteTarget{InterfaceIndex: 15, NextHop: "172.18.55.254"}, nil
+	}
 	probeRouteWindowsListAdaptersIPv4 = func() ([]windowsAdapterInfo, error) { return nil, nil }
 	probeLocalListWindowsRouteEntries = func() ([]probeLocalWindowsRouteEntry, error) { return nil, nil }
 	probeLocalCreateWindowsRouteEntry = func(routeDef probeRouteWindowsRouteDef) (bool, error) {
@@ -433,7 +611,6 @@ func TestCleanupProbeRouteDirectBypassForVirtualRouterRulesRemovesMatchedHostRou
 	probeRouteDirectRouteTargetState.routeTarget = probeRouteWindowsDirectRouteTarget{InterfaceIndex: 13, NextHop: "192.168.51.1"}
 	probeRouteDirectRouteTargetState.ready = true
 	probeRouteDirectRouteTargetState.mu.Unlock()
-
 	probeLocalListWindowsRouteEntries = func() ([]probeLocalWindowsRouteEntry, error) {
 		return []probeLocalWindowsRouteEntry{
 			{Prefix: "149.154.167.51", PrefixLength: 32, NextHop: "192.168.51.1", IfIndex: 13, Metric: probeRouteWindowsDirectRouteMetric, Protocol: probeRouteWindowsProtocolNetMgmt},
@@ -476,6 +653,9 @@ func TestEnsureProbeRouteDirectBypassRejectsTUNInterfaceTarget(t *testing.T) {
 	probeRouteDirectRouteTargetState.routeTarget = probeRouteWindowsDirectRouteTarget{InterfaceIndex: 9, NextHop: "198.18.0.1"}
 	probeRouteDirectRouteTargetState.ready = true
 	probeRouteDirectRouteTargetState.mu.Unlock()
+	probeLocalResolveWindowsPrimaryEgressRoute = func(excludedIfIndex int) (probeRouteWindowsDirectRouteTarget, error) {
+		return probeRouteWindowsDirectRouteTarget{InterfaceIndex: 9, NextHop: "198.18.0.1"}, nil
+	}
 	probeRouteWindowsListAdaptersIPv4 = func() ([]windowsAdapterInfo, error) {
 		return []windowsAdapterInfo{{InterfaceIndex: 15, IPv4Addrs: []string{"192.168.51.20"}}}, nil
 	}

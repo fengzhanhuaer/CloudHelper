@@ -3,7 +3,6 @@
 package main
 
 import (
-	"errors"
 	"strings"
 	"testing"
 )
@@ -65,7 +64,7 @@ func TestApplyProbeLocalTUNEgressPersistentStateMigratesLegacyIfIndex(t *testing
 	}
 }
 
-func TestEnsureProbeRouteDirectBypassRebindsStaleManualAdapter(t *testing.T) {
+func TestEnsureProbeRouteDirectBypassRebindsStaleManualAdapterBeforeCreate(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeRouteDirectBypassStateForTest()
 	stubProbeLocalWindowsEgressRouteOptions(t, currentProbeLocalEgressTestOptions())
@@ -86,11 +85,8 @@ func TestEnsureProbeRouteDirectBypassRebindsStaleManualAdapter(t *testing.T) {
 	var calls []probeRouteWindowsRouteDef
 	probeLocalCreateWindowsRouteEntry = func(routeDef probeRouteWindowsRouteDef) (bool, error) {
 		calls = append(calls, routeDef)
-		if routeDef.IfIndex == 14 {
-			return false, errors.New("CreateIpForwardEntry2 failed: code=1168")
-		}
 		if routeDef.IfIndex != 15 || routeDef.InterfaceLUID != 2002 {
-			return false, errors.New("unexpected rebound route target")
+			t.Fatalf("route was not proactively rebound: %+v", routeDef)
 		}
 		return true, nil
 	}
@@ -99,11 +95,11 @@ func TestEnsureProbeRouteDirectBypassRebindsStaleManualAdapter(t *testing.T) {
 	if err := ensureProbeRouteDirectBypass("203.0.113.10:443"); err != nil {
 		t.Fatalf("ensure direct bypass after stale adapter: %v", err)
 	}
-	if len(calls) != 2 {
-		t.Fatalf("route create calls=%d want 2: %+v", len(calls), calls)
+	if len(calls) != 1 {
+		t.Fatalf("route create calls=%d want 1: %+v", len(calls), calls)
 	}
-	if calls[0].IfIndex != 14 || calls[1].IfIndex != 15 {
-		t.Fatalf("route was not retried with rebound index: %+v", calls)
+	if calls[0].IfIndex != 15 {
+		t.Fatalf("route did not use rebound index: %+v", calls)
 	}
 }
 
