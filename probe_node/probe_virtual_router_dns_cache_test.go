@@ -29,6 +29,55 @@ func TestDefaultProbeLocalDNSUpstreamsBootstrapWithoutSystemDNS(t *testing.T) {
 	}
 }
 
+func TestProbeLocalDNSBootstrapPrefersSystemServers(t *testing.T) {
+	resetProbeLocalDNSServiceForTest()
+	t.Cleanup(resetProbeLocalDNSServiceForTest)
+	probeLocalDNSSystemServers = func() []string {
+		return []string{"172.18.52.205", "223.5.5.5"}
+	}
+
+	got := currentProbeLocalDNSBootstrapServerTargets()
+	want := []string{"172.18.52.205:53", "223.5.5.5:53", "119.29.29.29:53"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("bootstrap servers=%v want=%v", got, want)
+	}
+}
+
+func TestProbeLocalDNSBootstrapFallsBackAfterSystemServerFailure(t *testing.T) {
+	resetProbeLocalDNSServiceForTest()
+	t.Cleanup(resetProbeLocalDNSServiceForTest)
+	probeLocalDNSSystemServers = func() []string { return []string{"172.18.52.205"} }
+
+	var queried []string
+	probeLocalDNSBootstrapQuery = func(server string, packet []byte) ([]byte, error) {
+		queried = append(queried, server)
+		if server == "172.18.52.205:53" {
+			return nil, errors.New("system dns unavailable")
+		}
+		var message dnsmessage.Message
+		if err := message.Unpack(packet); err != nil {
+			return nil, err
+		}
+		message.Header.Response = true
+		message.Answers = []dnsmessage.Resource{{
+			Header: dnsmessage.ResourceHeader{Name: message.Questions[0].Name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: 60},
+			Body:   &dnsmessage.AResource{A: [4]byte{203, 0, 113, 41}},
+		}}
+		return message.Pack()
+	}
+
+	ips, err := bootstrapProbeLocalDNSResolveIPv4s("controller.example")
+	if err != nil {
+		t.Fatalf("bootstrap fallback failed: %v", err)
+	}
+	if strings.Join(ips, ",") != "203.0.113.41" {
+		t.Fatalf("bootstrap ips=%v", ips)
+	}
+	if strings.Join(queried, ",") != "172.18.52.205:53,223.5.5.5:53" {
+		t.Fatalf("queried servers=%v", queried)
+	}
+}
+
 func TestProbeLocalDNSExternalAndRelayResolutionUseFullUpstreamChain(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeLocalDNSServiceForTest()

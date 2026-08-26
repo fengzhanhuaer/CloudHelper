@@ -137,6 +137,7 @@ var (
 	probeLocalDNSNow              = time.Now
 	probeLocalDNSSystemServers    = currentProbeLocalSystemDNSServers
 	probeLocalDNSQueryUpstream    = defaultProbeLocalDNSQueryUpstream
+	probeLocalDNSBootstrapQuery   = queryProbeLocalDNSViaPlain
 	probeLocalDNSLoadHostMappings = func() ([]probeLocalHostMapping, error) {
 		_, hosts, err := loadProbeLocalHostMappingsWithContent()
 		return hosts, err
@@ -898,7 +899,7 @@ func bootstrapProbeLocalDNSResolveIPv4s(domain string) ([]string, error) {
 	}
 	var lastErr error
 	for _, server := range servers {
-		response, queryErr := queryProbeLocalDNSViaPlain(server, query)
+		response, queryErr := probeLocalDNSBootstrapQuery(server, query)
 		if queryErr != nil {
 			lastErr = queryErr
 			continue
@@ -956,8 +957,8 @@ func currentProbeLocalDNSBootstrapServerTargets() []string {
 			out = append(out, target)
 		}
 	}
-	appendServer(defaultProbeLocalDNSServers())
 	appendServer(probeLocalDNSSystemServers())
+	appendServer(defaultProbeLocalDNSServers())
 	return out
 }
 
@@ -1730,6 +1731,7 @@ func resetProbeLocalDNSHooksForTest() {
 	probeLocalDNSNow = time.Now
 	probeLocalDNSSystemServers = currentProbeLocalSystemDNSServers
 	probeLocalDNSQueryUpstream = defaultProbeLocalDNSQueryUpstream
+	probeLocalDNSBootstrapQuery = queryProbeLocalDNSViaPlain
 	probeLocalDNSLoadHostMappings = func() ([]probeLocalHostMapping, error) {
 		_, hosts, err := loadProbeLocalHostMappingsWithContent()
 		return hosts, err
