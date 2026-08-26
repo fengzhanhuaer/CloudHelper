@@ -648,6 +648,13 @@ func buildProbeLinuxRouterNFTScript(snapshot probeLinuxRouterSnapshot, iface str
 			"  }",
 		)
 	}
+	if snapshot.GatewayProxy.Enabled && !failOpen {
+		rules = append(rules,
+			"  chain preconntrack { type filter hook prerouting priority raw; policy accept;",
+			"    iifname "+ifaceQuote+" ip saddr @lan4 ip daddr != @lan4 ip daddr != @routed4 notrack",
+			"  }",
+		)
+	}
 	if (snapshot.GatewayProxy.Enabled || snapshot.LocalIPProxy.Enabled) && !failOpen {
 		rules = append(rules,
 			"  chain premangle { type filter hook prerouting priority mangle; policy accept;",

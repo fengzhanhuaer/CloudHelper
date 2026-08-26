@@ -135,7 +135,7 @@ func TestBuildProbeLinuxRouterNFTScriptOnlyMarksLANIngress(t *testing.T) {
 		LocalIPProxy: probeLinuxRouterLocalIPConfig{Enabled: true, PublishedCIDRs: []string{"192.168.50.0/24"}},
 	}
 	script := buildProbeLinuxRouterNFTScript(snapshot, "eth0", "cloudhelper0", "198.18.0.15", []string{"198.18.0.0/15", "149.154.160.0/20"}, nil, false)
-	for _, marker := range []string{`iifname "eth0" ip saddr @lan4`, "meta mark set 0x4348", `iifname "cloudhelper0" ip daddr @published4 ct mark set 0x4349`, `iifname "eth0" ct mark 0x4349`, `iifname "cloudhelper0" oifname "eth0"`, "dnat to 198.18.0.2:53", "149.154.160.0/20", `oifname "cloudhelper0" ip saddr @lan4 ip daddr @routed4 snat to 198.18.0.15`} {
+	for _, marker := range []string{`iifname "eth0" ip saddr @lan4`, "meta mark set 0x4348", `chain preconntrack { type filter hook prerouting priority raw; policy accept;`, `iifname "eth0" ip saddr @lan4 ip daddr != @lan4 ip daddr != @routed4 notrack`, `iifname "cloudhelper0" ip daddr @published4 ct mark set 0x4349`, `iifname "eth0" ct mark 0x4349`, `iifname "cloudhelper0" oifname "eth0"`, "dnat to 198.18.0.2:53", "149.154.160.0/20", `oifname "cloudhelper0" ip saddr @lan4 ip daddr @routed4 snat to 198.18.0.15`} {
 		if !strings.Contains(script, marker) {
 			t.Fatalf("nft script missing %q:\n%s", marker, script)
 		}
@@ -228,7 +228,7 @@ func TestProbeLinuxRouterSysctlsRestoreOriginalValues(t *testing.T) {
 func TestBuildProbeLinuxRouterFailOpenNFTScriptRemovesTUNMarkAndDNSRedirect(t *testing.T) {
 	snapshot := probeLinuxRouterSnapshot{GatewayProxy: probeLinuxRouterGatewayConfig{Enabled: true, DNSEnabled: true, GatewayAddress: "192.168.1.150/24", LANCIDRs: []string{"192.168.1.0/24"}}}
 	script := buildProbeLinuxRouterNFTScript(snapshot, "eth0", "cloudhelper0", "", nil, nil, true)
-	if strings.Contains(script, "meta mark set") || strings.Contains(script, "dnat to") || strings.Contains(script, "snat to") {
+	if strings.Contains(script, "meta mark set") || strings.Contains(script, "dnat to") || strings.Contains(script, "snat to") || strings.Contains(script, "notrack") {
 		t.Fatalf("fail-open script still redirects traffic:\n%s", script)
 	}
 	if !strings.Contains(script, `oifname "eth0" ip saddr @lan4 masquerade`) {
