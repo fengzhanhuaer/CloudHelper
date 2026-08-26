@@ -32,10 +32,13 @@ var (
 	probeLinuxRouterPlatformResolve = func(snapshot probeLinuxRouterSnapshot) (probeLinuxRouterSnapshot, error) {
 		return snapshot, nil
 	}
-	probeLinuxRouterPlatformPrepare  = func() error { return nil }
-	probeLinuxRouterPlatformFailOpen = func(snapshot probeLinuxRouterSnapshot) error { return nil }
-	probeLinuxRouterPlatformCleanup  = func(snapshot *probeLinuxRouterSnapshot) error { return nil }
-	probeLinuxRouterPlatformHealthy  = func(snapshot probeLinuxRouterSnapshot) error { return nil }
+	probeLinuxRouterPlatformPrepare              = func() error { return nil }
+	probeLinuxRouterPlatformFailOpen             = func(snapshot probeLinuxRouterSnapshot) error { return nil }
+	probeLinuxRouterPlatformCleanup              = func(snapshot *probeLinuxRouterSnapshot) error { return nil }
+	probeLinuxRouterPlatformHealthy              = func(snapshot probeLinuxRouterSnapshot) error { return nil }
+	probeLinuxRouterPlatformRestoreInterfaceAuto = func(string) (string, bool, error) {
+		return "", false, errors.New("linux router network configuration is unavailable")
+	}
 )
 
 var probeLinuxRouterRuntimeState = struct {

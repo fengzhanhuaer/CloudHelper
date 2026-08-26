@@ -36,6 +36,7 @@ func setupProbeLinuxRouterWebTest(t *testing.T) http.Handler {
 	oldResolve := probeLinuxRouterPlatformResolve
 	oldFailOpen := probeLinuxRouterPlatformFailOpen
 	oldCleanup := probeLinuxRouterPlatformCleanup
+	oldRestoreInterfaceAuto := probeLinuxRouterPlatformRestoreInterfaceAuto
 	probeLinuxRouterPlatformApply = func(probeLinuxRouterSnapshot) (string, error) { return "eth0", nil }
 	probeLinuxRouterPlatformResolve = func(snapshot probeLinuxRouterSnapshot) (probeLinuxRouterSnapshot, error) {
 		snapshot.GatewayProxy.Interface = "eth0"
@@ -53,6 +54,12 @@ func setupProbeLinuxRouterWebTest(t *testing.T) http.Handler {
 	}
 	probeLinuxRouterPlatformFailOpen = func(probeLinuxRouterSnapshot) error { return nil }
 	probeLinuxRouterPlatformCleanup = func(*probeLinuxRouterSnapshot) error { return nil }
+	probeLinuxRouterPlatformRestoreInterfaceAuto = func(interfaceName string) (string, bool, error) {
+		if interfaceName == "auto" {
+			interfaceName = "eth0"
+		}
+		return interfaceName, true, nil
+	}
 	t.Cleanup(func() {
 		resetProbeLocalAuthManagerForTest()
 		resetProbeLocalSetupTokenForTest()
@@ -67,6 +74,7 @@ func setupProbeLinuxRouterWebTest(t *testing.T) http.Handler {
 		probeLinuxRouterPlatformResolve = oldResolve
 		probeLinuxRouterPlatformFailOpen = oldFailOpen
 		probeLinuxRouterPlatformCleanup = oldCleanup
+		probeLinuxRouterPlatformRestoreInterfaceAuto = oldRestoreInterfaceAuto
 	})
 	return buildProbeLocalConsoleHandler()
 }
@@ -226,6 +234,31 @@ func TestProbeLinuxRouterWebIsIntegratedIntoGenericConsole(t *testing.T) {
 	if upgrade.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated upgrade endpoint=%d", upgrade.Code)
 	}
+	networkAuto := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/network/auto", "192.168.1.150:16032", "192.168.1.20:43210", map[string]any{"interface": "auto"})
+	if networkAuto.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated network auto endpoint=%d", networkAuto.Code)
+	}
+}
+
+func TestProbeLinuxRouterWebRestoresInterfaceAutomaticAddressing(t *testing.T) {
+	handler := setupProbeLinuxRouterWebTest(t)
+	cookie := registerAndLoginProbeLinuxRouterWeb(t, handler)
+	var restoredInterface string
+	probeLinuxRouterPlatformRestoreInterfaceAuto = func(interfaceName string) (string, bool, error) {
+		restoredInterface = interfaceName
+		return "eth0", true, nil
+	}
+
+	response := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/network/auto", "192.168.1.150:16032", "192.168.1.20:43210", map[string]any{"interface": "auto"}, cookie)
+	if response.Code != http.StatusOK || restoredInterface != "auto" || !strings.Contains(response.Body.String(), `"interface":"eth0"`) || !strings.Contains(response.Body.String(), `"reconnect_scheduled":true`) {
+		t.Fatalf("network auto status=%d restored=%q body=%s", response.Code, restoredInterface, response.Body.String())
+	}
+
+	restoredInterface = ""
+	invalid := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/network/auto", "192.168.1.150:16032", "192.168.1.20:43210", map[string]any{"interface": "eth0;reboot"}, cookie)
+	if invalid.Code != http.StatusBadRequest || restoredInterface != "" {
+		t.Fatalf("invalid network auto status=%d restored=%q body=%s", invalid.Code, restoredInterface, invalid.Body.String())
+	}
 }
 
 func TestProbeLinuxRouterWebConfigAndFailOpenFlow(t *testing.T) {
@@ -286,7 +319,7 @@ func TestProbeLinuxRouterWebRejectsInvalidGatewayConfig(t *testing.T) {
 }
 
 func TestProbeLinuxRouterWebUsesLocalConfigAndShowsConnections(t *testing.T) {
-	for _, marker := range []string{"本地配置", `<select id="interfaceName">`, `id="gatewayAddress" type="text" readonly`, "LAN IP（自动）", "上游网关（可选）", "默认使用上级下发网关", "syncGatewayAddressPreview", `id="runtimeUpstreamGateway"`, `id="dnsWhitelistEnabled"`, `id="dnsWhitelistIPs"`, `id="dnsWhitelistDomains"`, "dns_whitelist_enabled", "dns_whitelist_ips", "dns_whitelist_domains", `id="availableNodeID"`, `id="addAllowedNodeBtn"`, `id="allowedNodeList"`, `id="connectionRows"`, `id="upgradeBtn"`, "/local/router/api/upgrade/check", `href="/local/virtual-router"`, `class="subtab active"`, "gateway_proxy", "local_ip_proxy", "let configDirty = false", "statusRequestSequence", "allowedNodeSelection", "有未保存的更改", "配置已保存并应用", "beforeunload"} {
+	for _, marker := range []string{"本地配置", `<select id="interfaceName">`, `id="restoreAutoIPBtn"`, "恢复自动获取 IP", "/local/router/api/network/auto", "IP 地址也可能变化", `id="gatewayAddress" type="text" readonly`, "LAN IP（自动）", "上游网关（可选）", "默认使用上级下发网关", "syncGatewayAddressPreview", `id="runtimeUpstreamGateway"`, `id="dnsWhitelistEnabled"`, `id="dnsWhitelistIPs"`, `id="dnsWhitelistDomains"`, "dns_whitelist_enabled", "dns_whitelist_ips", "dns_whitelist_domains", `id="availableNodeID"`, `id="addAllowedNodeBtn"`, `id="allowedNodeList"`, `id="connectionRows"`, `id="upgradeBtn"`, "/local/router/api/upgrade/check", `href="/local/virtual-router"`, `class="subtab active"`, "gateway_proxy", "local_ip_proxy", "let configDirty = false", "statusRequestSequence", "allowedNodeSelection", "有未保存的更改", "配置已保存并应用", "beforeunload"} {
 		if !strings.Contains(probeLinuxRouterWebPageHTML, marker) {
 			t.Fatalf("router page missing %q", marker)
 		}

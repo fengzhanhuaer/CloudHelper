@@ -36,6 +36,7 @@ func registerProbeLinuxRouterLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/router", probeLinuxRouterWebPageHandler)
 	mux.HandleFunc("/local/router/api/status", probeLinuxRouterWebStatusHandler)
 	mux.HandleFunc("/local/router/api/config", probeLinuxRouterWebConfigHandler)
+	mux.HandleFunc("/local/router/api/network/auto", probeLinuxRouterWebNetworkAutoHandler)
 	mux.HandleFunc("/local/router/api/fail-open", probeLinuxRouterWebFailOpenHandler)
 	mux.HandleFunc("/local/router/api/resume", probeLinuxRouterWebResumeHandler)
 	mux.HandleFunc("/local/router/api/logs", probeLinuxRouterWebLogsHandler)
@@ -188,6 +189,44 @@ func probeLinuxRouterWebConfigHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func probeLinuxRouterWebNetworkAutoHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, probeLinuxRouterWebBodyLimit)
+	defer body.Close()
+	var request struct {
+		Interface string `json:"interface"`
+	}
+	if err := decodeProbeLinuxRouterWebJSON(body, &request); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	interfaceName := strings.TrimSpace(request.Interface)
+	if interfaceName == "" {
+		interfaceName = "auto"
+	}
+	if interfaceName != "auto" && !probeLinuxRouterInterfacePattern.MatchString(interfaceName) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid router interface"})
+		return
+	}
+	resolvedInterface, changed, err := probeLinuxRouterPlatformRestoreInterfaceAuto(interfaceName)
+	if err != nil {
+		writeProbeLocalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":                  true,
+		"interface":           resolvedInterface,
+		"changed":             changed,
+		"reconnect_scheduled": changed,
+	})
 }
 
 func probeLinuxRouterWebFailOpenHandler(w http.ResponseWriter, r *http.Request) {

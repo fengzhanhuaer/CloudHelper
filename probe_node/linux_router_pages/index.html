@@ -113,7 +113,7 @@
     .switches { display: flex; gap: 24px; flex-wrap: wrap; align-items: center; min-height: 38px; }
     .check { display: inline-flex; align-items: center; gap: 8px; color: var(--text); font-size: 14px; font-weight: 600; }
     .check input { width: 18px; height: 18px; accent-color: var(--green); }
-    .allowed-picker { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+    .allowed-picker, .interface-picker { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
     .allowed-list { display: flex; flex-wrap: wrap; gap: 8px; min-height: 30px; margin-top: 10px; }
     .allowed-item { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 4px 5px 4px 9px; border: 1px solid var(--line); border-radius: 5px; background: rgba(13, 17, 23, .36); font-size: 13px; }
     .allowed-item span { overflow-wrap: anywhere; }
@@ -170,6 +170,7 @@
       .status-item:last-child { border-bottom: 0; }
       .toolbar, .actions, .page-toolbar { width: 100%; }
       .toolbar .btn, .actions .btn { flex: 1 1 auto; }
+      .interface-picker { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -232,7 +233,13 @@
               <label class="check"><input id="dnsEnabled" type="checkbox" />LAN DNS</label>
               <label class="check"><input id="dnsWhitelistEnabled" type="checkbox" />DNS 白名单</label>
             </div>
-            <div class="field"><label for="interfaceName">LAN 网卡</label><select id="interfaceName"></select></div>
+            <div class="field">
+              <label for="interfaceName">LAN 网卡</label>
+              <div class="interface-picker">
+                <select id="interfaceName"></select>
+                <button id="restoreAutoIPBtn" class="btn" type="button">恢复自动获取 IP</button>
+              </div>
+            </div>
             <div class="field"><label for="gatewayAddress">LAN IP（自动）</label><input id="gatewayAddress" type="text" readonly /></div>
             <div class="field"><label for="upstreamGateway">上游网关（可选）</label><input id="upstreamGateway" type="text" maxlength="32" placeholder="默认使用上级下发网关" /></div>
             <div class="field"><label for="dnsWhitelistIPs">DNS 白名单 IP</label><textarea id="dnsWhitelistIPs" spellcheck="false"></textarea></div>
@@ -560,6 +567,40 @@
       }
     }
 
+    async function restoreInterfaceAutoIP() {
+      const selected = String($('interfaceName').value || 'auto').trim() || 'auto';
+      const runtimeInterface = String(currentStatus && currentStatus.runtime && currentStatus.runtime.interface || '').trim();
+      const targetLabel = selected === 'auto' ? (runtimeInterface || '当前 LAN 网卡') : selected;
+      if (!window.confirm(`将 ${targetLabel} 的 IPv4 配置恢复为 DHCP 自动获取？网卡会重新连接，当前页面可能断开，IP 地址也可能变化。`)) return;
+      const button = $('restoreAutoIPBtn');
+      button.disabled = true;
+      let reconnectScheduled = false;
+      try {
+        const result = await requestJSON('/local/router/api/network/auto', {
+          method: 'POST',
+          body: JSON.stringify({ interface: selected }),
+        });
+        const interfaceName = String(result.interface || targetLabel);
+        reconnectScheduled = result.reconnect_scheduled === true;
+        configNotice = result.changed
+          ? `${interfaceName} 已改为自动获取 IP，正在重新连接；如果地址变化，请使用新地址重新打开页面`
+          : `${interfaceName} 已经是自动获取 IP`;
+        if (currentStatus) renderStatus(currentStatus);
+        if (!reconnectScheduled) await loadStatus();
+      } catch (error) {
+        showActionError(error);
+      } finally {
+        if (!reconnectScheduled) {
+          button.disabled = false;
+        } else {
+          setTimeout(() => {
+            button.disabled = false;
+            loadStatus().catch(() => {});
+          }, 8000);
+        }
+      }
+    }
+
     $('configForm').addEventListener('submit', async (event) => {
       event.preventDefault();
       if (!window.confirm('保存并应用本地旁路由配置？')) return;
@@ -647,6 +688,7 @@
       } catch (error) { showActionError(error); }
     });
     $('refreshBtn').addEventListener('click', async () => { try { await loadStatus(); } catch (error) { showActionError(error); } });
+    $('restoreAutoIPBtn').addEventListener('click', restoreInterfaceAutoIP);
     $('upgradeBtn').addEventListener('click', startUpgrade);
     $('logsBtn').addEventListener('click', async () => { try { await loadLogs(); } catch (error) { showActionError(error); } });
     requestAnimationFrame(() => {
