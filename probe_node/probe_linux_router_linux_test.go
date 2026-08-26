@@ -4,14 +4,130 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestResolveProbeLinuxRouterNetworkGatewayPriority(t *testing.T) {
+	oldRun := probeLinuxRouterRunCommand
+	oldDHCPDir := probeLinuxRouterDHCPServerDir
+	dhcpDir := t.TempDir()
+	probeLinuxRouterDHCPServerDir = dhcpDir
+	t.Cleanup(func() {
+		probeLinuxRouterRunCommand = oldRun
+		probeLinuxRouterDHCPServerDir = oldDHCPDir
+	})
+
+	defaultGateway := "192.168.1.1"
+	probeLinuxRouterRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
+		command := name + " " + strings.Join(args, " ")
+		switch command {
+		case "ip -4 route show default":
+			return "default via " + defaultGateway + " dev eth0 proto dhcp metric 200\n", nil
+		case "ip -4 -o address show dev eth0":
+			return "2: eth0    inet 192.168.1.150/24 brd 192.168.1.255 scope global dynamic eth0\n", nil
+		default:
+			return "", fmt.Errorf("unexpected command: %s", command)
+		}
+	}
+
+	base := probeLinuxRouterSnapshot{GatewayProxy: probeLinuxRouterGatewayConfig{Enabled: true, Interface: "eth0"}}
+	effective, err := resolveProbeLinuxRouterNetwork(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if effective.GatewayProxy.GatewayAddress != "192.168.1.150/24" || effective.GatewayProxy.UpstreamGateway != "192.168.1.1" {
+		t.Fatalf("system defaults resolved incorrectly: %+v", effective.GatewayProxy)
+	}
+	if len(effective.GatewayProxy.LANCIDRs) != 1 || effective.GatewayProxy.LANCIDRs[0] != "192.168.1.0/24" {
+		t.Fatalf("automatic LAN CIDR=%v", effective.GatewayProxy.LANCIDRs)
+	}
+
+	withUserGateway := base
+	withUserGateway.GatewayProxy.UpstreamGateway = "192.168.1.254"
+	effective, err = resolveProbeLinuxRouterNetwork(withUserGateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if effective.GatewayProxy.UpstreamGateway != "192.168.1.254" {
+		t.Fatalf("user gateway did not win: %+v", effective.GatewayProxy)
+	}
+
+	defaultGateway = "192.168.1.150"
+	if err := os.WriteFile(filepath.Join(dhcpDir, "eth0"), []byte("192.168.1.2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	effective, err = resolveProbeLinuxRouterNetwork(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if effective.GatewayProxy.UpstreamGateway != "192.168.1.2" {
+		t.Fatalf("DHCP server fallback=%q, want 192.168.1.2", effective.GatewayProxy.UpstreamGateway)
+	}
+}
+
+func TestResolveProbeLinuxRouterNetworkRejectsSelfUserGateway(t *testing.T) {
+	oldRun := probeLinuxRouterRunCommand
+	t.Cleanup(func() { probeLinuxRouterRunCommand = oldRun })
+	probeLinuxRouterRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
+		switch name + " " + strings.Join(args, " ") {
+		case "ip -4 route show default":
+			return "default via 192.168.1.1 dev eth0 proto dhcp metric 200\n", nil
+		case "ip -4 -o address show dev eth0":
+			return "2: eth0 inet 192.168.1.150/24 scope global eth0\n", nil
+		default:
+			return "", errors.New("unexpected command")
+		}
+	}
+	_, err := resolveProbeLinuxRouterNetwork(probeLinuxRouterSnapshot{GatewayProxy: probeLinuxRouterGatewayConfig{
+		Enabled: true, Interface: "eth0", UpstreamGateway: "192.168.1.150",
+	}})
+	if err == nil || !strings.Contains(err.Error(), "cannot equal") {
+		t.Fatalf("self user gateway error=%v", err)
+	}
+}
+
+func TestSelectProbeLinuxRouterInterfacePrefixMatchesGatewaySubnet(t *testing.T) {
+	prefixes := []netip.Prefix{netip.MustParsePrefix("192.168.10.20/24"), netip.MustParsePrefix("10.20.30.40/24")}
+	got, ok := selectProbeLinuxRouterInterfacePrefix(prefixes, netip.MustParseAddr("10.20.30.1"))
+	if !ok || got.String() != "10.20.30.40/24" {
+		t.Fatalf("selected prefix=%v ok=%t", got, ok)
+	}
+}
+
+func TestEnsureProbeLinuxRouterUDHCPCHooks(t *testing.T) {
+	oldDir := probeLinuxRouterUDHCPCDir
+	probeLinuxRouterUDHCPCDir = t.TempDir()
+	t.Cleanup(func() { probeLinuxRouterUDHCPCDir = oldDir })
+	if err := ensureProbeLinuxRouterUDHCPCHooks(); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []string{"bound", "renew"} {
+		path := filepath.Join(probeLinuxRouterUDHCPCDir, "post-"+event, "90-cloudhelper-probe-router")
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o755 {
+			t.Fatalf("hook mode=%o", info.Mode().Perm())
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil || !strings.Contains(string(raw), "${serverid:-}") {
+			t.Fatalf("hook content missing server identifier capture: err=%v content=%q", err, raw)
+		}
+		if output, err := exec.Command("sh", "-n", path).CombinedOutput(); err != nil {
+			t.Fatalf("hook shell syntax is invalid: %v: %s", err, output)
+		}
+	}
+}
 
 func TestBuildProbeLinuxRouterNFTScriptOnlyMarksLANIngress(t *testing.T) {
 	snapshot := probeLinuxRouterSnapshot{

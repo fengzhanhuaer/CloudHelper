@@ -122,6 +122,7 @@ type probeLinuxRouterRuntimeReport struct {
 	FailOpen            bool     `json:"fail_open"`
 	Interface           string   `json:"interface,omitempty"`
 	GatewayAddress      string   `json:"gateway_address,omitempty"`
+	UpstreamGateway     string   `json:"upstream_gateway,omitempty"`
 	PublishedCIDRs      []string `json:"published_cidrs,omitempty"`
 	AllowedNodeIDs      []string `json:"allowed_node_ids,omitempty"`
 	TUNRXPackets        uint64   `json:"tun_rx_packets,omitempty"`

@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -30,6 +29,10 @@ var (
 	probeLinuxRouterPlatformApply = func(snapshot probeLinuxRouterSnapshot) (string, error) {
 		return "", errors.New("linux router platform is unavailable")
 	}
+	probeLinuxRouterPlatformResolve = func(snapshot probeLinuxRouterSnapshot) (probeLinuxRouterSnapshot, error) {
+		return snapshot, nil
+	}
+	probeLinuxRouterPlatformPrepare  = func() error { return nil }
 	probeLinuxRouterPlatformFailOpen = func(snapshot probeLinuxRouterSnapshot) error { return nil }
 	probeLinuxRouterPlatformCleanup  = func(snapshot *probeLinuxRouterSnapshot) error { return nil }
 	probeLinuxRouterPlatformHealthy  = func(snapshot probeLinuxRouterSnapshot) error { return nil }
@@ -43,6 +46,7 @@ var probeLinuxRouterRuntimeState = struct {
 	stopCh         chan struct{}
 	running        bool
 	manualFailOpen bool
+	applied        *probeLinuxRouterSnapshot
 }{}
 
 type probeLinuxRouterLocalConfig struct {
@@ -95,6 +99,9 @@ func startProbeProductRuntime(nodeID string) error {
 	// The router dataplane remains available even when the optional Mihomo
 	// companion has no snapshot yet or cannot start.
 	_ = startProbeMihomoRuntime(nodeID, false)
+	if err := probeLinuxRouterPlatformPrepare(); err != nil {
+		logProbeWarnf("prepare linux router DHCP integration failed: %v", err)
+	}
 	probeLinuxRouterRuntimeState.mu.Lock()
 	probeLinuxRouterRuntimeState.nodeID = strings.TrimSpace(nodeID)
 	if !probeLinuxRouterRuntimeState.running {
@@ -164,7 +171,19 @@ func reconcileProbeLinuxRouterRuntime() error {
 		setProbeLinuxRouterReport(desired, "", false, err)
 		return err
 	}
-	iface, err := probeLinuxRouterPlatformApply(*desired)
+	effective, err := probeLinuxRouterPlatformResolve(*desired)
+	if err != nil {
+		failOpen := false
+		if desired.GatewayProxy.Enabled {
+			failOpen = true
+			if fallbackErr := probeLinuxRouterPlatformFailOpen(*desired); fallbackErr != nil {
+				err = errors.Join(err, fmt.Errorf("fail-open: %w", fallbackErr))
+			}
+		}
+		setProbeLinuxRouterReport(desired, "", failOpen, err)
+		return err
+	}
+	iface, err := probeLinuxRouterPlatformApply(effective)
 	if err != nil {
 		failOpen := false
 		if desired.GatewayProxy.Enabled {
@@ -175,10 +194,10 @@ func reconcileProbeLinuxRouterRuntime() error {
 		} else if cleanupErr := probeLinuxRouterPlatformCleanup(desired); cleanupErr != nil {
 			err = errors.Join(err, fmt.Errorf("cleanup failed local IP proxy state: %w", cleanupErr))
 		}
-		setProbeLinuxRouterReport(desired, iface, failOpen, err)
+		setProbeLinuxRouterReport(&effective, iface, failOpen, err)
 		return err
 	}
-	setProbeLinuxRouterReport(desired, iface, false, nil)
+	setProbeLinuxRouterReport(&effective, iface, false, nil)
 	return nil
 }
 
@@ -293,24 +312,18 @@ func applyProbeLinuxRouterLocalConfig(config probeLinuxRouterLocalConfig) error 
 	if config.GatewayProxy.Interface == "" {
 		config.GatewayProxy.Interface = "auto"
 	}
-	config.GatewayProxy.GatewayAddress = normalizeProbeLinuxRouterGatewayAddress(config.GatewayProxy.GatewayAddress, config.GatewayProxy.Interface)
+	// The physical interface address belongs to the upstream DHCP/static network
+	// configuration. It is discovered at runtime and is never owned here.
+	config.GatewayProxy.GatewayAddress = ""
 	config.GatewayProxy.UpstreamGateway = strings.TrimSpace(config.GatewayProxy.UpstreamGateway)
 	config.GatewayProxy.LANCIDRs = normalizeProbeLinuxRouterLocalCIDRs(config.GatewayProxy.LANCIDRs)
 	config.GatewayProxy.DNSWhitelistIPs = normalizeProbeLinuxRouterDNSWhitelistIPs(config.GatewayProxy.DNSWhitelistIPs)
 	config.GatewayProxy.DNSWhitelistDomains = normalizeProbeLinuxRouterDNSWhitelistDomains(config.GatewayProxy.DNSWhitelistDomains)
-	if len(config.GatewayProxy.LANCIDRs) == 0 {
-		if subnet := probeLinuxRouterGatewaySubnet(config.GatewayProxy.GatewayAddress); subnet != "" {
-			config.GatewayProxy.LANCIDRs = []string{subnet}
-		}
-	}
 	config.LocalIPProxy.PublishedCIDRs = normalizeProbeLinuxRouterLocalCIDRs(config.LocalIPProxy.PublishedCIDRs)
 	if len(config.LocalIPProxy.PublishedCIDRs) == 0 {
 		config.LocalIPProxy.PublishedCIDRs = append([]string(nil), config.GatewayProxy.LANCIDRs...)
 	}
 	config.LocalIPProxy.AllowedNodeIDs = normalizeProbeLinuxRouterLocalNodeIDs(config.LocalIPProxy.AllowedNodeIDs)
-	if config.LocalIPProxy.Enabled && len(config.LocalIPProxy.PublishedCIDRs) == 0 {
-		return &probeLinuxRouterLocalConfigError{err: errors.New("at least one published CIDR is required when local IP proxy is enabled")}
-	}
 	if config.LocalIPProxy.Enabled && len(config.LocalIPProxy.AllowedNodeIDs) == 0 {
 		return &probeLinuxRouterLocalConfigError{err: errors.New("at least one allowed node is required when local IP proxy is enabled")}
 	}
@@ -343,6 +356,11 @@ func applyProbeLinuxRouterLocalConfig(config probeLinuxRouterLocalConfig) error 
 	if err := validateProbeLinuxRouterSnapshot(desired, nodeID); err != nil {
 		return &probeLinuxRouterLocalConfigError{err: err}
 	}
+	if desired.GatewayProxy.Enabled || desired.LocalIPProxy.Enabled {
+		if _, err := probeLinuxRouterPlatformResolve(*desired); err != nil {
+			return &probeLinuxRouterLocalConfigError{err: err}
+		}
+	}
 	if err := persistProbeLinuxRouterSnapshot(desired); err != nil {
 		return err
 	}
@@ -352,40 +370,6 @@ func applyProbeLinuxRouterLocalConfig(config probeLinuxRouterLocalConfig) error 
 	probeLinuxRouterRuntimeState.manualFailOpen = false
 	probeLinuxRouterRuntimeState.mu.Unlock()
 	return reconcileProbeLinuxRouterRuntime()
-}
-
-func normalizeProbeLinuxRouterGatewayAddress(value, interfaceName string) string {
-	value = strings.TrimSpace(value)
-	if value == "" || strings.Contains(value, "/") {
-		return value
-	}
-	address, err := netip.ParseAddr(value)
-	if err != nil || !address.Is4() {
-		return value
-	}
-
-	prefixBits := 24
-	interfaces, err := net.Interfaces()
-	if err == nil {
-		selectedInterface := strings.TrimSpace(interfaceName)
-		for _, iface := range interfaces {
-			if selectedInterface != "" && selectedInterface != "auto" && iface.Name != selectedInterface {
-				continue
-			}
-			interfaceAddresses, addressErr := iface.Addrs()
-			if addressErr != nil {
-				continue
-			}
-			for _, interfaceAddress := range interfaceAddresses {
-				prefix, parseErr := netip.ParsePrefix(strings.TrimSpace(interfaceAddress.String()))
-				if parseErr == nil && prefix.Addr().Is4() && prefix.Contains(address) {
-					prefixBits = prefix.Bits()
-					return netip.PrefixFrom(address, prefixBits).String()
-				}
-			}
-		}
-	}
-	return netip.PrefixFrom(address, prefixBits).String()
 }
 
 func probeLinuxRouterGatewaySubnet(value string) string {
@@ -504,6 +488,7 @@ func setProbeLinuxRouterReport(snapshot *probeLinuxRouterSnapshot, iface string,
 		report.GatewayProxyEnabled = snapshot.GatewayProxy.Enabled
 		report.LocalIPProxyEnabled = snapshot.LocalIPProxy.Enabled
 		report.GatewayAddress = snapshot.GatewayProxy.GatewayAddress
+		report.UpstreamGateway = snapshot.GatewayProxy.UpstreamGateway
 		report.PublishedCIDRs = append([]string(nil), snapshot.LocalIPProxy.PublishedCIDRs...)
 		report.AllowedNodeIDs = append([]string(nil), snapshot.LocalIPProxy.AllowedNodeIDs...)
 	}
@@ -512,6 +497,11 @@ func setProbeLinuxRouterReport(snapshot *probeLinuxRouterSnapshot, iface string,
 	}
 	probeLinuxRouterRuntimeState.mu.Lock()
 	probeLinuxRouterRuntimeState.report = report
+	if applyErr == nil && !failOpen && snapshot != nil {
+		probeLinuxRouterRuntimeState.applied = cloneProbeLinuxRouterSnapshot(snapshot)
+	} else {
+		probeLinuxRouterRuntimeState.applied = nil
+	}
 	probeLinuxRouterRuntimeState.mu.Unlock()
 	_, _ = triggerProbeImmediateReport()
 }
@@ -551,14 +541,12 @@ func probeLinuxRouterAllowsForwardedTUNPacket(packet []byte, _ string, _ []strin
 	if err != nil || !sourceIP.Is4() {
 		return false
 	}
-	probeLinuxRouterRuntimeState.mu.RLock()
-	desired := cloneProbeLinuxRouterSnapshot(probeLinuxRouterRuntimeState.desired)
-	probeLinuxRouterRuntimeState.mu.RUnlock()
-	if desired == nil {
+	snapshot := currentProbeLinuxRouterRoutingSnapshot()
+	if snapshot == nil {
 		return false
 	}
-	return (desired.GatewayProxy.Enabled && probeLinuxRouterIPInCIDRs(sourceIP, desired.GatewayProxy.LANCIDRs)) ||
-		(desired.LocalIPProxy.Enabled && probeLinuxRouterIPInCIDRs(sourceIP, desired.LocalIPProxy.PublishedCIDRs))
+	return (snapshot.GatewayProxy.Enabled && probeLinuxRouterIPInCIDRs(sourceIP, snapshot.GatewayProxy.LANCIDRs)) ||
+		(snapshot.LocalIPProxy.Enabled && probeLinuxRouterIPInCIDRs(sourceIP, snapshot.LocalIPProxy.PublishedCIDRs))
 }
 
 func probeLinuxRouterHandleDirectTUNPacket(packet []byte, dstIP string) bool {
@@ -586,14 +574,21 @@ func probeLinuxRouterTargetsLocalDelivery(dstIP string) bool {
 	if err != nil || !addr.Is4() {
 		return false
 	}
-	probeLinuxRouterRuntimeState.mu.RLock()
-	desired := cloneProbeLinuxRouterSnapshot(probeLinuxRouterRuntimeState.desired)
-	probeLinuxRouterRuntimeState.mu.RUnlock()
-	if desired == nil {
+	snapshot := currentProbeLinuxRouterRoutingSnapshot()
+	if snapshot == nil {
 		return false
 	}
-	return (desired.GatewayProxy.Enabled && probeLinuxRouterIPInCIDRs(addr, desired.GatewayProxy.LANCIDRs)) ||
-		(desired.LocalIPProxy.Enabled && probeLinuxRouterIPInCIDRs(addr, desired.LocalIPProxy.PublishedCIDRs))
+	return (snapshot.GatewayProxy.Enabled && probeLinuxRouterIPInCIDRs(addr, snapshot.GatewayProxy.LANCIDRs)) ||
+		(snapshot.LocalIPProxy.Enabled && probeLinuxRouterIPInCIDRs(addr, snapshot.LocalIPProxy.PublishedCIDRs))
+}
+
+func currentProbeLinuxRouterRoutingSnapshot() *probeLinuxRouterSnapshot {
+	probeLinuxRouterRuntimeState.mu.RLock()
+	defer probeLinuxRouterRuntimeState.mu.RUnlock()
+	if probeLinuxRouterRuntimeState.applied != nil {
+		return cloneProbeLinuxRouterSnapshot(probeLinuxRouterRuntimeState.applied)
+	}
+	return cloneProbeLinuxRouterSnapshot(probeLinuxRouterRuntimeState.desired)
 }
 
 func setProbeLinuxRouterReportFromCurrent(err error) {
@@ -627,13 +622,17 @@ func validateProbeLinuxRouterSnapshot(snapshot *probeLinuxRouterSnapshot, nodeID
 	if iface != "auto" && !probeLinuxRouterInterfacePattern.MatchString(iface) {
 		return errors.New("router interface is invalid")
 	}
-	gateway, err := netip.ParsePrefix(strings.TrimSpace(snapshot.GatewayProxy.GatewayAddress))
-	if err != nil || !gateway.Addr().Is4() || !gateway.Addr().IsPrivate() {
-		return errors.New("router gateway_address must be a private IPv4 CIDR")
+	if raw := strings.TrimSpace(snapshot.GatewayProxy.GatewayAddress); raw != "" {
+		gateway, err := netip.ParsePrefix(raw)
+		if err != nil || !gateway.Addr().Is4() || !gateway.Addr().IsPrivate() {
+			return errors.New("router gateway_address must be empty or a private IPv4 CIDR")
+		}
 	}
-	upstream, err := netip.ParseAddr(strings.TrimSpace(snapshot.GatewayProxy.UpstreamGateway))
-	if err != nil || !gateway.Masked().Contains(upstream) || upstream == gateway.Addr() {
-		return errors.New("router upstream_gateway is outside the gateway subnet")
+	if raw := strings.TrimSpace(snapshot.GatewayProxy.UpstreamGateway); raw != "" {
+		upstream, err := netip.ParseAddr(raw)
+		if err != nil || !upstream.Is4() || !upstream.IsPrivate() {
+			return errors.New("router upstream_gateway must be empty or a private IPv4 address")
+		}
 	}
 	fakePool := netip.MustParsePrefix("198.18.0.0/15")
 	for _, values := range [][]string{snapshot.GatewayProxy.LANCIDRs, snapshot.LocalIPProxy.PublishedCIDRs} {
@@ -664,9 +663,6 @@ func validateProbeLinuxRouterSnapshot(snapshot *probeLinuxRouterSnapshot, nodeID
 		if !validateProbeLinuxRouterDNSWhitelistDomain(domain) {
 			return fmt.Errorf("router DNS whitelist domain %q is invalid", domain)
 		}
-	}
-	if snapshot.LocalIPProxy.Enabled && len(snapshot.LocalIPProxy.PublishedCIDRs) == 0 {
-		return errors.New("router published CIDRs are required when local IP proxy is enabled")
 	}
 	if snapshot.LocalIPProxy.Enabled && len(snapshot.LocalIPProxy.AllowedNodeIDs) == 0 {
 		return errors.New("router allowed node IDs are required when local IP proxy is enabled")
@@ -724,8 +720,26 @@ func loadProbeLinuxRouterSnapshot() (*probeLinuxRouterSnapshot, error) {
 		GatewayProxy: persisted.GatewayProxy,
 		LocalIPProxy: persisted.LocalIPProxy,
 	}
+	migrateProbeLinuxRouterAutomaticNetworkConfig(&snapshot)
 	snapshot.SHA256 = probeLinuxRouterSnapshotSHA256(snapshot)
 	return &snapshot, nil
+}
+
+func migrateProbeLinuxRouterAutomaticNetworkConfig(snapshot *probeLinuxRouterSnapshot) {
+	if snapshot == nil {
+		return
+	}
+	legacySubnet := probeLinuxRouterGatewaySubnet(snapshot.GatewayProxy.GatewayAddress)
+	snapshot.GatewayProxy.GatewayAddress = ""
+	if legacySubnet == "" {
+		return
+	}
+	if len(snapshot.GatewayProxy.LANCIDRs) == 1 && snapshot.GatewayProxy.LANCIDRs[0] == legacySubnet {
+		snapshot.GatewayProxy.LANCIDRs = nil
+	}
+	if len(snapshot.LocalIPProxy.PublishedCIDRs) == 1 && snapshot.LocalIPProxy.PublishedCIDRs[0] == legacySubnet {
+		snapshot.LocalIPProxy.PublishedCIDRs = nil
+	}
 }
 
 func cloneProbeLinuxRouterSnapshot(snapshot *probeLinuxRouterSnapshot) *probeLinuxRouterSnapshot {

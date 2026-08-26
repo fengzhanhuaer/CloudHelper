@@ -26,14 +26,14 @@ func testProbeLinuxRouterIPv4Packet(src [4]byte, dst [4]byte) []byte {
 func TestValidateProbeLinuxRouterSnapshotUsesSemanticValidation(t *testing.T) {
 	snapshot := probeLinuxRouterSnapshot{
 		Version: 1, NodeID: "21", Revision: 2,
-		GatewayProxy: probeLinuxRouterGatewayConfig{Interface: "auto", GatewayAddress: "192.168.1.150/24", UpstreamGateway: "192.168.1.1", LANCIDRs: []string{"192.168.1.0/24"}, DNSEnabled: true},
+		GatewayProxy: probeLinuxRouterGatewayConfig{Interface: "auto", UpstreamGateway: "192.168.1.1", LANCIDRs: []string{"192.168.1.0/24"}, DNSEnabled: true},
 		LocalIPProxy: probeLinuxRouterLocalIPConfig{PublishedCIDRs: []string{"192.168.1.0/24"}, AllowedNodeIDs: []string{"1"}},
 	}
 	snapshot.SHA256 = "stale-local-fingerprint"
 	if err := validateProbeLinuxRouterSnapshot(&snapshot, "21"); err != nil {
 		t.Fatal(err)
 	}
-	snapshot.GatewayProxy.UpstreamGateway = "192.168.2.1"
+	snapshot.GatewayProxy.UpstreamGateway = "203.0.113.1"
 	if err := validateProbeLinuxRouterSnapshot(&snapshot, "21"); err == nil {
 		t.Fatal("semantically invalid snapshot unexpectedly accepted")
 	}
@@ -73,6 +73,9 @@ func TestLoadProbeLinuxRouterSnapshotIgnoresLegacySHA(t *testing.T) {
 	if snapshot.SHA256 != probeLinuxRouterSnapshotSHA256(*snapshot) {
 		t.Fatal("runtime router config fingerprint was not rebuilt")
 	}
+	if snapshot.GatewayProxy.GatewayAddress != "" || len(snapshot.GatewayProxy.LANCIDRs) != 0 || len(snapshot.LocalIPProxy.PublishedCIDRs) != 0 {
+		t.Fatalf("legacy automatic network fields were not migrated: %+v", snapshot)
+	}
 	if err := validateProbeLinuxRouterSnapshot(snapshot, "21"); err != nil {
 		t.Fatalf("legacy router config is invalid: %v", err)
 	}
@@ -85,15 +88,6 @@ func TestLoadProbeLinuxRouterSnapshotIgnoresLegacySHA(t *testing.T) {
 	}
 	if strings.Contains(string(raw), `"sha256"`) {
 		t.Fatalf("local router config still persists sha256: %s", raw)
-	}
-}
-
-func TestNormalizeProbeLinuxRouterGatewayAddressAcceptsPlainIPv4(t *testing.T) {
-	if got := normalizeProbeLinuxRouterGatewayAddress("192.0.2.123", "auto"); got != "192.0.2.123/24" {
-		t.Fatalf("plain gateway address=%q, want /24 CIDR", got)
-	}
-	if got := normalizeProbeLinuxRouterGatewayAddress("192.0.2.123/27", "auto"); got != "192.0.2.123/27" {
-		t.Fatalf("explicit gateway prefix changed to %q", got)
 	}
 }
 

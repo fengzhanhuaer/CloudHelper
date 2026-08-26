@@ -233,8 +233,8 @@
               <label class="check"><input id="dnsWhitelistEnabled" type="checkbox" />DNS 白名单</label>
             </div>
             <div class="field"><label for="interfaceName">LAN 网卡</label><select id="interfaceName"></select></div>
-            <div class="field"><label for="gatewayAddress">LAN IP</label><input id="gatewayAddress" type="text" maxlength="32" /></div>
-            <div class="field"><label for="upstreamGateway">上游网关</label><input id="upstreamGateway" type="text" maxlength="32" /></div>
+            <div class="field"><label for="gatewayAddress">LAN IP（自动）</label><input id="gatewayAddress" type="text" readonly /></div>
+            <div class="field"><label for="upstreamGateway">上游网关（可选）</label><input id="upstreamGateway" type="text" maxlength="32" placeholder="默认使用上级下发网关" /></div>
             <div class="field"><label for="dnsWhitelistIPs">DNS 白名单 IP</label><textarea id="dnsWhitelistIPs" spellcheck="false"></textarea></div>
             <div class="field"><label for="dnsWhitelistDomains">DNS 白名单域名</label><textarea id="dnsWhitelistDomains" spellcheck="false"></textarea></div>
             <div class="field full switches">
@@ -270,7 +270,8 @@
         <div class="runtime-grid">
           <div class="runtime-item"><div class="label">应用修订</div><div id="revision" class="value">--</div></div>
           <div class="runtime-item"><div class="label">运行网卡</div><div id="runtimeInterface" class="value">--</div></div>
-          <div class="runtime-item"><div class="label">网关地址</div><div id="runtimeGateway" class="value">--</div></div>
+          <div class="runtime-item"><div class="label">网卡 IP</div><div id="runtimeGateway" class="value">--</div></div>
+          <div class="runtime-item"><div class="label">上游网关</div><div id="runtimeUpstreamGateway" class="value">--</div></div>
           <div class="runtime-item"><div class="label">TUN 接收</div><div id="tunRx" class="value">--</div></div>
           <div class="runtime-item"><div class="label">TUN 发送</div><div id="tunTx" class="value">--</div></div>
           <div class="runtime-item"><div class="label">最优邻接延迟</div><div id="latency" class="value">--</div></div>
@@ -343,6 +344,19 @@
       const disabled = !$('dnsWhitelistEnabled').checked;
       $('dnsWhitelistIPs').disabled = disabled;
       $('dnsWhitelistDomains').disabled = disabled;
+    }
+
+    function syncGatewayAddressPreview() {
+      const data = currentStatus || {};
+      const runtime = data.runtime || {};
+      const selected = String($('interfaceName').value || 'auto');
+      if (runtime.gateway_address && (selected === 'auto' || selected === runtime.interface)) {
+        $('gatewayAddress').value = runtime.gateway_address;
+        return;
+      }
+      const interfaces = Array.isArray(data.interfaces) ? data.interfaces : [];
+      const match = interfaces.find((item) => String(item.name || '') === selected);
+      $('gatewayAddress').value = match && Array.isArray(match.addresses) && match.addresses.length ? match.addresses[0] : '自动获取';
     }
 
     function escapeHTML(value) {
@@ -422,15 +436,16 @@
         }
         $('interfaceName').innerHTML = interfaceOptions.map((item) => `<option value="${escapeHTML(item.name)}">${escapeHTML(item.label)}</option>`).join('');
         $('interfaceName').value = configuredInterface;
-        $('gatewayAddress').value = String(gateway.gateway_address || '192.168.1.150/24').split('/')[0];
-        $('upstreamGateway').value = gateway.upstream_gateway || '192.168.1.1';
+        $('upstreamGateway').value = gateway.upstream_gateway || '';
         $('localIPEnabled').checked = localIP.enabled === true;
       }
+      syncGatewayAddressPreview();
       const allowedNodeIDs = preserveForm ? Array.from(allowedNodeSelection) : localIP.allowed_node_ids;
       renderConnections(data.connections, allowedNodeIDs, !preserveForm);
       $('revision').textContent = 'r' + Number(runtime.applied_revision || config.revision || 0);
       $('runtimeInterface').textContent = runtime.interface || '-';
       $('runtimeGateway').textContent = runtime.gateway_address || gateway.gateway_address || '-';
+      $('runtimeUpstreamGateway').textContent = runtime.upstream_gateway || gateway.upstream_gateway || '-';
       $('tunRx').textContent = Number(runtime.tun_rx_packets || 0) + ' 包 / ' + formatBytes(runtime.tun_rx_bytes);
       $('tunTx').textContent = Number(runtime.tun_tx_packets || 0) + ' 包 / ' + formatBytes(runtime.tun_tx_bytes);
       $('latency').textContent = Number(runtime.latency_ms || 0) > 0 ? runtime.latency_ms + ' ms' : '-';
@@ -559,7 +574,7 @@
             dns_whitelist_ips: parseConfigList($('dnsWhitelistIPs').value),
             dns_whitelist_domains: parseConfigList($('dnsWhitelistDomains').value),
             interface: $('interfaceName').value.trim(),
-            gateway_address: $('gatewayAddress').value.trim(),
+            gateway_address: '',
             upstream_gateway: $('upstreamGateway').value.trim(),
           },
           local_ip_proxy: {
@@ -586,6 +601,8 @@
       configNotice = '有未保存的更改';
       if (currentStatus) renderStatus(currentStatus);
     }
+
+    $('interfaceName').addEventListener('change', syncGatewayAddressPreview);
     $('configForm').addEventListener('input', (event) => {
       if (event.target === $('availableNodeID')) return;
       markConfigDirty();
