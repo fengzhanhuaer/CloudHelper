@@ -41,18 +41,14 @@ func ensureProbeVirtualRouterPlatformInterfaceIP(ip string) error {
 	interfaceLUID := probeVirtualRouterTUNDataPlaneState.interfaceLUID
 	ifIndex := probeVirtualRouterTUNDataPlaneState.ifIndex
 	probeVirtualRouterTUNDataPlaneState.mu.Unlock()
-	prefixLength := probeLocalTUNRouteIPv4PrefixLen
-	if !probeVirtualRouterWindowsFakeIPRouteRequired() {
-		prefixLength = 32
-	}
 	if interfaceLUID > 0 {
-		if err := probeLocalUpsertWindowsInterfaceIPv4ByLUID(interfaceLUID, ifIndex, cleanIP, prefixLength); err != nil {
+		if err := probeLocalUpsertWindowsInterfaceIPv4ByLUID(interfaceLUID, ifIndex, cleanIP, probeLocalTUNRouteIPv4PrefixLen); err != nil {
 			return err
 		}
 		return ensureProbeVirtualRouterWindowsRoutes(interfaceLUID, ifIndex)
 	}
 	if ifIndex > 0 {
-		if err := probeLocalUpsertWindowsInterfaceIPv4(ifIndex, cleanIP, prefixLength); err != nil {
+		if err := probeLocalUpsertWindowsInterfaceIPv4(ifIndex, cleanIP, probeLocalTUNRouteIPv4PrefixLen); err != nil {
 			return err
 		}
 		return ensureProbeVirtualRouterWindowsRoutes(0, ifIndex)
@@ -72,11 +68,7 @@ func ensureProbeVirtualRouterWindowsRoutes(interfaceLUID uint64, ifIndex int) er
 	if ifIndex <= 0 {
 		return nil
 	}
-	if probeVirtualRouterWindowsFakeIPRouteRequired() {
-		if err := ensureProbeVirtualRouterWindowsFakeIPRoute(interfaceLUID, ifIndex); err != nil {
-			return err
-		}
-	} else if err := cleanupProbeVirtualRouterWindowsFakeIPRoute(interfaceLUID, ifIndex); err != nil {
+	if err := ensureProbeVirtualRouterWindowsFakeIPRoute(interfaceLUID, ifIndex); err != nil {
 		return err
 	}
 	if err := ensureProbeVirtualRouterWindowsPublishedRoutes(interfaceLUID, ifIndex); err != nil {
@@ -90,10 +82,6 @@ func ensureProbeVirtualRouterWindowsRoutes(interfaceLUID uint64, ifIndex int) er
 	}
 	cleanupProbeRouteDirectBypassForVirtualRouterRules(currentProbeVirtualRouterConfig())
 	return nil
-}
-
-func probeVirtualRouterWindowsFakeIPRouteRequired() bool {
-	return probeVirtualRouterLocalEntryEnabled() || probeVirtualRouterLocalDNSEnabled()
 }
 
 func ensureProbeVirtualRouterWindowsPublishedRoutes(interfaceLUID uint64, ifIndex int) error {

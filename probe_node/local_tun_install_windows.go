@@ -708,10 +708,7 @@ func setProbeLocalWindowsRouteTargetEnv(interfaceIndex int) {
 }
 
 func probeLocalTUNRouteTargetIPv4PrefixLength() int {
-	if probeVirtualRouterWindowsFakeIPRouteRequired() {
-		return probeLocalTUNRouteIPv4PrefixLen
-	}
-	return 32
+	return probeLocalTUNRouteIPv4PrefixLen
 }
 
 func logProbeLocalWindowsRouteTargetDebugContext(stage string, interfaceIndex int, cause error) {
