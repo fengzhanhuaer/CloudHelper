@@ -7,6 +7,26 @@ import (
 	"testing"
 )
 
+func TestProbeLocalTUNRouteTargetIPv4PrefixLengthFollowsLocalFeatures(t *testing.T) {
+	resetProbeVirtualRouterLocalSettingsForTest()
+	t.Cleanup(resetProbeVirtualRouterLocalSettingsForTest)
+
+	enableProbeVirtualRouterLocalSettingsForTest(false, false)
+	if got := probeLocalTUNRouteTargetIPv4PrefixLength(); got != 32 {
+		t.Fatalf("base-only route target prefix=%d want 32", got)
+	}
+
+	enableProbeVirtualRouterLocalSettingsForTest(true, false)
+	if got := probeLocalTUNRouteTargetIPv4PrefixLength(); got != probeLocalTUNRouteIPv4PrefixLen {
+		t.Fatalf("local router route target prefix=%d want %d", got, probeLocalTUNRouteIPv4PrefixLen)
+	}
+
+	enableProbeVirtualRouterLocalSettingsForTest(false, true)
+	if got := probeLocalTUNRouteTargetIPv4PrefixLength(); got != probeLocalTUNRouteIPv4PrefixLen {
+		t.Fatalf("local dns route target prefix=%d want %d", got, probeLocalTUNRouteIPv4PrefixLen)
+	}
+}
+
 func TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsAppliesTakeoverAndLocalBypassRoutes(t *testing.T) {
 	if !probeProductVRouteTakeoverEnabled() {
 		t.Skip("active product deliberately disables host takeover routes")

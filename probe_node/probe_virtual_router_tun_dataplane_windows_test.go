@@ -51,8 +51,8 @@ func stubProbeVirtualRouterTUNDataPlaneRouteTarget(t *testing.T, luid uint64, if
 		if strings.TrimSpace(ip) != probeLocalTUNInterfaceIPv4 {
 			t.Fatalf("route target ip=%s want %s", ip, probeLocalTUNInterfaceIPv4)
 		}
-		if prefix != probeLocalTUNRouteIPv4PrefixLen {
-			t.Fatalf("route target prefix=%d want %d", prefix, probeLocalTUNRouteIPv4PrefixLen)
+		if want := probeLocalTUNRouteTargetIPv4PrefixLength(); prefix != want {
+			t.Fatalf("route target prefix=%d want %d", prefix, want)
 		}
 		return nil
 	}

@@ -707,6 +707,13 @@ func setProbeLocalWindowsRouteTargetEnv(interfaceIndex int) {
 	}
 }
 
+func probeLocalTUNRouteTargetIPv4PrefixLength() int {
+	if probeVirtualRouterWindowsFakeIPRouteRequired() {
+		return probeLocalTUNRouteIPv4PrefixLen
+	}
+	return 32
+}
+
 func logProbeLocalWindowsRouteTargetDebugContext(stage string, interfaceIndex int, cause error) {
 	cleanStage := strings.TrimSpace(stage)
 	if cleanStage == "" {
@@ -724,7 +731,7 @@ func logProbeLocalWindowsRouteTargetDebugContext(stage string, interfaceIndex in
 		strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_GATEWAY")),
 		strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_DNS_HOST")),
 		probeLocalTUNInterfaceIPv4,
-		probeLocalTUNRouteIPv4PrefixLen,
+		probeLocalTUNRouteTargetIPv4PrefixLength(),
 		causeText,
 	)
 	if interfaceIndex > 0 {
@@ -832,7 +839,7 @@ func recoverProbeLocalWindowsRouteTargetAfterSameIfIndexTimeout(interfaceIndex i
 		if delay > 0 {
 			probeLocalTUNInstallSleep(delay)
 		}
-		retryErr := probeLocalEnsureWindowsInterfaceIPv4(retryIfIndex, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteIPv4PrefixLen)
+		retryErr := probeLocalEnsureWindowsInterfaceIPv4(retryIfIndex, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteTargetIPv4PrefixLength())
 		if retryErr == nil {
 			logProbeWarnf("probe virtual router tun route target same-ifindex recovery retry succeeded: ifindex=%d attempt=%d", retryIfIndex, attempt+1)
 			setProbeLocalWindowsRouteTargetEnv(retryIfIndex)
@@ -1070,7 +1077,7 @@ func ensureProbeRouteWindowsRouteTargetByInterfaceIndex(interfaceIndex int) erro
 		logProbeLocalWindowsRouteTargetDebugContext("route_target_by_ifindex.invalid_ifindex", interfaceIndex, err)
 		return err
 	}
-	if err := probeLocalEnsureWindowsInterfaceIPv4(interfaceIndex, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteIPv4PrefixLen); err != nil {
+	if err := probeLocalEnsureWindowsInterfaceIPv4(interfaceIndex, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteTargetIPv4PrefixLength()); err != nil {
 		logProbeLocalWindowsRouteTargetDebugContext("route_target_by_ifindex.ensure_ipv4_failed", interfaceIndex, err)
 		return err
 	}
@@ -1084,7 +1091,7 @@ func ensureProbeRouteWindowsRouteTargetByInterfaceLUID(interfaceLUID uint64) err
 		logProbeLocalWindowsRouteTargetDebugContext("route_target_by_luid.invalid_luid", 0, err)
 		return err
 	}
-	if err := probeLocalEnsureWindowsInterfaceIPv4ByLUID(interfaceLUID, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteIPv4PrefixLen); err != nil {
+	if err := probeLocalEnsureWindowsInterfaceIPv4ByLUID(interfaceLUID, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteTargetIPv4PrefixLength()); err != nil {
 		interfaceIndex := 0
 		if ifIndex, convertErr := probeLocalConvertInterfaceLUIDToIndex(interfaceLUID); convertErr == nil && ifIndex > 0 {
 			interfaceIndex = ifIndex
@@ -1145,7 +1152,7 @@ func repairProbeLocalWindowsRouteTargetIPv4(interfaceIndex int) error {
 	if interfaceIndex <= 0 {
 		return errors.New("invalid wintun adapter interface index")
 	}
-	return probeLocalRepairWindowsInterfaceIPv4Address(interfaceIndex, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteIPv4PrefixLen)
+	return probeLocalRepairWindowsInterfaceIPv4Address(interfaceIndex, probeLocalTUNInterfaceIPv4, probeLocalTUNRouteTargetIPv4PrefixLength())
 }
 
 func recycleProbeLocalWindowsTunAdapter(interfaceIndex int) error {
