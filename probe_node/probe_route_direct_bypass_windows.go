@@ -175,6 +175,7 @@ func resetProbeRouteDirectBypassStateForTest() {
 	probeRouteDirectRouteTargetState.mu.Unlock()
 	probeRouteWindowsManagedDirectBypassState.mu.Lock()
 	probeRouteWindowsManagedDirectBypassState.routes = make(map[string]probeRouteWindowsRouteDef)
+	probeRouteWindowsManagedDirectBypassState.transportProtected = make(map[string]struct{})
 	probeRouteWindowsManagedDirectBypassState.mu.Unlock()
 	probeRouteWindowsDirectBypassRequired = func() bool { return true }
 }

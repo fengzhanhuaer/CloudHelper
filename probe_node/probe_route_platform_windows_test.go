@@ -638,6 +638,36 @@ func TestCleanupProbeRouteDirectBypassForVirtualRouterRulesRemovesMatchedHostRou
 	}
 }
 
+func TestCleanupProbeRouteDirectBypassForVirtualRouterRulesKeepsTransportHostRoute(t *testing.T) {
+	resetProbeRouteDirectBypassStateForTest()
+	t.Cleanup(func() {
+		resetProbeRouteDirectBypassStateForTest()
+		resetProbeLocalWindowsNativeRouteHooksForTest()
+	})
+
+	probeRouteDirectRouteTargetState.mu.Lock()
+	probeRouteDirectRouteTargetState.routeTarget = probeRouteWindowsDirectRouteTarget{InterfaceIndex: 13, NextHop: "192.168.51.1"}
+	probeRouteDirectRouteTargetState.ready = true
+	probeRouteDirectRouteTargetState.mu.Unlock()
+	rememberProbeRouteWindowsTransportBypassIPs([]string{"172.18.52.205"})
+	probeLocalListWindowsRouteEntries = func() ([]probeLocalWindowsRouteEntry, error) {
+		return []probeLocalWindowsRouteEntry{{
+			Prefix: "172.18.52.205", PrefixLength: 32, NextHop: "192.168.51.1", IfIndex: 13,
+			Metric: probeRouteWindowsDirectRouteMetric, Protocol: probeRouteWindowsProtocolNetMgmt,
+		}}, nil
+	}
+	probeLocalDeleteWindowsRouteEntry = func(routeDef probeRouteWindowsRouteDef) error {
+		t.Fatalf("transport host route must not be deleted: %+v", routeDef)
+		return nil
+	}
+
+	cleanupProbeRouteDirectBypassForVirtualRouterRules(probeVirtualRouterConfig{
+		RouteRules: []probeVirtualRouterRouteRule{{
+			ID: "linux-router-22", Name: "router", Action: "probe_exit", ExitNodeID: "22", Entries: []string{"cidr:172.18.52.0/22"},
+		}},
+	})
+}
+
 func TestEnsureProbeRouteDirectBypassRejectsTUNInterfaceTarget(t *testing.T) {
 	resetProbeRouteDirectBypassStateForTest()
 	t.Cleanup(func() {

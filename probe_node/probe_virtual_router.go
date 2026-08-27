@@ -546,6 +546,17 @@ func sanitizeProbeVirtualRouterConfigForCache(input probeVirtualRouterConfig) pr
 	return out
 }
 
+func stripProbeLinuxRouterPublishedRouteRules(items []probeVirtualRouterRouteRule) []probeVirtualRouterRouteRule {
+	out := make([]probeVirtualRouterRouteRule, 0, len(items))
+	for _, item := range items {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(item.ID)), "linux-router-") {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
 func sanitizeProbeVirtualRouterFakeIPLibrary(input probeVirtualRouterFakeIPLibrary) probeVirtualRouterFakeIPLibrary {
 	version := input.Version
 	if version < 0 {
@@ -812,6 +823,7 @@ func persistProbeRouteConfigCache(config probeVirtualRouterConfig) error {
 		return err
 	}
 	cacheItem := sanitizeProbeVirtualRouterConfigForCache(config)
+	cacheItem.RouteRules = stripProbeLinuxRouterPublishedRouteRules(cacheItem.RouteRules)
 	cacheItem.FakeIPLibrary = probeVirtualRouterFakeIPLibrary{}
 	payload := probeRouteConfigCacheFile{
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
@@ -850,6 +862,7 @@ func loadProbeRouteConfigCache() (probeVirtualRouterConfig, error) {
 		return probeVirtualRouterConfig{}, err
 	}
 	config := sanitizeProbeVirtualRouterConfigForCache(payload.Item)
+	config.RouteRules = stripProbeLinuxRouterPublishedRouteRules(config.RouteRules)
 	config.FakeIPLibrary = probeVirtualRouterFakeIPLibrary{}
 	rememberProbeVirtualRouterAuthTickets(config)
 	return config, nil

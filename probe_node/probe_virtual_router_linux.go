@@ -179,16 +179,13 @@ func ensureProbeVirtualRouterLinuxPublishedRoutes(dev string, srcIP string) erro
 	probeVirtualRouterLinuxRouteState.mu.Lock()
 	oldRouteDefs := append([]probeVirtualRouterLinuxRouteDef(nil), probeVirtualRouterLinuxRouteState.publishedRouteDefs...)
 	probeVirtualRouterLinuxRouteState.mu.Unlock()
-	if len(routeDefs) == 0 {
-		return replaceProbeVirtualRouterLinuxPublishedRoutes(oldRouteDefs, nil)
-	}
 
 	output, err := probeLocalLinuxRunCommand(5*time.Second, "ip", "-4", "route", "show", "table", "main")
 	if err != nil {
 		return fmt.Errorf("inspect main routes for published subnet: %w", err)
 	}
 	activeRouteDefs := make([]probeVirtualRouterLinuxRouteDef, 0, len(routeDefs))
-	staleRouteDefs := make([]probeVirtualRouterLinuxRouteDef, 0)
+	staleRouteDefs := listProbeVirtualRouterLinuxStalePublishedRoutes(dev, output, routeDefs)
 	for _, routeDef := range routeDefs {
 		collides, stale, inspectErr := inspectProbeVirtualRouterLinuxPublishedRoute(routeDef.Prefix, routeDef.Dev, output)
 		if inspectErr != nil {
@@ -208,6 +205,54 @@ func ensureProbeVirtualRouterLinuxPublishedRoutes(dev string, srcIP string) erro
 		return nil
 	}
 	return replaceProbeVirtualRouterLinuxPublishedRoutes(deleteRouteDefs, activeRouteDefs)
+}
+
+func listProbeVirtualRouterLinuxStalePublishedRoutes(dev string, output string, desired []probeVirtualRouterLinuxRouteDef) []probeVirtualRouterLinuxRouteDef {
+	cleanDev := strings.TrimSpace(dev)
+	fakeCIDR := strings.TrimSpace(currentProbeVirtualRouterFakeIPCIDR())
+	_, fakeNetwork, _ := net.ParseCIDR(fakeCIDR)
+	out := make([]probeVirtualRouterLinuxRouteDef, 0)
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) == 0 || fields[0] == "default" {
+			continue
+		}
+		prefix := fields[0]
+		if !strings.Contains(prefix, "/") {
+			prefix += "/32"
+		}
+		_, network, err := net.ParseCIDR(prefix)
+		if err != nil || network == nil {
+			continue
+		}
+		bits, _ := network.Mask.Size()
+		lineDev := ""
+		metric := ""
+		for index := 0; index+1 < len(fields); index++ {
+			switch fields[index] {
+			case "dev":
+				lineDev = strings.TrimSpace(fields[index+1])
+			case "metric":
+				metric = strings.TrimSpace(fields[index+1])
+			}
+		}
+		if lineDev != cleanDev || metric != fmt.Sprintf("%d", probeVirtualRouterLinuxRouteMetric) || bits <= 1 ||
+			(fakeNetwork != nil && network.String() == fakeNetwork.String()) {
+			continue
+		}
+		candidate := probeVirtualRouterLinuxRouteDef{Prefix: network.String(), Dev: cleanDev, Metric: probeVirtualRouterLinuxRouteMetric}
+		keep := false
+		for _, routeDef := range desired {
+			if strings.TrimSpace(routeDef.Prefix) == candidate.Prefix && strings.TrimSpace(routeDef.Dev) == candidate.Dev {
+				keep = true
+				break
+			}
+		}
+		if !keep {
+			out = append(out, candidate)
+		}
+	}
+	return dedupeProbeVirtualRouterLinuxRouteDefs(out)
 }
 
 func replaceProbeVirtualRouterLinuxPublishedRoutes(oldRouteDefs, routeDefs []probeVirtualRouterLinuxRouteDef) error {
@@ -291,7 +336,9 @@ func inspectProbeVirtualRouterLinuxPublishedRoute(prefix string, tunDev string, 
 			}
 			continue
 		}
-		if candidate.Contains(existing.IP) || existing.Contains(candidate.IP) {
+		existingBits, _ := existing.Mask.Size()
+		candidateBits, _ := candidate.Mask.Size()
+		if existingBits <= candidateBits && existing.Contains(candidate.IP) {
 			collides = true
 		}
 	}

@@ -59,6 +59,29 @@ func TestEnsureProbeRouteDirectBypassLinuxWritesPhysicalHostRouteOnce(t *testing
 	}
 }
 
+func TestCleanupProbeRouteDirectBypassForVirtualRouterRulesLinuxKeepsTransportHostRoute(t *testing.T) {
+	resetProbeRouteLinuxDirectBypassStateForTest()
+	t.Cleanup(resetProbeRouteLinuxDirectBypassStateForTest)
+	oldRun := probeLocalLinuxRunCommand
+	t.Cleanup(func() { probeLocalLinuxRunCommand = oldRun })
+
+	routeDef := probeVirtualRouterLinuxRouteDef{Prefix: "172.18.52.205/32", Dev: "eth0", Gateway: "192.168.51.1"}
+	probeRouteLinuxDirectBypassState.mu.Lock()
+	probeRouteLinuxDirectBypassState.routes[routeDef.Prefix] = routeDef
+	probeRouteLinuxDirectBypassState.transportProtected["172.18.52.205"] = struct{}{}
+	probeRouteLinuxDirectBypassState.mu.Unlock()
+	probeLocalLinuxRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
+		t.Fatalf("transport host route must not be deleted: %s %s", name, strings.Join(args, " "))
+		return "", nil
+	}
+
+	cleanupProbeRouteDirectBypassForVirtualRouterRules(probeVirtualRouterConfig{
+		RouteRules: []probeVirtualRouterRouteRule{{
+			ID: "linux-router-22", Name: "router", Action: "probe_exit", ExitNodeID: "22", Entries: []string{"cidr:172.18.52.0/22"},
+		}},
+	})
+}
+
 func TestProbeLocalTUNEgressUpdateLinuxRebindsExistingBypass(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	calls := stubProbeLocalLinuxEgressHooks(t, []string{

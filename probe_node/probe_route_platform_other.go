@@ -11,6 +11,10 @@ func ensureProbeRouteDirectBypass(string) error {
 	return nil
 }
 
+func ensureProbeRouteTransportDirectBypass(string) error {
+	return nil
+}
+
 func cleanupProbeRouteDirectBypassForVirtualRouterRules(probeVirtualRouterConfig) {
 }
 

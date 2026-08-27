@@ -200,7 +200,13 @@ func buildProbeVirtualRouterConfigForNodeLocked(nodeID string) probeVirtualRoute
 
 func appendProbeLinuxRouterPublishedRouteRules(rules []probeVirtualRouterRouteRule, runtimes []probeRuntimeStatus, nodeID string) []probeVirtualRouterRouteRule {
 	nodeID = normalizeProbeNodeID(nodeID)
-	out := append([]probeVirtualRouterRouteRule(nil), rules...)
+	out := make([]probeVirtualRouterRouteRule, 0, len(rules))
+	for _, rule := range rules {
+		if isProbeLinuxRouterPublishedRouteRule(rule) {
+			continue
+		}
+		out = append(out, rule)
+	}
 	for _, runtime := range runtimes {
 		routerNodeID := normalizeProbeNodeID(runtime.NodeID)
 		report := runtime.LinuxRouter
@@ -222,6 +228,10 @@ func appendProbeLinuxRouterPublishedRouteRules(rules []probeVirtualRouterRouteRu
 		}
 	}
 	return normalizeProbeVirtualRouterRouteRules(out)
+}
+
+func isProbeLinuxRouterPublishedRouteRule(rule probeVirtualRouterRouteRule) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(rule.ID)), "linux-router-")
 }
 
 func probeLinuxRouterNodeAllowed(allowed []string, nodeID string) bool {

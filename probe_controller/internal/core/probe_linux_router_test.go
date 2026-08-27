@@ -60,6 +60,19 @@ func TestAppendProbeLinuxRouterPublishedRouteRulesScopesByACL(t *testing.T) {
 	}
 }
 
+func TestAppendProbeLinuxRouterPublishedRouteRulesRemovesStaleGeneratedRules(t *testing.T) {
+	setupProbeLinuxRouterTestStores(t)
+	base := []probeVirtualRouterRouteRule{
+		{ID: "manual-direct", Name: "manual", Action: "direct", Entries: []string{"cidr:203.0.113.0/24"}},
+		{ID: "linux-router-21-stale", Name: "stale", Action: "probe_exit", ExitNodeID: "21", Entries: []string{"cidr:192.168.50.0/24"}},
+	}
+
+	rules := appendProbeLinuxRouterPublishedRouteRules(base, nil, "2")
+	if len(rules) != 1 || rules[0].ID != "manual-direct" {
+		t.Fatalf("unselected node retained generated rules: %+v", rules)
+	}
+}
+
 func TestUpdateProbeRuntimeProductStatusAcceptsOnlyValidatedLocalRouterRoutes(t *testing.T) {
 	setupProbeLinuxRouterTestStores(t)
 	probeRuntimeStore.mu.Lock()

@@ -54,9 +54,13 @@ func shouldProbeRouteWindowsUseDirectBypass() bool {
 }
 
 var probeRouteWindowsManagedDirectBypassState = struct {
-	mu     sync.Mutex
-	routes map[string]probeRouteWindowsRouteDef
-}{routes: make(map[string]probeRouteWindowsRouteDef)}
+	mu                 sync.Mutex
+	routes             map[string]probeRouteWindowsRouteDef
+	transportProtected map[string]struct{}
+}{
+	routes:             make(map[string]probeRouteWindowsRouteDef),
+	transportProtected: make(map[string]struct{}),
+}
 
 func resolveProbeRouteWindowsTUNRouteTarget() (probeRouteWindowsTUNRouteTarget, error) {
 	gateway := strings.TrimSpace(os.Getenv("PROBE_LOCAL_TUN_GATEWAY"))
@@ -117,6 +121,14 @@ func probeRouteIPInAnyNetwork(ip net.IP, networks []*net.IPNet) bool {
 }
 
 func ensureProbeRouteDirectBypass(targetAddr string) error {
+	return ensureProbeRouteDirectBypassWithPurpose(targetAddr, false)
+}
+
+func ensureProbeRouteTransportDirectBypass(targetAddr string) error {
+	return ensureProbeRouteDirectBypassWithPurpose(targetAddr, true)
+}
+
+func ensureProbeRouteDirectBypassWithPurpose(targetAddr string, protectTransport bool) error {
 	host, _, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
 	if err != nil {
 		return err
@@ -138,6 +150,9 @@ func ensureProbeRouteDirectBypass(targetAddr string) error {
 	}
 	if len(ips) == 0 {
 		return fmt.Errorf("bypass target has no ipv4 address: %s", cleanHost)
+	}
+	if protectTransport {
+		rememberProbeRouteWindowsTransportBypassIPs(ips)
 	}
 	if probeRouteWindowsDirectBypassIPsContainProtectedRange(ips) {
 		logProbeWarnf("probe route direct route skipped for protected tun target: target=%s ips=%s", strings.TrimSpace(targetAddr), strings.Join(ips, ","))
@@ -261,6 +276,27 @@ func ensureProbeRouteDirectBypass(targetAddr string) error {
 		rememberProbeRouteWindowsManagedDirectBypass(routeDef)
 	}
 	return allErr
+}
+
+func rememberProbeRouteWindowsTransportBypassIPs(ips []string) {
+	probeRouteWindowsManagedDirectBypassState.mu.Lock()
+	defer probeRouteWindowsManagedDirectBypassState.mu.Unlock()
+	for _, ipText := range ips {
+		if ip4 := net.ParseIP(strings.TrimSpace(ipText)).To4(); ip4 != nil {
+			probeRouteWindowsManagedDirectBypassState.transportProtected[ip4.String()] = struct{}{}
+		}
+	}
+}
+
+func probeRouteWindowsTransportBypassIsProtected(ip net.IP) bool {
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return false
+	}
+	probeRouteWindowsManagedDirectBypassState.mu.Lock()
+	_, ok := probeRouteWindowsManagedDirectBypassState.transportProtected[ip4.String()]
+	probeRouteWindowsManagedDirectBypassState.mu.Unlock()
+	return ok
 }
 
 func probeRouteWindowsDirectBypassIPIsSpecial(ip net.IP) bool {
@@ -528,7 +564,7 @@ func cleanupProbeRouteDirectBypassForVirtualRouterRules(config probeVirtualRoute
 			continue
 		}
 		ip := net.ParseIP(strings.TrimSpace(entry.Prefix)).To4()
-		if ip == nil || probeVirtualRouterDNSDirectPriorityIP(ip) || !probeVirtualRouterConfigRoutesIPViaProbeExit(config, ip) {
+		if ip == nil || probeVirtualRouterDNSDirectPriorityIP(ip) || probeRouteWindowsTransportBypassIsProtected(ip) || !probeVirtualRouterConfigRoutesIPViaProbeExit(config, ip) {
 			continue
 		}
 		routeDef := probeRouteWindowsRouteDef{

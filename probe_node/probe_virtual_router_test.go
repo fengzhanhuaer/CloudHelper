@@ -232,6 +232,24 @@ func TestProbeVirtualRouterCacheDoesNotPersistFakeIPLibrary(t *testing.T) {
 	}
 }
 
+func TestProbeVirtualRouterCacheDoesNotPersistLinuxRouterPublishedRules(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	config := probeVirtualRouterConfig{RouteRules: []probeVirtualRouterRouteRule{
+		{ID: "manual-direct", Name: "manual", Action: "direct", Entries: []string{"cidr:203.0.113.0/24"}},
+		{ID: "linux-router-22-stale", Name: "dynamic", Action: "probe_exit", ExitNodeID: "22", Entries: []string{"cidr:172.18.52.0/22"}},
+	}}
+	if err := persistProbeRouteConfigCache(config); err != nil {
+		t.Fatalf("persist cache failed: %v", err)
+	}
+	loaded, err := loadProbeRouteConfigCache()
+	if err != nil {
+		t.Fatalf("load cache failed: %v", err)
+	}
+	if len(loaded.RouteRules) != 1 || loaded.RouteRules[0].ID != "manual-direct" {
+		t.Fatalf("cached route rules=%+v, want only manual rule", loaded.RouteRules)
+	}
+}
+
 func withProbeVirtualRouterRuleAuthForTest(t *testing.T, rule probeVirtualRouterTopologyRule) probeVirtualRouterTopologyRule {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)

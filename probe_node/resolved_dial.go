@@ -85,7 +85,7 @@ func newProbeResolvedDialContext(target probeResolvedURLDialTarget, timeout time
 			KeepAlive: 30 * time.Second,
 		})
 		if strings.EqualFold(strings.TrimSpace(addr), strings.TrimSpace(target.OriginalEndpoint)) {
-			if err := ensureProbeRouteDirectBypass(target.DialEndpoint); err != nil {
+			if err := ensureProbeRouteTransportDirectBypass(target.DialEndpoint); err != nil {
 				logProbeWarnf("probe resolved dial direct bypass failed: target=%s err=%v", target.DialEndpoint, err)
 			}
 			return dialer.DialContext(ctx, probeRouteEgressDialNetwork(network, target.DialEndpoint), target.DialEndpoint)

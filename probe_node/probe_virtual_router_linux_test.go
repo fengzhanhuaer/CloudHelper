@@ -340,6 +340,7 @@ func TestEnsureProbeVirtualRouterLinuxPublishedRoutesKeepsPhysicalSubnetAndClean
 			return strings.Join([]string{
 				"172.18.52.0/22 dev eth0 proto kernel scope link src 172.18.53.157",
 				"172.18.52.0/22 dev cloudhelper0 src 198.18.0.7 metric 3",
+				"192.168.50.42 dev eth0 scope link",
 			}, "\n"), nil
 		}
 		return "", nil
@@ -364,6 +365,51 @@ func TestEnsureProbeVirtualRouterLinuxPublishedRoutesKeepsPhysicalSubnetAndClean
 	probeVirtualRouterLinuxRouteState.mu.Unlock()
 	if len(applied) != 1 || applied[0].Prefix != "192.168.50.0/24" {
 		t.Fatalf("applied=%+v, want remote published route only", applied)
+	}
+}
+
+func TestEnsureProbeVirtualRouterLinuxPublishedRoutesCleansRestartStaleRouteWhenUnselected(t *testing.T) {
+	resetProbeVirtualRouterLinuxRouteStateForTest()
+	probeVirtualRouterState.mu.Lock()
+	previousConfig := probeVirtualRouterState.config
+	probeVirtualRouterState.config = probeVirtualRouterConfig{FakeIPCIDR: "198.18.0.0/15"}
+	probeVirtualRouterState.mu.Unlock()
+	oldRun := probeLocalLinuxRunCommand
+	t.Cleanup(func() {
+		probeVirtualRouterState.mu.Lock()
+		probeVirtualRouterState.config = previousConfig
+		probeVirtualRouterState.mu.Unlock()
+		probeLocalLinuxRunCommand = oldRun
+		resetProbeVirtualRouterLinuxRouteStateForTest()
+	})
+
+	var calls []string
+	probeLocalLinuxRunCommand = func(timeout time.Duration, name string, args ...string) (string, error) {
+		joined := strings.Join(args, " ")
+		calls = append(calls, name+" "+joined)
+		if joined == "-4 route show table main" {
+			return strings.Join([]string{
+				"172.18.52.0/22 dev cloudhelper0 src 198.18.0.8 metric 3",
+				"198.18.0.0/15 dev cloudhelper0 src 198.18.0.8 metric 3",
+				"0.0.0.0/1 dev cloudhelper0 src 198.18.0.8 metric 3",
+			}, "\n"), nil
+		}
+		return "", nil
+	}
+
+	if err := ensureProbeVirtualRouterLinuxPublishedRoutes("cloudhelper0", "198.18.0.8"); err != nil {
+		t.Fatalf("ensure published routes returned error: %v", err)
+	}
+	if !hasProbeVirtualRouterLinuxCommand(calls, "ip -4 route del 172.18.52.0/22 dev cloudhelper0") {
+		t.Fatalf("missing stale published route cleanup: calls=%v", calls)
+	}
+	for _, forbidden := range []string{
+		"ip -4 route del 198.18.0.0/15 dev cloudhelper0",
+		"ip -4 route del 0.0.0.0/1 dev cloudhelper0",
+	} {
+		if hasProbeVirtualRouterLinuxCommand(calls, forbidden) {
+			t.Fatalf("reserved route must not be removed: command=%q calls=%v", forbidden, calls)
+		}
 	}
 }
 

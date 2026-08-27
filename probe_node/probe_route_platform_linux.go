@@ -20,11 +20,23 @@ var (
 )
 
 var probeRouteLinuxDirectBypassState = struct {
-	mu     sync.Mutex
-	routes map[string]probeVirtualRouterLinuxRouteDef
-}{routes: make(map[string]probeVirtualRouterLinuxRouteDef)}
+	mu                 sync.Mutex
+	routes             map[string]probeVirtualRouterLinuxRouteDef
+	transportProtected map[string]struct{}
+}{
+	routes:             make(map[string]probeVirtualRouterLinuxRouteDef),
+	transportProtected: make(map[string]struct{}),
+}
 
 func ensureProbeRouteDirectBypass(targetAddr string) error {
+	return ensureProbeRouteDirectBypassWithPurpose(targetAddr, false)
+}
+
+func ensureProbeRouteTransportDirectBypass(targetAddr string) error {
+	return ensureProbeRouteDirectBypassWithPurpose(targetAddr, true)
+}
+
+func ensureProbeRouteDirectBypassWithPurpose(targetAddr string, protectTransport bool) error {
 	host, _, err := net.SplitHostPort(strings.TrimSpace(targetAddr))
 	if err != nil {
 		return err
@@ -47,6 +59,15 @@ func ensureProbeRouteDirectBypass(targetAddr string) error {
 	}
 	if len(ips) == 0 {
 		return fmt.Errorf("bypass target has no ipv4 address: %s", cleanHost)
+	}
+	if protectTransport {
+		probeRouteLinuxDirectBypassState.mu.Lock()
+		for _, ipText := range ips {
+			if ip4 := net.ParseIP(strings.TrimSpace(ipText)).To4(); ip4 != nil {
+				probeRouteLinuxDirectBypassState.transportProtected[ip4.String()] = struct{}{}
+			}
+		}
+		probeRouteLinuxDirectBypassState.mu.Unlock()
 	}
 
 	var allErr error
@@ -119,7 +140,7 @@ func cleanupProbeRouteDirectBypassForVirtualRouterRules(config probeVirtualRoute
 
 	for _, routeDef := range routes {
 		ip, _, err := net.ParseCIDR(strings.TrimSpace(routeDef.Prefix))
-		if err != nil || ip == nil || probeVirtualRouterDNSDirectPriorityIP(ip) || !probeVirtualRouterConfigRoutesIPViaProbeExit(config, ip) {
+		if err != nil || ip == nil || probeVirtualRouterDNSDirectPriorityIP(ip) || probeRouteLinuxTransportBypassIsProtected(ip) || !probeVirtualRouterConfigRoutesIPViaProbeExit(config, ip) {
 			continue
 		}
 		if err := deleteProbeVirtualRouterLinuxRoute(routeDef); err != nil {
@@ -132,6 +153,17 @@ func cleanupProbeRouteDirectBypassForVirtualRouterRules(config probeVirtualRoute
 		}
 		probeRouteLinuxDirectBypassState.mu.Unlock()
 	}
+}
+
+func probeRouteLinuxTransportBypassIsProtected(ip net.IP) bool {
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return false
+	}
+	probeRouteLinuxDirectBypassState.mu.Lock()
+	_, ok := probeRouteLinuxDirectBypassState.transportProtected[ip4.String()]
+	probeRouteLinuxDirectBypassState.mu.Unlock()
+	return ok
 }
 
 func probeVirtualRouterConfigRoutesIPViaProbeExit(config probeVirtualRouterConfig, ip net.IP) bool {
@@ -156,6 +188,7 @@ func probeVirtualRouterConfigRoutesIPViaProbeExit(config probeVirtualRouterConfi
 func resetProbeRouteLinuxDirectBypassStateForTest() {
 	probeRouteLinuxDirectBypassState.mu.Lock()
 	probeRouteLinuxDirectBypassState.routes = make(map[string]probeVirtualRouterLinuxRouteDef)
+	probeRouteLinuxDirectBypassState.transportProtected = make(map[string]struct{})
 	probeRouteLinuxDirectBypassState.mu.Unlock()
 }
 

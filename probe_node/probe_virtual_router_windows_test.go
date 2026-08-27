@@ -281,6 +281,9 @@ func TestEnsureProbeVirtualRouterWindowsPublishedRoutesKeepsPhysicalSubnetAndCle
 		return []probeLocalWindowsRouteEntry{
 			{Prefix: "172.18.52.0", PrefixLength: 22, NextHop: "0.0.0.0", IfIndex: 22},
 			{Prefix: "172.18.52.0", PrefixLength: 22, NextHop: probeLocalTUNRouteGatewayIPv4, IfIndex: 40, Metric: probeRouteWindowsRouteMetric, Protocol: probeRouteWindowsProtocolNetMgmt},
+			{Prefix: "192.168.50.42", PrefixLength: 32, NextHop: "0.0.0.0", IfIndex: 22, Metric: 1, Protocol: probeRouteWindowsProtocolNetMgmt},
+			{Prefix: "192.168.50.43", PrefixLength: 32, NextHop: "192.168.1.1", IfIndex: 22, Metric: 1, Protocol: probeRouteWindowsProtocolNetMgmt},
+			{Prefix: "192.168.50.44", PrefixLength: 32, NextHop: "0.0.0.0", IfIndex: 22, Metric: 256, Protocol: 2},
 		}, nil
 	}
 	var created []probeRouteWindowsRouteDef
@@ -297,11 +300,14 @@ func TestEnsureProbeVirtualRouterWindowsPublishedRoutesKeepsPhysicalSubnetAndCle
 	if err := ensureProbeVirtualRouterWindowsPublishedRoutes(77, 40); err != nil {
 		t.Fatalf("ensure published routes returned error: %v", err)
 	}
-	if len(deleted) != 1 {
-		t.Fatalf("deleted=%+v, want stale local-subnet TUN route only", deleted)
+	if len(deleted) != 2 {
+		t.Fatalf("deleted=%+v, want stale local-subnet TUN route and stale remote on-link host route", deleted)
 	}
 	assertProbeVirtualRouterWindowsRouteDef(t, deleted, probeRouteWindowsRouteDef{
 		Prefix: "172.18.52.0", Mask: "255.255.252.0", Gateway: probeLocalTUNRouteGatewayIPv4, IfIndex: 40,
+	})
+	assertProbeVirtualRouterWindowsRouteDef(t, deleted, probeRouteWindowsRouteDef{
+		Prefix: "192.168.50.42", Mask: probeRouteWindowsHostRouteMask, Gateway: "0.0.0.0", IfIndex: 22,
 	})
 	if len(created) != 1 {
 		t.Fatalf("created=%+v, want remote published route only", created)
@@ -316,6 +322,47 @@ func TestEnsureProbeVirtualRouterWindowsPublishedRoutesKeepsPhysicalSubnetAndCle
 		t.Fatalf("applied=%+v, want remote published route only", applied)
 	}
 	assertProbeVirtualRouterWindowsRouteDef(t, applied, probeRouteWindowsRouteDef{Prefix: "192.168.50.0", IfIndex: 40})
+}
+
+func TestEnsureProbeVirtualRouterWindowsPublishedRoutesCleansRestartStaleRouteWhenUnselected(t *testing.T) {
+	resetProbeVirtualRouterWindowsRouteStateForTest()
+	probeVirtualRouterState.mu.Lock()
+	previousConfig := probeVirtualRouterState.config
+	probeVirtualRouterState.config = probeVirtualRouterConfig{FakeIPCIDR: "198.18.0.0/15"}
+	probeVirtualRouterState.mu.Unlock()
+	oldListRoutes := probeLocalListWindowsRouteEntries
+	oldDeleteRoute := probeLocalDeleteWindowsRouteEntry
+	t.Cleanup(func() {
+		probeVirtualRouterState.mu.Lock()
+		probeVirtualRouterState.config = previousConfig
+		probeVirtualRouterState.mu.Unlock()
+		probeLocalListWindowsRouteEntries = oldListRoutes
+		probeLocalDeleteWindowsRouteEntry = oldDeleteRoute
+		resetProbeVirtualRouterWindowsRouteStateForTest()
+	})
+
+	probeLocalListWindowsRouteEntries = func() ([]probeLocalWindowsRouteEntry, error) {
+		return []probeLocalWindowsRouteEntry{
+			{Prefix: "172.18.52.0", PrefixLength: 22, NextHop: probeLocalTUNRouteGatewayIPv4, IfIndex: 40, Metric: probeRouteWindowsRouteMetric, Protocol: probeRouteWindowsProtocolNetMgmt},
+			{Prefix: "198.18.0.0", PrefixLength: 15, NextHop: probeLocalTUNRouteGatewayIPv4, IfIndex: 40, Metric: probeRouteWindowsRouteMetric, Protocol: probeRouteWindowsProtocolNetMgmt},
+			{Prefix: "0.0.0.0", PrefixLength: 1, NextHop: probeLocalTUNRouteGatewayIPv4, IfIndex: 40, Metric: probeRouteWindowsRouteMetric, Protocol: probeRouteWindowsProtocolNetMgmt},
+		}, nil
+	}
+	var deleted []probeRouteWindowsRouteDef
+	probeLocalDeleteWindowsRouteEntry = func(routeDef probeRouteWindowsRouteDef) error {
+		deleted = append(deleted, routeDef)
+		return nil
+	}
+
+	if err := ensureProbeVirtualRouterWindowsPublishedRoutes(77, 40); err != nil {
+		t.Fatalf("ensure published routes returned error: %v", err)
+	}
+	if len(deleted) != 1 {
+		t.Fatalf("deleted=%+v, want only stale published route", deleted)
+	}
+	assertProbeVirtualRouterWindowsRouteDef(t, deleted, probeRouteWindowsRouteDef{
+		Prefix: "172.18.52.0", Mask: "255.255.252.0", Gateway: probeLocalTUNRouteGatewayIPv4, IfIndex: 40,
+	})
 }
 
 func resetProbeVirtualRouterWindowsRouteStateForTest() {

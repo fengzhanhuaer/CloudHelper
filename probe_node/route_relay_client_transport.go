@@ -30,7 +30,7 @@ func dialProbeRouteBoundQUIC(ctx context.Context, dialHostPort string, tlsConf *
 	if err != nil {
 		return nil, err
 	}
-	if err := ensureProbeRouteDirectBypass(dialHostPort); err != nil {
+	if err := ensureProbeRouteTransportDirectBypass(dialHostPort); err != nil {
 		log.Printf("probe route relay quic direct bypass failed: target=%s err=%v", strings.TrimSpace(dialHostPort), err)
 	}
 	listenNetwork := "udp"
@@ -1121,7 +1121,7 @@ func openProbeRouteRelayWebSocketNetConn(routeID string, secret string, relayHos
 		WriteBufferSize:   probeRouteRelayWebSocketBufferBytes,
 		EnableCompression: false,
 		NetDialContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
-			if err := ensureProbeRouteDirectBypass(dialHostPort); err != nil {
+			if err := ensureProbeRouteTransportDirectBypass(dialHostPort); err != nil {
 				log.Printf("probe route relay websocket direct bypass failed: target=%s err=%v", strings.TrimSpace(dialHostPort), err)
 			}
 			netDialer := applyProbeRouteEgressDialer(&net.Dialer{Timeout: probeRouteRelayDialTimeout})
