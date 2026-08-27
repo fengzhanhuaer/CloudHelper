@@ -64,6 +64,11 @@ type probeLinuxRouterLocalIPConfig struct {
 	AllowedNodeIDs []string `json:"allowed_node_ids"`
 }
 
+type probeLinuxRouterOneArmConfig struct {
+	Enabled    bool   `json:"enabled"`
+	SubnetCIDR string `json:"subnet_cidr"`
+}
+
 type probeLinuxRouterSnapshot struct {
 	Version      int                           `json:"version"`
 	NodeID       string                        `json:"node_id"`
@@ -71,6 +76,7 @@ type probeLinuxRouterSnapshot struct {
 	SHA256       string                        `json:"sha256"`
 	GatewayProxy probeLinuxRouterGatewayConfig `json:"gateway_proxy"`
 	LocalIPProxy probeLinuxRouterLocalIPConfig `json:"local_ip_proxy"`
+	OneArmRouter probeLinuxRouterOneArmConfig  `json:"one_arm_router"`
 }
 
 type probeVirtualRouterConfig struct {

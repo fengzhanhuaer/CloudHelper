@@ -177,11 +177,11 @@ func TestProbeLinuxRouterWebOnlyAllowsLANAndVirtualIPClientsAndHosts(t *testing.
 	handler := setupProbeLinuxRouterWebTest(t)
 	cookie := registerAndLoginProbeLinuxRouterWeb(t, handler)
 	allowed := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/router", "192.168.1.150:16032", "192.168.1.20:43210", nil, cookie)
-	if allowed.Code != http.StatusOK || !strings.Contains(allowed.Body.String(), "CloudHelper 旁路由") {
+	if allowed.Code != http.StatusOK || !strings.Contains(allowed.Body.String(), "CloudHelper 路由") {
 		t.Fatalf("private request status=%d body=%s", allowed.Code, allowed.Body.String())
 	}
 	virtual := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/router", "198.18.0.15:16032", "198.18.0.7:43210", nil, cookie)
-	if virtual.Code != http.StatusOK || !strings.Contains(virtual.Body.String(), "CloudHelper 旁路由") {
+	if virtual.Code != http.StatusOK || !strings.Contains(virtual.Body.String(), "CloudHelper 路由") {
 		t.Fatalf("virtual request status=%d body=%s", virtual.Code, virtual.Body.String())
 	}
 	publicClient := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/router", "192.168.1.150:16032", "8.8.8.8:43210", nil)
@@ -318,8 +318,35 @@ func TestProbeLinuxRouterWebRejectsInvalidGatewayConfig(t *testing.T) {
 	}
 }
 
+func TestProbeLinuxRouterWebAppliesOneArmModeAndRejectsDoubleEnable(t *testing.T) {
+	handler := setupProbeLinuxRouterWebTest(t)
+	cookie := registerAndLoginProbeLinuxRouterWeb(t, handler)
+	oneArm := map[string]any{
+		"gateway_proxy":  map[string]any{"enabled": false, "interface": "eth0"},
+		"local_ip_proxy": map[string]any{"enabled": false},
+		"one_arm_router": map[string]any{"enabled": true, "subnet_cidr": "192.168.205.77/24"},
+	}
+	response := doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/config", "192.168.1.150:16032", "192.168.1.20:43210", oneArm, cookie)
+	if response.Code != http.StatusOK {
+		t.Fatalf("one-arm save status=%d body=%s", response.Code, response.Body.String())
+	}
+	desired, _, _ := currentProbeLinuxRouterLocalState()
+	if desired == nil || !desired.OneArmRouter.Enabled || desired.OneArmRouter.SubnetCIDR != "192.168.205.0/24" || desired.GatewayProxy.Enabled || desired.LocalIPProxy.Enabled {
+		t.Fatalf("unexpected one-arm state: %+v", desired)
+	}
+	oneArm["gateway_proxy"] = map[string]any{"enabled": true, "interface": "eth0"}
+	response = doProbeLinuxRouterWebRequest(t, handler, http.MethodPost, "/local/router/api/config", "192.168.1.150:16032", "192.168.1.20:43210", oneArm, cookie)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "cannot be enabled") {
+		t.Fatalf("double-enable status=%d body=%s", response.Code, response.Body.String())
+	}
+	page := doProbeLinuxRouterWebRequest(t, handler, http.MethodGet, "/local/router/one-arm", "192.168.1.150:16032", "192.168.1.20:43210", nil, cookie)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), `id="oneArmRouterPanel"`) {
+		t.Fatalf("one-arm page status=%d body=%s", page.Code, page.Body.String())
+	}
+}
+
 func TestProbeLinuxRouterWebUsesLocalConfigAndShowsConnections(t *testing.T) {
-	for _, marker := range []string{"本地配置", `<select id="interfaceName">`, `id="restoreAutoIPBtn"`, "恢复自动获取 IP", "/local/router/api/network/auto", "IP 地址也可能变化", `id="gatewayAddress" type="text" readonly`, "LAN IP（自动）", "上游网关（可选）", "默认使用上级下发网关", "syncGatewayAddressPreview", `id="runtimeUpstreamGateway"`, `id="dnsWhitelistEnabled"`, `id="dnsWhitelistIPs"`, `id="dnsWhitelistDomains"`, "dns_whitelist_enabled", "dns_whitelist_ips", "dns_whitelist_domains", `id="availableNodeID"`, `id="addAllowedNodeBtn"`, `id="allowedNodeList"`, `id="connectionRows"`, `id="upgradeBtn"`, "/local/router/api/upgrade/check", `href="/local/virtual-router"`, `class="subtab active"`, "gateway_proxy", "local_ip_proxy", "let configDirty = false", "statusRequestSequence", "allowedNodeSelection", "有未保存的更改", "配置已保存并应用", "beforeunload"} {
+	for _, marker := range []string{"本地配置", `<select id="interfaceName">`, `id="restoreAutoIPBtn"`, "恢复自动获取 IP", "/local/router/api/network/auto", "IP 地址也可能变化", `id="gatewayAddress" type="text" readonly`, "LAN IP（自动）", "上游网关（可选）", "默认使用上级下发网关", "syncGatewayAddressPreview", `id="runtimeUpstreamGateway"`, `id="dnsWhitelistEnabled"`, `id="dnsWhitelistIPs"`, `id="dnsWhitelistDomains"`, "dns_whitelist_enabled", "dns_whitelist_ips", "dns_whitelist_domains", `id="availableNodeID"`, `id="addAllowedNodeBtn"`, `id="allowedNodeList"`, `id="connectionRows"`, `id="upgradeBtn"`, "/local/router/api/upgrade/check", `href="/local/virtual-router"`, `class="subtab active"`, `href="/local/router/one-arm"`, `id="oneArmEnabled"`, `id="oneArmSubnetCIDR"`, `id="oneArmGateway"`, "one_arm_router", "gateway_proxy", "local_ip_proxy", "let configDirty = false", "statusRequestSequence", "allowedNodeSelection", "有未保存的更改", "配置已保存并应用", "beforeunload"} {
 		if !strings.Contains(probeLinuxRouterWebPageHTML, marker) {
 			t.Fatalf("router page missing %q", marker)
 		}

@@ -36,6 +36,8 @@ var probeLinuxRouterLinuxState = struct {
 	sysctlOriginal        map[string]string
 	snatCIDRsSignature    string
 	dnsWhitelistSignature string
+	oneArmInterface       string
+	oneArmGatewayCIDR     string
 }{}
 
 var probeLinuxRouterRunCommand = probeLocalLinuxRunCommand
@@ -78,34 +80,45 @@ func init() {
 }
 
 func applyProbeLinuxRouterPlatform(snapshot probeLinuxRouterSnapshot) (string, error) {
-	tunIP := strings.TrimSpace(currentProbeVirtualRouterLocalIP())
-	if tunIP == "" {
-		return "", errors.New("virtual router local IP is not ready")
-	}
-	if err := ensureProbeVirtualRouterPlatformInterfaceIP(tunIP); err != nil {
-		return "", fmt.Errorf("prepare virtual router TUN: %w", err)
-	}
 	tunDev := probeRouteLinuxTUNDeviceName()
 	iface, err := resolveProbeLinuxRouterInterface(snapshot.GatewayProxy.Interface, tunDev)
 	if err != nil {
 		return "", err
 	}
+	tunIP := ""
+	if probeLinuxRouterAnyModeEnabled(snapshot) {
+		tunIP = strings.TrimSpace(currentProbeVirtualRouterLocalIP())
+		if tunIP == "" {
+			return "", errors.New("virtual router local IP is not ready")
+		}
+		if err := ensureProbeVirtualRouterPlatformInterfaceIP(tunIP); err != nil {
+			return "", fmt.Errorf("prepare virtual router TUN: %w", err)
+		}
+	}
 
-	if err := applyProbeLinuxRouterSysctls([][2]string{{"net.ipv4.ip_forward", "1"}, {"net.ipv4.conf.all.rp_filter", "2"}, {"net.ipv4.conf." + iface + ".rp_filter", "2"}, {"net.ipv4.conf." + tunDev + ".rp_filter", "2"}}); err != nil {
+	if err := applyProbeLinuxRouterSysctls(probeLinuxRouterSysctlSettings(snapshot, iface, tunDev, true)); err != nil {
+		return iface, err
+	}
+	if err := reconcileProbeLinuxRouterOneArmAddress(snapshot, iface); err != nil {
 		return iface, err
 	}
 	if err := applyProbeLinuxRouterPolicyRouting(snapshot, iface, tunDev); err != nil {
 		return iface, err
 	}
-	snatCIDRs := probeLinuxRouterSNATCIDRs(currentProbeVirtualRouterConfig())
-	dnsWhitelistIPs, err := resolveProbeLinuxRouterDNSWhitelist(snapshot.GatewayProxy)
+	var snatCIDRs []string
+	if probeLinuxRouterAnyModeEnabled(snapshot) {
+		snatCIDRs = probeLinuxRouterSNATCIDRs(currentProbeVirtualRouterConfig())
+	}
+	dnsConfig := snapshot.GatewayProxy
+	dnsConfig.Enabled = snapshot.GatewayProxy.Enabled || snapshot.OneArmRouter.Enabled
+	dnsWhitelistIPs, err := resolveProbeLinuxRouterDNSWhitelist(dnsConfig)
 	if err != nil {
 		return iface, err
 	}
 	if err := replaceProbeLinuxRouterNFTTable(buildProbeLinuxRouterNFTScript(snapshot, iface, tunDev, tunIP, snatCIDRs, dnsWhitelistIPs, false)); err != nil {
 		return iface, err
 	}
-	if err := reconcileProbeLinuxRouterDNSRuntime(snapshot.GatewayProxy.Enabled && snapshot.GatewayProxy.DNSEnabled); err != nil {
+	if err := reconcileProbeLinuxRouterDNSRuntime((snapshot.GatewayProxy.Enabled || snapshot.OneArmRouter.Enabled) && snapshot.GatewayProxy.DNSEnabled); err != nil {
 		return iface, err
 	}
 	probeLinuxRouterLinuxState.mu.Lock()
@@ -123,8 +136,13 @@ func applyProbeLinuxRouterFailOpen(snapshot probeLinuxRouterSnapshot) error {
 	if err != nil {
 		return err
 	}
-	if snapshot.GatewayProxy.Enabled {
-		_, _ = probeLinuxRouterRunCommand(5*time.Second, "sysctl", "-w", "net.ipv4.ip_forward=1")
+	if snapshot.GatewayProxy.Enabled || snapshot.OneArmRouter.Enabled {
+		if err := applyProbeLinuxRouterSysctls(probeLinuxRouterSysctlSettings(snapshot, iface, tunDev, false)); err != nil {
+			return err
+		}
+	}
+	if err := reconcileProbeLinuxRouterOneArmAddress(effective, iface); err != nil {
+		return err
 	}
 	if err := cleanupProbeLinuxRouterPolicyRouting(); err != nil {
 		return err
@@ -138,8 +156,29 @@ func applyProbeLinuxRouterFailOpen(snapshot probeLinuxRouterSnapshot) error {
 	return errors.Join(dnsErr, nftErr)
 }
 
+func probeLinuxRouterSysctlSettings(snapshot probeLinuxRouterSnapshot, iface string, tunDev string, includeTUN bool) [][2]string {
+	settings := [][2]string{
+		{"net.ipv4.ip_forward", "1"},
+		{"net.ipv4.conf.all.rp_filter", "2"},
+		{"net.ipv4.conf." + iface + ".rp_filter", "2"},
+	}
+	if includeTUN {
+		settings = append(settings, [2]string{"net.ipv4.conf." + tunDev + ".rp_filter", "2"})
+	}
+	if snapshot.OneArmRouter.Enabled {
+		settings = append(settings,
+			[2]string{"net.ipv4.conf.all.send_redirects", "0"},
+			[2]string{"net.ipv4.conf." + iface + ".send_redirects", "0"},
+		)
+	}
+	return settings
+}
+
 func cleanupProbeLinuxRouterPlatform(snapshot *probeLinuxRouterSnapshot) error {
 	var allErr error
+	if err := cleanupProbeLinuxRouterOneArmAddress(); err != nil {
+		allErr = errors.Join(allErr, err)
+	}
 	if err := cleanupProbeLinuxRouterPolicyRouting(); err != nil {
 		allErr = errors.Join(allErr, err)
 	}
@@ -234,7 +273,7 @@ func restoreProbeLinuxRouterSysctls() error {
 }
 
 func probeLinuxRouterPlatformHealth(snapshot probeLinuxRouterSnapshot) error {
-	if !probeVirtualRouterTUNDataPlaneRunning() {
+	if probeLinuxRouterAnyModeEnabled(snapshot) && !probeVirtualRouterTUNDataPlaneRunning() {
 		return errors.New("virtual router TUN data plane is not running")
 	}
 	effective, err := resolveProbeLinuxRouterNetwork(snapshot)
@@ -247,22 +286,32 @@ func probeLinuxRouterPlatformHealth(snapshot probeLinuxRouterSnapshot) error {
 	if probeLinuxRouterNetworkSignature(effective, strings.TrimSpace(effective.GatewayProxy.Interface)) != appliedNetwork {
 		return errors.New("router interface address or upstream gateway changed")
 	}
-	dnsRequired := snapshot.GatewayProxy.Enabled && snapshot.GatewayProxy.DNSEnabled || probeLinuxRouterVirtualDNSConfigured()
+	if snapshot.OneArmRouter.Enabled {
+		if err := checkProbeLinuxRouterOneArmAddress(effective, strings.TrimSpace(effective.GatewayProxy.Interface)); err != nil {
+			return err
+		}
+	}
+	dnsRequired := (snapshot.GatewayProxy.Enabled || snapshot.OneArmRouter.Enabled) && snapshot.GatewayProxy.DNSEnabled || probeLinuxRouterVirtualDNSConfigured()
 	if err := ensureProbeLinuxRouterDNSHealth(dnsRequired); err != nil {
 		return err
 	}
 	if _, err := probeLinuxRouterRunCommand(5*time.Second, "nft", "list", "table", "ip", probeLinuxRouterNFTTable); err != nil {
 		return fmt.Errorf("router nftables state is unavailable: %w", err)
 	}
-	expectedSNATCIDRs := strings.Join(probeLinuxRouterSNATCIDRs(currentProbeVirtualRouterConfig()), ",")
+	expectedSNATCIDRs := ""
+	if probeLinuxRouterAnyModeEnabled(snapshot) {
+		expectedSNATCIDRs = strings.Join(probeLinuxRouterSNATCIDRs(currentProbeVirtualRouterConfig()), ",")
+	}
 	probeLinuxRouterLinuxState.mu.Lock()
 	appliedSNATCIDRs := probeLinuxRouterLinuxState.snatCIDRsSignature
 	probeLinuxRouterLinuxState.mu.Unlock()
 	if expectedSNATCIDRs != appliedSNATCIDRs {
 		return errors.New("router proxy CIDR selection changed")
 	}
-	if snapshot.GatewayProxy.Enabled && snapshot.GatewayProxy.DNSWhitelistEnabled && len(snapshot.GatewayProxy.DNSWhitelistDomains) > 0 {
-		if resolved, resolveErr := resolveProbeLinuxRouterDNSWhitelist(snapshot.GatewayProxy); resolveErr == nil {
+	if (snapshot.GatewayProxy.Enabled || snapshot.OneArmRouter.Enabled) && snapshot.GatewayProxy.DNSWhitelistEnabled && len(snapshot.GatewayProxy.DNSWhitelistDomains) > 0 {
+		dnsConfig := snapshot.GatewayProxy
+		dnsConfig.Enabled = snapshot.GatewayProxy.Enabled || snapshot.OneArmRouter.Enabled
+		if resolved, resolveErr := resolveProbeLinuxRouterDNSWhitelist(dnsConfig); resolveErr == nil {
 			probeLinuxRouterLinuxState.mu.Lock()
 			applied := probeLinuxRouterLinuxState.dnsWhitelistSignature
 			probeLinuxRouterLinuxState.mu.Unlock()
@@ -271,7 +320,7 @@ func probeLinuxRouterPlatformHealth(snapshot probeLinuxRouterSnapshot) error {
 			}
 		}
 	}
-	if snapshot.GatewayProxy.Enabled || snapshot.LocalIPProxy.Enabled {
+	if probeLinuxRouterAnyModeEnabled(snapshot) {
 		output, err := probeLinuxRouterRunCommand(5*time.Second, "ip", "-4", "rule", "show", "priority", probeLinuxRouterRulePriority)
 		if err != nil {
 			return fmt.Errorf("router policy rule is unavailable: %w", err)
@@ -429,6 +478,23 @@ func resolveProbeLinuxRouterNetworkForMode(snapshot probeLinuxRouterSnapshot, re
 	}
 	snapshot.GatewayProxy.Interface = iface
 	snapshot.GatewayProxy.GatewayAddress = prefix.String()
+	if snapshot.OneArmRouter.Enabled {
+		gatewayCIDR, gatewayErr := probeLinuxRouterOneArmGatewayCIDR(snapshot.OneArmRouter.SubnetCIDR)
+		if gatewayErr != nil {
+			return snapshot, iface, gatewayErr
+		}
+		gatewayPrefix := netip.MustParsePrefix(gatewayCIDR)
+		oneArmSubnet := gatewayPrefix.Masked()
+		for _, existing := range prefixes {
+			if !probeLinuxRouterPrefixesOverlap(existing.Masked(), oneArmSubnet) {
+				continue
+			}
+			if existing == gatewayPrefix {
+				continue
+			}
+			return snapshot, iface, fmt.Errorf("one-arm router subnet %s overlaps interface address %s", oneArmSubnet, existing)
+		}
+	}
 	if len(snapshot.GatewayProxy.LANCIDRs) == 0 {
 		snapshot.GatewayProxy.LANCIDRs = []string{prefix.Masked().String()}
 	}
@@ -490,7 +556,86 @@ func readProbeLinuxRouterDHCPServer(iface string) (netip.Addr, error) {
 }
 
 func probeLinuxRouterNetworkSignature(snapshot probeLinuxRouterSnapshot, iface string) string {
-	return strings.Join([]string{strings.TrimSpace(iface), strings.TrimSpace(snapshot.GatewayProxy.GatewayAddress), strings.TrimSpace(snapshot.GatewayProxy.UpstreamGateway)}, "|")
+	oneArmGateway, _ := probeLinuxRouterOneArmGatewayCIDR(snapshot.OneArmRouter.SubnetCIDR)
+	return strings.Join([]string{
+		strings.TrimSpace(iface),
+		strings.TrimSpace(snapshot.GatewayProxy.GatewayAddress),
+		strings.TrimSpace(snapshot.GatewayProxy.UpstreamGateway),
+		strconv.FormatBool(snapshot.OneArmRouter.Enabled),
+		strings.TrimSpace(oneArmGateway),
+	}, "|")
+}
+
+func reconcileProbeLinuxRouterOneArmAddress(snapshot probeLinuxRouterSnapshot, iface string) error {
+	desiredCIDR := ""
+	if snapshot.OneArmRouter.Enabled {
+		var err error
+		desiredCIDR, err = probeLinuxRouterOneArmGatewayCIDR(snapshot.OneArmRouter.SubnetCIDR)
+		if err != nil {
+			return err
+		}
+	}
+
+	probeLinuxRouterLinuxState.mu.Lock()
+	previousInterface := probeLinuxRouterLinuxState.oneArmInterface
+	previousCIDR := probeLinuxRouterLinuxState.oneArmGatewayCIDR
+	probeLinuxRouterLinuxState.mu.Unlock()
+	if previousCIDR != "" && (previousInterface != iface || previousCIDR != desiredCIDR) {
+		if _, err := probeLinuxRouterRunCommand(5*time.Second, "ip", "-4", "address", "del", previousCIDR, "dev", previousInterface); err != nil && !probeLinuxRouterCommandMissingObject(err) {
+			return fmt.Errorf("remove previous one-arm router address: %w", err)
+		}
+		probeLinuxRouterLinuxState.mu.Lock()
+		probeLinuxRouterLinuxState.oneArmInterface = ""
+		probeLinuxRouterLinuxState.oneArmGatewayCIDR = ""
+		probeLinuxRouterLinuxState.mu.Unlock()
+	}
+	if desiredCIDR == "" {
+		return nil
+	}
+	if _, err := probeLinuxRouterRunCommand(5*time.Second, "ip", "-4", "address", "replace", desiredCIDR, "dev", iface); err != nil {
+		return fmt.Errorf("apply one-arm router address %s: %w", desiredCIDR, err)
+	}
+	probeLinuxRouterLinuxState.mu.Lock()
+	probeLinuxRouterLinuxState.oneArmInterface = iface
+	probeLinuxRouterLinuxState.oneArmGatewayCIDR = desiredCIDR
+	probeLinuxRouterLinuxState.mu.Unlock()
+	return nil
+}
+
+func cleanupProbeLinuxRouterOneArmAddress() error {
+	probeLinuxRouterLinuxState.mu.Lock()
+	iface := probeLinuxRouterLinuxState.oneArmInterface
+	gatewayCIDR := probeLinuxRouterLinuxState.oneArmGatewayCIDR
+	probeLinuxRouterLinuxState.mu.Unlock()
+	if iface == "" || gatewayCIDR == "" {
+		return nil
+	}
+	if _, err := probeLinuxRouterRunCommand(5*time.Second, "ip", "-4", "address", "del", gatewayCIDR, "dev", iface); err != nil && !probeLinuxRouterCommandMissingObject(err) {
+		return fmt.Errorf("remove one-arm router address: %w", err)
+	}
+	probeLinuxRouterLinuxState.mu.Lock()
+	probeLinuxRouterLinuxState.oneArmInterface = ""
+	probeLinuxRouterLinuxState.oneArmGatewayCIDR = ""
+	probeLinuxRouterLinuxState.mu.Unlock()
+	return nil
+}
+
+func checkProbeLinuxRouterOneArmAddress(snapshot probeLinuxRouterSnapshot, iface string) error {
+	gatewayCIDR, err := probeLinuxRouterOneArmGatewayCIDR(snapshot.OneArmRouter.SubnetCIDR)
+	if err != nil {
+		return err
+	}
+	want := netip.MustParsePrefix(gatewayCIDR)
+	prefixes, err := listProbeLinuxRouterInterfacePrefixes(iface)
+	if err != nil {
+		return err
+	}
+	for _, prefix := range prefixes {
+		if prefix == want {
+			return nil
+		}
+	}
+	return fmt.Errorf("one-arm router address %s is unavailable on %s", gatewayCIDR, iface)
 }
 
 func cleanupProbeLinuxRouterPolicyRouting() error {
@@ -512,7 +657,7 @@ func applyProbeLinuxRouterPolicyRouting(snapshot probeLinuxRouterSnapshot, iface
 	if err := cleanupProbeLinuxRouterPolicyRouting(); err != nil {
 		return err
 	}
-	if !snapshot.GatewayProxy.Enabled && !snapshot.LocalIPProxy.Enabled {
+	if !probeLinuxRouterAnyModeEnabled(snapshot) {
 		return nil
 	}
 	if _, err := probeLinuxRouterRunCommand(5*time.Second, "ip", "-4", "route", "replace", "table", probeLinuxRouterRouteTable, "default", "dev", tunDev); err != nil {
@@ -556,6 +701,7 @@ func probeLinuxRouterPhysicalCIDRs(snapshot probeLinuxRouterSnapshot) []string {
 	}
 	appendCIDRs(snapshot.GatewayProxy.Enabled, snapshot.GatewayProxy.LANCIDRs)
 	appendCIDRs(snapshot.LocalIPProxy.Enabled, snapshot.LocalIPProxy.PublishedCIDRs)
+	appendCIDRs(snapshot.OneArmRouter.Enabled, []string{snapshot.OneArmRouter.SubnetCIDR})
 	sort.Strings(out)
 	return out
 }
@@ -612,12 +758,16 @@ func resolveProbeLinuxRouterDNSWhitelist(config probeLinuxRouterGatewayConfig) (
 func buildProbeLinuxRouterNFTScript(snapshot probeLinuxRouterSnapshot, iface string, tunDev string, localIP string, snatCIDRs []string, dnsWhitelistIPs []string, failOpen bool) string {
 	lanElements := strings.Join(snapshot.GatewayProxy.LANCIDRs, ", ")
 	publishedElements := strings.Join(snapshot.LocalIPProxy.PublishedCIDRs, ", ")
+	oneArmElements := strings.TrimSpace(snapshot.OneArmRouter.SubnetCIDR)
 	snatElements := strings.Join(snatCIDRs, ", ")
 	if lanElements == "" {
 		lanElements = "192.168.1.0/24"
 	}
 	if publishedElements == "" {
 		publishedElements = "192.168.1.0/24"
+	}
+	if oneArmElements == "" {
+		oneArmElements = "192.168.205.0/24"
 	}
 	if snatElements == "" {
 		snatElements = probeLocalFakeIPDefaultCIDR
@@ -629,9 +779,11 @@ func buildProbeLinuxRouterNFTScript(snapshot probeLinuxRouterSnapshot, iface str
 		"table ip "+probeLinuxRouterNFTTable+" {",
 		"  set lan4 { type ipv4_addr; flags interval; elements = { "+lanElements+" } }",
 		"  set published4 { type ipv4_addr; flags interval; elements = { "+publishedElements+" } }",
+		"  set one_arm4 { type ipv4_addr; flags interval; elements = { "+oneArmElements+" } }",
 		"  set routed4 { type ipv4_addr; flags interval; elements = { "+snatElements+" } }",
 	)
-	if snapshot.GatewayProxy.Enabled && snapshot.GatewayProxy.DNSWhitelistEnabled && !failOpen {
+	proxyIngressEnabled := snapshot.GatewayProxy.Enabled || snapshot.OneArmRouter.Enabled
+	if proxyIngressEnabled && snapshot.GatewayProxy.DNSWhitelistEnabled && !failOpen {
 		dnsElements := strings.Join(dnsWhitelistIPs, ", ")
 		if dnsElements == "" {
 			rules = append(rules, "  set dns_allow4 { type ipv4_addr; }")
@@ -639,23 +791,36 @@ func buildProbeLinuxRouterNFTScript(snapshot probeLinuxRouterSnapshot, iface str
 			rules = append(rules, "  set dns_allow4 { type ipv4_addr; elements = { "+dnsElements+" } }")
 		}
 	}
-	if snapshot.GatewayProxy.Enabled && snapshot.GatewayProxy.DNSEnabled && !failOpen {
-		gateway, _ := netip.ParsePrefix(snapshot.GatewayProxy.GatewayAddress)
-		rules = append(rules,
-			"  chain dstnat { type nat hook prerouting priority dstnat; policy accept;",
-			"    iifname "+ifaceQuote+" ip daddr "+gateway.Addr().String()+" udp dport 53 dnat to "+probeVirtualRouterDNSListenHost+":53",
-			"    iifname "+ifaceQuote+" ip daddr "+gateway.Addr().String()+" tcp dport 53 dnat to "+probeVirtualRouterDNSListenHost+":53",
-			"  }",
-		)
+	if proxyIngressEnabled && snapshot.GatewayProxy.DNSEnabled && !failOpen {
+		rules = append(rules, "  chain dstnat { type nat hook prerouting priority dstnat; policy accept;")
+		if snapshot.GatewayProxy.Enabled {
+			gateway, _ := netip.ParsePrefix(snapshot.GatewayProxy.GatewayAddress)
+			rules = append(rules,
+				"    iifname "+ifaceQuote+" ip daddr "+gateway.Addr().String()+" udp dport 53 dnat to "+probeVirtualRouterDNSListenHost+":53",
+				"    iifname "+ifaceQuote+" ip daddr "+gateway.Addr().String()+" tcp dport 53 dnat to "+probeVirtualRouterDNSListenHost+":53",
+			)
+		}
+		if snapshot.OneArmRouter.Enabled {
+			gatewayCIDR, _ := probeLinuxRouterOneArmGatewayCIDR(snapshot.OneArmRouter.SubnetCIDR)
+			gateway, _ := netip.ParsePrefix(gatewayCIDR)
+			rules = append(rules,
+				"    iifname "+ifaceQuote+" ip daddr "+gateway.Addr().String()+" udp dport 53 dnat to "+probeVirtualRouterDNSListenHost+":53",
+				"    iifname "+ifaceQuote+" ip daddr "+gateway.Addr().String()+" tcp dport 53 dnat to "+probeVirtualRouterDNSListenHost+":53",
+			)
+		}
+		rules = append(rules, "  }")
 	}
-	if snapshot.GatewayProxy.Enabled && !failOpen {
-		rules = append(rules,
-			"  chain preconntrack { type filter hook prerouting priority raw; policy accept;",
-			"    iifname "+ifaceQuote+" ip saddr @lan4 ip daddr != @lan4 ip daddr != @routed4 notrack",
-			"  }",
-		)
+	if proxyIngressEnabled && !failOpen {
+		rules = append(rules, "  chain preconntrack { type filter hook prerouting priority raw; policy accept;")
+		if snapshot.GatewayProxy.Enabled {
+			rules = append(rules, "    iifname "+ifaceQuote+" ip saddr @lan4 ip daddr != @lan4 ip daddr != @routed4 notrack")
+		}
+		if snapshot.OneArmRouter.Enabled {
+			rules = append(rules, "    iifname "+ifaceQuote+" ip saddr @one_arm4 ip daddr != @one_arm4 ip daddr != @routed4 notrack")
+		}
+		rules = append(rules, "  }")
 	}
-	if (snapshot.GatewayProxy.Enabled || snapshot.LocalIPProxy.Enabled) && !failOpen {
+	if probeLinuxRouterAnyModeEnabled(snapshot) && !failOpen {
 		rules = append(rules,
 			"  chain premangle { type filter hook prerouting priority mangle; policy accept;",
 		)
@@ -668,23 +833,42 @@ func buildProbeLinuxRouterNFTScript(snapshot probeLinuxRouterSnapshot, iface str
 		if snapshot.GatewayProxy.Enabled {
 			rules = append(rules, "    iifname "+ifaceQuote+" ip saddr @lan4 ip daddr != @lan4 meta mark set "+probeLinuxRouterPacketMark)
 		}
+		if snapshot.OneArmRouter.Enabled {
+			rules = append(rules, "    iifname "+ifaceQuote+" ip saddr @one_arm4 ip daddr != @one_arm4 meta mark set "+probeLinuxRouterPacketMark)
+		}
 		rules = append(rules, "  }")
 	}
-	if snapshot.GatewayProxy.Enabled && snapshot.GatewayProxy.DNSWhitelistEnabled && !failOpen {
+	if proxyIngressEnabled && snapshot.GatewayProxy.DNSWhitelistEnabled && !failOpen {
 		rules = append(rules,
 			"  chain dns_guard { type filter hook forward priority filter; policy accept;",
 		)
 		if len(dnsWhitelistIPs) > 0 {
+			if snapshot.GatewayProxy.Enabled {
+				rules = append(rules,
+					"    iifname "+ifaceQuote+" ip saddr @lan4 ip daddr @dns_allow4 udp dport { 53, 853 } accept",
+					"    iifname "+ifaceQuote+" ip saddr @lan4 ip daddr @dns_allow4 tcp dport { 53, 853 } accept",
+				)
+			}
+			if snapshot.OneArmRouter.Enabled {
+				rules = append(rules,
+					"    iifname "+ifaceQuote+" ip saddr @one_arm4 ip daddr @dns_allow4 udp dport { 53, 853 } accept",
+					"    iifname "+ifaceQuote+" ip saddr @one_arm4 ip daddr @dns_allow4 tcp dport { 53, 853 } accept",
+				)
+			}
+		}
+		if snapshot.GatewayProxy.Enabled {
 			rules = append(rules,
-				"    iifname "+ifaceQuote+" ip saddr @lan4 ip daddr @dns_allow4 udp dport { 53, 853 } accept",
-				"    iifname "+ifaceQuote+" ip saddr @lan4 ip daddr @dns_allow4 tcp dport { 53, 853 } accept",
+				"    iifname "+ifaceQuote+" ip saddr @lan4 udp dport { 53, 853 } drop",
+				"    iifname "+ifaceQuote+" ip saddr @lan4 tcp dport { 53, 853 } drop",
 			)
 		}
-		rules = append(rules,
-			"    iifname "+ifaceQuote+" ip saddr @lan4 udp dport { 53, 853 } drop",
-			"    iifname "+ifaceQuote+" ip saddr @lan4 tcp dport { 53, 853 } drop",
-			"  }",
-		)
+		if snapshot.OneArmRouter.Enabled {
+			rules = append(rules,
+				"    iifname "+ifaceQuote+" ip saddr @one_arm4 udp dport { 53, 853 } drop",
+				"    iifname "+ifaceQuote+" ip saddr @one_arm4 tcp dport { 53, 853 } drop",
+			)
+		}
+		rules = append(rules, "  }")
 	}
 	rules = append(rules, "  chain postrouting { type nat hook postrouting priority srcnat; policy accept;")
 	if snapshot.GatewayProxy.Enabled {
@@ -695,6 +879,13 @@ func buildProbeLinuxRouterNFTScript(snapshot probeLinuxRouterSnapshot, iface str
 	}
 	if snapshot.LocalIPProxy.Enabled && !failOpen {
 		rules = append(rules, "    iifname "+tunQuote+" oifname "+ifaceQuote+" ip daddr @published4 masquerade")
+	}
+	if snapshot.OneArmRouter.Enabled {
+		if !failOpen && strings.TrimSpace(localIP) != "" {
+			rules = append(rules, "    oifname "+tunQuote+" ip saddr @one_arm4 ip daddr @routed4 snat to "+strings.TrimSpace(localIP))
+		}
+		gateway, _ := netip.ParsePrefix(snapshot.GatewayProxy.GatewayAddress)
+		rules = append(rules, "    oifname "+ifaceQuote+" ip saddr @one_arm4 snat to "+gateway.Addr().String())
 	}
 	rules = append(rules, "  }", "}")
 	return strings.Join(rules, "\n") + "\n"

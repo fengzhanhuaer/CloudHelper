@@ -55,6 +55,7 @@ var probeLinuxRouterRuntimeState = struct {
 type probeLinuxRouterLocalConfig struct {
 	GatewayProxy probeLinuxRouterGatewayConfig `json:"gateway_proxy"`
 	LocalIPProxy probeLinuxRouterLocalIPConfig `json:"local_ip_proxy"`
+	OneArmRouter probeLinuxRouterOneArmConfig  `json:"one_arm_router"`
 }
 
 type probeLinuxRouterPersistedConfig struct {
@@ -63,6 +64,7 @@ type probeLinuxRouterPersistedConfig struct {
 	Revision     int64                         `json:"revision"`
 	GatewayProxy probeLinuxRouterGatewayConfig `json:"gateway_proxy"`
 	LocalIPProxy probeLinuxRouterLocalIPConfig `json:"local_ip_proxy"`
+	OneArmRouter probeLinuxRouterOneArmConfig  `json:"one_arm_router"`
 }
 
 type probeLinuxRouterLocalConfigError struct {
@@ -140,7 +142,7 @@ func stopProbeProductRuntime() {
 	}
 	desired := cloneProbeLinuxRouterSnapshot(probeLinuxRouterRuntimeState.desired)
 	probeLinuxRouterRuntimeState.mu.Unlock()
-	if desired != nil && desired.GatewayProxy.Enabled {
+	if desired != nil && (desired.GatewayProxy.Enabled || desired.OneArmRouter.Enabled) {
 		_ = probeLinuxRouterPlatformFailOpen(*desired)
 	} else {
 		_ = probeLinuxRouterPlatformCleanup(desired)
@@ -169,7 +171,7 @@ func reconcileProbeLinuxRouterRuntime() error {
 		setProbeLinuxRouterReport(desired, currentProbeLinuxRouterReport().Interface, true, err)
 		return err
 	}
-	if !desired.GatewayProxy.Enabled && !desired.LocalIPProxy.Enabled {
+	if !probeLinuxRouterAnyModeEnabled(*desired) {
 		err := probeLinuxRouterPlatformCleanup(desired)
 		setProbeLinuxRouterReport(desired, "", false, err)
 		return err
@@ -177,7 +179,7 @@ func reconcileProbeLinuxRouterRuntime() error {
 	effective, err := probeLinuxRouterPlatformResolve(*desired)
 	if err != nil {
 		failOpen := false
-		if desired.GatewayProxy.Enabled {
+		if desired.GatewayProxy.Enabled || desired.OneArmRouter.Enabled {
 			failOpen = true
 			if fallbackErr := probeLinuxRouterPlatformFailOpen(*desired); fallbackErr != nil {
 				err = errors.Join(err, fmt.Errorf("fail-open: %w", fallbackErr))
@@ -189,7 +191,7 @@ func reconcileProbeLinuxRouterRuntime() error {
 	iface, err := probeLinuxRouterPlatformApply(effective)
 	if err != nil {
 		failOpen := false
-		if desired.GatewayProxy.Enabled {
+		if desired.GatewayProxy.Enabled || desired.OneArmRouter.Enabled {
 			failOpen = true
 			if fallbackErr := probeLinuxRouterPlatformFailOpen(*desired); fallbackErr != nil {
 				err = errors.Join(err, fmt.Errorf("fail-open: %w", fallbackErr))
@@ -223,7 +225,7 @@ func probeLinuxRouterHealthCheckOnce() {
 	report := probeLinuxRouterRuntimeState.report
 	manualFailOpen := probeLinuxRouterRuntimeState.manualFailOpen
 	probeLinuxRouterRuntimeState.mu.RUnlock()
-	if manualFailOpen || desired == nil || (!desired.GatewayProxy.Enabled && !desired.LocalIPProxy.Enabled) {
+	if manualFailOpen || desired == nil || !probeLinuxRouterAnyModeEnabled(*desired) {
 		return
 	}
 
@@ -245,10 +247,10 @@ func probeLinuxRouterHealthCheckOnce() {
 		} else {
 			return
 		}
-		if desired.GatewayProxy.Enabled {
+		if desired.GatewayProxy.Enabled || desired.OneArmRouter.Enabled {
 			_ = probeLinuxRouterPlatformFailOpen(*desired)
 		}
-		setProbeLinuxRouterReport(desired, report.Interface, desired.GatewayProxy.Enabled, err)
+		setProbeLinuxRouterReport(desired, report.Interface, desired.GatewayProxy.Enabled || desired.OneArmRouter.Enabled, err)
 	}
 }
 
@@ -301,7 +303,7 @@ func setProbeLinuxRouterManualFailOpen(enabled bool) error {
 		probeLinuxRouterRuntimeState.mu.Unlock()
 		return errors.New("router config is not available")
 	}
-	if enabled && !desired.GatewayProxy.Enabled && !desired.LocalIPProxy.Enabled {
+	if enabled && !probeLinuxRouterAnyModeEnabled(*desired) {
 		probeLinuxRouterRuntimeState.mu.Unlock()
 		return errors.New("router data plane is already disabled")
 	}
@@ -327,6 +329,10 @@ func applyProbeLinuxRouterLocalConfig(config probeLinuxRouterLocalConfig) error 
 		config.LocalIPProxy.PublishedCIDRs = append([]string(nil), config.GatewayProxy.LANCIDRs...)
 	}
 	config.LocalIPProxy.AllowedNodeIDs = normalizeProbeLinuxRouterLocalNodeIDs(config.LocalIPProxy.AllowedNodeIDs)
+	config.OneArmRouter.SubnetCIDR = normalizeProbeLinuxRouterOneArmSubnet(config.OneArmRouter.SubnetCIDR)
+	if config.OneArmRouter.Enabled && (config.GatewayProxy.Enabled || config.LocalIPProxy.Enabled) {
+		return &probeLinuxRouterLocalConfigError{err: errors.New("side router and one-arm router modes cannot be enabled at the same time")}
+	}
 	if config.LocalIPProxy.Enabled && len(config.LocalIPProxy.AllowedNodeIDs) == 0 {
 		return &probeLinuxRouterLocalConfigError{err: errors.New("at least one allowed node is required when local IP proxy is enabled")}
 	}
@@ -348,6 +354,7 @@ func applyProbeLinuxRouterLocalConfig(config probeLinuxRouterLocalConfig) error 
 	desired.NodeID = nodeID
 	desired.GatewayProxy = config.GatewayProxy
 	desired.LocalIPProxy = config.LocalIPProxy
+	desired.OneArmRouter = config.OneArmRouter
 	nextSHA := probeLinuxRouterSnapshotSHA256(*desired)
 	if previousSHA != "" && !strings.EqualFold(previousSHA, nextSHA) {
 		desired.Revision++
@@ -359,7 +366,7 @@ func applyProbeLinuxRouterLocalConfig(config probeLinuxRouterLocalConfig) error 
 	if err := validateProbeLinuxRouterSnapshot(desired, nodeID); err != nil {
 		return &probeLinuxRouterLocalConfigError{err: err}
 	}
-	if desired.GatewayProxy.Enabled || desired.LocalIPProxy.Enabled {
+	if probeLinuxRouterAnyModeEnabled(*desired) {
 		if _, err := probeLinuxRouterPlatformResolve(*desired); err != nil {
 			return &probeLinuxRouterLocalConfigError{err: err}
 		}
@@ -373,6 +380,40 @@ func applyProbeLinuxRouterLocalConfig(config probeLinuxRouterLocalConfig) error 
 	probeLinuxRouterRuntimeState.manualFailOpen = false
 	probeLinuxRouterRuntimeState.mu.Unlock()
 	return reconcileProbeLinuxRouterRuntime()
+}
+
+func probeLinuxRouterSideModeEnabled(snapshot probeLinuxRouterSnapshot) bool {
+	return snapshot.GatewayProxy.Enabled || snapshot.LocalIPProxy.Enabled
+}
+
+func probeLinuxRouterAnyModeEnabled(snapshot probeLinuxRouterSnapshot) bool {
+	return probeLinuxRouterSideModeEnabled(snapshot) || snapshot.OneArmRouter.Enabled
+}
+
+func normalizeProbeLinuxRouterOneArmSubnet(value string) string {
+	value = strings.TrimSpace(value)
+	prefix, err := netip.ParsePrefix(value)
+	if err != nil || !prefix.Addr().Is4() {
+		return value
+	}
+	return prefix.Masked().String()
+}
+
+func probeLinuxRouterOneArmGatewayCIDR(value string) (string, error) {
+	prefix, err := netip.ParsePrefix(strings.TrimSpace(value))
+	if err != nil || !prefix.Addr().Is4() || !prefix.Addr().IsPrivate() || prefix.Bits() < 8 || prefix.Bits() > 30 {
+		return "", errors.New("one-arm router subnet must be a private IPv4 CIDR with prefix length 8 through 30")
+	}
+	prefix = prefix.Masked()
+	fakePool := netip.MustParsePrefix("198.18.0.0/15")
+	if probeLinuxRouterPrefixesOverlap(prefix, fakePool) {
+		return "", errors.New("one-arm router subnet overlaps the virtual router fake IP pool")
+	}
+	return netip.PrefixFrom(prefix.Addr().Next(), prefix.Bits()).String(), nil
+}
+
+func probeLinuxRouterPrefixesOverlap(left, right netip.Prefix) bool {
+	return left.Contains(right.Addr()) || right.Contains(left.Addr())
 }
 
 func probeLinuxRouterGatewaySubnet(value string) string {
@@ -490,8 +531,13 @@ func setProbeLinuxRouterReport(snapshot *probeLinuxRouterSnapshot, iface string,
 		report.AppliedSHA256 = strings.ToLower(strings.TrimSpace(snapshot.SHA256))
 		report.GatewayProxyEnabled = snapshot.GatewayProxy.Enabled
 		report.LocalIPProxyEnabled = snapshot.LocalIPProxy.Enabled
+		report.OneArmRouterEnabled = snapshot.OneArmRouter.Enabled
 		report.GatewayAddress = snapshot.GatewayProxy.GatewayAddress
 		report.UpstreamGateway = snapshot.GatewayProxy.UpstreamGateway
+		report.OneArmSubnetCIDR = snapshot.OneArmRouter.SubnetCIDR
+		if gateway, err := probeLinuxRouterOneArmGatewayCIDR(snapshot.OneArmRouter.SubnetCIDR); err == nil {
+			report.OneArmGateway = gateway
+		}
 		report.PublishedCIDRs = append([]string(nil), snapshot.LocalIPProxy.PublishedCIDRs...)
 		report.AllowedNodeIDs = append([]string(nil), snapshot.LocalIPProxy.AllowedNodeIDs...)
 	}
@@ -549,7 +595,8 @@ func probeLinuxRouterAllowsForwardedTUNPacket(packet []byte, _ string, _ []strin
 		return false
 	}
 	return (snapshot.GatewayProxy.Enabled && probeLinuxRouterIPInCIDRs(sourceIP, snapshot.GatewayProxy.LANCIDRs)) ||
-		(snapshot.LocalIPProxy.Enabled && probeLinuxRouterIPInCIDRs(sourceIP, snapshot.LocalIPProxy.PublishedCIDRs))
+		(snapshot.LocalIPProxy.Enabled && probeLinuxRouterIPInCIDRs(sourceIP, snapshot.LocalIPProxy.PublishedCIDRs)) ||
+		(snapshot.OneArmRouter.Enabled && probeLinuxRouterIPInCIDRs(sourceIP, []string{snapshot.OneArmRouter.SubnetCIDR}))
 }
 
 func probeLinuxRouterHandleDirectTUNPacket(packet []byte, dstIP string) bool {
@@ -582,7 +629,8 @@ func probeLinuxRouterTargetsLocalDelivery(dstIP string) bool {
 		return false
 	}
 	return (snapshot.GatewayProxy.Enabled && probeLinuxRouterIPInCIDRs(addr, snapshot.GatewayProxy.LANCIDRs)) ||
-		(snapshot.LocalIPProxy.Enabled && probeLinuxRouterIPInCIDRs(addr, snapshot.LocalIPProxy.PublishedCIDRs))
+		(snapshot.LocalIPProxy.Enabled && probeLinuxRouterIPInCIDRs(addr, snapshot.LocalIPProxy.PublishedCIDRs)) ||
+		(snapshot.OneArmRouter.Enabled && probeLinuxRouterIPInCIDRs(addr, []string{snapshot.OneArmRouter.SubnetCIDR}))
 }
 
 func currentProbeLinuxRouterRoutingSnapshot() *probeLinuxRouterSnapshot {
@@ -599,7 +647,7 @@ func setProbeLinuxRouterReportFromCurrent(err error) {
 	desired := cloneProbeLinuxRouterSnapshot(probeLinuxRouterRuntimeState.desired)
 	iface := probeLinuxRouterRuntimeState.report.Interface
 	probeLinuxRouterRuntimeState.mu.RUnlock()
-	setProbeLinuxRouterReport(desired, iface, desired != nil && desired.GatewayProxy.Enabled, err)
+	setProbeLinuxRouterReport(desired, iface, desired != nil && (desired.GatewayProxy.Enabled || desired.OneArmRouter.Enabled), err)
 }
 
 func probeLinuxRouterIPInCIDRs(addr netip.Addr, cidrs []string) bool {
@@ -670,6 +718,14 @@ func validateProbeLinuxRouterSnapshot(snapshot *probeLinuxRouterSnapshot, nodeID
 	if snapshot.LocalIPProxy.Enabled && len(snapshot.LocalIPProxy.AllowedNodeIDs) == 0 {
 		return errors.New("router allowed node IDs are required when local IP proxy is enabled")
 	}
+	if snapshot.OneArmRouter.Enabled && probeLinuxRouterSideModeEnabled(*snapshot) {
+		return errors.New("side router and one-arm router modes cannot be enabled at the same time")
+	}
+	if snapshot.OneArmRouter.Enabled {
+		if _, err := probeLinuxRouterOneArmGatewayCIDR(snapshot.OneArmRouter.SubnetCIDR); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -678,7 +734,8 @@ func probeLinuxRouterSnapshotSHA256(snapshot probeLinuxRouterSnapshot) string {
 		NodeID       string                        `json:"node_id"`
 		GatewayProxy probeLinuxRouterGatewayConfig `json:"gateway_proxy"`
 		LocalIPProxy probeLinuxRouterLocalIPConfig `json:"local_ip_proxy"`
-	}{snapshot.NodeID, snapshot.GatewayProxy, snapshot.LocalIPProxy}
+		OneArmRouter probeLinuxRouterOneArmConfig  `json:"one_arm_router"`
+	}{snapshot.NodeID, snapshot.GatewayProxy, snapshot.LocalIPProxy, snapshot.OneArmRouter}
 	raw, _ := json.Marshal(payload)
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
@@ -695,6 +752,7 @@ func persistProbeLinuxRouterSnapshot(snapshot *probeLinuxRouterSnapshot) error {
 		Revision:     snapshot.Revision,
 		GatewayProxy: snapshot.GatewayProxy,
 		LocalIPProxy: snapshot.LocalIPProxy,
+		OneArmRouter: snapshot.OneArmRouter,
 	}
 	raw, err := json.MarshalIndent(persisted, "", "  ")
 	if err != nil {
@@ -722,6 +780,7 @@ func loadProbeLinuxRouterSnapshot() (*probeLinuxRouterSnapshot, error) {
 		Revision:     persisted.Revision,
 		GatewayProxy: persisted.GatewayProxy,
 		LocalIPProxy: persisted.LocalIPProxy,
+		OneArmRouter: persisted.OneArmRouter,
 	}
 	migrateProbeLinuxRouterAutomaticNetworkConfig(&snapshot)
 	snapshot.SHA256 = probeLinuxRouterSnapshotSHA256(snapshot)

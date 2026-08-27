@@ -39,6 +39,26 @@ func TestValidateProbeLinuxRouterSnapshotUsesSemanticValidation(t *testing.T) {
 	}
 }
 
+func TestProbeLinuxRouterOneArmGatewayAndModeValidation(t *testing.T) {
+	gateway, err := probeLinuxRouterOneArmGatewayCIDR("192.168.205.77/24")
+	if err != nil || gateway != "192.168.205.1/24" {
+		t.Fatalf("one-arm gateway=%q err=%v", gateway, err)
+	}
+	for _, subnet := range []string{"", "198.18.0.0/24", "192.168.1.0/31", "203.0.113.0/24"} {
+		if _, err := probeLinuxRouterOneArmGatewayCIDR(subnet); err == nil {
+			t.Fatalf("invalid one-arm subnet %q was accepted", subnet)
+		}
+	}
+	snapshot := probeLinuxRouterSnapshot{
+		Version: 1, NodeID: "21", Revision: 1,
+		GatewayProxy: probeLinuxRouterGatewayConfig{Enabled: true, Interface: "auto"},
+		OneArmRouter: probeLinuxRouterOneArmConfig{Enabled: true, SubnetCIDR: "192.168.205.0/24"},
+	}
+	if err := validateProbeLinuxRouterSnapshot(&snapshot, "21"); err == nil || !strings.Contains(err.Error(), "cannot be enabled") {
+		t.Fatalf("mutually exclusive router modes error=%v", err)
+	}
+}
+
 func TestLoadProbeLinuxRouterSnapshotIgnoresLegacySHA(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("PROBE_NODE_DATA_DIR", dataDir)

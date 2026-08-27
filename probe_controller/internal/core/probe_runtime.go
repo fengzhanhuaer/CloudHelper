@@ -1,6 +1,7 @@
 package core
 
 import (
+	"net/netip"
 	"slices"
 	"sort"
 	"strings"
@@ -71,6 +72,9 @@ func updateProbeRuntimeProductStatus(nodeID string, buildKind string, status pro
 	routerStatus.AppliedSHA256 = strings.ToLower(strings.TrimSpace(routerStatus.AppliedSHA256))
 	routerStatus.Interface = strings.TrimSpace(routerStatus.Interface)
 	routerStatus.GatewayAddress = strings.TrimSpace(routerStatus.GatewayAddress)
+	routerStatus.UpstreamGateway = strings.TrimSpace(routerStatus.UpstreamGateway)
+	routerStatus.OneArmSubnetCIDR = strings.TrimSpace(routerStatus.OneArmSubnetCIDR)
+	routerStatus.OneArmGateway = strings.TrimSpace(routerStatus.OneArmGateway)
 	if cidrs, err := normalizeProbeLinuxRouterCIDRs(routerStatus.PublishedCIDRs); err == nil {
 		routerStatus.PublishedCIDRs = cidrs
 	} else {
@@ -80,6 +84,16 @@ func updateProbeRuntimeProductStatus(nodeID string, buildKind string, status pro
 		routerStatus.LastApplyError = "invalid published CIDRs: " + err.Error()
 	}
 	routerStatus.AllowedNodeIDs = normalizeProbeLinuxRouterAllowedNodes(routerStatus.AllowedNodeIDs, nodeID)
+	if routerStatus.OneArmRouterEnabled {
+		prefix, err := netip.ParsePrefix(routerStatus.OneArmSubnetCIDR)
+		if err != nil || !prefix.Addr().Is4() || !prefix.Addr().IsPrivate() || prefix.Bits() < 8 || prefix.Bits() > 30 {
+			routerStatus.OneArmRouterEnabled = false
+			routerStatus.Healthy = false
+			routerStatus.LastApplyError = "invalid one-arm router subnet"
+		} else {
+			routerStatus.OneArmSubnetCIDR = prefix.Masked().String()
+		}
+	}
 	routerStatus.LastApplyError = strings.TrimSpace(routerStatus.LastApplyError)
 	if len(routerStatus.LastApplyError) > 512 {
 		routerStatus.LastApplyError = routerStatus.LastApplyError[:512]

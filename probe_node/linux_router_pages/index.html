@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>CloudHelper 旁路由</title>
+  <title>CloudHelper 路由</title>
   <style>
     :root {
       color-scheme: dark;
@@ -76,7 +76,7 @@
     .page-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
     .status-grid {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(5, minmax(0, 1fr));
       margin: 20px 0 0;
       background: var(--surface);
       border: 1px solid var(--line);
@@ -149,8 +149,9 @@
       body { padding: 16px; }
       .topbar-inner { align-items: flex-start; flex-direction: column; padding: 14px 0; }
       .status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .status-item:nth-child(2) { border-right: 0; }
-      .status-item:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+      .status-item { border-bottom: 1px solid var(--line); }
+      .status-item:nth-child(2n), .status-item:last-child { border-right: 0; }
+      .status-item:last-child { border-bottom: 0; }
       .form-grid, .runtime-grid { grid-template-columns: 1fr; }
       .field.full { grid-column: auto; }
       .section-head { flex-direction: column; }
@@ -180,7 +181,7 @@
       <div class="topbar-inner">
         <div>
           <h1>虚拟路由</h1>
-          <div class="subline">旁路由配置与运行状态</div>
+          <div id="pageSubtitle" class="subline">旁路由配置与运行状态</div>
         </div>
         <nav class="nav" aria-label="本地控制台导航">
           <a href="/local/panel">首页</a>
@@ -201,7 +202,8 @@
       <a class="subtab" href="/local/virtual-router#dnsRecords" role="tab" aria-selected="false">DNS 查询记录</a>
       <a class="subtab" href="/local/virtual-router#packets" role="tab" aria-selected="false">最近报文</a>
       <a class="subtab" href="/local/virtual-router#routeTest" role="tab" aria-selected="false">路由测试</a>
-      <a class="subtab active" href="/local/router" role="tab" aria-selected="true">旁路由</a>
+      <a id="sideRouterTab" class="subtab active" href="/local/router" role="tab" aria-selected="true">旁路由</a>
+      <a id="oneArmRouterTab" class="subtab" href="/local/router/one-arm" role="tab" aria-selected="false">单臂路由</a>
     </div>
 
     <div class="page-toolbar">
@@ -219,9 +221,10 @@
         <div class="status-item"><div class="label">数据面</div><div id="dataPlaneStatus" class="value">--</div></div>
         <div class="status-item"><div class="label">网关代理</div><div id="gatewayStatus" class="value">--</div></div>
         <div class="status-item"><div class="label">本地 IP 代理</div><div id="localIPStatus" class="value">--</div></div>
+        <div class="status-item"><div class="label">单臂路由</div><div id="oneArmStatus" class="value">--</div></div>
       </section>
 
-      <section class="section">
+      <section id="sideRouterPanel" class="section">
         <div class="section-head">
           <h2>旁路由配置</h2>
           <div id="configSource" class="section-meta">本地配置</div>
@@ -264,7 +267,28 @@
         </form>
       </section>
 
-      <section class="section">
+      <section id="oneArmRouterPanel" class="section hidden">
+        <div class="section-head">
+          <h2>单臂路由配置</h2>
+          <div class="section-meta">本地配置</div>
+        </div>
+        <form id="oneArmForm">
+          <div class="form-grid">
+            <div class="field full switches">
+              <label class="check"><input id="oneArmEnabled" type="checkbox" />启用单臂路由</label>
+            </div>
+            <div class="field"><label for="oneArmSubnetCIDR">子网段</label><input id="oneArmSubnetCIDR" type="text" maxlength="32" placeholder="192.168.205.0/24" /></div>
+            <div class="field"><label for="oneArmGateway">子网网关（自动）</label><input id="oneArmGateway" type="text" readonly /></div>
+          </div>
+          <div class="actions">
+            <button id="oneArmSaveBtn" class="btn primary" type="submit">保存并应用</button>
+            <button id="oneArmFailOpenBtn" class="btn warn" type="button">故障直通</button>
+            <button id="oneArmResumeBtn" class="btn danger hidden" type="button">恢复数据面</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="sideConnections" class="section">
         <div class="section-head"><h2>节点连接</h2><div id="connectionSummary" class="section-meta">--</div></div>
         <div class="connection-list">
           <div class="connection-row header"><span>节点</span><span>状态</span><span>路径</span><span>延迟</span><span>最近结果</span></div>
@@ -279,6 +303,8 @@
           <div class="runtime-item"><div class="label">运行网卡</div><div id="runtimeInterface" class="value">--</div></div>
           <div class="runtime-item"><div class="label">网卡 IP</div><div id="runtimeGateway" class="value">--</div></div>
           <div class="runtime-item"><div class="label">上游网关</div><div id="runtimeUpstreamGateway" class="value">--</div></div>
+          <div class="runtime-item"><div class="label">单臂子网</div><div id="runtimeOneArmSubnet" class="value">--</div></div>
+          <div class="runtime-item"><div class="label">单臂网关</div><div id="runtimeOneArmGateway" class="value">--</div></div>
           <div class="runtime-item"><div class="label">TUN 接收</div><div id="tunRx" class="value">--</div></div>
           <div class="runtime-item"><div class="label">TUN 发送</div><div id="tunTx" class="value">--</div></div>
           <div class="runtime-item"><div class="label">最优邻接延迟</div><div id="latency" class="value">--</div></div>
@@ -304,6 +330,16 @@
     let statusRequestSequence = 0;
     let appliedStatusSequence = 0;
     let allowedNodeSelection = new Set();
+    const oneArmView = window.location.pathname === '/local/router/one-arm';
+
+    $('sideRouterTab').classList.toggle('active', !oneArmView);
+    $('sideRouterTab').setAttribute('aria-selected', oneArmView ? 'false' : 'true');
+    $('oneArmRouterTab').classList.toggle('active', oneArmView);
+    $('oneArmRouterTab').setAttribute('aria-selected', oneArmView ? 'true' : 'false');
+    $('sideRouterPanel').classList.toggle('hidden', oneArmView);
+    $('sideConnections').classList.toggle('hidden', oneArmView);
+    $('oneArmRouterPanel').classList.toggle('hidden', !oneArmView);
+    $('pageSubtitle').textContent = oneArmView ? '单臂路由配置与运行状态' : '旁路由配置与运行状态';
 
     async function requestJSON(url, options = {}) {
       const response = await fetch(url, {
@@ -335,6 +371,21 @@
       const hours = Math.floor((value % 86400) / 3600);
       const minutes = Math.floor((value % 3600) / 60);
       return (days ? days + ' 天 ' : '') + hours + ' 小时 ' + minutes + ' 分';
+    }
+
+    function deriveOneArmGateway(value) {
+      const [rawAddress, rawBits, extra] = String(value || '').trim().split('/');
+      const octets = String(rawAddress || '').split('.').map(Number);
+      const bits = Number(rawBits);
+      if (extra !== undefined || octets.length !== 4 || !Number.isInteger(bits) || bits < 8 || bits > 30 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return '';
+      const address = (((octets[0] << 24) >>> 0) | (octets[1] << 16) | (octets[2] << 8) | octets[3]) >>> 0;
+      const mask = (0xffffffff << (32 - bits)) >>> 0;
+      const gateway = ((address & mask) + 1) >>> 0;
+      return `${(gateway >>> 24) & 255}.${(gateway >>> 16) & 255}.${(gateway >>> 8) & 255}.${gateway & 255}/${bits}`;
+    }
+
+    function syncOneArmGatewayPreview() {
+      $('oneArmGateway').value = deriveOneArmGateway($('oneArmSubnetCIDR').value) || '-';
     }
 
     function setState(id, text, kind) {
@@ -415,12 +466,14 @@
       const config = data.config || {};
       const gateway = config.gateway_proxy || {};
       const localIP = config.local_ip_proxy || {};
+      const oneArm = config.one_arm_router || {};
       const runtime = data.runtime || {};
       $('nodeSummary').textContent = '#' + (data.node_id || '-') + ' · ' + (data.hostname || '-') + ' · ' + (data.architecture || '-') + ' · ' + (data.version || 'dev');
       setState('controllerStatus', data.controller_connected ? '已连接' : '未连接', data.controller_connected ? 'ok' : 'warn-text');
       setState('dataPlaneStatus', data.manual_fail_open || runtime.fail_open ? '故障直通' : (runtime.healthy ? '正常' : '异常'), data.manual_fail_open || runtime.fail_open ? 'warn-text' : (runtime.healthy ? 'ok' : 'error-text'));
       setState('gatewayStatus', gateway.enabled ? '已启用' : '已关闭', gateway.enabled ? 'ok' : '');
       setState('localIPStatus', localIP.enabled ? '已启用' : '已关闭', localIP.enabled ? 'ok' : '');
+      setState('oneArmStatus', oneArm.enabled ? '已启用' : '已关闭', oneArm.enabled ? 'ok' : '');
       $('configSource').textContent = '本地配置';
       const preserveForm = configDirty || configSaveInFlight;
       if (!preserveForm) {
@@ -445,14 +498,19 @@
         $('interfaceName').value = configuredInterface;
         $('upstreamGateway').value = gateway.upstream_gateway || '';
         $('localIPEnabled').checked = localIP.enabled === true;
+        $('oneArmEnabled').checked = oneArm.enabled === true;
+        $('oneArmSubnetCIDR').value = oneArm.subnet_cidr || '192.168.205.0/24';
       }
       syncGatewayAddressPreview();
+      syncOneArmGatewayPreview();
       const allowedNodeIDs = preserveForm ? Array.from(allowedNodeSelection) : localIP.allowed_node_ids;
       renderConnections(data.connections, allowedNodeIDs, !preserveForm);
       $('revision').textContent = 'r' + Number(runtime.applied_revision || config.revision || 0);
       $('runtimeInterface').textContent = runtime.interface || '-';
       $('runtimeGateway').textContent = runtime.gateway_address || gateway.gateway_address || '-';
       $('runtimeUpstreamGateway').textContent = runtime.upstream_gateway || gateway.upstream_gateway || '-';
+      $('runtimeOneArmSubnet').textContent = runtime.one_arm_subnet_cidr || oneArm.subnet_cidr || '-';
+      $('runtimeOneArmGateway').textContent = runtime.one_arm_gateway || deriveOneArmGateway(oneArm.subnet_cidr) || '-';
       $('tunRx').textContent = Number(runtime.tun_rx_packets || 0) + ' 包 / ' + formatBytes(runtime.tun_rx_bytes);
       $('tunTx').textContent = Number(runtime.tun_tx_packets || 0) + ' 包 / ' + formatBytes(runtime.tun_tx_bytes);
       $('latency').textContent = Number(runtime.latency_ms || 0) > 0 ? runtime.latency_ms + ' ms' : '-';
@@ -462,6 +520,8 @@
       $('updatedAt').textContent = runtime.updated_at ? new Date(runtime.updated_at).toLocaleString() : '-';
       $('failOpenBtn').classList.toggle('hidden', data.manual_fail_open === true);
       $('resumeBtn').classList.toggle('hidden', data.manual_fail_open !== true);
+      $('oneArmFailOpenBtn').classList.toggle('hidden', data.manual_fail_open === true);
+      $('oneArmResumeBtn').classList.toggle('hidden', data.manual_fail_open !== true);
       const error = runtime.last_apply_error || '';
       const notice = $('notice');
       if (error) {
@@ -601,10 +661,18 @@
       }
     }
 
-    $('configForm').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      if (!window.confirm('保存并应用本地旁路由配置？')) return;
-      $('saveBtn').disabled = true;
+    async function saveRouterConfig(mode) {
+      const oneArmMode = mode === 'one-arm';
+      if (oneArmMode && $('oneArmEnabled').checked) {
+        $('gatewayEnabled').checked = false;
+        $('localIPEnabled').checked = false;
+      }
+      if (!oneArmMode && ($('gatewayEnabled').checked || $('localIPEnabled').checked)) {
+        $('oneArmEnabled').checked = false;
+      }
+      if (!window.confirm(oneArmMode ? '保存并应用本地单臂路由配置？' : '保存并应用本地旁路由配置？')) return;
+      const saveButton = oneArmMode ? $('oneArmSaveBtn') : $('saveBtn');
+      saveButton.disabled = true;
       configSaveInFlight = true;
       try {
         await requestJSON('/local/router/api/config', { method: 'POST', body: JSON.stringify({
@@ -622,6 +690,10 @@
             enabled: $('localIPEnabled').checked,
             allowed_node_ids: Array.from(allowedNodeSelection),
           },
+          one_arm_router: {
+            enabled: $('oneArmEnabled').checked,
+            subnet_cidr: $('oneArmSubnetCIDR').value.trim(),
+          },
         }) });
         configDirty = false;
         configNotice = '配置已保存并应用';
@@ -632,9 +704,18 @@
         $('notice').className = 'notice error';
       } finally {
         configSaveInFlight = false;
-        $('saveBtn').disabled = false;
+        saveButton.disabled = false;
         if (currentStatus) renderStatus(currentStatus);
       }
+    }
+
+    $('configForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      await saveRouterConfig('side');
+    });
+    $('oneArmForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      await saveRouterConfig('one-arm');
     });
 
     function markConfigDirty() {
@@ -651,6 +732,19 @@
     $('configForm').addEventListener('change', (event) => {
       if (event.target === $('availableNodeID')) return;
       if (event.target === $('dnsWhitelistEnabled')) syncDNSWhitelistFields();
+      if ((event.target === $('gatewayEnabled') || event.target === $('localIPEnabled')) && event.target.checked) $('oneArmEnabled').checked = false;
+      markConfigDirty();
+    });
+    $('oneArmForm').addEventListener('input', () => {
+      syncOneArmGatewayPreview();
+      markConfigDirty();
+    });
+    $('oneArmForm').addEventListener('change', (event) => {
+      if (event.target === $('oneArmEnabled') && event.target.checked) {
+        $('gatewayEnabled').checked = false;
+        $('localIPEnabled').checked = false;
+      }
+      syncOneArmGatewayPreview();
       markConfigDirty();
     });
     $('addAllowedNodeBtn').addEventListener('click', () => {
@@ -687,6 +781,20 @@
         await loadStatus();
       } catch (error) { showActionError(error); }
     });
+    $('oneArmFailOpenBtn').addEventListener('click', async () => {
+      if (!window.confirm('立即进入故障直通？')) return;
+      try {
+        await requestJSON('/local/router/api/fail-open', { method: 'POST', body: '{}' });
+        await loadStatus();
+      } catch (error) { showActionError(error); }
+    });
+    $('oneArmResumeBtn').addEventListener('click', async () => {
+      if (!window.confirm('恢复单臂路由数据面？')) return;
+      try {
+        await requestJSON('/local/router/api/resume', { method: 'POST', body: '{}' });
+        await loadStatus();
+      } catch (error) { showActionError(error); }
+    });
     $('refreshBtn').addEventListener('click', async () => { try { await loadStatus(); } catch (error) { showActionError(error); } });
     $('restoreAutoIPBtn').addEventListener('click', restoreInterfaceAutoIP);
     $('upgradeBtn').addEventListener('click', startUpgrade);
@@ -698,7 +806,7 @@
       showActionError(error);
     });
     setInterval(() => {
-      if (!currentStatus || document.hidden || $('configForm').contains(document.activeElement)) return;
+      if (!currentStatus || document.hidden || $('configForm').contains(document.activeElement) || $('oneArmForm').contains(document.activeElement)) return;
       loadStatus().catch(() => {});
     }, 5000);
   </script>

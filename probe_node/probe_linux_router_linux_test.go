@@ -95,6 +95,28 @@ func TestResolveProbeLinuxRouterNetworkRejectsSelfUserGateway(t *testing.T) {
 	}
 }
 
+func TestResolveProbeLinuxRouterNetworkRejectsOneArmPhysicalOverlap(t *testing.T) {
+	oldRun := probeLinuxRouterRunCommand
+	t.Cleanup(func() { probeLinuxRouterRunCommand = oldRun })
+	probeLinuxRouterRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
+		switch name + " " + strings.Join(args, " ") {
+		case "ip -4 route show default":
+			return "default via 172.18.55.254 dev eth0 proto dhcp metric 200\n", nil
+		case "ip -4 -o address show dev eth0":
+			return "2: eth0 inet 172.18.52.205/22 scope global eth0\n", nil
+		default:
+			return "", errors.New("unexpected command")
+		}
+	}
+	_, err := resolveProbeLinuxRouterNetwork(probeLinuxRouterSnapshot{
+		GatewayProxy: probeLinuxRouterGatewayConfig{Interface: "eth0"},
+		OneArmRouter: probeLinuxRouterOneArmConfig{Enabled: true, SubnetCIDR: "172.18.54.0/24"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "overlaps interface address") {
+		t.Fatalf("one-arm physical overlap error=%v", err)
+	}
+}
+
 func TestSelectProbeLinuxRouterInterfacePrefixMatchesGatewaySubnet(t *testing.T) {
 	prefixes := []netip.Prefix{netip.MustParsePrefix("192.168.10.20/24"), netip.MustParsePrefix("10.20.30.40/24")}
 	got, ok := selectProbeLinuxRouterInterfacePrefix(prefixes, netip.MustParseAddr("10.20.30.1"))
@@ -145,6 +167,62 @@ func TestBuildProbeLinuxRouterNFTScriptOnlyMarksLANIngress(t *testing.T) {
 	}
 }
 
+func TestBuildProbeLinuxRouterNFTScriptOneArmRetainsProxyAndDirectSNAT(t *testing.T) {
+	snapshot := probeLinuxRouterSnapshot{
+		GatewayProxy: probeLinuxRouterGatewayConfig{GatewayAddress: "172.18.52.205/22", DNSEnabled: true},
+		OneArmRouter: probeLinuxRouterOneArmConfig{Enabled: true, SubnetCIDR: "192.168.205.0/24"},
+	}
+	script := buildProbeLinuxRouterNFTScript(snapshot, "eth0", "cloudhelper0", "198.18.0.15", []string{"198.18.0.0/15"}, nil, false)
+	for _, marker := range []string{
+		"set one_arm4", "192.168.205.0/24",
+		`iifname "eth0" ip saddr @one_arm4 ip daddr != @one_arm4 meta mark set 0x4348`,
+		`oifname "cloudhelper0" ip saddr @one_arm4 ip daddr @routed4 snat to 198.18.0.15`,
+		`oifname "eth0" ip saddr @one_arm4 snat to 172.18.52.205`,
+		"ip daddr 192.168.205.1 udp dport 53 dnat to 198.18.0.2:53",
+	} {
+		if !strings.Contains(script, marker) {
+			t.Fatalf("one-arm nft script missing %q:\n%s", marker, script)
+		}
+	}
+}
+
+func TestReconcileProbeLinuxRouterOneArmAddressAddsAndRemovesAlias(t *testing.T) {
+	oldRun := probeLinuxRouterRunCommand
+	probeLinuxRouterLinuxState.mu.Lock()
+	oldInterface := probeLinuxRouterLinuxState.oneArmInterface
+	oldGateway := probeLinuxRouterLinuxState.oneArmGatewayCIDR
+	probeLinuxRouterLinuxState.oneArmInterface = ""
+	probeLinuxRouterLinuxState.oneArmGatewayCIDR = ""
+	probeLinuxRouterLinuxState.mu.Unlock()
+	var commands []string
+	probeLinuxRouterRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
+		commands = append(commands, name+" "+strings.Join(args, " "))
+		return "", nil
+	}
+	t.Cleanup(func() {
+		probeLinuxRouterRunCommand = oldRun
+		probeLinuxRouterLinuxState.mu.Lock()
+		probeLinuxRouterLinuxState.oneArmInterface = oldInterface
+		probeLinuxRouterLinuxState.oneArmGatewayCIDR = oldGateway
+		probeLinuxRouterLinuxState.mu.Unlock()
+	})
+	snapshot := probeLinuxRouterSnapshot{OneArmRouter: probeLinuxRouterOneArmConfig{Enabled: true, SubnetCIDR: "192.168.205.0/24"}}
+	if err := reconcileProbeLinuxRouterOneArmAddress(snapshot, "eth0"); err != nil {
+		t.Fatal(err)
+	}
+	snapshot.OneArmRouter.Enabled = false
+	if err := reconcileProbeLinuxRouterOneArmAddress(snapshot, "eth0"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"ip -4 address replace 192.168.205.1/24 dev eth0",
+		"ip -4 address del 192.168.205.1/24 dev eth0",
+	}
+	if strings.Join(commands, "|") != strings.Join(want, "|") {
+		t.Fatalf("one-arm address commands=%v want=%v", commands, want)
+	}
+}
+
 func TestBuildProbeLinuxRouterNFTScriptPassesNFTCheck(t *testing.T) {
 	if os.Getenv("CLOUDHELPER_ROUTER_NFT_CHECK") != "1" || os.Geteuid() != 0 {
 		t.Skip("set CLOUDHELPER_ROUTER_NFT_CHECK=1 and run as root to check generated nft syntax")
@@ -152,14 +230,22 @@ func TestBuildProbeLinuxRouterNFTScriptPassesNFTCheck(t *testing.T) {
 	if _, err := exec.LookPath("nft"); err != nil {
 		t.Skipf("nft is unavailable: %v", err)
 	}
-	snapshot := probeLinuxRouterSnapshot{
-		GatewayProxy: probeLinuxRouterGatewayConfig{Enabled: true, DNSEnabled: true, GatewayAddress: "192.168.1.150/24", LANCIDRs: []string{"192.168.1.0/24"}},
-		LocalIPProxy: probeLinuxRouterLocalIPConfig{Enabled: true, PublishedCIDRs: []string{"192.168.50.0/24"}},
+	snapshots := []probeLinuxRouterSnapshot{
+		{
+			GatewayProxy: probeLinuxRouterGatewayConfig{Enabled: true, DNSEnabled: true, GatewayAddress: "192.168.1.150/24", LANCIDRs: []string{"192.168.1.0/24"}},
+			LocalIPProxy: probeLinuxRouterLocalIPConfig{Enabled: true, PublishedCIDRs: []string{"192.168.50.0/24"}},
+		},
+		{
+			GatewayProxy: probeLinuxRouterGatewayConfig{DNSEnabled: true, GatewayAddress: "172.18.52.205/22", LANCIDRs: []string{"172.18.52.0/22"}},
+			OneArmRouter: probeLinuxRouterOneArmConfig{Enabled: true, SubnetCIDR: "192.168.205.0/24"},
+		},
 	}
-	cmd := exec.Command("nft", "--check", "-f", "-")
-	cmd.Stdin = strings.NewReader(buildProbeLinuxRouterNFTScript(snapshot, "chlan0", "chprobe0", "198.18.0.21", []string{"198.18.0.0/15"}, nil, false))
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("nft check failed: %v: %s", err, strings.TrimSpace(string(output)))
+	for index, snapshot := range snapshots {
+		cmd := exec.Command("nft", "--check", "-f", "-")
+		cmd.Stdin = strings.NewReader(buildProbeLinuxRouterNFTScript(snapshot, "chlan0", "chprobe0", "198.18.0.21", []string{"198.18.0.0/15"}, nil, false))
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("nft check %d failed: %v: %s", index, err, strings.TrimSpace(string(output)))
+		}
 	}
 }
 
@@ -171,6 +257,17 @@ func TestProbeLinuxRouterPhysicalCIDRsFollowIndependentSwitches(t *testing.T) {
 	got := probeLinuxRouterPhysicalCIDRs(snapshot)
 	if len(got) != 1 || got[0] != "192.168.50.0/24" {
 		t.Fatalf("physical CIDRs = %v", got)
+	}
+}
+
+func TestProbeLinuxRouterOneArmDirectTableUsesUpstreamDefault(t *testing.T) {
+	snapshot := probeLinuxRouterSnapshot{
+		GatewayProxy: probeLinuxRouterGatewayConfig{Enabled: false, LANCIDRs: []string{"172.18.52.0/22"}},
+		OneArmRouter: probeLinuxRouterOneArmConfig{Enabled: true, SubnetCIDR: "192.168.205.0/24"},
+	}
+	got := probeLinuxRouterPhysicalCIDRs(snapshot)
+	if len(got) != 1 || got[0] != "192.168.205.0/24" {
+		t.Fatalf("one-arm direct table CIDRs=%v, upstream physical subnet must use the configured default gateway", got)
 	}
 }
 

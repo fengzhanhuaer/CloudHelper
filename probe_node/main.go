@@ -118,11 +118,14 @@ type probeLinuxRouterRuntimeReport struct {
 	AppliedSHA256       string   `json:"applied_sha256,omitempty"`
 	GatewayProxyEnabled bool     `json:"gateway_proxy_enabled"`
 	LocalIPProxyEnabled bool     `json:"local_ip_proxy_enabled"`
+	OneArmRouterEnabled bool     `json:"one_arm_router_enabled"`
 	Healthy             bool     `json:"healthy"`
 	FailOpen            bool     `json:"fail_open"`
 	Interface           string   `json:"interface,omitempty"`
 	GatewayAddress      string   `json:"gateway_address,omitempty"`
 	UpstreamGateway     string   `json:"upstream_gateway,omitempty"`
+	OneArmSubnetCIDR    string   `json:"one_arm_subnet_cidr,omitempty"`
+	OneArmGateway       string   `json:"one_arm_gateway,omitempty"`
 	PublishedCIDRs      []string `json:"published_cidrs,omitempty"`
 	AllowedNodeIDs      []string `json:"allowed_node_ids,omitempty"`
 	TUNRXPackets        uint64   `json:"tun_rx_packets,omitempty"`

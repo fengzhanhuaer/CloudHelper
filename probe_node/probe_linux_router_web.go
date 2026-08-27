@@ -34,6 +34,7 @@ func registerProbeLinuxRouterLocalConsoleRoutes(mux *http.ServeMux) {
 		return
 	}
 	mux.HandleFunc("/local/router", probeLinuxRouterWebPageHandler)
+	mux.HandleFunc("/local/router/one-arm", probeLinuxRouterWebPageHandler)
 	mux.HandleFunc("/local/router/api/status", probeLinuxRouterWebStatusHandler)
 	mux.HandleFunc("/local/router/api/config", probeLinuxRouterWebConfigHandler)
 	mux.HandleFunc("/local/router/api/network/auto", probeLinuxRouterWebNetworkAutoHandler)
@@ -50,7 +51,7 @@ func decorateProbeLinuxRouterLocalConsolePage(path, pageHTML string) string {
 		return pageHTML
 	}
 	const marker = "<!-- product-virtual-router-subtabs -->"
-	const tab = `<a class="subtab" href="/local/router" role="tab" aria-selected="false">旁路由</a>`
+	const tab = `<a class="subtab" href="/local/router" role="tab" aria-selected="false">旁路由</a><a class="subtab" href="/local/router/one-arm" role="tab" aria-selected="false">单臂路由</a>`
 	return strings.Replace(pageHTML, marker, tab, 1)
 }
 
@@ -105,7 +106,11 @@ func isProbeLinuxRouterLocalIPv4(raw string) bool {
 }
 
 func probeLinuxRouterWebPageHandler(w http.ResponseWriter, r *http.Request) {
-	serveProbeLocalHTMLPage(w, r, "/local/router", probeLinuxRouterWebPageHTML)
+	path := "/local/router"
+	if r != nil && r.URL.Path == "/local/router/one-arm" {
+		path = "/local/router/one-arm"
+	}
+	serveProbeLocalHTMLPage(w, r, path, probeLinuxRouterWebPageHTML)
 }
 
 func probeLinuxRouterWebStatusHandler(w http.ResponseWriter, r *http.Request) {
