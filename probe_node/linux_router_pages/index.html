@@ -276,9 +276,14 @@
           <div class="form-grid">
             <div class="field full switches">
               <label class="check"><input id="oneArmEnabled" type="checkbox" />启用单臂路由</label>
+              <label class="check"><input id="oneArmDNSEnabled" type="checkbox" />LAN DNS</label>
+              <label class="check"><input id="oneArmDNSWhitelistEnabled" type="checkbox" />DNS 白名单</label>
             </div>
+            <div class="field"><label for="oneArmInterfaceName">LAN 网卡</label><select id="oneArmInterfaceName"></select></div>
             <div class="field"><label for="oneArmSubnetCIDR">子网段</label><input id="oneArmSubnetCIDR" type="text" maxlength="32" placeholder="192.168.205.0/24" /></div>
             <div class="field"><label for="oneArmGateway">子网网关（自动）</label><input id="oneArmGateway" type="text" readonly /></div>
+            <div class="field"><label for="oneArmDNSWhitelistIPs">DNS 白名单 IP</label><textarea id="oneArmDNSWhitelistIPs" spellcheck="false"></textarea></div>
+            <div class="field"><label for="oneArmDNSWhitelistDomains">DNS 白名单域名</label><textarea id="oneArmDNSWhitelistDomains" spellcheck="false"></textarea></div>
           </div>
           <div class="actions">
             <button id="oneArmSaveBtn" class="btn primary" type="submit">保存并应用</button>
@@ -404,6 +409,12 @@
       $('dnsWhitelistDomains').disabled = disabled;
     }
 
+    function syncOneArmDNSWhitelistFields() {
+      const disabled = !$('oneArmDNSWhitelistEnabled').checked;
+      $('oneArmDNSWhitelistIPs').disabled = disabled;
+      $('oneArmDNSWhitelistDomains').disabled = disabled;
+    }
+
     function syncGatewayAddressPreview() {
       const data = currentStatus || {};
       const runtime = data.runtime || {};
@@ -494,11 +505,19 @@
         if (configuredInterface !== 'auto' && !interfaceNames.has(configuredInterface)) {
           interfaceOptions.push({ name: configuredInterface, label: `${configuredInterface} · 当前配置` });
         }
-        $('interfaceName').innerHTML = interfaceOptions.map((item) => `<option value="${escapeHTML(item.name)}">${escapeHTML(item.label)}</option>`).join('');
+        const interfaceOptionsHTML = interfaceOptions.map((item) => `<option value="${escapeHTML(item.name)}">${escapeHTML(item.label)}</option>`).join('');
+        $('interfaceName').innerHTML = interfaceOptionsHTML;
         $('interfaceName').value = configuredInterface;
+        $('oneArmInterfaceName').innerHTML = interfaceOptionsHTML;
+        $('oneArmInterfaceName').value = configuredInterface;
         $('upstreamGateway').value = gateway.upstream_gateway || '';
         $('localIPEnabled').checked = localIP.enabled === true;
         $('oneArmEnabled').checked = oneArm.enabled === true;
+        $('oneArmDNSEnabled').checked = gateway.dns_enabled !== false;
+        $('oneArmDNSWhitelistEnabled').checked = gateway.dns_whitelist_enabled === true;
+        $('oneArmDNSWhitelistIPs').value = (gateway.dns_whitelist_ips || []).join('\n');
+        $('oneArmDNSWhitelistDomains').value = (gateway.dns_whitelist_domains || []).join('\n');
+        syncOneArmDNSWhitelistFields();
         $('oneArmSubnetCIDR').value = oneArm.subnet_cidr || '192.168.205.0/24';
       }
       syncGatewayAddressPreview();
@@ -678,11 +697,11 @@
         await requestJSON('/local/router/api/config', { method: 'POST', body: JSON.stringify({
           gateway_proxy: {
             enabled: $('gatewayEnabled').checked,
-            dns_enabled: $('dnsEnabled').checked,
-            dns_whitelist_enabled: $('dnsWhitelistEnabled').checked,
-            dns_whitelist_ips: parseConfigList($('dnsWhitelistIPs').value),
-            dns_whitelist_domains: parseConfigList($('dnsWhitelistDomains').value),
-            interface: $('interfaceName').value.trim(),
+            dns_enabled: (oneArmMode ? $('oneArmDNSEnabled') : $('dnsEnabled')).checked,
+            dns_whitelist_enabled: (oneArmMode ? $('oneArmDNSWhitelistEnabled') : $('dnsWhitelistEnabled')).checked,
+            dns_whitelist_ips: parseConfigList((oneArmMode ? $('oneArmDNSWhitelistIPs') : $('dnsWhitelistIPs')).value),
+            dns_whitelist_domains: parseConfigList((oneArmMode ? $('oneArmDNSWhitelistDomains') : $('dnsWhitelistDomains')).value),
+            interface: (oneArmMode ? $('oneArmInterfaceName') : $('interfaceName')).value.trim(),
             gateway_address: '',
             upstream_gateway: $('upstreamGateway').value.trim(),
           },
@@ -744,6 +763,7 @@
         $('gatewayEnabled').checked = false;
         $('localIPEnabled').checked = false;
       }
+      if (event.target === $('oneArmDNSWhitelistEnabled')) syncOneArmDNSWhitelistFields();
       syncOneArmGatewayPreview();
       markConfigDirty();
     });
