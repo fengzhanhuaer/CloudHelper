@@ -88,11 +88,39 @@ func ensureProbeVirtualRouterWindowsPublishedRoutes(interfaceLUID uint64, ifInde
 	routeDefs := buildProbeVirtualRouterWindowsPublishedRouteDefs(interfaceLUID, ifIndex)
 	probeVirtualRouterWindowsRouteState.mu.Lock()
 	oldRouteDefs := append([]probeRouteWindowsRouteDef(nil), probeVirtualRouterWindowsRouteState.publishedRouteDefs...)
-	if probeVirtualRouterWindowsRouteDefsEqual(oldRouteDefs, routeDefs) {
-		probeVirtualRouterWindowsRouteState.mu.Unlock()
+	probeVirtualRouterWindowsRouteState.mu.Unlock()
+	if len(routeDefs) == 0 {
+		return replaceProbeVirtualRouterWindowsPublishedRoutes(oldRouteDefs, nil)
+	}
+
+	entries, err := probeLocalListWindowsRouteEntries()
+	if err != nil {
+		return fmt.Errorf("inspect windows routes for published subnet: %w", err)
+	}
+	activeRouteDefs := make([]probeRouteWindowsRouteDef, 0, len(routeDefs))
+	staleRouteDefs := make([]probeRouteWindowsRouteDef, 0)
+	for _, routeDef := range routeDefs {
+		collides, stale, inspectErr := inspectProbeVirtualRouterWindowsPublishedRoute(routeDef, ifIndex, entries)
+		if inspectErr != nil {
+			return inspectErr
+		}
+		if collides {
+			if stale {
+				staleRouteDefs = append(staleRouteDefs, routeDef)
+			}
+			continue
+		}
+		activeRouteDefs = append(activeRouteDefs, routeDef)
+	}
+
+	deleteRouteDefs := dedupeProbeVirtualRouterWindowsRouteDefs(append(oldRouteDefs, staleRouteDefs...))
+	if probeVirtualRouterWindowsRouteDefsEqual(oldRouteDefs, activeRouteDefs) && len(staleRouteDefs) == 0 {
 		return nil
 	}
-	probeVirtualRouterWindowsRouteState.mu.Unlock()
+	return replaceProbeVirtualRouterWindowsPublishedRoutes(deleteRouteDefs, activeRouteDefs)
+}
+
+func replaceProbeVirtualRouterWindowsPublishedRoutes(oldRouteDefs, routeDefs []probeRouteWindowsRouteDef) error {
 	var allErr error
 	for _, oldRouteDef := range oldRouteDefs {
 		if err := deleteProbeVirtualRouterWindowsRoute(oldRouteDef); err != nil {
@@ -100,10 +128,6 @@ func ensureProbeVirtualRouterWindowsPublishedRoutes(interfaceLUID uint64, ifInde
 		}
 	}
 	for _, routeDef := range routeDefs {
-		if err := rejectProbeVirtualRouterWindowsPublishedRouteCollision(routeDef, ifIndex); err != nil {
-			allErr = errors.Join(allErr, err)
-			continue
-		}
 		if _, err := ensureProbeVirtualRouterWindowsRoute(routeDef); err != nil {
 			allErr = errors.Join(allErr, err)
 		}
@@ -147,32 +171,34 @@ func buildProbeVirtualRouterWindowsPublishedRouteDefs(interfaceLUID uint64, ifIn
 	return out
 }
 
-func rejectProbeVirtualRouterWindowsPublishedRouteCollision(routeDef probeRouteWindowsRouteDef, tunIfIndex int) error {
+func inspectProbeVirtualRouterWindowsPublishedRoute(routeDef probeRouteWindowsRouteDef, tunIfIndex int, entries []probeLocalWindowsRouteEntry) (collides bool, stale bool, err error) {
 	prefixLength, err := probeLocalIPv4PrefixLengthFromMask(routeDef.Mask)
 	if err != nil {
-		return err
+		return false, false, err
 	}
 	candidate, err := netip.ParsePrefix(fmt.Sprintf("%s/%d", routeDef.Prefix, prefixLength))
 	if err != nil {
-		return err
-	}
-	entries, err := probeLocalListWindowsRouteEntries()
-	if err != nil {
-		return fmt.Errorf("inspect windows routes for published subnet: %w", err)
+		return false, false, err
 	}
 	for _, item := range entries {
-		if item.PrefixLength == 0 || item.IfIndex == tunIfIndex {
+		if item.PrefixLength == 0 {
 			continue
 		}
 		existing, parseErr := netip.ParsePrefix(fmt.Sprintf("%s/%d", item.Prefix, item.PrefixLength))
 		if parseErr != nil {
 			continue
 		}
+		if item.IfIndex == tunIfIndex {
+			if existing == candidate && strings.EqualFold(strings.TrimSpace(item.NextHop), strings.TrimSpace(routeDef.Gateway)) {
+				stale = true
+			}
+			continue
+		}
 		if candidate.Contains(existing.Addr()) || existing.Contains(candidate.Addr()) {
-			return fmt.Errorf("published subnet %s overlaps local route %s", candidate.String(), existing.String())
+			collides = true
 		}
 	}
-	return nil
+	return collides, stale, nil
 }
 
 func ensureProbeVirtualRouterWindowsFakeIPRoute(interfaceLUID uint64, ifIndex int) error {

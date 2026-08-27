@@ -314,10 +314,64 @@ func hasProbeVirtualRouterLinuxCommand(calls []string, want string) bool {
 	return false
 }
 
+func TestEnsureProbeVirtualRouterLinuxPublishedRoutesKeepsPhysicalSubnetAndCleansStaleTUNRoute(t *testing.T) {
+	resetProbeVirtualRouterLinuxRouteStateForTest()
+	probeVirtualRouterState.mu.Lock()
+	previousConfig := probeVirtualRouterState.config
+	probeVirtualRouterState.config = probeVirtualRouterConfig{RouteRules: []probeVirtualRouterRouteRule{
+		{ID: "linux-router-22-local", Name: "Local subnet", Action: "probe_exit", ExitNodeID: "22", Entries: []string{"cidr:172.18.52.0/22"}},
+		{ID: "linux-router-23-remote", Name: "Remote subnet", Action: "probe_exit", ExitNodeID: "23", Entries: []string{"cidr:192.168.50.0/24"}},
+	}}
+	probeVirtualRouterState.mu.Unlock()
+	oldRun := probeLocalLinuxRunCommand
+	t.Cleanup(func() {
+		probeVirtualRouterState.mu.Lock()
+		probeVirtualRouterState.config = previousConfig
+		probeVirtualRouterState.mu.Unlock()
+		probeLocalLinuxRunCommand = oldRun
+		resetProbeVirtualRouterLinuxRouteStateForTest()
+	})
+
+	var calls []string
+	probeLocalLinuxRunCommand = func(timeout time.Duration, name string, args ...string) (string, error) {
+		joined := strings.Join(args, " ")
+		calls = append(calls, name+" "+joined)
+		if joined == "-4 route show table main" {
+			return strings.Join([]string{
+				"172.18.52.0/22 dev eth0 proto kernel scope link src 172.18.53.157",
+				"172.18.52.0/22 dev cloudhelper0 src 198.18.0.7 metric 3",
+			}, "\n"), nil
+		}
+		return "", nil
+	}
+
+	if err := ensureProbeVirtualRouterLinuxPublishedRoutes("cloudhelper0", "198.18.0.7"); err != nil {
+		t.Fatalf("ensure published routes returned error: %v", err)
+	}
+	for _, want := range []string{
+		"ip -4 route del 172.18.52.0/22 dev cloudhelper0",
+		"ip -4 route replace 192.168.50.0/24 dev cloudhelper0 src 198.18.0.7 metric 3",
+	} {
+		if !hasProbeVirtualRouterLinuxCommand(calls, want) {
+			t.Fatalf("missing command %q calls=%v", want, calls)
+		}
+	}
+	if hasProbeVirtualRouterLinuxCommand(calls, "ip -4 route replace 172.18.52.0/22 dev cloudhelper0 src 198.18.0.7 metric 3") {
+		t.Fatalf("local physical subnet must not be installed on TUN: calls=%v", calls)
+	}
+	probeVirtualRouterLinuxRouteState.mu.Lock()
+	applied := append([]probeVirtualRouterLinuxRouteDef(nil), probeVirtualRouterLinuxRouteState.publishedRouteDefs...)
+	probeVirtualRouterLinuxRouteState.mu.Unlock()
+	if len(applied) != 1 || applied[0].Prefix != "192.168.50.0/24" {
+		t.Fatalf("applied=%+v, want remote published route only", applied)
+	}
+}
+
 func resetProbeVirtualRouterLinuxRouteStateForTest() {
 	probeVirtualRouterLinuxRouteState.mu.Lock()
 	probeVirtualRouterLinuxRouteState.fakeRouteDef = probeVirtualRouterLinuxRouteDef{}
 	probeVirtualRouterLinuxRouteState.fakeApplied = false
 	probeVirtualRouterLinuxRouteState.takeoverRouteDefs = nil
+	probeVirtualRouterLinuxRouteState.publishedRouteDefs = nil
 	probeVirtualRouterLinuxRouteState.mu.Unlock()
 }

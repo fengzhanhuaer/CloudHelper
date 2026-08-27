@@ -255,11 +255,75 @@ func TestCleanupProbeVirtualRouterPlatformRoutesWindowsDeletesFakeIPRoute(t *tes
 	}
 }
 
+func TestEnsureProbeVirtualRouterWindowsPublishedRoutesKeepsPhysicalSubnetAndCleansStaleTUNRoute(t *testing.T) {
+	resetProbeVirtualRouterWindowsRouteStateForTest()
+	probeVirtualRouterState.mu.Lock()
+	previousConfig := probeVirtualRouterState.config
+	probeVirtualRouterState.config = probeVirtualRouterConfig{RouteRules: []probeVirtualRouterRouteRule{
+		{ID: "linux-router-22-local", Name: "Local subnet", Action: "probe_exit", ExitNodeID: "22", Entries: []string{"cidr:172.18.52.0/22"}},
+		{ID: "linux-router-23-remote", Name: "Remote subnet", Action: "probe_exit", ExitNodeID: "23", Entries: []string{"cidr:192.168.50.0/24"}},
+	}}
+	probeVirtualRouterState.mu.Unlock()
+	oldListRoutes := probeLocalListWindowsRouteEntries
+	oldCreateRoute := probeLocalCreateWindowsRouteEntry
+	oldDeleteRoute := probeLocalDeleteWindowsRouteEntry
+	t.Cleanup(func() {
+		probeVirtualRouterState.mu.Lock()
+		probeVirtualRouterState.config = previousConfig
+		probeVirtualRouterState.mu.Unlock()
+		probeLocalListWindowsRouteEntries = oldListRoutes
+		probeLocalCreateWindowsRouteEntry = oldCreateRoute
+		probeLocalDeleteWindowsRouteEntry = oldDeleteRoute
+		resetProbeVirtualRouterWindowsRouteStateForTest()
+	})
+
+	probeLocalListWindowsRouteEntries = func() ([]probeLocalWindowsRouteEntry, error) {
+		return []probeLocalWindowsRouteEntry{
+			{Prefix: "172.18.52.0", PrefixLength: 22, NextHop: "0.0.0.0", IfIndex: 22},
+			{Prefix: "172.18.52.0", PrefixLength: 22, NextHop: probeLocalTUNRouteGatewayIPv4, IfIndex: 40, Metric: probeRouteWindowsRouteMetric, Protocol: probeRouteWindowsProtocolNetMgmt},
+		}, nil
+	}
+	var created []probeRouteWindowsRouteDef
+	var deleted []probeRouteWindowsRouteDef
+	probeLocalCreateWindowsRouteEntry = func(routeDef probeRouteWindowsRouteDef) (bool, error) {
+		created = append(created, routeDef)
+		return true, nil
+	}
+	probeLocalDeleteWindowsRouteEntry = func(routeDef probeRouteWindowsRouteDef) error {
+		deleted = append(deleted, routeDef)
+		return nil
+	}
+
+	if err := ensureProbeVirtualRouterWindowsPublishedRoutes(77, 40); err != nil {
+		t.Fatalf("ensure published routes returned error: %v", err)
+	}
+	if len(deleted) != 1 {
+		t.Fatalf("deleted=%+v, want stale local-subnet TUN route only", deleted)
+	}
+	assertProbeVirtualRouterWindowsRouteDef(t, deleted, probeRouteWindowsRouteDef{
+		Prefix: "172.18.52.0", Mask: "255.255.252.0", Gateway: probeLocalTUNRouteGatewayIPv4, IfIndex: 40,
+	})
+	if len(created) != 1 {
+		t.Fatalf("created=%+v, want remote published route only", created)
+	}
+	assertProbeVirtualRouterWindowsRouteDef(t, created, probeRouteWindowsRouteDef{
+		Prefix: "192.168.50.0", Mask: "255.255.255.0", Gateway: probeLocalTUNRouteGatewayIPv4, IfIndex: 40,
+	})
+	probeVirtualRouterWindowsRouteState.mu.Lock()
+	applied := append([]probeRouteWindowsRouteDef(nil), probeVirtualRouterWindowsRouteState.publishedRouteDefs...)
+	probeVirtualRouterWindowsRouteState.mu.Unlock()
+	if len(applied) != 1 {
+		t.Fatalf("applied=%+v, want remote published route only", applied)
+	}
+	assertProbeVirtualRouterWindowsRouteDef(t, applied, probeRouteWindowsRouteDef{Prefix: "192.168.50.0", IfIndex: 40})
+}
+
 func resetProbeVirtualRouterWindowsRouteStateForTest() {
 	probeVirtualRouterWindowsRouteState.mu.Lock()
 	probeVirtualRouterWindowsRouteState.fakeRouteDef = probeRouteWindowsRouteDef{}
 	probeVirtualRouterWindowsRouteState.fakeApplied = false
 	probeVirtualRouterWindowsRouteState.takeoverRouteDefs = nil
+	probeVirtualRouterWindowsRouteState.publishedRouteDefs = nil
 	probeVirtualRouterWindowsRouteState.mu.Unlock()
 }
 

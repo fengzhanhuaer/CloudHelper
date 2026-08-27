@@ -178,11 +178,39 @@ func ensureProbeVirtualRouterLinuxPublishedRoutes(dev string, srcIP string) erro
 	routeDefs := buildProbeVirtualRouterLinuxPublishedRouteDefs(dev, srcIP)
 	probeVirtualRouterLinuxRouteState.mu.Lock()
 	oldRouteDefs := append([]probeVirtualRouterLinuxRouteDef(nil), probeVirtualRouterLinuxRouteState.publishedRouteDefs...)
-	if probeVirtualRouterLinuxRouteDefsEqual(oldRouteDefs, routeDefs) {
-		probeVirtualRouterLinuxRouteState.mu.Unlock()
+	probeVirtualRouterLinuxRouteState.mu.Unlock()
+	if len(routeDefs) == 0 {
+		return replaceProbeVirtualRouterLinuxPublishedRoutes(oldRouteDefs, nil)
+	}
+
+	output, err := probeLocalLinuxRunCommand(5*time.Second, "ip", "-4", "route", "show", "table", "main")
+	if err != nil {
+		return fmt.Errorf("inspect main routes for published subnet: %w", err)
+	}
+	activeRouteDefs := make([]probeVirtualRouterLinuxRouteDef, 0, len(routeDefs))
+	staleRouteDefs := make([]probeVirtualRouterLinuxRouteDef, 0)
+	for _, routeDef := range routeDefs {
+		collides, stale, inspectErr := inspectProbeVirtualRouterLinuxPublishedRoute(routeDef.Prefix, routeDef.Dev, output)
+		if inspectErr != nil {
+			return inspectErr
+		}
+		if collides {
+			if stale {
+				staleRouteDefs = append(staleRouteDefs, routeDef)
+			}
+			continue
+		}
+		activeRouteDefs = append(activeRouteDefs, routeDef)
+	}
+
+	deleteRouteDefs := dedupeProbeVirtualRouterLinuxRouteDefs(append(oldRouteDefs, staleRouteDefs...))
+	if probeVirtualRouterLinuxRouteDefsEqual(oldRouteDefs, activeRouteDefs) && len(staleRouteDefs) == 0 {
 		return nil
 	}
-	probeVirtualRouterLinuxRouteState.mu.Unlock()
+	return replaceProbeVirtualRouterLinuxPublishedRoutes(deleteRouteDefs, activeRouteDefs)
+}
+
+func replaceProbeVirtualRouterLinuxPublishedRoutes(oldRouteDefs, routeDefs []probeVirtualRouterLinuxRouteDef) error {
 	var allErr error
 	for _, oldRouteDef := range oldRouteDefs {
 		if err := deleteProbeVirtualRouterLinuxRoute(oldRouteDef); err != nil {
@@ -190,10 +218,6 @@ func ensureProbeVirtualRouterLinuxPublishedRoutes(dev string, srcIP string) erro
 		}
 	}
 	for _, routeDef := range routeDefs {
-		if err := rejectProbeVirtualRouterLinuxPublishedRouteCollision(routeDef.Prefix, routeDef.Dev); err != nil {
-			allErr = errors.Join(allErr, err)
-			continue
-		}
 		if err := ensureProbeVirtualRouterLinuxRoute(routeDef); err != nil {
 			allErr = errors.Join(allErr, err)
 		}
@@ -236,18 +260,14 @@ func buildProbeVirtualRouterLinuxPublishedRouteDefs(dev string, srcIP string) []
 	return out
 }
 
-func rejectProbeVirtualRouterLinuxPublishedRouteCollision(prefix string, tunDev string) error {
+func inspectProbeVirtualRouterLinuxPublishedRoute(prefix string, tunDev string, output string) (collides bool, stale bool, err error) {
 	_, candidate, err := net.ParseCIDR(strings.TrimSpace(prefix))
 	if err != nil || candidate == nil {
-		return fmt.Errorf("invalid published route prefix: %s", prefix)
-	}
-	output, err := probeLocalLinuxRunCommand(5*time.Second, "ip", "-4", "route", "show", "table", "main")
-	if err != nil {
-		return fmt.Errorf("inspect main routes for published subnet: %w", err)
+		return false, false, fmt.Errorf("invalid published route prefix: %s", prefix)
 	}
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(strings.TrimSpace(line))
-		if len(fields) == 0 || fields[0] == "default" || strings.Contains(line, " dev "+strings.TrimSpace(tunDev)) {
+		if len(fields) == 0 || fields[0] == "default" {
 			continue
 		}
 		value := fields[0]
@@ -258,11 +278,41 @@ func rejectProbeVirtualRouterLinuxPublishedRouteCollision(prefix string, tunDev 
 		if parseErr != nil || existing == nil {
 			continue
 		}
+		lineDev := ""
+		for index := 0; index+1 < len(fields); index++ {
+			if fields[index] == "dev" {
+				lineDev = strings.TrimSpace(fields[index+1])
+				break
+			}
+		}
+		if lineDev == strings.TrimSpace(tunDev) {
+			if existing.String() == candidate.String() {
+				stale = true
+			}
+			continue
+		}
 		if candidate.Contains(existing.IP) || existing.Contains(candidate.IP) {
-			return fmt.Errorf("published subnet %s overlaps local route %s", candidate.String(), strings.TrimSpace(line))
+			collides = true
 		}
 	}
-	return nil
+	return collides, stale, nil
+}
+
+func dedupeProbeVirtualRouterLinuxRouteDefs(routeDefs []probeVirtualRouterLinuxRouteDef) []probeVirtualRouterLinuxRouteDef {
+	out := make([]probeVirtualRouterLinuxRouteDef, 0, len(routeDefs))
+	for _, routeDef := range routeDefs {
+		duplicate := false
+		for _, existing := range out {
+			if probeVirtualRouterLinuxRouteDefEqual(existing, routeDef) {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			out = append(out, routeDef)
+		}
+	}
+	return out
 }
 
 func cleanupProbeVirtualRouterPlatformTakeoverRoutes() error {
