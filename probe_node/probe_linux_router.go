@@ -19,8 +19,11 @@ import (
 )
 
 const (
-	probeLinuxRouterConfigFileName = "probe_linux_router_config.json"
-	probeLinuxRouterHealthInterval = 20 * time.Second
+	probeLinuxRouterConfigFileName         = "probe_linux_router_config.json"
+	probeLinuxRouterHealthInterval         = 20 * time.Second
+	probeLinuxRouterPublishScopeSelf       = "self"
+	probeLinuxRouterPublishScopeDownstream = "downstream"
+	probeLinuxRouterPublishScopeAll        = "all"
 )
 
 var probeLinuxRouterInterfacePattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,32}$`)
@@ -324,14 +327,12 @@ func applyProbeLinuxRouterLocalConfig(config probeLinuxRouterLocalConfig) error 
 	config.GatewayProxy.LANCIDRs = normalizeProbeLinuxRouterLocalCIDRs(config.GatewayProxy.LANCIDRs)
 	config.GatewayProxy.DNSWhitelistIPs = normalizeProbeLinuxRouterDNSWhitelistIPs(config.GatewayProxy.DNSWhitelistIPs)
 	config.GatewayProxy.DNSWhitelistDomains = normalizeProbeLinuxRouterDNSWhitelistDomains(config.GatewayProxy.DNSWhitelistDomains)
-	config.LocalIPProxy.PublishedCIDRs = normalizeProbeLinuxRouterLocalCIDRs(config.LocalIPProxy.PublishedCIDRs)
-	if len(config.LocalIPProxy.PublishedCIDRs) == 0 {
-		config.LocalIPProxy.PublishedCIDRs = append([]string(nil), config.GatewayProxy.LANCIDRs...)
-	}
-	config.LocalIPProxy.AllowedNodeIDs = normalizeProbeLinuxRouterLocalNodeIDs(config.LocalIPProxy.AllowedNodeIDs)
 	config.OneArmRouter.SubnetCIDR = normalizeProbeLinuxRouterOneArmSubnet(config.OneArmRouter.SubnetCIDR)
-	if config.OneArmRouter.Enabled && (config.GatewayProxy.Enabled || config.LocalIPProxy.Enabled) {
-		return &probeLinuxRouterLocalConfigError{err: errors.New("side router and one-arm router modes cannot be enabled at the same time")}
+	config.LocalIPProxy.PublishScope = normalizeProbeLinuxRouterPublishScope(config.LocalIPProxy.PublishScope, config.OneArmRouter.Enabled)
+	config.LocalIPProxy.PublishedCIDRs = nil
+	config.LocalIPProxy.AllowedNodeIDs = normalizeProbeLinuxRouterLocalNodeIDs(config.LocalIPProxy.AllowedNodeIDs)
+	if config.OneArmRouter.Enabled && config.GatewayProxy.Enabled {
+		return &probeLinuxRouterLocalConfigError{err: errors.New("gateway proxy and one-arm router modes cannot be enabled at the same time")}
 	}
 	if config.LocalIPProxy.Enabled && len(config.LocalIPProxy.AllowedNodeIDs) == 0 {
 		return &probeLinuxRouterLocalConfigError{err: errors.New("at least one allowed node is required when local IP proxy is enabled")}
@@ -382,12 +383,22 @@ func applyProbeLinuxRouterLocalConfig(config probeLinuxRouterLocalConfig) error 
 	return reconcileProbeLinuxRouterRuntime()
 }
 
-func probeLinuxRouterSideModeEnabled(snapshot probeLinuxRouterSnapshot) bool {
-	return snapshot.GatewayProxy.Enabled || snapshot.LocalIPProxy.Enabled
+func probeLinuxRouterAnyModeEnabled(snapshot probeLinuxRouterSnapshot) bool {
+	return snapshot.GatewayProxy.Enabled || snapshot.LocalIPProxy.Enabled || snapshot.OneArmRouter.Enabled
 }
 
-func probeLinuxRouterAnyModeEnabled(snapshot probeLinuxRouterSnapshot) bool {
-	return probeLinuxRouterSideModeEnabled(snapshot) || snapshot.OneArmRouter.Enabled
+func normalizeProbeLinuxRouterPublishScope(value string, oneArmEnabled bool) string {
+	if !oneArmEnabled {
+		return probeLinuxRouterPublishScopeSelf
+	}
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case probeLinuxRouterPublishScopeDownstream:
+		return probeLinuxRouterPublishScopeDownstream
+	case probeLinuxRouterPublishScopeAll:
+		return probeLinuxRouterPublishScopeAll
+	default:
+		return probeLinuxRouterPublishScopeSelf
+	}
 }
 
 func normalizeProbeLinuxRouterOneArmSubnet(value string) string {
@@ -718,8 +729,15 @@ func validateProbeLinuxRouterSnapshot(snapshot *probeLinuxRouterSnapshot, nodeID
 	if snapshot.LocalIPProxy.Enabled && len(snapshot.LocalIPProxy.AllowedNodeIDs) == 0 {
 		return errors.New("router allowed node IDs are required when local IP proxy is enabled")
 	}
-	if snapshot.OneArmRouter.Enabled && probeLinuxRouterSideModeEnabled(*snapshot) {
-		return errors.New("side router and one-arm router modes cannot be enabled at the same time")
+	scope := strings.ToLower(strings.TrimSpace(snapshot.LocalIPProxy.PublishScope))
+	if scope != "" && scope != probeLinuxRouterPublishScopeSelf && scope != probeLinuxRouterPublishScopeDownstream && scope != probeLinuxRouterPublishScopeAll {
+		return errors.New("router local IP publish_scope is invalid")
+	}
+	if !snapshot.OneArmRouter.Enabled && scope != "" && scope != probeLinuxRouterPublishScopeSelf {
+		return errors.New("side router local IP proxy can only publish its own LAN")
+	}
+	if snapshot.OneArmRouter.Enabled && snapshot.GatewayProxy.Enabled {
+		return errors.New("gateway proxy and one-arm router modes cannot be enabled at the same time")
 	}
 	if snapshot.OneArmRouter.Enabled {
 		if _, err := probeLinuxRouterOneArmGatewayCIDR(snapshot.OneArmRouter.SubnetCIDR); err != nil {
@@ -791,6 +809,8 @@ func migrateProbeLinuxRouterAutomaticNetworkConfig(snapshot *probeLinuxRouterSna
 	if snapshot == nil {
 		return
 	}
+	snapshot.LocalIPProxy.PublishScope = normalizeProbeLinuxRouterPublishScope(snapshot.LocalIPProxy.PublishScope, snapshot.OneArmRouter.Enabled)
+	snapshot.LocalIPProxy.PublishedCIDRs = nil
 	legacySubnet := probeLinuxRouterGatewaySubnet(snapshot.GatewayProxy.GatewayAddress)
 	snapshot.GatewayProxy.GatewayAddress = ""
 	if legacySubnet == "" {
@@ -798,9 +818,6 @@ func migrateProbeLinuxRouterAutomaticNetworkConfig(snapshot *probeLinuxRouterSna
 	}
 	if len(snapshot.GatewayProxy.LANCIDRs) == 1 && snapshot.GatewayProxy.LANCIDRs[0] == legacySubnet {
 		snapshot.GatewayProxy.LANCIDRs = nil
-	}
-	if len(snapshot.LocalIPProxy.PublishedCIDRs) == 1 && snapshot.LocalIPProxy.PublishedCIDRs[0] == legacySubnet {
-		snapshot.LocalIPProxy.PublishedCIDRs = nil
 	}
 }
 

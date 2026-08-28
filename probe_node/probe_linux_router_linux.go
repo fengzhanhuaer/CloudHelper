@@ -505,8 +505,15 @@ func resolveProbeLinuxRouterNetworkForMode(snapshot probeLinuxRouterSnapshot, re
 	if len(snapshot.GatewayProxy.LANCIDRs) == 0 {
 		snapshot.GatewayProxy.LANCIDRs = []string{prefix.Masked().String()}
 	}
-	if len(snapshot.LocalIPProxy.PublishedCIDRs) == 0 {
-		snapshot.LocalIPProxy.PublishedCIDRs = []string{prefix.Masked().String()}
+	selfCIDR := prefix.Masked().String()
+	snapshot.LocalIPProxy.PublishScope = normalizeProbeLinuxRouterPublishScope(snapshot.LocalIPProxy.PublishScope, snapshot.OneArmRouter.Enabled)
+	switch snapshot.LocalIPProxy.PublishScope {
+	case probeLinuxRouterPublishScopeDownstream:
+		snapshot.LocalIPProxy.PublishedCIDRs = []string{snapshot.OneArmRouter.SubnetCIDR}
+	case probeLinuxRouterPublishScopeAll:
+		snapshot.LocalIPProxy.PublishedCIDRs = normalizeProbeLinuxRouterLocalCIDRs([]string{selfCIDR, snapshot.OneArmRouter.SubnetCIDR})
+	default:
+		snapshot.LocalIPProxy.PublishedCIDRs = []string{selfCIDR}
 	}
 	return snapshot, iface, nil
 }

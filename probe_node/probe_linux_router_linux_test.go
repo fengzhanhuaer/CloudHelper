@@ -75,6 +75,45 @@ func TestResolveProbeLinuxRouterNetworkGatewayPriority(t *testing.T) {
 	}
 }
 
+func TestResolveProbeLinuxRouterNetworkLocalIPPublishScopes(t *testing.T) {
+	oldRun := probeLinuxRouterRunCommand
+	t.Cleanup(func() { probeLinuxRouterRunCommand = oldRun })
+	probeLinuxRouterRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
+		switch name + " " + strings.Join(args, " ") {
+		case "ip -4 route show default":
+			return "default via 172.18.55.254 dev eth0 proto dhcp metric 200\n", nil
+		case "ip -4 -o address show dev eth0":
+			return "2: eth0 inet 172.18.52.205/22 scope global eth0\n", nil
+		default:
+			return "", errors.New("unexpected command")
+		}
+	}
+
+	for _, test := range []struct {
+		name  string
+		scope string
+		want  string
+	}{
+		{name: "self", scope: probeLinuxRouterPublishScopeSelf, want: "172.18.52.0/22"},
+		{name: "downstream", scope: probeLinuxRouterPublishScopeDownstream, want: "192.168.205.0/24"},
+		{name: "all", scope: probeLinuxRouterPublishScopeAll, want: "172.18.52.0/22,192.168.205.0/24"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			effective, err := resolveProbeLinuxRouterNetwork(probeLinuxRouterSnapshot{
+				GatewayProxy: probeLinuxRouterGatewayConfig{Interface: "eth0"},
+				LocalIPProxy: probeLinuxRouterLocalIPConfig{Enabled: true, PublishScope: test.scope, AllowedNodeIDs: []string{"1"}},
+				OneArmRouter: probeLinuxRouterOneArmConfig{Enabled: true, SubnetCIDR: "192.168.205.0/24"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Join(effective.LocalIPProxy.PublishedCIDRs, ","); got != test.want {
+				t.Fatalf("published CIDRs=%q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestResolveProbeLinuxRouterNetworkRejectsSelfUserGateway(t *testing.T) {
 	oldRun := probeLinuxRouterRunCommand
 	t.Cleanup(func() { probeLinuxRouterRunCommand = oldRun })
@@ -171,11 +210,15 @@ func TestBuildProbeLinuxRouterNFTScriptOnlyMarksLANIngress(t *testing.T) {
 func TestBuildProbeLinuxRouterNFTScriptOneArmRetainsProxyAndDirectSNAT(t *testing.T) {
 	snapshot := probeLinuxRouterSnapshot{
 		GatewayProxy: probeLinuxRouterGatewayConfig{GatewayAddress: "172.18.52.205/22", DNSEnabled: true},
+		LocalIPProxy: probeLinuxRouterLocalIPConfig{Enabled: true, PublishScope: probeLinuxRouterPublishScopeAll, PublishedCIDRs: []string{"172.18.52.0/22", "192.168.205.0/24"}},
 		OneArmRouter: probeLinuxRouterOneArmConfig{Enabled: true, SubnetCIDR: "192.168.205.0/24"},
 	}
 	script := buildProbeLinuxRouterNFTScript(snapshot, "eth0", "cloudhelper0", "198.18.0.15", []string{"198.18.0.0/15"}, nil, false)
 	for _, marker := range []string{
 		"set one_arm4", "192.168.205.0/24",
+		"set published4", "172.18.52.0/22, 192.168.205.0/24",
+		`iifname "cloudhelper0" ip daddr @published4 ct mark set 0x4349`,
+		`iifname "cloudhelper0" oifname "eth0" ip daddr @published4 masquerade`,
 		`iifname "eth0" ip saddr @one_arm4 ip daddr != @one_arm4 meta mark set 0x4348`,
 		`oifname "cloudhelper0" ip saddr @one_arm4 ip daddr @routed4 snat to 198.18.0.15`,
 		`oifname "eth0" ip saddr @one_arm4 snat to 172.18.52.205`,

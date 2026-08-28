@@ -33,10 +33,17 @@ func TestAppendProbeLinuxRouterPublishedRouteRulesScopesByACL(t *testing.T) {
 	setupProbeLinuxRouterTestStores(t)
 	router := probeRuntimeStatus{NodeID: "21", Online: true, LinuxRouter: probeLinuxRouterRuntimeReport{
 		AppliedRevision: 2, LocalIPProxyEnabled: true, Healthy: true,
-		PublishedCIDRs: []string{"192.168.50.0/24"}, AllowedNodeIDs: []string{"1"}, UpdatedAt: "2026-08-18T00:00:00Z",
+		PublishedCIDRs: []string{"172.18.52.0/22", "192.168.205.0/24"}, AllowedNodeIDs: []string{"1"}, UpdatedAt: "2026-08-18T00:00:00Z",
 	}}
 	rules := appendProbeLinuxRouterPublishedRouteRules(nil, []probeRuntimeStatus{router}, "1")
-	if len(rules) != 1 || rules[0].ExitNodeID != "21" || len(rules[0].Entries) != 1 || rules[0].Entries[0] != "cidr:192.168.50.0/24" {
+	entries := make(map[string]bool)
+	for _, rule := range rules {
+		if rule.ExitNodeID != "21" || len(rule.Entries) != 1 {
+			t.Fatalf("unexpected aggregated rule: %+v", rule)
+		}
+		entries[rule.Entries[0]] = true
+	}
+	if len(rules) != 2 || !entries["cidr:172.18.52.0/22"] || !entries["cidr:192.168.205.0/24"] {
 		t.Fatalf("unexpected aggregated rules: %+v", rules)
 	}
 	if denied := appendProbeLinuxRouterPublishedRouteRules(nil, []probeRuntimeStatus{router}, "2"); len(denied) != 0 {

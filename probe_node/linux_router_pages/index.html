@@ -248,7 +248,7 @@
             <div class="field"><label for="dnsWhitelistIPs">DNS 白名单 IP</label><textarea id="dnsWhitelistIPs" spellcheck="false"></textarea></div>
             <div class="field"><label for="dnsWhitelistDomains">DNS 白名单域名</label><textarea id="dnsWhitelistDomains" spellcheck="false"></textarea></div>
             <div class="field full switches">
-              <label class="check"><input id="localIPEnabled" type="checkbox" />本地 IP 代理</label>
+              <label class="check"><input id="localIPEnabled" type="checkbox" />远程访问自身局域网</label>
             </div>
             <div class="field full">
               <label for="availableNodeID">允许访问的探针</label>
@@ -278,12 +278,29 @@
               <label class="check"><input id="oneArmEnabled" type="checkbox" />启用单臂路由</label>
               <label class="check"><input id="oneArmDNSEnabled" type="checkbox" />LAN DNS</label>
               <label class="check"><input id="oneArmDNSWhitelistEnabled" type="checkbox" />DNS 白名单</label>
+              <label class="check"><input id="oneArmLocalIPEnabled" type="checkbox" />远程访问局域网</label>
             </div>
             <div class="field"><label for="oneArmInterfaceName">LAN 网卡</label><select id="oneArmInterfaceName"></select></div>
             <div class="field"><label for="oneArmSubnetCIDR">子网段</label><input id="oneArmSubnetCIDR" type="text" maxlength="32" placeholder="192.168.205.0/24" /></div>
             <div class="field"><label for="oneArmGateway">子网网关（自动）</label><input id="oneArmGateway" type="text" readonly /></div>
+            <div class="field">
+              <label for="oneArmLocalIPScope">远程访问范围</label>
+              <select id="oneArmLocalIPScope">
+                <option value="self">自身局域网</option>
+                <option value="downstream">下级局域网</option>
+                <option value="all">全部</option>
+              </select>
+            </div>
             <div class="field"><label for="oneArmDNSWhitelistIPs">DNS 白名单 IP</label><textarea id="oneArmDNSWhitelistIPs" spellcheck="false"></textarea></div>
             <div class="field"><label for="oneArmDNSWhitelistDomains">DNS 白名单域名</label><textarea id="oneArmDNSWhitelistDomains" spellcheck="false"></textarea></div>
+            <div class="field full">
+              <label for="oneArmAvailableNodeID">允许访问的探针</label>
+              <div class="allowed-picker">
+                <select id="oneArmAvailableNodeID"></select>
+                <button id="oneArmAddAllowedNodeBtn" class="btn" type="button">添加</button>
+              </div>
+              <div id="oneArmAllowedNodeList" class="allowed-list"></div>
+            </div>
           </div>
           <div class="actions">
             <button id="oneArmSaveBtn" class="btn primary" type="submit">保存并应用</button>
@@ -342,7 +359,6 @@
     $('oneArmRouterTab').classList.toggle('active', oneArmView);
     $('oneArmRouterTab').setAttribute('aria-selected', oneArmView ? 'true' : 'false');
     $('sideRouterPanel').classList.toggle('hidden', oneArmView);
-    $('sideConnections').classList.toggle('hidden', oneArmView);
     $('oneArmRouterPanel').classList.toggle('hidden', !oneArmView);
     $('pageSubtitle').textContent = oneArmView ? '单臂路由配置与运行状态' : '旁路由配置与运行状态';
 
@@ -439,15 +455,22 @@
       const known = new Map(items.map((item) => [String(item.target_node_id || '').trim(), String(item.target_node_name || '').trim()]));
       allowedNodeSelection.forEach((nodeID) => { if (!known.has(nodeID)) known.set(nodeID, ''); });
       const available = Array.from(known.entries()).filter(([nodeID]) => nodeID && !allowedNodeSelection.has(nodeID)).sort((left, right) => left[0].localeCompare(right[0], undefined, { numeric: true }));
-      $('availableNodeID').innerHTML = '<option value="">选择探针</option>' + available.map(([nodeID, nodeName]) =>
+      const selected = Array.from(allowedNodeSelection).sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
+      const optionsHTML = '<option value="">选择探针</option>' + available.map(([nodeID, nodeName]) =>
         `<option value="${escapeHTML(nodeID)}">#${escapeHTML(nodeID)}${nodeName ? ' ' + escapeHTML(nodeName) : ''}</option>`
       ).join('');
-      $('addAllowedNodeBtn').disabled = available.length === 0;
-      const selected = Array.from(allowedNodeSelection).sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
-      $('allowedNodeList').innerHTML = selected.length ? selected.map((nodeID) => {
+      const selectedHTML = selected.length ? selected.map((nodeID) => {
         const nodeName = known.get(nodeID) || '';
         return `<div class="allowed-item"><span>#${escapeHTML(nodeID)}${nodeName ? ' ' + escapeHTML(nodeName) : ''}</span><button class="allowed-remove" type="button" data-node-id="${escapeHTML(nodeID)}" title="移除">×</button></div>`;
       }).join('') : '<span class="allowed-empty">未添加探针</span>';
+      [
+        ['availableNodeID', 'addAllowedNodeBtn', 'allowedNodeList'],
+        ['oneArmAvailableNodeID', 'oneArmAddAllowedNodeBtn', 'oneArmAllowedNodeList'],
+      ].forEach(([selectID, addID, listID]) => {
+        $(selectID).innerHTML = optionsHTML;
+        $(addID).disabled = available.length === 0;
+        $(listID).innerHTML = selectedHTML;
+      });
 
       const healthy = items.filter((item) => item.status === 'running').length;
       $('connectionSummary').textContent = `${healthy}/${items.length} 可达`;
@@ -512,6 +535,9 @@
         $('oneArmInterfaceName').value = configuredInterface;
         $('upstreamGateway').value = gateway.upstream_gateway || '';
         $('localIPEnabled').checked = localIP.enabled === true;
+        $('oneArmLocalIPEnabled').checked = localIP.enabled === true;
+        const publishScope = ['self', 'downstream', 'all'].includes(String(localIP.publish_scope || '')) ? String(localIP.publish_scope) : 'self';
+        $('oneArmLocalIPScope').value = publishScope;
         $('oneArmEnabled').checked = oneArm.enabled === true;
         $('oneArmDNSEnabled').checked = gateway.dns_enabled !== false;
         $('oneArmDNSWhitelistEnabled').checked = gateway.dns_whitelist_enabled === true;
@@ -684,11 +710,14 @@
       const oneArmMode = mode === 'one-arm';
       if (oneArmMode && $('oneArmEnabled').checked) {
         $('gatewayEnabled').checked = false;
-        $('localIPEnabled').checked = false;
       }
-      if (!oneArmMode && ($('gatewayEnabled').checked || $('localIPEnabled').checked)) {
+      if (!oneArmMode && $('gatewayEnabled').checked) {
         $('oneArmEnabled').checked = false;
       }
+      const localIPEnabled = (oneArmMode ? $('oneArmLocalIPEnabled') : $('localIPEnabled')).checked;
+      $('localIPEnabled').checked = localIPEnabled;
+      $('oneArmLocalIPEnabled').checked = localIPEnabled;
+      const publishScope = $('oneArmEnabled').checked ? $('oneArmLocalIPScope').value : 'self';
       if (!window.confirm(oneArmMode ? '保存并应用本地单臂路由配置？' : '保存并应用本地旁路由配置？')) return;
       const saveButton = oneArmMode ? $('oneArmSaveBtn') : $('saveBtn');
       saveButton.disabled = true;
@@ -706,7 +735,8 @@
             upstream_gateway: $('upstreamGateway').value.trim(),
           },
           local_ip_proxy: {
-            enabled: $('localIPEnabled').checked,
+            enabled: localIPEnabled,
+            publish_scope: publishScope,
             allowed_node_ids: Array.from(allowedNodeSelection),
           },
           one_arm_router: {
@@ -751,35 +781,45 @@
     $('configForm').addEventListener('change', (event) => {
       if (event.target === $('availableNodeID')) return;
       if (event.target === $('dnsWhitelistEnabled')) syncDNSWhitelistFields();
-      if ((event.target === $('gatewayEnabled') || event.target === $('localIPEnabled')) && event.target.checked) $('oneArmEnabled').checked = false;
+      if (event.target === $('gatewayEnabled') && event.target.checked) $('oneArmEnabled').checked = false;
+      if (event.target === $('localIPEnabled')) $('oneArmLocalIPEnabled').checked = event.target.checked;
       markConfigDirty();
     });
-    $('oneArmForm').addEventListener('input', () => {
+    $('oneArmForm').addEventListener('input', (event) => {
+      if (event.target === $('oneArmAvailableNodeID')) return;
       syncOneArmGatewayPreview();
       markConfigDirty();
     });
     $('oneArmForm').addEventListener('change', (event) => {
+      if (event.target === $('oneArmAvailableNodeID')) return;
       if (event.target === $('oneArmEnabled') && event.target.checked) {
         $('gatewayEnabled').checked = false;
-        $('localIPEnabled').checked = false;
       }
+      if (event.target === $('oneArmLocalIPEnabled')) $('localIPEnabled').checked = event.target.checked;
       if (event.target === $('oneArmDNSWhitelistEnabled')) syncOneArmDNSWhitelistFields();
       syncOneArmGatewayPreview();
       markConfigDirty();
     });
-    $('addAllowedNodeBtn').addEventListener('click', () => {
-      const nodeID = $('availableNodeID').value.trim();
-      if (!nodeID) return;
-      allowedNodeSelection.add(nodeID);
-      renderConnections(currentStatus && currentStatus.connections, Array.from(allowedNodeSelection), false);
-      markConfigDirty();
+    [
+      ['availableNodeID', 'addAllowedNodeBtn'],
+      ['oneArmAvailableNodeID', 'oneArmAddAllowedNodeBtn'],
+    ].forEach(([selectID, buttonID]) => {
+      $(buttonID).addEventListener('click', () => {
+        const nodeID = $(selectID).value.trim();
+        if (!nodeID) return;
+        allowedNodeSelection.add(nodeID);
+        renderConnections(currentStatus && currentStatus.connections, Array.from(allowedNodeSelection), false);
+        markConfigDirty();
+      });
     });
-    $('allowedNodeList').addEventListener('click', (event) => {
-      const button = event.target.closest('.allowed-remove');
-      if (!button) return;
-      allowedNodeSelection.delete(String(button.dataset.nodeId || '').trim());
-      renderConnections(currentStatus && currentStatus.connections, Array.from(allowedNodeSelection), false);
-      markConfigDirty();
+    ['allowedNodeList', 'oneArmAllowedNodeList'].forEach((listID) => {
+      $(listID).addEventListener('click', (event) => {
+        const button = event.target.closest('.allowed-remove');
+        if (!button) return;
+        allowedNodeSelection.delete(String(button.dataset.nodeId || '').trim());
+        renderConnections(currentStatus && currentStatus.connections, Array.from(allowedNodeSelection), false);
+        markConfigDirty();
+      });
     });
     window.addEventListener('beforeunload', (event) => {
       if (!configDirty) return;

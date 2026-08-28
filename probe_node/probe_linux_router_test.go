@@ -51,11 +51,22 @@ func TestProbeLinuxRouterOneArmGatewayAndModeValidation(t *testing.T) {
 	}
 	snapshot := probeLinuxRouterSnapshot{
 		Version: 1, NodeID: "21", Revision: 1,
-		GatewayProxy: probeLinuxRouterGatewayConfig{Enabled: true, Interface: "auto"},
+		GatewayProxy: probeLinuxRouterGatewayConfig{Interface: "auto"},
+		LocalIPProxy: probeLinuxRouterLocalIPConfig{Enabled: true, PublishScope: probeLinuxRouterPublishScopeAll, AllowedNodeIDs: []string{"1"}},
 		OneArmRouter: probeLinuxRouterOneArmConfig{Enabled: true, SubnetCIDR: "192.168.205.0/24"},
 	}
+	if err := validateProbeLinuxRouterSnapshot(&snapshot, "21"); err != nil {
+		t.Fatalf("one-arm local LAN proxy combination is invalid: %v", err)
+	}
+	snapshot.GatewayProxy.Enabled = true
 	if err := validateProbeLinuxRouterSnapshot(&snapshot, "21"); err == nil || !strings.Contains(err.Error(), "cannot be enabled") {
 		t.Fatalf("mutually exclusive router modes error=%v", err)
+	}
+	snapshot.GatewayProxy.Enabled = false
+	snapshot.OneArmRouter.Enabled = false
+	snapshot.LocalIPProxy.PublishScope = probeLinuxRouterPublishScopeDownstream
+	if err := validateProbeLinuxRouterSnapshot(&snapshot, "21"); err == nil || !strings.Contains(err.Error(), "only publish its own LAN") {
+		t.Fatalf("side router downstream publish scope error=%v", err)
 	}
 }
 
@@ -93,7 +104,7 @@ func TestLoadProbeLinuxRouterSnapshotIgnoresLegacySHA(t *testing.T) {
 	if snapshot.SHA256 != probeLinuxRouterSnapshotSHA256(*snapshot) {
 		t.Fatal("runtime router config fingerprint was not rebuilt")
 	}
-	if snapshot.GatewayProxy.GatewayAddress != "" || len(snapshot.GatewayProxy.LANCIDRs) != 0 || len(snapshot.LocalIPProxy.PublishedCIDRs) != 0 {
+	if snapshot.GatewayProxy.GatewayAddress != "" || len(snapshot.GatewayProxy.LANCIDRs) != 0 || len(snapshot.LocalIPProxy.PublishedCIDRs) != 0 || snapshot.LocalIPProxy.PublishScope != probeLinuxRouterPublishScopeSelf {
 		t.Fatalf("legacy automatic network fields were not migrated: %+v", snapshot)
 	}
 	if err := validateProbeLinuxRouterSnapshot(snapshot, "21"); err != nil {

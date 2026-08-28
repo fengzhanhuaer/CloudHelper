@@ -60,6 +60,7 @@ type probeLinuxRouterGatewayConfig struct {
 
 type probeLinuxRouterLocalIPConfig struct {
 	Enabled        bool     `json:"enabled"`
+	PublishScope   string   `json:"publish_scope,omitempty"`
 	PublishedCIDRs []string `json:"published_cidrs"`
 	AllowedNodeIDs []string `json:"allowed_node_ids"`
 }
