@@ -47,7 +47,7 @@ func TestEnsureProbeRouteDirectBypassLinuxWritesPhysicalHostRouteOnce(t *testing
 	if err := ensureProbeRouteDirectBypass("203.0.113.7:16030"); err != nil {
 		t.Fatalf("ensure cached linux direct bypass: %v", err)
 	}
-	want := "ip -4 route replace 203.0.113.7/32 via 192.168.50.1 dev eth0"
+	want := "ip -4 route replace 203.0.113.7/32 via 192.168.50.1 dev eth0 metric 4273"
 	count := 0
 	for _, call := range *calls {
 		if call == want {
@@ -56,6 +56,43 @@ func TestEnsureProbeRouteDirectBypassLinuxWritesPhysicalHostRouteOnce(t *testing
 	}
 	if count != 1 {
 		t.Fatalf("host route writes=%d want 1 calls=%v", count, *calls)
+	}
+}
+
+func TestEnsureProbeRouteDirectBypassLinuxUsesOnLinkRouteAndCleansLegacyHostRoute(t *testing.T) {
+	calls := stubProbeLocalLinuxEgressHooks(t, []string{
+		"default via 192.168.50.1 dev eth0 proto dhcp metric 100",
+	})
+	baseRun := probeLocalLinuxRunCommand
+	probeLocalLinuxRunCommand = func(timeout time.Duration, name string, args ...string) (string, error) {
+		call := name + " " + strings.Join(args, " ")
+		if call == "ip -4 route show table main" {
+			return strings.Join([]string{
+				"default via 192.168.50.1 dev eth0 proto dhcp metric 100",
+				"192.168.50.0/24 dev eth0 proto kernel scope link src 192.168.50.94",
+				"192.168.50.91 via 192.168.50.1 dev eth0",
+			}, "\n") + "\n", nil
+		}
+		return baseRun(timeout, name, args...)
+	}
+	resetProbeRouteLinuxDirectBypassStateForTest()
+	resetProbeRouteLinuxEgressStateForTest()
+	t.Cleanup(resetProbeRouteLinuxDirectBypassStateForTest)
+	t.Cleanup(resetProbeRouteLinuxEgressStateForTest)
+
+	if err := ensureProbeRouteTransportDirectBypass("192.168.50.91:16030"); err != nil {
+		t.Fatalf("ensure on-link linux transport bypass: %v", err)
+	}
+	if !containsProbeLocalLinuxCall(*calls, "ip -4 route del 192.168.50.91/32 via 192.168.50.1 dev eth0") {
+		t.Fatalf("legacy on-link host route was not removed: calls=%v", *calls)
+	}
+	for _, call := range *calls {
+		if strings.Contains(call, "route replace 192.168.50.91/32") {
+			t.Fatalf("on-link target must not receive a host bypass route: calls=%v", *calls)
+		}
+	}
+	if probeRouteLinuxTransportBypassIsProtected(net.ParseIP("192.168.50.91")) {
+		t.Fatal("on-link target must not remain transport-protected after redundant route cleanup")
 	}
 }
 
@@ -106,7 +143,7 @@ func TestProbeLocalTUNEgressUpdateLinuxRebindsExistingBypass(t *testing.T) {
 	if !status.ManualValid || status.Selected == nil || status.Selected.Name != "eth1" {
 		t.Fatalf("status=%+v, want valid eth1 manual selection", status)
 	}
-	want := "ip -4 route replace 203.0.113.7/32 via 10.20.30.1 dev eth1"
+	want := "ip -4 route replace 203.0.113.7/32 via 10.20.30.1 dev eth1 metric 4273"
 	if !containsProbeLocalLinuxCall(*calls, want) {
 		t.Fatalf("missing rebound route %q calls=%v", want, *calls)
 	}

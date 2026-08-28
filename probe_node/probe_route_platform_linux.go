@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,16 @@ var (
 	probeLocalLinuxLookPath   = exec.LookPath
 	probeLocalLinuxRunCommand = runProbeLocalCommand
 )
+
+const probeRouteLinuxDirectRouteMetric = 4273
+
+type probeRouteLinuxMainRoute struct {
+	Prefix   *net.IPNet
+	Dev      string
+	Gateway  string
+	Protocol string
+	Metric   uint32
+}
 
 var probeRouteLinuxDirectBypassState = struct {
 	mu                 sync.Mutex
@@ -77,18 +88,38 @@ func ensureProbeRouteDirectBypassWithPurpose(targetAddr string, protectTransport
 			continue
 		}
 		prefix := ip4.String() + "/32"
-		if probeRouteLinuxDirectBypassAlreadyApplied(prefix) {
-			continue
-		}
 		routeTarget, resolveErr := resolveProbeVirtualRouterLinuxPrimaryEgressRoute(probeRouteLinuxTUNDeviceName())
 		if resolveErr != nil {
 			allErr = errors.Join(allErr, resolveErr)
+			continue
+		}
+		covered, existing, staleRoutes, inspectErr := inspectProbeRouteLinuxDirectBypass(ip4, probeRouteLinuxTUNDeviceName(), routeTarget)
+		if inspectErr != nil {
+			allErr = errors.Join(allErr, inspectErr)
+			continue
+		}
+		if covered {
+			cleaned := true
+			for _, staleRoute := range staleRoutes {
+				if deleteErr := deleteProbeVirtualRouterLinuxRoute(staleRoute); deleteErr != nil {
+					allErr = errors.Join(allErr, deleteErr)
+					cleaned = false
+					continue
+				}
+			}
+			if cleaned {
+				forgetProbeRouteLinuxDirectBypass(ip4.String(), prefix)
+			}
+			continue
+		}
+		if existing || probeRouteLinuxDirectBypassAlreadyApplied(prefix) {
 			continue
 		}
 		routeDef := probeVirtualRouterLinuxRouteDef{
 			Prefix:  prefix,
 			Dev:     routeTarget.Dev,
 			Gateway: routeTarget.Gateway,
+			Metric:  probeRouteLinuxDirectRouteMetric,
 		}
 		if routeErr := ensureProbeVirtualRouterLinuxRoute(routeDef); routeErr != nil {
 			allErr = errors.Join(allErr, routeErr)
@@ -99,6 +130,163 @@ func ensureProbeRouteDirectBypassWithPurpose(targetAddr string, protectTransport
 		probeRouteLinuxDirectBypassState.mu.Unlock()
 	}
 	return allErr
+}
+
+func inspectProbeRouteLinuxDirectBypass(ip net.IP, tunDev string, routeTarget probeVirtualRouterLinuxRouteTarget) (bool, bool, []probeVirtualRouterLinuxRouteDef, error) {
+	routes, err := listProbeRouteLinuxMainRoutes()
+	if err != nil {
+		return false, false, nil, err
+	}
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return false, false, nil, nil
+	}
+	targetDev := strings.TrimSpace(routeTarget.Dev)
+	targetGateway := strings.TrimSpace(routeTarget.Gateway)
+	cleanTUNDev := strings.TrimSpace(tunDev)
+	var best *probeRouteLinuxMainRoute
+	var staleRoutes []probeVirtualRouterLinuxRouteDef
+	existing := false
+	for index := range routes {
+		route := &routes[index]
+		if route.Prefix == nil || !route.Prefix.Contains(ip4) {
+			continue
+		}
+		bits, _ := route.Prefix.Mask.Size()
+		if bits == 32 && route.Dev == targetDev && route.Gateway == targetGateway {
+			existing = true
+			staleRoutes = append(staleRoutes, probeVirtualRouterLinuxRouteDef{
+				Prefix:  ip4.String() + "/32",
+				Dev:     route.Dev,
+				Gateway: route.Gateway,
+				Metric:  int(route.Metric),
+			})
+			continue
+		}
+		if bits <= 1 || route.Dev == "" {
+			continue
+		}
+		if best == nil || probeRouteLinuxMainRoutePreferred(*route, *best) {
+			best = route
+		}
+	}
+	if best == nil || best.Dev == cleanTUNDev {
+		return false, existing, nil, nil
+	}
+	return true, existing, staleRoutes, nil
+}
+
+func probeRouteLinuxMainRoutePreferred(candidate, current probeRouteLinuxMainRoute) bool {
+	candidateBits, _ := candidate.Prefix.Mask.Size()
+	currentBits, _ := current.Prefix.Mask.Size()
+	if candidateBits != currentBits {
+		return candidateBits > currentBits
+	}
+	return candidate.Metric < current.Metric
+}
+
+func listProbeRouteLinuxMainRoutes() ([]probeRouteLinuxMainRoute, error) {
+	output, err := probeLocalLinuxRunCommand(5*time.Second, "ip", "-4", "route", "show", "table", "main")
+	if err != nil {
+		return nil, fmt.Errorf("list linux main routes: %w", err)
+	}
+	var routes []probeRouteLinuxMainRoute
+	for _, line := range strings.Split(output, "\n") {
+		if route, ok := parseProbeRouteLinuxMainRoute(line); ok {
+			routes = append(routes, route)
+		}
+	}
+	return routes, nil
+}
+
+func parseProbeRouteLinuxMainRoute(line string) (probeRouteLinuxMainRoute, bool) {
+	fields := strings.Fields(strings.TrimSpace(line))
+	if len(fields) == 0 || fields[0] == "default" {
+		return probeRouteLinuxMainRoute{}, false
+	}
+	prefixText := fields[0]
+	if !strings.Contains(prefixText, "/") {
+		prefixText += "/32"
+	}
+	_, prefix, err := net.ParseCIDR(prefixText)
+	if err != nil || prefix == nil {
+		return probeRouteLinuxMainRoute{}, false
+	}
+	route := probeRouteLinuxMainRoute{Prefix: prefix}
+	for index := 1; index+1 < len(fields); index++ {
+		switch fields[index] {
+		case "dev":
+			route.Dev = strings.TrimSpace(fields[index+1])
+		case "via":
+			route.Gateway = strings.TrimSpace(fields[index+1])
+		case "proto":
+			route.Protocol = strings.TrimSpace(fields[index+1])
+		case "metric":
+			if metric, parseErr := strconv.ParseUint(fields[index+1], 10, 32); parseErr == nil {
+				route.Metric = uint32(metric)
+			}
+		}
+	}
+	return route, true
+}
+
+func cleanupProbeRouteLinuxRedundantPhysicalHostRoutes(dev, gateway string, cidrs []string) error {
+	routes, err := listProbeRouteLinuxMainRoutes()
+	if err != nil {
+		return err
+	}
+	cleanDev := strings.TrimSpace(dev)
+	cleanGateway := strings.TrimSpace(gateway)
+	var networks []*net.IPNet
+	for _, cidr := range cidrs {
+		_, network, parseErr := net.ParseCIDR(strings.TrimSpace(cidr))
+		if parseErr == nil && network != nil {
+			networks = append(networks, network)
+		}
+	}
+	var allErr error
+	for _, route := range routes {
+		if route.Prefix == nil || route.Dev != cleanDev || route.Gateway != cleanGateway {
+			continue
+		}
+		bits, _ := route.Prefix.Mask.Size()
+		if bits != 32 || (route.Protocol != "" && route.Protocol != "boot") || (route.Metric != 0 && route.Metric != probeRouteLinuxDirectRouteMetric) {
+			continue
+		}
+		ip4 := route.Prefix.IP.To4()
+		if ip4 == nil || !probeRouteLinuxIPInNetworks(ip4, networks) {
+			continue
+		}
+		routeDef := probeVirtualRouterLinuxRouteDef{
+			Prefix:  ip4.String() + "/32",
+			Dev:     route.Dev,
+			Gateway: route.Gateway,
+			Metric:  int(route.Metric),
+		}
+		if deleteErr := deleteProbeVirtualRouterLinuxRoute(routeDef); deleteErr != nil {
+			allErr = errors.Join(allErr, deleteErr)
+			continue
+		}
+		forgetProbeRouteLinuxDirectBypass(ip4.String(), routeDef.Prefix)
+		logProbeInfof("probe route direct bypass removed redundant physical host route: ip=%s gateway=%s dev=%s", ip4.String(), route.Gateway, route.Dev)
+	}
+	return allErr
+}
+
+func probeRouteLinuxIPInNetworks(ip net.IP, networks []*net.IPNet) bool {
+	for _, network := range networks {
+		if network != nil && network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func forgetProbeRouteLinuxDirectBypass(ip, prefix string) {
+	probeRouteLinuxDirectBypassState.mu.Lock()
+	delete(probeRouteLinuxDirectBypassState.routes, strings.TrimSpace(prefix))
+	delete(probeRouteLinuxDirectBypassState.transportProtected, strings.TrimSpace(ip))
+	probeRouteLinuxDirectBypassState.mu.Unlock()
 }
 
 func probeRouteLinuxTUNDeviceName() string {

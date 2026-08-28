@@ -312,6 +312,54 @@ func TestApplyProbeLinuxRouterPolicyRoutingOneArmReinjectsTUNPacketsThroughPhysi
 	}
 }
 
+func TestCleanupProbeRouteLinuxRedundantPhysicalHostRoutesCoversGatewayAndOneArmSubnets(t *testing.T) {
+	oldRun := probeLocalLinuxRunCommand
+	var calls []string
+	probeLocalLinuxRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
+		call := name + " " + strings.Join(args, " ")
+		calls = append(calls, call)
+		if call == "ip -4 route show table main" {
+			return strings.Join([]string{
+				"default via 172.18.55.254 dev eth0 metric 202",
+				"172.18.52.0/22 dev eth0 proto kernel scope link src 172.18.52.205",
+				"172.18.54.246 via 172.18.55.254 dev eth0",
+				"172.18.54.245 via 172.18.55.254 dev eth0 proto static",
+				"172.18.54.244 via 172.18.55.253 dev eth0",
+				"192.168.205.0/24 dev eth0 proto kernel scope link src 192.168.205.1",
+				"192.168.205.17 via 172.18.55.254 dev eth0 metric 4273",
+				"203.0.113.7 via 172.18.55.254 dev eth0 metric 4273",
+			}, "\n") + "\n", nil
+		}
+		return "", nil
+	}
+	t.Cleanup(func() { probeLocalLinuxRunCommand = oldRun })
+	resetProbeRouteLinuxDirectBypassStateForTest()
+	t.Cleanup(resetProbeRouteLinuxDirectBypassStateForTest)
+
+	snapshot := probeLinuxRouterSnapshot{
+		GatewayProxy: probeLinuxRouterGatewayConfig{GatewayAddress: "172.18.52.205/22", UpstreamGateway: "172.18.55.254"},
+		OneArmRouter: probeLinuxRouterOneArmConfig{Enabled: true, SubnetCIDR: "192.168.205.0/24"},
+	}
+	if err := cleanupProbeRouteLinuxRedundantPhysicalHostRoutes("eth0", snapshot.GatewayProxy.UpstreamGateway, probeLinuxRouterHostRouteCleanupCIDRs(snapshot)); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"ip -4 route del 172.18.54.246/32 via 172.18.55.254 dev eth0",
+		"ip -4 route del 192.168.205.17/32 via 172.18.55.254 dev eth0",
+	} {
+		if !containsProbeLinuxRouterCommand(calls, want) {
+			t.Fatalf("missing redundant route cleanup %q calls=%v", want, calls)
+		}
+	}
+	for _, forbidden := range []string{"172.18.54.245/32", "172.18.54.244/32", "203.0.113.7/32"} {
+		for _, call := range calls {
+			if strings.Contains(call, "route del "+forbidden) {
+				t.Fatalf("unrelated route %s must be preserved: calls=%v", forbidden, calls)
+			}
+		}
+	}
+}
+
 func containsProbeLinuxRouterCommand(calls []string, want string) bool {
 	for _, call := range calls {
 		if strings.TrimSpace(call) == want {

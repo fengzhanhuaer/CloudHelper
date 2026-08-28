@@ -667,6 +667,9 @@ func applyProbeLinuxRouterPolicyRouting(snapshot probeLinuxRouterSnapshot, iface
 	if !probeLinuxRouterAnyModeEnabled(snapshot) {
 		return nil
 	}
+	if err := cleanupProbeRouteLinuxRedundantPhysicalHostRoutes(iface, snapshot.GatewayProxy.UpstreamGateway, probeLinuxRouterHostRouteCleanupCIDRs(snapshot)); err != nil {
+		return fmt.Errorf("cleanup redundant router physical host routes: %w", err)
+	}
 	if _, err := probeLinuxRouterRunCommand(5*time.Second, "ip", "-4", "route", "replace", "table", probeLinuxRouterRouteTable, "default", "dev", tunDev); err != nil {
 		return fmt.Errorf("apply router policy table: %w", err)
 	}
@@ -709,6 +712,28 @@ func probeLinuxRouterPhysicalCIDRs(snapshot probeLinuxRouterSnapshot) []string {
 	appendCIDRs(snapshot.GatewayProxy.Enabled, snapshot.GatewayProxy.LANCIDRs)
 	appendCIDRs(snapshot.LocalIPProxy.Enabled, snapshot.LocalIPProxy.PublishedCIDRs)
 	appendCIDRs(snapshot.OneArmRouter.Enabled, []string{snapshot.OneArmRouter.SubnetCIDR})
+	sort.Strings(out)
+	return out
+}
+
+func probeLinuxRouterHostRouteCleanupCIDRs(snapshot probeLinuxRouterSnapshot) []string {
+	cidrs := append([]string(nil), probeLinuxRouterPhysicalCIDRs(snapshot)...)
+	if prefix, err := netip.ParsePrefix(strings.TrimSpace(snapshot.GatewayProxy.GatewayAddress)); err == nil && prefix.Addr().Is4() {
+		cidrs = append(cidrs, prefix.Masked().String())
+	}
+	seen := make(map[string]struct{}, len(cidrs))
+	out := make([]string, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		cidr = strings.TrimSpace(cidr)
+		if cidr == "" {
+			continue
+		}
+		if _, ok := seen[cidr]; ok {
+			continue
+		}
+		seen[cidr] = struct{}{}
+		out = append(out, cidr)
+	}
 	sort.Strings(out)
 	return out
 }
