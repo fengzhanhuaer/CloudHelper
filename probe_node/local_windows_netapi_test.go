@@ -11,6 +11,79 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+func TestEnsureProbeLocalWindowsInterfaceIPv4AddressByLUIDReconcilesDNSWithRouterSwitch(t *testing.T) {
+	tests := []struct {
+		name       string
+		enabled    bool
+		currentDNS []string
+		wantSet    int
+		wantReset  int
+	}{
+		{name: "enabled", enabled: true, wantSet: 1},
+		{name: "disabled clears stale dns", currentDNS: []string{probeLocalTUNInterfaceIPv4}, wantReset: 1},
+		{name: "disabled already clear"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldFindAdapter := probeLocalFindWindowsAdapterByLUID
+			oldUpsertIPv4 := probeLocalUpsertWindowsInterfaceIPv4ByLUID
+			oldSetDNS := probeLocalSetWindowsInterfaceDNS
+			oldResetDNS := probeLocalResetWindowsInterfaceDNS
+			t.Cleanup(func() {
+				probeLocalFindWindowsAdapterByLUID = oldFindAdapter
+				probeLocalUpsertWindowsInterfaceIPv4ByLUID = oldUpsertIPv4
+				probeLocalSetWindowsInterfaceDNS = oldSetDNS
+				probeLocalResetWindowsInterfaceDNS = oldResetDNS
+				resetProbeVirtualRouterLocalSettingsForTest()
+			})
+
+			resetProbeVirtualRouterLocalSettingsForTest()
+			probeVirtualRouterLocalSettingsState.mu.Lock()
+			probeVirtualRouterLocalSettingsState.loaded = true
+			probeVirtualRouterLocalSettingsState.settings = probeVirtualRouterLocalSettings{
+				VirtualRouterEnabled: tt.enabled,
+				VirtualDNSEnabled:    tt.enabled,
+			}
+			probeVirtualRouterLocalSettingsState.mu.Unlock()
+
+			probeLocalFindWindowsAdapterByLUID = func(luid uint64) (windowsAdapterInfo, error) {
+				if luid != 77 {
+					t.Fatalf("luid=%d, want 77", luid)
+				}
+				return windowsAdapterInfo{InterfaceIndex: 13, InterfaceLUID: luid, AdapterGUID: "{6BA2B7A3-1C2D-4E63-9E3C-6F7A8B9C0D21}", DNSServers: tt.currentDNS}, nil
+			}
+			probeLocalUpsertWindowsInterfaceIPv4ByLUID = func(luid uint64, ifIndex int, ip string, prefix int) error {
+				if luid != 77 || ifIndex != 13 || ip != "198.18.0.7" || prefix != 30 {
+					t.Fatalf("unexpected address ensure: luid=%d if_index=%d ip=%s prefix=%d", luid, ifIndex, ip, prefix)
+				}
+				return nil
+			}
+			setCalls := 0
+			resetCalls := 0
+			probeLocalSetWindowsInterfaceDNS = func(guid string, servers []string) error {
+				setCalls++
+				if guid == "" || len(servers) != 1 || servers[0] != probeLocalTUNInterfaceIPv4 {
+					t.Fatalf("unexpected dns set: guid=%q servers=%v", guid, servers)
+				}
+				return nil
+			}
+			probeLocalResetWindowsInterfaceDNS = func(guid string) error {
+				resetCalls++
+				if guid == "" {
+					t.Fatal("empty adapter guid")
+				}
+				return nil
+			}
+			if err := ensureProbeLocalWindowsInterfaceIPv4AddressByLUID(77, "198.18.0.7", 30); err != nil {
+				t.Fatalf("ensure interface address: %v", err)
+			}
+			if setCalls != tt.wantSet || resetCalls != tt.wantReset {
+				t.Fatalf("dns calls set=%d reset=%d, want %d/%d", setCalls, resetCalls, tt.wantSet, tt.wantReset)
+			}
+		})
+	}
+}
+
 func TestProbeLocalRepairWindowsInterfaceIPv4AddressIgnoresDeleteInvalidParameter(t *testing.T) {
 	deleteCalls := 0
 	upsertCalls := 0

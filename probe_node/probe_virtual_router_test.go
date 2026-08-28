@@ -2961,6 +2961,48 @@ func TestProbeVirtualRouterTUNPacketAllowsVirtualRangeWhenEntryDisabled(t *testi
 	}
 }
 
+func TestProbeVirtualRouterTUNPacketReinjectsLocalTransportResponse(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	resetProbeVirtualRouterLocalSettingsForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(resetProbeVirtualRouterLocalSettingsForTest)
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled: true,
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "16", IP: "198.18.0.18"},
+		},
+	}, "16")
+
+	oldWriter := probeVirtualRouterLocalTUNPacketWriter
+	var written [][]byte
+	probeVirtualRouterLocalTUNPacketWriter = func(packet []byte) error {
+		written = append(written, append([]byte(nil), packet...))
+		return nil
+	}
+	t.Cleanup(func() { probeVirtualRouterLocalTUNPacketWriter = oldWriter })
+
+	packets := [][]byte{
+		buildProbeVirtualRouterTestUDPPacket(t, "198.18.0.2", "198.18.0.18", 53, 53001),
+		buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.2", "198.18.0.18", 53, 53002),
+	}
+	for _, packet := range packets {
+		if !handleProbeVirtualRouterTUNPacket(packet) {
+			t.Fatal("local transport response should be reinjected")
+		}
+	}
+	if len(written) != len(packets) {
+		t.Fatalf("written packets=%d, want %d", len(written), len(packets))
+	}
+	for i, packet := range written {
+		if got := probeVirtualRouterIPv4Source(packet); got != "198.18.0.2" {
+			t.Fatalf("packet %d source=%q", i, got)
+		}
+		if got := probeVirtualRouterIPv4Destination(packet); got != "198.18.0.18" {
+			t.Fatalf("packet %d destination=%q", i, got)
+		}
+	}
+}
+
 func TestProbeVirtualRouterTUNPacketEnsuresDirectBypassForOrdinaryTarget(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeVirtualRouterStateForTest()

@@ -3710,13 +3710,22 @@ func handleProbeVirtualRouterLocalSelfTUNPacket(packet []byte, dstIP string) boo
 	if !probeVirtualRouterIPMatches(dstIP, localIP) {
 		return false
 	}
-	reply, _, ok := buildProbeVirtualRouterICMPEchoReply(packet, localIP)
-	if !ok {
-		return false
-	}
 	writer := probeVirtualRouterLocalTUNPacketWriter
 	if writer == nil {
 		writer = writeProbeVirtualRouterLocalTUNPacket
+	}
+	reply, _, ok := buildProbeVirtualRouterICMPEchoReply(packet, localIP)
+	if !ok {
+		info, transportOK := probeVirtualRouterParseTCPUDPLogInfo(packet)
+		if !transportOK {
+			return false
+		}
+		if err := writer(packet); err != nil {
+			if shouldLog, suppressed := takeProbeVirtualRouterTransportTUNDropLogThrottle(info, "local_reinject_failed", time.Now()); shouldLog {
+				log.Printf("probe virtual router local transport reinject failed: proto=%s src=%s:%d dst=%s:%d local_ip=%s suppressed=%d err=%v", info.Protocol, info.SourceIP, info.SourcePort, info.DestinationIP, info.DestinationPort, localIP, suppressed, err)
+			}
+		}
+		return true
 	}
 	if err := writer(reply); err != nil {
 		log.Printf("probe virtual router local self icmp reply failed: local_ip=%s err=%v", localIP, err)

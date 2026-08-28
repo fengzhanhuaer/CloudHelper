@@ -193,10 +193,6 @@ func ensureProbeLocalWindowsInterfaceIPv4AddressByLUID(interfaceLUID uint64, ipT
 		prefixLength = probeLocalTUNRouteIPv4PrefixLen
 	}
 	cleanIP := ip4.String()
-	cleanDNS := cleanIP
-	if parsedDNS := net.ParseIP(strings.TrimSpace(probeLocalTUNInterfaceIPv4)).To4(); parsedDNS != nil {
-		cleanDNS = parsedDNS.String()
-	}
 
 	adapter, err := probeLocalFindWindowsAdapterByLUID(interfaceLUID)
 	if err != nil {
@@ -208,7 +204,7 @@ func ensureProbeLocalWindowsInterfaceIPv4AddressByLUID(interfaceLUID uint64, ipT
 	if strings.TrimSpace(adapter.AdapterGUID) == "" {
 		return errors.New("adapter guid is empty")
 	}
-	if err := probeLocalSetWindowsInterfaceDNS(adapter.AdapterGUID, []string{cleanDNS}); err != nil {
+	if err := reconcileProbeLocalWindowsTUNInterfaceDNS(adapter); err != nil {
 		return err
 	}
 	return nil
@@ -226,10 +222,6 @@ func ensureProbeLocalWindowsInterfaceIPv4StaticProfile(interfaceIndex int, ipTex
 		prefixLength = probeLocalTUNRouteIPv4PrefixLen
 	}
 	cleanIP := ip4.String()
-	cleanDNS := cleanIP
-	if parsedDNS := net.ParseIP(strings.TrimSpace(probeLocalTUNInterfaceIPv4)).To4(); parsedDNS != nil {
-		cleanDNS = parsedDNS.String()
-	}
 	adapter, err := probeLocalFindWindowsAdapterByIfIndex(interfaceIndex)
 	if err != nil {
 		return err
@@ -240,10 +232,24 @@ func ensureProbeLocalWindowsInterfaceIPv4StaticProfile(interfaceIndex int, ipTex
 	if strings.TrimSpace(adapter.AdapterGUID) == "" {
 		return errors.New("adapter guid is empty")
 	}
-	if err := probeLocalSetWindowsInterfaceDNS(adapter.AdapterGUID, []string{cleanDNS}); err != nil {
+	if err := reconcileProbeLocalWindowsTUNInterfaceDNS(adapter); err != nil {
 		return err
 	}
 	return nil
+}
+
+func reconcileProbeLocalWindowsTUNInterfaceDNS(adapter windowsAdapterInfo) error {
+	if probeVirtualRouterLocalEntryEnabled() {
+		dnsIP := strings.TrimSpace(probeLocalTUNInterfaceIPv4)
+		if parsedDNS := net.ParseIP(dnsIP).To4(); parsedDNS != nil {
+			dnsIP = parsedDNS.String()
+		}
+		return probeLocalSetWindowsInterfaceDNS(adapter.AdapterGUID, []string{dnsIP})
+	}
+	if len(adapter.DNSServers) == 0 {
+		return nil
+	}
+	return probeLocalResetWindowsInterfaceDNS(adapter.AdapterGUID)
 }
 
 func probeLocalIPv4MaskFromPrefix(prefixLength int) (string, error) {
