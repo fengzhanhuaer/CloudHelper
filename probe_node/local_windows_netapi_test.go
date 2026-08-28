@@ -11,17 +11,17 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func TestEnsureProbeLocalWindowsInterfaceIPv4AddressByLUIDReconcilesDNSWithRouterSwitch(t *testing.T) {
+func TestEnsureProbeLocalWindowsInterfaceIPv4AddressByLUIDKeepsFixedDNS(t *testing.T) {
 	tests := []struct {
 		name       string
 		enabled    bool
 		currentDNS []string
 		wantSet    int
-		wantReset  int
 	}{
 		{name: "enabled", enabled: true, wantSet: 1},
-		{name: "disabled clears stale dns", currentDNS: []string{probeLocalTUNInterfaceIPv4}, wantReset: 1},
-		{name: "disabled already clear"},
+		{name: "disabled still sets fixed dns", wantSet: 1},
+		{name: "disabled replaces other dns", currentDNS: []string{"192.0.2.53"}, wantSet: 1},
+		{name: "disabled already fixed", currentDNS: []string{probeLocalTUNInterfaceIPv4}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -59,7 +59,6 @@ func TestEnsureProbeLocalWindowsInterfaceIPv4AddressByLUIDReconcilesDNSWithRoute
 				return nil
 			}
 			setCalls := 0
-			resetCalls := 0
 			probeLocalSetWindowsInterfaceDNS = func(guid string, servers []string) error {
 				setCalls++
 				if guid == "" || len(servers) != 1 || servers[0] != probeLocalTUNInterfaceIPv4 {
@@ -67,18 +66,11 @@ func TestEnsureProbeLocalWindowsInterfaceIPv4AddressByLUIDReconcilesDNSWithRoute
 				}
 				return nil
 			}
-			probeLocalResetWindowsInterfaceDNS = func(guid string) error {
-				resetCalls++
-				if guid == "" {
-					t.Fatal("empty adapter guid")
-				}
-				return nil
-			}
 			if err := ensureProbeLocalWindowsInterfaceIPv4AddressByLUID(77, "198.18.0.7", 30); err != nil {
 				t.Fatalf("ensure interface address: %v", err)
 			}
-			if setCalls != tt.wantSet || resetCalls != tt.wantReset {
-				t.Fatalf("dns calls set=%d reset=%d, want %d/%d", setCalls, resetCalls, tt.wantSet, tt.wantReset)
+			if setCalls != tt.wantSet {
+				t.Fatalf("dns set calls=%d, want %d", setCalls, tt.wantSet)
 			}
 		})
 	}

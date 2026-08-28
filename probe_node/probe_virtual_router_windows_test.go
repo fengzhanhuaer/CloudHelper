@@ -77,6 +77,9 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsAppliesTakeoverAndLoc
 	})
 
 	upsertCalls := 0
+	dnsSetCalls := 0
+	oldFindAdapterByLUID := probeLocalFindWindowsAdapterByLUID
+	oldSetInterfaceDNS := probeLocalSetWindowsInterfaceDNS
 	probeLocalUpsertWindowsInterfaceIPv4ByLUID = func(luid uint64, ifIndex int, ip string, prefixLength int) error {
 		upsertCalls++
 		if luid != 77 {
@@ -93,16 +96,36 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsAppliesTakeoverAndLoc
 		}
 		return nil
 	}
+	probeLocalFindWindowsAdapterByLUID = func(luid uint64) (windowsAdapterInfo, error) {
+		if luid != 77 {
+			t.Fatalf("dns adapter luid=%d want 77", luid)
+		}
+		return windowsAdapterInfo{InterfaceIndex: 40, AdapterGUID: "{00000000-0000-0000-0000-000000000077}"}, nil
+	}
+	probeLocalSetWindowsInterfaceDNS = func(guid string, servers []string) error {
+		dnsSetCalls++
+		if guid != "{00000000-0000-0000-0000-000000000077}" || len(servers) != 1 || servers[0] != probeLocalTUNInterfaceIPv4 {
+			t.Fatalf("unexpected tun dns reconcile guid=%q servers=%v", guid, servers)
+		}
+		return nil
+	}
 	probeLocalUpsertWindowsInterfaceIPv4 = func(ifIndex int, ip string, prefixLength int) error {
 		t.Fatalf("expected LUID path, got ifIndex=%d ip=%s prefix=%d", ifIndex, ip, prefixLength)
 		return nil
 	}
+	t.Cleanup(func() {
+		probeLocalFindWindowsAdapterByLUID = oldFindAdapterByLUID
+		probeLocalSetWindowsInterfaceDNS = oldSetInterfaceDNS
+	})
 
 	if err := ensureProbeVirtualRouterPlatformInterfaceIP("198.18.0.21"); err != nil {
 		t.Fatalf("ensureProbeVirtualRouterPlatformInterfaceIP returned error: %v", err)
 	}
 	if upsertCalls != 1 {
 		t.Fatalf("upsertCalls=%d want 1", upsertCalls)
+	}
+	if dnsSetCalls != 1 {
+		t.Fatalf("dnsSetCalls=%d want 1", dnsSetCalls)
 	}
 	if len(routeCreateCalls) != 6 {
 		t.Fatalf("routeCreateCalls=%d want 6 calls=%+v", len(routeCreateCalls), routeCreateCalls)
@@ -178,6 +201,8 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsBaseOnlyKeepsVirtualR
 	oldCreateRoute := probeLocalCreateWindowsRouteEntry
 	oldDeleteRoute := probeLocalDeleteWindowsRouteEntry
 	oldUpsertIPv4ByLUID := probeLocalUpsertWindowsInterfaceIPv4ByLUID
+	oldFindAdapterByLUID := probeLocalFindWindowsAdapterByLUID
+	oldSetInterfaceDNS := probeLocalSetWindowsInterfaceDNS
 	probeLocalCreateWindowsRouteEntry = func(routeDef probeRouteWindowsRouteDef) (bool, error) {
 		created = append(created, routeDef)
 		return true, nil
@@ -192,10 +217,26 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsBaseOnlyKeepsVirtualR
 		}
 		return nil
 	}
+	dnsSetCalls := 0
+	probeLocalFindWindowsAdapterByLUID = func(luid uint64) (windowsAdapterInfo, error) {
+		return windowsAdapterInfo{
+			InterfaceIndex: 40,
+			AdapterGUID:    "{00000000-0000-0000-0000-000000000077}",
+		}, nil
+	}
+	probeLocalSetWindowsInterfaceDNS = func(guid string, servers []string) error {
+		dnsSetCalls++
+		if guid != "{00000000-0000-0000-0000-000000000077}" || len(servers) != 1 || servers[0] != probeLocalTUNInterfaceIPv4 {
+			t.Fatalf("unexpected fixed tun dns guid=%q servers=%v", guid, servers)
+		}
+		return nil
+	}
 	t.Cleanup(func() {
 		probeLocalCreateWindowsRouteEntry = oldCreateRoute
 		probeLocalDeleteWindowsRouteEntry = oldDeleteRoute
 		probeLocalUpsertWindowsInterfaceIPv4ByLUID = oldUpsertIPv4ByLUID
+		probeLocalFindWindowsAdapterByLUID = oldFindAdapterByLUID
+		probeLocalSetWindowsInterfaceDNS = oldSetInterfaceDNS
 	})
 
 	if err := ensureProbeVirtualRouterPlatformInterfaceIP("198.18.0.21"); err != nil {
@@ -206,6 +247,9 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsBaseOnlyKeepsVirtualR
 	}
 	if len(deleted) != 1 {
 		t.Fatalf("deleted routes=%+v, want takeover route only", deleted)
+	}
+	if dnsSetCalls != 1 {
+		t.Fatalf("dnsSetCalls=%d want 1", dnsSetCalls)
 	}
 	assertProbeVirtualRouterWindowsRouteDef(t, created, probeRouteWindowsRouteDef{Prefix: "198.18.0.0", Mask: "255.254.0.0", Gateway: probeLocalTUNRouteGatewayIPv4, IfIndex: 40})
 	assertProbeVirtualRouterWindowsRouteDef(t, deleted, probeRouteWindowsRouteDef{Prefix: probeVirtualRouterWindowsRouteSplitPrefixA, IfIndex: 40})

@@ -45,13 +45,41 @@ func ensureProbeVirtualRouterPlatformInterfaceIP(ip string) error {
 		if err := probeLocalUpsertWindowsInterfaceIPv4ByLUID(interfaceLUID, ifIndex, cleanIP, probeLocalTUNRouteIPv4PrefixLen); err != nil {
 			return err
 		}
+		if err := reconcileProbeVirtualRouterWindowsInterfaceDNS(interfaceLUID, ifIndex); err != nil {
+			return err
+		}
 		return ensureProbeVirtualRouterWindowsRoutes(interfaceLUID, ifIndex)
 	}
 	if ifIndex > 0 {
 		if err := probeLocalUpsertWindowsInterfaceIPv4(ifIndex, cleanIP, probeLocalTUNRouteIPv4PrefixLen); err != nil {
 			return err
 		}
+		if err := reconcileProbeVirtualRouterWindowsInterfaceDNS(0, ifIndex); err != nil {
+			return err
+		}
 		return ensureProbeVirtualRouterWindowsRoutes(0, ifIndex)
+	}
+	return nil
+}
+
+func reconcileProbeVirtualRouterWindowsInterfaceDNS(interfaceLUID uint64, ifIndex int) error {
+	var (
+		adapter windowsAdapterInfo
+		err     error
+	)
+	if interfaceLUID > 0 {
+		adapter, err = probeLocalFindWindowsAdapterByLUID(interfaceLUID)
+	} else {
+		adapter, err = probeLocalFindWindowsAdapterByIfIndex(ifIndex)
+	}
+	if err != nil {
+		return fmt.Errorf("resolve windows virtual router adapter before dns reconcile: %w", err)
+	}
+	if strings.TrimSpace(adapter.AdapterGUID) == "" {
+		return errors.New("windows virtual router adapter guid is empty")
+	}
+	if err := reconcileProbeLocalWindowsTUNInterfaceDNS(adapter); err != nil {
+		return fmt.Errorf("reconcile windows virtual router interface dns: %w", err)
 	}
 	return nil
 }

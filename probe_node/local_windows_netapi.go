@@ -239,17 +239,14 @@ func ensureProbeLocalWindowsInterfaceIPv4StaticProfile(interfaceIndex int, ipTex
 }
 
 func reconcileProbeLocalWindowsTUNInterfaceDNS(adapter windowsAdapterInfo) error {
-	if probeVirtualRouterLocalEntryEnabled() {
-		dnsIP := strings.TrimSpace(probeLocalTUNInterfaceIPv4)
-		if parsedDNS := net.ParseIP(dnsIP).To4(); parsedDNS != nil {
-			dnsIP = parsedDNS.String()
-		}
-		return probeLocalSetWindowsInterfaceDNS(adapter.AdapterGUID, []string{dnsIP})
+	dnsIP := strings.TrimSpace(probeLocalTUNInterfaceIPv4)
+	if parsedDNS := net.ParseIP(dnsIP).To4(); parsedDNS != nil {
+		dnsIP = parsedDNS.String()
 	}
-	if len(adapter.DNSServers) == 0 {
+	if len(adapter.DNSServers) == 1 && strings.EqualFold(strings.TrimSpace(adapter.DNSServers[0]), dnsIP) {
 		return nil
 	}
-	return probeLocalResetWindowsInterfaceDNS(adapter.AdapterGUID)
+	return probeLocalSetWindowsInterfaceDNS(adapter.AdapterGUID, []string{dnsIP})
 }
 
 func probeLocalIPv4MaskFromPrefix(prefixLength int) (string, error) {
