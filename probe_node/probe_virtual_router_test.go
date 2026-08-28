@@ -4034,6 +4034,95 @@ func TestProbeVirtualRouterFinalHopFakeIPMissRecoversFirstSYN(t *testing.T) {
 	}
 }
 
+func TestProbeVirtualRouterSourceFakeIPMissRecoversFirstSYN(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	resetProbeVirtualRouterFakeIPRecoveryForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+	t.Cleanup(resetProbeVirtualRouterFakeIPRecoveryForTest)
+
+	applyProbeVirtualRouterConfigForNode(probeVirtualRouterConfig{
+		Enabled:    true,
+		FakeIPCIDR: "198.18.0.0/15",
+		ProbeIPs: []probeVirtualRouterProbeIP{
+			{NodeID: "9", IP: "198.18.0.7"},
+			{NodeID: "22", IP: "198.18.0.22"},
+			{NodeID: "17", IP: "198.18.0.17"},
+		},
+		TopologyRules: []probeVirtualRouterTopologyRule{
+			{FromNodeID: "9", ToNodeID: "22", Enabled: true},
+			{FromNodeID: "22", ToNodeID: "17", Enabled: true},
+		},
+		RouteRules: []probeVirtualRouterRouteRule{
+			{ID: "rr-7", Action: "probe_exit", ExitNodeID: "17", Entries: []string{"domain_suffix:msftconnecttest.com"}},
+		},
+	}, "9")
+
+	probeVirtualRouterControllerState.mu.Lock()
+	probeVirtualRouterControllerState.identity = nodeIdentity{NodeID: "9", Secret: "secret-9"}
+	probeVirtualRouterControllerState.controllerBaseURL = "https://controller.example.test"
+	probeVirtualRouterControllerState.mu.Unlock()
+
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	requestCalls := 0
+	oldRequestByIP := probeRequestRouteFakeIPByIP
+	probeRequestRouteFakeIPByIP = func(ctx context.Context, controllerBaseURL string, identity nodeIdentity, fakeIP string) (probeVirtualRouterFakeIPEntry, error) {
+		requestCalls++
+		close(requestStarted)
+		<-releaseRequest
+		return probeVirtualRouterFakeIPEntry{
+			Domain:     "www.msftconnecttest.com",
+			FakeIP:     fakeIP,
+			Action:     "probe_exit",
+			ExitNodeID: "17",
+			RuleID:     "rr-7",
+			ExpiresAt:  time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+		}, nil
+	}
+	t.Cleanup(func() { probeRequestRouteFakeIPByIP = oldRequestByIP })
+
+	replayed := make(chan []byte, 2)
+	oldRecover := probeVirtualRouterRecoverFakeIPSourcePacketHook
+	probeVirtualRouterRecoverFakeIPSourcePacketHook = func(packet []byte) bool {
+		if entry, ok := currentProbeVirtualRouterFakeIPEntryByIP("198.18.4.79"); !ok || entry.ExitNodeID != "17" {
+			t.Errorf("mapping must be available before source replay: entry=%+v ok=%v", entry, ok)
+		}
+		replayed <- append([]byte(nil), packet...)
+		return true
+	}
+	t.Cleanup(func() { probeVirtualRouterRecoverFakeIPSourcePacketHook = oldRecover })
+
+	packet := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.7", "198.18.4.79", 60725, 80)
+	if !handleProbeVirtualRouterTUNPacket(packet) {
+		t.Fatal("source fake ip miss should queue recovery")
+	}
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("source fake ip mapping refresh did not start")
+	}
+	if !handleProbeVirtualRouterTUNPacket(packet) {
+		t.Fatal("retransmitted source SYN should join pending recovery")
+	}
+	close(releaseRequest)
+	select {
+	case got := <-replayed:
+		if !bytes.Equal(got, packet) {
+			t.Fatalf("source replay packet mismatch: got=%x want=%x", got, packet)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("source SYN was not replayed after mapping refresh")
+	}
+	select {
+	case <-replayed:
+		t.Fatal("duplicate source SYN must not be replayed twice")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if requestCalls != 1 {
+		t.Fatalf("controller mapping requests=%d, want 1", requestCalls)
+	}
+}
+
 func TestProbeVirtualRouterFakeIPExitTargetsResolveRealIP(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeVirtualRouterStateForTest()

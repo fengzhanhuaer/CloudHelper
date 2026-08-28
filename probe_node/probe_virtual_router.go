@@ -3555,6 +3555,10 @@ func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
 		return true
 	}
 	if len(path) < 2 && probeVirtualRouterIPInCurrentFakeCIDR(dstIP) {
+		if _, exists := currentProbeVirtualRouterFakeIPEntryByIP(dstIP); !exists && scheduleProbeVirtualRouterFakeIPSourceFirstPacketRecovery(packet) {
+			recordProbeVirtualRouterRecentPacket("tun_rx", "wait_fake_mapping", nil, packet, path, false, nil)
+			return true
+		}
 		scheduleProbeVirtualRouterFakeIPItemRefreshByIP(dstIP)
 	}
 	maybeScheduleProbeVirtualRouterFakeIPVerifyForTCPRetransmit(packet, path)
