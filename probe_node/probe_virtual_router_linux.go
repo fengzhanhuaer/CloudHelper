@@ -59,11 +59,7 @@ func ensureProbeVirtualRouterPlatformInterfaceIP(ip string) error {
 			return err
 		}
 	}
-	if probeVirtualRouterOwnsFakeIPRoute() {
-		if err := ensureProbeVirtualRouterLinuxFakeIPRoute(dev, cleanIP); err != nil {
-			return err
-		}
-	} else if err := cleanupProbeVirtualRouterLinuxFakeIPRoute(dev, cleanIP); err != nil {
+	if err := ensureProbeVirtualRouterLinuxFakeIPRoute(dev, cleanIP); err != nil {
 		return err
 	}
 	if err := ensureProbeVirtualRouterLinuxPublishedRoutes(dev, cleanIP); err != nil {
@@ -284,18 +280,6 @@ func buildProbeVirtualRouterLinuxPublishedRouteDefs(dev string, srcIP string) []
 	config := currentProbeVirtualRouterConfig()
 	seen := make(map[string]struct{})
 	out := make([]probeVirtualRouterLinuxRouteDef, 0)
-	for _, item := range config.ProbeIPs {
-		ip := net.ParseIP(strings.TrimSpace(item.IP)).To4()
-		if ip == nil {
-			continue
-		}
-		prefix := ip.String() + "/32"
-		if _, exists := seen[prefix]; exists {
-			continue
-		}
-		seen[prefix] = struct{}{}
-		out = append(out, probeVirtualRouterLinuxRouteDef{Prefix: prefix, Dev: strings.TrimSpace(dev), Source: strings.TrimSpace(srcIP), Metric: probeVirtualRouterLinuxRouteMetric})
-	}
 	for _, rule := range config.RouteRules {
 		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(rule.ID)), "linux-router-") || sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) != "probe_exit" {
 			continue
@@ -406,29 +390,6 @@ func ensureProbeVirtualRouterLinuxFakeIPRoute(dev string, srcIP string) error {
 	probeVirtualRouterLinuxRouteState.fakeApplied = true
 	probeVirtualRouterLinuxRouteState.mu.Unlock()
 	return nil
-}
-
-func cleanupProbeVirtualRouterLinuxFakeIPRoute(dev string, srcIP string) error {
-	expected := probeVirtualRouterLinuxRouteDef{
-		Prefix: strings.TrimSpace(currentProbeVirtualRouterFakeIPCIDR()),
-		Dev:    strings.TrimSpace(dev),
-		Source: strings.TrimSpace(srcIP),
-	}
-	probeVirtualRouterLinuxRouteState.mu.Lock()
-	oldRouteDef := probeVirtualRouterLinuxRouteState.fakeRouteDef
-	oldApplied := probeVirtualRouterLinuxRouteState.fakeApplied
-	probeVirtualRouterLinuxRouteState.fakeRouteDef = probeVirtualRouterLinuxRouteDef{}
-	probeVirtualRouterLinuxRouteState.fakeApplied = false
-	probeVirtualRouterLinuxRouteState.mu.Unlock()
-
-	var allErr error
-	if oldApplied {
-		allErr = errors.Join(allErr, deleteProbeVirtualRouterLinuxRoute(oldRouteDef))
-	}
-	if !oldApplied || !probeVirtualRouterLinuxRouteDefEqual(oldRouteDef, expected) {
-		allErr = errors.Join(allErr, deleteProbeVirtualRouterLinuxRoute(expected))
-	}
-	return allErr
 }
 
 func ensureProbeVirtualRouterLinuxTakeoverRoutes(dev string, srcIP string) error {

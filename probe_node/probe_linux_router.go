@@ -89,7 +89,6 @@ func init() {
 	probeProductHandleDirectTUNPacket = probeLinuxRouterHandleDirectTUNPacket
 	probeProductTargetsLocalDelivery = probeLinuxRouterTargetsLocalDelivery
 	probeProductVirtualRouterConfigApplied = probeLinuxRouterVirtualRouterConfigApplied
-	probeProductOwnsFakeIPRoute = probeLinuxRouterOwnsFakeIPRoute
 	probeProductVirtualRouterRouteRuleEntryMatchesIP = probeLinuxRouterRouteRuleEntryMatchesIP
 }
 
@@ -389,12 +388,6 @@ func probeLinuxRouterSideModeEnabled(snapshot probeLinuxRouterSnapshot) bool {
 
 func probeLinuxRouterAnyModeEnabled(snapshot probeLinuxRouterSnapshot) bool {
 	return probeLinuxRouterSideModeEnabled(snapshot) || snapshot.OneArmRouter.Enabled
-}
-
-func probeLinuxRouterOwnsFakeIPRoute() bool {
-	probeLinuxRouterRuntimeState.mu.RLock()
-	defer probeLinuxRouterRuntimeState.mu.RUnlock()
-	return probeLinuxRouterRuntimeState.desired != nil && probeLinuxRouterAnyModeEnabled(*probeLinuxRouterRuntimeState.desired)
 }
 
 func normalizeProbeLinuxRouterOneArmSubnet(value string) string {

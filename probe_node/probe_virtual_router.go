@@ -28,7 +28,6 @@ const (
 	probeVirtualRouterRecentPruneInterval = time.Second
 	probeVirtualRouterRecentFlushTimeout  = 2 * time.Second
 	probeVirtualRouterRecentDropLogPeriod = time.Second
-	probeVirtualRouterNodeIPv4PrefixLen   = 32
 
 	// vRouter frame header is a stable 12-byte wire protocol boundary:
 	// magic 2 bytes, maintype 2 bytes, subtype 2 bytes,
@@ -927,14 +926,7 @@ func applyProbeVirtualRouterConfigForNode(config probeVirtualRouterConfig, nodeI
 	}
 }
 
-var (
-	probeProductVirtualRouterConfigApplied = func(probeVirtualRouterConfig) {}
-	probeProductOwnsFakeIPRoute            = func() bool { return false }
-)
-
-func probeVirtualRouterOwnsFakeIPRoute() bool {
-	return probeVirtualRouterLocalEntryEnabled() || probeProductOwnsFakeIPRoute()
-}
+var probeProductVirtualRouterConfigApplied = func(probeVirtualRouterConfig) {}
 
 func buildProbeVirtualRouterTopologyIndex(config probeVirtualRouterConfig) probeVirtualRouterTopologyIndex {
 	index := probeVirtualRouterTopologyIndex{

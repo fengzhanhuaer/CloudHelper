@@ -88,8 +88,8 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsAppliesTakeoverAndLoc
 		if strings.TrimSpace(ip) != "198.18.0.21" {
 			t.Fatalf("ip=%q want 198.18.0.21", ip)
 		}
-		if prefixLength != probeVirtualRouterNodeIPv4PrefixLen {
-			t.Fatalf("prefixLength=%d want %d", prefixLength, probeVirtualRouterNodeIPv4PrefixLen)
+		if prefixLength != probeLocalTUNRouteIPv4PrefixLen {
+			t.Fatalf("prefixLength=%d want %d", prefixLength, probeLocalTUNRouteIPv4PrefixLen)
 		}
 		return nil
 	}
@@ -137,7 +137,7 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsAppliesTakeoverAndLoc
 	}
 }
 
-func TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsBaseOnlyCleansFakeIPAndTakeoverRoutes(t *testing.T) {
+func TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsBaseOnlyKeepsVirtualRouteAndCleansTakeover(t *testing.T) {
 	resetProbeLocalTUNInstallWindowsHooksForTest()
 	resetProbeVirtualRouterTUNDataPlaneHooksForTest()
 	resetProbeRouteWindowsStateForTest()
@@ -187,8 +187,8 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsBaseOnlyCleansFakeIPA
 		return nil
 	}
 	probeLocalUpsertWindowsInterfaceIPv4ByLUID = func(luid uint64, ifIndex int, ip string, prefixLength int) error {
-		if prefixLength != probeVirtualRouterNodeIPv4PrefixLen {
-			t.Fatalf("base-only prefixLength=%d want %d", prefixLength, probeVirtualRouterNodeIPv4PrefixLen)
+		if prefixLength != probeLocalTUNRouteIPv4PrefixLen {
+			t.Fatalf("base-only prefixLength=%d want %d", prefixLength, probeLocalTUNRouteIPv4PrefixLen)
 		}
 		return nil
 	}
@@ -201,17 +201,17 @@ func TestEnsureProbeVirtualRouterPlatformInterfaceIPWindowsBaseOnlyCleansFakeIPA
 	if err := ensureProbeVirtualRouterPlatformInterfaceIP("198.18.0.21"); err != nil {
 		t.Fatalf("ensure disabled virtual router route failed: %v", err)
 	}
-	if len(created) != 0 {
-		t.Fatalf("created routes=%+v, want no fake IP route without TUN takeover", created)
+	if len(created) != 1 {
+		t.Fatalf("created routes=%+v, want virtual network route only", created)
 	}
-	if len(deleted) != 2 {
-		t.Fatalf("deleted routes=%+v, want fake IP and takeover routes", deleted)
+	if len(deleted) != 1 {
+		t.Fatalf("deleted routes=%+v, want takeover route only", deleted)
 	}
-	assertProbeVirtualRouterWindowsRouteDef(t, deleted, probeRouteWindowsRouteDef{Prefix: "198.18.0.0", Mask: "255.254.0.0", Gateway: probeLocalTUNRouteGatewayIPv4, IfIndex: 40})
+	assertProbeVirtualRouterWindowsRouteDef(t, created, probeRouteWindowsRouteDef{Prefix: "198.18.0.0", Mask: "255.254.0.0", Gateway: probeLocalTUNRouteGatewayIPv4, IfIndex: 40})
 	assertProbeVirtualRouterWindowsRouteDef(t, deleted, probeRouteWindowsRouteDef{Prefix: probeVirtualRouterWindowsRouteSplitPrefixA, IfIndex: 40})
 }
 
-func TestBuildProbeVirtualRouterWindowsPublishedRouteDefsIncludesProbeHostRoutes(t *testing.T) {
+func TestBuildProbeVirtualRouterWindowsPublishedRouteDefsDoesNotAddProbeHostRoutes(t *testing.T) {
 	probeVirtualRouterState.mu.Lock()
 	previousConfig := probeVirtualRouterState.config
 	probeVirtualRouterState.config = probeVirtualRouterConfig{ProbeIPs: []probeVirtualRouterProbeIP{
@@ -226,13 +226,8 @@ func TestBuildProbeVirtualRouterWindowsPublishedRouteDefsIncludesProbeHostRoutes
 	})
 
 	routes := buildProbeVirtualRouterWindowsPublishedRouteDefs(77, 40)
-	if len(routes) != 2 {
-		t.Fatalf("routes=%+v, want two probe host routes", routes)
-	}
-	for _, prefix := range []string{"198.18.0.7", "198.18.0.17"} {
-		assertProbeVirtualRouterWindowsRouteDef(t, routes, probeRouteWindowsRouteDef{
-			Prefix: prefix, Mask: "255.255.255.255", Gateway: probeLocalTUNRouteGatewayIPv4, InterfaceLUID: 77, IfIndex: 40,
-		})
+	if len(routes) != 0 {
+		t.Fatalf("routes=%+v, probe nodes are covered by the shared fake IP route", routes)
 	}
 }
 

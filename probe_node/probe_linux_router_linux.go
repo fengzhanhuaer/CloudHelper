@@ -25,7 +25,7 @@ const (
 	probeLinuxRouterRulePriority = "10080"
 	probeLinuxRouterPacketMark   = "0x4348"
 	probeLinuxRouterDirectTable  = "209"
-	probeLinuxRouterDirectRule   = "10081"
+	probeLinuxRouterDirectRule   = "10079"
 	probeLinuxRouterReturnMark   = "0x4349"
 )
 

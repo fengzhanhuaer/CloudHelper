@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -269,6 +270,55 @@ func TestProbeLinuxRouterOneArmDirectTableUsesUpstreamDefault(t *testing.T) {
 	if len(got) != 1 || got[0] != "192.168.205.0/24" {
 		t.Fatalf("one-arm direct table CIDRs=%v, upstream physical subnet must use the configured default gateway", got)
 	}
+}
+
+func TestApplyProbeLinuxRouterPolicyRoutingOneArmReinjectsTUNPacketsThroughPhysicalTable(t *testing.T) {
+	oldRun := probeLinuxRouterRunCommand
+	var calls []string
+	probeLinuxRouterRunCommand = func(_ time.Duration, name string, args ...string) (string, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		return "", nil
+	}
+	t.Cleanup(func() { probeLinuxRouterRunCommand = oldRun })
+
+	snapshot := probeLinuxRouterSnapshot{
+		GatewayProxy: probeLinuxRouterGatewayConfig{UpstreamGateway: "172.18.52.254"},
+		OneArmRouter: probeLinuxRouterOneArmConfig{Enabled: true, SubnetCIDR: "192.168.205.0/24"},
+	}
+	if err := applyProbeLinuxRouterPolicyRouting(snapshot, "eth0", "cloudhelper0"); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"ip -4 route replace table 208 default dev cloudhelper0",
+		"ip -4 rule add priority 10080 fwmark 0x4348/0xffff lookup 208",
+		"ip -4 route replace table 209 192.168.205.0/24 dev eth0",
+		"ip -4 route replace table 209 default via 172.18.52.254 dev eth0",
+		"ip -4 rule add priority 10079 iif cloudhelper0 lookup 209",
+	} {
+		if !containsProbeLinuxRouterCommand(calls, want) {
+			t.Fatalf("missing loop-prevention policy %q calls=%v", want, calls)
+		}
+	}
+	directPriority, err := strconv.Atoi(probeLinuxRouterDirectRule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	markedPriority, err := strconv.Atoi(probeLinuxRouterRulePriority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if directPriority >= markedPriority {
+		t.Fatalf("TUN reinjection priority=%d must run before marked takeover priority=%d", directPriority, markedPriority)
+	}
+}
+
+func containsProbeLinuxRouterCommand(calls []string, want string) bool {
+	for _, call := range calls {
+		if strings.TrimSpace(call) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestProbeLinuxRouterSysctlsRestoreOriginalValues(t *testing.T) {

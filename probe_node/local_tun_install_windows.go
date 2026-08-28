@@ -19,7 +19,7 @@ const (
 	probeLocalTUNAdapterRequestedGUID = "{6BA2B7A3-1C2D-4E63-9E3C-6F7A8B9C0D21}"
 	probeLocalTUNRouteGatewayIPv4     = "198.18.0.1"
 	probeLocalTUNInterfaceIPv4        = "198.18.0.2"
-	probeLocalTUNRouteIPv4PrefixLen   = 30
+	probeLocalTUNRouteIPv4PrefixLen   = 15
 	probeLocalTUNVisibilityRetryCount = 5
 )
 
