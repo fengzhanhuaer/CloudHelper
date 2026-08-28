@@ -273,11 +273,30 @@ func inspectProbeVirtualRouterWindowsPublishedRoute(routeDef probeRouteWindowsRo
 				IfIndex: item.IfIndex,
 			})
 		}
+		if probeVirtualRouterWindowsRouteEntryIsManagedLocalBypass(item, existing) {
+			continue
+		}
 		if existing.Bits() <= candidate.Bits() && existing.Contains(candidate.Addr()) {
 			collides = true
 		}
 	}
 	return collides, stale, staleOnLinkHostRoutes, nil
+}
+
+func probeVirtualRouterWindowsRouteEntryIsManagedLocalBypass(item probeLocalWindowsRouteEntry, prefix netip.Prefix) bool {
+	if item.IfIndex <= 0 || item.Protocol != probeRouteWindowsProtocolNetMgmt || item.Metric != uint32(probeRouteWindowsRouteMetric) {
+		return false
+	}
+	nextHop := strings.TrimSpace(item.NextHop)
+	if nextHop == "" || nextHop == "0.0.0.0" {
+		return false
+	}
+	switch prefix.Masked().String() {
+	case "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16":
+		return true
+	default:
+		return false
+	}
 }
 
 func ensureProbeVirtualRouterWindowsFakeIPRoute(interfaceLUID uint64, ifIndex int) error {

@@ -3,6 +3,8 @@
 package main
 
 import (
+	"fmt"
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -344,6 +346,7 @@ func TestEnsureProbeVirtualRouterWindowsPublishedRoutesKeepsPhysicalSubnetAndCle
 	probeLocalListWindowsRouteEntries = func() ([]probeLocalWindowsRouteEntry, error) {
 		return []probeLocalWindowsRouteEntry{
 			{Prefix: "172.18.52.0", PrefixLength: 22, NextHop: "0.0.0.0", IfIndex: 22},
+			{Prefix: "192.168.0.0", PrefixLength: 16, NextHop: "172.18.55.254", IfIndex: 22, Metric: probeRouteWindowsRouteMetric, Protocol: probeRouteWindowsProtocolNetMgmt},
 			{Prefix: "172.18.52.0", PrefixLength: 22, NextHop: probeLocalTUNRouteGatewayIPv4, IfIndex: 40, Metric: probeRouteWindowsRouteMetric, Protocol: probeRouteWindowsProtocolNetMgmt},
 			{Prefix: "192.168.50.42", PrefixLength: 32, NextHop: "0.0.0.0", IfIndex: 22, Metric: 1, Protocol: probeRouteWindowsProtocolNetMgmt},
 			{Prefix: "192.168.50.43", PrefixLength: 32, NextHop: "192.168.1.1", IfIndex: 22, Metric: 1, Protocol: probeRouteWindowsProtocolNetMgmt},
@@ -386,6 +389,40 @@ func TestEnsureProbeVirtualRouterWindowsPublishedRoutesKeepsPhysicalSubnetAndCle
 		t.Fatalf("applied=%+v, want remote published route only", applied)
 	}
 	assertProbeVirtualRouterWindowsRouteDef(t, applied, probeRouteWindowsRouteDef{Prefix: "192.168.50.0", IfIndex: 40})
+}
+
+func TestProbeVirtualRouterWindowsRouteEntryIsManagedLocalBypass(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry probeLocalWindowsRouteEntry
+		want  bool
+	}{
+		{
+			name:  "managed private bypass",
+			entry: probeLocalWindowsRouteEntry{Prefix: "192.168.0.0", PrefixLength: 16, NextHop: "172.18.55.254", IfIndex: 22, Metric: probeRouteWindowsRouteMetric, Protocol: probeRouteWindowsProtocolNetMgmt},
+			want:  true,
+		},
+		{
+			name:  "physical on-link route",
+			entry: probeLocalWindowsRouteEntry{Prefix: "192.168.0.0", PrefixLength: 16, NextHop: "0.0.0.0", IfIndex: 22, Metric: probeRouteWindowsRouteMetric, Protocol: probeRouteWindowsProtocolNetMgmt},
+		},
+		{
+			name:  "user route with another metric",
+			entry: probeLocalWindowsRouteEntry{Prefix: "192.168.0.0", PrefixLength: 16, NextHop: "172.18.55.254", IfIndex: 22, Metric: 9, Protocol: probeRouteWindowsProtocolNetMgmt},
+		},
+		{
+			name:  "specific private route",
+			entry: probeLocalWindowsRouteEntry{Prefix: "192.168.50.0", PrefixLength: 24, NextHop: "172.18.55.254", IfIndex: 22, Metric: probeRouteWindowsRouteMetric, Protocol: probeRouteWindowsProtocolNetMgmt},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prefix := netip.MustParsePrefix(fmt.Sprintf("%s/%d", tt.entry.Prefix, tt.entry.PrefixLength))
+			if got := probeVirtualRouterWindowsRouteEntryIsManagedLocalBypass(tt.entry, prefix); got != tt.want {
+				t.Fatalf("managed local bypass=%v, want %v", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestEnsureProbeVirtualRouterWindowsPublishedRoutesCleansRestartStaleRouteWhenUnselected(t *testing.T) {

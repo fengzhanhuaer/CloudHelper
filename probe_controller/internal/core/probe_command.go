@@ -138,9 +138,15 @@ func (s *probeRouteConfigSyncScheduler) runLoop() {
 	}
 }
 
-var automaticProbeRouteConfigSyncScheduler = newProbeRouteConfigSyncScheduler(func() {
+func runAutomaticProbeRouteConfigSync() {
 	dispatchProbeRouteConfigSyncToKnownNodes("")
-})
+}
+
+var automaticProbeRouteConfigSyncScheduler *probeRouteConfigSyncScheduler
+
+func init() {
+	automaticProbeRouteConfigSyncScheduler = newProbeRouteConfigSyncScheduler(runAutomaticProbeRouteConfigSync)
+}
 
 func scheduleProbeRouteConfigSyncToKnownNodes() {
 	automaticProbeRouteConfigSyncScheduler.Schedule()
@@ -310,7 +316,9 @@ func registerProbeSession(nodeID string, stream net.Conn) *probeSession {
 	probeSessions.mu.Lock()
 	probeSessions.data[nodeID] = s
 	probeSessions.mu.Unlock()
-	setProbeRuntimeOnline(nodeID, true)
+	if setProbeRuntimeOnline(nodeID, true) {
+		scheduleProbeRouteConfigSyncToKnownNodes()
+	}
 	go func() {
 		_ = s.writeJSON(map[string]interface{}{
 			"type":         "report_interval",
@@ -335,7 +343,9 @@ func unregisterProbeSession(nodeID string, session *probeSession) {
 		_ = current.stream.Close()
 	}
 	probeSessions.mu.Unlock()
-	setProbeRuntimeOnline(nodeID, false)
+	if setProbeRuntimeOnline(nodeID, false) {
+		scheduleProbeRouteConfigSyncToKnownNodes()
+	}
 }
 
 func getProbeSession(nodeID string) (*probeSession, bool) {

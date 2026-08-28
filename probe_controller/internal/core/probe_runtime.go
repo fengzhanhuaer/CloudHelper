@@ -108,6 +108,8 @@ func updateProbeRuntimeProductStatus(nodeID string, buildKind string, status pro
 
 func probeLinuxRouterRoutingReportChanged(previous, current probeLinuxRouterRuntimeReport) bool {
 	return previous.LocalIPProxyEnabled != current.LocalIPProxyEnabled ||
+		previous.Healthy != current.Healthy ||
+		previous.FailOpen != current.FailOpen ||
 		!slices.Equal(previous.PublishedCIDRs, current.PublishedCIDRs) ||
 		!slices.Equal(previous.AllowedNodeIDs, current.AllowedNodeIDs)
 }
@@ -208,10 +210,10 @@ var probeRuntimeStore = struct {
 	data map[string]probeRuntimeStatus
 }{data: make(map[string]probeRuntimeStatus)}
 
-func setProbeRuntimeOnline(nodeID string, online bool) {
+func setProbeRuntimeOnline(nodeID string, online bool) bool {
 	nodeID = normalizeProbeNodeID(nodeID)
 	if nodeID == "" {
-		return
+		return false
 	}
 	probeRuntimeStore.mu.Lock()
 	current, existed := probeRuntimeStore.data[nodeID]
@@ -223,12 +225,14 @@ func setProbeRuntimeOnline(nodeID string, online bool) {
 	}
 	probeRuntimeStore.data[nodeID] = current
 	probeRuntimeStore.mu.Unlock()
+	routeConfigChanged := existed && prevOnline != online && normalizeProbeNodeKind(current.BuildKind) == probeNodeKindLinuxRouter
 
 	// Notify only on a real edge for an already-seen node so controller restarts
 	// (which re-register every node) do not spam online notifications.
 	if existed && prevOnline != online {
 		onProbeRuntimeTransition(nodeID, online)
 	}
+	return routeConfigChanged
 }
 
 func updateProbeRuntimeReport(nodeID string, ipv4 []string, ipv6 []string, metrics probeSystemMetrics, version string) {
