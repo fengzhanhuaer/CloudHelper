@@ -197,6 +197,13 @@ func cleanupProbeLinuxRouterPlatform(snapshot *probeLinuxRouterSnapshot) error {
 	if err := restoreProbeLinuxRouterSysctls(); err != nil {
 		allErr = errors.Join(allErr, err)
 	}
+	if snapshot != nil && !probeLinuxRouterAnyModeEnabled(*snapshot) {
+		if localIP := strings.TrimSpace(currentProbeVirtualRouterLocalIP()); localIP != "" {
+			if err := ensureProbeVirtualRouterPlatformInterfaceIP(localIP); err != nil {
+				allErr = errors.Join(allErr, fmt.Errorf("reconcile virtual routes after router disable: %w", err))
+			}
+		}
+	}
 	return allErr
 }
 

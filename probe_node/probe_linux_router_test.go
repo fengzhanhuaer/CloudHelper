@@ -13,6 +13,35 @@ import (
 	"testing"
 )
 
+func TestProbeLinuxRouterOwnsFakeIPRouteOnlyWhenRouterModeEnabled(t *testing.T) {
+	probeLinuxRouterRuntimeState.mu.Lock()
+	previousDesired := cloneProbeLinuxRouterSnapshot(probeLinuxRouterRuntimeState.desired)
+	probeLinuxRouterRuntimeState.desired = &probeLinuxRouterSnapshot{}
+	probeLinuxRouterRuntimeState.mu.Unlock()
+	t.Cleanup(func() {
+		probeLinuxRouterRuntimeState.mu.Lock()
+		probeLinuxRouterRuntimeState.desired = previousDesired
+		probeLinuxRouterRuntimeState.mu.Unlock()
+	})
+
+	if probeLinuxRouterOwnsFakeIPRoute() {
+		t.Fatal("disabled router must not claim the fake IP route")
+	}
+	for _, mutate := range []func(*probeLinuxRouterSnapshot){
+		func(snapshot *probeLinuxRouterSnapshot) { snapshot.GatewayProxy.Enabled = true },
+		func(snapshot *probeLinuxRouterSnapshot) { snapshot.LocalIPProxy.Enabled = true },
+		func(snapshot *probeLinuxRouterSnapshot) { snapshot.OneArmRouter.Enabled = true },
+	} {
+		probeLinuxRouterRuntimeState.mu.Lock()
+		probeLinuxRouterRuntimeState.desired = &probeLinuxRouterSnapshot{}
+		mutate(probeLinuxRouterRuntimeState.desired)
+		probeLinuxRouterRuntimeState.mu.Unlock()
+		if !probeLinuxRouterOwnsFakeIPRoute() {
+			t.Fatal("enabled side-router or one-arm mode must claim the fake IP route")
+		}
+	}
+}
+
 func testProbeLinuxRouterIPv4Packet(src [4]byte, dst [4]byte) []byte {
 	packet := make([]byte, 20)
 	packet[0] = 0x45

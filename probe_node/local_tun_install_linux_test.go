@@ -49,12 +49,14 @@ func TestInstallProbeLocalTUNDriverLinuxCreatesDefaultDevice(t *testing.T) {
 		"ip link show dev cloudhelper0",
 		"ip tuntap add dev cloudhelper0 mode tun",
 		"ip link set dev cloudhelper0 up",
-		"ip -4 addr replace 198.18.0.2/15 dev cloudhelper0",
-		"ip -4 route replace 198.18.0.0/15 dev cloudhelper0 src 198.18.0.2",
+		"ip -4 addr replace 198.18.0.2/30 dev cloudhelper0",
 	} {
 		if !hasProbeVirtualRouterLinuxCommand(calls, want) {
 			t.Fatalf("missing command %q calls=%v", want, calls)
 		}
+	}
+	if hasProbeVirtualRouterLinuxCommand(calls, "ip -4 route replace 198.18.0.0/15 dev cloudhelper0 src 198.18.0.2") {
+		t.Fatalf("installing the base TUN device must not claim the fake IP pool: calls=%v", calls)
 	}
 }
 

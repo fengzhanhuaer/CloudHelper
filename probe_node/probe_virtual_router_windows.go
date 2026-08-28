@@ -42,13 +42,13 @@ func ensureProbeVirtualRouterPlatformInterfaceIP(ip string) error {
 	ifIndex := probeVirtualRouterTUNDataPlaneState.ifIndex
 	probeVirtualRouterTUNDataPlaneState.mu.Unlock()
 	if interfaceLUID > 0 {
-		if err := probeLocalUpsertWindowsInterfaceIPv4ByLUID(interfaceLUID, ifIndex, cleanIP, probeLocalTUNRouteIPv4PrefixLen); err != nil {
+		if err := probeLocalUpsertWindowsInterfaceIPv4ByLUID(interfaceLUID, ifIndex, cleanIP, probeVirtualRouterNodeIPv4PrefixLen); err != nil {
 			return err
 		}
 		return ensureProbeVirtualRouterWindowsRoutes(interfaceLUID, ifIndex)
 	}
 	if ifIndex > 0 {
-		if err := probeLocalUpsertWindowsInterfaceIPv4(ifIndex, cleanIP, probeLocalTUNRouteIPv4PrefixLen); err != nil {
+		if err := probeLocalUpsertWindowsInterfaceIPv4(ifIndex, cleanIP, probeVirtualRouterNodeIPv4PrefixLen); err != nil {
 			return err
 		}
 		return ensureProbeVirtualRouterWindowsRoutes(0, ifIndex)
@@ -68,7 +68,11 @@ func ensureProbeVirtualRouterWindowsRoutes(interfaceLUID uint64, ifIndex int) er
 	if ifIndex <= 0 {
 		return nil
 	}
-	if err := ensureProbeVirtualRouterWindowsFakeIPRoute(interfaceLUID, ifIndex); err != nil {
+	if probeVirtualRouterOwnsFakeIPRoute() {
+		if err := ensureProbeVirtualRouterWindowsFakeIPRoute(interfaceLUID, ifIndex); err != nil {
+			return err
+		}
+	} else if err := cleanupProbeVirtualRouterWindowsFakeIPRoute(interfaceLUID, ifIndex); err != nil {
 		return err
 	}
 	if err := ensureProbeVirtualRouterWindowsPublishedRoutes(interfaceLUID, ifIndex); err != nil {
@@ -187,6 +191,19 @@ func buildProbeVirtualRouterWindowsPublishedRouteDefs(interfaceLUID uint64, ifIn
 	config := currentProbeVirtualRouterConfig()
 	seen := make(map[string]struct{})
 	out := make([]probeRouteWindowsRouteDef, 0)
+	for _, item := range config.ProbeIPs {
+		ip := net.ParseIP(strings.TrimSpace(item.IP)).To4()
+		if ip == nil {
+			continue
+		}
+		prefix := ip.String()
+		key := prefix + "/32"
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, probeRouteWindowsRouteDef{Prefix: prefix, Mask: "255.255.255.255", Gateway: probeLocalTUNRouteGatewayIPv4, InterfaceLUID: interfaceLUID, IfIndex: ifIndex})
+	}
 	for _, rule := range config.RouteRules {
 		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(rule.ID)), "linux-router-") || sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) != "probe_exit" {
 			continue

@@ -72,9 +72,6 @@ func ensureProbeLocalLinuxTUNDeviceReady() (string, error) {
 	if err := ensureProbeLocalLinuxInterfaceIPv4(dev, probeLocalTUNInterfaceIPv4); err != nil {
 		return "", err
 	}
-	if err := ensureProbeLocalLinuxVirtualRoute(dev, probeLocalTUNInterfaceIPv4); err != nil {
-		return "", err
-	}
 	return dev, nil
 }
 
@@ -115,7 +112,11 @@ func validateProbeLocalLinuxTUNDeviceName(dev string) error {
 }
 
 func ensureProbeLocalLinuxInterfaceIPv4(dev string, ip string) error {
-	cidr := fmt.Sprintf("%s/%d", ip, probeLocalTUNRouteIPv4PrefixLen)
+	prefixLen := probeVirtualRouterNodeIPv4PrefixLen
+	if strings.TrimSpace(ip) == probeLocalTUNInterfaceIPv4 {
+		prefixLen = probeLocalTUNRouteIPv4PrefixLen
+	}
+	cidr := fmt.Sprintf("%s/%d", ip, prefixLen)
 	if _, err := probeLocalLinuxRunCommand(5*time.Second, "ip", "-4", "addr", "replace", cidr, "dev", dev); err != nil {
 		return fmt.Errorf("replace linux tun ipv4 failed: dev=%s ip=%s: %w", dev, cidr, err)
 	}

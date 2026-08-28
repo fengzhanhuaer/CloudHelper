@@ -7,6 +7,31 @@ import (
 	"time"
 )
 
+func TestProbeVirtualRouterOwnsFakeIPRouteIgnoresProxyOnlyMode(t *testing.T) {
+	resetProbeVirtualRouterLocalSettingsForTest()
+	oldProductOwns := probeProductOwnsFakeIPRoute
+	probeProductOwnsFakeIPRoute = func() bool { return false }
+	t.Cleanup(func() {
+		probeProductOwnsFakeIPRoute = oldProductOwns
+		resetProbeVirtualRouterLocalSettingsForTest()
+	})
+
+	probeVirtualRouterLocalSettingsState.mu.Lock()
+	probeVirtualRouterLocalSettingsState.loaded = true
+	probeVirtualRouterLocalSettingsState.settings = probeVirtualRouterLocalSettings{ProxyEnabled: true}
+	probeVirtualRouterLocalSettingsState.mu.Unlock()
+	if probeVirtualRouterOwnsFakeIPRoute() {
+		t.Fatal("SOCKS/HTTP proxy-only mode must not claim the fake IP route")
+	}
+
+	probeVirtualRouterLocalSettingsState.mu.Lock()
+	probeVirtualRouterLocalSettingsState.settings.VirtualRouterEnabled = true
+	probeVirtualRouterLocalSettingsState.mu.Unlock()
+	if !probeVirtualRouterOwnsFakeIPRoute() {
+		t.Fatal("TUN mode must claim the fake IP route")
+	}
+}
+
 func TestSaveProbeVirtualRouterLocalSettingsDisableKeepsBaseTransportAndPreservesProxy(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	resetProbeVirtualRouterLocalSettingsForTest()
