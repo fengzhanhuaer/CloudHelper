@@ -46,7 +46,8 @@ const (
 	probeVirtualRouterFrameLinkRXDispatchShards             = 8
 	probeVirtualRouterFrameLinkRXDispatchShardBufferFrames  = 1024
 	probeVirtualRouterFrameLinkRXDispatchShardInitialFrames = 64
-	probeVirtualRouterCarrierMaxCount                       = 4
+	probeVirtualRouterCarrierDefaultCount                   = 4
+	probeVirtualRouterCarrierMaxCount                       = 264
 	probeVirtualRouterCarrierTXInitialFrames                = 8
 	probeVirtualRouterCarrierTXBufferFrames                 = 64
 	probeVirtualRouterCarrierFlowBindingTTL                 = 10 * time.Minute
@@ -1069,13 +1070,12 @@ func runProbeVirtualRouterBridgeSlotDialer(rt *probeVirtualRouterRuntime, slot i
 }
 
 func normalizeProbeVirtualRouterCarrierCount(value int) int {
-	if value <= 0 {
-		return 1
+	switch value {
+	case 4, 16, 64, probeVirtualRouterCarrierMaxCount:
+		return value
+	default:
+		return probeVirtualRouterCarrierDefaultCount
 	}
-	if value > probeVirtualRouterCarrierMaxCount {
-		return probeVirtualRouterCarrierMaxCount
-	}
-	return value
 }
 
 func signalProbeVirtualRouterBridgeDialer(rt *probeVirtualRouterRuntime) {

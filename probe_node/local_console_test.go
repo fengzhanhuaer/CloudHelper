@@ -356,8 +356,12 @@ func TestProbeLocalVirtualRouterStatusHandlerReturnsRuntimeDebugState(t *testing
 	left, right := net.Pipe()
 	defer right.Close()
 	defer left.Close()
+	leftSecond, rightSecond := net.Pipe()
+	defer rightSecond.Close()
+	defer leftSecond.Close()
 	link := newProbeVirtualRouterFrameLink(probeVirtualRouterFrameLinkKey(rt, "", "", nil), rt, nil, []string{"16", "19"})
 	link.AttachCarrier(left, "status-carrier", "198.51.100.19:12040")
+	link.AttachCarrierSlot(1, leftSecond, "status-carrier-1", "198.51.100.19:12040")
 	probeVirtualRouterRuntimeState.mu.Lock()
 	oldRuntimes := probeVirtualRouterRuntimeState.runtimes
 	probeVirtualRouterRuntimeState.runtimes = map[string]*probeVirtualRouterRuntime{rt.cfg.routeID: rt}
@@ -391,7 +395,7 @@ func TestProbeLocalVirtualRouterStatusHandlerReturnsRuntimeDebugState(t *testing
 	if !ok {
 		t.Fatalf("summary=%T %v", payload["summary"], payload["summary"])
 	}
-	if summary["runtime_count"] != float64(1) || summary["carrier_count"] != float64(1) {
+	if summary["runtime_count"] != float64(1) || summary["carrier_count"] != float64(2) {
 		t.Fatalf("unexpected summary: %+v", summary)
 	}
 	runtimes, ok := payload["runtimes"].([]any)
@@ -407,7 +411,8 @@ func TestProbeLocalVirtualRouterStatusHandlerReturnsRuntimeDebugState(t *testing
 		t.Fatalf("frame_links=%T %v", payload["frame_links"], payload["frame_links"])
 	}
 	firstLink, ok := links[0].(map[string]any)
-	if !ok || firstLink["carrier"] != true || firstLink["carrier_session_id"] != "status-carrier" {
+	carrierSlots, carrierSlotsOK := firstLink["carrier_slots"].([]any)
+	if !ok || firstLink["carrier"] != true || firstLink["carrier_session_id"] != "status-carrier" || firstLink["carrier_count"] != float64(2) || !carrierSlotsOK || len(carrierSlots) != 2 {
 		t.Fatalf("unexpected frame link: %+v", firstLink)
 	}
 }

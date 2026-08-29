@@ -2765,6 +2765,12 @@ func probeLocalVirtualRouterFrameLinkStatusPayload(link *probeVirtualRouterFrame
 	openedAt := link.openedAt
 	lastUsed := link.lastUsed
 	token := link.carrier
+	carrierSlots := make([]int, 0, len(link.carriers))
+	for slot := 0; slot < probeVirtualRouterCarrierMaxCount; slot++ {
+		if carrier := link.carriers[slot]; carrier != nil && carrier.conn != nil {
+			carrierSlots = append(carrierSlots, slot)
+		}
+	}
 	rt := link.runtime
 	closed := isProbeVirtualRouterFrameLinkClosed(link)
 	link.mu.Unlock()
@@ -2779,6 +2785,8 @@ func probeLocalVirtualRouterFrameLinkStatusPayload(link *probeVirtualRouterFrame
 		"last_used_ms":         probeDurationMilliseconds(now.Sub(lastUsed)),
 		"closed":               closed,
 		"carrier":              false,
+		"carrier_count":        len(carrierSlots),
+		"carrier_slots":        carrierSlots,
 		"tx_queue":             txDepth,
 		"tx_capacity":          txCap,
 		"tx_control_queue":     txControlDepth,
@@ -2876,6 +2884,10 @@ func probeLocalVirtualRouterRuleRuntimeStatusPayloads() []map[string]any {
 func probeLocalVirtualRouterCarrierCount(items []map[string]any) int {
 	count := 0
 	for _, item := range items {
+		if carriers, ok := item["carrier_count"].(int); ok {
+			count += carriers
+			continue
+		}
 		if carrier, _ := item["carrier"].(bool); carrier {
 			count++
 		}

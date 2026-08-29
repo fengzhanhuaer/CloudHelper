@@ -5867,13 +5867,13 @@ func TestProbeVirtualRouterMultiCarrierNegotiationAndSlotValidation(t *testing.T
 	if slot, err := probeVirtualRouterCarrierSlotFromRequest(request); err != nil || slot != 0 {
 		t.Fatalf("legacy request slot=(%d,%v), want (0,nil)", slot, err)
 	}
-	request.Header.Set(probeRouteCodexCarrierSlotHeader, "3")
-	if slot, err := probeVirtualRouterCarrierSlotFromRequest(request); err != nil || slot != 3 {
-		t.Fatalf("multi-carrier request slot=(%d,%v), want (3,nil)", slot, err)
+	request.Header.Set(probeRouteCodexCarrierSlotHeader, "263")
+	if slot, err := probeVirtualRouterCarrierSlotFromRequest(request); err != nil || slot != 263 {
+		t.Fatalf("multi-carrier request slot=(%d,%v), want (263,nil)", slot, err)
 	}
-	request.Header.Set(probeRouteCodexCarrierSlotHeader, "4")
+	request.Header.Set(probeRouteCodexCarrierSlotHeader, "264")
 	if _, err := probeVirtualRouterCarrierSlotFromRequest(request); err == nil {
-		t.Fatal("slot outside 0..3 should be rejected")
+		t.Fatal("slot outside 0..263 should be rejected")
 	}
 
 	left, right := net.Pipe()
@@ -5894,19 +5894,19 @@ func TestProbeVirtualRouterMultiCarrierNegotiationAndSlotValidation(t *testing.T
 	_ = legacy.Close()
 }
 
-func TestProbeVirtualRouterCarrierCountDefaultsAndClamps(t *testing.T) {
+func TestProbeVirtualRouterCarrierCountDefaultsAndAllowedValues(t *testing.T) {
 	for _, test := range []struct {
 		input int
 		want  int
-	}{{0, 1}, {-1, 1}, {1, 1}, {3, 3}, {4, 4}, {9, 4}} {
+	}{{0, 4}, {-1, 4}, {1, 4}, {3, 4}, {4, 4}, {16, 16}, {64, 64}, {264, 264}, {265, 4}} {
 		if got := normalizeProbeVirtualRouterCarrierCount(test.input); got != test.want {
 			t.Fatalf("normalize carrier count %d=%d, want %d", test.input, got, test.want)
 		}
 	}
 	rules := sanitizeProbeVirtualRouterTopologyRules([]probeVirtualRouterTopologyRule{{
-		ID: "vr-carriers", FromNodeID: "1", ToNodeID: "2", Direction: "forward", CarrierCount: 3, Enabled: true,
+		ID: "vr-carriers", FromNodeID: "1", ToNodeID: "2", Direction: "forward", CarrierCount: 64, Enabled: true,
 	}})
-	if len(rules) != 1 || rules[0].CarrierCount != 3 {
+	if len(rules) != 1 || rules[0].CarrierCount != 64 {
 		t.Fatalf("sanitized carrier count was not preserved: %+v", rules)
 	}
 }

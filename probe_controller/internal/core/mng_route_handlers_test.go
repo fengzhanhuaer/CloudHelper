@@ -31,6 +31,8 @@ func TestMngRoutePageIncludesMultiCarrierAndBufferControls(t *testing.T) {
 	markers := []string{
 		`data-vr-carrier-count`,
 		`carrier_count: normalizeVirtualRouterCarrierCount`,
+		`[4, 16, 64, 264]`,
+		`carrier_count: 4`,
 		`data-tab="buffers"`,
 		`id="btn-vr-buffers-report"`,
 		`id="btn-vr-buffers-reset"`,

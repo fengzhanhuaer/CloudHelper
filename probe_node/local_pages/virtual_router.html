@@ -915,7 +915,7 @@
     const proxyUsernameEl = document.getElementById('proxyUsername');
     const proxyPasswordEl = document.getElementById('proxyPassword');
     const tunEgressSelectEl = document.getElementById('tunEgressSelect');
-    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260829-buffer-status';
+    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260829-multi-carrier-status';
     const REQUEST_TIMEOUT_DEFAULT_MS = 20000;
     const REQUEST_TIMEOUT_TUN_INSTALL_MS = 90000;
     let tunPollingTimer = null;
@@ -1392,11 +1392,15 @@
         return;
       }
       rows.innerHTML = items.map((item) => {
-        const carrierText = item.carrier ? (item.carrier_session_id || 'connected') : (item.closed ? 'closed' : 'none');
-        const carrierKind = item.carrier ? 'ok' : 'warn';
+        const carrierCount = Number(item.carrier_count || (item.carrier ? 1 : 0));
+        const carrierSlots = Array.isArray(item.carrier_slots) ? item.carrier_slots : [];
+        const carrierText = carrierCount > 0
+          ? `${formatNumber(carrierCount)} 条${carrierSlots.length ? ` / slot ${carrierSlots.join(', ')}` : ''}`
+          : (item.closed ? 'closed' : 'none');
+        const carrierKind = carrierCount > 0 ? 'ok' : 'warn';
         const idle = 'RX ' + formatDurationMS(item.rx_idle_ms) + ' / TX ' + formatDurationMS(item.tx_idle_ms);
         const rxWorkers = Number(item.rx_dispatch_workers || 0);
-        return `<tr${item.carrier ? '' : ' class="packet-error"'}>
+        return `<tr${carrierCount > 0 ? '' : ' class="packet-error"'}>
           <td class="mono">${escapeHTML(item.key || '-')}</td>
           <td>${escapeHTML(peerNodeDisplayName(item))}</td>
           <td>${statusPillHTML(carrierKind, carrierText)}</td>

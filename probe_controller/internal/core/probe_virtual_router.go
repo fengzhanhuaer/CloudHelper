@@ -1484,13 +1484,12 @@ func normalizeProbeVirtualRouterRouteLayer(raw string) string {
 }
 
 func normalizeProbeVirtualRouterCarrierCount(value int) int {
-	if value <= 0 {
-		return 1
-	}
-	if value > 4 {
+	switch value {
+	case 4, 16, 64, 264:
+		return value
+	default:
 		return 4
 	}
-	return value
 }
 
 func normalizeProbeVirtualRouterIP(raw string) string {

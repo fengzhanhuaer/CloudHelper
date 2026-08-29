@@ -640,15 +640,15 @@ func TestNormalizeProbeVirtualRouterCarrierCount(t *testing.T) {
 	for _, test := range []struct {
 		input int
 		want  int
-	}{{0, 1}, {-1, 1}, {1, 1}, {3, 3}, {4, 4}, {8, 4}} {
+	}{{0, 4}, {-1, 4}, {1, 4}, {3, 4}, {4, 4}, {16, 16}, {64, 64}, {264, 264}, {265, 4}} {
 		if got := normalizeProbeVirtualRouterCarrierCount(test.input); got != test.want {
 			t.Fatalf("normalize carrier count %d=%d, want %d", test.input, got, test.want)
 		}
 	}
 	rules := normalizeProbeVirtualRouterTopologyRules([]probeVirtualRouterTopologyRule{{
-		ID: "vr-carriers", FromNodeID: "1", ToNodeID: "2", Direction: "forward", CarrierCount: 3, Enabled: true,
+		ID: "vr-carriers", FromNodeID: "1", ToNodeID: "2", Direction: "forward", CarrierCount: 64, Enabled: true,
 	}})
-	if len(rules) != 1 || rules[0].CarrierCount != 3 {
+	if len(rules) != 1 || rules[0].CarrierCount != 64 {
 		t.Fatalf("normalized carrier count was not preserved: %+v", rules)
 	}
 }
