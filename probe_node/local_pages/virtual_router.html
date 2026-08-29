@@ -359,6 +359,7 @@
     <div class="subtabs" role="tablist">
       <button class="subtab active" data-tab="status" type="button" role="tab" aria-selected="true">路由设置</button>
       <button class="subtab" data-tab="routeStatus" type="button" role="tab" aria-selected="false">路由状态</button>
+      <button class="subtab" data-tab="buffers" type="button" role="tab" aria-selected="false">缓冲状态</button>
       <button class="subtab" data-tab="connections" type="button" role="tab" aria-selected="false">最近连接</button>
       <button class="subtab" data-tab="dnsRecords" type="button" role="tab" aria-selected="false">DNS 查询记录</button>
       <button class="subtab" data-tab="packets" type="button" role="tab" aria-selected="false">最近报文</button>
@@ -613,6 +614,43 @@
       <section class="card" style="margin-top:14px;">
         <h2>最近异常</h2>
         <div id="routeStatusLatestError" class="hint">-</div>
+      </section>
+    </div>
+
+    <div id="buffersTab" class="tab-panel">
+      <section class="card">
+        <div class="section-head">
+          <h2>缓冲状态</h2>
+          <div class="actions">
+            <button id="bufferRefreshBtn" class="secondary" type="button">刷新</button>
+            <button id="bufferResetBtn" class="warn" type="button">重新统计</button>
+          </div>
+        </div>
+        <div class="status-cards">
+          <div class="status-card"><span>缓冲区</span><strong id="bufferQueueCount">0</strong></div>
+          <div class="status-card"><span>当前占用</span><strong id="bufferCurrentDepth">0</strong></div>
+          <div class="status-card"><span>峰值占用</span><strong id="bufferPeakDepth">0</strong></div>
+          <div class="status-card"><span>统计起点</span><strong id="bufferStatsStartedAt" class="compact">-</strong></div>
+          <div class="status-card"><span>采集时间</span><strong id="bufferCollectedAt" class="compact">-</strong></div>
+        </div>
+        <div class="table-wrap" style="margin-top:12px;">
+          <table>
+            <thead>
+              <tr>
+                <th>缓冲区</th>
+                <th>范围</th>
+                <th>当前</th>
+                <th>容量</th>
+                <th>峰值</th>
+                <th>事件</th>
+                <th>统计起点</th>
+              </tr>
+            </thead>
+            <tbody id="bufferRows">
+              <tr><td colspan="7" class="hint">暂无缓冲状态</td></tr>
+            </tbody>
+          </table>
+        </div>
       </section>
     </div>
 
@@ -877,7 +915,7 @@
     const proxyUsernameEl = document.getElementById('proxyUsername');
     const proxyPasswordEl = document.getElementById('proxyPassword');
     const tunEgressSelectEl = document.getElementById('tunEgressSelect');
-    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260821-domain-observations';
+    const VIRTUAL_ROUTER_PAGE_VERSION = 'vrouter-local-20260829-buffer-status';
     const REQUEST_TIMEOUT_DEFAULT_MS = 20000;
     const REQUEST_TIMEOUT_TUN_INSTALL_MS = 90000;
     let tunPollingTimer = null;
@@ -898,6 +936,7 @@
     let packetFilterText = '';
     let packetSnapshot = { items: [] };
     let routeStatusSnapshot = {};
+    let bufferSnapshot = { items: [] };
     let activeTab = 'status';
 
     function setMessage(text, type) {
@@ -1171,6 +1210,47 @@
       renderRouteStatusLinks(Array.isArray(payload.frame_links) ? payload.frame_links : []);
       renderRouteStatusLatestError(payload.recent_summary || {});
       renderRouteSpeedTargetOptions(payload);
+    }
+
+    function renderBufferStatus(data) {
+      const payload = data && typeof data === 'object' ? data : {};
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      const currentDepth = items.reduce((sum, item) => sum + Number(item && item.depth || 0), 0);
+      const peakDepth = items.reduce((sum, item) => sum + Number(item && item.peak_depth || 0), 0);
+      setText('bufferQueueCount', formatNumber(items.length));
+      setText('bufferCurrentDepth', formatNumber(currentDepth));
+      setText('bufferPeakDepth', formatNumber(peakDepth));
+      setText('bufferStatsStartedAt', formatDateTime(payload.stats_started_at));
+      setText('bufferCollectedAt', formatDateTime(payload.collected_at));
+      const rows = document.getElementById('bufferRows');
+      if (!rows) return;
+      if (!items.length) {
+        rows.innerHTML = '<tr><td colspan="7" class="hint">当前没有已注册的虚拟路由缓冲区</td></tr>';
+        return;
+      }
+      rows.innerHTML = items.map((item) => {
+        const scope = [];
+        if (item.direction) scope.push(String(item.direction));
+        if (item.route_id) scope.push('route ' + String(item.route_id));
+        if (item.carrier_slot !== undefined && item.carrier_slot !== null) scope.push('slot ' + String(item.carrier_slot));
+        if (item.shard !== undefined && item.shard !== null) scope.push('shard ' + String(item.shard));
+        const eventText = [
+          '入 ' + formatNumber(item.enqueued),
+          '出 ' + formatNumber(item.dequeued),
+          '满 ' + formatNumber(item.full_events),
+          '扩 ' + formatNumber(item.grow_events),
+          '缩 ' + formatNumber(item.shrink_events),
+        ].join(' / ');
+        return `<tr>
+          <td><div>${escapeHTML(item.stage || '-')}</div><div class="queue-meta mono">${escapeHTML(item.id || '-')}</div></td>
+          <td class="small mono">${escapeHTML(scope.join(' / ') || '-')}</td>
+          <td>${queueCellHTML(item.depth, item.allocated_capacity)}</td>
+          <td class="mono">${escapeHTML(formatNumber(item.allocated_capacity) + ' / ' + formatNumber(item.max_capacity))}</td>
+          <td class="mono">${escapeHTML(formatNumber(item.peak_depth) + ' / cap ' + formatNumber(item.peak_allocated_capacity))}</td>
+          <td class="small mono">${escapeHTML(eventText)}</td>
+          <td class="small">${escapeHTML(formatDateTime(item.stats_started_at || payload.stats_started_at))}</td>
+        </tr>`;
+      }).join('');
     }
 
     function renderRouteSpeedTargetOptions(data) {
@@ -2003,6 +2083,29 @@
       return routeStatusSnapshot;
     }
 
+    async function loadBufferStatus() {
+      const data = await requestJSON('/local/api/virtual_router/buffers', { method: 'GET' });
+      bufferSnapshot = data || { items: [] };
+      renderBufferStatus(bufferSnapshot);
+      return bufferSnapshot;
+    }
+
+    async function resetBufferStats() {
+      const button = document.getElementById('bufferResetBtn');
+      if (button) button.disabled = true;
+      try {
+        const data = await requestJSON('/local/api/virtual_router/buffers', {
+          method: 'POST',
+          body: JSON.stringify({ action: 'reset' }),
+        });
+        bufferSnapshot = data || { items: [] };
+        renderBufferStatus(bufferSnapshot);
+        setMessage('缓冲峰值和事件统计已重新开始', 'success');
+      } finally {
+        if (button) button.disabled = false;
+      }
+    }
+
     async function refreshRoutePathRTT() {
       const button = document.getElementById('routePathRTTRefreshBtn');
       if (button) button.disabled = true;
@@ -2232,6 +2335,7 @@
       tunPollingTimer = setInterval(() => {
         loadTunStatus().catch(() => {});
         if (activeTab === 'routeStatus') loadRouteStatus().catch(() => {});
+        if (activeTab === 'buffers') loadBufferStatus().catch(() => {});
         if (activeTab === 'connections' && !connectionAutoRefreshPaused) loadConnections().catch(() => {});
         if (activeTab === 'dnsRecords' && !dnsRecordAutoRefreshPaused) loadDomainObservations().catch(() => {});
         if (activeTab === 'packets' && !packetAutoRefreshPaused) loadPackets().catch(() => {});
@@ -2239,7 +2343,7 @@
     }
 
     function normalizeTab(tab) {
-      return tab === 'routeStatus' || tab === 'connections' || tab === 'dnsRecords' || tab === 'packets' || tab === 'routeTest' ? tab : 'status';
+      return tab === 'routeStatus' || tab === 'buffers' || tab === 'connections' || tab === 'dnsRecords' || tab === 'packets' || tab === 'routeTest' ? tab : 'status';
     }
 
     function tabFromLocationHash() {
@@ -2258,12 +2362,16 @@
       });
       document.getElementById('statusTab').classList.toggle('active', activeTab === 'status');
       document.getElementById('routeStatusTab').classList.toggle('active', activeTab === 'routeStatus');
+      document.getElementById('buffersTab').classList.toggle('active', activeTab === 'buffers');
       document.getElementById('connectionsTab').classList.toggle('active', activeTab === 'connections');
       document.getElementById('dnsRecordsTab').classList.toggle('active', activeTab === 'dnsRecords');
       document.getElementById('packetsTab').classList.toggle('active', activeTab === 'packets');
       document.getElementById('routeTestTab').classList.toggle('active', activeTab === 'routeTest');
       if (activeTab === 'routeStatus') {
         loadRouteStatus().catch((err) => setMessage('读取路由状态失败：' + err.message, 'error'));
+      }
+      if (activeTab === 'buffers') {
+        loadBufferStatus().catch((err) => setMessage('读取缓冲状态失败：' + err.message, 'error'));
       }
       if (activeTab === 'connections') {
         loadConnections().catch((err) => setMessage('读取最近连接失败：' + err.message, 'error'));
@@ -2298,6 +2406,13 @@
     });
     document.getElementById('routeStatusRefreshBtn').addEventListener('click', () => {
       loadRouteStatus().then(() => setMessage('路由状态已刷新', 'success')).catch((err) => setMessage('读取路由状态失败：' + err.message, 'error'));
+    });
+    document.getElementById('bufferRefreshBtn').addEventListener('click', () => {
+      loadBufferStatus().then(() => setMessage('缓冲状态已刷新', 'success')).catch((err) => setMessage('读取缓冲状态失败：' + err.message, 'error'));
+    });
+    document.getElementById('bufferResetBtn').addEventListener('click', () => {
+      if (!window.confirm('重新开始统计缓冲峰值和事件计数？当前队列数据不会被清空。')) return;
+      resetBufferStats().catch((err) => setMessage('重新统计失败：' + err.message, 'error'));
     });
     document.getElementById('routePathRTTRefreshBtn').addEventListener('click', () => {
       refreshRoutePathRTT().catch((err) => setMessage('刷新路径延迟失败：' + err.message, 'error'));

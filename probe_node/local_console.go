@@ -1791,6 +1791,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/logs", probeLocalLogsHandler)
 	mux.HandleFunc("/local/api/virtual_router/settings", probeLocalVirtualRouterSettingsHandler)
 	mux.HandleFunc("/local/api/virtual_router/status", probeLocalVirtualRouterStatusHandler)
+	mux.HandleFunc("/local/api/virtual_router/buffers", probeLocalVirtualRouterBuffersHandler)
 	mux.HandleFunc("/local/api/virtual_router/packets", probeLocalVirtualRouterPacketsHandler)
 	mux.HandleFunc("/local/api/virtual_router/connections", probeLocalVirtualRouterConnectionsHandler)
 	mux.HandleFunc("/local/api/virtual_router/domain_observations", probeLocalVirtualRouterDomainObservationsHandler)
@@ -2350,6 +2351,31 @@ func probeLocalVirtualRouterStatusHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, probeLocalVirtualRouterStatusPayload())
+}
+
+func probeLocalVirtualRouterBuffersHandler(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, snapshotProbeVirtualRouterBuffers())
+	case http.MethodPost:
+		var req struct {
+			Action string `json:"action"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		if !strings.EqualFold(strings.TrimSpace(req.Action), "reset") {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "action must be reset"})
+			return
+		}
+		writeJSON(w, http.StatusOK, resetProbeVirtualRouterBufferStats())
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func probeLocalVirtualRouterPathRTTHandler(w http.ResponseWriter, r *http.Request) {

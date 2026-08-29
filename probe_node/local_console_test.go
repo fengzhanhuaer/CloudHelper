@@ -412,6 +412,64 @@ func TestProbeLocalVirtualRouterStatusHandlerReturnsRuntimeDebugState(t *testing
 	}
 }
 
+func TestProbeLocalVirtualRouterBuffersHandlerReturnsAndResetsStats(t *testing.T) {
+	mux := setupProbeLocalConsoleTest(t)
+	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")
+	queue := newProbeAdaptiveQueue[int](probeAdaptiveQueueOptions{
+		ID:              "local-console-buffer-test",
+		Stage:           "test_stage",
+		Direction:       "tx",
+		RouteID:         "test-route",
+		InitialCapacity: 1,
+		MaxCapacity:     4,
+	})
+	t.Cleanup(queue.Close)
+	if !queue.TryPush(1) || !queue.TryPush(2) {
+		t.Fatal("failed to seed adaptive queue")
+	}
+
+	resp := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/virtual_router/buffers", nil, sessionCookie)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("buffers status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	payload := decodeProbeLocalJSON(t, resp)
+	item := findProbeLocalBufferItem(t, payload, "local-console-buffer-test")
+	if item["depth"] != float64(2) || item["allocated_capacity"] != float64(2) || item["peak_depth"] != float64(2) {
+		t.Fatalf("unexpected buffer snapshot: %+v", item)
+	}
+
+	resetResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/virtual_router/buffers", map[string]any{"action": "reset"}, sessionCookie)
+	if resetResp.Code != http.StatusOK {
+		t.Fatalf("buffer reset status=%d body=%s", resetResp.Code, resetResp.Body.String())
+	}
+	resetPayload := decodeProbeLocalJSON(t, resetResp)
+	resetItem := findProbeLocalBufferItem(t, resetPayload, "local-console-buffer-test")
+	if resetItem["depth"] != float64(2) || resetItem["peak_depth"] != float64(2) || resetItem["enqueued"] != float64(0) || resetItem["grow_events"] != float64(0) {
+		t.Fatalf("unexpected reset buffer snapshot: %+v", resetItem)
+	}
+
+	badResp := doProbeLocalRequest(t, mux, http.MethodPost, "/local/api/virtual_router/buffers", map[string]any{"action": "clear"}, sessionCookie)
+	if badResp.Code != http.StatusBadRequest {
+		t.Fatalf("invalid buffer action status=%d body=%s", badResp.Code, badResp.Body.String())
+	}
+}
+
+func findProbeLocalBufferItem(t *testing.T, payload map[string]any, id string) map[string]any {
+	t.Helper()
+	items, ok := payload["items"].([]any)
+	if !ok {
+		t.Fatalf("buffer items=%T %v", payload["items"], payload["items"])
+	}
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if ok && item["id"] == id {
+			return item
+		}
+	}
+	t.Fatalf("buffer %q not found in %+v", id, items)
+	return nil
+}
+
 func TestProbeLocalVirtualRouterSettingsHandlerConfiguresProxy(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	sessionCookie := registerAndLoginProbeLocal(t, mux, "admin", "secret1234")

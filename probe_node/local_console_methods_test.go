@@ -19,6 +19,7 @@ func TestProbeLocalAPIMethodGuards(t *testing.T) {
 		{name: "tun status should only allow GET", method: http.MethodPost, path: "/local/api/tun/status", body: map[string]any{}},
 		{name: "logs should only allow GET", method: http.MethodPost, path: "/local/api/logs", body: map[string]any{}},
 		{name: "virtual router settings should reject PUT", method: http.MethodPut, path: "/local/api/virtual_router/settings", body: map[string]any{}},
+		{name: "virtual router buffers should reject PUT", method: http.MethodPut, path: "/local/api/virtual_router/buffers", body: map[string]any{}},
 		{name: "virtual router packets should only allow GET", method: http.MethodPost, path: "/local/api/virtual_router/packets", body: map[string]any{}},
 		{name: "virtual router route test should reject PUT", method: http.MethodPut, path: "/local/api/virtual_router/route_test", body: map[string]any{}},
 		{name: "virtual router route curl test should reject PUT", method: http.MethodPut, path: "/local/api/virtual_router/route_test/curl", body: map[string]any{}},
