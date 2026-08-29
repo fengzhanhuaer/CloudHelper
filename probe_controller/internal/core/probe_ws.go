@@ -11,21 +11,22 @@ import (
 )
 
 type probeReportMessage struct {
-	Type                 string                        `json:"type"`
-	NodeID               string                        `json:"node_id"`
-	Platform             string                        `json:"platform,omitempty"`
-	OS                   string                        `json:"os,omitempty"`
-	Arch                 string                        `json:"arch,omitempty"`
-	IPv4                 []string                      `json:"ipv4,omitempty"`
-	IPv6                 []string                      `json:"ipv6,omitempty"`
-	System               probeSystemMetrics            `json:"system"`
-	MachineUptimeSeconds int64                         `json:"machine_uptime_seconds,omitempty"`
-	Version              string                        `json:"version,omitempty"`
-	BuildKind            string                        `json:"build_kind,omitempty"`
-	SpecialExit          probeSpecialExitRuntimeReport `json:"special_exit,omitempty"`
-	LinuxRouter          probeLinuxRouterRuntimeReport `json:"linux_router,omitempty"`
-	RelayStatus          []probeRelayStatusItem        `json:"relay_status,omitempty"`
-	Timestamp            string                        `json:"timestamp,omitempty"`
+	Type                 string                         `json:"type"`
+	NodeID               string                         `json:"node_id"`
+	Platform             string                         `json:"platform,omitempty"`
+	OS                   string                         `json:"os,omitempty"`
+	Arch                 string                         `json:"arch,omitempty"`
+	IPv4                 []string                       `json:"ipv4,omitempty"`
+	IPv6                 []string                       `json:"ipv6,omitempty"`
+	System               probeSystemMetrics             `json:"system"`
+	MachineUptimeSeconds int64                          `json:"machine_uptime_seconds,omitempty"`
+	Version              string                         `json:"version,omitempty"`
+	BuildKind            string                         `json:"build_kind,omitempty"`
+	SpecialExit          probeSpecialExitRuntimeReport  `json:"special_exit,omitempty"`
+	LinuxRouter          probeLinuxRouterRuntimeReport  `json:"linux_router,omitempty"`
+	RelayStatus          []probeRelayStatusItem         `json:"relay_status,omitempty"`
+	VirtualRouterBuffers probeVirtualRouterBufferReport `json:"virtual_router_buffers,omitempty"`
+	Timestamp            string                         `json:"timestamp,omitempty"`
 }
 
 type probeAckMessage struct {
@@ -111,7 +112,7 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 			}
 
 			msg.NodeID = nodeID
-			updateProbeRuntimeReportWithPlatform(nodeID, msg.IPv4, msg.IPv6, msg.System, msg.Version, msg.Platform, msg.OS, msg.Arch, msg.MachineUptimeSeconds, msg.RelayStatus)
+			updateProbeRuntimeReportWithPlatformAndBuffers(nodeID, msg.IPv4, msg.IPv6, msg.System, msg.Version, msg.Platform, msg.OS, msg.Arch, msg.MachineUptimeSeconds, msg.RelayStatus, msg.VirtualRouterBuffers)
 			if updateProbeRuntimeProductStatus(nodeID, msg.BuildKind, msg.SpecialExit, msg.LinuxRouter) {
 				scheduleProbeRouteConfigSyncToKnownNodes()
 			}

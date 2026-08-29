@@ -81,6 +81,7 @@ type probeVirtualRouterTopologyRule struct {
 	ToServicePort     int    `json:"to_service_port,omitempty"`
 	ToTLSSPKISHA256   string `json:"to_tls_spki_sha256,omitempty"`
 	RouteLayer        string `json:"route_layer,omitempty"`
+	CarrierCount      int    `json:"carrier_count,omitempty"`
 	UserID            string `json:"user_id,omitempty"`
 	UserPublicKey     string `json:"user_public_key,omitempty"`
 	Secret            string `json:"secret,omitempty"`
@@ -548,6 +549,7 @@ func normalizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopology
 			ToServicePort:     toServicePort,
 			ToTLSSPKISHA256:   normalizeProbeVirtualRouterTLSSPKI(item.ToTLSSPKISHA256),
 			RouteLayer:        normalizeProbeVirtualRouterRouteLayer(item.RouteLayer),
+			CarrierCount:      normalizeProbeVirtualRouterCarrierCount(item.CarrierCount),
 			UserID:            strings.TrimSpace(item.UserID),
 			UserPublicKey:     strings.TrimSpace(item.UserPublicKey),
 			Secret:            firstNonEmptyProbeVirtualRouter(strings.TrimSpace(item.Secret), randomProbeNodeSecret(probeVirtualRouterDefaultSecretLen)),
@@ -1479,6 +1481,16 @@ func normalizeProbeVirtualRouterRouteLayer(raw string) string {
 	default:
 		return "auto"
 	}
+}
+
+func normalizeProbeVirtualRouterCarrierCount(value int) int {
+	if value <= 0 {
+		return 1
+	}
+	if value > 4 {
+		return 4
+	}
+	return value
 }
 
 func normalizeProbeVirtualRouterIP(raw string) string {

@@ -76,6 +76,11 @@ type probeReportOnceCommand struct {
 	Timestamp string `json:"timestamp"`
 }
 
+type probeVirtualRouterBuffersResetCommand struct {
+	Type      string `json:"type"`
+	Timestamp string `json:"timestamp"`
+}
+
 type probeVirtualRouterLatencyProbeCommand struct {
 	Type      string `json:"type"`
 	Timestamp string `json:"timestamp"`
@@ -395,6 +400,30 @@ func dispatchProbeCertificateSyncToNode(nodeID string, controllerBaseURL string,
 
 func dispatchProbeReportOnceToKnownNodes() probeRouteConfigSyncDispatchResult {
 	return dispatchProbeReportOnceToNodes(listProbeVirtualRouterKnownNodeIDs())
+}
+
+func dispatchProbeVirtualRouterBuffersResetToNodes(nodeIDs []string) probeRouteConfigSyncDispatchResult {
+	result := probeRouteConfigSyncDispatchResult{Total: len(nodeIDs)}
+	for _, nodeID := range nodeIDs {
+		nodeID = normalizeProbeNodeID(nodeID)
+		session, ok := getProbeSession(nodeID)
+		if !ok {
+			result.Offline++
+			continue
+		}
+		command := probeVirtualRouterBuffersResetCommand{
+			Type:      "virtual_router_buffers_reset",
+			Timestamp: time.Now().UTC().Format(time.RFC3339),
+		}
+		if err := session.writeJSON(command); err != nil {
+			unregisterProbeSession(nodeID, session)
+			result.Failed++
+			result.Failures = append(result.Failures, fmt.Sprintf("%s: %v", nodeID, err))
+			continue
+		}
+		result.Dispatched++
+	}
+	return result
 }
 
 func dispatchProbeVirtualRouterLatencyProbeToKnownNodes() probeRouteConfigSyncDispatchResult {

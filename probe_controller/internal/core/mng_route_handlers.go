@@ -186,6 +186,64 @@ func mngRouteVirtualRouterStatusHandler(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+type mngVirtualRouterBufferStatus struct {
+	NodeID   string                         `json:"node_id"`
+	Online   bool                           `json:"online"`
+	LastSeen string                         `json:"last_seen,omitempty"`
+	Version  string                         `json:"version,omitempty"`
+	Buffers  probeVirtualRouterBufferReport `json:"buffers"`
+}
+
+func listMngVirtualRouterBufferStatuses() []mngVirtualRouterBufferStatus {
+	runtimes := listProbeRuntimes()
+	out := make([]mngVirtualRouterBufferStatus, 0, len(runtimes))
+	for _, runtime := range runtimes {
+		out = append(out, mngVirtualRouterBufferStatus{
+			NodeID:   normalizeProbeNodeID(runtime.NodeID),
+			Online:   runtime.Online,
+			LastSeen: strings.TrimSpace(runtime.LastSeen),
+			Version:  strings.TrimSpace(runtime.Version),
+			Buffers:  runtime.VirtualRouterBuffers,
+		})
+	}
+	return out
+}
+
+func mngRouteVirtualRouterBuffersHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{"items": listMngVirtualRouterBufferStatuses()})
+	case http.MethodPost:
+		var req struct {
+			Action string `json:"action"`
+			NodeID string `json:"node_id,omitempty"`
+		}
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+			return
+		}
+		nodeIDs := listProbeVirtualRouterKnownNodeIDs()
+		if nodeID := normalizeProbeNodeID(req.NodeID); nodeID != "" {
+			nodeIDs = []string{nodeID}
+		}
+		var result probeRouteConfigSyncDispatchResult
+		switch strings.ToLower(strings.TrimSpace(req.Action)) {
+		case "report", "summon":
+			result = dispatchProbeReportOnceToNodes(nodeIDs)
+		case "reset":
+			result = dispatchProbeVirtualRouterBuffersResetToNodes(nodeIDs)
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "action must be report or reset"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"sync": result})
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
 func mngRouteVirtualRouterLatencyProbeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

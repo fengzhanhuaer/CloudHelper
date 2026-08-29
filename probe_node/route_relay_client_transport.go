@@ -304,11 +304,17 @@ func openProbeVirtualRouterBridgeRelayNetConn(routeID string, secret string, rel
 }
 
 func openProbeVirtualRouterBridgeRelayNetConnWithDomainPolicy(routeID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration, preserveDomain bool) (net.Conn, error) {
+	conn, _, err := openProbeVirtualRouterBridgeRelayNetConnWithDomainPolicyForSlot(routeID, secret, relayHost, relayPort, layer, bridgeRole, openTimeout, preserveDomain, 0)
+	return conn, err
+}
+
+func openProbeVirtualRouterBridgeRelayNetConnWithDomainPolicyForSlot(routeID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration, preserveDomain bool, slot int) (net.Conn, bool, error) {
 	relayDialHost, relayHostHeader, err := resolveProbeRouteDialIPHostWithPolicy(relayHost, preserveDomain)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return openProbeVirtualRouterBridgeRelayNetConnWithResolvedHost(routeID, secret, relayHost, relayPort, layer, bridgeRole, relayDialHost, relayHostHeader, openTimeout, true)
+	conn, err := openProbeVirtualRouterBridgeRelayNetConnWithResolvedHostAndSlot(routeID, secret, relayHost, relayPort, layer, bridgeRole, relayDialHost, relayHostHeader, openTimeout, true, slot)
+	return conn, probeVirtualRouterConnSupportsMultiCarrier(conn), err
 }
 
 func openProbeVirtualRouterBridgeRelayNetConnDefault(routeID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, cacheOnSuccess bool) (net.Conn, error) {
@@ -321,6 +327,10 @@ func openProbeVirtualRouterBridgeRelayNetConnDefault(routeID string, secret stri
 }
 
 func openProbeVirtualRouterBridgeRelayNetConnWithResolvedHost(routeID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
+	return openProbeVirtualRouterBridgeRelayNetConnWithResolvedHostAndSlot(routeID, secret, relayHost, relayPort, layer, bridgeRole, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess, 0)
+}
+
+func openProbeVirtualRouterBridgeRelayNetConnWithResolvedHostAndSlot(routeID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool, slot int) (net.Conn, error) {
 	endpointKey := probeRouteRelayProtocolEndpointKey(relayHost, relayPort)
 	if endpointKey == "" {
 		return nil, errors.New("relay endpoint is required")
@@ -348,7 +358,8 @@ func openProbeVirtualRouterBridgeRelayNetConnWithResolvedHost(routeID string, se
 			continue
 		}
 		result := probeRouteRelayProtocolDialResult{Protocol: cleanProtocol, StartedAt: time.Now()}
-		conn, err := openProbeRouteRelayNetConnWithResolvedHostModeAndToken(routeID, secret, relayHost, relayPort, cleanProtocol, bridgeRole, probeRouteRelayModeBridge, "", relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
+		connToken := fmt.Sprintf("vrouter-carrier-slot-%d", slot)
+		conn, err := openProbeRouteRelayNetConnWithResolvedHostModeAndToken(routeID, secret, relayHost, relayPort, cleanProtocol, bridgeRole, probeRouteRelayModeBridge, connToken, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
 		result.Latency = time.Since(result.StartedAt)
 		if err == nil {
 			result.Conn = conn
@@ -1091,6 +1102,42 @@ func openProbeRouteRelayNetConnWithResolvedHostModeAndToken(routeID string, secr
 	return conn, err
 }
 
+type probeVirtualRouterNegotiatedConn struct {
+	net.Conn
+	multiCarrier bool
+}
+
+func probeVirtualRouterCarrierSlotFromConnToken(connToken string) (int, bool) {
+	const prefix = "vrouter-carrier-slot-"
+	raw := strings.TrimSpace(connToken)
+	if !strings.HasPrefix(raw, prefix) {
+		return 0, false
+	}
+	slot, err := strconv.Atoi(strings.TrimPrefix(raw, prefix))
+	if err != nil || slot < 0 || slot >= probeVirtualRouterCarrierMaxCount {
+		return 0, false
+	}
+	return slot, true
+}
+
+func probeVirtualRouterConnSupportsMultiCarrier(conn net.Conn) bool {
+	negotiated, ok := conn.(*probeVirtualRouterNegotiatedConn)
+	return ok && negotiated != nil && negotiated.multiCarrier
+}
+
+func wrapProbeVirtualRouterNegotiatedConn(conn net.Conn, connToken string, response http.Header) net.Conn {
+	if conn == nil {
+		return nil
+	}
+	if _, ok := probeVirtualRouterCarrierSlotFromConnToken(connToken); !ok {
+		return conn
+	}
+	return &probeVirtualRouterNegotiatedConn{
+		Conn:         conn,
+		multiCarrier: strings.TrimSpace(response.Get(probeRouteCodexMultiCarrierHeader)) == "1",
+	}
+}
+
 func openProbeRouteRelayWebSocketNetConn(routeID string, secret string, relayHost string, relayPort int, bridgeRole string, relayMode string, connToken string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
 	startedAt := time.Now()
 	if openTimeout <= 0 {
@@ -1111,6 +1158,9 @@ func openProbeRouteRelayWebSocketNetConn(routeID string, secret string, relayHos
 	}
 	if strings.TrimSpace(connToken) != "" {
 		header.Set(probeRouteCodexConnIDHeader, strings.TrimSpace(connToken))
+	}
+	if slot, ok := probeVirtualRouterCarrierSlotFromConnToken(connToken); ok {
+		header.Set(probeRouteCodexCarrierSlotHeader, strconv.Itoa(slot))
 	}
 
 	dialHostPort := net.JoinHostPort(relayDialHost, strconv.Itoa(relayPort))
@@ -1155,7 +1205,11 @@ func openProbeRouteRelayWebSocketNetConn(routeID string, secret string, relayHos
 		refreshProbeRouteRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
 	}
 	logProbeRouteRelayDialOutcome("websocket", routeID, "websocket", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), nil)
-	return newWebSocketNetConn(ws), nil
+	responseHeader := http.Header{}
+	if response != nil {
+		responseHeader = response.Header
+	}
+	return wrapProbeVirtualRouterNegotiatedConn(newWebSocketNetConn(ws), connToken, responseHeader), nil
 }
 
 func openProbeRouteRelayHTTP3WebSocketNetConn(routeID string, secret string, relayHost string, relayPort int, bridgeRole string, relayMode string, connToken string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {
@@ -1256,6 +1310,9 @@ func openProbeRouteRelayHTTP3WebSocketNetConn(routeID string, secret string, rel
 	if strings.TrimSpace(connToken) != "" {
 		request.Header.Set(probeRouteCodexConnIDHeader, strings.TrimSpace(connToken))
 	}
+	if slot, ok := probeVirtualRouterCarrierSlotFromConnToken(connToken); ok {
+		request.Header.Set(probeRouteCodexCarrierSlotHeader, strconv.Itoa(slot))
+	}
 	if strings.TrimSpace(relayHostHeader) != "" {
 		request.Host = strings.TrimSpace(relayHostHeader)
 	}
@@ -1300,7 +1357,7 @@ func openProbeRouteRelayHTTP3WebSocketNetConn(routeID string, secret string, rel
 	stopOpenTimer()
 	logProbeRouteRelayDialOutcome("websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), nil)
 	cancelOnce := sync.Once{}
-	return &probeRouteHTTP3StreamNetConn{
+	conn := &probeRouteHTTP3StreamNetConn{
 		stream: stream,
 		local:  probeRouteRelayNetAddr{label: "probe-route-h3-websocket-local"},
 		remote: probeRouteRelayNetAddr{label: dialHostPort},
@@ -1314,7 +1371,8 @@ func openProbeRouteRelayHTTP3WebSocketNetConn(routeID string, secret string, rel
 			})
 			return closeErr
 		},
-	}, nil
+	}
+	return wrapProbeVirtualRouterNegotiatedConn(conn, connToken, response.Header), nil
 }
 
 func probeRouteHTTP3StreamOpenTimeout(openTimeout time.Duration) time.Duration {

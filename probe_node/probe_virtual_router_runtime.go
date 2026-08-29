@@ -31,17 +31,27 @@ const (
 	probeVirtualRouterRuntimeRole          = "virtual_router"
 	// Keep several high-latency websocket batches in memory so transient relay
 	// stalls apply bounded backpressure instead of dropping IP frames at once.
-	probeVirtualRouterFrameLinkTXBufferFrames              = 512
-	probeVirtualRouterFrameLinkTXControlBufferFrames       = 32
-	probeVirtualRouterFrameLinkTXBulkBufferFrames          = 128
-	probeVirtualRouterFrameLinkTXBusinessQuantum           = 8
-	probeVirtualRouterFrameLinkTXBatchBytes                = 256 * 1024
-	probeVirtualRouterFrameLinkTXCoalesceWindow            = 200 * time.Microsecond
-	probeVirtualRouterFrameLinkTXEnqueueWait               = 750 * time.Millisecond
-	probeVirtualRouterFrameLinkRXBufferFrames              = 4096
-	probeVirtualRouterFrameLinkRXDispatchShards            = 8
-	probeVirtualRouterFrameLinkRXDispatchShardBufferFrames = 1024
-	probeVirtualRouterRXDispatchDropLogPeriod              = time.Second
+	probeVirtualRouterFrameLinkTXBufferFrames               = 512
+	probeVirtualRouterFrameLinkTXInitialFrames              = 32
+	probeVirtualRouterFrameLinkTXControlBufferFrames        = 32
+	probeVirtualRouterFrameLinkTXControlInitialFrames       = 8
+	probeVirtualRouterFrameLinkTXBulkBufferFrames           = 128
+	probeVirtualRouterFrameLinkTXBulkInitialFrames          = 16
+	probeVirtualRouterFrameLinkTXBusinessQuantum            = 8
+	probeVirtualRouterFrameLinkTXBatchBytes                 = 256 * 1024
+	probeVirtualRouterFrameLinkTXCoalesceWindow             = 200 * time.Microsecond
+	probeVirtualRouterFrameLinkTXEnqueueWait                = 750 * time.Millisecond
+	probeVirtualRouterFrameLinkRXBufferFrames               = 4096
+	probeVirtualRouterFrameLinkRXInitialFrames              = 256
+	probeVirtualRouterFrameLinkRXDispatchShards             = 8
+	probeVirtualRouterFrameLinkRXDispatchShardBufferFrames  = 1024
+	probeVirtualRouterFrameLinkRXDispatchShardInitialFrames = 64
+	probeVirtualRouterCarrierMaxCount                       = 4
+	probeVirtualRouterCarrierTXInitialFrames                = 8
+	probeVirtualRouterCarrierTXBufferFrames                 = 64
+	probeVirtualRouterCarrierFlowBindingTTL                 = 10 * time.Minute
+	probeVirtualRouterCarrierFlowBindingMax                 = 65536
+	probeVirtualRouterRXDispatchDropLogPeriod               = time.Second
 )
 
 type probeVirtualRouterRuntimeConfig struct {
@@ -67,6 +77,7 @@ type probeVirtualRouterRuntimeConfig struct {
 	peerIP        string
 	peerHost      string
 	peerPort      int
+	carrierCount  int
 	dialer        bool
 	identity      nodeIdentity
 	controllerURL string
@@ -177,16 +188,19 @@ type probeVirtualRouterFrameLink struct {
 	key               string
 	runtime           *probeVirtualRouterRuntime
 	carrier           *probeVirtualRouterPhysicalCarrier
+	carriers          map[int]*probeVirtualRouterPhysicalCarrier
+	flowBindings      map[uint32]probeVirtualRouterCarrierFlowBinding
 	requestPath       []string
 	openedAt          time.Time
 	lastUsed          time.Time
-	tx                chan probeVirtualRouterFrame
-	txControl         chan probeVirtualRouterFrame
-	txBulk            chan probeVirtualRouterFrame
-	rx                chan probeVirtualRouterFrame
-	rxDispatchShards  []chan probeVirtualRouterFrame
+	tx                *probeAdaptiveQueue[probeVirtualRouterFrame]
+	txControl         *probeAdaptiveQueue[probeVirtualRouterFrame]
+	txBulk            *probeAdaptiveQueue[probeVirtualRouterFrame]
+	rx                *probeAdaptiveQueue[probeVirtualRouterFrame]
+	rxDispatchShards  []*probeAdaptiveQueue[probeVirtualRouterFrame]
 	done              chan struct{}
 	carrierNotify     chan struct{}
+	started           bool
 	startOnce         sync.Once
 	closeOnce         sync.Once
 	rxDispatchDrops   uint64
@@ -199,6 +213,7 @@ type probeVirtualRouterFrameLink struct {
 }
 
 type probeVirtualRouterPhysicalCarrier struct {
+	slot        int
 	conn        net.Conn
 	sessionID   string
 	remoteAddr  string
@@ -206,8 +221,15 @@ type probeVirtualRouterPhysicalCarrier struct {
 	lastReadAt  time.Time
 	lastWriteAt time.Time
 	done        chan struct{}
+	tx          *probeAdaptiveQueue[probeVirtualRouterFrame]
+	startOnce   sync.Once
 	closeOnce   sync.Once
 	mu          sync.Mutex
+}
+
+type probeVirtualRouterCarrierFlowBinding struct {
+	Slot     int
+	LastSeen time.Time
 }
 
 type probeVirtualRouterRuleRuntime struct {
@@ -405,6 +427,7 @@ func isSameProbeVirtualRouterRuntimeConfig(routeID string, cfg probeVirtualRoute
 		c.peerIP == cfg.peerIP &&
 		c.peerHost == cfg.peerHost &&
 		c.peerPort == cfg.peerPort &&
+		normalizeProbeVirtualRouterCarrierCount(c.carrierCount) == normalizeProbeVirtualRouterCarrierCount(cfg.carrierCount) &&
 		c.dialer == cfg.dialer &&
 		c.secret == cfg.secret &&
 		c.rawPublicKey == cfg.rawPublicKey
@@ -750,7 +773,14 @@ func handleProbeVirtualRouterBridgeRelayWebSocket(rt *probeVirtualRouterRuntime,
 		WriteBufferSize:   probeRouteRelayWebSocketBufferBytes,
 		EnableCompression: false,
 	}
-	ws, err := upgrader.Upgrade(w, r, nil)
+	slot, err := probeVirtualRouterCarrierSlotFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	responseHeader := http.Header{}
+	responseHeader.Set(probeRouteCodexMultiCarrierHeader, "1")
+	ws, err := upgrader.Upgrade(w, r, responseHeader)
 	if err != nil {
 		log.Printf("probe virtual router websocket relay upgrade failed: route=%s remote=%s err=%v", rt.cfg.routeID, r.RemoteAddr, err)
 		return
@@ -758,7 +788,7 @@ func handleProbeVirtualRouterBridgeRelayWebSocket(rt *probeVirtualRouterRuntime,
 	defer ws.Close()
 	conn := newWebSocketNetConn(ws)
 	sessionID := rt.nextBridgeSessionID("vrouter-carrier")
-	runProbeVirtualRouterPhysicalCarrier(rt, conn, sessionID, strings.TrimSpace(r.RemoteAddr))
+	runProbeVirtualRouterPhysicalCarrier(rt, slot, conn, sessionID, strings.TrimSpace(r.RemoteAddr))
 }
 
 func handleProbeVirtualRouterBridgeRelayH3(rt *probeVirtualRouterRuntime, bridgeRole string, w http.ResponseWriter, r *http.Request) {
@@ -766,6 +796,12 @@ func handleProbeVirtualRouterBridgeRelayH3(rt *probeVirtualRouterRuntime, bridge
 		http.Error(w, "virtual router runtime not found", http.StatusNotFound)
 		return
 	}
+	slot, err := probeVirtualRouterCarrierSlotFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set(probeRouteCodexMultiCarrierHeader, "1")
 	conn, ok := probeVirtualRouterConnFromH3(w, r, "probe-vrouter-h3-bridge")
 	if !ok {
 		log.Printf("probe virtual router h3 relay stream unavailable: route=%s remote=%s proto=%s", rt.cfg.routeID, r.RemoteAddr, r.Proto)
@@ -774,7 +810,22 @@ func handleProbeVirtualRouterBridgeRelayH3(rt *probeVirtualRouterRuntime, bridge
 	}
 	defer conn.Close()
 	sessionID := rt.nextBridgeSessionID("vrouter-carrier")
-	runProbeVirtualRouterPhysicalCarrier(rt, conn, sessionID, strings.TrimSpace(r.RemoteAddr))
+	runProbeVirtualRouterPhysicalCarrier(rt, slot, conn, sessionID, strings.TrimSpace(r.RemoteAddr))
+}
+
+func probeVirtualRouterCarrierSlotFromRequest(r *http.Request) (int, error) {
+	if r == nil {
+		return 0, errors.New("virtual router carrier request is nil")
+	}
+	raw := strings.TrimSpace(r.Header.Get(probeRouteCodexCarrierSlotHeader))
+	if raw == "" {
+		return 0, nil
+	}
+	slot, err := strconv.Atoi(raw)
+	if err != nil || slot < 0 || slot >= probeVirtualRouterCarrierMaxCount {
+		return 0, fmt.Errorf("invalid virtual router carrier slot")
+	}
+	return slot, nil
 }
 
 func isProbeVirtualRouterH3Connect(r *http.Request) bool {
@@ -936,6 +987,7 @@ func startProbeVirtualRouterBridgeWorker(rt *probeVirtualRouterRuntime) {
 }
 
 func runProbeVirtualRouterBridgeDialer(rt *probeVirtualRouterRuntime) {
+	extraStarted := false
 	backoff := probeRouteBridgeRetryMin
 	for {
 		select {
@@ -943,7 +995,7 @@ func runProbeVirtualRouterBridgeDialer(rt *probeVirtualRouterRuntime) {
 			return
 		default:
 		}
-		conn, err := openProbeVirtualRouterBridgeRelayNetConnWithDomainPolicy(
+		conn, multiCarrier, err := openProbeVirtualRouterBridgeRelayNetConnWithDomainPolicyForSlot(
 			rt.cfg.routeID,
 			rt.cfg.secret,
 			rt.cfg.peerHost,
@@ -952,6 +1004,7 @@ func runProbeVirtualRouterBridgeDialer(rt *probeVirtualRouterRuntime) {
 			probeRouteBridgeRoleToNext,
 			probeRouteRelayDialTimeout+probeRouteRelayResponseReadDeadline,
 			isProbeVirtualRouterCloudflareCopilotDomain(rt.cfg.peerHost),
+			0,
 		)
 		if err != nil {
 			key := fmt.Sprintf("bridge_dial|%s|%s:%d|%s", rt.cfg.routeID, rt.cfg.peerHost, rt.cfg.peerPort, strings.TrimSpace(err.Error()))
@@ -963,11 +1016,66 @@ func runProbeVirtualRouterBridgeDialer(rt *probeVirtualRouterRuntime) {
 			continue
 		}
 		backoff = probeRouteBridgeRetryMin
-		sessionID := rt.nextBridgeSessionID("vrouter-carrier")
-		runProbeVirtualRouterPhysicalCarrier(rt, conn, sessionID, net.JoinHostPort(rt.cfg.peerHost, strconv.Itoa(rt.cfg.peerPort)))
+		if multiCarrier && !extraStarted {
+			extraStarted = true
+			for slot := 1; slot < normalizeProbeVirtualRouterCarrierCount(rt.cfg.carrierCount); slot++ {
+				go runProbeVirtualRouterBridgeSlotDialer(rt, slot)
+			}
+		}
+		sessionID := rt.nextBridgeSessionID("vrouter-carrier-0")
+		runProbeVirtualRouterPhysicalCarrier(rt, 0, conn, sessionID, net.JoinHostPort(rt.cfg.peerHost, strconv.Itoa(rt.cfg.peerPort)))
 		sleepProbeVirtualRouterBridgeBackoff(rt, backoff)
 		backoff = nextProbeRouteBridgeBackoff(backoff)
 	}
+}
+
+func runProbeVirtualRouterBridgeSlotDialer(rt *probeVirtualRouterRuntime, slot int) {
+	if rt == nil || slot <= 0 || slot >= normalizeProbeVirtualRouterCarrierCount(rt.cfg.carrierCount) {
+		return
+	}
+	backoff := probeRouteBridgeRetryMin
+	for {
+		select {
+		case <-rt.stopCh:
+			return
+		default:
+		}
+		conn, _, err := openProbeVirtualRouterBridgeRelayNetConnWithDomainPolicyForSlot(
+			rt.cfg.routeID,
+			rt.cfg.secret,
+			rt.cfg.peerHost,
+			rt.cfg.peerPort,
+			rt.cfg.routeLayer,
+			probeRouteBridgeRoleToNext,
+			probeRouteRelayDialTimeout+probeRouteRelayResponseReadDeadline,
+			isProbeVirtualRouterCloudflareCopilotDomain(rt.cfg.peerHost),
+			slot,
+		)
+		if err != nil {
+			key := fmt.Sprintf("bridge_dial|%s|slot=%d|%s:%d|%s", rt.cfg.routeID, slot, rt.cfg.peerHost, rt.cfg.peerPort, strings.TrimSpace(err.Error()))
+			if allowed, suppressed := takeProbeVirtualRouterLogThrottle(key, probeVirtualRouterDiagnosticLogPeriod, time.Now()); allowed {
+				log.Printf("probe virtual router bridge slot dial failed: route=%s slot=%d peer=%s:%d suppressed=%d err=%v", rt.cfg.routeID, slot, rt.cfg.peerHost, rt.cfg.peerPort, suppressed, err)
+			}
+			sleepProbeVirtualRouterBridgeBackoff(rt, backoff)
+			backoff = nextProbeRouteBridgeBackoff(backoff)
+			continue
+		}
+		backoff = probeRouteBridgeRetryMin
+		sessionID := rt.nextBridgeSessionID(fmt.Sprintf("vrouter-carrier-%d", slot))
+		runProbeVirtualRouterPhysicalCarrier(rt, slot, conn, sessionID, net.JoinHostPort(rt.cfg.peerHost, strconv.Itoa(rt.cfg.peerPort)))
+		sleepProbeVirtualRouterBridgeBackoff(rt, backoff)
+		backoff = nextProbeRouteBridgeBackoff(backoff)
+	}
+}
+
+func normalizeProbeVirtualRouterCarrierCount(value int) int {
+	if value <= 0 {
+		return 1
+	}
+	if value > probeVirtualRouterCarrierMaxCount {
+		return probeVirtualRouterCarrierMaxCount
+	}
+	return value
 }
 
 func signalProbeVirtualRouterBridgeDialer(rt *probeVirtualRouterRuntime) {
@@ -1176,6 +1284,7 @@ func buildProbeVirtualRouterRuntimeConfigForRule(config probeVirtualRouterConfig
 		listenHost:    "0.0.0.0",
 		listenPort:    localPort,
 		routeLayer:    normalizeProbeRouteRouteLayer(firstNonEmpty(strings.TrimSpace(rule.RouteLayer), probeVirtualRouterRuntimeRouteLayer)),
+		carrierCount:  normalizeProbeVirtualRouterCarrierCount(rule.CarrierCount),
 		fromNodeID:    fromNodeID,
 		toNodeID:      toNodeID,
 		localNodeID:   localNodeID,

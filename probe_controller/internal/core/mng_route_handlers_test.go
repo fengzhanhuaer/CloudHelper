@@ -27,6 +27,22 @@ func TestMngRoutePageAddVirtualRouterRuleRevealsNewRule(t *testing.T) {
 	}
 }
 
+func TestMngRoutePageIncludesMultiCarrierAndBufferControls(t *testing.T) {
+	markers := []string{
+		`data-vr-carrier-count`,
+		`carrier_count: normalizeVirtualRouterCarrierCount`,
+		`data-tab="buffers"`,
+		`id="btn-vr-buffers-report"`,
+		`id="btn-vr-buffers-reset"`,
+		`/mng/api/route/virtual_router/buffers`,
+	}
+	for _, marker := range markers {
+		if !strings.Contains(mngRoutePageHTML, marker) {
+			t.Fatalf("route page missing multi-carrier/buffer marker %q", marker)
+		}
+	}
+}
+
 func TestMngVirtualRouterSideStatsErrorIgnoresStaleErrorAfterBridgeReconnect(t *testing.T) {
 	side := mngVirtualRouterRouteSideStatus{
 		VirtualRouter: &probeVirtualRouterRuntimeStats{
@@ -283,6 +299,51 @@ func TestMngLinkVirtualRouterStatusHandlerPostDispatchesReportOnce(t *testing.T)
 		t.Fatalf("sync result=%+v", payload.Sync)
 	}
 	assertProbeVirtualRouterCommandType(t, commandCh, "report_once")
+}
+
+func TestMngVirtualRouterBuffersHandlerStoresReportsAndDispatchesControls(t *testing.T) {
+	clearProbeVirtualRouterTestRuntimes(t)
+	setProbeVirtualRouterTestProbeStore(t, probeConfigData{ProbeNodes: []probeNodeRecord{{NodeNo: 1, NodeName: "node-1"}}})
+	updateProbeRuntimeReportWithPlatformAndBuffers("1", nil, nil, probeSystemMetrics{}, "v0.5.0", "linux", "linux", "amd64", 30, nil, probeVirtualRouterBufferReport{
+		StatsStartedAt: "2026-08-29T05:00:00Z",
+		CollectedAt:    "2026-08-29T05:01:00Z",
+		Items: []probeAdaptiveQueueSnapshot{{
+			ID: "frame_link.route.carrier.0.tx", Stage: "carrier_tx", Depth: 3, AllocatedCapacity: 8, MaxCapacity: 64, PeakDepth: 7, PeakAllocatedCapacity: 8,
+		}},
+	})
+
+	getReq := httptest.NewRequest(http.MethodGet, "/mng/api/route/virtual_router/buffers", nil)
+	getRR := httptest.NewRecorder()
+	mngRouteVirtualRouterBuffersHandler(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("get status=%d body=%s", getRR.Code, getRR.Body.String())
+	}
+	var getPayload struct {
+		Items []mngVirtualRouterBufferStatus `json:"items"`
+	}
+	if err := json.Unmarshal(getRR.Body.Bytes(), &getPayload); err != nil {
+		t.Fatalf("decode get payload: %v", err)
+	}
+	if len(getPayload.Items) != 1 || len(getPayload.Items[0].Buffers.Items) != 1 || getPayload.Items[0].Buffers.Items[0].PeakDepth != 7 {
+		t.Fatalf("buffer status=%+v", getPayload.Items)
+	}
+
+	for _, test := range []struct {
+		action      string
+		commandType string
+	}{{"report", "report_once"}, {"reset", "virtual_router_buffers_reset"}} {
+		commandCh, cleanupSession := attachProbeVirtualRouterTestSession(t, "1")
+		body := bytes.NewBufferString(`{"action":"` + test.action + `","node_id":"1"}`)
+		req := httptest.NewRequest(http.MethodPost, "/mng/api/route/virtual_router/buffers", body)
+		rr := httptest.NewRecorder()
+		mngRouteVirtualRouterBuffersHandler(rr, req)
+		if rr.Code != http.StatusOK {
+			cleanupSession()
+			t.Fatalf("%s status=%d body=%s", test.action, rr.Code, rr.Body.String())
+		}
+		assertProbeVirtualRouterCommandType(t, commandCh, test.commandType)
+		cleanupSession()
+	}
 }
 
 func TestLastMngVirtualRouterRouteLatencyUsesNewestPingReport(t *testing.T) {

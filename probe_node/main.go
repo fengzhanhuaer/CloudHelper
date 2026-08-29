@@ -74,21 +74,22 @@ type nodeIdentity struct {
 }
 
 type probeReportPayload struct {
-	Type                 string                        `json:"type"`
-	NodeID               string                        `json:"node_id"`
-	Platform             string                        `json:"platform,omitempty"`
-	OS                   string                        `json:"os,omitempty"`
-	Arch                 string                        `json:"arch,omitempty"`
-	IPv4                 []string                      `json:"ipv4,omitempty"`
-	IPv6                 []string                      `json:"ipv6,omitempty"`
-	System               systemStatus                  `json:"system"`
-	MachineUptimeSeconds int64                         `json:"machine_uptime_seconds,omitempty"`
-	Version              string                        `json:"version,omitempty"`
-	BuildKind            string                        `json:"build_kind,omitempty"`
-	SpecialExit          probeSpecialExitRuntimeReport `json:"special_exit,omitempty"`
-	LinuxRouter          probeLinuxRouterRuntimeReport `json:"linux_router,omitempty"`
-	RelayStatus          []probeRouteRelayReportItem   `json:"relay_status,omitempty"`
-	Timestamp            string                        `json:"timestamp"`
+	Type                 string                         `json:"type"`
+	NodeID               string                         `json:"node_id"`
+	Platform             string                         `json:"platform,omitempty"`
+	OS                   string                         `json:"os,omitempty"`
+	Arch                 string                         `json:"arch,omitempty"`
+	IPv4                 []string                       `json:"ipv4,omitempty"`
+	IPv6                 []string                       `json:"ipv6,omitempty"`
+	System               systemStatus                   `json:"system"`
+	MachineUptimeSeconds int64                          `json:"machine_uptime_seconds,omitempty"`
+	Version              string                         `json:"version,omitempty"`
+	BuildKind            string                         `json:"build_kind,omitempty"`
+	SpecialExit          probeSpecialExitRuntimeReport  `json:"special_exit,omitempty"`
+	LinuxRouter          probeLinuxRouterRuntimeReport  `json:"linux_router,omitempty"`
+	RelayStatus          []probeRouteRelayReportItem    `json:"relay_status,omitempty"`
+	VirtualRouterBuffers probeVirtualRouterBufferReport `json:"virtual_router_buffers,omitempty"`
+	Timestamp            string                         `json:"timestamp"`
 }
 
 type probeSpecialExitRuntimeReport struct {
@@ -836,6 +837,7 @@ func sendProbeReport(stream net.Conn, encoder *json.Encoder, identity nodeIdenti
 		SpecialExit:          probeProductSpecialExitReport(),
 		LinuxRouter:          probeProductLinuxRouterReport(),
 		RelayStatus:          snapshotProbeRouteRelayReports(),
+		VirtualRouterBuffers: snapshotProbeVirtualRouterBuffers(),
 		Timestamp:            time.Now().UTC().Format(time.RFC3339),
 	}
 
@@ -909,6 +911,10 @@ func processProbeControlMessage(msg probeControlMessage, identity nodeIdentity, 
 	}
 	if typeName == "report_once" {
 		go runProbeReportOnceControl(identity, stream, encoder, writeMu)
+		return
+	}
+	if typeName == "virtual_router_buffers_reset" {
+		go runProbeVirtualRouterBuffersResetControl(identity, stream, encoder, writeMu)
 		return
 	}
 	if typeName == "virtual_router_latency_probe" {
@@ -1129,6 +1135,14 @@ func runProbeReportOnceControl(identity nodeIdentity, stream net.Conn, encoder *
 	logProbeInfof("probe report once requested by controller")
 	if err := sendProbeReport(stream, encoder, identity, &cpuSampler{}, writeMu); err != nil {
 		logProbeWarnf("probe report once failed: err=%v", err)
+	}
+}
+
+func runProbeVirtualRouterBuffersResetControl(identity nodeIdentity, stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex) {
+	resetProbeVirtualRouterBufferStats()
+	logProbeInfof("probe virtual router buffer statistics reset by controller")
+	if err := sendProbeReport(stream, encoder, identity, &cpuSampler{}, writeMu); err != nil {
+		logProbeWarnf("probe virtual router buffer reset report failed: err=%v", err)
 	}
 }
 

@@ -1861,7 +1861,12 @@ func TestProbeVirtualRouterPathRTTSupportsAdjacentDirectPath(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		select {
-		case frame := <-link.txControl:
+		case <-link.txControl.Ready():
+			frame, ok := link.txControl.TryPop()
+			if !ok {
+				done <- errors.New("direct path rtt control queue became empty")
+				return
+			}
 			if frame.MainType != probeVirtualRouterFrameMainTypePingPong || frame.SubType != probeVirtualRouterPingPongSubTypePing {
 				done <- fmt.Errorf("frame type=%d/%d, want ping", frame.MainType, frame.SubType)
 				return
@@ -2482,7 +2487,7 @@ func TestProbeVirtualRouterFrameLinkTXCoalesceWaitsForNextFrame(t *testing.T) {
 	want := probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeIP, Data: []byte{0x45}}
 	go func() {
 		time.Sleep(10 * time.Millisecond)
-		link.tx <- want
+		link.tx.TryPush(want)
 	}()
 	businessSinceBulk := 0
 	got, ok := link.waitNextTXFrameUntil(&businessSinceBulk, time.Now().Add(time.Second))
@@ -4843,15 +4848,21 @@ func TestProbeVirtualRouterRecentPacketRingKeepsNewestItems(t *testing.T) {
 
 func TestProbeVirtualRouterFrameLinkRXCapacityAndDropLogAggregation(t *testing.T) {
 	link := newProbeVirtualRouterFrameLink("packet|capacity", nil, nil, nil)
-	if cap(link.rx) != probeVirtualRouterFrameLinkRXBufferFrames {
-		t.Fatalf("rx capacity=%d, want %d", cap(link.rx), probeVirtualRouterFrameLinkRXBufferFrames)
+	if got := link.rx.Capacity(); got != probeVirtualRouterFrameLinkRXInitialFrames {
+		t.Fatalf("rx initial capacity=%d, want %d", got, probeVirtualRouterFrameLinkRXInitialFrames)
+	}
+	if got := link.rx.MaxCapacity(); got != probeVirtualRouterFrameLinkRXBufferFrames {
+		t.Fatalf("rx max capacity=%d, want %d", got, probeVirtualRouterFrameLinkRXBufferFrames)
 	}
 	if len(link.rxDispatchShards) != probeVirtualRouterFrameLinkRXDispatchShards {
 		t.Fatalf("rx dispatch shards=%d, want %d", len(link.rxDispatchShards), probeVirtualRouterFrameLinkRXDispatchShards)
 	}
 	for shardID, shard := range link.rxDispatchShards {
-		if cap(shard) != probeVirtualRouterFrameLinkRXDispatchShardBufferFrames {
-			t.Fatalf("shard %d capacity=%d, want %d", shardID, cap(shard), probeVirtualRouterFrameLinkRXDispatchShardBufferFrames)
+		if got := shard.Capacity(); got != probeVirtualRouterFrameLinkRXDispatchShardInitialFrames {
+			t.Fatalf("shard %d initial capacity=%d, want %d", shardID, got, probeVirtualRouterFrameLinkRXDispatchShardInitialFrames)
+		}
+		if got := shard.MaxCapacity(); got != probeVirtualRouterFrameLinkRXDispatchShardBufferFrames {
+			t.Fatalf("shard %d max capacity=%d, want %d", shardID, got, probeVirtualRouterFrameLinkRXDispatchShardBufferFrames)
 		}
 	}
 	if shouldLog, dropped := link.recordRXDispatchDrop(); !shouldLog || dropped != 1 {
@@ -5429,7 +5440,9 @@ func TestProbeVirtualRouterDispatchErrorKeepsFrameLinkAlive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build unsupported wire frame failed: %v", err)
 	}
-	link.rx <- frame
+	if !link.rx.TryPush(frame) {
+		t.Fatal("rx queue should accept frame")
+	}
 
 	deadline := time.Now().Add(200 * time.Millisecond)
 	for time.Now().Before(deadline) {
@@ -5490,8 +5503,10 @@ func TestProbeVirtualRouterFrameLinkTXQueueFullReturnsImmediately(t *testing.T) 
 	if err != nil {
 		t.Fatalf("build ip frame failed: %v", err)
 	}
-	for i := 0; i < cap(link.tx); i++ {
-		link.tx <- frame
+	for i := 0; i < link.tx.MaxCapacity(); i++ {
+		if !link.tx.TryPush(frame) {
+			t.Fatalf("tx queue rejected frame %d before hard limit", i)
+		}
 	}
 
 	startedAt := time.Now()
@@ -5533,8 +5548,10 @@ func TestProbeVirtualRouterFrameLinkTXQueueWaitsForCapacity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build ip frame failed: %v", err)
 	}
-	for i := 0; i < cap(link.tx); i++ {
-		link.tx <- frame
+	for i := 0; i < link.tx.MaxCapacity(); i++ {
+		if !link.tx.TryPush(frame) {
+			t.Fatalf("tx queue rejected frame %d before hard limit", i)
+		}
 	}
 
 	done := make(chan error, 1)
@@ -5546,7 +5563,9 @@ func TestProbeVirtualRouterFrameLinkTXQueueWaitsForCapacity(t *testing.T) {
 		t.Fatalf("enqueue returned before capacity was available: %v", err)
 	case <-time.After(20 * time.Millisecond):
 	}
-	<-link.tx
+	if _, ok := link.tx.TryPop(); !ok {
+		t.Fatal("tx queue should contain a frame")
+	}
 	select {
 	case err := <-done:
 		if err != nil {
@@ -5567,8 +5586,10 @@ func TestProbeVirtualRouterFrameLinkTXQueueWaitDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build ip frame failed: %v", err)
 	}
-	for i := 0; i < cap(link.tx); i++ {
-		link.tx <- frame
+	for i := 0; i < link.tx.MaxCapacity(); i++ {
+		if !link.tx.TryPush(frame) {
+			t.Fatalf("tx queue rejected frame %d before hard limit", i)
+		}
 	}
 
 	startedAt := time.Now()
@@ -5591,14 +5612,16 @@ func TestProbeVirtualRouterFrameLinkTXQueuesReserveControlCapacity(t *testing.T)
 	if err != nil {
 		t.Fatalf("build ip frame failed: %v", err)
 	}
-	for i := 0; i < cap(link.tx); i++ {
-		link.tx <- ipFrame
+	for i := 0; i < link.tx.MaxCapacity(); i++ {
+		if !link.tx.TryPush(ipFrame) {
+			t.Fatalf("tx queue rejected frame %d before hard limit", i)
+		}
 	}
 	controlFrame := probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypePingPong, SubType: probeVirtualRouterPingPongSubTypePing, Data: []byte{1}}
 	if err := link.EnqueueProbeVirtualRouterFrame(controlFrame); err != nil {
 		t.Fatalf("control enqueue should use reserved queue: %v", err)
 	}
-	if got := len(link.txControl); got != 1 {
+	if got := link.txControl.Len(); got != 1 {
 		t.Fatalf("control queue depth=%d, want 1", got)
 	}
 }
@@ -5610,10 +5633,13 @@ func TestProbeVirtualRouterFrameLinkTXSchedulingPrioritizesControlAndBoundsBulk(
 	control := probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypePingPong, Data: []byte{2}}
 	bulk := probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeSpeed, Data: []byte{3}}
 	for i := 0; i < probeVirtualRouterFrameLinkTXBusinessQuantum+1; i++ {
-		link.tx <- business
+		if !link.tx.TryPush(business) {
+			t.Fatalf("business queue rejected frame %d", i)
+		}
 	}
-	link.txControl <- control
-	link.txBulk <- bulk
+	if !link.txControl.TryPush(control) || !link.txBulk.TryPush(bulk) {
+		t.Fatal("reserved queues should accept test frames")
+	}
 
 	businessSinceBulk := 0
 	frame, ok := link.nextTXFrame(&businessSinceBulk)
@@ -5635,12 +5661,14 @@ func TestProbeVirtualRouterFrameLinkTXSchedulingPrioritizesControlAndBoundsBulk(
 func TestProbeVirtualRouterSpeedBackpressureUsesBoundedBulkQueue(t *testing.T) {
 	link := newProbeVirtualRouterFrameLink("speed-backpressure", &probeVirtualRouterRuntime{}, nil, nil)
 	t.Cleanup(func() { stopProbeVirtualRouterFrameLink(link) })
-	high, low := probeVirtualRouterSpeedTXWatermarks(cap(link.txBulk))
+	high, low := probeVirtualRouterSpeedTXWatermarks(link.txBulk.MaxCapacity())
 	if high != 96 || low != 32 {
 		t.Fatalf("speed tx watermarks high=%d low=%d, want high=96 low=32", high, low)
 	}
 	for i := 0; i < high; i++ {
-		link.txBulk <- probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeSpeed, Data: []byte{1}}
+		if !link.txBulk.TryPush(probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeSpeed, Data: []byte{1}}) {
+			t.Fatalf("bulk queue rejected frame %d", i)
+		}
 	}
 
 	done := make(chan error, 1)
@@ -5652,8 +5680,10 @@ func TestProbeVirtualRouterSpeedBackpressureUsesBoundedBulkQueue(t *testing.T) {
 		t.Fatalf("backpressure returned before bulk queue drained: %v", err)
 	case <-time.After(20 * time.Millisecond):
 	}
-	for len(link.txBulk) > low {
-		<-link.txBulk
+	for link.txBulk.Len() > low {
+		if _, ok := link.txBulk.TryPop(); !ok {
+			t.Fatal("bulk queue became empty before low watermark")
+		}
 	}
 	select {
 	case err := <-done:
@@ -5692,8 +5722,10 @@ func TestSnapshotProbeVirtualRouterExitNetstackAggregatesOutputQueues(t *testing
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 
 	shards := makeProbeVirtualRouterExitNetstackOutputDispatchShards()
-	shards[0] <- probeVirtualRouterExitNetstackOutputPacket{payload: []byte{0x45}}
-	shards[1] <- probeVirtualRouterExitNetstackOutputPacket{payload: []byte{0x45}}
+	if !shards[0].TryPush(probeVirtualRouterExitNetstackOutputPacket{payload: []byte{0x45}}) ||
+		!shards[1].TryPush(probeVirtualRouterExitNetstackOutputPacket{payload: []byte{0x45}}) {
+		t.Fatal("output queues should accept test packets")
+	}
 	runner := &probeVirtualRouterExitNetstack{outputDispatch: shards}
 	runner.outputEnqueued.Store(3)
 	runner.outputForwarded.Store(2)
@@ -5710,7 +5742,7 @@ func TestSnapshotProbeVirtualRouterExitNetstackAggregatesOutputQueues(t *testing
 	if snapshot.MTU != probeVirtualRouterExitNetstackMTU {
 		t.Fatalf("snapshot mtu=%d, want %d", snapshot.MTU, probeVirtualRouterExitNetstackMTU)
 	}
-	if snapshot.OutputShards != len(shards) || snapshot.OutputQueueDepth != 2 || snapshot.OutputQueueCapacity != len(shards)*probeVirtualRouterExitNetstackOutputShardQueuePackets {
+	if snapshot.OutputShards != len(shards) || snapshot.OutputQueueDepth != 2 || snapshot.OutputQueueCapacity != len(shards)*probeVirtualRouterExitNetstackOutputShardInitialPackets {
 		t.Fatalf("unexpected output queue snapshot: %+v", snapshot)
 	}
 	if snapshot.OutputEnqueued != 3 || snapshot.OutputForwarded != 2 || snapshot.OutputDropped != 1 || snapshot.OutputQueueFull != 1 {
@@ -5718,7 +5750,7 @@ func TestSnapshotProbeVirtualRouterExitNetstackAggregatesOutputQueues(t *testing
 	}
 }
 
-func TestProbeVirtualRouterFrameLinkAttachClearsBufferedFrames(t *testing.T) {
+func TestProbeVirtualRouterFrameLinkAttachKeepsSharedBufferedFrames(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 
@@ -5730,21 +5762,194 @@ func TestProbeVirtualRouterFrameLinkAttachClearsBufferedFrames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build ip frame failed: %v", err)
 	}
-	link.tx <- frame
-	link.txControl <- probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypePingPong, Data: []byte{1}}
-	link.txBulk <- probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeSpeed, Data: []byte{1}}
-	link.rx <- frame
-	link.rxDispatchShards[0] <- frame
+	if !link.tx.TryPush(frame) ||
+		!link.txControl.TryPush(probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypePingPong, Data: []byte{1}}) ||
+		!link.txBulk.TryPush(probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeSpeed, Data: []byte{1}}) ||
+		!link.rx.TryPush(frame) || !link.rxDispatchShards[0].TryPush(frame) {
+		t.Fatal("queues should accept test frames")
+	}
 
 	if token := link.AttachCarrier(left, "carrier-attach-clear", "pipe"); token == nil {
 		t.Fatalf("carrier should attach")
 	}
-	if txDepth, _, _, _, _, _, _, _ := link.txQueueSnapshot(); txDepth != 0 || len(link.rx) != 0 || len(link.rxDispatchShards[0]) != 0 {
-		t.Fatalf("attach should clear buffered frames, tx=%d rx=%d rx_dispatch=%d", txDepth, len(link.rx), len(link.rxDispatchShards[0]))
+	if txDepth, _, _, _, _, _, _, _ := link.txQueueSnapshot(); txDepth != 3 || link.rx.Len() != 1 || link.rxDispatchShards[0].Len() != 1 {
+		t.Fatalf("attach should keep shared buffered frames, tx=%d rx=%d rx_dispatch=%d", txDepth, link.rx.Len(), link.rxDispatchShards[0].Len())
 	}
 }
 
-func TestProbeVirtualRouterFrameLinkDetachClearsBufferedFrames(t *testing.T) {
+func TestProbeVirtualRouterFrameLinkMultiCarrierKeepsFlowAffinity(t *testing.T) {
+	link := newProbeVirtualRouterFrameLink("multi-carrier-flow", &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-multi-flow"}}, nil, nil)
+	t.Cleanup(func() { stopProbeVirtualRouterFrameLink(link) })
+	left0, right0 := net.Pipe()
+	left1, right1 := net.Pipe()
+	t.Cleanup(func() { right0.Close(); right1.Close() })
+	carrier0 := link.AttachCarrierSlot(0, left0, "carrier-0", "pipe-0")
+	carrier1 := link.AttachCarrierSlot(1, left1, "carrier-1", "pipe-1")
+	if carrier0 == nil || carrier1 == nil {
+		t.Fatal("both carrier slots should attach")
+	}
+	if carrier0.tx.Capacity() != probeVirtualRouterCarrierTXInitialFrames || carrier0.tx.MaxCapacity() != probeVirtualRouterCarrierTXBufferFrames {
+		t.Fatalf("carrier queue capacity=%d/%d", carrier0.tx.Capacity(), carrier0.tx.MaxCapacity())
+	}
+	report := snapshotProbeVirtualRouterBuffers()
+	foundCarrierQueue := false
+	for _, item := range report.Items {
+		if item.ID == "frame_link.multi-carrier-flow.carrier.0.tx" && item.CarrierSlot != nil && *item.CarrierSlot == 0 {
+			foundCarrierQueue = true
+			break
+		}
+	}
+	if !foundCarrierQueue {
+		t.Fatal("carrier queue should be present in buffer report")
+	}
+
+	forward := probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeIP, SubType: probeVirtualRouterIPSubTypeIPv4, Data: buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.7", "198.18.4.52", 57113, 443)}
+	reverse := probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeIP, SubType: probeVirtualRouterIPSubTypeIPv4, Data: buildProbeVirtualRouterTestTCPPacket(t, "198.18.4.52", "198.18.0.7", 443, 57113)}
+	forwardCarrier, err := link.selectCarrierForFrame(forward)
+	if err != nil {
+		t.Fatalf("select forward carrier: %v", err)
+	}
+	reverseCarrier, err := link.selectCarrierForFrame(reverse)
+	if err != nil {
+		t.Fatalf("select reverse carrier: %v", err)
+	}
+	if forwardCarrier != reverseCarrier {
+		t.Fatalf("bidirectional flow selected different slots: forward=%d reverse=%d", forwardCarrier.slot, reverseCarrier.slot)
+	}
+
+	seen := map[int]bool{}
+	for port := 40000; port < 40256; port++ {
+		frame := probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeIP, SubType: probeVirtualRouterIPSubTypeIPv4, Data: buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.7", "198.18.4.52", uint16(port), 443)}
+		carrier, selectErr := link.selectCarrierForFrame(frame)
+		if selectErr != nil {
+			t.Fatalf("select carrier for port %d: %v", port, selectErr)
+		}
+		seen[carrier.slot] = true
+	}
+	if !seen[0] || !seen[1] {
+		t.Fatalf("independent flows did not distribute across slots: %v", seen)
+	}
+
+	sessionID := strings.Repeat("ab", probeVRouteProxySessionIDBytes)
+	openPayload, err := json.Marshal(probeVRouteProxyTCPOpenPayload{SessionID: sessionID, TargetAddr: "example.com:443"})
+	if err != nil {
+		t.Fatalf("marshal proxy open: %v", err)
+	}
+	dataPayload, err := marshalProbeVRouteProxyTCPData(sessionID, []byte("payload"))
+	if err != nil {
+		t.Fatalf("marshal proxy data: %v", err)
+	}
+	closePayload, err := json.Marshal(probeVRouteProxyClosePayload{SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("marshal proxy close: %v", err)
+	}
+	proxyFrames := []probeVirtualRouterFrame{
+		{MainType: probeVirtualRouterFrameMainTypeProxy, SubType: probeVirtualRouterProxySubTypeTCPOpen, Data: openPayload},
+		{MainType: probeVirtualRouterFrameMainTypeProxy, SubType: probeVirtualRouterProxySubTypeTCPData, Data: dataPayload},
+		{MainType: probeVirtualRouterFrameMainTypeProxy, SubType: probeVirtualRouterProxySubTypeTCPClose, Data: closePayload},
+	}
+	var proxyCarrier *probeVirtualRouterPhysicalCarrier
+	for _, proxyFrame := range proxyFrames {
+		carrier, selectErr := link.selectCarrierForFrame(proxyFrame)
+		if selectErr != nil {
+			t.Fatalf("select proxy carrier: %v", selectErr)
+		}
+		if proxyCarrier == nil {
+			proxyCarrier = carrier
+		} else if carrier != proxyCarrier {
+			t.Fatalf("proxy session changed carrier: first=%d current=%d", proxyCarrier.slot, carrier.slot)
+		}
+	}
+}
+
+func TestProbeVirtualRouterMultiCarrierNegotiationAndSlotValidation(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, probeRouteRelayAPIPath, nil)
+	if slot, err := probeVirtualRouterCarrierSlotFromRequest(request); err != nil || slot != 0 {
+		t.Fatalf("legacy request slot=(%d,%v), want (0,nil)", slot, err)
+	}
+	request.Header.Set(probeRouteCodexCarrierSlotHeader, "3")
+	if slot, err := probeVirtualRouterCarrierSlotFromRequest(request); err != nil || slot != 3 {
+		t.Fatalf("multi-carrier request slot=(%d,%v), want (3,nil)", slot, err)
+	}
+	request.Header.Set(probeRouteCodexCarrierSlotHeader, "4")
+	if _, err := probeVirtualRouterCarrierSlotFromRequest(request); err == nil {
+		t.Fatal("slot outside 0..3 should be rejected")
+	}
+
+	left, right := net.Pipe()
+	defer right.Close()
+	header := http.Header{}
+	header.Set(probeRouteCodexMultiCarrierHeader, "1")
+	negotiated := wrapProbeVirtualRouterNegotiatedConn(left, "vrouter-carrier-slot-0", header)
+	if !probeVirtualRouterConnSupportsMultiCarrier(negotiated) {
+		t.Fatal("capability response should enable multi-carrier")
+	}
+	_ = negotiated.Close()
+	legacyLeft, legacyRight := net.Pipe()
+	defer legacyRight.Close()
+	legacy := wrapProbeVirtualRouterNegotiatedConn(legacyLeft, "vrouter-carrier-slot-0", http.Header{})
+	if probeVirtualRouterConnSupportsMultiCarrier(legacy) {
+		t.Fatal("missing capability response should remain single-carrier")
+	}
+	_ = legacy.Close()
+}
+
+func TestProbeVirtualRouterCarrierCountDefaultsAndClamps(t *testing.T) {
+	for _, test := range []struct {
+		input int
+		want  int
+	}{{0, 1}, {-1, 1}, {1, 1}, {3, 3}, {4, 4}, {9, 4}} {
+		if got := normalizeProbeVirtualRouterCarrierCount(test.input); got != test.want {
+			t.Fatalf("normalize carrier count %d=%d, want %d", test.input, got, test.want)
+		}
+	}
+	rules := sanitizeProbeVirtualRouterTopologyRules([]probeVirtualRouterTopologyRule{{
+		ID: "vr-carriers", FromNodeID: "1", ToNodeID: "2", Direction: "forward", CarrierCount: 3, Enabled: true,
+	}})
+	if len(rules) != 1 || rules[0].CarrierCount != 3 {
+		t.Fatalf("sanitized carrier count was not preserved: %+v", rules)
+	}
+}
+
+func TestProbeVirtualRouterFrameLinkCarrierFailureOnlyRemapsAffectedFlows(t *testing.T) {
+	link := newProbeVirtualRouterFrameLink("multi-carrier-failure", &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{routeID: "vrouter-multi-failure"}}, nil, nil)
+	t.Cleanup(func() { stopProbeVirtualRouterFrameLink(link) })
+	left0, right0 := net.Pipe()
+	left1, right1 := net.Pipe()
+	t.Cleanup(func() { right0.Close(); right1.Close() })
+	carrier0 := link.AttachCarrierSlot(0, left0, "carrier-0", "pipe-0")
+	carrier1 := link.AttachCarrierSlot(1, left1, "carrier-1", "pipe-1")
+	if carrier0 == nil || carrier1 == nil {
+		t.Fatal("both carrier slots should attach")
+	}
+	frame := probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeIP, SubType: probeVirtualRouterIPSubTypeIPv4, Data: buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.7", "198.18.4.52", 57113, 443)}
+	selected, err := link.selectCarrierForFrame(frame)
+	if err != nil {
+		t.Fatalf("select carrier: %v", err)
+	}
+	if !link.tx.TryPush(frame) {
+		t.Fatal("shared tx queue should accept frame")
+	}
+	link.detachCarrier(selected)
+	remapped, err := link.selectCarrierForFrame(frame)
+	if err != nil {
+		t.Fatalf("select carrier after failure: %v", err)
+	}
+	if remapped == selected {
+		t.Fatalf("failed slot %d should not remain selected", selected.slot)
+	}
+	if link.tx.Len() != 1 {
+		t.Fatalf("single carrier failure cleared shared queue, depth=%d", link.tx.Len())
+	}
+	link.mu.Lock()
+	remaining := len(link.carriers)
+	link.mu.Unlock()
+	if remaining != 1 {
+		t.Fatalf("remaining carriers=%d, want 1", remaining)
+	}
+}
+
+func TestProbeVirtualRouterFrameLinkDetachKeepsSharedBufferedFrames(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 
@@ -5760,16 +5965,17 @@ func TestProbeVirtualRouterFrameLinkDetachClearsBufferedFrames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build ip frame failed: %v", err)
 	}
-	link.tx <- frame
-	link.txControl <- probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypePingPong, Data: []byte{1}}
-	link.txBulk <- probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeSpeed, Data: []byte{1}}
-	link.rx <- frame
-	link.rxDispatchShards[0] <- frame
+	if !link.tx.TryPush(frame) ||
+		!link.txControl.TryPush(probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypePingPong, Data: []byte{1}}) ||
+		!link.txBulk.TryPush(probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeSpeed, Data: []byte{1}}) ||
+		!link.rx.TryPush(frame) || !link.rxDispatchShards[0].TryPush(frame) {
+		t.Fatal("queues should accept test frames")
+	}
 
 	link.detachCarrier(token)
 
-	if txDepth, _, _, _, _, _, _, _ := link.txQueueSnapshot(); txDepth != 0 || len(link.rx) != 0 || len(link.rxDispatchShards[0]) != 0 {
-		t.Fatalf("detach should clear buffered frames, tx=%d rx=%d rx_dispatch=%d", txDepth, len(link.rx), len(link.rxDispatchShards[0]))
+	if txDepth, _, _, _, _, _, _, _ := link.txQueueSnapshot(); txDepth != 3 || link.rx.Len() != 1 || link.rxDispatchShards[0].Len() != 1 {
+		t.Fatalf("detach should keep shared buffered frames, tx=%d rx=%d rx_dispatch=%d", txDepth, link.rx.Len(), link.rxDispatchShards[0].Len())
 	}
 }
 

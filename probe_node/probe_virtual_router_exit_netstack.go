@@ -35,20 +35,21 @@ const (
 	probeVirtualRouterExitNetstackOutputShards = 8
 	// Each TCP flow stays on one shard, so capacity must absorb a slow carrier
 	// write while preserving per-flow packet order.
-	probeVirtualRouterExitNetstackOutputShardQueuePackets = 512
-	probeVirtualRouterExitNetstackTCPBufferMin            = 64 << 10
-	probeVirtualRouterExitNetstackTCPBufferDefault        = 4 << 20
-	probeVirtualRouterExitNetstackTCPBufferMax            = 16 << 20
-	probeVirtualRouterExitTCPRelayCopyBufferBytes         = 64 << 10
-	probeVirtualRouterExitDialTimeout                     = 12 * time.Second
-	probeVirtualRouterExitUDPIdleTimeout                  = 90 * time.Second
-	probeVirtualRouterExitICMPTimeout                     = 5 * time.Second
+	probeVirtualRouterExitNetstackOutputShardQueuePackets   = 512
+	probeVirtualRouterExitNetstackOutputShardInitialPackets = 32
+	probeVirtualRouterExitNetstackTCPBufferMin              = 64 << 10
+	probeVirtualRouterExitNetstackTCPBufferDefault          = 4 << 20
+	probeVirtualRouterExitNetstackTCPBufferMax              = 16 << 20
+	probeVirtualRouterExitTCPRelayCopyBufferBytes           = 64 << 10
+	probeVirtualRouterExitDialTimeout                       = 12 * time.Second
+	probeVirtualRouterExitUDPIdleTimeout                    = 90 * time.Second
+	probeVirtualRouterExitICMPTimeout                       = 5 * time.Second
 )
 
 type probeVirtualRouterExitNetstack struct {
 	stack           *stack.Stack
 	linkEP          *channel.Endpoint
-	outputDispatch  []chan probeVirtualRouterExitNetstackOutputPacket
+	outputDispatch  []*probeAdaptiveQueue[probeVirtualRouterExitNetstackOutputPacket]
 	cancel          context.CancelFunc
 	doneCh          chan struct{}
 	closeOnce       sync.Once
@@ -298,10 +299,18 @@ func configureProbeVirtualRouterExitNetstackTCP(gStack *stack.Stack) error {
 	return nil
 }
 
-func makeProbeVirtualRouterExitNetstackOutputDispatchShards() []chan probeVirtualRouterExitNetstackOutputPacket {
-	shards := make([]chan probeVirtualRouterExitNetstackOutputPacket, 0, probeVirtualRouterExitNetstackOutputShards)
+func makeProbeVirtualRouterExitNetstackOutputDispatchShards() []*probeAdaptiveQueue[probeVirtualRouterExitNetstackOutputPacket] {
+	shards := make([]*probeAdaptiveQueue[probeVirtualRouterExitNetstackOutputPacket], 0, probeVirtualRouterExitNetstackOutputShards)
 	for i := 0; i < probeVirtualRouterExitNetstackOutputShards; i++ {
-		shards = append(shards, make(chan probeVirtualRouterExitNetstackOutputPacket, probeVirtualRouterExitNetstackOutputShardQueuePackets))
+		shards = append(shards, newProbeAdaptiveQueue[probeVirtualRouterExitNetstackOutputPacket](probeAdaptiveQueueOptions{
+			ID:              fmt.Sprintf("exit_netstack.output.%d", i),
+			Stage:           "exit_netstack_output",
+			Direction:       "tx",
+			Shard:           i,
+			HasShard:        true,
+			InitialCapacity: probeVirtualRouterExitNetstackOutputShardInitialPackets,
+			MaxCapacity:     probeVirtualRouterExitNetstackOutputShardQueuePackets,
+		}))
 	}
 	return shards
 }
@@ -325,8 +334,8 @@ func snapshotProbeVirtualRouterExitNetstack() probeVirtualRouterExitNetstackSnap
 		if shard == nil {
 			continue
 		}
-		snapshot.OutputQueueDepth += len(shard)
-		snapshot.OutputQueueCapacity += cap(shard)
+		snapshot.OutputQueueDepth += shard.Len()
+		snapshot.OutputQueueCapacity += shard.Capacity()
 	}
 	snapshot.OutputEnqueued = runner.outputEnqueued.Load()
 	snapshot.OutputForwarded = runner.outputForwarded.Load()
@@ -406,23 +415,28 @@ func (n *probeVirtualRouterExitNetstack) enqueueOutputPacket(ctx context.Context
 		dstIP:   strings.TrimSpace(dstIP),
 		path:    append([]string(nil), path...),
 	}
-	select {
-	case shard <- item:
+	if shard.TryPush(item) {
 		n.outputEnqueued.Add(1)
 		return nil
+	}
+	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-		return fmt.Errorf("%w: shard=%d depth=%d capacity=%d", errProbeVirtualRouterExitNetstackOutputQueueFull, shardID, len(shard), cap(shard))
+		return fmt.Errorf("%w: shard=%d depth=%d capacity=%d limit=%d", errProbeVirtualRouterExitNetstackOutputQueueFull, shardID, shard.Len(), shard.Capacity(), shard.MaxCapacity())
 	}
 }
 
-func (n *probeVirtualRouterExitNetstack) outputForwardWorker(ctx context.Context, shardID int, shard chan probeVirtualRouterExitNetstackOutputPacket) {
+func (n *probeVirtualRouterExitNetstack) outputForwardWorker(ctx context.Context, shardID int, shard *probeAdaptiveQueue[probeVirtualRouterExitNetstackOutputPacket]) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case item := <-shard:
+		case <-shard.Ready():
+			item, ok := shard.TryPop()
+			if !ok {
+				continue
+			}
 			if len(item.payload) == 0 {
 				continue
 			}
@@ -449,6 +463,11 @@ func (n *probeVirtualRouterExitNetstack) Close() error {
 	}
 	n.closeOnce.Do(func() {
 		n.closed.Store(true)
+		for _, shard := range n.outputDispatch {
+			if shard != nil {
+				shard.Close()
+			}
+		}
 		if n.cancel != nil {
 			n.cancel()
 		}

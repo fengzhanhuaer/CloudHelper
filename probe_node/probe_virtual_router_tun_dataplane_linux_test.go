@@ -86,11 +86,12 @@ func TestProbeVirtualRouterLinuxTUNDataPlaneAggregatesAbnormalSlowWrites(t *test
 	var logs []string
 	runner := &probeVirtualRouterLinuxTUNDataPlaneRunner{
 		dev:        "cloudhelper0",
-		outboundCh: make(chan []byte, probeLocalLinuxTUNOutboundQueueFrames),
+		outboundCh: newProbeAdaptiveQueue[[]byte](probeAdaptiveQueueOptions{ID: "test.tun.linux.outbound.slow", InitialCapacity: probeLocalLinuxTUNOutboundQueueFrames, MaxCapacity: probeLocalLinuxTUNOutboundQueueFrames}),
 		logf: func(format string, args ...any) {
 			logs = append(logs, fmt.Sprintf(format, args...))
 		},
 	}
+	defer runner.outboundCh.Close()
 	runner.recordSlowWriteSummary(1375, 179, 69*time.Millisecond)
 	runner.recordSlowWriteSummary(1464, 3075, 125*time.Millisecond)
 	runner.flushSlowWriteSummary()
@@ -114,11 +115,12 @@ func TestProbeVirtualRouterLinuxTUNDataPlaneAggregatesAbnormalSlowWrites(t *test
 func TestProbeVirtualRouterLinuxTUNDataPlaneSuppressesSchedulingJitter(t *testing.T) {
 	var logs []string
 	runner := &probeVirtualRouterLinuxTUNDataPlaneRunner{
-		outboundCh: make(chan []byte, probeLocalLinuxTUNOutboundQueueFrames),
+		outboundCh: newProbeAdaptiveQueue[[]byte](probeAdaptiveQueueOptions{ID: "test.tun.linux.outbound.jitter", InitialCapacity: probeLocalLinuxTUNOutboundQueueFrames, MaxCapacity: probeLocalLinuxTUNOutboundQueueFrames}),
 		logf: func(format string, args ...any) {
 			logs = append(logs, fmt.Sprintf(format, args...))
 		},
 	}
+	defer runner.outboundCh.Close()
 	runner.recordSlowWriteSummary(1375, 179, 69*time.Millisecond)
 	runner.flushSlowWriteSummary()
 	if len(logs) != 0 {
@@ -129,11 +131,12 @@ func TestProbeVirtualRouterLinuxTUNDataPlaneSuppressesSchedulingJitter(t *testin
 func TestProbeVirtualRouterLinuxTUNDataPlaneLogsStallOncePerEpisode(t *testing.T) {
 	var logs []string
 	runner := &probeVirtualRouterLinuxTUNDataPlaneRunner{
-		outboundCh: make(chan []byte, probeLocalLinuxTUNOutboundQueueFrames),
+		outboundCh: newProbeAdaptiveQueue[[]byte](probeAdaptiveQueueOptions{ID: "test.tun.linux.outbound.stall", InitialCapacity: probeLocalLinuxTUNOutboundQueueFrames, MaxCapacity: probeLocalLinuxTUNOutboundQueueFrames}),
 		logf: func(format string, args ...any) {
 			logs = append(logs, fmt.Sprintf(format, args...))
 		},
 	}
+	defer runner.outboundCh.Close()
 	recordStall := func() {
 		runner.recordSlowWriteSummary(1464, 32, 150*time.Millisecond)
 		runner.flushSlowWriteSummary()

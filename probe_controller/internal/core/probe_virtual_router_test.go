@@ -636,6 +636,23 @@ func TestProbeVirtualRouterRuntimeRouteIDIsStableAcrossServiceEndpointChanges(t 
 	}
 }
 
+func TestNormalizeProbeVirtualRouterCarrierCount(t *testing.T) {
+	for _, test := range []struct {
+		input int
+		want  int
+	}{{0, 1}, {-1, 1}, {1, 1}, {3, 3}, {4, 4}, {8, 4}} {
+		if got := normalizeProbeVirtualRouterCarrierCount(test.input); got != test.want {
+			t.Fatalf("normalize carrier count %d=%d, want %d", test.input, got, test.want)
+		}
+	}
+	rules := normalizeProbeVirtualRouterTopologyRules([]probeVirtualRouterTopologyRule{{
+		ID: "vr-carriers", FromNodeID: "1", ToNodeID: "2", Direction: "forward", CarrierCount: 3, Enabled: true,
+	}})
+	if len(rules) != 1 || rules[0].CarrierCount != 3 {
+		t.Fatalf("normalized carrier count was not preserved: %+v", rules)
+	}
+}
+
 func TestNormalizeProbeVirtualRouterTopologyRulesInitializesRuleIDsBySequence(t *testing.T) {
 	config := normalizeProbeVirtualRouterConfig(probeVirtualRouterConfig{
 		Enabled: true,

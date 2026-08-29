@@ -19,8 +19,10 @@ import (
 const (
 	probeLocalLinuxTUNPacketBufferSize       = 65535
 	probeLocalLinuxTUNInboundQueueFrames     = 2048
+	probeLocalLinuxTUNInboundInitialFrames   = 128
 	probeLocalLinuxTUNInboundDispatchShards  = 8
 	probeLocalLinuxTUNOutboundQueueFrames    = 4096
+	probeLocalLinuxTUNOutboundInitialFrames  = 256
 	probeLocalLinuxTUNWriteTimeout           = 500 * time.Millisecond
 	probeLocalLinuxTUNWritePollTimeoutMS     = 50
 	probeLocalLinuxTUNSlowWriteThreshold     = 10 * time.Millisecond
@@ -52,9 +54,9 @@ type probeVirtualRouterLinuxTUNDataPlaneRunner struct {
 	writeMu sync.Mutex
 	closed  atomic.Bool
 
-	inboundCh        chan []byte
-	inboundDispatch  []chan []byte
-	outboundCh       chan []byte
+	inboundCh        *probeAdaptiveQueue[[]byte]
+	inboundDispatch  []*probeAdaptiveQueue[[]byte]
+	outboundCh       *probeAdaptiveQueue[[]byte]
 	stopCh           chan struct{}
 	rxPackets        atomic.Uint64
 	rxBytes          atomic.Uint64
@@ -175,15 +177,27 @@ func newProbeLocalLinuxTUNDataPlaneRunner(dev string) (*probeVirtualRouterLinuxT
 		return nil, err
 	}
 	runner := &probeVirtualRouterLinuxTUNDataPlaneRunner{
-		file:            file,
-		dev:             dev,
-		inboundCh:       make(chan []byte, probeLocalLinuxTUNInboundQueueFrames),
-		inboundDispatch: makeProbeVirtualRouterTUNInboundDispatchShards(probeLocalLinuxTUNInboundDispatchShards, probeLocalLinuxTUNInboundQueueFrames),
-		outboundCh:      make(chan []byte, probeLocalLinuxTUNOutboundQueueFrames),
-		logf:            logProbeWarnf,
-		stopCh:          make(chan struct{}),
-		doneCh:          make(chan struct{}),
-		writeDoneCh:     make(chan struct{}),
+		file: file,
+		dev:  dev,
+		inboundCh: newProbeAdaptiveQueue[[]byte](probeAdaptiveQueueOptions{
+			ID:              "tun.linux.inbound.entry",
+			Stage:           "tun_inbound_entry",
+			Direction:       "rx",
+			InitialCapacity: probeLocalLinuxTUNInboundInitialFrames,
+			MaxCapacity:     probeLocalLinuxTUNInboundQueueFrames,
+		}),
+		inboundDispatch: makeProbeVirtualRouterTUNInboundDispatchShards("tun.linux", probeLocalLinuxTUNInboundDispatchShards, probeLocalLinuxTUNInboundQueueFrames),
+		outboundCh: newProbeAdaptiveQueue[[]byte](probeAdaptiveQueueOptions{
+			ID:              "tun.linux.outbound",
+			Stage:           "tun_outbound",
+			Direction:       "tx",
+			InitialCapacity: probeLocalLinuxTUNOutboundInitialFrames,
+			MaxCapacity:     probeLocalLinuxTUNOutboundQueueFrames,
+		}),
+		logf:        logProbeWarnf,
+		stopCh:      make(chan struct{}),
+		doneCh:      make(chan struct{}),
+		writeDoneCh: make(chan struct{}),
 	}
 	for shardID, shard := range runner.inboundDispatch {
 		go runner.inboundShardWorker(shardID, shard)
@@ -284,11 +298,13 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) handleInboundPayload(payload
 		go handleProbeVirtualRouterTUNInboundPacket(packet)
 		return
 	}
-	select {
-	case r.inboundCh <- packet:
-	case <-r.stopCh:
-	default:
-		logProbeWarnf("probe local linux tun inbound packet drop: dev=%s reason=handler_queue_full depth=%d capacity=%d", r.dev, len(r.inboundCh), cap(r.inboundCh))
+	if !r.inboundCh.TryPush(packet) {
+		select {
+		case <-r.stopCh:
+			return
+		default:
+		}
+		logProbeWarnf("probe local linux tun inbound packet drop: dev=%s reason=handler_queue_full depth=%d capacity=%d limit=%d", r.dev, r.inboundCh.Len(), r.inboundCh.Capacity(), r.inboundCh.MaxCapacity())
 	}
 }
 
@@ -297,7 +313,11 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) inboundDispatchWorker() {
 		select {
 		case <-r.stopCh:
 			return
-		case packet := <-r.inboundCh:
+		case <-r.inboundCh.Ready():
+			packet, ok := r.inboundCh.TryPop()
+			if !ok {
+				continue
+			}
 			if len(packet) == 0 {
 				continue
 			}
@@ -307,23 +327,28 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) inboundDispatchWorker() {
 			}
 			shardID := probeVirtualRouterPacketDispatchShard(packet, len(r.inboundDispatch))
 			shard := r.inboundDispatch[shardID]
-			select {
-			case shard <- packet:
-			case <-r.stopCh:
-				return
-			default:
-				logProbeWarnf("probe local linux tun inbound packet drop: dev=%s reason=dispatch_queue_full shard=%d depth=%d capacity=%d", r.dev, shardID, len(shard), cap(shard))
+			if !shard.TryPush(packet) {
+				select {
+				case <-r.stopCh:
+					return
+				default:
+				}
+				logProbeWarnf("probe local linux tun inbound packet drop: dev=%s reason=dispatch_queue_full shard=%d depth=%d capacity=%d limit=%d", r.dev, shardID, shard.Len(), shard.Capacity(), shard.MaxCapacity())
 			}
 		}
 	}
 }
 
-func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) inboundShardWorker(shardID int, shard chan []byte) {
+func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) inboundShardWorker(shardID int, shard *probeAdaptiveQueue[[]byte]) {
 	for {
 		select {
 		case <-r.stopCh:
 			return
-		case packet := <-shard:
+		case <-shard.Ready():
+			packet, ok := shard.TryPop()
+			if !ok {
+				continue
+			}
 			if len(packet) == 0 {
 				continue
 			}
@@ -345,7 +370,11 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) writeLoop() {
 			return
 		case <-ticker.C:
 			r.flushSlowWriteSummary()
-		case packet := <-r.outboundCh:
+		case <-r.outboundCh.Ready():
+			packet, ok := r.outboundCh.TryPop()
+			if !ok {
+				continue
+			}
 			if len(packet) == 0 {
 				continue
 			}
@@ -366,7 +395,7 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) writeLoop() {
 			}
 			if elapsed >= probeLocalLinuxTUNSlowWriteThreshold {
 				r.txSlowWrites.Add(1)
-				r.recordSlowWriteSummary(len(packet), len(r.outboundCh), elapsed)
+				r.recordSlowWriteSummary(len(packet), r.outboundCh.Len(), elapsed)
 			}
 		}
 	}
@@ -387,7 +416,7 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) flushSlowWriteSummary() {
 		return
 	}
 	r.slowWrite = probeVirtualRouterLinuxTUNSlowWriteSummary{}
-	queueCapacity := cap(r.outboundCh)
+	queueCapacity := r.outboundCh.Capacity()
 	queueAbnormal := queueCapacity > 0 && summary.maxQueueDepth*100 >= queueCapacity*probeLocalLinuxTUNAbnormalQueuePercent
 	if summary.maxWrite < probeLocalLinuxTUNAbnormalWriteThreshold && !queueAbnormal {
 		r.slowWriteEpisode = false
@@ -419,6 +448,17 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) Close() error {
 		r.closed.Store(true)
 		if r.stopCh != nil {
 			close(r.stopCh)
+		}
+		if r.inboundCh != nil {
+			r.inboundCh.Close()
+		}
+		for _, shard := range r.inboundDispatch {
+			if shard != nil {
+				shard.Close()
+			}
+		}
+		if r.outboundCh != nil {
+			r.outboundCh.Close()
 		}
 		closeErr = r.file.Close()
 		select {
@@ -476,14 +516,15 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) WritePacket(packet []byte) e
 		return r.writePacketDirect(packet)
 	}
 	payload := append([]byte(nil), packet...)
-	select {
-	case r.outboundCh <- payload:
+	if r.outboundCh.TryPush(payload) {
 		return nil
+	}
+	select {
 	case <-r.stopCh:
 		return io.ErrClosedPipe
 	default:
 		r.txDropped.Add(1)
-		return fmt.Errorf("probe local linux tun outbound queue full: dev=%s depth=%d capacity=%d", r.dev, len(r.outboundCh), cap(r.outboundCh))
+		return fmt.Errorf("probe local linux tun outbound queue full: dev=%s depth=%d capacity=%d limit=%d", r.dev, r.outboundCh.Len(), r.outboundCh.Capacity(), r.outboundCh.MaxCapacity())
 	}
 }
 

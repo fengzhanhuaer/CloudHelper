@@ -424,13 +424,16 @@ func TestProbeVirtualRouterTUNDataPlaneRunnerHandleInboundPayloadDoesNotBlock(t 
 	var startedOnce sync.Once
 
 	runner := &probeVirtualRouterTUNDataPlaneRunner{
-		inboundCh: make(chan []byte, 1),
-		stopCh:    make(chan struct{}),
+		inboundCh: newProbeAdaptiveQueue[[]byte](probeAdaptiveQueueOptions{
+			ID: "test.tun.windows.inbound.nonblocking", InitialCapacity: 1, MaxCapacity: 1,
+		}),
+		stopCh: make(chan struct{}),
 		onPacket: func([]byte) {
 			startedOnce.Do(func() { close(started) })
 			<-release
 		},
 	}
+	defer runner.inboundCh.Close()
 	go runner.inboundDispatchWorker()
 	defer close(runner.stopCh)
 
@@ -464,8 +467,10 @@ func TestProbeVirtualRouterTUNDataPlaneRunnerDropsInboundWhenQueueFull(t *testin
 	calls := 0
 	var logs []string
 	runner := &probeVirtualRouterTUNDataPlaneRunner{
-		inboundCh: make(chan []byte, 1),
-		stopCh:    make(chan struct{}),
+		inboundCh: newProbeAdaptiveQueue[[]byte](probeAdaptiveQueueOptions{
+			ID: "test.tun.windows.inbound.full", InitialCapacity: 1, MaxCapacity: 1,
+		}),
+		stopCh: make(chan struct{}),
 		onPacket: func([]byte) {
 			calls++
 		},
@@ -473,8 +478,11 @@ func TestProbeVirtualRouterTUNDataPlaneRunnerDropsInboundWhenQueueFull(t *testin
 			logs = append(logs, fmt.Sprintf(format, args...))
 		},
 	}
+	defer runner.inboundCh.Close()
 	defer close(runner.stopCh)
-	runner.inboundCh <- []byte{0x45}
+	if !runner.inboundCh.TryPush([]byte{0x45}) {
+		t.Fatal("inbound queue should accept first packet")
+	}
 
 	runner.handleInboundPayload([]byte{0x45, 0x00})
 
@@ -488,16 +496,22 @@ func TestProbeVirtualRouterTUNDataPlaneRunnerDropsInboundWhenQueueFull(t *testin
 
 func TestProbeVirtualRouterTUNDataPlaneRunnerWritePacketCopiesIntoPooledQueueItem(t *testing.T) {
 	runner := &probeVirtualRouterTUNDataPlaneRunner{
-		outboundCh: make(chan *probeVirtualRouterTUNOutboundPacket, 1),
-		stopCh:     make(chan struct{}),
+		outboundCh: newProbeAdaptiveQueue[*probeVirtualRouterTUNOutboundPacket](probeAdaptiveQueueOptions{
+			ID: "test.tun.windows.outbound.copy", InitialCapacity: 1, MaxCapacity: 1,
+		}),
+		stopCh: make(chan struct{}),
 	}
+	defer runner.outboundCh.Close()
 	runner.running.Store(true)
 	packet := []byte{0x45, 0x00, 0x00, 0x14}
 	if err := runner.WritePacket(packet); err != nil {
 		t.Fatalf("WritePacket returned error: %v", err)
 	}
 	packet[0] = 0
-	outbound := <-runner.outboundCh
+	outbound, ok := runner.outboundCh.TryPop()
+	if !ok {
+		t.Fatal("outbound queue should contain packet")
+	}
 	defer releaseProbeVirtualRouterTUNOutboundPacket(outbound)
 	if outbound.enqueuedAt.IsZero() {
 		t.Fatal("queued packet is missing enqueue timestamp")
@@ -523,11 +537,14 @@ func TestProbeVirtualRouterTUNOutboundPacketPoolReusesTypicalPacketBuffer(t *tes
 func TestProbeVirtualRouterTUNDataPlaneRunnerAggregatesSlowWriteLogs(t *testing.T) {
 	var logs []string
 	runner := &probeVirtualRouterTUNDataPlaneRunner{
-		outboundCh: make(chan *probeVirtualRouterTUNOutboundPacket, 4096),
+		outboundCh: newProbeAdaptiveQueue[*probeVirtualRouterTUNOutboundPacket](probeAdaptiveQueueOptions{
+			ID: "test.tun.windows.outbound.slow-log", InitialCapacity: 4096, MaxCapacity: 4096,
+		}),
 		logf: func(format string, args ...any) {
 			logs = append(logs, fmt.Sprintf(format, args...))
 		},
 	}
+	defer runner.outboundCh.Close()
 	runner.recordSlowWriteSummary(1464, 132, 25*time.Millisecond, probeVirtualRouterTUNWriteTiming{
 		total:    119 * time.Millisecond,
 		lockWait: 2 * time.Millisecond,
@@ -567,11 +584,14 @@ func TestProbeVirtualRouterTUNDataPlaneRunnerAggregatesSlowWriteLogs(t *testing.
 func TestProbeVirtualRouterTUNDataPlaneRunnerSuppressesNormalSchedulingJitter(t *testing.T) {
 	var logs []string
 	runner := &probeVirtualRouterTUNDataPlaneRunner{
-		outboundCh: make(chan *probeVirtualRouterTUNOutboundPacket, 4096),
+		outboundCh: newProbeAdaptiveQueue[*probeVirtualRouterTUNOutboundPacket](probeAdaptiveQueueOptions{
+			ID: "test.tun.windows.outbound.jitter", InitialCapacity: 4096, MaxCapacity: 4096,
+		}),
 		logf: func(format string, args ...any) {
 			logs = append(logs, fmt.Sprintf(format, args...))
 		},
 	}
+	defer runner.outboundCh.Close()
 	runner.recordSlowWriteSummary(1464, 19, 46*time.Millisecond, probeVirtualRouterTUNWriteTiming{
 		total:    39 * time.Millisecond,
 		allocate: 38 * time.Millisecond,
@@ -586,11 +606,14 @@ func TestProbeVirtualRouterTUNDataPlaneRunnerSuppressesNormalSchedulingJitter(t 
 func TestProbeVirtualRouterTUNDataPlaneRunnerLogsStallOncePerEpisode(t *testing.T) {
 	var logs []string
 	runner := &probeVirtualRouterTUNDataPlaneRunner{
-		outboundCh: make(chan *probeVirtualRouterTUNOutboundPacket, 4096),
+		outboundCh: newProbeAdaptiveQueue[*probeVirtualRouterTUNOutboundPacket](probeAdaptiveQueueOptions{
+			ID: "test.tun.windows.outbound.stall", InitialCapacity: 4096, MaxCapacity: 4096,
+		}),
 		logf: func(format string, args ...any) {
 			logs = append(logs, fmt.Sprintf(format, args...))
 		},
 	}
+	defer runner.outboundCh.Close()
 	recordStall := func() {
 		runner.recordSlowWriteSummary(1464, 32, 120*time.Millisecond, probeVirtualRouterTUNWriteTiming{total: 150 * time.Millisecond}, true, true)
 		runner.flushSlowWriteSummary()

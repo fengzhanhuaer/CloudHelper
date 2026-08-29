@@ -17,6 +17,7 @@ import (
 const (
 	probeVRouteProxyTCPOpenTimeout      = 12 * time.Second
 	probeVRouteProxyTCPInboundQueueSize = 256
+	probeVRouteProxyTCPInboundInitial   = 16
 )
 
 type probeVRouteProxyTCPSession struct {
@@ -25,7 +26,7 @@ type probeVRouteProxyTCPSession struct {
 	targetAddr   string
 	path         []string
 	conn         net.Conn
-	inbound      chan []byte
+	inbound      *probeAdaptiveQueue[[]byte]
 	openResult   chan probeVRouteProxyTCPOpenResultPayload
 	done         chan struct{}
 	createdAt    time.Time
@@ -79,7 +80,7 @@ func openProbeVRouteProxyRemoteTCP(decision probeVRouteProxyTargetDecision) (net
 		targetAddr: decision.TargetAddr,
 		path:       append([]string(nil), decision.Path...),
 		conn:       bridgeConn,
-		inbound:    make(chan []byte, probeVRouteProxyTCPInboundQueueSize),
+		inbound:    newProbeVRouteProxyTCPInboundQueue(sessionID, "source"),
 		openResult: make(chan probeVRouteProxyTCPOpenResultPayload, 1),
 		done:       make(chan struct{}),
 		createdAt:  time.Now(),
@@ -170,7 +171,7 @@ func openProbeVRouteProxyTCPAtExit(msg probeVRouteProxyTCPOpenPayload, requestPa
 		targetAddr: msg.TargetAddr,
 		path:       responsePath,
 		conn:       conn,
-		inbound:    make(chan []byte, probeVRouteProxyTCPInboundQueueSize),
+		inbound:    newProbeVRouteProxyTCPInboundQueue(msg.SessionID, "exit"),
 		done:       make(chan struct{}),
 		createdAt:  time.Now(),
 	}
@@ -222,11 +223,12 @@ func handleProbeVRouteProxyTCPData(payload []byte) error {
 		return nil
 	}
 	packet := append([]byte(nil), data...)
-	select {
-	case session.inbound <- packet:
+	if session.inbound.TryPush(packet) {
 		session.touch()
 		probeVRouteProxyTCPState.rxBytes.Add(uint64(len(packet)))
 		return nil
+	}
+	select {
 	case <-session.done:
 		return nil
 	default:
@@ -234,6 +236,16 @@ func handleProbeVRouteProxyTCPData(payload []byte) error {
 		session.close(true, err)
 		return err
 	}
+}
+
+func newProbeVRouteProxyTCPInboundQueue(sessionID string, role string) *probeAdaptiveQueue[[]byte] {
+	return newProbeAdaptiveQueue[[]byte](probeAdaptiveQueueOptions{
+		ID:              fmt.Sprintf("vroute_proxy.tcp.%s.%s.inbound", strings.TrimSpace(role), strings.ToLower(strings.TrimSpace(sessionID))),
+		Stage:           "vroute_proxy_tcp_inbound",
+		Direction:       "rx",
+		InitialCapacity: probeVRouteProxyTCPInboundInitial,
+		MaxCapacity:     probeVRouteProxyTCPInboundQueueSize,
+	})
 }
 
 func handleProbeVRouteProxyTCPClose(payload []byte) error {
@@ -277,7 +289,11 @@ func (s *probeVRouteProxyTCPSession) runInbound() {
 		select {
 		case <-s.done:
 			return
-		case payload := <-s.inbound:
+		case <-s.inbound.Ready():
+			payload, ok := s.inbound.TryPop()
+			if !ok {
+				continue
+			}
 			if len(payload) == 0 {
 				continue
 			}
@@ -325,6 +341,10 @@ func (s *probeVRouteProxyTCPSession) close(notify bool, cause error) {
 	}
 	s.closeOnce.Do(func() {
 		close(s.done)
+		if s.inbound != nil {
+			s.inbound.Drain(nil)
+			s.inbound.Close()
+		}
 		_ = s.conn.Close()
 		probeVRouteProxyTCPState.mu.Lock()
 		if probeVRouteProxyTCPState.sessions[s.id] == s {

@@ -687,6 +687,7 @@ func sanitizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopologyR
 			ToServicePort:     toServicePort,
 			ToTLSSPKISHA256:   normalizeProbeRouteTLSSPKI(item.ToTLSSPKISHA256),
 			RouteLayer:        normalizeProbeRouteRouteLayer(item.RouteLayer),
+			CarrierCount:      normalizeProbeVirtualRouterCarrierCount(item.CarrierCount),
 			UserID:            strings.TrimSpace(item.UserID),
 			UserPublicKey:     strings.TrimSpace(item.UserPublicKey),
 			Secret:            strings.TrimSpace(item.Secret),
@@ -4337,39 +4338,92 @@ func probeVirtualRouterPingPongDirection(rt *probeVirtualRouterRuntime, directio
 	recordProbeVirtualRouterRuntimePingSuccess(rt, direction, time.Duration(result.LatencyMS)*time.Millisecond)
 }
 
-func makeProbeVirtualRouterFrameLinkRXDispatchShards() []chan probeVirtualRouterFrame {
-	shards := make([]chan probeVirtualRouterFrame, 0, probeVirtualRouterFrameLinkRXDispatchShards)
+func makeProbeVirtualRouterFrameLinkRXDispatchShards(key string, routeID string) []*probeAdaptiveQueue[probeVirtualRouterFrame] {
+	shards := make([]*probeAdaptiveQueue[probeVirtualRouterFrame], 0, probeVirtualRouterFrameLinkRXDispatchShards)
 	for i := 0; i < probeVirtualRouterFrameLinkRXDispatchShards; i++ {
-		shards = append(shards, make(chan probeVirtualRouterFrame, probeVirtualRouterFrameLinkRXDispatchShardBufferFrames))
+		shards = append(shards, newProbeAdaptiveQueue[probeVirtualRouterFrame](probeAdaptiveQueueOptions{
+			ID:              fmt.Sprintf("frame_link.%s.rx.dispatch.%d", strings.TrimSpace(key), i),
+			Stage:           "frame_link_rx_dispatch",
+			Direction:       "rx",
+			RouteID:         strings.TrimSpace(routeID),
+			Shard:           i,
+			HasShard:        true,
+			InitialCapacity: probeVirtualRouterFrameLinkRXDispatchShardInitialFrames,
+			MaxCapacity:     probeVirtualRouterFrameLinkRXDispatchShardBufferFrames,
+		}))
 	}
 	return shards
 }
 
 func newProbeVirtualRouterFrameLink(key string, runtime *probeVirtualRouterRuntime, carrier net.Conn, requestPath []string) *probeVirtualRouterFrameLink {
 	now := time.Now()
+	cleanKey := strings.TrimSpace(key)
+	routeID := probeVirtualRouterRuntimeLogRouteID(runtime)
 	link := &probeVirtualRouterFrameLink{
-		key:              strings.TrimSpace(key),
-		runtime:          runtime,
-		requestPath:      append([]string(nil), requestPath...),
-		openedAt:         now,
-		lastUsed:         now,
-		tx:               make(chan probeVirtualRouterFrame, probeVirtualRouterFrameLinkTXBufferFrames),
-		txControl:        make(chan probeVirtualRouterFrame, probeVirtualRouterFrameLinkTXControlBufferFrames),
-		txBulk:           make(chan probeVirtualRouterFrame, probeVirtualRouterFrameLinkTXBulkBufferFrames),
-		rx:               make(chan probeVirtualRouterFrame, probeVirtualRouterFrameLinkRXBufferFrames),
-		rxDispatchShards: makeProbeVirtualRouterFrameLinkRXDispatchShards(),
+		key:         cleanKey,
+		runtime:     runtime,
+		requestPath: append([]string(nil), requestPath...),
+		openedAt:    now,
+		lastUsed:    now,
+		tx: newProbeAdaptiveQueue[probeVirtualRouterFrame](probeAdaptiveQueueOptions{
+			ID:              "frame_link." + cleanKey + ".tx.business",
+			Stage:           "frame_link_tx_business",
+			Direction:       "tx",
+			RouteID:         routeID,
+			InitialCapacity: probeVirtualRouterFrameLinkTXInitialFrames,
+			MaxCapacity:     probeVirtualRouterFrameLinkTXBufferFrames,
+		}),
+		txControl: newProbeAdaptiveQueue[probeVirtualRouterFrame](probeAdaptiveQueueOptions{
+			ID:              "frame_link." + cleanKey + ".tx.control",
+			Stage:           "frame_link_tx_control",
+			Direction:       "tx",
+			RouteID:         routeID,
+			InitialCapacity: probeVirtualRouterFrameLinkTXControlInitialFrames,
+			MaxCapacity:     probeVirtualRouterFrameLinkTXControlBufferFrames,
+		}),
+		txBulk: newProbeAdaptiveQueue[probeVirtualRouterFrame](probeAdaptiveQueueOptions{
+			ID:              "frame_link." + cleanKey + ".tx.bulk",
+			Stage:           "frame_link_tx_bulk",
+			Direction:       "tx",
+			RouteID:         routeID,
+			InitialCapacity: probeVirtualRouterFrameLinkTXBulkInitialFrames,
+			MaxCapacity:     probeVirtualRouterFrameLinkTXBulkBufferFrames,
+		}),
+		rx: newProbeAdaptiveQueue[probeVirtualRouterFrame](probeAdaptiveQueueOptions{
+			ID:              "frame_link." + cleanKey + ".rx.entry",
+			Stage:           "frame_link_rx_entry",
+			Direction:       "rx",
+			RouteID:         routeID,
+			InitialCapacity: probeVirtualRouterFrameLinkRXInitialFrames,
+			MaxCapacity:     probeVirtualRouterFrameLinkRXBufferFrames,
+		}),
+		rxDispatchShards: makeProbeVirtualRouterFrameLinkRXDispatchShards(cleanKey, routeID),
 		done:             make(chan struct{}),
 		carrierNotify:    make(chan struct{}, 1),
+		carriers:         make(map[int]*probeVirtualRouterPhysicalCarrier),
+		flowBindings:     make(map[uint32]probeVirtualRouterCarrierFlowBinding),
 	}
 	if carrier != nil {
-		link.carrier = newProbeVirtualRouterPhysicalCarrier(carrier, "", "")
+		token := newProbeVirtualRouterPhysicalCarrier(link, 0, carrier, "", "")
+		link.carriers[0] = token
+		link.carrier = token
 	}
 	return link
 }
 
-func newProbeVirtualRouterPhysicalCarrier(conn net.Conn, sessionID string, remoteAddr string) *probeVirtualRouterPhysicalCarrier {
+func newProbeVirtualRouterPhysicalCarrier(link *probeVirtualRouterFrameLink, slot int, conn net.Conn, sessionID string, remoteAddr string) *probeVirtualRouterPhysicalCarrier {
 	now := time.Now()
+	if slot < 0 || slot >= probeVirtualRouterCarrierMaxCount {
+		slot = 0
+	}
+	key := ""
+	routeID := ""
+	if link != nil {
+		key = strings.TrimSpace(link.key)
+		routeID = probeVirtualRouterRuntimeLogRouteID(link.runtime)
+	}
 	return &probeVirtualRouterPhysicalCarrier{
+		slot:        slot,
 		conn:        conn,
 		sessionID:   strings.TrimSpace(sessionID),
 		remoteAddr:  strings.TrimSpace(remoteAddr),
@@ -4377,15 +4431,33 @@ func newProbeVirtualRouterPhysicalCarrier(conn net.Conn, sessionID string, remot
 		lastReadAt:  now,
 		lastWriteAt: now,
 		done:        make(chan struct{}),
+		tx: newProbeAdaptiveQueue[probeVirtualRouterFrame](probeAdaptiveQueueOptions{
+			ID:              fmt.Sprintf("frame_link.%s.carrier.%d.tx", key, slot),
+			Stage:           "carrier_tx",
+			Direction:       "tx",
+			RouteID:         routeID,
+			CarrierSlot:     slot,
+			HasCarrierSlot:  true,
+			InitialCapacity: probeVirtualRouterCarrierTXInitialFrames,
+			MaxCapacity:     probeVirtualRouterCarrierTXBufferFrames,
+		}),
 	}
 }
 
 func (s *probeVirtualRouterFrameLink) AttachCarrier(conn net.Conn, sessionID string, remoteAddr string) *probeVirtualRouterPhysicalCarrier {
+	return s.AttachCarrierSlot(0, conn, sessionID, remoteAddr)
+}
+
+func (s *probeVirtualRouterFrameLink) AttachCarrierSlot(slot int, conn net.Conn, sessionID string, remoteAddr string) *probeVirtualRouterPhysicalCarrier {
 	if s == nil || conn == nil {
 		return nil
 	}
-	token := newProbeVirtualRouterPhysicalCarrier(conn, sessionID, remoteAddr)
+	if slot < 0 || slot >= probeVirtualRouterCarrierMaxCount {
+		return nil
+	}
+	token := newProbeVirtualRouterPhysicalCarrier(s, slot, conn, sessionID, remoteAddr)
 	var old *probeVirtualRouterPhysicalCarrier
+	started := false
 	s.mu.Lock()
 	select {
 	case <-s.done:
@@ -4394,21 +4466,35 @@ func (s *probeVirtualRouterFrameLink) AttachCarrier(conn net.Conn, sessionID str
 		return nil
 	default:
 	}
-	old = s.carrier
-	s.carrier = token
+	if s.carriers == nil {
+		s.carriers = make(map[int]*probeVirtualRouterPhysicalCarrier)
+	}
+	old = s.carriers[slot]
+	s.carriers[slot] = token
+	s.refreshPrimaryCarrierLocked()
 	s.openedAt = token.connectedAt
 	s.lastUsed = token.connectedAt
-	droppedTX, droppedRX := s.clearBuffersLocked()
+	started = s.started
 	s.signalCarrierChangedLocked()
 	s.mu.Unlock()
 	if old != nil {
 		old.close()
 	}
-	clearProbeVirtualRouterPhysicalCarrierDisconnected(s.runtime)
-	if droppedTX > 0 || droppedRX > 0 {
-		log.Printf("probe virtual router frame buffers cleared: reason=carrier_attached route=%s key=%s tx=%d rx=%d session_id=%s remote=%s", probeVirtualRouterRuntimeLogRouteID(s.runtime), strings.TrimSpace(s.key), droppedTX, droppedRX, strings.TrimSpace(sessionID), strings.TrimSpace(remoteAddr))
+	if started {
+		s.startCarrierWorkers(token)
 	}
+	clearProbeVirtualRouterPhysicalCarrierDisconnected(s.runtime)
 	return token
+}
+
+func (s *probeVirtualRouterFrameLink) refreshPrimaryCarrierLocked() {
+	s.carrier = nil
+	for slot := 0; slot < probeVirtualRouterCarrierMaxCount; slot++ {
+		if token := s.carriers[slot]; token != nil && token.conn != nil {
+			s.carrier = token
+			return
+		}
+	}
 }
 
 func (s *probeVirtualRouterFrameLink) signalCarrierChangedLocked() {
@@ -4425,32 +4511,24 @@ func (s *probeVirtualRouterFrameLink) clearBuffersLocked() (int, int) {
 	if s == nil {
 		return 0, 0
 	}
-	txDropped := drainProbeVirtualRouterFrameChannel(s.tx)
-	txDropped += drainProbeVirtualRouterFrameChannel(s.txControl)
-	txDropped += drainProbeVirtualRouterFrameChannel(s.txBulk)
-	rxDropped := drainProbeVirtualRouterFrameChannel(s.rx)
+	txDropped := drainProbeVirtualRouterFrameQueue(s.tx)
+	txDropped += drainProbeVirtualRouterFrameQueue(s.txControl)
+	txDropped += drainProbeVirtualRouterFrameQueue(s.txBulk)
+	rxDropped := drainProbeVirtualRouterFrameQueue(s.rx)
 	for _, shard := range s.rxDispatchShards {
-		rxDropped += drainProbeVirtualRouterFrameChannel(shard)
+		rxDropped += drainProbeVirtualRouterFrameQueue(shard)
 	}
 	return txDropped, rxDropped
 }
 
-func drainProbeVirtualRouterFrameChannel(ch chan probeVirtualRouterFrame) int {
-	if ch == nil {
+func drainProbeVirtualRouterFrameQueue(queue *probeAdaptiveQueue[probeVirtualRouterFrame]) int {
+	if queue == nil {
 		return 0
 	}
-	count := 0
-	for {
-		select {
-		case <-ch:
-			count++
-		default:
-			return count
-		}
-	}
+	return queue.Drain(nil)
 }
 
-func runProbeVirtualRouterPhysicalCarrier(runtime *probeVirtualRouterRuntime, carrier net.Conn, sessionID string, remoteAddr string) {
+func runProbeVirtualRouterPhysicalCarrier(runtime *probeVirtualRouterRuntime, slot int, carrier net.Conn, sessionID string, remoteAddr string) {
 	if runtime == nil || carrier == nil {
 		return
 	}
@@ -4465,15 +4543,15 @@ func runProbeVirtualRouterPhysicalCarrier(runtime *probeVirtualRouterRuntime, ca
 	}
 	probeVirtualRouterFrameLinkState.mu.Unlock()
 	link.Start()
-	token := link.AttachCarrier(carrier, sessionID, remoteAddr)
+	token := link.AttachCarrierSlot(slot, carrier, sessionID, remoteAddr)
 	if token == nil {
 		_ = carrier.Close()
 		return
 	}
 	recordProbeVirtualRouterRuntimeOpenSuccess(runtime.cfg.routeID, 0)
-	log.Printf("probe virtual router physical carrier connected: route=%s role=%s session_id=%s remote=%s", strings.TrimSpace(runtime.cfg.routeID), probeVirtualRouterRuntimeRole, strings.TrimSpace(sessionID), strings.TrimSpace(remoteAddr))
+	log.Printf("probe virtual router physical carrier connected: route=%s role=%s slot=%d session_id=%s remote=%s", strings.TrimSpace(runtime.cfg.routeID), probeVirtualRouterRuntimeRole, slot, strings.TrimSpace(sessionID), strings.TrimSpace(remoteAddr))
 	<-token.done
-	log.Printf("probe virtual router physical carrier disconnected: route=%s role=%s session_id=%s remote=%s %s", strings.TrimSpace(runtime.cfg.routeID), probeVirtualRouterRuntimeRole, strings.TrimSpace(sessionID), strings.TrimSpace(remoteAddr), probeVirtualRouterFrameLinkCarrierStateString(link, token))
+	log.Printf("probe virtual router physical carrier disconnected: route=%s role=%s slot=%d session_id=%s remote=%s %s", strings.TrimSpace(runtime.cfg.routeID), probeVirtualRouterRuntimeRole, slot, strings.TrimSpace(sessionID), strings.TrimSpace(remoteAddr), probeVirtualRouterFrameLinkCarrierStateString(link, token))
 }
 
 func (s *probeVirtualRouterFrameLink) Start() {
@@ -4482,24 +4560,43 @@ func (s *probeVirtualRouterFrameLink) Start() {
 	}
 	s.startOnce.Do(func() {
 		shards := s.ensureRXDispatchShards()
+		s.mu.Lock()
+		s.started = true
+		carriers := make([]*probeVirtualRouterPhysicalCarrier, 0, len(s.carriers))
+		for _, token := range s.carriers {
+			carriers = append(carriers, token)
+		}
+		s.mu.Unlock()
 		go s.runTXWorker()
-		go s.runRXWorker()
 		go s.runRXDispatchWorker()
 		for shardID, shard := range shards {
 			go s.runRXDispatchShardWorker(shardID, shard)
 		}
+		for _, token := range carriers {
+			s.startCarrierWorkers(token)
+		}
 	})
 }
 
-func (s *probeVirtualRouterFrameLink) ensureRXDispatchShards() []chan probeVirtualRouterFrame {
+func (s *probeVirtualRouterFrameLink) startCarrierWorkers(token *probeVirtualRouterPhysicalCarrier) {
+	if s == nil || token == nil {
+		return
+	}
+	token.startOnce.Do(func() {
+		go s.runCarrierTXWorker(token)
+		go s.runCarrierRXWorker(token)
+	})
+}
+
+func (s *probeVirtualRouterFrameLink) ensureRXDispatchShards() []*probeAdaptiveQueue[probeVirtualRouterFrame] {
 	if s == nil {
 		return nil
 	}
 	s.mu.Lock()
 	if len(s.rxDispatchShards) == 0 {
-		s.rxDispatchShards = makeProbeVirtualRouterFrameLinkRXDispatchShards()
+		s.rxDispatchShards = makeProbeVirtualRouterFrameLinkRXDispatchShards(s.key, probeVirtualRouterRuntimeLogRouteID(s.runtime))
 	}
-	shards := append([]chan probeVirtualRouterFrame(nil), s.rxDispatchShards...)
+	shards := append([]*probeAdaptiveQueue[probeVirtualRouterFrame](nil), s.rxDispatchShards...)
 	s.mu.Unlock()
 	return shards
 }
@@ -4510,19 +4607,19 @@ func (s *probeVirtualRouterFrameLink) rxQueueSnapshot() (int, int, int, int, int
 	}
 	entryDepth, entryCap := 0, 0
 	if s.rx != nil {
-		entryDepth = len(s.rx)
-		entryCap = cap(s.rx)
+		entryDepth = s.rx.Len()
+		entryCap = s.rx.Capacity()
 	}
 	s.mu.Lock()
-	shards := append([]chan probeVirtualRouterFrame(nil), s.rxDispatchShards...)
+	shards := append([]*probeAdaptiveQueue[probeVirtualRouterFrame](nil), s.rxDispatchShards...)
 	s.mu.Unlock()
 	dispatchDepth, dispatchCap := 0, 0
 	for _, shard := range shards {
 		if shard == nil {
 			continue
 		}
-		dispatchDepth += len(shard)
-		dispatchCap += cap(shard)
+		dispatchDepth += shard.Len()
+		dispatchCap += shard.Capacity()
 	}
 	return entryDepth, entryCap, dispatchDepth, dispatchCap, len(shards)
 }
@@ -4572,35 +4669,27 @@ func (s *probeVirtualRouterFrameLink) enqueueProbeVirtualRouterFrame(input probe
 		return io.ErrClosedPipe
 	default:
 	}
-	if !deadline.IsZero() {
-		wait := time.Until(deadline)
-		if wait <= 0 {
-			depth, capacity, _, _, _, _, _, _ := s.txQueueSnapshot()
-			return fmt.Errorf("virtual router tx queue wait timeout: key=%s queue=%s depth=%d capacity=%d total_depth=%d total_capacity=%d: %w", strings.TrimSpace(s.key), queueName, len(queue), cap(queue), depth, capacity, os.ErrDeadlineExceeded)
-		}
-		timer := time.NewTimer(wait)
-		defer timer.Stop()
-		select {
-		case queue <- frame:
-			s.touch()
-			return nil
-		case <-s.done:
-			return io.ErrClosedPipe
-		case <-timer.C:
-			depth, capacity, _, _, _, _, _, _ := s.txQueueSnapshot()
-			return fmt.Errorf("virtual router tx queue wait timeout: key=%s queue=%s depth=%d capacity=%d total_depth=%d total_capacity=%d: %w", strings.TrimSpace(s.key), queueName, len(queue), cap(queue), depth, capacity, os.ErrDeadlineExceeded)
-		}
-	}
-	select {
-	case queue <- frame:
+	if deadline.IsZero() && queue.TryPush(frame) {
 		s.touch()
 		return nil
+	}
+	if !deadline.IsZero() {
+		if err := queue.PushUntil(frame, deadline, s.done); err == nil {
+			s.touch()
+			return nil
+		} else if errors.Is(err, io.ErrClosedPipe) {
+			return io.ErrClosedPipe
+		}
+		depth, capacity, _, _, _, _, _, _ := s.txQueueSnapshot()
+		return fmt.Errorf("virtual router tx queue wait timeout: key=%s queue=%s depth=%d capacity=%d limit=%d total_depth=%d total_capacity=%d: %w", strings.TrimSpace(s.key), queueName, queue.Len(), queue.Capacity(), queue.MaxCapacity(), depth, capacity, os.ErrDeadlineExceeded)
+	}
+	select {
 	case <-s.done:
 		return io.ErrClosedPipe
 	default:
-		depth, capacity, _, _, _, _, _, _ := s.txQueueSnapshot()
-		return fmt.Errorf("virtual router tx queue full: key=%s queue=%s depth=%d capacity=%d total_depth=%d total_capacity=%d", strings.TrimSpace(s.key), queueName, len(queue), cap(queue), depth, capacity)
 	}
+	depth, capacity, _, _, _, _, _, _ := s.txQueueSnapshot()
+	return fmt.Errorf("virtual router tx queue full: key=%s queue=%s depth=%d capacity=%d limit=%d total_depth=%d total_capacity=%d", strings.TrimSpace(s.key), queueName, queue.Len(), queue.Capacity(), queue.MaxCapacity(), depth, capacity)
 }
 
 func (s *probeVirtualRouterFrameLink) runTXWorker() {
@@ -4613,7 +4702,7 @@ func (s *probeVirtualRouterFrameLink) runTXWorker() {
 		if len(frame.Data) == 0 {
 			continue
 		}
-		token, err := s.currentCarrier()
+		token, err := s.selectCarrierForFrame(frame)
 		if err != nil {
 			routeID := probeVirtualRouterRuntimeLogRouteID(s.runtime)
 			key := "frame_tx_drop|" + routeID + "|" + strings.TrimSpace(s.key) + "|" + strings.TrimSpace(err.Error())
@@ -4624,18 +4713,70 @@ func (s *probeVirtualRouterFrameLink) runTXWorker() {
 			continue
 		}
 		frame = appendProbeVirtualRouterWireFrameICMPTrace(frame, s.runtime, s.requestPath, "carrier_tx")
+		if token.tx == nil {
+			err = io.ErrClosedPipe
+		} else {
+			err = token.tx.PushUntil(frame, time.Now().Add(probeVirtualRouterFrameLinkTXEnqueueWait), token.done)
+		}
+		if err != nil {
+			recordProbeVirtualRouterTXFrameFailure(s, frame, err)
+			key := fmt.Sprintf("carrier_tx_queue|%s|%d|%v", probeVirtualRouterRuntimeLogRouteID(s.runtime), token.slot, err)
+			if allowed, suppressed := takeProbeVirtualRouterLogThrottle(key, probeVirtualRouterDiagnosticLogPeriod, time.Now()); allowed {
+				log.Printf("probe virtual router carrier tx enqueue failed: route=%s key=%s slot=%d depth=%d capacity=%d limit=%d suppressed=%d err=%v", probeVirtualRouterRuntimeLogRouteID(s.runtime), s.key, token.slot, token.tx.Len(), token.tx.Capacity(), token.tx.MaxCapacity(), suppressed, err)
+			}
+		}
+	}
+}
+
+func (s *probeVirtualRouterFrameLink) runCarrierTXWorker(token *probeVirtualRouterPhysicalCarrier) {
+	if s == nil || token == nil || token.tx == nil {
+		return
+	}
+	var pending *probeVirtualRouterFrame
+	for {
+		frame := probeVirtualRouterFrame{}
+		ok := false
+		if pending != nil {
+			frame = *pending
+			pending = nil
+			ok = true
+		} else {
+			select {
+			case <-s.done:
+				return
+			case <-token.done:
+				return
+			case <-token.tx.Ready():
+			}
+			frame, ok = token.tx.TryPop()
+		}
+		if !ok || len(frame.Data) == 0 {
+			continue
+		}
 		frames := []probeVirtualRouterFrame{frame}
 		batchBytes := probeVirtualRouterFrameEnvelopeHeaderSize + len(frame.Control) + len(frame.Data)
-		coalesceDeadline := time.Time{}
-		_, queueName := s.txQueueForFrame(frame)
-		allowBatch := queueName != "control"
-		if allowBatch {
-			coalesceDeadline = time.Now().Add(probeVirtualRouterFrameLinkTXCoalesceWindow)
-		}
-		for allowBatch && batchBytes < probeVirtualRouterFrameLinkTXBatchBytes {
-			next, available := s.tryNextTXFrame(&businessSinceBulk)
-			if !available && !coalesceDeadline.IsZero() {
-				next, available = s.waitNextTXFrameUntil(&businessSinceBulk, coalesceDeadline)
+		_, firstQueueName := s.txQueueForFrame(frame)
+		deadline := time.Now().Add(probeVirtualRouterFrameLinkTXCoalesceWindow)
+		for firstQueueName != "control" && batchBytes < probeVirtualRouterFrameLinkTXBatchBytes {
+			next, available := token.tx.TryPop()
+			if !available {
+				wait := time.Until(deadline)
+				if wait <= 0 {
+					break
+				}
+				timer := time.NewTimer(wait)
+				select {
+				case <-token.tx.Ready():
+					stopProbeAdaptiveQueueTimer(timer)
+					next, available = token.tx.TryPop()
+				case <-token.done:
+					stopProbeAdaptiveQueueTimer(timer)
+					return
+				case <-s.done:
+					stopProbeAdaptiveQueueTimer(timer)
+					return
+				case <-timer.C:
+				}
 			}
 			if !available {
 				break
@@ -4643,12 +4784,15 @@ func (s *probeVirtualRouterFrameLink) runTXWorker() {
 			if len(next.Data) == 0 {
 				continue
 			}
-			next = appendProbeVirtualRouterWireFrameICMPTrace(next, s.runtime, s.requestPath, "carrier_tx")
+			if _, queueName := s.txQueueForFrame(next); queueName == "control" {
+				pending = &next
+				break
+			}
 			frames = append(frames, next)
 			batchBytes += probeVirtualRouterFrameEnvelopeHeaderSize + len(next.Control) + len(next.Data)
 		}
 		writeStartedAt := time.Now()
-		err = writeProbeVirtualRouterWireFramesRaw(token.conn, frames)
+		err := writeProbeVirtualRouterWireFramesRaw(token.conn, frames)
 		s.recordTXWriteBatch(time.Since(writeStartedAt), len(frames), batchBytes)
 		if err == nil {
 			token.markWrite()
@@ -4656,11 +4800,80 @@ func (s *probeVirtualRouterFrameLink) runTXWorker() {
 			s.touch()
 			continue
 		}
-		log.Printf("probe virtual router frame tx carrier failed: route=%s key=%s frames=%d bytes=%d first_frame=%s err=%v %s", probeVirtualRouterRuntimeLogRouteID(s.runtime), s.key, len(frames), batchBytes, probeVirtualRouterFrameDebugLabel(frame, s.requestPath), err, probeVirtualRouterFrameLinkCarrierStateString(s, token))
+		log.Printf("probe virtual router frame tx carrier failed: route=%s key=%s slot=%d frames=%d bytes=%d first_frame=%s err=%v %s", probeVirtualRouterRuntimeLogRouteID(s.runtime), s.key, token.slot, len(frames), batchBytes, probeVirtualRouterFrameDebugLabel(frame, s.requestPath), err, probeVirtualRouterFrameLinkCarrierStateString(s, token))
 		for _, failedFrame := range frames {
 			recordProbeVirtualRouterTXFrameFailure(s, failedFrame, err)
 		}
 		s.detachCarrierWithReason(token, "tx_write_error", err)
+		return
+	}
+}
+
+func (s *probeVirtualRouterFrameLink) selectCarrierForFrame(frame probeVirtualRouterFrame) (*probeVirtualRouterPhysicalCarrier, error) {
+	if s == nil {
+		return nil, io.ErrClosedPipe
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	active := make([]*probeVirtualRouterPhysicalCarrier, 0, len(s.carriers))
+	for slot := 0; slot < probeVirtualRouterCarrierMaxCount; slot++ {
+		if token := s.carriers[slot]; token != nil && token.conn != nil {
+			active = append(active, token)
+		}
+	}
+	if len(active) == 0 {
+		return nil, errors.New("virtual router physical carrier is unavailable")
+	}
+	hash, affinity := probeVirtualRouterCarrierFlowHash(frame)
+	if !affinity {
+		return active[0], nil
+	}
+	now := time.Now()
+	if binding, ok := s.flowBindings[hash]; ok {
+		if token := s.carriers[binding.Slot]; token != nil && token.conn != nil {
+			binding.LastSeen = now
+			s.flowBindings[hash] = binding
+			return token, nil
+		}
+		delete(s.flowBindings, hash)
+	}
+	if len(s.flowBindings) >= probeVirtualRouterCarrierFlowBindingMax {
+		cutoff := now.Add(-probeVirtualRouterCarrierFlowBindingTTL)
+		oldestKey := uint32(0)
+		oldestAt := now
+		haveOldest := false
+		for key, binding := range s.flowBindings {
+			if binding.LastSeen.Before(cutoff) {
+				delete(s.flowBindings, key)
+				continue
+			}
+			if !haveOldest || binding.LastSeen.Before(oldestAt) {
+				oldestKey = key
+				oldestAt = binding.LastSeen
+				haveOldest = true
+			}
+		}
+		if len(s.flowBindings) >= probeVirtualRouterCarrierFlowBindingMax && haveOldest {
+			delete(s.flowBindings, oldestKey)
+		}
+	}
+	token := active[int(hash%uint32(len(active)))]
+	s.flowBindings[hash] = probeVirtualRouterCarrierFlowBinding{Slot: token.slot, LastSeen: now}
+	return token, nil
+}
+
+func probeVirtualRouterCarrierFlowHash(frame probeVirtualRouterFrame) (uint32, bool) {
+	const seed uint32 = 2166136261
+	switch frame.MainType {
+	case probeVirtualRouterFrameMainTypeIP:
+		return probeVirtualRouterPacketFlowHash(frame.Data, seed), true
+	case probeVirtualRouterFrameMainTypeProxy:
+		if probeVRouteProxyFrameSessionID(frame.SubType, frame.Data) == "" {
+			return 0, false
+		}
+		return probeVRouteProxyFrameDispatchHash(frame.SubType, frame.Data, seed), true
+	default:
+		return 0, false
 	}
 }
 
@@ -4671,7 +4884,7 @@ func recordProbeVirtualRouterTXFrameFailure(link *probeVirtualRouterFrameLink, f
 	recordProbeVirtualRouterRecentPacket("frame_tx", "proxy_error", link.runtime, frame.Data, link.requestPath, false, err)
 }
 
-func (s *probeVirtualRouterFrameLink) txQueueForFrame(frame probeVirtualRouterFrame) (chan probeVirtualRouterFrame, string) {
+func (s *probeVirtualRouterFrameLink) txQueueForFrame(frame probeVirtualRouterFrame) (*probeAdaptiveQueue[probeVirtualRouterFrame], string) {
 	if s == nil {
 		return nil, ""
 	}
@@ -4707,16 +4920,16 @@ func (s *probeVirtualRouterFrameLink) txQueueSnapshot() (depth int, capacity int
 		return
 	}
 	if s.txControl != nil {
-		controlDepth = len(s.txControl)
-		controlCapacity = cap(s.txControl)
+		controlDepth = s.txControl.Len()
+		controlCapacity = s.txControl.Capacity()
 	}
 	if s.tx != nil {
-		businessDepth = len(s.tx)
-		businessCapacity = cap(s.tx)
+		businessDepth = s.tx.Len()
+		businessCapacity = s.tx.Capacity()
 	}
 	if s.txBulk != nil {
-		bulkDepth = len(s.txBulk)
-		bulkCapacity = cap(s.txBulk)
+		bulkDepth = s.txBulk.Len()
+		bulkCapacity = s.txBulk.Capacity()
 	}
 	depth = controlDepth + businessDepth + bulkDepth
 	capacity = controlCapacity + businessCapacity + bulkCapacity
@@ -4741,16 +4954,9 @@ func (s *probeVirtualRouterFrameLink) nextTXFrame(businessSinceBulk *int) (probe
 			return frame, true
 		}
 		select {
-		case frame := <-s.txControl:
-			return frame, true
-		case frame := <-s.tx:
-			if *businessSinceBulk < probeVirtualRouterFrameLinkTXBusinessQuantum {
-				(*businessSinceBulk)++
-			}
-			return frame, true
-		case frame := <-s.txBulk:
-			*businessSinceBulk = 0
-			return frame, true
+		case <-s.txControl.Ready():
+		case <-s.tx.Ready():
+		case <-s.txBulk.Ready():
 		case <-s.done:
 			return probeVirtualRouterFrame{}, false
 		}
@@ -4761,64 +4967,59 @@ func (s *probeVirtualRouterFrameLink) tryNextTXFrame(businessSinceBulk *int) (pr
 	if s == nil || businessSinceBulk == nil {
 		return probeVirtualRouterFrame{}, false
 	}
-	select {
-	case frame := <-s.txControl:
+	if frame, ok := s.txControl.TryPop(); ok {
 		return frame, true
-	default:
 	}
 	if *businessSinceBulk >= probeVirtualRouterFrameLinkTXBusinessQuantum {
-		select {
-		case frame := <-s.txBulk:
+		if frame, ok := s.txBulk.TryPop(); ok {
 			*businessSinceBulk = 0
 			return frame, true
-		default:
 		}
 	}
-	select {
-	case frame := <-s.tx:
+	if frame, ok := s.tx.TryPop(); ok {
 		if *businessSinceBulk < probeVirtualRouterFrameLinkTXBusinessQuantum {
 			(*businessSinceBulk)++
 		}
 		return frame, true
-	default:
 	}
-	select {
-	case frame := <-s.txBulk:
+	if frame, ok := s.txBulk.TryPop(); ok {
 		*businessSinceBulk = 0
 		return frame, true
-	default:
-		return probeVirtualRouterFrame{}, false
 	}
+	return probeVirtualRouterFrame{}, false
 }
 
 func (s *probeVirtualRouterFrameLink) waitNextTXFrameUntil(businessSinceBulk *int, deadline time.Time) (probeVirtualRouterFrame, bool) {
 	if s == nil || businessSinceBulk == nil || s.done == nil {
 		return probeVirtualRouterFrame{}, false
 	}
-	if frame, ok := s.tryNextTXFrame(businessSinceBulk); ok {
-		return frame, true
-	}
-	wait := time.Until(deadline)
-	if wait <= 0 {
-		return probeVirtualRouterFrame{}, false
-	}
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
-	select {
-	case frame := <-s.txControl:
-		return frame, true
-	case frame := <-s.tx:
-		if *businessSinceBulk < probeVirtualRouterFrameLinkTXBusinessQuantum {
-			(*businessSinceBulk)++
+	for {
+		if frame, ok := s.tryNextTXFrame(businessSinceBulk); ok {
+			return frame, true
 		}
-		return frame, true
-	case frame := <-s.txBulk:
-		*businessSinceBulk = 0
-		return frame, true
-	case <-s.done:
-		return probeVirtualRouterFrame{}, false
-	case <-timer.C:
-		return probeVirtualRouterFrame{}, false
+		wait := time.Until(deadline)
+		if wait <= 0 {
+			return probeVirtualRouterFrame{}, false
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-s.txControl.Ready():
+		case <-s.tx.Ready():
+		case <-s.txBulk.Ready():
+		case <-s.done:
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return probeVirtualRouterFrame{}, false
+		case <-timer.C:
+			return probeVirtualRouterFrame{}, false
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
 	}
 }
 
@@ -4851,36 +5052,33 @@ func (s *probeVirtualRouterFrameLink) txWriteSnapshot() (time.Duration, time.Dur
 	return last, ema, batchFrames, batchBytes
 }
 
-func (s *probeVirtualRouterFrameLink) runRXWorker() {
+func (s *probeVirtualRouterFrameLink) runCarrierRXWorker(token *probeVirtualRouterPhysicalCarrier) {
+	if s == nil || token == nil || token.conn == nil {
+		return
+	}
+	reader := bufio.NewReaderSize(token.conn, probeVirtualRouterFrameReadBufferBytes)
 	for {
-		token, err := s.waitCarrier()
+		frame, err := readProbeVirtualRouterWireFrame(reader)
 		if err != nil {
+			closedLike := errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || isProbeVirtualRouterClosedLinkError(err)
+			log.Printf("probe virtual router frame rx carrier ended: route=%s key=%s slot=%d closed_like=%v err=%v %s", probeVirtualRouterRuntimeLogRouteID(s.runtime), s.key, token.slot, closedLike, err, probeVirtualRouterFrameLinkCarrierStateString(s, token))
+			s.detachCarrierWithReason(token, "rx_read_error", err)
 			return
 		}
-		reader := bufio.NewReaderSize(token.conn, probeVirtualRouterFrameReadBufferBytes)
-		for {
-			frame, err := readProbeVirtualRouterWireFrame(reader)
-			if err != nil {
-				closedLike := errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || isProbeVirtualRouterClosedLinkError(err)
-				log.Printf("probe virtual router frame rx carrier ended: route=%s key=%s closed_like=%v err=%v %s", probeVirtualRouterRuntimeLogRouteID(s.runtime), s.key, closedLike, err, probeVirtualRouterFrameLinkCarrierStateString(s, token))
-				s.detachCarrierWithReason(token, "rx_read_error", err)
-				break
+		frame = appendProbeVirtualRouterWireFrameICMPTrace(frame, s.runtime, s.requestPath, "carrier_rx")
+		token.markRead()
+		if shouldHandleProbeVirtualRouterFrameInRXWorker(s.runtime, frame, s.requestPath) {
+			if err := handleProbeVirtualRouterFrame(s.runtime, s, frame, s.requestPath); err != nil {
+				log.Printf("probe virtual router frame rx inline failed: route=%s key=%s slot=%d path=%s err=%v", probeVirtualRouterRuntimeLogRouteID(s.runtime), s.key, token.slot, probeVirtualRouterWireFramePathString(frame, s.requestPath), err)
 			}
-			frame = appendProbeVirtualRouterWireFrameICMPTrace(frame, s.runtime, s.requestPath, "carrier_rx")
-			token.markRead()
-			if shouldHandleProbeVirtualRouterFrameInRXWorker(s.runtime, frame, s.requestPath) {
-				if err := handleProbeVirtualRouterFrame(s.runtime, s, frame, s.requestPath); err != nil {
-					log.Printf("probe virtual router frame rx inline failed: route=%s key=%s path=%s err=%v", probeVirtualRouterRuntimeLogRouteID(s.runtime), s.key, probeVirtualRouterWireFramePathString(frame, s.requestPath), err)
-				}
-				s.touch()
-				continue
+			s.touch()
+			continue
+		}
+		if err := s.enqueueRXFrame(frame); err != nil {
+			if errors.Is(err, io.ErrClosedPipe) {
+				return
 			}
-			if err := s.enqueueRXFrame(frame); err != nil {
-				if errors.Is(err, io.ErrClosedPipe) {
-					return
-				}
-				log.Printf("probe virtual router frame rx enqueue failed: route=%s key=%s path=%s err=%v", probeVirtualRouterRuntimeLogRouteID(s.runtime), s.key, probeVirtualRouterWireFramePathString(frame, s.requestPath), err)
-			}
+			log.Printf("probe virtual router frame rx enqueue failed: route=%s key=%s slot=%d path=%s err=%v", probeVirtualRouterRuntimeLogRouteID(s.runtime), s.key, token.slot, probeVirtualRouterWireFramePathString(frame, s.requestPath), err)
 		}
 	}
 }
@@ -4892,14 +5090,15 @@ func (s *probeVirtualRouterFrameLink) enqueueRXFrame(frame probeVirtualRouterFra
 	if s.rx == nil || s.done == nil {
 		return io.ErrClosedPipe
 	}
-	select {
-	case s.rx <- frame:
+	if s.rx.TryPush(frame) {
 		s.touch()
 		return nil
+	}
+	select {
 	case <-s.done:
 		return io.ErrClosedPipe
 	default:
-		return fmt.Errorf("virtual router rx queue full: key=%s depth=%d capacity=%d", strings.TrimSpace(s.key), len(s.rx), cap(s.rx))
+		return fmt.Errorf("virtual router rx queue full: key=%s depth=%d capacity=%d limit=%d", strings.TrimSpace(s.key), s.rx.Len(), s.rx.Capacity(), s.rx.MaxCapacity())
 	}
 }
 
@@ -4907,7 +5106,11 @@ func (s *probeVirtualRouterFrameLink) runRXDispatchWorker() {
 	shards := s.ensureRXDispatchShards()
 	for {
 		select {
-		case frame := <-s.rx:
+		case <-s.rx.Ready():
+			frame, ok := s.rx.TryPop()
+			if !ok {
+				continue
+			}
 			if len(frame.Data) == 0 {
 				continue
 			}
@@ -4947,7 +5150,7 @@ func (s *probeVirtualRouterFrameLink) recordRXDispatchDrop() (bool, uint64) {
 	return true, dropped
 }
 
-func (s *probeVirtualRouterFrameLink) enqueueRXDispatchFrame(frame probeVirtualRouterFrame, shards []chan probeVirtualRouterFrame) error {
+func (s *probeVirtualRouterFrameLink) enqueueRXDispatchFrame(frame probeVirtualRouterFrame, shards []*probeAdaptiveQueue[probeVirtualRouterFrame]) error {
 	if s == nil {
 		return io.ErrClosedPipe
 	}
@@ -4956,23 +5159,28 @@ func (s *probeVirtualRouterFrameLink) enqueueRXDispatchFrame(frame probeVirtualR
 	}
 	shardID := probeVirtualRouterFrameRXDispatchShard(frame, len(shards))
 	shard := shards[shardID]
-	select {
-	case shard <- frame:
+	if shard.TryPush(frame) {
 		return nil
+	}
+	select {
 	case <-s.done:
 		return io.ErrClosedPipe
 	default:
-		return fmt.Errorf("virtual router rx dispatch queue full: key=%s shard=%d depth=%d capacity=%d", strings.TrimSpace(s.key), shardID, len(shard), cap(shard))
+		return fmt.Errorf("virtual router rx dispatch queue full: key=%s shard=%d depth=%d capacity=%d limit=%d", strings.TrimSpace(s.key), shardID, shard.Len(), shard.Capacity(), shard.MaxCapacity())
 	}
 }
 
-func (s *probeVirtualRouterFrameLink) runRXDispatchShardWorker(shardID int, shard chan probeVirtualRouterFrame) {
+func (s *probeVirtualRouterFrameLink) runRXDispatchShardWorker(shardID int, shard *probeAdaptiveQueue[probeVirtualRouterFrame]) {
 	if s == nil || shard == nil {
 		return
 	}
 	for {
 		select {
-		case frame := <-shard:
+		case <-shard.Ready():
+			frame, ok := shard.TryPop()
+			if !ok {
+				continue
+			}
 			if len(frame.Data) == 0 {
 				continue
 			}
@@ -5357,8 +5565,8 @@ func probeVirtualRouterFrameLinkCarrierStateString(link *probeVirtualRouterFrame
 	txLastWrite, txWriteEMA, txLastBatchFrames, txLastBatchBytes := link.txWriteSnapshot()
 	rxDepth, rxCap := 0, 0
 	if link.rx != nil {
-		rxDepth = len(link.rx)
-		rxCap = cap(link.rx)
+		rxDepth = link.rx.Len()
+		rxCap = link.rx.Capacity()
 	}
 	rxEntryDepth, rxEntryCap, rxDispatchDepth, rxDispatchCap, rxDispatchWorkers := link.rxQueueSnapshot()
 	token.mu.Lock()
@@ -5430,28 +5638,34 @@ func (s *probeVirtualRouterFrameLink) detachCarrierWithReason(token *probeVirtua
 	}
 	state := probeVirtualRouterFrameLinkCarrierStateString(s, token)
 	detached := false
+	poolEmpty := false
 	droppedTX := 0
-	droppedRX := 0
 	s.mu.Lock()
-	if s.carrier == token {
-		s.carrier = nil
-		droppedTX, droppedRX = s.clearBuffersLocked()
+	if s.carriers[token.slot] == token {
+		delete(s.carriers, token.slot)
+		for hash, binding := range s.flowBindings {
+			if binding.Slot == token.slot {
+				delete(s.flowBindings, hash)
+			}
+		}
+		s.refreshPrimaryCarrierLocked()
+		poolEmpty = len(s.carriers) == 0
 		s.signalCarrierChangedLocked()
 		detached = true
 	}
 	s.mu.Unlock()
+	if token.tx != nil {
+		droppedTX = token.tx.Drain(nil)
+	}
 	token.close()
 	if detached {
 		if err != nil {
-			log.Printf("probe virtual router physical carrier detached: reason=%s route=%s key=%s err=%v tx_dropped=%d rx_dropped=%d %s", reason, probeVirtualRouterRuntimeLogRouteID(s.runtime), strings.TrimSpace(s.key), err, droppedTX, droppedRX, state)
+			log.Printf("probe virtual router physical carrier detached: reason=%s route=%s key=%s slot=%d err=%v tx_dropped=%d pool_empty=%t %s", reason, probeVirtualRouterRuntimeLogRouteID(s.runtime), strings.TrimSpace(s.key), token.slot, err, droppedTX, poolEmpty, state)
 		} else {
-			log.Printf("probe virtual router physical carrier detached: reason=%s route=%s key=%s tx_dropped=%d rx_dropped=%d %s", reason, probeVirtualRouterRuntimeLogRouteID(s.runtime), strings.TrimSpace(s.key), droppedTX, droppedRX, state)
+			log.Printf("probe virtual router physical carrier detached: reason=%s route=%s key=%s slot=%d tx_dropped=%d pool_empty=%t %s", reason, probeVirtualRouterRuntimeLogRouteID(s.runtime), strings.TrimSpace(s.key), token.slot, droppedTX, poolEmpty, state)
 		}
 	}
-	if detached && (droppedTX > 0 || droppedRX > 0) {
-		log.Printf("probe virtual router frame buffers cleared: reason=carrier_detached_%s route=%s key=%s tx=%d rx=%d session_id=%s remote=%s", reason, probeVirtualRouterRuntimeLogRouteID(s.runtime), strings.TrimSpace(s.key), droppedTX, droppedRX, strings.TrimSpace(token.sessionID), strings.TrimSpace(token.remoteAddr))
-	}
-	if detached && s.runtime != nil {
+	if detached && poolEmpty && s.runtime != nil {
 		clearProbeVirtualRouterRuntimePingError(s.runtime.cfg.routeID)
 		markProbeVirtualRouterPhysicalCarrierDisconnected(s.runtime, reason)
 	}
@@ -5489,6 +5703,9 @@ func (c *probeVirtualRouterPhysicalCarrier) close() {
 		return
 	}
 	c.closeOnce.Do(func() {
+		if c.tx != nil {
+			c.tx.Close()
+		}
 		if c.conn != nil {
 			_ = c.conn.Close()
 		}
@@ -5502,7 +5719,7 @@ func stopProbeVirtualRouterFrameLink(s *probeVirtualRouterFrameLink) {
 	if s == nil {
 		return
 	}
-	var token *probeVirtualRouterPhysicalCarrier
+	var carriers []*probeVirtualRouterPhysicalCarrier
 	droppedTX := 0
 	droppedRX := 0
 	s.closeOnce.Do(func() {
@@ -5514,15 +5731,29 @@ func stopProbeVirtualRouterFrameLink(s *probeVirtualRouterFrameLink) {
 				close(s.done)
 			}
 		}
-		token = s.carrier
+		for _, token := range s.carriers {
+			carriers = append(carriers, token)
+		}
+		s.carriers = make(map[int]*probeVirtualRouterPhysicalCarrier)
+		s.flowBindings = make(map[uint32]probeVirtualRouterCarrierFlowBinding)
 		s.carrier = nil
 		droppedTX, droppedRX = s.clearBuffersLocked()
 		s.signalCarrierChangedLocked()
 		s.mu.Unlock()
+		for _, queue := range []*probeAdaptiveQueue[probeVirtualRouterFrame]{s.tx, s.txControl, s.txBulk, s.rx} {
+			if queue != nil {
+				queue.Close()
+			}
+		}
+		for _, shard := range s.rxDispatchShards {
+			if shard != nil {
+				shard.Close()
+			}
+		}
 		if droppedTX > 0 || droppedRX > 0 {
 			log.Printf("probe virtual router frame buffers cleared: reason=link_stopped route=%s key=%s tx=%d rx=%d", probeVirtualRouterRuntimeLogRouteID(s.runtime), strings.TrimSpace(s.key), droppedTX, droppedRX)
 		}
-		if token != nil {
+		for _, token := range carriers {
 			token.close()
 		}
 	})
@@ -6309,18 +6540,18 @@ func waitProbeVirtualRouterSpeedTXBackpressure(link *probeVirtualRouterFrameLink
 	if link == nil || link.txBulk == nil || link.done == nil {
 		return nil
 	}
-	capacity := cap(link.txBulk)
+	capacity := link.txBulk.MaxCapacity()
 	if capacity <= 0 {
 		return nil
 	}
 	high, low := probeVirtualRouterSpeedTXWatermarks(capacity)
-	if len(link.txBulk) < high {
+	if link.txBulk.Len() < high {
 		return nil
 	}
 	ticker := time.NewTicker(2 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if len(link.txBulk) <= low {
+		if link.txBulk.Len() <= low {
 			return nil
 		}
 		wait := time.Until(deadline)
@@ -6466,21 +6697,16 @@ func enqueueProbeVirtualRouterBusinessFrameUntil(link *probeVirtualRouterFrameLi
 	if queue == nil || link.done == nil {
 		return link.EnqueueProbeVirtualRouterFrame(frame)
 	}
-	wait := time.Until(deadline)
-	if wait <= 0 {
+	if time.Until(deadline) <= 0 {
 		return os.ErrDeadlineExceeded
 	}
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
-	select {
-	case queue <- frame:
+	if err := queue.PushUntil(frame, deadline, link.done); err == nil {
 		link.touch()
 		return nil
-	case <-link.done:
+	} else if errors.Is(err, io.ErrClosedPipe) {
 		return io.ErrClosedPipe
-	case <-timer.C:
-		return os.ErrDeadlineExceeded
 	}
+	return os.ErrDeadlineExceeded
 }
 
 func registerProbeVirtualRouterControlResponse(requestID string) chan probeVirtualRouterControlProbePayload {
@@ -7473,13 +7699,18 @@ func probeVirtualRouterRuntimeCarrierRecentlyReceived(rt *probeVirtualRouterRunt
 		return false
 	}
 	link.mu.Lock()
-	token := link.carrier
-	link.mu.Unlock()
-	if token == nil {
-		return false
+	carriers := make([]*probeVirtualRouterPhysicalCarrier, 0, len(link.carriers))
+	for _, token := range link.carriers {
+		carriers = append(carriers, token)
 	}
-	lastReadAt := token.lastRead()
-	return !lastReadAt.IsZero() && time.Since(lastReadAt) < maxIdle
+	link.mu.Unlock()
+	for _, token := range carriers {
+		lastReadAt := token.lastRead()
+		if !lastReadAt.IsZero() && time.Since(lastReadAt) < maxIdle {
+			return true
+		}
+	}
+	return false
 }
 
 func recordProbeVirtualRouterRuntimeRemoteRTTControlSuccess(routeID string, latencyMS int64, responder string) {
@@ -7601,12 +7832,12 @@ func snapshotProbeVirtualRouterPingContext(rt *probeVirtualRouterRuntime, direct
 	if rt == nil {
 		return "", probeRouteBridgeRuntimeStatus{}, probeRouteBridgeSessionSnapshot{}
 	}
-	snapshot, ok := snapshotProbeVirtualRouterPhysicalCarrier(rt)
+	snapshots := snapshotProbeVirtualRouterPhysicalCarriers(rt)
 	status := probeRouteBridgeRuntimeStatus{UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
-	if ok {
-		status.DownstreamActive = 1
-		status.Sessions = []probeRouteBridgeSessionSnapshot{snapshot}
-		return strings.TrimSpace(rt.cfg.routeID), status, snapshot
+	if len(snapshots) > 0 {
+		status.DownstreamActive = len(snapshots)
+		status.Sessions = snapshots
+		return strings.TrimSpace(rt.cfg.routeID), status, snapshots[0]
 	}
 	return strings.TrimSpace(rt.cfg.routeID), status, probeRouteBridgeSessionSnapshot{}
 }
@@ -7633,34 +7864,50 @@ func probeVirtualRouterBridgeConnectionCount(bridgeStatus probeRouteBridgeRuntim
 }
 
 func snapshotProbeVirtualRouterPhysicalCarrier(rt *probeVirtualRouterRuntime) (probeRouteBridgeSessionSnapshot, bool) {
+	snapshots := snapshotProbeVirtualRouterPhysicalCarriers(rt)
+	if len(snapshots) == 0 {
+		return probeRouteBridgeSessionSnapshot{}, false
+	}
+	return snapshots[0], true
+}
+
+func snapshotProbeVirtualRouterPhysicalCarriers(rt *probeVirtualRouterRuntime) []probeRouteBridgeSessionSnapshot {
 	link := currentProbeVirtualRouterPhysicalCarrier(rt)
 	if link == nil {
-		return probeRouteBridgeSessionSnapshot{}, false
+		return nil
 	}
 	link.mu.Lock()
-	defer link.mu.Unlock()
-	carrier := link.carrier
-	if carrier == nil {
-		return probeRouteBridgeSessionSnapshot{}, false
+	carriers := make([]*probeVirtualRouterPhysicalCarrier, 0, len(link.carriers))
+	for slot := 0; slot < probeVirtualRouterCarrierMaxCount; slot++ {
+		if carrier := link.carriers[slot]; carrier != nil {
+			carriers = append(carriers, carrier)
+		}
 	}
-	connectedAt := ""
-	connectedMS := int64(0)
-	if !carrier.connectedAt.IsZero() {
-		connectedAt = carrier.connectedAt.UTC().Format(time.RFC3339)
-		connectedMS = time.Since(carrier.connectedAt).Milliseconds()
+	link.mu.Unlock()
+	out := make([]probeRouteBridgeSessionSnapshot, 0, len(carriers))
+	for _, carrier := range carriers {
+		carrier.mu.Lock()
+		connectedAt := ""
+		connectedMS := int64(0)
+		if !carrier.connectedAt.IsZero() {
+			connectedAt = carrier.connectedAt.UTC().Format(time.RFC3339)
+			connectedMS = time.Since(carrier.connectedAt).Milliseconds()
+		}
+		out = append(out, probeRouteBridgeSessionSnapshot{
+			RouteID:        strings.TrimSpace(rt.cfg.routeID),
+			RuntimeRole:    probeVirtualRouterRuntimeRole,
+			Direction:      "physical",
+			SessionID:      firstNonEmpty(strings.TrimSpace(carrier.sessionID), fmt.Sprintf("vrouter-carrier-%d", carrier.slot)),
+			BridgeRole:     "physical",
+			RemoteAddr:     strings.TrimSpace(carrier.remoteAddr),
+			ConnectedAt:    connectedAt,
+			ConnectedMS:    connectedMS,
+			StreamsCurrent: 0,
+			Closed:         false,
+		})
+		carrier.mu.Unlock()
 	}
-	return probeRouteBridgeSessionSnapshot{
-		RouteID:        strings.TrimSpace(rt.cfg.routeID),
-		RuntimeRole:    probeVirtualRouterRuntimeRole,
-		Direction:      "physical",
-		SessionID:      firstNonEmpty(strings.TrimSpace(carrier.sessionID), "vrouter-carrier"),
-		BridgeRole:     "physical",
-		RemoteAddr:     strings.TrimSpace(carrier.remoteAddr),
-		ConnectedAt:    connectedAt,
-		ConnectedMS:    connectedMS,
-		StreamsCurrent: 0,
-		Closed:         false,
-	}, true
+	return out
 }
 
 func clearProbeVirtualRouterRuntimePingError(routeID string) {
@@ -7815,21 +8062,23 @@ func detachProbeVirtualRouterStalePhysicalCarrier(rt *probeVirtualRouterRuntime,
 		return
 	}
 	item.mu.Lock()
-	token := item.carrier
+	carriers := make([]*probeVirtualRouterPhysicalCarrier, 0, len(item.carriers))
+	for _, token := range item.carriers {
+		carriers = append(carriers, token)
+	}
 	item.mu.Unlock()
-	if token == nil {
-		return
+	for _, token := range carriers {
+		lastReadAt := token.lastRead()
+		if lastReadAt.IsZero() {
+			lastReadAt = token.connectedAt
+		}
+		idleFor := time.Since(lastReadAt)
+		if idleFor < probeVirtualRouterCarrierStaleRXGrace {
+			continue
+		}
+		log.Printf("probe virtual router physical carrier stale, detach for reconnect: route=%s role=%s slot=%d session_id=%s remote=%s failures=%d rx_idle_ms=%d reason=%s", strings.TrimSpace(rt.cfg.routeID), probeVirtualRouterRuntimeRole, token.slot, strings.TrimSpace(token.sessionID), strings.TrimSpace(token.remoteAddr), failureCount, probeDurationMilliseconds(idleFor), strings.TrimSpace(reason))
+		item.detachCarrierWithReason(token, "stale_ping", errors.New(strings.TrimSpace(reason)))
 	}
-	lastReadAt := token.lastRead()
-	if lastReadAt.IsZero() {
-		lastReadAt = token.connectedAt
-	}
-	idleFor := time.Since(lastReadAt)
-	if idleFor < probeVirtualRouterCarrierStaleRXGrace {
-		return
-	}
-	log.Printf("probe virtual router physical carrier stale, detach for reconnect: route=%s role=%s session_id=%s remote=%s failures=%d rx_idle_ms=%d reason=%s", strings.TrimSpace(rt.cfg.routeID), probeVirtualRouterRuntimeRole, strings.TrimSpace(token.sessionID), strings.TrimSpace(token.remoteAddr), failureCount, probeDurationMilliseconds(idleFor), strings.TrimSpace(reason))
-	item.detachCarrierWithReason(token, "stale_ping", errors.New(strings.TrimSpace(reason)))
 }
 
 func probeVirtualRouterNextHopInPath(path []string, localNodeID string) string {

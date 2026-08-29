@@ -22,23 +22,50 @@ type probeSystemMetrics struct {
 	DiskUsedPercent   float64 `json:"disk_used_percent"`
 }
 
+type probeAdaptiveQueueSnapshot struct {
+	ID                    string `json:"id"`
+	Stage                 string `json:"stage"`
+	Direction             string `json:"direction,omitempty"`
+	RouteID               string `json:"route_id,omitempty"`
+	CarrierSlot           *int   `json:"carrier_slot,omitempty"`
+	Shard                 *int   `json:"shard,omitempty"`
+	Depth                 int    `json:"depth"`
+	AllocatedCapacity     int    `json:"allocated_capacity"`
+	MaxCapacity           int    `json:"max_capacity"`
+	PeakDepth             int    `json:"peak_depth"`
+	PeakAllocatedCapacity int    `json:"peak_allocated_capacity"`
+	Enqueued              uint64 `json:"enqueued"`
+	Dequeued              uint64 `json:"dequeued"`
+	FullEvents            uint64 `json:"full_events"`
+	GrowEvents            uint64 `json:"grow_events"`
+	ShrinkEvents          uint64 `json:"shrink_events"`
+	StatsStartedAt        string `json:"stats_started_at"`
+}
+
+type probeVirtualRouterBufferReport struct {
+	StatsStartedAt string                       `json:"stats_started_at"`
+	CollectedAt    string                       `json:"collected_at"`
+	Items          []probeAdaptiveQueueSnapshot `json:"items"`
+}
+
 type probeRuntimeStatus struct {
-	NodeID               string                        `json:"node_id"`
-	Online               bool                          `json:"online"`
-	LastSeen             string                        `json:"last_seen"`
-	Platform             string                        `json:"platform,omitempty"`
-	OS                   string                        `json:"os,omitempty"`
-	Arch                 string                        `json:"arch,omitempty"`
-	IPv4                 []string                      `json:"ipv4,omitempty"`
-	IPv6                 []string                      `json:"ipv6,omitempty"`
-	IPLocations          map[string]string             `json:"ip_locations,omitempty"`
-	Version              string                        `json:"version,omitempty"`
-	BuildKind            string                        `json:"build_kind,omitempty"`
-	SpecialExit          probeSpecialExitRuntimeReport `json:"special_exit,omitempty"`
-	LinuxRouter          probeLinuxRouterRuntimeReport `json:"linux_router,omitempty"`
-	System               probeSystemMetrics            `json:"system"`
-	MachineUptimeSeconds int64                         `json:"machine_uptime_seconds,omitempty"`
-	RelayStatus          []probeRelayStatusItem        `json:"relay_status,omitempty"`
+	NodeID               string                         `json:"node_id"`
+	Online               bool                           `json:"online"`
+	LastSeen             string                         `json:"last_seen"`
+	Platform             string                         `json:"platform,omitempty"`
+	OS                   string                         `json:"os,omitempty"`
+	Arch                 string                         `json:"arch,omitempty"`
+	IPv4                 []string                       `json:"ipv4,omitempty"`
+	IPv6                 []string                       `json:"ipv6,omitempty"`
+	IPLocations          map[string]string              `json:"ip_locations,omitempty"`
+	Version              string                         `json:"version,omitempty"`
+	BuildKind            string                         `json:"build_kind,omitempty"`
+	SpecialExit          probeSpecialExitRuntimeReport  `json:"special_exit,omitempty"`
+	LinuxRouter          probeLinuxRouterRuntimeReport  `json:"linux_router,omitempty"`
+	System               probeSystemMetrics             `json:"system"`
+	MachineUptimeSeconds int64                          `json:"machine_uptime_seconds,omitempty"`
+	RelayStatus          []probeRelayStatusItem         `json:"relay_status,omitempty"`
+	VirtualRouterBuffers probeVirtualRouterBufferReport `json:"virtual_router_buffers,omitempty"`
 }
 
 func updateProbeRuntimeProductStatus(nodeID string, buildKind string, status probeSpecialExitRuntimeReport, routerStatus probeLinuxRouterRuntimeReport) bool {
@@ -244,6 +271,10 @@ func updateProbeRuntimeReportWithRelay(nodeID string, ipv4 []string, ipv6 []stri
 }
 
 func updateProbeRuntimeReportWithPlatform(nodeID string, ipv4 []string, ipv6 []string, metrics probeSystemMetrics, version string, platform string, osName string, arch string, machineUptimeSeconds int64, relayStatus []probeRelayStatusItem) {
+	updateProbeRuntimeReportWithPlatformAndBuffers(nodeID, ipv4, ipv6, metrics, version, platform, osName, arch, machineUptimeSeconds, relayStatus, probeVirtualRouterBufferReport{})
+}
+
+func updateProbeRuntimeReportWithPlatformAndBuffers(nodeID string, ipv4 []string, ipv6 []string, metrics probeSystemMetrics, version string, platform string, osName string, arch string, machineUptimeSeconds int64, relayStatus []probeRelayStatusItem, buffers probeVirtualRouterBufferReport) {
 	nodeID = normalizeProbeNodeID(nodeID)
 	if nodeID == "" {
 		return
@@ -313,6 +344,7 @@ func updateProbeRuntimeReportWithPlatform(nodeID string, ipv4 []string, ipv6 []s
 	current.System = metrics
 	current.MachineUptimeSeconds = normalizeProbeMachineUptimeSeconds(machineUptimeSeconds)
 	current.RelayStatus = cloneProbeRelayStatusItems(relayStatus)
+	current.VirtualRouterBuffers = normalizeProbeVirtualRouterBufferReport(buffers)
 	probeRuntimeStore.data[nodeID] = current
 	probeRuntimeStore.mu.Unlock()
 
@@ -320,6 +352,32 @@ func updateProbeRuntimeReportWithPlatform(nodeID string, ipv4 []string, ipv6 []s
 		resolveAndApplyProbeIPLocations(nodeID, pendingResolveIPs)
 	}
 	notifyCloudflareRuntimeChanged(nodeID, previousIPv4, previousIPv6, nextIPv4, nextIPv6)
+}
+
+func normalizeProbeVirtualRouterBufferReport(input probeVirtualRouterBufferReport) probeVirtualRouterBufferReport {
+	out := probeVirtualRouterBufferReport{
+		StatsStartedAt: strings.TrimSpace(input.StatsStartedAt),
+		CollectedAt:    strings.TrimSpace(input.CollectedAt),
+		Items:          make([]probeAdaptiveQueueSnapshot, 0, len(input.Items)),
+	}
+	seen := make(map[string]struct{}, len(input.Items))
+	for _, item := range input.Items {
+		item.ID = strings.TrimSpace(item.ID)
+		item.Stage = strings.TrimSpace(item.Stage)
+		item.Direction = strings.TrimSpace(item.Direction)
+		item.RouteID = strings.TrimSpace(item.RouteID)
+		item.StatsStartedAt = strings.TrimSpace(item.StatsStartedAt)
+		if item.ID == "" || item.Stage == "" || item.Depth < 0 || item.AllocatedCapacity < 0 || item.MaxCapacity < 0 || item.Depth > item.MaxCapacity || item.AllocatedCapacity > item.MaxCapacity {
+			continue
+		}
+		if _, ok := seen[item.ID]; ok {
+			continue
+		}
+		seen[item.ID] = struct{}{}
+		out.Items = append(out.Items, item)
+	}
+	sort.SliceStable(out.Items, func(i, j int) bool { return out.Items[i].ID < out.Items[j].ID })
+	return out
 }
 
 func normalizeProbeMachineUptimeSeconds(value int64) int64 {

@@ -1,5 +1,7 @@
 package main
 
+import "strconv"
+
 type probeVirtualRouterTUNDataPlaneStats struct {
 	Running                      bool
 	RXPackets                    uint64
@@ -36,41 +38,53 @@ type probeVirtualRouterTUNDataPlane interface {
 	WritePacket(packet []byte) error
 }
 
-func makeProbeVirtualRouterTUNInboundDispatchShards(shardCount int, totalCapacity int) []chan []byte {
+func makeProbeVirtualRouterTUNInboundDispatchShards(idPrefix string, shardCount int, totalCapacity int) []*probeAdaptiveQueue[[]byte] {
 	if shardCount <= 0 {
 		return nil
 	}
-	shardCapacity := totalCapacity / shardCount
-	if shardCapacity <= 0 {
-		shardCapacity = 1
+	maxShardCapacity := totalCapacity / shardCount
+	if maxShardCapacity <= 0 {
+		maxShardCapacity = 1
 	}
-	shards := make([]chan []byte, 0, shardCount)
+	initialShardCapacity := maxShardCapacity / 16
+	if initialShardCapacity <= 0 {
+		initialShardCapacity = 1
+	}
+	shards := make([]*probeAdaptiveQueue[[]byte], 0, shardCount)
 	for i := 0; i < shardCount; i++ {
-		shards = append(shards, make(chan []byte, shardCapacity))
+		shards = append(shards, newProbeAdaptiveQueue[[]byte](probeAdaptiveQueueOptions{
+			ID:              idPrefix + ".inbound.dispatch." + strconv.Itoa(i),
+			Stage:           "tun_inbound_dispatch",
+			Direction:       "rx",
+			Shard:           i,
+			HasShard:        true,
+			InitialCapacity: initialShardCapacity,
+			MaxCapacity:     maxShardCapacity,
+		}))
 	}
 	return shards
 }
 
-func snapshotProbeVirtualRouterTUNInboundQueues(entry chan []byte, shards []chan []byte) (int, int, int, int, int) {
+func snapshotProbeVirtualRouterTUNInboundQueues(entry *probeAdaptiveQueue[[]byte], shards []*probeAdaptiveQueue[[]byte]) (int, int, int, int, int) {
 	entryDepth, entryCapacity := 0, 0
 	if entry != nil {
-		entryDepth = len(entry)
-		entryCapacity = cap(entry)
+		entryDepth = entry.Len()
+		entryCapacity = entry.Capacity()
 	}
 	dispatchDepth, dispatchCapacity := 0, 0
 	for _, shard := range shards {
 		if shard == nil {
 			continue
 		}
-		dispatchDepth += len(shard)
-		dispatchCapacity += cap(shard)
+		dispatchDepth += shard.Len()
+		dispatchCapacity += shard.Capacity()
 	}
 	return entryDepth, entryCapacity, dispatchDepth, dispatchCapacity, len(shards)
 }
 
-func snapshotProbeVirtualRouterTUNOutboundQueue(queue chan []byte) (int, int, int) {
+func snapshotProbeVirtualRouterTUNOutboundQueue(queue *probeAdaptiveQueue[[]byte]) (int, int, int) {
 	if queue == nil {
 		return 0, 0, 0
 	}
-	return len(queue), cap(queue), 1
+	return queue.Len(), queue.Capacity(), 1
 }

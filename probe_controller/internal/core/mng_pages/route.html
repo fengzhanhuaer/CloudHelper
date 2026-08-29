@@ -164,6 +164,7 @@
       <button class="tab" data-tab="fake-ip" type="button">Fake IP</button>
       <button class="tab" data-tab="doh" type="button">DoH</button>
       <button class="tab" data-tab="route" type="button">路由状态</button>
+	  <button class="tab" data-tab="buffers" type="button">缓冲状态</button>
     </div>
 
     <div class="panel">
@@ -441,6 +442,25 @@
           <tbody id="vr-status-body"></tbody>
         </table>
       </section>
+
+	  <section id="section-buffers" class="section">
+		<div class="toolbar">
+		  <div class="toolbar-actions">
+			<button id="btn-vr-buffers-refresh" class="btn" type="button">刷新</button>
+			<button id="btn-vr-buffers-report" class="btn primary" type="button">召唤上报</button>
+			<button id="btn-vr-buffers-reset" class="btn danger" type="button">重新统计</button>
+			<label for="vr-buffers-node-filter">筛选探针</label>
+			<select id="vr-buffers-node-filter" class="small"><option value="">全部探针</option></select>
+		  </div>
+		  <span id="vr-buffers-summary" class="summary-pill small">暂无状态</span>
+		</div>
+		<div class="table-shell">
+		  <table>
+			<thead><tr><th>探针</th><th>缓冲区</th><th>链路</th><th>当前</th><th>容量</th><th>峰值</th><th>事件</th><th>统计时间</th></tr></thead>
+			<tbody id="vr-buffers-body"></tbody>
+		  </table>
+		</div>
+	  </section>
     </div>
   </div>
 
@@ -453,6 +473,8 @@
       activeTab: 'topology',
       nodes: [],
       virtualRouterStatus: [],
+	  virtualRouterBuffers: [],
+	  virtualRouterBuffersNodeFilterID: '',
       routeRules: [],
       linuxRouters: [],
       selectedLinuxRouterNodeID: '',
@@ -1291,6 +1313,83 @@
       </select>`;
     }
 
+	async function loadVirtualRouterBuffers(silent) {
+	  const payload = await requestJSON('/mng/api/route/virtual_router/buffers');
+	  state.virtualRouterBuffers = Array.isArray(payload.items) ? payload.items : [];
+	  renderVirtualRouterBuffers();
+	  if (!silent) setStatus(`缓冲状态已刷新：${state.virtualRouterBuffers.length} 个探针`, 'ok');
+	}
+
+	function renderVirtualRouterBufferNodeFilter() {
+	  const control = document.getElementById('vr-buffers-node-filter');
+	  if (!control) return;
+	  const ids = Array.from(new Set((state.virtualRouterBuffers || []).map((item) => normalizeNodeID(item && item.node_id)).filter(Boolean))).sort((a, b) => Number(a) - Number(b));
+	  const current = normalizeNodeID(state.virtualRouterBuffersNodeFilterID);
+	  state.virtualRouterBuffersNodeFilterID = current && ids.includes(current) ? current : '';
+	  control.innerHTML = ['<option value="">全部探针</option>', ...ids.map((id) => `<option value="${escapeHTML(id)}">${escapeHTML(nodeLabel(id))}</option>`)].join('');
+	  control.value = state.virtualRouterBuffersNodeFilterID;
+	}
+
+	function renderVirtualRouterBuffers() {
+	  const body = document.getElementById('vr-buffers-body');
+	  const summary = document.getElementById('vr-buffers-summary');
+	  if (!body || !summary) return;
+	  renderVirtualRouterBufferNodeFilter();
+	  const selected = normalizeNodeID(state.virtualRouterBuffersNodeFilterID);
+	  const probes = (state.virtualRouterBuffers || []).filter((item) => !selected || normalizeNodeID(item && item.node_id) === selected);
+	  const rows = [];
+	  probes.forEach((probe) => {
+		const buffers = probe && probe.buffers ? probe.buffers : {};
+		const items = Array.isArray(buffers.items) ? buffers.items : [];
+		if (!items.length) {
+		  rows.push(`<tr><td><div>${escapeHTML(nodeLabel(probe.node_id))}</div><div class="small muted">${probe.online ? '在线' : '离线'} · ${escapeHTML(probe.version || '-')}</div></td><td colspan="7" class="muted">尚未收到缓冲状态</td></tr>`);
+		  return;
+		}
+		items.forEach((item, index) => {
+		  const location = [item.route_id ? `route ${item.route_id}` : '', item.carrier_slot !== undefined ? `slot ${item.carrier_slot}` : '', item.shard !== undefined ? `shard ${item.shard}` : ''].filter(Boolean).join(' · ') || '-';
+		  const events = `满 ${Number(item.full_events || 0)} · 扩 ${Number(item.grow_events || 0)} · 缩 ${Number(item.shrink_events || 0)}`;
+		  rows.push(`<tr>
+			<td>${index === 0 ? `<div>${escapeHTML(nodeLabel(probe.node_id))}</div><div class="small muted">${probe.online ? '在线' : '离线'} · ${escapeHTML(probe.version || '-')}</div><div class="small muted">上报 ${escapeHTML(buffers.collected_at || probe.last_seen || '-')}</div>` : ''}</td>
+			<td><div>${escapeHTML(item.stage || '-')}</div><div class="small muted mono">${escapeHTML(item.id || '-')}</div></td>
+			<td class="small mono">${escapeHTML(location)}</td>
+			<td>${Number(item.depth || 0)}</td>
+			<td>${Number(item.allocated_capacity || 0)} / ${Number(item.max_capacity || 0)}</td>
+			<td>${Number(item.peak_depth || 0)} / ${Number(item.peak_allocated_capacity || 0)}</td>
+			<td class="small">${escapeHTML(events)}<div class="muted">入 ${Number(item.enqueued || 0)} · 出 ${Number(item.dequeued || 0)}</div></td>
+			<td class="small mono">${escapeHTML(item.stats_started_at || buffers.stats_started_at || '-')}</td>
+		  </tr>`);
+		});
+	  });
+	  body.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="8" class="muted">暂无探针缓冲状态。</td></tr>';
+	  const queueCount = probes.reduce((sum, probe) => sum + (Array.isArray(probe && probe.buffers && probe.buffers.items) ? probe.buffers.items.length : 0), 0);
+	  summary.textContent = `${probes.length} 个探针 · ${queueCount} 个缓冲区`;
+	}
+
+	async function controlVirtualRouterBuffers(action) {
+	  const nodeID = normalizeNodeID(state.virtualRouterBuffersNodeFilterID);
+	  if (action === 'reset' && !window.confirm(`${nodeID ? nodeLabel(nodeID) : '全部探针'}的缓冲峰值和事件计数将重新开始，是否继续？`)) return;
+	  const payload = await requestJSON('/mng/api/route/virtual_router/buffers', {
+		method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, node_id: nodeID }),
+	  });
+	  const sync = payload.sync || {};
+	  const failed = Number(sync.failed || 0);
+	  setStatus(`${action === 'reset' ? '重新统计' : '召唤上报'}已下发：${Number(sync.dispatched || 0)}/${Number(sync.total || 0)}，离线 ${Number(sync.offline || 0)}，失败 ${failed}`, failed > 0 ? 'warn' : 'ok');
+	  window.setTimeout(() => loadVirtualRouterBuffers(true).catch((err) => setStatus(`刷新缓冲状态失败：${err.message || err}`, 'err')), 900);
+	}
+
+    function normalizeVirtualRouterCarrierCount(raw) {
+      const value = Number.parseInt(String(raw || ''), 10);
+      if (!Number.isFinite(value) || value < 1) return 1;
+      return Math.min(4, value);
+    }
+
+    function virtualRouterCarrierCountSelect(rule, idx) {
+      const value = normalizeVirtualRouterCarrierCount(rule && rule.carrier_count);
+      return `<select data-vr-carrier-count="${idx}">
+        ${[1, 2, 3, 4].map((count) => `<option value="${count}" ${value === count ? 'selected' : ''}>${count}</option>`).join('')}
+      </select>`;
+    }
+
     function virtualRouterSpeedNodeIDs() {
       const ids = new Set();
       (state.virtualRouterNodeIDs || []).forEach((id) => {
@@ -1388,6 +1487,7 @@
               <div class="endpoint-stack">
                 <div class="endpoint-row"><span class="label">入口探针</span><select data-vr-rule-from="${idx}">${virtualRouterNodeOptions(rule.from_node_id)}</select></div>
                 <div class="endpoint-row"><span class="label">协议</span>${virtualRouterRouteLayerSelect(rule, idx)}</div>
+				<div class="endpoint-row"><span class="label">连接数</span>${virtualRouterCarrierCountSelect(rule, idx)}</div>
                 <div class="endpoint-hint">主动连接监听探针，不在本端配置监听。</div>
               </div>
             </td>
@@ -1462,6 +1562,13 @@
           if (idx >= 0 && idx < rules.length) rules[idx].route_layer = normalizeVirtualRouterRouteLayer(el.value);
         });
       });
+	  document.querySelectorAll('[data-vr-carrier-count]').forEach((el) => {
+		el.addEventListener('change', () => {
+		  const idx = Number.parseInt(el.getAttribute('data-vr-carrier-count') || '-1', 10);
+		  const rules = state.virtualRouter.topology_rules || [];
+		  if (idx >= 0 && idx < rules.length) rules[idx].carrier_count = normalizeVirtualRouterCarrierCount(el.value);
+		});
+	  });
       document.querySelectorAll('[data-vr-rule-save]').forEach((el) => {
         el.addEventListener('click', () => {
           const idx = Number.parseInt(el.getAttribute('data-vr-rule-save') || '-1', 10);
@@ -1510,6 +1617,7 @@
         to_service_domain: '',
         to_service_port: 0,
         route_layer: 'auto',
+		carrier_count: 1,
         enabled: true,
       });
       renderVirtualRouter();
@@ -1535,6 +1643,7 @@
         to_service_port: 0,
         to_tls_spki_sha256: String(rule.to_tls_spki_sha256 || '').trim(),
         route_layer: normalizeVirtualRouterRouteLayer(rule.route_layer),
+		carrier_count: normalizeVirtualRouterCarrierCount(rule.carrier_count),
         user_id: String(rule.user_id || '').trim(),
         user_public_key: String(rule.user_public_key || '').trim(),
         secret: String(rule.secret || '').trim(),
@@ -1569,6 +1678,7 @@
         rule.from_service_port = 0;
         rule.to_service_port = 0;
         rule.route_layer = normalizeVirtualRouterRouteLayer(rule.route_layer);
+		rule.carrier_count = normalizeVirtualRouterCarrierCount(rule.carrier_count);
       });
       const result = await requestJSON('/mng/api/route/virtual_router', {
         method: 'POST',
@@ -2117,6 +2227,9 @@
           if (state.activeTab === 'route') {
             loadVirtualRouterStatus(true).catch((err) => setStatus(`刷新路由状态失败：${err.message || err}`, 'err'));
           }
+		  if (state.activeTab === 'buffers') {
+			loadVirtualRouterBuffers(true).catch((err) => setStatus(`刷新缓冲状态失败：${err.message || err}`, 'err'));
+		  }
           updateDoHRefreshTimer();
         });
       });
@@ -2246,6 +2359,19 @@
       document.getElementById('btn-vr-speed-test').addEventListener('click', () => {
         triggerVirtualRouterSpeedTest().catch((err) => setStatus(`测速下发失败：${err.message || err}`, 'err'));
       });
+	  document.getElementById('btn-vr-buffers-refresh').addEventListener('click', () => {
+		loadVirtualRouterBuffers(false).catch((err) => setStatus(`刷新缓冲状态失败：${err.message || err}`, 'err'));
+	  });
+	  document.getElementById('btn-vr-buffers-report').addEventListener('click', () => {
+		controlVirtualRouterBuffers('report').catch((err) => setStatus(`召唤缓冲状态失败：${err.message || err}`, 'err'));
+	  });
+	  document.getElementById('btn-vr-buffers-reset').addEventListener('click', () => {
+		controlVirtualRouterBuffers('reset').catch((err) => setStatus(`重新统计失败：${err.message || err}`, 'err'));
+	  });
+	  document.getElementById('vr-buffers-node-filter').addEventListener('change', (event) => {
+		state.virtualRouterBuffersNodeFilterID = normalizeNodeID(event.target.value);
+		renderVirtualRouterBuffers();
+	  });
     }
 
     async function bootstrap() {
@@ -2263,6 +2389,7 @@
       await loadRouteRules(true).catch(() => {});
       await loadSpecialExits(true).catch(() => {});
       await loadVirtualRouterStatus(true).catch(() => {});
+	  await loadVirtualRouterBuffers(true).catch(() => {});
       setStatus('路由管理页面初始化完成', 'ok');
     }
 
