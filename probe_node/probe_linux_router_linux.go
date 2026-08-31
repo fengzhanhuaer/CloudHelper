@@ -855,7 +855,7 @@ func buildProbeLinuxRouterNFTScript(snapshot probeLinuxRouterSnapshot, iface str
 			rules = append(rules, "    iifname "+ifaceQuote+" ip saddr @lan4 ip daddr != @lan4 ip daddr != @routed4 notrack")
 		}
 		if snapshot.OneArmRouter.Enabled {
-			rules = append(rules, "    iifname "+ifaceQuote+" ip saddr @one_arm4 ip daddr != @one_arm4 ip daddr != @routed4 notrack")
+			rules = append(rules, "    iifname "+ifaceQuote+" ip saddr @one_arm4 ip daddr != @one_arm4 ip daddr != @lan4 ip daddr != @routed4 notrack")
 		}
 		rules = append(rules, "  }")
 	}
@@ -873,7 +873,7 @@ func buildProbeLinuxRouterNFTScript(snapshot probeLinuxRouterSnapshot, iface str
 			rules = append(rules, "    iifname "+ifaceQuote+" ip saddr @lan4 ip daddr != @lan4 meta mark set "+probeLinuxRouterPacketMark)
 		}
 		if snapshot.OneArmRouter.Enabled {
-			rules = append(rules, "    iifname "+ifaceQuote+" ip saddr @one_arm4 ip daddr != @one_arm4 meta mark set "+probeLinuxRouterPacketMark)
+			rules = append(rules, "    iifname "+ifaceQuote+" ip saddr @one_arm4 ip daddr != @one_arm4 ip daddr != @lan4 meta mark set "+probeLinuxRouterPacketMark)
 		}
 		rules = append(rules, "  }")
 	}

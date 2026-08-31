@@ -209,7 +209,7 @@ func TestBuildProbeLinuxRouterNFTScriptOnlyMarksLANIngress(t *testing.T) {
 
 func TestBuildProbeLinuxRouterNFTScriptOneArmRetainsProxyAndDirectSNAT(t *testing.T) {
 	snapshot := probeLinuxRouterSnapshot{
-		GatewayProxy: probeLinuxRouterGatewayConfig{GatewayAddress: "172.18.52.205/22", DNSEnabled: true},
+		GatewayProxy: probeLinuxRouterGatewayConfig{GatewayAddress: "172.18.52.205/22", LANCIDRs: []string{"172.18.52.0/22"}, DNSEnabled: true},
 		LocalIPProxy: probeLinuxRouterLocalIPConfig{Enabled: true, PublishScope: probeLinuxRouterPublishScopeAll, PublishedCIDRs: []string{"172.18.52.0/22", "192.168.205.0/24"}},
 		OneArmRouter: probeLinuxRouterOneArmConfig{Enabled: true, SubnetCIDR: "192.168.205.0/24"},
 	}
@@ -219,7 +219,8 @@ func TestBuildProbeLinuxRouterNFTScriptOneArmRetainsProxyAndDirectSNAT(t *testin
 		"set published4", "172.18.52.0/22, 192.168.205.0/24",
 		`iifname "cloudhelper0" ip daddr @published4 ct mark set 0x4349`,
 		`iifname "cloudhelper0" oifname "eth0" ip daddr @published4 masquerade`,
-		`iifname "eth0" ip saddr @one_arm4 ip daddr != @one_arm4 meta mark set 0x4348`,
+		`iifname "eth0" ip saddr @one_arm4 ip daddr != @one_arm4 ip daddr != @lan4 ip daddr != @routed4 notrack`,
+		`iifname "eth0" ip saddr @one_arm4 ip daddr != @one_arm4 ip daddr != @lan4 meta mark set 0x4348`,
 		`oifname "cloudhelper0" ip saddr @one_arm4 ip daddr @routed4 snat to 198.18.0.15`,
 		`oifname "eth0" ip saddr @one_arm4 snat to 172.18.52.205`,
 		"ip daddr 192.168.205.1 udp dport 53 dnat to 198.18.0.2:53",
