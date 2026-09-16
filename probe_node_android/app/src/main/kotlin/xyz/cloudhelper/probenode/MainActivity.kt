@@ -138,6 +138,16 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun emitVRouteSpeed(payload: String) {
+        AndroidLogStore.add("route", payload, if (payload.contains("\"ok\":false")) "error" else "info")
+        runOnUiThread {
+            webView.evaluateJavascript(
+                "window.CloudHelperUI && window.CloudHelperUI.setVRouteSpeed(${JSONObject.quote(payload)});",
+                null,
+            )
+        }
+    }
+
     private fun emitInfoBox(payload: String) {
         AndroidLogStore.add("info", payload, if (payload.contains("\"ok\":false")) "error" else "info")
         runOnUiThread {
@@ -340,6 +350,15 @@ class MainActivity : Activity() {
                 emitVRouteRTT(MobileCoreBridge.vRoutePathRTT(targetNodeID))
             }
             return "RTT 测量已开始"
+        }
+
+        @JavascriptInterface
+        fun vrouteSpeedTest(targetNodeID: String): String {
+            AndroidLogStore.add("route", "vroute speed test requested: target=$targetNodeID")
+            thread(name = "cloudhelper-android-vroute-speed") {
+                emitVRouteSpeed(MobileCoreBridge.vRouteSpeedTest(targetNodeID))
+            }
+            return "双向测速已开始"
         }
 
         @JavascriptInterface

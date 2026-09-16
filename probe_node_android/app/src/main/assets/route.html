@@ -42,12 +42,14 @@
         <div id="vrouteSummary" class="vroute-summary-grid"></div>
         <div id="vrouteLinks" class="vroute-list"></div>
         <div class="vroute-rtt-tools">
-          <label for="vrouteRTTTarget">RTT 目标节点</label>
+          <label for="vrouteRTTTarget">目标节点</label>
           <div class="vroute-rtt-actions">
             <select id="vrouteRTTTarget"></select>
             <button id="vrouteRTTButton" class="command secondary" type="button">测量 RTT</button>
+            <button id="vrouteSpeedButton" class="command secondary" type="button">双向测速</button>
           </div>
           <div id="vrouteRTTResult" class="inline-feedback" aria-live="polite"></div>
+          <div id="vrouteSpeedResult" class="inline-feedback" aria-live="polite"></div>
         </div>
         <div id="vrouteExitNodes" class="vroute-list"></div>
         <div id="vrouteCarriers" class="vroute-list"></div>

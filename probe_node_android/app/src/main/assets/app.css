@@ -402,7 +402,7 @@ select {
 }
 .vroute-rtt-actions {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(96px, auto);
+  grid-template-columns: minmax(0, 1fr) minmax(96px, auto) minmax(96px, auto);
   gap: 8px;
   align-items: center;
   min-width: 0;
@@ -898,6 +898,12 @@ select {
   .route-runtime-heading .command,
   .vroute-rtt-actions .command {
     flex: 0 0 auto;
+  }
+  .vroute-rtt-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .vroute-rtt-actions select {
+    grid-column: 1 / -1;
   }
   .info-box-heading {
     align-items: center;

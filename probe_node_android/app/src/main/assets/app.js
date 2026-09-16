@@ -50,6 +50,15 @@ window.CloudHelperUI = {
     }
     refreshLogsIfVisible();
   },
+  setVRouteSpeed(payload) {
+    renderVRouteSpeedResult(parseJSON(payload || "{}"));
+    const button = byId("vrouteSpeedButton");
+    if (button) {
+      button.disabled = false;
+      button.textContent = "双向测速";
+    }
+    refreshLogsIfVisible();
+  },
   setInfoBox(payload) {
     completeInfoBoxRequest(parseJSON(payload || "{}"));
   },
@@ -780,6 +789,52 @@ function renderVRouteRTTResult(result) {
   setText("vrouteRTTResult", `${vrouteNodeLabel(result.target_node_id || result.responder)}：${Number(result.latency_ms || 0)} ms${path ? `；路径 ${path}` : ""}`);
 }
 
+function runVRouteSpeed() {
+  const select = byId("vrouteRTTTarget");
+  const targetNodeID = select ? String(select.value || "").trim() : "";
+  if (!targetNodeID) {
+    setText("vrouteSpeedResult", "请选择目标节点");
+    return;
+  }
+  const button = byId("vrouteSpeedButton");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "测速中...";
+  }
+  setText("vrouteSpeedResult", `正在测试与 ${vrouteNodeLabel(targetNodeID)} 之间的上下行速度...`);
+  try {
+    const message = window.CloudHelper && window.CloudHelper.vrouteSpeedTest
+      ? window.CloudHelper.vrouteSpeedTest(targetNodeID)
+      : "测速接口不可用";
+    if (message && !String(message).includes("已开始")) {
+      setText("vrouteSpeedResult", message);
+      if (button) {
+        button.disabled = false;
+        button.textContent = "双向测速";
+      }
+    }
+  } catch (error) {
+    setText("vrouteSpeedResult", `测速失败：${error && error.message ? error.message : error}`);
+    if (button) {
+      button.disabled = false;
+      button.textContent = "双向测速";
+    }
+  }
+}
+
+function renderVRouteSpeedResult(result) {
+  const path = vroutePathLabel(result.path);
+  const up = result.up || {};
+  const down = result.down || {};
+  if (!result.ok) {
+    setText("vrouteSpeedResult", `测速失败：${result.error || "未收到完整结果"}${path ? `；路径 ${path}` : ""}`);
+    return;
+  }
+  const upMbps = Number(up.mbps || 0).toFixed(2);
+  const downMbps = Number(down.mbps || 0).toFixed(2);
+  setText("vrouteSpeedResult", `上行 ${upMbps} Mbps / 下行 ${downMbps} Mbps${path ? `；路径 ${path}` : ""}`);
+}
+
 function renderVRouteHealth(enabled, error, updatedAt, lastErrorAt) {
   const target = byId("vrouteHealth");
   if (!target) {
@@ -945,7 +1000,8 @@ function renderVRouteCarriers(items) {
     const title = document.createElement("div");
     title.className = "vroute-card-title";
     const carrierNodeID = item.exit_node || item.next_node;
-    title.textContent = carrierNodeID ? `Carrier · ${vrouteNodeLabel(carrierNodeID)}` : (item.route_id || "Carrier");
+    const carrierSlot = Number(item.carrier_slot || 0);
+    title.textContent = carrierNodeID ? `Carrier ${carrierSlot + 1} · ${vrouteNodeLabel(carrierNodeID)}` : (item.route_id || "Carrier");
     const meta = document.createElement("div");
     meta.className = "vroute-card-meta";
     meta.textContent = [
@@ -970,6 +1026,7 @@ function renderVRouteCarriers(items) {
     appendVRouteMetric(stats, "TUN回写", `${tunWriteFrames} / ${formatBytes(tunWriteBytes)}`);
     appendVRouteMetric(stats, "路径", vroutePathLabel(item.path) || "-");
     appendVRouteMetric(stats, "Route ID", item.route_id || "-");
+    appendVRouteMetric(stats, "连接槽位", `${carrierSlot + 1} / ${Number(item.carrier_count || 1)}`);
     appendVRouteMetric(stats, "活动", formatCompactTime(item.last_activity_at) || "-");
     if (item.last_error) {
       appendVRouteMetric(stats, "错误", item.last_error);
@@ -994,7 +1051,9 @@ function renderVRouteCapabilities(capabilities) {
     ["主动拨出", capabilities.outbound_dialer],
     ["入站监听", capabilities.inbound_listener],
     ["TUN回写", capabilities.vpn_tun_writeback],
-    ["热刷新", capabilities.config_hot_refresh]
+    ["热刷新", capabilities.config_hot_refresh],
+    ["多 Carrier", capabilities.multi_carrier],
+    ["双向测速", capabilities.speed_test]
   ];
   const grid = document.createElement("div");
   grid.className = "vroute-capability-grid";
@@ -1317,6 +1376,10 @@ function setupVRoutePanel() {
   const rttButton = byId("vrouteRTTButton");
   if (rttButton) {
     rttButton.onclick = runVRouteRTT;
+  }
+  const speedButton = byId("vrouteSpeedButton");
+  if (speedButton) {
+    speedButton.onclick = runVRouteSpeed;
   }
   refreshVRoute();
 }

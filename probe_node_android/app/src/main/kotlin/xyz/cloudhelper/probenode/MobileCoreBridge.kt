@@ -121,6 +121,14 @@ object MobileCoreBridge {
         )
     }
 
+    fun vRouteSpeedTest(targetNodeID: String): String {
+        return callString(
+            methodName = "vRouteSpeedTest",
+            parameterTypes = arrayOf(String::class.java),
+            args = arrayOf(targetNodeID),
+        )
+    }
+
     fun vRouteSettings(context: Context, config: ProbeNodeConfig): String {
         return callString(
             methodName = "vRouteSettings",

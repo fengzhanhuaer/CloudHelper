@@ -160,6 +160,7 @@ type mobileVRouteTopology struct {
 	ToServicePort     int    `json:"to_service_port,omitempty"`
 	ToTLSSPKISHA256   string `json:"to_tls_spki_sha256,omitempty"`
 	RouteLayer        string `json:"route_layer,omitempty"`
+	CarrierCount      int    `json:"carrier_count,omitempty"`
 	UserID            string `json:"user_id,omitempty"`
 	UserPublicKey     string `json:"user_public_key,omitempty"`
 	Secret            string `json:"secret,omitempty"`
@@ -322,6 +323,7 @@ func sanitizeMobileVRouteConfig(input mobileVRouteConfig) mobileVRouteConfig {
 		item.FromTLSSPKISHA256 = normalizeMobileVRouteTLSSPKI(item.FromTLSSPKISHA256)
 		item.ToTLSSPKISHA256 = normalizeMobileVRouteTLSSPKI(item.ToTLSSPKISHA256)
 		item.RouteLayer = strings.TrimSpace(item.RouteLayer)
+		item.CarrierCount = normalizeMobileVRouteCarrierCount(item.CarrierCount)
 		item.UserID = strings.TrimSpace(item.UserID)
 		item.UserPublicKey = strings.TrimSpace(item.UserPublicKey)
 		item.Secret = strings.TrimSpace(item.Secret)

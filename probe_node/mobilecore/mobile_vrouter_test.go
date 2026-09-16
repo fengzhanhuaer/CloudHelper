@@ -32,11 +32,21 @@ func resetMobileVRouteVPNStateForTest(t *testing.T, configDir string) {
 	mobileVRouteRTTState.mu.Lock()
 	mobileVRouteRTTState.pending = make(map[string]chan mobileVRouteControlProbePayload)
 	mobileVRouteRTTState.mu.Unlock()
+	mobileVRouteSpeedState.mu.Lock()
+	oldSpeedPending := mobileVRouteSpeedState.pending
+	oldSpeedSessions := mobileVRouteSpeedState.sessions
+	oldSpeedCompleted := mobileVRouteSpeedState.completed
+	mobileVRouteSpeedState.pending = make(map[string]chan mobileVRouteSpeedResultPayload)
+	mobileVRouteSpeedState.sessions = make(map[string]*mobileVRouteSpeedReceiveSession)
+	mobileVRouteSpeedState.completed = make(map[string]time.Time)
+	mobileVRouteSpeedState.mu.Unlock()
 	mobileVRouteCarrierState.mu.Lock()
 	oldCarrierItems := mobileVRouteCarrierState.items
+	oldCarrierFlowBindings := mobileVRouteCarrierState.flowBindings
 	oldCarrierLastError := mobileVRouteCarrierState.lastError
 	oldCarrierLastErrorUnixNS := mobileVRouteCarrierState.lastErrorUnixNS
 	mobileVRouteCarrierState.items = map[string]*mobileVRouteCarrier{}
+	mobileVRouteCarrierState.flowBindings = map[string]mobileVRouteCarrierFlowBinding{}
 	mobileVRouteCarrierState.lastError = ""
 	mobileVRouteCarrierState.lastErrorUnixNS = 0
 	mobileVRouteCarrierState.mu.Unlock()
@@ -76,9 +86,15 @@ func resetMobileVRouteVPNStateForTest(t *testing.T, configDir string) {
 		closeMobileVRouteCarriers()
 		mobileVRouteCarrierState.mu.Lock()
 		mobileVRouteCarrierState.items = oldCarrierItems
+		mobileVRouteCarrierState.flowBindings = oldCarrierFlowBindings
 		mobileVRouteCarrierState.lastError = oldCarrierLastError
 		mobileVRouteCarrierState.lastErrorUnixNS = oldCarrierLastErrorUnixNS
 		mobileVRouteCarrierState.mu.Unlock()
+		mobileVRouteSpeedState.mu.Lock()
+		mobileVRouteSpeedState.pending = oldSpeedPending
+		mobileVRouteSpeedState.sessions = oldSpeedSessions
+		mobileVRouteSpeedState.completed = oldSpeedCompleted
+		mobileVRouteSpeedState.mu.Unlock()
 
 		vpnRuntime.mu.Lock()
 		vpnRuntime.configDir = oldConfigDir
@@ -929,6 +945,55 @@ func TestMobileVRouteOutboundCarrierPlansIncludeForwardAndReverseRules(t *testin
 	}
 }
 
+func TestMobileVRouteCarrierCountAndSlotKey(t *testing.T) {
+	for input, want := range map[int]int{0: 4, 4: 4, 16: 16, 64: 64, 264: 264, 8: 4} {
+		if got := normalizeMobileVRouteCarrierCount(input); got != want {
+			t.Fatalf("normalize carrier count %d=%d, want %d", input, got, want)
+		}
+	}
+	plan := mobileVRouteForwardPlan{RouteID: "route", BridgeRole: mobileVRouteBridgeRoleToNext, RelayHost: "edge.example.com", RelayPort: 12040}
+	key0 := mobileVRouteCarrierKey(plan)
+	plan.CarrierSlot = 3
+	key3 := mobileVRouteCarrierKey(plan)
+	if key0 == key3 || !strings.HasSuffix(key0, "|0") || !strings.HasSuffix(key3, "|3") {
+		t.Fatalf("carrier slot keys are not distinct: slot0=%q slot3=%q", key0, key3)
+	}
+}
+
+func TestMobileVRoutePacketFlowHashIsBidirectional(t *testing.T) {
+	forward := buildMobileVRouteTestIPv4Packet(6, "198.18.0.9", "198.18.0.17", 41000, 443)
+	reverse := buildMobileVRouteTestIPv4Packet(6, "198.18.0.17", "198.18.0.9", 443, 41000)
+	forwardHash := mobileVRoutePacketFlowHash(forward, 2166136261)
+	reverseHash := mobileVRoutePacketFlowHash(reverse, 2166136261)
+	if forwardHash != reverseHash {
+		t.Fatalf("bidirectional flow hashes differ: forward=%d reverse=%d", forwardHash, reverseHash)
+	}
+}
+
+func TestMobileVRouteCarrierSelectionKeepsFlowAffinity(t *testing.T) {
+	resetMobileVRouteVPNStateForTest(t, t.TempDir())
+	plan := mobileVRouteForwardPlan{RouteID: "route-affinity", BridgeRole: mobileVRouteBridgeRoleToNext, RelayHost: "edge.example.com", RelayPort: 12040, CarrierCount: 4}
+	for slot := 0; slot < 4; slot++ {
+		slotPlan := plan
+		slotPlan.CarrierSlot = slot
+		carrier := &mobileVRouteCarrier{key: mobileVRouteCarrierKey(slotPlan), plan: slotPlan}
+		mobileVRouteCarrierState.items[carrier.key] = carrier
+	}
+	forward := mobileVRouteFrame{MainType: mobileVRouteFrameMainTypeIP, SubType: mobileVRouteIPSubTypeIPv4, Data: buildMobileVRouteTestIPv4Packet(6, "198.18.0.9", "198.18.0.17", 41000, 443)}
+	reverse := mobileVRouteFrame{MainType: mobileVRouteFrameMainTypeIP, SubType: mobileVRouteIPSubTypeIPv4, Data: buildMobileVRouteTestIPv4Packet(6, "198.18.0.17", "198.18.0.9", 443, 41000)}
+	selectedForward, err := selectMobileVRouteCarrier(plan, forward, nil)
+	if err != nil {
+		t.Fatalf("select forward carrier: %v", err)
+	}
+	selectedReverse, err := selectMobileVRouteCarrier(plan, reverse, nil)
+	if err != nil {
+		t.Fatalf("select reverse carrier: %v", err)
+	}
+	if selectedForward.plan.CarrierSlot != selectedReverse.plan.CarrierSlot {
+		t.Fatalf("flow changed slots: forward=%d reverse=%d", selectedForward.plan.CarrierSlot, selectedReverse.plan.CarrierSlot)
+	}
+}
+
 func TestMobileVRouteCarrierWorkerRetriesFailedDial(t *testing.T) {
 	resetMobileVRouteVPNStateForTest(t, t.TempDir())
 	oldDial := mobileVRouteCarrierDial
@@ -1404,8 +1469,21 @@ func TestMobileVRouteRelayReportMatchesProbeNodeStatusShape(t *testing.T) {
 	carrier.txBytes.Store(300)
 	carrier.rxFrames.Store(2)
 	carrier.rxBytes.Store(200)
+	extraPlan := plan
+	extraPlan.CarrierSlot = 1
+	extra := &mobileVRouteCarrier{
+		key:           mobileVRouteCarrierKey(extraPlan),
+		plan:          extraPlan,
+		createdUnixNS: time.Now().Add(-time.Second).UnixNano(),
+	}
+	extra.markActivity()
+	extra.txFrames.Store(4)
+	extra.txBytes.Store(400)
+	extra.rxFrames.Store(3)
+	extra.rxBytes.Store(300)
 	mobileVRouteCarrierState.mu.Lock()
 	mobileVRouteCarrierState.items[carrier.key] = carrier
+	mobileVRouteCarrierState.items[extra.key] = extra
 	mobileVRouteCarrierState.mu.Unlock()
 
 	reports := snapshotMobileVRouteRelayReports(configDir)
@@ -1422,10 +1500,10 @@ func TestMobileVRouteRelayReportMatchesProbeNodeStatusShape(t *testing.T) {
 	if report.NextState == nil || report.NextState.SelectedProtocol != "websocket" {
 		t.Fatalf("next state missing selected protocol: %+v", report.NextState)
 	}
-	if report.VirtualRouter == nil || report.VirtualRouter.FramesSent != 3 || report.VirtualRouter.FramesReceived != 2 {
+	if report.VirtualRouter == nil || report.VirtualRouter.FramesSent != 7 || report.VirtualRouter.FramesReceived != 5 || report.VirtualRouter.LinkOpenCount != 2 {
 		t.Fatalf("virtual router stats not included: %+v", report.VirtualRouter)
 	}
-	if report.BridgeStatus == nil || len(report.BridgeStatus.Sessions) != 1 {
+	if report.BridgeStatus == nil || report.BridgeStatus.UpstreamActive != 2 || len(report.BridgeStatus.Sessions) != 2 {
 		t.Fatalf("bridge status not included: %+v", report.BridgeStatus)
 	}
 	raw, err := json.Marshal(reportPayload{Type: "report", NodeID: "9", RelayStatus: reports})
@@ -1749,6 +1827,37 @@ func TestMobileVRouteRespondsToPingAndPathRTT(t *testing.T) {
 				t.Fatal("timed out waiting for mobile rtt response")
 			}
 		})
+	}
+}
+
+func TestMobileVRouteSpeedChunkAndFrameSpan(t *testing.T) {
+	payload := buildMobileVRouteSpeedChunk("speed-request", 1024)
+	requestID, ok := parseMobileVRouteSpeedChunk(payload)
+	if !ok || requestID != "speed-request" || len(payload) != 1024 {
+		t.Fatalf("speed chunk request=%q ok=%t bytes=%d", requestID, ok, len(payload))
+	}
+	start := mobileVRouteSpeedResultPayload{
+		RequestID: "speed-request", Direction: "up", SourceNodeID: "9", TargetNodeID: "17",
+		ResultNodeID: "9", Path: []string{"9", "17"}, MaxDurationMS: 8000,
+	}
+	startMobileVRouteSpeedReceive(start, "17")
+	recordMobileVRouteSpeedChunk(start.RequestID, 1024)
+	time.Sleep(2 * time.Millisecond)
+	recordMobileVRouteSpeedChunk(start.RequestID, 1024)
+	result, ok := finishMobileVRouteSpeedReceive(start, "17")
+	if !ok || !result.OK || result.Bytes != 2048 || result.Frames != 2 || result.DurationMS < 1 || result.Mbps <= 0 {
+		t.Fatalf("unexpected speed result: ok=%t result=%+v", ok, result)
+	}
+}
+
+func TestMobileVRouteSpeedFrameUsesBusinessQueue(t *testing.T) {
+	carrier := &mobileVRouteCarrier{
+		tx:        make(chan mobileVRouteFrame, 1),
+		txControl: make(chan mobileVRouteFrame, 1),
+	}
+	queue, name := carrier.txQueueForFrame(mobileVRouteFrame{MainType: mobileVRouteFrameMainTypeSpeed, SubType: mobileVRouteSpeedSubTypeChunk})
+	if queue != carrier.tx || name != "bulk" {
+		t.Fatalf("speed queue=%q, want bulk business queue", name)
 	}
 }
 

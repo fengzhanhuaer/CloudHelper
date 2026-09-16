@@ -31,15 +31,17 @@ import (
 const (
 	mobileVRouteRelayAPIPath = "/api/node/route/relay"
 
-	mobileVRouteLegacyRouteIDHeader   = "X-CH-Route-ID"
-	mobileVRouteCodexRouteIDHeader    = "X-Codex-Route-Id"
-	mobileVRouteCodexAuthModeHeader   = "X-Codex-Auth-Mode"
-	mobileVRouteCodexMACHeader        = "X-Codex-Mac"
-	mobileVRouteCodexAuthTicketHeader = "X-Codex-User-Auth-Ticket"
-	mobileVRouteCodexVersionHeader    = "X-Codex-Api-Version"
-	mobileVRouteCodexRelayModeHeader  = "X-Codex-Relay-Mode"
-	mobileVRouteCodexRelayRoleHeader  = "X-Codex-Relay-Role"
-	mobileVRouteCodexSourceNodeHeader = "X-Codex-Source-Node-Id"
+	mobileVRouteLegacyRouteIDHeader     = "X-CH-Route-ID"
+	mobileVRouteCodexRouteIDHeader      = "X-Codex-Route-Id"
+	mobileVRouteCodexAuthModeHeader     = "X-Codex-Auth-Mode"
+	mobileVRouteCodexMACHeader          = "X-Codex-Mac"
+	mobileVRouteCodexAuthTicketHeader   = "X-Codex-User-Auth-Ticket"
+	mobileVRouteCodexVersionHeader      = "X-Codex-Api-Version"
+	mobileVRouteCodexRelayModeHeader    = "X-Codex-Relay-Mode"
+	mobileVRouteCodexRelayRoleHeader    = "X-Codex-Relay-Role"
+	mobileVRouteCodexSourceNodeHeader   = "X-Codex-Source-Node-Id"
+	mobileVRouteCodexCarrierSlotHeader  = "X-Codex-VRouter-Carrier-Slot"
+	mobileVRouteCodexMultiCarrierHeader = "X-Codex-VRouter-Multi-Carrier"
 
 	mobileVRouteAuthPacketVersion = "2025-03-22"
 	mobileVRouteRelayModeBridge   = "bridge"
@@ -59,6 +61,12 @@ const (
 	mobileVRouteFrameMainTypePathRTT         uint16 = 3
 	mobileVRoutePathRTTSubTypeQuery          uint16 = 1
 	mobileVRoutePathRTTSubTypeResponse       uint16 = 2
+	mobileVRouteFrameMainTypeSpeed           uint16 = 4
+	mobileVRouteSpeedSubTypeStart            uint16 = 1
+	mobileVRouteSpeedSubTypeChunk            uint16 = 2
+	mobileVRouteSpeedSubTypeFinish           uint16 = 3
+	mobileVRouteSpeedSubTypeResult           uint16 = 4
+	mobileVRouteSpeedSubTypeSend             uint16 = 5
 	mobileVRouteFrameMainTypeDebugLog        uint16 = 7
 	mobileVRouteDebugLogSubTypeQuery         uint16 = 1
 	mobileVRouteDebugLogSubTypeResponse      uint16 = 2
@@ -73,6 +81,10 @@ const (
 	mobileVRouteMaxHops                             = 3
 	mobileVRouteRelayResolveTimeout                 = 5 * time.Second
 	mobileVRouteH3StreamOpenTimeout                 = 6 * time.Second
+	mobileVRouteCarrierDefaultCount                 = 4
+	mobileVRouteCarrierMaxCount                     = 264
+	mobileVRouteCarrierFlowBindingMax               = 65536
+	mobileVRouteCarrierFlowBindingTTL               = 5 * time.Minute
 )
 
 type mobileVRouteFrame struct {
@@ -87,17 +99,19 @@ type mobileVRouteFrameControlEnvelope struct {
 }
 
 type mobileVRouteForwardPlan struct {
-	LocalNode  string
-	ExitNode   string
-	Path       []string
-	NextNode   string
-	Config     mobileVRouteConfig
-	Rule       mobileVRouteTopology
-	RouteID    string
-	RelayHost  string
-	RelayPort  int
-	BridgeRole string
-	Layer      string
+	LocalNode    string
+	ExitNode     string
+	Path         []string
+	NextNode     string
+	Config       mobileVRouteConfig
+	Rule         mobileVRouteTopology
+	RouteID      string
+	RelayHost    string
+	RelayPort    int
+	BridgeRole   string
+	Layer        string
+	CarrierSlot  int
+	CarrierCount int
 }
 
 type mobileVRouteCarrier struct {
@@ -135,6 +149,7 @@ type mobileVRouteCarrier struct {
 	txControl       chan mobileVRouteFrame
 	rx              chan mobileVRouteFrame
 	done            chan struct{}
+	multiCarrier    bool
 }
 
 type mobileVRouteCarrierWorker struct {
@@ -144,15 +159,28 @@ type mobileVRouteCarrierWorker struct {
 	stopOnce sync.Once
 }
 
+type mobileVRouteCarrierFlowBinding struct {
+	CarrierKey string
+	LastSeen   time.Time
+}
+
+type mobileVRouteNegotiatedConn struct {
+	net.Conn
+	multiCarrier bool
+}
+
 var mobileVRouteCarrierState = struct {
 	mu              sync.Mutex
 	items           map[string]*mobileVRouteCarrier
 	workers         map[string]*mobileVRouteCarrierWorker
 	lastError       string
 	lastErrorUnixNS int64
+	flowBindings    map[string]mobileVRouteCarrierFlowBinding
+	stopping        bool
 }{
-	items:   map[string]*mobileVRouteCarrier{},
-	workers: map[string]*mobileVRouteCarrierWorker{},
+	items:        map[string]*mobileVRouteCarrier{},
+	workers:      map[string]*mobileVRouteCarrierWorker{},
+	flowBindings: map[string]mobileVRouteCarrierFlowBinding{},
 }
 
 var mobileVRouteCarrierDial = dialMobileVRouteCarrier
@@ -307,13 +335,17 @@ func mobileVRouteHandleVPNPacket(configDir string, packet []byte, writeBack func
 		}
 		return writeBack(restored)
 	}
-	carrier, err := ensureMobileVRouteCarrier(plan, carrierWriteBack)
+	frame, err := buildMobileVRouteIPFrame(forwardPacket, plan.Path)
+	if err != nil {
+		return true, err
+	}
+	carrier, err := selectMobileVRouteCarrier(plan, frame, carrierWriteBack)
 	if err != nil {
 		recordMobileVRouteConnectionFailure("carrier_open_failed", targetAddr, plan.RouteID, route.Group, "", err)
 		logAndroidVPNDiagnostic("takeover_carrier_error_"+plan.RouteID, "error", "vroute takeover carrier unavailable: target="+targetAddr+" route="+plan.RouteID+" next="+plan.NextNode+" relay="+net.JoinHostPort(plan.RelayHost, strconv.Itoa(plan.RelayPort))+" err="+err.Error(), 2*time.Second)
 		return true, err
 	}
-	if err := carrier.writeIPPacket(forwardPacket, plan.Path); err != nil {
+	if err := carrier.enqueueFrame(frame); err != nil {
 		recordMobileVRouteConnectionFailure("enqueue_failed", targetAddr, plan.RouteID, route.Group, "", err)
 		logAndroidVPNDiagnostic("takeover_enqueue_error_"+plan.RouteID, "error", "vroute takeover enqueue failed: route="+plan.RouteID+" err="+err.Error(), 2*time.Second)
 		return true, err
@@ -392,17 +424,18 @@ func buildMobileVRouteForwardPlan(configDir string, routeID string) (mobileVRout
 		bridgeRole = mobileVRouteBridgeRoleToPrev
 	}
 	return mobileVRouteForwardPlan{
-		LocalNode:  localNode,
-		ExitNode:   exitNode,
-		Path:       path,
-		NextNode:   nextNode,
-		Config:     config,
-		Rule:       rule,
-		RouteID:    mobileVRouteRuntimeRouteID(rule),
-		RelayHost:  host,
-		RelayPort:  port,
-		BridgeRole: bridgeRole,
-		Layer:      normalizeMobileVRouteRelayLayer(rule.RouteLayer),
+		LocalNode:    localNode,
+		ExitNode:     exitNode,
+		Path:         path,
+		NextNode:     nextNode,
+		Config:       config,
+		Rule:         rule,
+		RouteID:      mobileVRouteRuntimeRouteID(rule),
+		RelayHost:    host,
+		RelayPort:    port,
+		BridgeRole:   bridgeRole,
+		Layer:        normalizeMobileVRouteRelayLayer(rule.RouteLayer),
+		CarrierCount: normalizeMobileVRouteCarrierCount(rule.CarrierCount),
 	}, nil
 }
 
@@ -429,21 +462,32 @@ func buildMobileVRouteAdjacentPlan(config mobileVRouteConfig, path []string, loc
 		bridgeRole = mobileVRouteBridgeRoleToPrev
 	}
 	return mobileVRouteForwardPlan{
-		LocalNode:  localNode,
-		ExitNode:   path[len(path)-1],
-		Path:       append([]string(nil), path...),
-		NextNode:   nextNode,
-		Config:     config,
-		Rule:       rule,
-		RouteID:    mobileVRouteRuntimeRouteID(rule),
-		RelayHost:  host,
-		RelayPort:  port,
-		BridgeRole: bridgeRole,
-		Layer:      normalizeMobileVRouteRelayLayer(rule.RouteLayer),
+		LocalNode:    localNode,
+		ExitNode:     path[len(path)-1],
+		Path:         append([]string(nil), path...),
+		NextNode:     nextNode,
+		Config:       config,
+		Rule:         rule,
+		RouteID:      mobileVRouteRuntimeRouteID(rule),
+		RelayHost:    host,
+		RelayPort:    port,
+		BridgeRole:   bridgeRole,
+		Layer:        normalizeMobileVRouteRelayLayer(rule.RouteLayer),
+		CarrierCount: normalizeMobileVRouteCarrierCount(rule.CarrierCount),
 	}, nil
 }
 
+func normalizeMobileVRouteCarrierCount(value int) int {
+	switch value {
+	case 4, 16, 64, mobileVRouteCarrierMaxCount:
+		return value
+	default:
+		return mobileVRouteCarrierDefaultCount
+	}
+}
+
 func ensureMobileVRouteCarrier(plan mobileVRouteForwardPlan, writeBack func([]byte) error) (*mobileVRouteCarrier, error) {
+	plan.CarrierCount = normalizeMobileVRouteCarrierCount(plan.CarrierCount)
 	key := mobileVRouteCarrierKey(plan)
 	mobileVRouteCarrierState.mu.Lock()
 	if existing := mobileVRouteCarrierState.items[key]; existing != nil {
@@ -470,14 +514,128 @@ func ensureMobileVRouteCarrier(plan mobileVRouteForwardPlan, writeBack func([]by
 	mobileVRouteCarrierState.items[key] = carrier
 	mobileVRouteCarrierState.mu.Unlock()
 	carrier.start()
+	if plan.CarrierSlot == 0 && carrier.multiCarrier {
+		startMobileVRouteExtraCarrierWorkers(plan)
+	}
 	return carrier, nil
+}
+
+func selectMobileVRouteCarrier(plan mobileVRouteForwardPlan, frame mobileVRouteFrame, writeBack func([]byte) error) (*mobileVRouteCarrier, error) {
+	plan.CarrierSlot = 0
+	plan.CarrierCount = normalizeMobileVRouteCarrierCount(plan.CarrierCount)
+	baseKey := mobileVRouteCarrierBaseKey(plan)
+	now := time.Now()
+	mobileVRouteCarrierState.mu.Lock()
+	active := make([]*mobileVRouteCarrier, 0, plan.CarrierCount)
+	for _, carrier := range mobileVRouteCarrierState.items {
+		if carrier == nil || mobileVRouteCarrierBaseKey(carrier.plan) != baseKey {
+			continue
+		}
+		carrier.setWriteBack(writeBack)
+		active = append(active, carrier)
+	}
+	sort.Slice(active, func(i, j int) bool { return active[i].plan.CarrierSlot < active[j].plan.CarrierSlot })
+	if len(active) > 0 {
+		selected := active[0]
+		if frame.MainType == mobileVRouteFrameMainTypeIP {
+			hash := mobileVRoutePacketFlowHash(frame.Data, 2166136261)
+			bindingKey := baseKey + "|" + strconv.FormatUint(uint64(hash), 10)
+			if binding, ok := mobileVRouteCarrierState.flowBindings[bindingKey]; ok {
+				if carrier := mobileVRouteCarrierState.items[binding.CarrierKey]; carrier != nil {
+					binding.LastSeen = now
+					mobileVRouteCarrierState.flowBindings[bindingKey] = binding
+					selected = carrier
+					mobileVRouteCarrierState.mu.Unlock()
+					return selected, nil
+				}
+				delete(mobileVRouteCarrierState.flowBindings, bindingKey)
+			}
+			selected = active[int(hash%uint32(len(active)))]
+			mobileVRouteCarrierState.flowBindings[bindingKey] = mobileVRouteCarrierFlowBinding{CarrierKey: selected.key, LastSeen: now}
+			pruneMobileVRouteCarrierFlowBindingsLocked(now)
+		}
+		mobileVRouteCarrierState.mu.Unlock()
+		return selected, nil
+	}
+	mobileVRouteCarrierState.mu.Unlock()
+	return ensureMobileVRouteCarrier(plan, writeBack)
+}
+
+func pruneMobileVRouteCarrierFlowBindingsLocked(now time.Time) {
+	if len(mobileVRouteCarrierState.flowBindings) < mobileVRouteCarrierFlowBindingMax {
+		return
+	}
+	cutoff := now.Add(-mobileVRouteCarrierFlowBindingTTL)
+	oldestKey := ""
+	oldestAt := now
+	for key, binding := range mobileVRouteCarrierState.flowBindings {
+		if binding.LastSeen.Before(cutoff) || mobileVRouteCarrierState.items[binding.CarrierKey] == nil {
+			delete(mobileVRouteCarrierState.flowBindings, key)
+			continue
+		}
+		if oldestKey == "" || binding.LastSeen.Before(oldestAt) {
+			oldestKey = key
+			oldestAt = binding.LastSeen
+		}
+	}
+	if len(mobileVRouteCarrierState.flowBindings) >= mobileVRouteCarrierFlowBindingMax && oldestKey != "" {
+		delete(mobileVRouteCarrierState.flowBindings, oldestKey)
+	}
+}
+
+func mobileVRoutePacketFlowHash(packet []byte, seed uint32) uint32 {
+	const fnvPrime uint32 = 16777619
+	hashByte := func(h uint32, value byte) uint32 { return (h ^ uint32(value)) * fnvPrime }
+	hashUint16 := func(h uint32, value uint16) uint32 {
+		h = hashByte(h, byte(value>>8))
+		return hashByte(h, byte(value))
+	}
+	hashUint32 := func(h uint32, value uint32) uint32 {
+		h = hashByte(h, byte(value>>24))
+		h = hashByte(h, byte(value>>16))
+		h = hashByte(h, byte(value>>8))
+		return hashByte(h, byte(value))
+	}
+	h := seed
+	if len(packet) < 20 || packet[0]>>4 != 4 {
+		return h
+	}
+	ihl := int(packet[0]&0x0f) * 4
+	if ihl < 20 || len(packet) < ihl {
+		return h
+	}
+	totalLen := int(binary.BigEndian.Uint16(packet[2:4]))
+	if totalLen <= 0 || totalLen > len(packet) || totalLen < ihl {
+		return h
+	}
+	protocol := packet[9]
+	sourceIP := binary.BigEndian.Uint32(packet[12:16])
+	targetIP := binary.BigEndian.Uint32(packet[16:20])
+	sourcePort, targetPort := uint16(0), uint16(0)
+	if (protocol == 6 || protocol == 17) && totalLen >= ihl+4 {
+		sourcePort = binary.BigEndian.Uint16(packet[ihl : ihl+2])
+		targetPort = binary.BigEndian.Uint16(packet[ihl+2 : ihl+4])
+	}
+	if sourceIP > targetIP || (sourceIP == targetIP && sourcePort > targetPort) {
+		sourceIP, targetIP = targetIP, sourceIP
+		sourcePort, targetPort = targetPort, sourcePort
+	}
+	h = hashByte(h, protocol)
+	h = hashUint32(h, sourceIP)
+	h = hashUint16(h, sourcePort)
+	h = hashUint32(h, targetIP)
+	h = hashUint16(h, targetPort)
+	if protocol == 1 && totalLen >= ihl+8 {
+		h = hashUint16(h, binary.BigEndian.Uint16(packet[ihl+4:ihl+6]))
+	}
+	return h
 }
 
 func newMobileVRouteCarrier(key string, plan mobileVRouteForwardPlan, conn net.Conn) *mobileVRouteCarrier {
 	if conn == nil {
 		return nil
 	}
-	return &mobileVRouteCarrier{
+	carrier := &mobileVRouteCarrier{
 		key:           key,
 		plan:          plan,
 		conn:          conn,
@@ -488,6 +646,10 @@ func newMobileVRouteCarrier(key string, plan mobileVRouteForwardPlan, conn net.C
 		rx:            make(chan mobileVRouteFrame, mobileVRouteCarrierRXBufferFrames),
 		done:          make(chan struct{}),
 	}
+	if negotiated, ok := conn.(*mobileVRouteNegotiatedConn); ok {
+		carrier.multiCarrier = negotiated.multiCarrier
+	}
+	return carrier
 }
 
 func (c *mobileVRouteCarrier) start() {
@@ -592,6 +754,9 @@ func (c *mobileVRouteCarrier) txQueueForFrame(frame mobileVRouteFrame) (chan mob
 	}
 	if mobileVRouteFrameIsIP(frame) {
 		return c.tx, "ip"
+	}
+	if frame.MainType == mobileVRouteFrameMainTypeSpeed {
+		return c.tx, "bulk"
 	}
 	return c.txControl, "control"
 }
@@ -740,11 +905,14 @@ func (c *mobileVRouteCarrier) handleIncomingFrame(frame mobileVRouteFrame) error
 		if err != nil {
 			return err
 		}
-		carrier, err := ensureMobileVRouteCarrier(plan, c.currentWriteBack())
+		carrier, err := selectMobileVRouteCarrier(plan, frame, c.currentWriteBack())
 		if err != nil {
 			return err
 		}
 		return carrier.enqueueFrame(frame)
+	}
+	if frame.MainType == mobileVRouteFrameMainTypeSpeed {
+		return handleMobileVRouteSpeedFrame(c, frame, path)
 	}
 	if frame.MainType == mobileVRouteFrameMainTypePingPong && frame.SubType == mobileVRoutePingPongSubTypePong {
 		return completeMobileVRouteRTTResponse(frame)
@@ -828,20 +996,34 @@ func (c *mobileVRouteCarrier) currentWriteBack() func([]byte) error {
 
 func startMobileVRouteCarrierWorkers(config mobileVRouteConfig) {
 	for _, plan := range mobileVRouteOutboundCarrierPlans(config) {
-		worker := &mobileVRouteCarrierWorker{
-			plan:   plan,
-			stopCh: make(chan struct{}),
-			doneCh: make(chan struct{}),
-		}
-		key := mobileVRouteCarrierKey(plan)
-		mobileVRouteCarrierState.mu.Lock()
-		if existing := mobileVRouteCarrierState.workers[key]; existing != nil {
-			mobileVRouteCarrierState.mu.Unlock()
-			continue
-		}
-		mobileVRouteCarrierState.workers[key] = worker
+		startMobileVRouteCarrierWorker(plan)
+	}
+}
+
+func startMobileVRouteCarrierWorker(plan mobileVRouteForwardPlan) {
+	worker := &mobileVRouteCarrierWorker{plan: plan, stopCh: make(chan struct{}), doneCh: make(chan struct{})}
+	key := mobileVRouteCarrierKey(plan)
+	mobileVRouteCarrierState.mu.Lock()
+	if mobileVRouteCarrierState.stopping {
 		mobileVRouteCarrierState.mu.Unlock()
-		go worker.run()
+		return
+	}
+	if existing := mobileVRouteCarrierState.workers[key]; existing != nil {
+		mobileVRouteCarrierState.mu.Unlock()
+		return
+	}
+	mobileVRouteCarrierState.workers[key] = worker
+	mobileVRouteCarrierState.mu.Unlock()
+	go worker.run()
+}
+
+func startMobileVRouteExtraCarrierWorkers(plan mobileVRouteForwardPlan) {
+	count := normalizeMobileVRouteCarrierCount(plan.CarrierCount)
+	for slot := 1; slot < count; slot++ {
+		extra := plan
+		extra.CarrierSlot = slot
+		extra.CarrierCount = count
+		startMobileVRouteCarrierWorker(extra)
 	}
 }
 
@@ -858,6 +1040,7 @@ func startMobileVRouteCarrierWorkersFromConfigDir(configDir string) {
 
 func stopMobileVRouteCarrierWorkers() {
 	mobileVRouteCarrierState.mu.Lock()
+	mobileVRouteCarrierState.stopping = true
 	workers := make([]*mobileVRouteCarrierWorker, 0, len(mobileVRouteCarrierState.workers))
 	for _, worker := range mobileVRouteCarrierState.workers {
 		workers = append(workers, worker)
@@ -867,6 +1050,9 @@ func stopMobileVRouteCarrierWorkers() {
 	for _, worker := range workers {
 		worker.stop()
 	}
+	mobileVRouteCarrierState.mu.Lock()
+	mobileVRouteCarrierState.stopping = false
+	mobileVRouteCarrierState.mu.Unlock()
 }
 
 func (w *mobileVRouteCarrierWorker) run() {
@@ -893,6 +1079,9 @@ func (w *mobileVRouteCarrierWorker) run() {
 		}
 		clearMobileVRouteCarrierStateError()
 		backoff = mobileVRouteCarrierRetryMin
+		if w.plan.CarrierSlot == 0 && carrier != nil && carrier.multiCarrier {
+			startMobileVRouteExtraCarrierWorkers(w.plan)
+		}
 		if !w.waitCarrier(carrier) {
 			if carrier != nil {
 				carrier.close()
@@ -1002,17 +1191,19 @@ func mobileVRouteOutboundCarrierPlans(config mobileVRouteConfig) []mobileVRouteF
 			bridgeRole = mobileVRouteBridgeRoleToPrev
 		}
 		plans = append(plans, mobileVRouteForwardPlan{
-			LocalNode:  localNode,
-			ExitNode:   nextNode,
-			Path:       []string{localNode, nextNode},
-			NextNode:   nextNode,
-			Config:     config,
-			Rule:       rule,
-			RouteID:    mobileVRouteRuntimeRouteID(rule),
-			RelayHost:  host,
-			RelayPort:  port,
-			BridgeRole: bridgeRole,
-			Layer:      normalizeMobileVRouteRelayLayer(rule.RouteLayer),
+			LocalNode:    localNode,
+			ExitNode:     nextNode,
+			Path:         []string{localNode, nextNode},
+			NextNode:     nextNode,
+			Config:       config,
+			Rule:         rule,
+			RouteID:      mobileVRouteRuntimeRouteID(rule),
+			RelayHost:    host,
+			RelayPort:    port,
+			BridgeRole:   bridgeRole,
+			Layer:        normalizeMobileVRouteRelayLayer(rule.RouteLayer),
+			CarrierSlot:  0,
+			CarrierCount: normalizeMobileVRouteCarrierCount(rule.CarrierCount),
 		})
 	}
 	sort.Slice(plans, func(i, j int) bool {
@@ -1070,6 +1261,7 @@ func closeMobileVRouteCarriers() {
 		items = append(items, item)
 	}
 	mobileVRouteCarrierState.items = map[string]*mobileVRouteCarrier{}
+	mobileVRouteCarrierState.flowBindings = map[string]mobileVRouteCarrierFlowBinding{}
 	mobileVRouteCarrierState.mu.Unlock()
 	for _, item := range items {
 		item.close()
@@ -1110,7 +1302,8 @@ func mobileVRouteCapabilitiesPayload() map[string]any {
 		"control_ping":       true,
 		"path_rtt":           true,
 		"route_test":         false,
-		"speed_test":         false,
+		"speed_test":         true,
+		"multi_carrier":      true,
 		"debug_log_pull":     true,
 		"fake_ip_verify":     false,
 		"vpn_tun_writeback":  true,
@@ -1127,6 +1320,15 @@ func snapshotMobileVRouteCarriers() map[string]any {
 	lastError := mobileVRouteCarrierState.lastError
 	lastErrorUnixNS := mobileVRouteCarrierState.lastErrorUnixNS
 	mobileVRouteCarrierState.mu.Unlock()
+	sort.Slice(items, func(i, j int) bool {
+		if items[i] == nil || items[j] == nil {
+			return items[j] == nil
+		}
+		if items[i].plan.RouteID != items[j].plan.RouteID {
+			return items[i].plan.RouteID < items[j].plan.RouteID
+		}
+		return items[i].plan.CarrierSlot < items[j].plan.CarrierSlot
+	})
 
 	carriers := make([]map[string]any, 0, len(items))
 	for _, item := range items {
@@ -1145,6 +1347,9 @@ func snapshotMobileVRouteCarriers() map[string]any {
 			"relay":               net.JoinHostPort(item.plan.RelayHost, strconv.Itoa(item.plan.RelayPort)),
 			"bridge_role":         item.plan.BridgeRole,
 			"layer":               item.plan.Layer,
+			"carrier_slot":        item.plan.CarrierSlot,
+			"carrier_count":       item.plan.CarrierCount,
+			"multi_carrier":       item.multiCarrier,
 			"tx_frames":           item.txFrames.Load(),
 			"tx_bytes":            item.txBytes.Load(),
 			"tx_ip_frames":        item.txIPFrames.Load(),
@@ -1209,6 +1414,7 @@ func dialMobileVRouteWebSocketCarrier(plan mobileVRouteForwardPlan) (net.Conn, e
 	header.Set(mobileVRouteCodexVersionHeader, mobileVRouteAuthPacketVersion)
 	header.Set(mobileVRouteCodexRelayModeHeader, mobileVRouteRelayModeBridge)
 	header.Set(mobileVRouteCodexRelayRoleHeader, plan.BridgeRole)
+	header.Set(mobileVRouteCodexCarrierSlotHeader, strconv.Itoa(plan.CarrierSlot))
 	if err := applyMobileVRouteSecretAuthHeaders(header, plan.RouteID, plan.Rule.Secret, plan.Rule.AuthTicket, plan.LocalNode, http.MethodGet, mobileVRouteRelayAPIPath, plan.BridgeRole); err != nil {
 		return nil, err
 	}
@@ -1267,7 +1473,8 @@ func dialMobileVRouteWebSocketCarrierCandidate(plan mobileVRouteForwardPlan, hea
 		}
 		return nil, err
 	}
-	return newWebSocketNetConn(ws), nil
+	multiCarrier := resp != nil && strings.TrimSpace(resp.Header.Get(mobileVRouteCodexMultiCarrierHeader)) == "1"
+	return &mobileVRouteNegotiatedConn{Conn: newWebSocketNetConn(ws), multiCarrier: multiCarrier}, nil
 }
 
 func dialMobileVRouteH3Carrier(plan mobileVRouteForwardPlan) (net.Conn, error) {
@@ -1342,6 +1549,7 @@ func dialMobileVRouteH3CarrierCandidate(plan mobileVRouteForwardPlan, candidate 
 	request.Header.Set(mobileVRouteCodexVersionHeader, mobileVRouteAuthPacketVersion)
 	request.Header.Set(mobileVRouteCodexRelayModeHeader, mobileVRouteRelayModeBridge)
 	request.Header.Set(mobileVRouteCodexRelayRoleHeader, plan.BridgeRole)
+	request.Header.Set(mobileVRouteCodexCarrierSlotHeader, strconv.Itoa(plan.CarrierSlot))
 	if err := applyMobileVRouteSecretAuthHeaders(request.Header, plan.RouteID, plan.Rule.Secret, plan.Rule.AuthTicket, plan.LocalNode, http.MethodConnect, mobileVRouteRelayAPIPath, plan.BridgeRole); err != nil {
 		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
 		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
@@ -1374,7 +1582,7 @@ func dialMobileVRouteH3CarrierCandidate(plan mobileVRouteForwardPlan, candidate 
 	}
 	_ = stream.SetDeadline(time.Time{})
 	cancelOnce := sync.Once{}
-	return &mobileVRouteH3StreamNetConn{
+	conn := &mobileVRouteH3StreamNetConn{
 		stream: stream,
 		local:  mobileVRouteNetAddr{label: "mobile-vroute-h3-local"},
 		remote: mobileVRouteNetAddr{label: dialHostPort},
@@ -1387,7 +1595,8 @@ func dialMobileVRouteH3CarrierCandidate(plan mobileVRouteForwardPlan, candidate 
 			})
 			return closeErr
 		},
-	}, nil
+	}
+	return &mobileVRouteNegotiatedConn{Conn: conn, multiCarrier: strings.TrimSpace(response.Header.Get(mobileVRouteCodexMultiCarrierHeader)) == "1"}, nil
 }
 
 func mobileVRouteQUICConfig() *quic.Config {
@@ -1839,6 +2048,10 @@ func mobileVRouteRuntimeRouteID(rule mobileVRouteTopology) string {
 }
 
 func mobileVRouteCarrierKey(plan mobileVRouteForwardPlan) string {
+	return mobileVRouteCarrierBaseKey(plan) + "|" + strconv.Itoa(plan.CarrierSlot)
+}
+
+func mobileVRouteCarrierBaseKey(plan mobileVRouteForwardPlan) string {
 	return strings.Join([]string{plan.RouteID, plan.BridgeRole, plan.RelayHost, strconv.Itoa(plan.RelayPort)}, "|")
 }
 

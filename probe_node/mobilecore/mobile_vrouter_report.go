@@ -137,7 +137,7 @@ func snapshotMobileVRouteRelayReports(configDir string) []mobileProbeRouteRelayR
 			item.VirtualRouter.LastOpenError = "mobilecore inbound relay listener is not supported"
 			item.VirtualRouter.LastOpenAt = now
 		}
-		if carrier := carriers[routeID]; carrier != nil {
+		for _, carrier := range carriers[routeID] {
 			applyMobileVRouteCarrierReport(&item, carrier, now)
 		}
 		out = append(out, item)
@@ -148,18 +148,23 @@ func snapshotMobileVRouteRelayReports(configDir string) []mobileProbeRouteRelayR
 	return out
 }
 
-func snapshotMobileVRouteCarriersByRouteID() map[string]*mobileVRouteCarrier {
+func snapshotMobileVRouteCarriersByRouteID() map[string][]*mobileVRouteCarrier {
 	mobileVRouteCarrierState.mu.Lock()
 	defer mobileVRouteCarrierState.mu.Unlock()
-	out := make(map[string]*mobileVRouteCarrier, len(mobileVRouteCarrierState.items))
+	out := make(map[string][]*mobileVRouteCarrier, len(mobileVRouteCarrierState.items))
 	for _, carrier := range mobileVRouteCarrierState.items {
 		if carrier == nil {
 			continue
 		}
 		routeID := strings.TrimSpace(carrier.plan.RouteID)
 		if routeID != "" {
-			out[routeID] = carrier
+			out[routeID] = append(out[routeID], carrier)
 		}
+	}
+	for routeID := range out {
+		sort.Slice(out[routeID], func(i, j int) bool {
+			return out[routeID][i].plan.CarrierSlot < out[routeID][j].plan.CarrierSlot
+		})
 	}
 	return out
 }
@@ -196,32 +201,43 @@ func applyMobileVRouteCarrierReport(item *mobileProbeRouteRelayReportItem, carri
 	if item.NextDialMode == "" && item.NextHost != "" && item.NextPort > 0 {
 		item.NextDialMode = "forward"
 	}
-	item.NextState = &mobileProbeRouteRelayProtocolStateSnapshot{
-		Endpoint:         net.JoinHostPort(strings.TrimSpace(carrier.plan.RelayHost), strconv.Itoa(carrier.plan.RelayPort)),
-		SelectedProtocol: normalizeMobileVRouteRelayLayer(carrier.plan.Layer),
-		SelectionReason:  "mobile_vroute_connected",
-		UpdatedAt:        firstNonEmptyString(lastActivityAt, now),
+	if item.NextState == nil {
+		item.NextState = &mobileProbeRouteRelayProtocolStateSnapshot{
+			Endpoint:         net.JoinHostPort(strings.TrimSpace(carrier.plan.RelayHost), strconv.Itoa(carrier.plan.RelayPort)),
+			SelectedProtocol: normalizeMobileVRouteRelayLayer(carrier.plan.Layer),
+			SelectionReason:  "mobile_vroute_connected",
+			UpdatedAt:        firstNonEmptyString(lastActivityAt, now),
+		}
 	}
 	stats := item.VirtualRouter
 	if stats == nil {
 		stats = &mobileProbeVirtualRouterRuntimeStats{}
 		item.VirtualRouter = stats
 	}
-	stats.PacketsForwarded = txIPFrames
-	stats.BytesForwarded = txIPBytes
-	stats.PacketsReceived = rxIPFrames
-	stats.BytesReceived = rxIPBytes
-	stats.PacketsDelivered = tunWriteFrames
-	stats.BytesDelivered = tunWriteBytes
-	stats.FramesSent = txFrames
-	stats.FrameBytesSent = txBytes
-	stats.FramesReceived = rxFrames
-	stats.FrameBytesReceived = rxBytes
-	stats.LinkOpenCount = 1
-	stats.LastOpenAt = createdAt
-	stats.LastOpenError = lastError
-	stats.LastPacketAt = firstNonEmptyString(lastActivityAt, lastErrorAt)
-	stats.LastFrameAt = firstNonEmptyString(lastActivityAt, lastErrorAt)
+	stats.PacketsForwarded += txIPFrames
+	stats.BytesForwarded += txIPBytes
+	stats.PacketsReceived += rxIPFrames
+	stats.BytesReceived += rxIPBytes
+	stats.PacketsDelivered += tunWriteFrames
+	stats.BytesDelivered += tunWriteBytes
+	stats.FramesSent += txFrames
+	stats.FrameBytesSent += txBytes
+	stats.FramesReceived += rxFrames
+	stats.FrameBytesReceived += rxBytes
+	stats.LinkOpenCount++
+	if createdAt > stats.LastOpenAt {
+		stats.LastOpenAt = createdAt
+	}
+	if lastError != "" {
+		stats.LastOpenError = lastError
+	}
+	activityAt := firstNonEmptyString(lastActivityAt, lastErrorAt)
+	if activityAt > stats.LastPacketAt {
+		stats.LastPacketAt = activityAt
+	}
+	if activityAt > stats.LastFrameAt {
+		stats.LastFrameAt = activityAt
+	}
 	stats.TUNDataPlane = mobileVRouteVPNRuntimeRunning()
 	session := mobileProbeRouteBridgeSessionSnapshot{
 		RouteID:             strings.TrimSpace(carrier.plan.RouteID),
@@ -239,9 +255,9 @@ func applyMobileVRouteCarrierReport(item *mobileProbeRouteRelayReportItem, carri
 		LastFrameSentAt:     lastActivityAt,
 		LastFrameReceivedAt: lastActivityAt,
 	}
-	item.BridgeSessions = []mobileProbeRouteBridgeSessionSnapshot{session}
+	item.BridgeSessions = append(item.BridgeSessions, session)
 	item.BridgeStatus = &mobileProbeRouteBridgeRuntimeStatus{
-		UpstreamActive: 1,
+		UpstreamActive: len(item.BridgeSessions),
 		Sessions:       item.BridgeSessions,
 		UpdatedAt:      firstNonEmptyString(lastActivityAt, now),
 	}
