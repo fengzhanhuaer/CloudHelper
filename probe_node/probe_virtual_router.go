@@ -6115,17 +6115,21 @@ func finalizeProbeVirtualRouterSpeedReceive(requestID string, localNodeID string
 	result.RuntimeRouteID = strings.TrimSpace(session.RouteID)
 	result.Bytes = session.Bytes
 	result.Frames = session.Frames
-	if !session.StartedAt.IsZero() && session.Frames > 0 {
-		result.DurationMS = probeDurationMilliseconds(now.Sub(session.StartedAt))
-		if result.DurationMS <= 0 {
-			result.DurationMS = 1
-		}
+	if !session.StartedAt.IsZero() && !session.LastAt.IsZero() && session.Frames > 0 {
+		result.DurationMS = probeVirtualRouterSpeedFrameSpanMilliseconds(session.StartedAt, session.LastAt)
 	}
 	result.Mbps = probeVirtualRouterSpeedMbps(result.Bytes, result.DurationMS)
 	if result.ResultNodeID == "" {
 		result.ResultNodeID = normalizeProbeRouteNodeID(firstNonEmpty(fallback.ResultNodeID, fallback.SourceNodeID))
 	}
 	return result, true
+}
+
+func probeVirtualRouterSpeedFrameSpanMilliseconds(firstAt time.Time, lastAt time.Time) int64 {
+	if firstAt.IsZero() || lastAt.IsZero() || lastAt.Before(firstAt) {
+		return 0
+	}
+	return probeDurationMilliseconds(lastAt.Sub(firstAt))
 }
 
 func cleanupProbeVirtualRouterSpeedReceiveCompletedLocked(now time.Time) {

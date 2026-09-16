@@ -451,6 +451,67 @@ func TestProbeVirtualRouterSpeedReceiveDropsLateAndOrphanChunks(t *testing.T) {
 	}
 }
 
+func TestProbeVirtualRouterSpeedReceiveUsesFirstAndLastFrameSpan(t *testing.T) {
+	resetProbeVirtualRouterStateForTest()
+	t.Cleanup(resetProbeVirtualRouterStateForTest)
+
+	requestID := "speed-frame-span-test"
+	startProbeVirtualRouterSpeedReceive(probeVirtualRouterSpeedTestResultPayload{
+		RequestID:     requestID,
+		Direction:     "down",
+		SourceNodeID:  "22",
+		TargetNodeID:  "18",
+		ResultNodeID:  "22",
+		Path:          []string{"18", "22"},
+		MaxDurationMS: 8000,
+	}, "22", "route-speed-test")
+
+	firstAt := time.Now().Add(-3 * time.Second)
+	lastAt := firstAt.Add(1250 * time.Millisecond)
+	probeVirtualRouterSpeedReceiveState.mu.Lock()
+	session := probeVirtualRouterSpeedReceiveState.sessions[requestID]
+	session.StartedAt = firstAt
+	session.LastAt = lastAt
+	session.Bytes = 2 * 1024 * 1024
+	session.Frames = 2048
+	probeVirtualRouterSpeedReceiveState.mu.Unlock()
+
+	result, ok := finishProbeVirtualRouterSpeedReceive(probeVirtualRouterSpeedTestResultPayload{RequestID: requestID}, "22")
+	if !ok {
+		t.Fatalf("finish should produce speed result")
+	}
+	if result.DurationMS != 1250 {
+		t.Fatalf("duration_ms=%d, want first-to-last frame span 1250", result.DurationMS)
+	}
+	wantMbps := probeVirtualRouterSpeedMbps(result.Bytes, 1250)
+	if result.Mbps != wantMbps {
+		t.Fatalf("mbps=%f, want %f", result.Mbps, wantMbps)
+	}
+}
+
+func TestProbeVirtualRouterSpeedFrameSpanMilliseconds(t *testing.T) {
+	firstAt := time.Unix(100, 0)
+	tests := []struct {
+		name   string
+		first  time.Time
+		last   time.Time
+		wantMS int64
+	}{
+		{name: "normal", first: firstAt, last: firstAt.Add(1500 * time.Millisecond), wantMS: 1500},
+		{name: "single frame", first: firstAt, last: firstAt, wantMS: 1},
+		{name: "last before first", first: firstAt, last: firstAt.Add(-time.Millisecond), wantMS: 0},
+		{name: "missing first", last: firstAt, wantMS: 0},
+		{name: "missing last", first: firstAt, wantMS: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := probeVirtualRouterSpeedFrameSpanMilliseconds(test.first, test.last); got != test.wantMS {
+				t.Fatalf("duration_ms=%d, want %d", got, test.wantMS)
+			}
+		})
+	}
+}
+
 func TestNormalizeProbeVirtualRouterSpeedDuration(t *testing.T) {
 	tests := []struct {
 		name string
