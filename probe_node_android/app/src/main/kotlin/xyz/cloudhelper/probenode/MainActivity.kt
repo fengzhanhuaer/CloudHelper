@@ -358,7 +358,7 @@ class MainActivity : Activity() {
             thread(name = "cloudhelper-android-vroute-speed") {
                 emitVRouteSpeed(MobileCoreBridge.vRouteSpeedTest(targetNodeID))
             }
-            return "双向测速已开始"
+            return "下载测速已开始"
         }
 
         @JavascriptInterface

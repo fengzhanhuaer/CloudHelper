@@ -55,7 +55,7 @@ window.CloudHelperUI = {
     const button = byId("vrouteSpeedButton");
     if (button) {
       button.disabled = false;
-      button.textContent = "双向测速";
+      button.textContent = "下载测速";
     }
     refreshLogsIfVisible();
   },
@@ -801,7 +801,7 @@ function runVRouteSpeed() {
     button.disabled = true;
     button.textContent = "测速中...";
   }
-  setText("vrouteSpeedResult", `正在测试与 ${vrouteNodeLabel(targetNodeID)} 之间的上下行速度...`);
+  setText("vrouteSpeedResult", `正在测试从 ${vrouteNodeLabel(targetNodeID)} 到本机的下载速度...`);
   try {
     const message = window.CloudHelper && window.CloudHelper.vrouteSpeedTest
       ? window.CloudHelper.vrouteSpeedTest(targetNodeID)
@@ -810,29 +810,27 @@ function runVRouteSpeed() {
       setText("vrouteSpeedResult", message);
       if (button) {
         button.disabled = false;
-        button.textContent = "双向测速";
+        button.textContent = "下载测速";
       }
     }
   } catch (error) {
     setText("vrouteSpeedResult", `测速失败：${error && error.message ? error.message : error}`);
     if (button) {
       button.disabled = false;
-      button.textContent = "双向测速";
+      button.textContent = "下载测速";
     }
   }
 }
 
 function renderVRouteSpeedResult(result) {
   const path = vroutePathLabel(result.path);
-  const up = result.up || {};
-  const down = result.down || {};
+  const download = result.download || result.down || {};
   if (!result.ok) {
     setText("vrouteSpeedResult", `测速失败：${result.error || "未收到完整结果"}${path ? `；路径 ${path}` : ""}`);
     return;
   }
-  const upMbps = Number(up.mbps || 0).toFixed(2);
-  const downMbps = Number(down.mbps || 0).toFixed(2);
-  setText("vrouteSpeedResult", `上行 ${upMbps} Mbps / 下行 ${downMbps} Mbps${path ? `；路径 ${path}` : ""}`);
+  const downloadMbps = Number(download.mbps || 0).toFixed(2);
+  setText("vrouteSpeedResult", `下载 ${downloadMbps} Mbps${path ? `；路径 ${path}` : ""}`);
 }
 
 function renderVRouteHealth(enabled, error, updatedAt, lastErrorAt) {
@@ -1053,7 +1051,7 @@ function renderVRouteCapabilities(capabilities) {
     ["TUN回写", capabilities.vpn_tun_writeback],
     ["热刷新", capabilities.config_hot_refresh],
     ["多 Carrier", capabilities.multi_carrier],
-    ["双向测速", capabilities.speed_test]
+    ["下载测速", capabilities.speed_test]
   ];
   const grid = document.createElement("div");
   grid.className = "vroute-capability-grid";

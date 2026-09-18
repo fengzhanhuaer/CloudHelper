@@ -78,26 +78,19 @@ func runMobileVRouteSpeedTest(targetNodeID string) map[string]any {
 	if err != nil {
 		return mobileVRouteSpeedErrorResult(targetNodeID, nil, err)
 	}
-	up, upErr := runMobileVRouteOneWaySpeed(config, path, "up")
-	down, downErr := runMobileVRouteReverseSpeed(config, path)
+	// Match the probe-node route diagnostic: measure one download direction,
+	// with the target node sending data back to the selected local node.
+	download, downloadErr := runMobileVRouteReverseSpeed(config, path)
 	result := map[string]any{
-		"ok":             upErr == nil && downErr == nil && up.OK && down.OK,
+		"ok":             downloadErr == nil && download.OK,
 		"source_node_id": localNodeID,
 		"target_node_id": targetNodeID,
 		"path":           path,
-		"up":             up,
-		"down":           down,
+		"download":       download,
 		"updated_at":     time.Now().UTC().Format(time.RFC3339Nano),
 	}
-	errorsText := make([]string, 0, 2)
-	if upErr != nil {
-		errorsText = append(errorsText, "up: "+upErr.Error())
-	}
-	if downErr != nil {
-		errorsText = append(errorsText, "down: "+downErr.Error())
-	}
-	if len(errorsText) > 0 {
-		result["error"] = strings.Join(errorsText, "; ")
+	if downloadErr != nil {
+		result["error"] = downloadErr.Error()
 	}
 	return result
 }
