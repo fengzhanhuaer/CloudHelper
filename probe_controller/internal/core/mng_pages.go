@@ -36,6 +36,7 @@ var mngQuickNavItems = []mngQuickNavItem{
 	{Path: "/mng/probe", Label: "探针管理"},
 	{Path: "/mng/backup", Label: "备份管理"},
 	{Path: "/mng/notepad", Label: "记事本"},
+	{Path: "/mng/subscriptions", Label: "订阅提醒"},
 	{Path: "/mng/controller-logs", Label: "主控日志"},
 	{Path: "/mng/route", Label: "路由管理"},
 	{Path: "/dashboard", Label: "探针面板"},
@@ -82,6 +83,9 @@ var (
 
 	//go:embed mng_pages/notepad.html
 	mngNotepadPageHTML string
+
+	//go:embed mng_pages/subscriptions.html
+	mngSubscriptionsPageHTML string
 
 	//go:embed mng_pages/probe.html
 	mngProbePageHTML string

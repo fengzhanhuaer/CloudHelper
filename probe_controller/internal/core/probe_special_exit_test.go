@@ -980,6 +980,7 @@ func TestMngTilePagesIncludeSharedQuickNavigation(t *testing.T) {
 		"/mng/probe":           mngProbePageHTML,
 		"/mng/backup":          mngBackupPageHTML,
 		"/mng/notepad":         mngNotepadPageHTML,
+		"/mng/subscriptions":   mngSubscriptionsPageHTML,
 		"/mng/controller-logs": mngControllerLogsPageHTML,
 		"/mng/route":           mngRoutePageHTML,
 		"/mng/cloudflare":      mngCloudflarePageHTML,

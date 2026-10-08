@@ -24,6 +24,7 @@ func Run() {
 	initTGAssistantBotEngine()
 	initTGAssistantKeepaliveEngine()
 	initTGAssistantRenewalEngine()
+	initSubscriptionReminderEngine()
 	initCloudflareZeroTrustSyncEngine()
 	initGoogleDriveBackupAuthRenewalEngine()
 	if err := cleanupControllerStaleExecutables(); err != nil {
@@ -91,6 +92,7 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("/mng/api/backup/google/auth/poll", mngAuthRequiredMiddleware(mngBackupGoogleAuthPollHandler))
 	mux.HandleFunc("/mng/api/backup/google/disconnect", mngAuthRequiredMiddleware(mngBackupGoogleDisconnectHandler))
 	mux.HandleFunc("/mng/api/notepad", mngAuthRequiredMiddleware(mngNotepadHandler))
+	mux.HandleFunc("/mng/api/subscriptions", mngAuthRequiredMiddleware(mngSubscriptionsHandler))
 	mux.HandleFunc("/mng/api/controller/logs", mngAuthRequiredMiddleware(mngControllerLogsHandler))
 	mux.HandleFunc("/mng/api/probe/nodes", mngAuthRequiredMiddleware(mngProbeNodesHandler))
 	mux.HandleFunc("/mng/api/probe/node/create", mngAuthRequiredMiddleware(mngProbeNodeCreateHandler))
@@ -171,6 +173,7 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("/mng/settings", mngAuthRequiredMiddleware(mngSettingsHandler))
 	mux.HandleFunc("/mng/backup", mngAuthRequiredMiddleware(mngBackupPageHandler))
 	mux.HandleFunc("/mng/notepad", mngAuthRequiredMiddleware(mngNotepadPageHandler))
+	mux.HandleFunc("/mng/subscriptions", mngAuthRequiredMiddleware(mngSubscriptionsPageHandler))
 	mux.HandleFunc("/mng/controller-logs", mngAuthRequiredMiddleware(mngControllerLogsPageHandler))
 	mux.HandleFunc("/mng/probe", mngAuthRequiredMiddleware(mngProbePageHandler))
 	mux.HandleFunc("/mng/route", mngAuthRequiredMiddleware(mngRoutePageHandler))

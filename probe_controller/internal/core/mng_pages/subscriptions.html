@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>订阅提醒 - CloudHelper</title>
+  <style>
+    :root { color-scheme:dark; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:Segoe UI,Roboto,Arial,sans-serif; background:#0d1117; color:#c9d1d9; }
+    .wrap { max-width:1400px; margin:24px auto; padding:0 20px; }
+    .topbar { margin-bottom:18px; }
+    h1 { font-size:24px; margin:0; } h2 { font-size:18px; margin:0 0 16px; }
+    .sub,.hint { font-size:13px; color:#8b949e; line-height:1.6; margin:5px 0 0; }
+    a { color:#58a6ff; } .btn { display:inline-block; text-decoration:none; padding:8px 12px; border:1px solid #30363d; border-radius:8px; background:#21262d; color:#c9d1d9; cursor:pointer; font:inherit; font-size:13px; }
+    .btn:hover { border-color:#58a6ff; } .btn:disabled { opacity:.5; cursor:wait; }
+    .primary { background:#238636; border-color:#2ea043; color:white; } .danger { color:#ff7b72; }
+    .layout { display:grid; grid-template-columns:340px minmax(0,1fr); gap:16px; align-items:start; }
+    .card { background:#161b22; border:1px solid #30363d; border-radius:12px; padding:20px; min-width:0; }
+    fieldset { border:0; padding:0; margin:0; min-width:0; }
+    label { display:block; font-size:13px; margin:0 0 14px; }
+    input,select { width:100%; margin-top:6px; padding:9px 10px; border:1px solid #30363d; border-radius:6px; background:#0d1117; color:#c9d1d9; font:inherit; font-size:14px; }
+    input:focus,select:focus { outline:2px solid #58a6ff; outline-offset:1px; }
+    input[type=checkbox] { width:auto; margin:0 6px 0 0; }
+    .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .actions { display:flex; flex-wrap:wrap; gap:8px; }
+    .notice { padding:12px 16px; border:1px solid #30363d; border-radius:8px; margin-bottom:16px; font-size:13px; line-height:1.6; }
+    .warn { color:#d29922; border-color:#9e6a03; } .success { color:#7ee787; }
+    #status { min-height:24px; font-size:13px; margin:12px 0; white-space:pre-wrap; }
+    #status.error { color:#ff7b72; }
+    .list-head { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+    .list-head h2 { margin-bottom:0; }
+    #list { margin-top:16px; }
+    .entry { padding:16px 0; border-top:1px solid #30363d; }
+    .entry:first-child { border-top:0; padding-top:0; }
+    .entry-head { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:center; }
+    .entry-name { font-size:16px; font-weight:600; overflow-wrap:anywhere; }
+    .tag { font-size:12px; padding:3px 8px; border-radius:12px; background:#21262d; color:#8b949e; }
+    .tag.soon { color:#d29922; } .tag.expired { color:#ff7b72; }
+    .entry-url { display:block; margin:8px 0; font-size:13px; overflow-wrap:anywhere; }
+    .entry-meta { margin:8px 0 12px; color:#8b949e; font-size:13px; line-height:1.8; white-space:pre-line; }
+    .empty { text-align:center; padding:36px 12px; color:#8b949e; line-height:1.8; }
+    [hidden] { display:none !important; }
+    @media(max-width:850px) { .layout { grid-template-columns:1fr; } }
+    @media(max-width:520px) { .wrap { padding:0 12px; margin:16px auto; } .card { padding:16px; } }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <div class="topbar">
+      <div><h1>订阅提醒</h1><p class="sub">到期前 7 天起每天 TG 提醒，续订和到期时间一处管理。</p></div>
+      <!-- mng-quick-nav -->
+      <div><a class="btn" href="/mng/panel">返回面板</a></div>
+    </div>
+    <div id="tg-notice" class="notice" role="status">正在读取 TG 通知状态…</div>
+    <div class="layout">
+      <section class="card">
+        <h2 id="form-title">添加订阅</h2>
+        <form id="form">
+          <fieldset id="fields">
+            <label>订阅名称<input id="name" maxlength="120" required placeholder="例如：云服务年费"></label>
+            <label>URL<input id="url" type="url" maxlength="2048" required placeholder="https://example.com"></label>
+            <label>提醒方式<select id="mode"><option value="period">周期订阅</option><option value="countdown">倒计时</option></select></label>
+            <div id="period-fields" class="row">
+              <label>周期<input id="period-count" type="number" min="1" max="36500" step="1" value="1"></label>
+              <label>单位<select id="period-unit"><option value="month">月</option><option value="year">年</option><option value="day">天</option></select></label>
+            </div>
+            <label><span id="days-label">首次到期剩余天数（可选）</span><input id="days" type="number" min="1" max="36500" step="1" placeholder="留空按一个完整周期计算"></label>
+            <label>到期时间（可选）<input id="due-at" type="datetime-local"><span class="hint">可直接指定到期时间，优先于天数。修改天数会重新计算到期时间。</span></label>
+            <label><input id="enabled" type="checkbox" checked>启用 TG 提醒</label>
+            <div class="actions"><button class="btn primary" type="submit">保存订阅</button><button class="btn" id="cancel" type="button" hidden>取消编辑</button></div>
+          </fieldset>
+        </form>
+        <div id="status" role="status" aria-live="polite"></div>
+        <p class="hint">每 5 分钟检查一次，按主控日期每天最多提醒一次；到期后继续提醒，直到续订或暂停。月、年周期按日历计算。</p>
+        <p class="hint">“已续订”：未到期从原到期时间增加一个周期，已到期从当前时间计算。倒计时续期可通过编辑设置。</p>
+      </section>
+      <section class="card">
+        <div class="list-head"><h2>订阅列表 <span id="count" class="tag">0</span></h2><button class="btn" id="refresh" type="button">刷新</button></div>
+        <div id="list"><div class="empty">正在加载…</div></div>
+      </section>
+    </div>
+  </main>
+  <script>
+    const $ = id => document.getElementById(id);
+    let items = [], editingID = '', originalDue = '', originalDueInput = '', busy = false;
+    function status(text, error = false) { $('status').textContent = text; $('status').className = error ? 'error' : 'success'; }
+    function localInput(raw) {
+      const date = new Date(raw);
+      const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+      return shifted.toISOString().slice(0,16);
+    }
+    function formatTime(raw) { return raw ? new Date(raw).toLocaleString() : '尚未发送'; }
+    function modeChanged() {
+      const countdown = $('mode').value === 'countdown';
+      $('period-fields').hidden = countdown;
+      $('period-count').required = !countdown;
+      $('days').required = countdown && !$('due-at').value;
+      $('days-label').textContent = countdown ? '倒计时天数' : '首次到期剩余天数（可选）';
+      $('days').placeholder = countdown ? '例如：30' : '留空按一个完整周期计算';
+    }
+    function resetForm() {
+      editingID = originalDue = originalDueInput = '';
+      $('form').reset(); $('form-title').textContent = '添加订阅'; $('cancel').hidden = true; modeChanged();
+    }
+    function edit(item) {
+      editingID = item.id; originalDue = item.due_at; originalDueInput = localInput(item.due_at);
+      $('name').value = item.name; $('url').value = item.url; $('mode').value = item.mode;
+      $('period-count').value = item.period_count || 1; $('period-unit').value = item.period_unit || 'month';
+      $('days').value = item.days || ''; $('enabled').checked = item.enabled; $('due-at').value = originalDueInput;
+      $('form-title').textContent = '编辑订阅'; $('cancel').hidden = false; modeChanged(); status('正在编辑：' + item.name); $('name').focus();
+    }
+    function element(tag, className, text) { const el = document.createElement(tag); el.className = className; el.textContent = text; return el; }
+    function button(text, action, danger = false) {
+      const el = element('button', danger ? 'btn danger' : 'btn', text); el.type = 'button'; el.disabled = busy; el.addEventListener('click', action); return el;
+    }
+    function render(data) {
+      items = data.items || [];
+      $('count').textContent = items.length;
+      const notice = $('tg-notice'); notice.replaceChildren(); notice.className = data.tg_ready ? 'notice' : 'notice warn';
+      notice.append(document.createTextNode(data.tg_ready ? 'TG 通知已就绪，使用 TG 助手中选定的通知账号。' : 'TG 通知尚未就绪：请在 TG 助手中选择已登录的通知账号，并配置 Bot。订阅仍会正常保存。'));
+      const link = element('a', '', ' 前往 TG 助手'); link.href = '/mng/tg'; notice.append(link);
+      const list = $('list'); list.replaceChildren();
+      if (!items.length) { list.append(element('div', 'empty', '还没有订阅\n填写左侧表单，添加第一条提醒。')); return; }
+      [...items].sort((a,b) => new Date(a.due_at) - new Date(b.due_at)).forEach(item => {
+        const entry = element('article', 'entry', ''); const head = element('div', 'entry-head', '');
+        head.append(element('div', 'entry-name', item.name));
+        const expired = new Date(item.due_at) <= new Date(data.server_time);
+        const label = !item.enabled ? '已暂停' : expired ? '已到期' : item.days_remaining === 0 ? '今天到期' : '剩余 ' + item.days_remaining + ' 天';
+        head.append(element('span', 'tag' + (item.enabled && expired ? ' expired' : item.enabled && item.days_remaining <= 7 ? ' soon' : ''), label)); entry.append(head);
+        const url = element('a', 'entry-url', item.url); url.href = item.url; url.target = '_blank'; url.rel = 'noopener noreferrer'; entry.append(url);
+        const units = {day:'天',month:'月',year:'年'};
+        const period = item.mode === 'period' ? '每 ' + item.period_count + ' ' + units[item.period_unit] : '倒计时';
+        entry.append(element('div', 'entry-meta', period + ' · 到期 ' + formatTime(item.due_at) + '\n最近提醒：' + formatTime(item.last_sent_at) + (item.last_error ? '\n' + item.last_error : '')));
+        const actions = element('div', 'actions', ''); actions.append(button('编辑', () => edit(item)));
+        if (item.mode === 'period') actions.append(button('已续订', () => { if (confirm('确认“' + item.name + '”已续订？将增加一个周期。')) mutate({action:'renew',id:item.id}, '已更新下次到期时间', true); }));
+        actions.append(button(item.enabled ? '暂停提醒' : '启用提醒', () => mutate({...item,action:'save',enabled:!item.enabled}, item.enabled ? '已暂停提醒' : '已启用提醒')));
+        actions.append(button('删除', () => { if (confirm('删除订阅“' + item.name + '”？')) mutate({action:'delete',id:item.id}, '已删除订阅', true); }, true)); entry.append(actions); list.append(entry);
+      });
+    }
+    async function request(payload) {
+      const response = await fetch('/mng/api/subscriptions', {credentials:'same-origin', ...(payload ? {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)} : {})});
+      if (response.status === 401) { location.href = '/mng'; throw new Error('登录已过期'); }
+      const data = await response.json(); if (!response.ok) throw new Error(data.error || '请求失败'); return data;
+    }
+    function setBusy(value) { busy = value; $('fields').disabled = value; document.querySelectorAll('#list button, #refresh').forEach(el => el.disabled = value); }
+    async function mutate(payload, message, clear = false) {
+      if (busy) return; setBusy(true);
+      try { const data = await request(payload); render(data); if (clear || payload.id === editingID) resetForm(); status(message); }
+      catch (error) { status(error.message, true); }
+      finally { setBusy(false); }
+    }
+    async function load() { if (busy) return; setBusy(true); try { render(await request()); } catch(error) { status(error.message,true); } finally { setBusy(false); } }
+    $('form').addEventListener('submit', event => {
+      event.preventDefault();
+      const rawDue = $('due-at').value;
+      const due = rawDue ? (editingID && rawDue === originalDueInput ? originalDue : new Date(rawDue).toISOString()) : '';
+      mutate({action:'save',id:editingID,name:$('name').value,url:$('url').value,mode:$('mode').value,period_count:Number($('period-count').value),period_unit:$('period-unit').value,days:Number($('days').value),due_at:due,enabled:$('enabled').checked}, '订阅已保存', true);
+    });
+    $('mode').addEventListener('change', () => { $('due-at').value = ''; modeChanged(); });
+    $('days').addEventListener('input', () => { $('due-at').value = ''; modeChanged(); });
+    $('due-at').addEventListener('input', modeChanged);
+    $('cancel').addEventListener('click', () => { resetForm(); status(''); });
+    $('refresh').addEventListener('click', load); modeChanged(); load(); setInterval(load,60000);
+  </script>
+</body>
+</html>

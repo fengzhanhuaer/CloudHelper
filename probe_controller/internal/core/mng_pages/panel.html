@@ -32,7 +32,7 @@
     <div class="topbar">
       <div>
         <h1>/mng 磁贴面板</h1>
-        <p class="sub">磁贴数量可扩展，可从下方进入系统设置、探针管理、主控日志、路由管理、探针面板、Cloudflare 管理与 TG 助手。</p>
+        <p class="sub">从下方进入系统设置、探针管理、订阅提醒、路由管理、Cloudflare 管理与 TG 助手等页面。</p>
       </div>
       <button id="btn-logout" class="btn" type="button">退出登录</button>
     </div>
@@ -60,6 +60,12 @@
         <div class="tile-title">记事本</div>
         <div class="tile-value">N</div>
         <div class="tile-sub">保存简单文本、链接与临时备注</div>
+      </a>
+
+      <a href="/mng/subscriptions" class="tile tile-link" id="tile-subscriptions">
+        <div class="tile-title">订阅提醒</div>
+        <div class="tile-value">◷</div>
+        <div class="tile-sub">记录订阅周期或倒计时，到期前一星期开始 TG 提醒</div>
       </a>
 
       <a href="/mng/controller-logs" class="tile tile-link" id="tile-controller-logs">
