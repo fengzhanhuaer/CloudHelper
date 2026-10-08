@@ -48,7 +48,7 @@
 <body>
   <main class="wrap">
     <div class="topbar">
-      <div><h1>订阅提醒</h1><p class="sub">到期前 7 天起每天 TG 提醒，续订和到期时间一处管理。</p></div>
+      <div><h1>订阅提醒</h1><p class="sub">查看剩余天数，到期前 7 天起每天 TG 提醒。</p></div>
       <!-- mng-quick-nav -->
       <div><a class="btn" href="/mng/panel">返回面板</a></div>
     </div>
@@ -60,10 +60,6 @@
           <fieldset id="fields">
             <label>订阅名称<input id="name" maxlength="120" required placeholder="例如：云服务年费"></label>
             <label>网址（选填）<input id="url" type="url" maxlength="2048" placeholder="https://example.com"></label>
-            <div id="period-fields" class="row">
-              <label>续订周期<input id="period-count" type="number" min="1" max="1200" step="1" value="1" required></label>
-              <label>单位<select id="period-unit"><option value="month">月</option><option value="year">年</option><option value="day">天</option></select></label>
-            </div>
             <label>到期日期填写方式<select id="expiry-mode"><option value="date">具体日期</option><option value="days">剩余天数</option></select></label>
             <label id="date-field">到期日期<input id="due-date" type="date" min="2000-01-01" max="9998-12-31" required><span class="hint">所选日期当天结束时到期，以主控时区为准。</span></label>
             <label id="days-field" hidden>剩余天数<input id="days" type="number" min="0" max="36500" step="1" placeholder="例如：30；0 表示今天到期" disabled><span class="hint">保存时从主控当前日期计算到期时间。</span></label>
@@ -72,8 +68,7 @@
           </fieldset>
         </form>
         <div id="status" role="status" aria-live="polite"></div>
-        <p class="hint">每 5 分钟检查一次，按主控日期每天最多提醒一次；到期后继续提醒，直到续订或暂停。月、年周期按日历计算。</p>
-        <p class="hint">“已续订”：未到期从原到期时间增加一个周期，已到期从当前时间计算。两种到期填写方式均使用上方续订周期。</p>
+        <p class="hint">每 5 分钟检查一次，按主控日期每天最多提醒一次；到期后继续提醒，直到更新到期日期或暂停。</p>
       </section>
       <section class="card">
         <div class="list-head"><h2>订阅列表 <span id="count" class="tag">0</span></h2><button class="btn" id="refresh" type="button">刷新</button></div>
@@ -97,19 +92,15 @@
       $('days').disabled = !days; $('days').required = days;
       $('due-date').disabled = days; $('due-date').required = !days;
     }
-    function periodUnitChanged() {
-      $('period-count').max = {day:36500,month:1200,year:100}[$('period-unit').value];
-    }
     function resetForm() {
       editingID = originalDue = originalDueInput = ''; expiryChanged = false;
-      $('form').reset(); $('form-title').textContent = '添加订阅'; $('cancel').hidden = true; expiryModeChanged(); periodUnitChanged();
+      $('form').reset(); $('form-title').textContent = '添加订阅'; $('cancel').hidden = true; expiryModeChanged();
     }
     function edit(item) {
       editingID = item.id; originalDue = item.due_at; originalDueInput = controllerDate(item.due_at); expiryChanged = false;
       $('name').value = item.name; $('url').value = item.url; $('expiry-mode').value = 'date';
-      $('period-count').value = item.period_count || 1; $('period-unit').value = item.period_unit || 'month';
       $('days').value = Math.max(0,item.days_remaining); $('enabled').checked = item.enabled; $('due-date').value = originalDueInput;
-      $('form-title').textContent = '编辑订阅'; $('cancel').hidden = false; expiryModeChanged(); periodUnitChanged(); status('正在编辑：' + item.name); $('name').focus();
+      $('form-title').textContent = '编辑订阅'; $('cancel').hidden = false; expiryModeChanged(); status('正在编辑：' + item.name); $('name').focus();
     }
     function element(tag, className, text) { const el = document.createElement(tag); el.className = className; el.textContent = text; return el; }
     function button(text, action, danger = false) {
@@ -128,16 +119,15 @@
         const entry = element('article', 'entry', ''); const head = element('div', 'entry-head', '');
         head.append(element('div', 'entry-name', item.name));
         const expired = new Date(item.due_at) <= new Date(data.server_time);
-        const label = !item.enabled ? '已暂停' : expired ? '已到期' : item.days_remaining === 0 ? '今天到期' : '剩余 ' + item.days_remaining + ' 天';
+        const remaining = Number(item.days_remaining || 0);
+        const label = '剩余 ' + Math.max(0,remaining) + ' 天' + (expired ? ' · 已到期' + (remaining < 0 ? ' ' + Math.abs(remaining) + ' 天' : '') : remaining === 0 ? ' · 今天到期' : '') + (!item.enabled ? ' · 已暂停' : '');
         head.append(element('span', 'tag' + (item.enabled && expired ? ' expired' : item.enabled && item.days_remaining <= 7 ? ' soon' : ''), label)); entry.append(head);
         if (item.url) {
           const url = element('a', 'entry-url', item.url); url.href = item.url; url.target = '_blank'; url.rel = 'noopener noreferrer'; entry.append(url);
         }
-        const units = {day:'天',month:'月',year:'年'};
-        const period = '每 ' + item.period_count + ' ' + units[item.period_unit];
-        entry.append(element('div', 'entry-meta', period + ' · 到期 ' + formatTime(item.due_at) + '\n最近提醒：' + formatTime(item.last_sent_at) + (item.last_error ? '\n' + item.last_error : '')));
+        entry.append(element('div', 'entry-meta', '到期 ' + formatTime(item.due_at) + '\n最近提醒：' + formatTime(item.last_sent_at) + (item.last_error ? '\n' + item.last_error : '')));
         const actions = element('div', 'actions', ''); actions.append(button('编辑', () => edit(item)));
-        actions.append(button('已续订', () => { if (confirm('确认“' + item.name + '”已续订？将增加一个周期。')) mutate({action:'renew',id:item.id}, '已更新下次到期时间', true); }));
+        actions.append(button('更新到期日期', () => { edit(item); $('due-date').focus(); }));
         actions.append(button(item.enabled ? '暂停提醒' : '启用提醒', () => mutate({...item,action:'save',enabled:!item.enabled}, item.enabled ? '已暂停提醒' : '已启用提醒')));
         actions.append(button('删除', () => { if (confirm('删除订阅“' + item.name + '”？')) mutate({action:'delete',id:item.id}, '已删除订阅', true); }, true)); entry.append(actions); list.append(entry);
       });
@@ -159,14 +149,13 @@
       event.preventDefault();
       const unchanged = editingID && !expiryChanged && $('expiry-mode').value === 'date' && $('due-date').value === originalDueInput;
       const expiry = unchanged ? {due_at:originalDue} : $('expiry-mode').value === 'date' ? {expiry_mode:'date',due_date:$('due-date').value} : {expiry_mode:'days',days:Number($('days').value)};
-      mutate({action:'save',id:editingID,name:$('name').value,url:$('url').value,mode:'period',period_count:Number($('period-count').value),period_unit:$('period-unit').value,...expiry,enabled:$('enabled').checked}, '订阅已保存', true);
+      mutate({action:'save',id:editingID,name:$('name').value,url:$('url').value,...expiry,enabled:$('enabled').checked}, '订阅已保存', true);
     });
     $('expiry-mode').addEventListener('change', () => { expiryChanged = true; expiryModeChanged(); });
     $('days').addEventListener('input', () => { expiryChanged = true; });
     $('due-date').addEventListener('input', () => { expiryChanged = true; });
-    $('period-unit').addEventListener('change',periodUnitChanged);
     $('cancel').addEventListener('click', () => { resetForm(); status(''); });
-    $('refresh').addEventListener('click', load); expiryModeChanged(); periodUnitChanged(); load(); setInterval(load,60000);
+    $('refresh').addEventListener('click', load); expiryModeChanged(); load(); setInterval(load,60000);
   </script>
 </body>
 </html>

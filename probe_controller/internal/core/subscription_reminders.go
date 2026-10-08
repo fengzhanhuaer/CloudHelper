@@ -136,6 +136,11 @@ func updateSubscription(req subscriptionRequest, now time.Time) ([]subscriptionR
 	}
 	switch req.Action {
 	case "save":
+		// The simplified page omits renewal fields. Preserve old records for
+		// legacy clients without assigning a hidden renewal period to new ones.
+		if index >= 0 && req.Mode == "" && req.PeriodCount == 0 && req.PeriodUnit == "" {
+			req.Mode, req.PeriodCount, req.PeriodUnit = items[index].Mode, items[index].PeriodCount, items[index].PeriodUnit
+		}
 		item, err := subscriptionFromRequest(req, now)
 		if err != nil {
 			return nil, err
@@ -208,12 +213,19 @@ func subscriptionFromRequest(req subscriptionRequest, now time.Time) (subscripti
 		if item.PeriodCount == 0 && req.DueAt != "" {
 			item.PeriodCount = 30
 		}
-	} else if req.Mode != "" && req.Mode != "period" {
-		return item, subscriptionInputError("所有订阅均需设置续订周期")
+	} else if req.Mode != "" && req.Mode != "period" && req.Mode != "reminder" {
+		return item, subscriptionInputError("不支持的订阅类型")
 	}
-	item.DueAt, err = subscriptionPeriodEnd(now, item.PeriodCount, item.PeriodUnit)
-	if err != nil {
-		return item, err
+	if (req.Mode == "" || req.Mode == "reminder") && req.PeriodCount == 0 && req.PeriodUnit == "" {
+		item.Mode = "reminder"
+		if req.ExpiryMode == "" && req.DueAt == "" {
+			return item, subscriptionInputError("请选择具体日期或剩余天数")
+		}
+	} else {
+		item.DueAt, err = subscriptionPeriodEnd(now, item.PeriodCount, item.PeriodUnit)
+		if err != nil {
+			return item, err
+		}
 	}
 	if (req.ExpiryMode == "days" || req.ExpiryMode == "") && (req.Days < 0 || req.Days > 36500) {
 		return item, subscriptionInputError("天数应为 0–36500")

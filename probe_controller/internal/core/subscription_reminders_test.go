@@ -98,6 +98,65 @@ func TestSubscriptionOptionalURL(t *testing.T) {
 	subscriptionMustUpdate(t, subscriptionRequest{Action: "renew", ID: updated.ID}, now)
 }
 
+func TestSubscriptionWithoutRenewalPeriod(t *testing.T) {
+	now := subscriptionTestSetup(t)
+	req := subscriptionRequest{Action: "save", Name: "只有到期日期", Enabled: true, ExpiryMode: "date", DueDate: "2026-10-10"}
+	item := subscriptionMustUpdate(t, req, now)[0]
+	if item.Mode != "reminder" || item.PeriodCount != 0 || item.PeriodUnit != "" || subscriptionDaysRemaining(item.DueAt, now) != 2 {
+		t.Fatalf("implicit period or wrong expiry: %+v", item)
+	}
+	if err := checkSubscriptionReminders(context.Background(), now, func(_ context.Context, text string) error {
+		if !strings.Contains(text, "只有到期日期") {
+			t.Fatal("reminder missing")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Metadata updates retain exact expiry and successful reminder history.
+	req.ID, req.Name, req.ExpiryMode, req.DueDate, req.DueAt = item.ID, "改名", "", "", item.DueAt.Format(time.RFC3339)
+	item = subscriptionMustUpdate(t, req, now)[0]
+	if item.LastReminderDay == "" {
+		t.Fatal("metadata edit lost reminder history")
+	}
+	req.ExpiryMode, req.Days, req.DueAt = "days", 20, ""
+	item = subscriptionMustUpdate(t, req, now)[0]
+	if subscriptionDaysRemaining(item.DueAt, now) != 20 || item.LastReminderDay != "" || item.PeriodCount != 0 {
+		t.Fatal("updating expiry should reset reminder history without a renewal period")
+	}
+	req.Enabled, req.ExpiryMode, req.DueAt = false, "", item.DueAt.Format(time.RFC3339)
+	item = subscriptionMustUpdate(t, req, now)[0]
+	if item.Enabled || subscriptionDaysRemaining(item.DueAt, now) != 20 {
+		t.Fatal("pause moved expiry")
+	}
+	if _, err := updateSubscription(subscriptionRequest{Action: "renew", ID: item.ID}, now); err == nil {
+		t.Fatal("no-period record must not use an arbitrary renewal default")
+	}
+	if _, err := subscriptionFromRequest(subscriptionRequest{Name: "缺到期日期"}, now); err == nil {
+		t.Fatal("missing expiry accepted")
+	}
+}
+
+func TestSubscriptionSimplifiedEditPreservesLegacyPeriod(t *testing.T) {
+	now := subscriptionTestSetup(t)
+	req := subscriptionTestRequest(7)
+	req.Mode, req.PeriodCount, req.PeriodUnit = "period", 3, "month"
+	legacy := subscriptionMustUpdate(t, req, now)[0]
+	if err := recordSubscriptionReminderResult(legacy, now.Format("2006-01-02"), now, nil); err != nil {
+		t.Fatal(err)
+	}
+	edit := subscriptionRequest{Action: "save", ID: legacy.ID, Name: legacy.Name, URL: legacy.URL, Enabled: true, DueAt: legacy.DueAt.Format(time.RFC3339)}
+	item := subscriptionMustUpdate(t, edit, now)[0]
+	if item.PeriodCount != 3 || item.PeriodUnit != "month" || !item.DueAt.Equal(legacy.DueAt) || item.LastReminderDay == "" {
+		t.Fatal("simplified edit changed legacy fields")
+	}
+	edit.ExpiryMode, edit.Days, edit.DueAt = "days", 40, ""
+	item = subscriptionMustUpdate(t, edit, now)[0]
+	if item.PeriodCount != 3 || item.PeriodUnit != "month" || subscriptionDaysRemaining(item.DueAt, now) != 40 || item.LastReminderDay != "" {
+		t.Fatal("manual expiry update used legacy period")
+	}
+}
+
 func TestSubscriptionPeriodsAndRenewal(t *testing.T) {
 	now := subscriptionTestSetup(t)
 	for _, tc := range []struct {
