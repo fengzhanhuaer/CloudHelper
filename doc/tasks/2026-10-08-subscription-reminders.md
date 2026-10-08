@@ -1,7 +1,7 @@
 # 主控订阅提醒
 
 - 任务标识：`2026-10-08-subscription-reminders`
-- 状态：`进行中`
+- 状态：`已完成`
 - 创建、更新时间：2026-10-08 Asia/Singapore
 - 用户原始需求：主控添加订阅提醒磁贴，输入名称、URL、周期或倒计时天数，到期前一星期开始 TG 提醒。
 - 用户最新指令：提醒都是周期性的，到期日期可选择具体日期或剩余天数。
@@ -47,10 +47,10 @@
 
 ### 当前交接
 
-- 阶段：验证；本次改动仅订阅相关 5 文件。
-- 当前步骤：TASK-006。
-- 当前门禁：修正需求准备门禁通过。
-- 下一步唯一动作：完成差异审查并提交推送。
+- 阶段：已完成；本次改动仅订阅相关 5 文件。
+- 当前步骤：无。
+- 当前门禁：完成门禁通过。
+- 下一步唯一动作：无。
 - 恢复先读：本账本、`git status`、订阅相关差异。
 
 | 编号 | 任务 | 状态 | 完成条件 |
@@ -60,7 +60,7 @@
 | TASK-003 | 测试与审查，REQ-001/002/003 | 已完成 | 所有相关自动测试与界面验证通过 |
 | TASK-004 | 按 cloudhelper-release-push 发布与核验 | 已完成 | v0.4.46 发布成功，版本及全部产物核验 |
 | TASK-005 | 修正周期及到期输入，REQ-002 | 已完成 | 两种到期输入均保留周期、能续订；主控全测/vet 与浏览器验证通过 |
-| TASK-006 | 发布本次修正及核验 | 进行中 | 工作流成功并核验全部产物 |
+| TASK-006 | 发布本次修正及核验 | 已完成 | v0.4.47 / run 37749618004 全成功，10 个资产及 Docker 核验通过 |
 
 变更记录：新增订阅后端与页面；server 注册鉴权入口与调度；panel 和共享导航新增入口。回滚见第九章。
 
@@ -74,6 +74,7 @@
 | TEST-004 | 主控和探针回归 | controller: `go test ./... -count=1`, `go vet ./...`; probe_node: `go test ./... -count=1`, `go test . -run 'TestReleaseWorkflow(DefinesLinuxRouterArtifacts\|DoesNotPublishStandaloneMihomoExitArtifacts)' -count=1` | 已完成，全部通过 |
 | TEST-005 | 发布产物 | GitHub Actions 匹配推送 SHA，检查版本、资产和 Docker job | 已完成，run 37744886950 全部 job success；v0.4.46 非草稿正式版，10 个资产齐全且非空，Docker success |
 | TEST-006 | 新日期/天数契约和旧数据兼容 | `go test ./... -count=1`, `go vet ./...`（controller）；Playwright 连接隔离 Go 主控 | 已完成，全部通过；实际 10 个 POST，1440x1050/390x844；日期/天数创建及互换、两种续订、名称/暂停保持精确到期、跨时区编辑、重载、无 JS 错误与溢出 |
+| TEST-007 | 本次发布验证 | `gh run view 37749618004`, `gh release view v0.4.47`, fetch/log | 已完成，匹配 726bbdf 全部 job success；版本提交 4d728b0，10 个非空产物；正式非草稿 release，Docker success |
 
 补充验证：`TestSubscriptionCheckResumesAfterTimeout` 检查慢失败不会饿死后续记录；`TestSubscriptionSchedulerUsesExistingNotifyBot` 检查启动/周期调度与既有 TG 目的账号，且不依赖节点续费开关。首次调度测试因模拟账号缺 Phone 被既有账号规范化过滤，已修正测试数据，未修改既有 TG 规则。
 
@@ -117,7 +118,7 @@ TG 未配置时保留订阅、提示未就绪；网络失败不记成功。进�
 ## 十二、质量门禁
 
 准备门禁：通过；目标、验收、架构、单元、追踪、干净工作区、回滚和约束均已确认，无未解决冲突。
-完成门禁：有条件通过；最新 REQ-002、主控全测/vet 和实际浏览器操作已通过，剩余条件为 TASK-006 发布核验。
+完成门禁：通过；最新 REQ-002、主控全测/vet、实际浏览器操作与 v0.4.47 发布核验通过，追踪闭合、CON-001 已解决、无产品缺陷或调试残留；风险/回滚已记录，无下一步动作。未执行真实 TG 的原因及替代证据见第五章。
 
 ## 十三、检查点
 
@@ -128,10 +129,15 @@ TG 未配置时保留订阅、提示未就绪；网络失败不记成功。进�
 2026-10-08：8 文件提交 `b9be3e5c4c27effdafb9dfdb171d892c4d108bd0` 已推送 origin/mapledev；匹配工作流 https://github.com/fengzhanhuaer/CloudHelper/actions/runs/37744886950，待完成与产物核验。
 2026-10-08：工作流全成功；自动版本提交 `e3ae628` / tag `v0.4.46`；https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.46 的 10 个产物全部核验，Docker success。主控未在线升级，属于部署范围外；用户仅需升级主控即可使用。
 2026-10-08：用户修正所有订阅周期性，到期输入独立二选一。后端、页面、旧 countdown 兼容完成；主控全测/vet 及隔离浏览器 10 POST 验证通过，临时测试服务/文件已关闭移除。下一步提交发布。
+2026-10-08：5 文件修正提交 `726bbdfd3fbe20bd2df581371dc6056062eb84c8` 已推送 origin/mapledev；等待匹配工作流并核验正式发布。
+2026-10-08：https://github.com/fengzhanhuaer/CloudHelper/actions/runs/37749618004 全成功；https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.47 的 10 个资产完整，Docker success。主控在线升级由用户后续启动。
 
 ## 十四、完成摘要
 
-以下为 v0.4.46 历史交付；最新要求待 TASK-005 完成后补充。
+最新交付：所有订阅均设置续订周期，到期输入独立选择具体日期/剩余天数；两种都可续订。日期按主控时区当天结束计算，编辑未修改到期时保留精确值与提醒历史；旧 countdown 自动兼容成天周期。
+最新验收：TEST-006/007 通过，修正提交 `726bbdf` 已推送并发布 `v0.4.47`。全自动测试及桌面/手机真实请求验证通过，10 个产物与 Docker 核验成功；仅需升级主控。完成门禁通过，下一步无。
+
+以下为 v0.4.46 历史交付。
 
 - 交付：主控磁贴和 `/mng/subscriptions` 页面；名称、URL、天/月/年周期、倒计时、指定到期时间；编辑、启停、删除、手动续订。
 - 提醒：复用现有 TG 通知账号，七天前每日一次，重启去重、失败重试、超时继续下一条；到期后持续提醒至人为处理。
