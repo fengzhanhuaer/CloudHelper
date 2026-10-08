@@ -198,7 +198,7 @@ func subscriptionFromRequest(req subscriptionRequest, now time.Time) (subscripti
 		return item, subscriptionInputError("名称应为 1–120 个字符，且不能换行")
 	}
 	u, err := url.Parse(item.URL)
-	if err != nil || len(item.URL) > 2048 || u == nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil {
+	if item.URL != "" && (err != nil || len(item.URL) > 2048 || u == nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil) {
 		return item, subscriptionInputError("URL 应为不超过 2048 字节的 HTTP(S) 地址，不含用户名密码")
 	}
 	// Old clients can still save a countdown, but every stored subscription
@@ -404,7 +404,10 @@ func checkSubscriptionReminders(ctx context.Context, now time.Time, send func(co
 		} else if subscriptionDaysRemaining(snapshot.DueAt, now) == 0 {
 			status = "今天到期"
 		}
-		text := fmt.Sprintf("订阅到期提醒\n名称：%s\n%s\n到期：%s\nURL：%s", snapshot.Name, status, snapshot.DueAt.In(now.Location()).Format("2006-01-02 15:04 MST"), snapshot.URL)
+		text := fmt.Sprintf("订阅到期提醒\n名称：%s\n%s\n到期：%s", snapshot.Name, status, snapshot.DueAt.In(now.Location()).Format("2006-01-02 15:04 MST"))
+		if snapshot.URL != "" {
+			text += "\nURL：" + snapshot.URL
+		}
 		sendCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		sendErr := send(sendCtx, text)
 		cancel()

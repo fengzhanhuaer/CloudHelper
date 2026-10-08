@@ -59,7 +59,7 @@
         <form id="form">
           <fieldset id="fields">
             <label>订阅名称<input id="name" maxlength="120" required placeholder="例如：云服务年费"></label>
-            <label>URL<input id="url" type="url" maxlength="2048" required placeholder="https://example.com"></label>
+            <label>网址（选填）<input id="url" type="url" maxlength="2048" placeholder="https://example.com"></label>
             <div id="period-fields" class="row">
               <label>续订周期<input id="period-count" type="number" min="1" max="1200" step="1" value="1" required></label>
               <label>单位<select id="period-unit"><option value="month">月</option><option value="year">年</option><option value="day">天</option></select></label>
@@ -130,7 +130,9 @@
         const expired = new Date(item.due_at) <= new Date(data.server_time);
         const label = !item.enabled ? '已暂停' : expired ? '已到期' : item.days_remaining === 0 ? '今天到期' : '剩余 ' + item.days_remaining + ' 天';
         head.append(element('span', 'tag' + (item.enabled && expired ? ' expired' : item.enabled && item.days_remaining <= 7 ? ' soon' : ''), label)); entry.append(head);
-        const url = element('a', 'entry-url', item.url); url.href = item.url; url.target = '_blank'; url.rel = 'noopener noreferrer'; entry.append(url);
+        if (item.url) {
+          const url = element('a', 'entry-url', item.url); url.href = item.url; url.target = '_blank'; url.rel = 'noopener noreferrer'; entry.append(url);
+        }
         const units = {day:'天',month:'月',year:'年'};
         const period = '每 ' + item.period_count + ' ' + units[item.period_unit];
         entry.append(element('div', 'entry-meta', period + ' · 到期 ' + formatTime(item.due_at) + '\n最近提醒：' + formatTime(item.last_sent_at) + (item.last_error ? '\n' + item.last_error : '')));

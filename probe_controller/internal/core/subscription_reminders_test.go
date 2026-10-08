@@ -62,6 +62,42 @@ func TestSubscriptionPersistenceEditPauseDelete(t *testing.T) {
 	}
 }
 
+func TestSubscriptionOptionalURL(t *testing.T) {
+	now := subscriptionTestSetup(t)
+	for _, raw := range []string{"", "  \t "} {
+		req := subscriptionTestRequest(1)
+		req.Mode, req.PeriodCount, req.PeriodUnit, req.ExpiryMode, req.URL = "period", 1, "month", "days", raw
+		subscriptionMustUpdate(t, req, now)
+	}
+	items, err := getSubscriptions()
+	if err != nil || len(items) != 2 || items[0].URL != "" || items[1].URL != "" {
+		t.Fatalf("empty URLs should persist: %+v %v", items, err)
+	}
+	sent := 0
+	err = checkSubscriptionReminders(context.Background(), now, func(_ context.Context, text string) error {
+		sent++
+		if !strings.Contains(text, "云服务") || !strings.Contains(text, "到期：") || strings.Contains(text, "URL：") {
+			t.Fatalf("empty URL reminder: %q", text)
+		}
+		return nil
+	})
+	if err != nil || sent != 2 {
+		t.Fatalf("empty URL reminders: sent=%d err=%v", sent, err)
+	}
+	req := subscriptionTestRequest(1)
+	req.ID, req.URL, req.DueAt = items[0].ID, "https://example.com/renew", items[0].DueAt.Format(time.RFC3339)
+	updated := subscriptionMustUpdate(t, req, now)[0]
+	if updated.URL != req.URL || updated.LastReminderDay == "" {
+		t.Fatal("adding URL should retain reminder history")
+	}
+	req.URL = ""
+	updated = subscriptionMustUpdate(t, req, now)[0]
+	if updated.URL != "" || !updated.DueAt.Equal(items[0].DueAt) {
+		t.Fatal("clearing URL should preserve expiry")
+	}
+	subscriptionMustUpdate(t, subscriptionRequest{Action: "renew", ID: updated.ID}, now)
+}
+
 func TestSubscriptionPeriodsAndRenewal(t *testing.T) {
 	now := subscriptionTestSetup(t)
 	for _, tc := range []struct {
