@@ -101,6 +101,78 @@ func TestSubscriptionPeriodsAndRenewal(t *testing.T) {
 	}
 }
 
+func TestSubscriptionExpirySelectionIsIndependentOfPeriod(t *testing.T) {
+	now := subscriptionTestSetup(t)
+	for _, mode := range []string{"date", "days"} {
+		t.Run(mode, func(t *testing.T) {
+			req := subscriptionTestRequest(12)
+			req.Mode, req.PeriodCount, req.PeriodUnit = "period", 1, "year"
+			req.ExpiryMode, req.DueDate = mode, "2026-10-20"
+			// Only the selected input should control expiry.
+			req.DueAt = "2029-01-01T00:00:00Z"
+			item := subscriptionMustUpdate(t, req, now)
+			got := item[len(item)-1]
+			want := now.AddDate(0, 0, 12)
+			if mode == "date" {
+				want = time.Date(2026, 10, 20, 23, 59, 59, 0, now.Location())
+			}
+			if got.Mode != "period" || got.PeriodCount != 1 || got.PeriodUnit != "year" || !got.DueAt.Equal(want) {
+				t.Fatalf("expiry or period: %+v", got)
+			}
+			renewed := subscriptionMustUpdate(t, subscriptionRequest{Action: "renew", ID: got.ID}, now)
+			next, _ := subscriptionPeriodEnd(want, 1, "year")
+			for _, rec := range renewed {
+				if rec.ID == got.ID && !rec.DueAt.Equal(next) {
+					t.Fatal("expiry input changed renewal period")
+				}
+			}
+		})
+	}
+	for _, mode := range []string{"date", "days", "invalid"} {
+		req := subscriptionTestRequest(5)
+		req.Mode, req.ExpiryMode = "period", mode
+		if _, err := subscriptionFromRequest(req, now); err == nil {
+			t.Fatal("missing renewal period accepted")
+		}
+	}
+	req := subscriptionTestRequest(0)
+	req.Mode, req.PeriodCount, req.PeriodUnit, req.ExpiryMode = "period", 1, "month", "days"
+	if item, err := subscriptionFromRequest(req, now); err != nil || !item.DueAt.Equal(now) {
+		t.Fatalf("today countdown: %+v %v", item, err)
+	}
+	for _, date := range []string{"", "2026-02-30", "not-a-date"} {
+		req.ExpiryMode, req.DueDate = "date", date
+		if _, err := subscriptionFromRequest(req, now); err == nil {
+			t.Fatalf("bad date accepted: %q", date)
+		}
+	}
+	req.ExpiryMode = "invalid"
+	if _, err := subscriptionFromRequest(req, now); err == nil {
+		t.Fatal("unknown expiry input accepted")
+	}
+}
+
+func TestSubscriptionLegacyCountdownBecomesRenewable(t *testing.T) {
+	now := subscriptionTestSetup(t)
+	legacy := subscriptionMustUpdate(t, subscriptionTestRequest(15), now)[0]
+	legacy.Mode, legacy.PeriodCount, legacy.PeriodUnit = "countdown", 0, ""
+	legacy.LastReminderDay = "2026-10-08"
+	subscriptionMu.Lock()
+	err := saveSubscriptionsLocked([]subscriptionReminder{legacy})
+	subscriptionMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := getSubscriptions()
+	if err != nil || items[0].Mode != "period" || items[0].PeriodCount != 15 || items[0].PeriodUnit != "day" || !items[0].DueAt.Equal(legacy.DueAt) || items[0].LastReminderDay != legacy.LastReminderDay {
+		t.Fatalf("legacy data lost: %+v %v", items, err)
+	}
+	renewed := subscriptionMustUpdate(t, subscriptionRequest{Action: "renew", ID: legacy.ID}, now)[0]
+	if !renewed.DueAt.Equal(legacy.DueAt.AddDate(0, 0, 15)) {
+		t.Fatal("legacy countdown cannot renew")
+	}
+}
+
 func TestSubscriptionValidationAndCorruptStorage(t *testing.T) {
 	now := subscriptionTestSetup(t)
 	for name, change := range map[string]func(*subscriptionRequest){

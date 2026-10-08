@@ -60,20 +60,20 @@
           <fieldset id="fields">
             <label>订阅名称<input id="name" maxlength="120" required placeholder="例如：云服务年费"></label>
             <label>URL<input id="url" type="url" maxlength="2048" required placeholder="https://example.com"></label>
-            <label>提醒方式<select id="mode"><option value="period">周期订阅</option><option value="countdown">倒计时</option></select></label>
             <div id="period-fields" class="row">
-              <label>周期<input id="period-count" type="number" min="1" max="36500" step="1" value="1"></label>
+              <label>续订周期<input id="period-count" type="number" min="1" max="1200" step="1" value="1" required></label>
               <label>单位<select id="period-unit"><option value="month">月</option><option value="year">年</option><option value="day">天</option></select></label>
             </div>
-            <label><span id="days-label">首次到期剩余天数（可选）</span><input id="days" type="number" min="1" max="36500" step="1" placeholder="留空按一个完整周期计算"></label>
-            <label>到期时间（可选）<input id="due-at" type="datetime-local"><span class="hint">可直接指定到期时间，优先于天数。修改天数会重新计算到期时间。</span></label>
+            <label>到期日期填写方式<select id="expiry-mode"><option value="date">具体日期</option><option value="days">剩余天数</option></select></label>
+            <label id="date-field">到期日期<input id="due-date" type="date" min="2000-01-01" max="9998-12-31" required><span class="hint">所选日期当天结束时到期，以主控时区为准。</span></label>
+            <label id="days-field" hidden>剩余天数<input id="days" type="number" min="0" max="36500" step="1" placeholder="例如：30；0 表示今天到期" disabled><span class="hint">保存时从主控当前日期计算到期时间。</span></label>
             <label><input id="enabled" type="checkbox" checked>启用 TG 提醒</label>
             <div class="actions"><button class="btn primary" type="submit">保存订阅</button><button class="btn" id="cancel" type="button" hidden>取消编辑</button></div>
           </fieldset>
         </form>
         <div id="status" role="status" aria-live="polite"></div>
         <p class="hint">每 5 分钟检查一次，按主控日期每天最多提醒一次；到期后继续提醒，直到续订或暂停。月、年周期按日历计算。</p>
-        <p class="hint">“已续订”：未到期从原到期时间增加一个周期，已到期从当前时间计算。倒计时续期可通过编辑设置。</p>
+        <p class="hint">“已续订”：未到期从原到期时间增加一个周期，已到期从当前时间计算。两种到期填写方式均使用上方续订周期。</p>
       </section>
       <section class="card">
         <div class="list-head"><h2>订阅列表 <span id="count" class="tag">0</span></h2><button class="btn" id="refresh" type="button">刷新</button></div>
@@ -83,32 +83,33 @@
   </main>
   <script>
     const $ = id => document.getElementById(id);
-    let items = [], editingID = '', originalDue = '', originalDueInput = '', busy = false;
+    let items = [], editingID = '', originalDue = '', originalDueInput = '', expiryChanged = false, serverTime = '', busy = false;
     function status(text, error = false) { $('status').textContent = text; $('status').className = error ? 'error' : 'success'; }
-    function localInput(raw) {
-      const date = new Date(raw);
-      const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
-      return shifted.toISOString().slice(0,16);
+    function controllerDate(raw) {
+      const offset = /([+-])(\d{2}):(\d{2})$/.exec(serverTime);
+      const minutes = offset ? (offset[1] === '+' ? 1 : -1) * (Number(offset[2]) * 60 + Number(offset[3])) : 0;
+      return new Date(new Date(raw).getTime() + minutes * 60000).toISOString().slice(0,10);
     }
     function formatTime(raw) { return raw ? new Date(raw).toLocaleString() : '尚未发送'; }
-    function modeChanged() {
-      const countdown = $('mode').value === 'countdown';
-      $('period-fields').hidden = countdown;
-      $('period-count').required = !countdown;
-      $('days').required = countdown && !$('due-at').value;
-      $('days-label').textContent = countdown ? '倒计时天数' : '首次到期剩余天数（可选）';
-      $('days').placeholder = countdown ? '例如：30' : '留空按一个完整周期计算';
+    function expiryModeChanged() {
+      const days = $('expiry-mode').value === 'days';
+      $('days-field').hidden = !days; $('date-field').hidden = days;
+      $('days').disabled = !days; $('days').required = days;
+      $('due-date').disabled = days; $('due-date').required = !days;
+    }
+    function periodUnitChanged() {
+      $('period-count').max = {day:36500,month:1200,year:100}[$('period-unit').value];
     }
     function resetForm() {
-      editingID = originalDue = originalDueInput = '';
-      $('form').reset(); $('form-title').textContent = '添加订阅'; $('cancel').hidden = true; modeChanged();
+      editingID = originalDue = originalDueInput = ''; expiryChanged = false;
+      $('form').reset(); $('form-title').textContent = '添加订阅'; $('cancel').hidden = true; expiryModeChanged(); periodUnitChanged();
     }
     function edit(item) {
-      editingID = item.id; originalDue = item.due_at; originalDueInput = localInput(item.due_at);
-      $('name').value = item.name; $('url').value = item.url; $('mode').value = item.mode;
+      editingID = item.id; originalDue = item.due_at; originalDueInput = controllerDate(item.due_at); expiryChanged = false;
+      $('name').value = item.name; $('url').value = item.url; $('expiry-mode').value = 'date';
       $('period-count').value = item.period_count || 1; $('period-unit').value = item.period_unit || 'month';
-      $('days').value = item.days || ''; $('enabled').checked = item.enabled; $('due-at').value = originalDueInput;
-      $('form-title').textContent = '编辑订阅'; $('cancel').hidden = false; modeChanged(); status('正在编辑：' + item.name); $('name').focus();
+      $('days').value = Math.max(0,item.days_remaining); $('enabled').checked = item.enabled; $('due-date').value = originalDueInput;
+      $('form-title').textContent = '编辑订阅'; $('cancel').hidden = false; expiryModeChanged(); periodUnitChanged(); status('正在编辑：' + item.name); $('name').focus();
     }
     function element(tag, className, text) { const el = document.createElement(tag); el.className = className; el.textContent = text; return el; }
     function button(text, action, danger = false) {
@@ -116,6 +117,7 @@
     }
     function render(data) {
       items = data.items || [];
+      serverTime = data.server_time;
       $('count').textContent = items.length;
       const notice = $('tg-notice'); notice.replaceChildren(); notice.className = data.tg_ready ? 'notice' : 'notice warn';
       notice.append(document.createTextNode(data.tg_ready ? 'TG 通知已就绪，使用 TG 助手中选定的通知账号。' : 'TG 通知尚未就绪：请在 TG 助手中选择已登录的通知账号，并配置 Bot。订阅仍会正常保存。'));
@@ -130,10 +132,10 @@
         head.append(element('span', 'tag' + (item.enabled && expired ? ' expired' : item.enabled && item.days_remaining <= 7 ? ' soon' : ''), label)); entry.append(head);
         const url = element('a', 'entry-url', item.url); url.href = item.url; url.target = '_blank'; url.rel = 'noopener noreferrer'; entry.append(url);
         const units = {day:'天',month:'月',year:'年'};
-        const period = item.mode === 'period' ? '每 ' + item.period_count + ' ' + units[item.period_unit] : '倒计时';
+        const period = '每 ' + item.period_count + ' ' + units[item.period_unit];
         entry.append(element('div', 'entry-meta', period + ' · 到期 ' + formatTime(item.due_at) + '\n最近提醒：' + formatTime(item.last_sent_at) + (item.last_error ? '\n' + item.last_error : '')));
         const actions = element('div', 'actions', ''); actions.append(button('编辑', () => edit(item)));
-        if (item.mode === 'period') actions.append(button('已续订', () => { if (confirm('确认“' + item.name + '”已续订？将增加一个周期。')) mutate({action:'renew',id:item.id}, '已更新下次到期时间', true); }));
+        actions.append(button('已续订', () => { if (confirm('确认“' + item.name + '”已续订？将增加一个周期。')) mutate({action:'renew',id:item.id}, '已更新下次到期时间', true); }));
         actions.append(button(item.enabled ? '暂停提醒' : '启用提醒', () => mutate({...item,action:'save',enabled:!item.enabled}, item.enabled ? '已暂停提醒' : '已启用提醒')));
         actions.append(button('删除', () => { if (confirm('删除订阅“' + item.name + '”？')) mutate({action:'delete',id:item.id}, '已删除订阅', true); }, true)); entry.append(actions); list.append(entry);
       });
@@ -153,15 +155,16 @@
     async function load() { if (busy) return; setBusy(true); try { render(await request()); } catch(error) { status(error.message,true); } finally { setBusy(false); } }
     $('form').addEventListener('submit', event => {
       event.preventDefault();
-      const rawDue = $('due-at').value;
-      const due = rawDue ? (editingID && rawDue === originalDueInput ? originalDue : new Date(rawDue).toISOString()) : '';
-      mutate({action:'save',id:editingID,name:$('name').value,url:$('url').value,mode:$('mode').value,period_count:Number($('period-count').value),period_unit:$('period-unit').value,days:Number($('days').value),due_at:due,enabled:$('enabled').checked}, '订阅已保存', true);
+      const unchanged = editingID && !expiryChanged && $('expiry-mode').value === 'date' && $('due-date').value === originalDueInput;
+      const expiry = unchanged ? {due_at:originalDue} : $('expiry-mode').value === 'date' ? {expiry_mode:'date',due_date:$('due-date').value} : {expiry_mode:'days',days:Number($('days').value)};
+      mutate({action:'save',id:editingID,name:$('name').value,url:$('url').value,mode:'period',period_count:Number($('period-count').value),period_unit:$('period-unit').value,...expiry,enabled:$('enabled').checked}, '订阅已保存', true);
     });
-    $('mode').addEventListener('change', () => { $('due-at').value = ''; modeChanged(); });
-    $('days').addEventListener('input', () => { $('due-at').value = ''; modeChanged(); });
-    $('due-at').addEventListener('input', modeChanged);
+    $('expiry-mode').addEventListener('change', () => { expiryChanged = true; expiryModeChanged(); });
+    $('days').addEventListener('input', () => { expiryChanged = true; });
+    $('due-date').addEventListener('input', () => { expiryChanged = true; });
+    $('period-unit').addEventListener('change',periodUnitChanged);
     $('cancel').addEventListener('click', () => { resetForm(); status(''); });
-    $('refresh').addEventListener('click', load); modeChanged(); load(); setInterval(load,60000);
+    $('refresh').addEventListener('click', load); expiryModeChanged(); periodUnitChanged(); load(); setInterval(load,60000);
   </script>
 </body>
 </html>

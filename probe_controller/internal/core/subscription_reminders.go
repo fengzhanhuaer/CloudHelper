@@ -53,6 +53,8 @@ type subscriptionRequest struct {
 	Days        int    `json:"days"`
 	Enabled     bool   `json:"enabled"`
 	DueAt       string `json:"due_at"`
+	ExpiryMode  string `json:"expiry_mode"`
+	DueDate     string `json:"due_date"`
 }
 
 type subscriptionInputError string
@@ -79,6 +81,17 @@ func loadSubscriptionsLocked() ([]subscriptionReminder, error) {
 	}
 	if items == nil {
 		items = []subscriptionReminder{}
+	}
+	for i := range items {
+		// v0.4.46 countdown records retain their expiry and successful-send
+		// history; the entered days become their renewal period.
+		if items[i].Mode == "countdown" {
+			items[i].Mode, items[i].PeriodUnit = "period", "day"
+			items[i].PeriodCount = items[i].Days
+			if items[i].PeriodCount <= 0 {
+				items[i].PeriodCount = 30
+			}
+		}
 	}
 	return items, nil
 }
@@ -178,7 +191,7 @@ func updateSubscription(req subscriptionRequest, now time.Time) ([]subscriptionR
 func subscriptionFromRequest(req subscriptionRequest, now time.Time) (subscriptionReminder, error) {
 	item := subscriptionReminder{
 		Name: strings.TrimSpace(req.Name), URL: strings.TrimSpace(req.URL),
-		Mode: req.Mode, PeriodCount: req.PeriodCount, PeriodUnit: req.PeriodUnit,
+		Mode: "period", PeriodCount: req.PeriodCount, PeriodUnit: req.PeriodUnit,
 		Days: req.Days, Enabled: req.Enabled, UpdatedAt: now.UTC(), Revision: rand.Text(),
 	}
 	if item.Name == "" || len([]rune(item.Name)) > 120 || strings.ContainsAny(item.Name, "\r\n") {
@@ -188,28 +201,41 @@ func subscriptionFromRequest(req subscriptionRequest, now time.Time) (subscripti
 	if err != nil || len(item.URL) > 2048 || u == nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil {
 		return item, subscriptionInputError("URL 应为不超过 2048 字节的 HTTP(S) 地址，不含用户名密码")
 	}
-	if req.Days < 0 || req.Days > 36500 {
+	// Old clients can still save a countdown, but every stored subscription
+	// now has a renewal period independent of its initial expiry.
+	if req.Mode == "countdown" {
+		item.PeriodCount, item.PeriodUnit = req.Days, "day"
+		if item.PeriodCount == 0 && req.DueAt != "" {
+			item.PeriodCount = 30
+		}
+	} else if req.Mode != "" && req.Mode != "period" {
+		return item, subscriptionInputError("所有订阅均需设置续订周期")
+	}
+	item.DueAt, err = subscriptionPeriodEnd(now, item.PeriodCount, item.PeriodUnit)
+	if err != nil {
+		return item, err
+	}
+	if (req.ExpiryMode == "days" || req.ExpiryMode == "") && (req.Days < 0 || req.Days > 36500) {
 		return item, subscriptionInputError("天数应为 0–36500")
 	}
-	switch req.Mode {
-	case "period":
-		item.DueAt, err = subscriptionPeriodEnd(now, req.PeriodCount, req.PeriodUnit)
-		if err != nil {
-			return item, err
+	switch req.ExpiryMode {
+	case "date":
+		date, parseErr := time.ParseInLocation("2006-01-02", req.DueDate, now.Location())
+		if parseErr != nil || date.Year() < 2000 || date.Year() > 9998 {
+			return item, subscriptionInputError("请选择有效的到期日期")
 		}
+		item.DueAt = date.AddDate(0, 0, 1).Add(-time.Second)
+		item.Days = 0
+	case "days":
+		item.DueAt = now.AddDate(0, 0, req.Days)
+	case "": // Compatibility with v0.4.46 payloads and exact-expiry edits.
 		if req.Days > 0 {
 			item.DueAt = now.AddDate(0, 0, req.Days)
 		}
-	case "countdown":
-		item.PeriodCount, item.PeriodUnit = 0, ""
-		if req.Days <= 0 && req.DueAt == "" {
-			return item, subscriptionInputError("倒计时天数应为 1–36500")
-		}
-		item.DueAt = now.AddDate(0, 0, req.Days)
 	default:
-		return item, subscriptionInputError("请选择周期或倒计时")
+		return item, subscriptionInputError("请选择具体日期或剩余天数")
 	}
-	if req.DueAt != "" {
+	if req.ExpiryMode == "" && req.DueAt != "" {
 		item.DueAt, err = time.Parse(time.RFC3339, req.DueAt)
 		if err != nil || item.DueAt.Year() < 2000 || item.DueAt.Year() > 9999 {
 			return item, subscriptionInputError("到期时间无效")
