@@ -1,7 +1,7 @@
 # 主控订阅提醒
 
 - 任务标识：`2026-10-08-subscription-reminders`
-- 状态：`进行中`
+- 状态：`已完成`
 - 创建、更新时间：2026-10-08 Asia/Singapore
 - 用户原始需求：主控添加订阅提醒磁贴，输入名称、URL、周期或倒计时天数，到期前一星期开始 TG 提醒。
 - 用户最新指令：继续（再次确认继续实施）。
@@ -29,8 +29,8 @@
 
 | 编号 | 契约 | 文件 | 关联 |
 |---|---|---|---|
-| IF-001 | GET `/mng/api/subscriptions` 返回 items、TG readiness、server_time；POST action=save/delete/renew，校验错误400、存储错误500、未登录401 | `subscription_reminders.go`, `server.go` | REQ-001/002，TASK-001/002，TEST-001/003 |
-| IF-002 | `data/subscription_reminders.json` 保存列表、到期时间和每日成功标记；旧版本忽略此新增文件 | `subscription_reminders.go` | REQ-001/003，TASK-001，TEST-001/002 |
+| IF-001 | GET `/mng/api/subscriptions` 返回 items、TG readiness、server_time；POST action=save/delete/renew，校验错误400、存储错误500、未登录401 | `subscription_reminders.go`, `server.go` | REQ-001/002，TASK-001/002，TEST-001/003，通过 HTTP 与实际浏览器验证 |
+| IF-002 | `data/subscription_reminders.json` 保存列表、到期时间和每日成功标记；旧版本忽略此新增文件 | `subscription_reminders.go` | REQ-001/003，TASK-001，TEST-001/002，通过重载与去重测试 |
 
 ## 三、单元设计
 
@@ -44,10 +44,10 @@
 
 ### 当前交接
 
-- 阶段：验证；工作区基线干净，无已有用户改动。
-- 当前步骤：TASK-004。
-- 当前门禁：准备门禁通过。
-- 下一步唯一动作：提交已验证的 8 个文件并推送 mapledev。
+- 阶段：已完成；工作区基线干净，无已有用户改动。
+- 当前步骤：无。
+- 当前门禁：完成门禁通过。
+- 下一步唯一动作：无。
 - 恢复先读：本账本、`git status`、订阅相关差异。
 
 | 编号 | 任务 | 状态 | 完成条件 |
@@ -55,7 +55,7 @@
 | TASK-001 | 存储/API/调度，REQ-001/002/003 | 已完成 | 已实现 |
 | TASK-002 | 磁贴/导航/表单，REQ-001/002/003 | 已完成 | 已实现，交互待 TASK-003 验证 |
 | TASK-003 | 测试与审查，REQ-001/002/003 | 已完成 | 所有相关自动测试与界面验证通过 |
-| TASK-004 | 按 cloudhelper-release-push 发布与核验 | 进行中 | 自动发布成功，版本及全部产物核验 |
+| TASK-004 | 按 cloudhelper-release-push 发布与核验 | 已完成 | v0.4.46 发布成功，版本及全部产物核验 |
 
 变更记录：新增订阅后端与页面；server 注册鉴权入口与调度；panel 和共享导航新增入口。回滚见第九章。
 
@@ -67,7 +67,7 @@
 | TEST-002 | 七天边界、同日去重、失败重试、禁用、重启与并发编辑 | 同上，`subscription_reminders_test.go` | 已完成，通过，含 DST 与 UTC 存储边界 |
 | TEST-003 | 页面入口、鉴权与交互 | HTTP 测试 + Playwright 连接隔离 Go 主控 1440x1050 / 390x844 | 已完成，9 个真实 POST；新增周期/倒计时、编辑、暂停/启用、续订、倒计时重设、删除、重载；无 JS 错误、横向溢出 |
 | TEST-004 | 主控和探针回归 | controller: `go test ./... -count=1`, `go vet ./...`; probe_node: `go test ./... -count=1`, `go test . -run 'TestReleaseWorkflow(DefinesLinuxRouterArtifacts\|DoesNotPublishStandaloneMihomoExitArtifacts)' -count=1` | 已完成，全部通过 |
-| TEST-005 | 发布产物 | GitHub Actions 匹配推送 SHA，检查版本、资产和 Docker job | 进行中 |
+| TEST-005 | 发布产物 | GitHub Actions 匹配推送 SHA，检查版本、资产和 Docker job | 已完成，run 37744886950 全部 job success；v0.4.46 非草稿正式版，10 个资产齐全且非空，Docker success |
 
 补充验证：`TestSubscriptionCheckResumesAfterTimeout` 检查慢失败不会饿死后续记录；`TestSubscriptionSchedulerUsesExistingNotifyBot` 检查启动/周期调度与既有 TG 目的账号，且不依赖节点续费开关。首次调度测试因模拟账号缺 Phone 被既有账号规范化过滤，已修正测试数据，未修改既有 TG 规则。
 
@@ -109,7 +109,7 @@ TG 未配置时保留订阅、提示未就绪；网络失败不记成功。进�
 ## 十二、质量门禁
 
 准备门禁：通过；目标、验收、架构、单元、追踪、干净工作区、回滚和约束均已确认，无未解决冲突。
-完成门禁：有条件通过；全部功能验收、测试、差异审查与追踪已闭合，剩余条件为 TASK-004/TEST-005 发布产物核验。
+完成门禁：通过；REQ-001/002/003 已验收、追踪闭合，测试与发布核验通过；无产品缺陷与未解决冲突，风险和回滚已记录，差异仅本任务 8 文件，无调试残留，下一步为无。未执行真实 TG 消息的原因和替代证据见第五章。
 
 ## 十三、检查点
 
@@ -117,7 +117,14 @@ TG 未配置时保留订阅、提示未就绪；网络失败不记成功。进�
 2026-10-08：后端和页面已实现；现有记事本及日期调度针对性测试通过。下一步订阅专项测试。
 2026-10-08：专项测试和实际浏览器操作通过，主控 vet 通过；隔离浏览器服务与临时测试文件已关闭和移除，下一步完整回归与发布。发布预检确认 mapledev/origin/工作流匹配。
 2026-10-08：最终 controller 全测和 vet、probe_node 全测和发布契约测试通过；无范围漂移和调试残留。下一步提交发布。
+2026-10-08：8 文件提交 `b9be3e5c4c27effdafb9dfdb171d892c4d108bd0` 已推送 origin/mapledev；匹配工作流 https://github.com/fengzhanhuaer/CloudHelper/actions/runs/37744886950，待完成与产物核验。
+2026-10-08：工作流全成功；自动版本提交 `e3ae628` / tag `v0.4.46`；https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.46 的 10 个产物全部核验，Docker success。主控未在线升级，属于部署范围外；用户仅需升级主控即可使用。
 
 ## 十四、完成摘要
 
-待实现与验证完成后填写。
+- 交付：主控磁贴和 `/mng/subscriptions` 页面；名称、URL、天/月/年周期、倒计时、指定到期时间；编辑、启停、删除、手动续订。
+- 提醒：复用现有 TG 通知账号，七天前每日一次，重启去重、失败重试、超时继续下一条；到期后持续提醒至人为处理。
+- 验收：所有 REQ 通过；自动测试、桌面/手机浏览器实际保存、主控/探针回归、主控 vet 和发布核验均通过。
+- 发布：功能提交 `b9be3e5`，正式版 `v0.4.46`，10 个下载产物及 Docker job 成功；使用 cloudhelper-release-push 技能自动发布。
+- 遗留边界：不发送真实测试 TG；已发送但保存前进程退出可能重发一次。回滚见第九章。
+- 完成门禁：通过；下一步唯一动作：无。
