@@ -22,25 +22,26 @@ type probeSecretUpsertRequest struct {
 }
 
 type probeNodeRecord struct {
-	NodeNo                int                    `json:"node_no"`
-	NodeName              string                 `json:"node_name"`
-	NodeKind              string                 `json:"node_kind,omitempty"`
-	Remark                string                 `json:"remark"`
-	DDNS                  string                 `json:"ddns"`
-	CloudflareDDNSRecords []cloudflareDDNSRecord `json:"cloudflare_ddns_records,omitempty"`
-	NodeSecret            string                 `json:"node_secret"`
-	TargetSystem          string                 `json:"target_system"`
-	DirectConnect         bool                   `json:"direct_connect"`
-	LocalConsoleEnabled   bool                   `json:"local_console_enabled"`
-	ServiceScheme         string                 `json:"service_scheme"`
-	ServiceHost           string                 `json:"service_host"`
-	PaymentCycle          string                 `json:"payment_cycle"`
-	Cost                  string                 `json:"cost"`
-	ExpireAt              string                 `json:"expire_at"`
-	VendorName            string                 `json:"vendor_name"`
-	VendorURL             string                 `json:"vendor_url"`
-	CreatedAt             string                 `json:"created_at"`
-	UpdatedAt             string                 `json:"updated_at"`
+	NodeNo                 int                    `json:"node_no"`
+	NodeName               string                 `json:"node_name"`
+	NodeKind               string                 `json:"node_kind,omitempty"`
+	Remark                 string                 `json:"remark"`
+	DDNS                   string                 `json:"ddns"`
+	CloudflareDDNSRecords  []cloudflareDDNSRecord `json:"cloudflare_ddns_records,omitempty"`
+	NodeSecret             string                 `json:"node_secret"`
+	TargetSystem           string                 `json:"target_system"`
+	DirectConnect          bool                   `json:"direct_connect"`
+	LocalConsoleEnabled    bool                   `json:"local_console_enabled"`
+	ServiceScheme          string                 `json:"service_scheme"`
+	ServiceHost            string                 `json:"service_host"`
+	PaymentCycle           string                 `json:"payment_cycle"`
+	Cost                   string                 `json:"cost"`
+	ExpireAt               string                 `json:"expire_at"`
+	VendorName             string                 `json:"vendor_name"`
+	VendorURL              string                 `json:"vendor_url"`
+	MonthlyTrafficStartDay int                    `json:"monthly_traffic_start_day"`
+	CreatedAt              string                 `json:"created_at"`
+	UpdatedAt              string                 `json:"updated_at"`
 }
 
 type probeNodeStatusRecord struct {
@@ -60,19 +61,20 @@ type probeNodeCreateRequest struct {
 }
 
 type probeNodeUpdateRequest struct {
-	NodeNo              int    `json:"node_no"`
-	NodeName            string `json:"node_name"`
-	NodeKind            string `json:"node_kind,omitempty"`
-	Remark              string `json:"remark"`
-	DDNS                string `json:"ddns"`
-	TargetSystem        string `json:"target_system"`
-	DirectConnect       bool   `json:"direct_connect"`
-	LocalConsoleEnabled bool   `json:"local_console_enabled"`
-	PaymentCycle        string `json:"payment_cycle"`
-	Cost                string `json:"cost"`
-	ExpireAt            string `json:"expire_at"`
-	VendorName          string `json:"vendor_name"`
-	VendorURL           string `json:"vendor_url"`
+	NodeNo                 int    `json:"node_no"`
+	NodeName               string `json:"node_name"`
+	NodeKind               string `json:"node_kind,omitempty"`
+	Remark                 string `json:"remark"`
+	DDNS                   string `json:"ddns"`
+	TargetSystem           string `json:"target_system"`
+	DirectConnect          bool   `json:"direct_connect"`
+	LocalConsoleEnabled    bool   `json:"local_console_enabled"`
+	PaymentCycle           string `json:"payment_cycle"`
+	Cost                   string `json:"cost"`
+	ExpireAt               string `json:"expire_at"`
+	VendorName             string `json:"vendor_name"`
+	VendorURL              string `json:"vendor_url"`
+	MonthlyTrafficStartDay int    `json:"monthly_traffic_start_day"`
 }
 
 type probeNodeLinkUpdateRequest struct {
@@ -465,6 +467,7 @@ func normalizeProbeNodes(items []probeNodeRecord) ([]probeNodeRecord, map[string
 		node.ExpireAt = strings.TrimSpace(node.ExpireAt)
 		node.VendorName = strings.TrimSpace(node.VendorName)
 		node.VendorURL = strings.TrimSpace(node.VendorURL)
+		node.MonthlyTrafficStartDay = normalizeMonthlyTrafficStartDay(node.MonthlyTrafficStartDay)
 		nodes = append(nodes, node)
 
 		nodeID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
@@ -700,6 +703,9 @@ func updateProbeNodeLocked(req probeNodeUpdateRequest) (probeNodeRecord, error) 
 	if system == "" {
 		return probeNodeRecord{}, fmt.Errorf("target system must be linux, windows, android or docker")
 	}
+	if req.MonthlyTrafficStartDay < 0 || req.MonthlyTrafficStartDay > 31 {
+		return probeNodeRecord{}, fmt.Errorf("monthly traffic start day must be between 1 and 31")
+	}
 
 	nodes := loadProbeNodesLocked()
 	found := -1
@@ -748,6 +754,7 @@ func updateProbeNodeLocked(req probeNodeUpdateRequest) (probeNodeRecord, error) 
 	nodes[found].ExpireAt = strings.TrimSpace(req.ExpireAt)
 	nodes[found].VendorName = strings.TrimSpace(req.VendorName)
 	nodes[found].VendorURL = strings.TrimSpace(req.VendorURL)
+	nodes[found].MonthlyTrafficStartDay = normalizeMonthlyTrafficStartDay(req.MonthlyTrafficStartDay)
 	nodes[found].UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if strings.TrimSpace(nodes[found].CreatedAt) == "" {
 		nodes[found].CreatedAt = nodes[found].UpdatedAt

@@ -3,6 +3,7 @@ package core
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestUpsertProbeNetworkMonitorTaskSupportsNameAndEdit(t *testing.T) {
@@ -64,6 +65,7 @@ func TestUpsertProbeNetworkMonitorTaskSupportsNameAndEdit(t *testing.T) {
 func TestProbeNetworkMonitorResultsPersistToPerNodeGobFiles(t *testing.T) {
 	restorePath := SetProbeNetworkMonitorResultStorePathForTest(filepath.Join(t.TempDir(), "network_monitor_results"))
 	t.Cleanup(restorePath)
+	now := time.Now().UTC().Truncate(time.Second)
 
 	_, err := appendProbeNetworkMonitorResult(probeNetworkMonitorResultRecord{
 		TaskID:    "task-1",
@@ -71,7 +73,7 @@ func TestProbeNetworkMonitorResultsPersistToPerNodeGobFiles(t *testing.T) {
 		NodeNo:    1,
 		NodeName:  "probe-a",
 		OK:        true,
-		Timestamp: "2026-01-01T00:00:00Z",
+		Timestamp: now.Add(-time.Minute).Format(time.RFC3339),
 	})
 	if err != nil {
 		t.Fatalf("append first result failed: %v", err)
@@ -83,7 +85,7 @@ func TestProbeNetworkMonitorResultsPersistToPerNodeGobFiles(t *testing.T) {
 		NodeName:  "probe-b",
 		OK:        false,
 		Error:     "timeout",
-		Timestamp: "2026-01-01T00:01:00Z",
+		Timestamp: now.Format(time.RFC3339),
 	})
 	if err != nil {
 		t.Fatalf("append second result failed: %v", err)
@@ -103,6 +105,35 @@ func TestProbeNetworkMonitorResultsPersistToPerNodeGobFiles(t *testing.T) {
 	nodeTwoResults := loadProbeNetworkMonitorResultsForNode("2")
 	if len(nodeTwoResults) != 1 || nodeTwoResults[0].TaskID != "task-2" {
 		t.Fatalf("node two results=%+v", nodeTwoResults)
+	}
+}
+
+func TestProbeNetworkMonitorExpiredRawIsArchivedHourly(t *testing.T) {
+	restorePath := SetProbeNetworkMonitorResultStorePathForTest(filepath.Join(t.TempDir(), "network_monitor_results"))
+	t.Cleanup(restorePath)
+
+	timestamp := time.Now().UTC().Add(-25 * time.Hour).Format(time.RFC3339)
+	_, err := appendProbeNetworkMonitorResult(probeNetworkMonitorResultRecord{
+		TaskID:    "task-1",
+		NodeID:    "1",
+		OK:        true,
+		Timestamp: timestamp,
+		Results: []probeNetworkMonitorTargetResult{{
+			Target: "1.1.1.1", Sent: 1, Received: 1, LatencyAvgMS: 23.5, LossPercent: 1.5,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("append expired raw result: %v", err)
+	}
+	if raw := loadProbeNetworkMonitorResultsForNode("1"); len(raw) != 0 {
+		t.Fatalf("expired raw count=%d, want 0", len(raw))
+	}
+	history, err := loadProbeNetworkMonitorHistoryForNode("1")
+	if err != nil {
+		t.Fatalf("load archived history: %v", err)
+	}
+	if len(history.Hourly) != 1 || history.Hourly[0].ResultCount != 1 || history.Hourly[0].LatencySum != 23.5 || history.Hourly[0].LossSum != 1.5 {
+		t.Fatalf("hourly history=%+v, want one archived result", history.Hourly)
 	}
 }
 

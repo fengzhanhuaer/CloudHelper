@@ -113,6 +113,11 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 
 			msg.NodeID = nodeID
 			updateProbeRuntimeReportWithPlatformAndBuffers(nodeID, msg.IPv4, msg.IPv6, msg.System, msg.Version, msg.Platform, msg.OS, msg.Arch, msg.MachineUptimeSeconds, msg.RelayStatus, msg.VirtualRouterBuffers)
+			if msg.System.NetworkAvailable {
+				if err := accumulateProbeTrafficFromReport(nodeID, msg.System.NetworkRXBytes, msg.System.NetworkTXBytes, firstNonEmptyNetworkMonitor(msg.Timestamp, time.Now().UTC().Format(time.RFC3339))); err != nil {
+					logControllerWarnf("failed to persist probe traffic: node=%s err=%v", normalizeProbeNodeID(nodeID), err)
+				}
+			}
 			if updateProbeRuntimeProductStatus(nodeID, msg.BuildKind, msg.SpecialExit, msg.LinuxRouter) {
 				scheduleProbeRouteConfigSyncToKnownNodes()
 			}

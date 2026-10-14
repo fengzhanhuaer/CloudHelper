@@ -328,6 +328,10 @@
           <input id="edit-expire-at" type="date" placeholder="YYYY-MM-DD" />
         </div>
         <div class="form-field">
+          <label for="edit-monthly-traffic-start-day">月度流量起始日</label>
+          <input id="edit-monthly-traffic-start-day" type="number" min="1" max="31" step="1" value="1" />
+        </div>
+        <div class="form-field">
           <label for="edit-vendor-name">vendor_name</label>
           <input id="edit-vendor-name" />
         </div>
@@ -1513,6 +1517,7 @@
       document.getElementById('edit-payment-cycle').value = String(node.payment_cycle || '');
       document.getElementById('edit-cost').value = String(node.cost || '');
       document.getElementById('edit-expire-at').value = String(node.expire_at || '');
+      document.getElementById('edit-monthly-traffic-start-day').value = String(Number(node.monthly_traffic_start_day) || 1);
       document.getElementById('edit-vendor-name').value = String(node.vendor_name || '');
       document.getElementById('edit-vendor-url').value = String(node.vendor_url || '');
       const modal = document.getElementById('node-edit-modal');
@@ -1580,6 +1585,7 @@
       const nodeName = String(document.getElementById('edit-node-name').value || '').trim();
       const targetSystem = String(document.getElementById('edit-target-system').value || '').trim().toLowerCase();
       const expireAt = String(document.getElementById('edit-expire-at').value || '').trim();
+      const monthlyTrafficStartDay = Number(document.getElementById('edit-monthly-traffic-start-day').value);
       if (!nodeName) {
         throw buildEditValidationError('node_name 不能为空');
       }
@@ -1593,6 +1599,9 @@
       if (expireAt && !/^\d{4}-\d{2}-\d{2}$/.test(expireAt)) {
         throw buildEditValidationError('expire_at 格式必须是 YYYY-MM-DD');
       }
+      if (!Number.isInteger(monthlyTrafficStartDay) || monthlyTrafficStartDay < 1 || monthlyTrafficStartDay > 31) {
+        throw buildEditValidationError('月度流量起始日必须是 1 到 31 的整数');
+      }
       return {
         node_no: Number(state.editingNodeNo),
         node_name: nodeName,
@@ -1605,6 +1614,7 @@
         payment_cycle: String(document.getElementById('edit-payment-cycle').value || '').trim(),
         cost: String(document.getElementById('edit-cost').value || '').trim(),
         expire_at: expireAt,
+        monthly_traffic_start_day: monthlyTrafficStartDay,
         vendor_name: String(document.getElementById('edit-vendor-name').value || '').trim(),
         vendor_url: String(document.getElementById('edit-vendor-url').value || '').trim(),
       };

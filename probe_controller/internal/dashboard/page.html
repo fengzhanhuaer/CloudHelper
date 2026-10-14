@@ -221,6 +221,18 @@
             font-family: 'Courier New', Courier, monospace;
             line-height: 1.35;
         }
+        .probe-traffic {
+            display: grid;
+            gap: 4px;
+            padding-top: 8px;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            color: var(--text-primary);
+            font: 12px/1.45 'Courier New', Courier, monospace;
+            overflow-wrap: anywhere;
+        }
+        .probe-traffic-period {
+            color: var(--text-secondary);
+        }
         .probe-online {
             flex: 0 0 auto;
             font-size: 12px;
@@ -406,19 +418,23 @@
         .legend span::before {
             content: "";
             display: inline-block;
-            width: 8px;
-            height: 8px;
+            width: 16px;
+            height: 0;
             margin-right: 6px;
-            border-radius: 2px;
+            vertical-align: middle;
         }
         .legend-latency::before {
-            background: #58a6ff;
+            border-top: 2px solid #58a6ff;
         }
         .legend-loss::before {
-            background: #f85149;
+            border-top: 2px dashed #ff5c54;
         }
         .task-legend::before {
+            width: 8px !important;
+            height: 8px !important;
+            border: 0 !important;
             background: var(--task-color);
+            border-radius: 2px;
         }
         .refresh-button {
             appearance: none;
@@ -524,7 +540,19 @@
         function formatMachineUptime(seconds) {
             seconds = Number(seconds);
             if (!Number.isFinite(seconds) || seconds <= 0) return '-';
-            return formatUptime(seconds);
+            const days = Math.floor(seconds / 86400);
+            return days + '天 ' + formatUptime(seconds % 86400);
+        }
+
+        function formatTrafficBytes(value) {
+            let bytes = Math.max(0, Number(value) || 0);
+            const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
+            let unit = 0;
+            while (bytes >= 1024 && unit < units.length - 1) {
+                bytes /= 1024;
+                unit += 1;
+            }
+            return (unit === 0 ? String(Math.floor(bytes)) : bytes.toFixed(2)) + ' ' + units[unit];
         }
 
         function formatBytes(bytes) {
@@ -686,6 +714,14 @@
                 const vendorLine = vendor ? '<div class="probe-vendor">厂家: ' + vendor + '</div>' : '';
                 const locationText = formatLocations(item.locations);
                 const locationLine = locationText ? '<div class="probe-location">归属地: ' + escapeHTML(locationText) + '</div>' : '';
+                const traffic = item.traffic || {};
+                const trafficLine = traffic.available
+                    ? '<div class="probe-traffic" title="仅统计启用中的硬件出口接口；累计从本统计口径首次采样后开始；月度账期按 UTC 计算">'
+                        + '<div>总流量　↓ ' + formatTrafficBytes(traffic.total_rx_bytes) + '　↑ ' + formatTrafficBytes(traffic.total_tx_bytes) + '</div>'
+                        + '<div>月度流量　↓ ' + formatTrafficBytes(traffic.month_rx_bytes) + '　↑ ' + formatTrafficBytes(traffic.month_tx_bytes) + '</div>'
+                        + '<div class="probe-traffic-period">周期起始: ' + escapeHTML(traffic.period_start || '-') + ' UTC (每月 ' + (Number(traffic.monthly_start_day) || 1) + ' 日)</div>'
+                    + '</div>'
+                    : '<div class="probe-traffic probe-traffic-period">流量统计等待探针上报</div>';
                 return '<div class="probe-item">'
                     + '<div class="probe-item-head">'
                     + '<div class="probe-node-meta">'
@@ -703,6 +739,7 @@
                     + metricGauge('DISK', sys.disk_used_percent, sys.disk_used_bytes, sys.disk_total_bytes)
                     + '</div>'
                     + '<div class="probe-uptime">机器运行: ' + machineUptime + ' / 开机: ' + bootTime + '</div>'
+                    + trafficLine
                     + '<div class="probe-last-seen">Last Seen: ' + escapeHTML(lastSeen) + '</div>'
                     + '</div>';
             }).join('');
@@ -746,10 +783,11 @@
                             + '</div>';
                     }).join('')
                     : '<div class="network-meta">No points</div>';
-                const legend = series.map((entry, seriesIndex) => {
+                const taskLegend = series.map((entry, seriesIndex) => {
                     const color = taskColors[seriesIndex % taskColors.length];
                     return '<span class="task-legend" style="--task-color:' + color + '">' + escapeHTML(entry.task_name || entry.task_id || '未命名任务') + '</span>';
                 }).join('');
+                const legend = '<span class="legend-latency">延迟</span><span class="legend-loss">丢包</span>' + taskLegend;
                 return '<div class="network-card">'
                     + '<div class="network-head">'
                     + '<div class="network-node-meta">'
@@ -840,7 +878,9 @@
             series.forEach((entry, index) => {
                 const color = taskColors[index % taskColors.length];
                 drawLine(ctx, entry.points, xOfTime, latencyY, 'latency_avg_ms', color, ratio, false);
-                drawLine(ctx, entry.points, xOfTime, lossY, 'loss_percent', color, ratio, true);
+            });
+            series.forEach((entry) => {
+                drawLine(ctx, entry.points, xOfTime, lossY, 'loss_percent', '#ff5c54', ratio, true);
             });
 
         }
@@ -899,8 +939,8 @@
 
         function drawLine(ctx, points, xOf, yOf, field, color, ratio, dashed) {
             ctx.strokeStyle = color;
-            ctx.lineWidth = dashed ? 1.2 * ratio : 1.8 * ratio;
-            ctx.setLineDash(dashed ? [4 * ratio, 4 * ratio] : []);
+            ctx.lineWidth = dashed ? 2.4 * ratio : 1.8 * ratio;
+            ctx.setLineDash(dashed ? [9 * ratio, 5 * ratio] : []);
             ctx.beginPath();
             let started = false;
             points.forEach((point, index) => {

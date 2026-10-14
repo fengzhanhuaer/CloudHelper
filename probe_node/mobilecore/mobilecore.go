@@ -65,6 +65,9 @@ type systemStatus struct {
 	DiskTotalBytes    uint64  `json:"disk_total_bytes"`
 	DiskUsedBytes     uint64  `json:"disk_used_bytes"`
 	DiskUsedPercent   float64 `json:"disk_used_percent"`
+	NetworkRXBytes    uint64  `json:"network_rx_bytes"`
+	NetworkTXBytes    uint64  `json:"network_tx_bytes"`
+	NetworkAvailable  bool    `json:"network_traffic_available"`
 }
 
 type cpuSnapshot struct {
@@ -498,6 +501,7 @@ func parseInjectedIPList(raw string, wantIPv4 bool) []string {
 func collectSystemStatus(sampler *cpuSampler) systemStatus {
 	memoryTotal, memoryUsed, swapTotal, swapUsed := readLinuxMemInfo()
 	diskTotal, diskUsed := readDiskUsageRoot()
+	networkRX, networkTX, networkAvailable := readNetworkTrafficCounters()
 	return systemStatus{
 		CPUPercent:        sampler.usagePercent(),
 		MemoryTotalBytes:  memoryTotal,
@@ -509,6 +513,9 @@ func collectSystemStatus(sampler *cpuSampler) systemStatus {
 		DiskTotalBytes:    diskTotal,
 		DiskUsedBytes:     diskUsed,
 		DiskUsedPercent:   percentFromUsed(diskUsed, diskTotal),
+		NetworkRXBytes:    networkRX,
+		NetworkTXBytes:    networkTX,
+		NetworkAvailable:  networkAvailable,
 	}
 }
 

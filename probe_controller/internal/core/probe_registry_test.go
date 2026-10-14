@@ -145,11 +145,12 @@ func TestUpdateProbeNodeLockedStoresLocalConsoleEnabled(t *testing.T) {
 
 	ProbeStore.mu.Lock()
 	node, err := updateProbeNodeLocked(probeNodeUpdateRequest{
-		NodeNo:              1,
-		NodeName:            "node-a",
-		TargetSystem:        "linux",
-		DirectConnect:       true,
-		LocalConsoleEnabled: true,
+		NodeNo:                 1,
+		NodeName:               "node-a",
+		TargetSystem:           "linux",
+		DirectConnect:          true,
+		LocalConsoleEnabled:    true,
+		MonthlyTrafficStartDay: 15,
 	})
 	ProbeStore.mu.Unlock()
 	if err != nil {
@@ -160,6 +161,9 @@ func TestUpdateProbeNodeLockedStoresLocalConsoleEnabled(t *testing.T) {
 	}
 	if !ProbeStore.data.ProbeNodes[0].LocalConsoleEnabled {
 		t.Fatalf("expected stored node local console enabled")
+	}
+	if node.MonthlyTrafficStartDay != 15 || ProbeStore.data.ProbeNodes[0].MonthlyTrafficStartDay != 15 {
+		t.Fatalf("monthly traffic start day returned=%d stored=%d, want 15", node.MonthlyTrafficStartDay, ProbeStore.data.ProbeNodes[0].MonthlyTrafficStartDay)
 	}
 }
 

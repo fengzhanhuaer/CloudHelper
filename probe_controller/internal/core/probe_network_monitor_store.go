@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/gob"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ const (
 	maxProbeNetworkMonitorTasks        = 200
 	maxProbeNetworkMonitorResults      = 50000
 	defaultProbeNetworkMonitorCycleSec = 600
+	probeNetworkMonitorHistoryVersion  = 1
 )
 
 var probeNetworkMonitorResultStore = struct {
@@ -54,6 +56,25 @@ type probeNetworkMonitorResultRecord struct {
 	StartedAt  string                            `json:"started_at,omitempty"`
 	FinishedAt string                            `json:"finished_at,omitempty"`
 	Timestamp  string                            `json:"timestamp"`
+}
+
+type probeNetworkMonitorHistory struct {
+	Version          int                                `json:"version"`
+	CompactedThrough string                             `json:"compacted_through,omitempty"`
+	Hourly           []probeNetworkMonitorHistoryBucket `json:"hourly,omitempty"`
+	Daily            []probeNetworkMonitorHistoryBucket `json:"daily,omitempty"`
+	Latest           []probeNetworkMonitorResultRecord  `json:"latest,omitempty"`
+}
+
+type probeNetworkMonitorHistoryBucket struct {
+	TaskID       string  `json:"task_id"`
+	Timestamp    string  `json:"timestamp"`
+	LatencySum   float64 `json:"latency_sum"`
+	LatencyCount int64   `json:"latency_count"`
+	LossSum      float64 `json:"loss_sum"`
+	LossCount    int64   `json:"loss_count"`
+	OKCount      int64   `json:"ok_count"`
+	ResultCount  int64   `json:"result_count"`
 }
 
 func upsertProbeNetworkMonitorTaskLocked(req mngProbeNetworkMonitorTaskUpsertRequest) (probeNetworkMonitorTaskRecord, error) {
@@ -175,6 +196,19 @@ func appendProbeNetworkMonitorResult(record probeNetworkMonitorResultRecord) (pr
 	if err := saveProbeNetworkMonitorResultsForNodeToDiskLocked(record.NodeID, items); err != nil {
 		return record, err
 	}
+	history, err := loadProbeNetworkMonitorHistoryForNodeLocked(record.NodeID)
+	if err != nil {
+		return record, err
+	}
+	history.Latest = mergeProbeNetworkMonitorLatest(history.Latest, items, &record)
+	compactProbeNetworkMonitorHistory(&history, items, time.Now().UTC())
+	// Commit rollups before pruning raw; the watermark makes retries idempotent.
+	if err := saveProbeNetworkMonitorHistoryForNodeLocked(record.NodeID, history); err != nil {
+		return record, err
+	}
+	if err := saveProbeNetworkMonitorResultsForNodeToDiskLocked(record.NodeID, retainProbeNetworkMonitorRaw(items, time.Now().UTC())); err != nil {
+		return record, err
+	}
 	return record, nil
 }
 
@@ -222,6 +256,13 @@ func loadProbeNetworkMonitorLatestResultsByNodeTask() []probeNetworkMonitorResul
 			logControllerWarnf("failed to load network monitor results: node=%s err=%v", nodeID, loadErr)
 			return []probeNetworkMonitorResultRecord{}
 		}
+		history, historyErr := loadProbeNetworkMonitorHistoryForNodeLocked(nodeID)
+		if historyErr != nil {
+			probeNetworkMonitorResultStore.mu.Unlock()
+			logControllerWarnf("failed to load network monitor history: node=%s err=%v", nodeID, historyErr)
+			return []probeNetworkMonitorResultRecord{}
+		}
+		items = append(items, history.Latest...)
 		for _, item := range items {
 			taskID := strings.TrimSpace(item.TaskID)
 			if taskID == "" {
@@ -300,6 +341,37 @@ func loadProbeNetworkMonitorResultsForNode(nodeID string) []probeNetworkMonitorR
 		return []probeNetworkMonitorResultRecord{}
 	}
 	return items
+}
+
+func loadProbeNetworkMonitorChartHistoryForNode(nodeID string) ([]probeNetworkMonitorResultRecord, probeNetworkMonitorHistory) {
+	cleanID := normalizeProbeNodeID(nodeID)
+	if cleanID == "" {
+		return []probeNetworkMonitorResultRecord{}, probeNetworkMonitorHistory{}
+	}
+	probeNetworkMonitorResultStore.mu.Lock()
+	items, resultErr := loadProbeNetworkMonitorResultsForNodeFromDiskLocked(cleanID)
+	history, historyErr := loadProbeNetworkMonitorHistoryForNodeLocked(cleanID)
+	if resultErr == nil && historyErr == nil && probeNetworkMonitorHistoryNeedsCompaction(history, items, time.Now().UTC()) {
+		originalHistory := history
+		originalHistory.Hourly = append([]probeNetworkMonitorHistoryBucket(nil), history.Hourly...)
+		originalHistory.Daily = append([]probeNetworkMonitorHistoryBucket(nil), history.Daily...)
+		originalHistory.Latest = append([]probeNetworkMonitorResultRecord(nil), history.Latest...)
+		history.Latest = mergeProbeNetworkMonitorLatest(history.Latest, items, nil)
+		now := time.Now().UTC()
+		compactProbeNetworkMonitorHistory(&history, items, now)
+		if saveErr := saveProbeNetworkMonitorHistoryForNodeLocked(cleanID, history); saveErr != nil {
+			logControllerWarnf("failed to compact network monitor history: node=%s err=%v", cleanID, saveErr)
+			history = originalHistory
+		} else if saveErr := saveProbeNetworkMonitorResultsForNodeToDiskLocked(cleanID, retainProbeNetworkMonitorRaw(items, now)); saveErr != nil {
+			logControllerWarnf("failed to prune compacted network monitor results: node=%s err=%v", cleanID, saveErr)
+		}
+	}
+	probeNetworkMonitorResultStore.mu.Unlock()
+	if resultErr != nil || historyErr != nil {
+		logControllerWarnf("failed to load network monitor chart history: node=%s results=%v history=%v", cleanID, resultErr, historyErr)
+		return []probeNetworkMonitorResultRecord{}, probeNetworkMonitorHistory{}
+	}
+	return items, history
 }
 
 func listProbeNetworkMonitorResultNodeIDs() []string {
@@ -415,6 +487,321 @@ func probeNetworkMonitorResultPathForNode(nodeID string) (string, error) {
 		return "", fmt.Errorf("node id is required")
 	}
 	return filepath.Join(probeNetworkMonitorResultStore.dir, "node_"+cleanID+".gob"), nil
+}
+
+func probeNetworkMonitorHistoryPathForNode(nodeID string) (string, error) {
+	cleanID := normalizeProbeNodeID(nodeID)
+	if cleanID == "" {
+		return "", fmt.Errorf("node id is required")
+	}
+	return filepath.Join(probeNetworkMonitorResultStore.dir, "history", "node_"+cleanID+".gob"), nil
+}
+
+func loadProbeNetworkMonitorHistoryForNode(nodeID string) (probeNetworkMonitorHistory, error) {
+	cleanID := normalizeProbeNodeID(nodeID)
+	if cleanID == "" {
+		return probeNetworkMonitorHistory{}, fmt.Errorf("node id is required")
+	}
+	probeNetworkMonitorResultStore.mu.Lock()
+	defer probeNetworkMonitorResultStore.mu.Unlock()
+	return loadProbeNetworkMonitorHistoryForNodeLocked(cleanID)
+}
+
+func loadProbeNetworkMonitorHistoryForNodeLocked(nodeID string) (probeNetworkMonitorHistory, error) {
+	path, err := probeNetworkMonitorHistoryPathForNode(nodeID)
+	if err != nil {
+		return probeNetworkMonitorHistory{}, err
+	}
+	file, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return probeNetworkMonitorHistory{Version: probeNetworkMonitorHistoryVersion}, nil
+	}
+	if err != nil {
+		return probeNetworkMonitorHistory{}, err
+	}
+	defer file.Close()
+	var history probeNetworkMonitorHistory
+	if err := gob.NewDecoder(file).Decode(&history); err != nil {
+		return probeNetworkMonitorHistory{}, err
+	}
+	if history.Version != probeNetworkMonitorHistoryVersion {
+		return probeNetworkMonitorHistory{}, fmt.Errorf("unsupported network monitor history version: %d", history.Version)
+	}
+	history.Hourly = normalizeProbeNetworkMonitorHistoryBuckets(history.Hourly)
+	history.Daily = normalizeProbeNetworkMonitorHistoryBuckets(history.Daily)
+	history.Latest = normalizeProbeNetworkMonitorResultsForNode(history.Latest, nodeID)
+	return history, nil
+}
+
+func saveProbeNetworkMonitorHistoryForNodeLocked(nodeID string, history probeNetworkMonitorHistory) error {
+	path, err := probeNetworkMonitorHistoryPathForNode(nodeID)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	history.Version = probeNetworkMonitorHistoryVersion
+	history.Hourly = normalizeProbeNetworkMonitorHistoryBuckets(history.Hourly)
+	history.Daily = normalizeProbeNetworkMonitorHistoryBuckets(history.Daily)
+	history.Latest = normalizeProbeNetworkMonitorResultsForNode(history.Latest, nodeID)
+	tmpPath := path + ".tmp"
+	file, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	encodeErr := gob.NewEncoder(file).Encode(history)
+	closeErr := file.Close()
+	if encodeErr != nil {
+		_ = os.Remove(tmpPath)
+		return encodeErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmpPath)
+		return closeErr
+	}
+	return os.Rename(tmpPath, path)
+}
+
+func normalizeProbeNetworkMonitorHistoryBuckets(raw []probeNetworkMonitorHistoryBucket) []probeNetworkMonitorHistoryBucket {
+	byKey := make(map[string]probeNetworkMonitorHistoryBucket, len(raw))
+	for _, bucket := range raw {
+		bucket.TaskID = strings.TrimSpace(bucket.TaskID)
+		bucket.Timestamp = strings.TrimSpace(bucket.Timestamp)
+		if bucket.Timestamp == "" || bucket.ResultCount <= 0 {
+			continue
+		}
+		key := bucket.TaskID + "|" + bucket.Timestamp
+		byKey[key] = bucket
+	}
+	out := make([]probeNetworkMonitorHistoryBucket, 0, len(byKey))
+	for _, bucket := range byKey {
+		out = append(out, bucket)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Timestamp != out[j].Timestamp {
+			return out[i].Timestamp < out[j].Timestamp
+		}
+		return out[i].TaskID < out[j].TaskID
+	})
+	return out
+}
+
+func upsertProbeNetworkMonitorLatest(items []probeNetworkMonitorResultRecord, record probeNetworkMonitorResultRecord) []probeNetworkMonitorResultRecord {
+	key := probeNetworkMonitorResultKey(record)
+	out := make([]probeNetworkMonitorResultRecord, 0, len(items)+1)
+	replaced := false
+	for _, item := range items {
+		if probeNetworkMonitorResultKey(item) != key {
+			out = append(out, item)
+			continue
+		}
+		replaced = true
+		if probeNetworkMonitorResultTimestamp(item).After(probeNetworkMonitorResultTimestamp(record)) {
+			out = append(out, item)
+		} else {
+			out = append(out, record)
+		}
+	}
+	if !replaced {
+		out = append(out, record)
+	}
+	return out
+}
+
+func probeNetworkMonitorResultKey(item probeNetworkMonitorResultRecord) string {
+	taskID := strings.TrimSpace(item.TaskID)
+	if taskID == "" {
+		taskID = strings.TrimSpace(item.ID)
+	}
+	return normalizeProbeNodeID(item.NodeID) + "|" + taskID
+}
+
+func compactProbeNetworkMonitorHistory(history *probeNetworkMonitorHistory, raw []probeNetworkMonitorResultRecord, now time.Time) {
+	minuteCutoff := now.Add(-24 * time.Hour).Truncate(time.Minute)
+	hourCutoff := now.Add(-30 * 24 * time.Hour).Truncate(time.Hour)
+	dayCutoff := now.Add(-180 * 24 * time.Hour).Truncate(24 * time.Hour)
+	previousWatermark, hasWatermark := time.Time{}, false
+	if parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(history.CompactedThrough)); err == nil {
+		previousWatermark, hasWatermark = parsed.UTC(), true
+	}
+
+	hourly := make(map[string]probeNetworkMonitorHistoryBucket, len(history.Hourly))
+	for _, bucket := range history.Hourly {
+		hourly[bucket.TaskID+"|"+bucket.Timestamp] = bucket
+	}
+	daily := make(map[string]probeNetworkMonitorHistoryBucket, len(history.Daily))
+	for _, bucket := range history.Daily {
+		daily[bucket.TaskID+"|"+bucket.Timestamp] = bucket
+	}
+	for _, record := range raw {
+		ts := probeNetworkMonitorHistoryTimestamp(record)
+		if ts.IsZero() || !ts.Before(minuteCutoff) || (hasWatermark && ts.Before(previousWatermark)) {
+			continue
+		}
+		bucketTime := ts.Truncate(time.Hour)
+		bucketMap := hourly
+		if ts.Before(hourCutoff) {
+			bucketTime = time.Date(ts.Year(), ts.Month(), ts.Day(), 0, 0, 0, 0, time.UTC)
+			bucketMap = daily
+		}
+		addProbeNetworkMonitorRecordToBucket(bucketMap, record, bucketTime)
+	}
+
+	for key, bucket := range hourly {
+		bucketTime, err := time.Parse(time.RFC3339, bucket.Timestamp)
+		if err != nil || !bucketTime.Before(hourCutoff) {
+			continue
+		}
+		bucketTime = time.Date(bucketTime.Year(), bucketTime.Month(), bucketTime.Day(), 0, 0, 0, 0, time.UTC)
+		addProbeNetworkMonitorBucket(daily, bucket, bucketTime)
+		delete(hourly, key)
+	}
+	for key, bucket := range daily {
+		bucketTime, err := time.Parse(time.RFC3339, bucket.Timestamp)
+		if err != nil || bucketTime.Before(dayCutoff) {
+			delete(daily, key)
+		}
+	}
+	history.Hourly = normalizeProbeNetworkMonitorHistoryBuckets(valuesProbeNetworkMonitorBuckets(hourly))
+	history.Daily = normalizeProbeNetworkMonitorHistoryBuckets(valuesProbeNetworkMonitorBuckets(daily))
+	history.CompactedThrough = minuteCutoff.UTC().Format(time.RFC3339Nano)
+}
+
+func addProbeNetworkMonitorRecordToBucket(buckets map[string]probeNetworkMonitorHistoryBucket, record probeNetworkMonitorResultRecord, bucketTime time.Time) {
+	taskID := strings.TrimSpace(record.TaskID)
+	if taskID == "" {
+		taskID = "default"
+	}
+	latency, loss := summarizeDashboardNetworkResult(record.Results)
+	if latency < 0 && loss < 0 {
+		return
+	}
+	timestamp := bucketTime.UTC().Format(time.RFC3339)
+	key := taskID + "|" + timestamp
+	bucket := buckets[key]
+	bucket.TaskID = taskID
+	bucket.Timestamp = timestamp
+	bucket.ResultCount++
+	if record.OK {
+		bucket.OKCount++
+	}
+	if latency >= 0 && !math.IsNaN(latency) && !math.IsInf(latency, 0) {
+		bucket.LatencySum += latency
+		bucket.LatencyCount++
+	}
+	if loss >= 0 && !math.IsNaN(loss) && !math.IsInf(loss, 0) {
+		bucket.LossSum += loss
+		bucket.LossCount++
+	}
+	buckets[key] = bucket
+}
+
+func addProbeNetworkMonitorBucket(buckets map[string]probeNetworkMonitorHistoryBucket, source probeNetworkMonitorHistoryBucket, bucketTime time.Time) {
+	timestamp := bucketTime.UTC().Format(time.RFC3339)
+	key := source.TaskID + "|" + timestamp
+	bucket := buckets[key]
+	bucket.TaskID = source.TaskID
+	bucket.Timestamp = timestamp
+	bucket.LatencySum += source.LatencySum
+	bucket.LatencyCount += source.LatencyCount
+	bucket.LossSum += source.LossSum
+	bucket.LossCount += source.LossCount
+	bucket.OKCount += source.OKCount
+	bucket.ResultCount += source.ResultCount
+	buckets[key] = bucket
+}
+
+func valuesProbeNetworkMonitorBuckets(buckets map[string]probeNetworkMonitorHistoryBucket) []probeNetworkMonitorHistoryBucket {
+	items := make([]probeNetworkMonitorHistoryBucket, 0, len(buckets))
+	for _, bucket := range buckets {
+		items = append(items, bucket)
+	}
+	return items
+}
+
+func retainProbeNetworkMonitorRaw(items []probeNetworkMonitorResultRecord, now time.Time) []probeNetworkMonitorResultRecord {
+	cutoff := now.Add(-24 * time.Hour).Truncate(time.Minute)
+	out := make([]probeNetworkMonitorResultRecord, 0, len(items))
+	for _, item := range items {
+		ts := probeNetworkMonitorHistoryTimestamp(item)
+		if ts.IsZero() || !ts.Before(cutoff) {
+			out = append(out, item)
+		}
+	}
+	if len(out) > maxProbeNetworkMonitorResults {
+		out = out[len(out)-maxProbeNetworkMonitorResults:]
+	}
+	return out
+}
+
+func probeNetworkMonitorHistoryTimestamp(item probeNetworkMonitorResultRecord) time.Time {
+	for _, raw := range []string{item.FinishedAt, item.Timestamp, item.StartedAt} {
+		if ts := parseNetworkMonitorTimestamp(raw); !ts.IsZero() {
+			return ts
+		}
+	}
+	return time.Time{}
+}
+
+func mergeProbeNetworkMonitorLatest(existing []probeNetworkMonitorResultRecord, candidates []probeNetworkMonitorResultRecord, latest *probeNetworkMonitorResultRecord) []probeNetworkMonitorResultRecord {
+	byKey := make(map[string]probeNetworkMonitorResultRecord, len(existing)+len(candidates)+1)
+	for _, item := range append(append([]probeNetworkMonitorResultRecord{}, existing...), candidates...) {
+		key := probeNetworkMonitorResultKey(item)
+		current, ok := byKey[key]
+		if !ok || probeNetworkMonitorResultTimestamp(item).After(probeNetworkMonitorResultTimestamp(current)) {
+			byKey[key] = item
+		}
+	}
+	if latest != nil {
+		key := probeNetworkMonitorResultKey(*latest)
+		current, ok := byKey[key]
+		if !ok || !probeNetworkMonitorResultTimestamp(current).After(probeNetworkMonitorResultTimestamp(*latest)) {
+			byKey[key] = *latest
+		}
+	}
+	out := make([]probeNetworkMonitorResultRecord, 0, len(byKey))
+	for _, item := range byKey {
+		out = append(out, item)
+	}
+	return out
+}
+
+func probeNetworkMonitorHistoryNeedsCompaction(history probeNetworkMonitorHistory, raw []probeNetworkMonitorResultRecord, now time.Time) bool {
+	minuteCutoff := now.Add(-24 * time.Hour).Truncate(time.Minute)
+	hourCutoff := now.Add(-30 * 24 * time.Hour).Truncate(time.Hour)
+	dayCutoff := now.Add(-180 * 24 * time.Hour).Truncate(24 * time.Hour)
+	watermark, hasWatermark := parseNetworkMonitorTimestamp(history.CompactedThrough), false
+	hasWatermark = !watermark.IsZero()
+	if !hasWatermark {
+		return true
+	}
+	for _, record := range raw {
+		ts := probeNetworkMonitorHistoryTimestamp(record)
+		if !ts.IsZero() && ts.Before(minuteCutoff) {
+			return true
+		}
+	}
+	for _, bucket := range history.Hourly {
+		if ts := parseNetworkMonitorTimestamp(bucket.Timestamp); !ts.IsZero() && ts.Before(hourCutoff) {
+			return true
+		}
+	}
+	for _, bucket := range history.Daily {
+		if ts := parseNetworkMonitorTimestamp(bucket.Timestamp); !ts.IsZero() && ts.Before(dayCutoff) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseNetworkMonitorTimestamp(raw string) time.Time {
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if parsed, err := time.Parse(layout, strings.TrimSpace(raw)); err == nil {
+			return parsed.UTC()
+		}
+	}
+	return time.Time{}
 }
 
 func probeNetworkMonitorTasksForNodeLocked(nodeID string) []probeNetworkMonitorTaskRecord {

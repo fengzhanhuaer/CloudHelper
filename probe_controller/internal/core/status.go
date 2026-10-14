@@ -78,6 +78,7 @@ type dashboardPublicProbeItem struct {
 	LastSeen             string             `json:"last_seen"`
 	MachineUptimeSeconds int64              `json:"machine_uptime_seconds,omitempty"`
 	MachineBootTime      string             `json:"machine_boot_time,omitempty"`
+	Traffic              probeTrafficUsage  `json:"traffic"`
 	System               probeSystemMetrics `json:"system"`
 }
 
@@ -104,14 +105,25 @@ type dashboardPublicNetworkProbeItem struct {
 	Series     []dashboardPublicNetworkSeries `json:"series"`
 }
 
+type dashboardNetworkWeightedPoint struct {
+	Timestamp    string
+	LatencySum   float64
+	LatencyCount int64
+	LossSum      float64
+	LossCount    int64
+	OKCount      int64
+	ResultCount  int64
+}
+
 func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
 	// Security note: /dashboard/* is public. Do not expose node_id/ip/version here.
 	runtimes := listProbeRuntimes()
 	type nodeMeta struct {
-		no        int
-		name      string
-		vendor    string
-		vendorURL string
+		no              int
+		name            string
+		vendor          string
+		vendorURL       string
+		trafficStartDay int
 	}
 	metaMap := map[string]nodeMeta{}
 	if ProbeStore != nil {
@@ -122,10 +134,11 @@ func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
 			}
 			normalizedID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
 			metaMap[normalizedID] = nodeMeta{
-				no:        node.NodeNo,
-				name:      strings.TrimSpace(node.NodeName),
-				vendor:    strings.TrimSpace(node.VendorName),
-				vendorURL: strings.TrimSpace(node.VendorURL),
+				no:              node.NodeNo,
+				name:            strings.TrimSpace(node.NodeName),
+				vendor:          strings.TrimSpace(node.VendorName),
+				vendorURL:       strings.TrimSpace(node.VendorURL),
+				trafficStartDay: normalizeMonthlyTrafficStartDay(node.MonthlyTrafficStartDay),
 			}
 		}
 		ProbeStore.mu.RUnlock()
@@ -152,6 +165,11 @@ func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
 		if machineUptimeSeconds > 0 {
 			machineBootTime = time.Now().Add(-time.Duration(machineUptimeSeconds) * time.Second).UTC().Format(time.RFC3339)
 		}
+		traffic, trafficErr := loadProbeTrafficUsage(normalizedID, meta.trafficStartDay, time.Now().UTC())
+		if trafficErr != nil {
+			logControllerWarnf("failed to load probe traffic: node=%s err=%v", normalizedID, trafficErr)
+			traffic = probeTrafficUsage{StartDay: meta.trafficStartDay}
+		}
 		out = append(out, dashboardPublicProbeItem{
 			NodeNo:               nodeNo,
 			NodeName:             nodeName,
@@ -162,6 +180,7 @@ func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
 			LastSeen:             strings.TrimSpace(rt.LastSeen),
 			MachineUptimeSeconds: machineUptimeSeconds,
 			MachineBootTime:      machineBootTime,
+			Traffic:              traffic,
 			System:               rt.System,
 		})
 	}
@@ -203,8 +222,17 @@ func dashboardProbeRuntimeLocations(rt probeRuntimeStatus) []string {
 }
 
 func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeItem {
-	const maxDashboardNetworkPointsPerProbe = 720
+	const maxDashboardNetworkPointsPerProbe = 1440
 	scale = normalizeDashboardNetworkScale(scale)
+	now := time.Now().UTC()
+	window := 24 * time.Hour
+	if scale == "hour" {
+		window = 30 * 24 * time.Hour
+	} else if scale == "day" {
+		window = 180 * 24 * time.Hour
+	}
+	windowStart := now.Add(-window)
+	windowStart = truncateDashboardNetworkTime(windowStart, scale)
 
 	type nodeMeta struct {
 		no        int
@@ -240,7 +268,7 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 
 	type nodeAccumulator struct {
 		item   *dashboardPublicNetworkProbeItem
-		series map[string]*dashboardPublicNetworkSeries
+		points map[string][]dashboardNetworkWeightedPoint
 	}
 	byNode := map[string]*nodeAccumulator{}
 	for _, nodeID := range listProbeNetworkMonitorResultNodeIDs() {
@@ -262,10 +290,35 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 			}
 		}
 		rt, _ := getProbeRuntime(nodeID)
-		results := loadProbeNetworkMonitorResultsForNode(nodeID)
+		results, history := loadProbeNetworkMonitorChartHistoryForNode(nodeID)
+		acc := &nodeAccumulator{
+			item: &dashboardPublicNetworkProbeItem{
+				NodeNo:     nodeNo,
+				NodeName:   nodeName,
+				VendorName: meta.vendor,
+				VendorURL:  meta.vendorURL,
+				Locations:  dashboardProbeRuntimeLocations(rt),
+				Scale:      scale,
+				Series:     []dashboardPublicNetworkSeries{},
+			},
+			points: map[string][]dashboardNetworkWeightedPoint{},
+		}
+		appendPoint := func(taskID string, point dashboardNetworkWeightedPoint) {
+			if taskID == "" {
+				taskID = "default"
+			}
+			if _, exists := acc.points[taskID]; !exists {
+				acc.points[taskID] = []dashboardNetworkWeightedPoint{}
+			}
+			acc.points[taskID] = append(acc.points[taskID], point)
+		}
 		for _, result := range results {
 			timestamp := strings.TrimSpace(firstNonEmptyNetworkMonitor(result.FinishedAt, result.Timestamp, result.StartedAt))
-			if timestamp == "" {
+			ts := parseDashboardNetworkTimestamp(timestamp)
+			if ts.IsZero() || ts.Before(windowStart) {
+				continue
+			}
+			if watermark, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(history.CompactedThrough)); err == nil && ts.Before(watermark) {
 				continue
 			}
 			latencyAvgMS, lossPercent := summarizeDashboardNetworkResult(result.Results)
@@ -278,68 +331,65 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 			if nodeName == "" {
 				nodeName = strings.TrimSpace(result.NodeName)
 			}
-			acc, ok := byNode[nodeID]
-			if !ok {
-				acc = &nodeAccumulator{
-					item: &dashboardPublicNetworkProbeItem{
-						NodeNo:     nodeNo,
-						NodeName:   nodeName,
-						VendorName: meta.vendor,
-						VendorURL:  meta.vendorURL,
-						Locations:  dashboardProbeRuntimeLocations(rt),
-						Scale:      scale,
-						Series:     []dashboardPublicNetworkSeries{},
-					},
-					series: map[string]*dashboardPublicNetworkSeries{},
-				}
-				byNode[nodeID] = acc
+			taskID, _ := dashboardNetworkTaskIdentity(result, taskNameMap)
+			weighted := dashboardNetworkWeightedPoint{Timestamp: ts.UTC().Format(time.RFC3339), ResultCount: 1}
+			if latencyAvgMS >= 0 {
+				weighted.LatencySum, weighted.LatencyCount = latencyAvgMS, 1
 			}
-			if acc.item.NodeNo <= 0 && nodeNo > 0 {
-				acc.item.NodeNo = nodeNo
+			if lossPercent >= 0 {
+				weighted.LossSum, weighted.LossCount = lossPercent, 1
 			}
-			if acc.item.NodeName == "" && nodeName != "" {
-				acc.item.NodeName = nodeName
+			if result.OK {
+				weighted.OKCount = 1
 			}
-			if len(acc.item.Locations) == 0 {
-				acc.item.Locations = dashboardProbeRuntimeLocations(rt)
-			}
-			taskID, taskName := dashboardNetworkTaskIdentity(result, taskNameMap)
-			series, ok := acc.series[taskID]
-			if !ok {
-				series = &dashboardPublicNetworkSeries{
-					TaskID:   taskID,
-					TaskName: taskName,
-					Points:   []dashboardPublicNetworkPoint{},
-				}
-				acc.series[taskID] = series
-			}
-			if series.TaskName == "" && taskName != "" {
-				series.TaskName = taskName
-			}
-			series.Points = append(series.Points, dashboardPublicNetworkPoint{
-				Timestamp:    timestamp,
-				LatencyAvgMS: math.Max(0, latencyAvgMS),
-				LossPercent:  math.Max(0, lossPercent),
-				OK:           result.OK,
-			})
+			appendPoint(taskID, weighted)
 		}
+		appendArchived := func(buckets []probeNetworkMonitorHistoryBucket) {
+			for _, bucket := range buckets {
+				ts := parseDashboardNetworkTimestamp(bucket.Timestamp)
+				if ts.IsZero() || ts.Before(windowStart) {
+					continue
+				}
+				appendPoint(bucket.TaskID, dashboardNetworkWeightedPoint{
+					Timestamp:    ts.UTC().Format(time.RFC3339),
+					LatencySum:   bucket.LatencySum,
+					LatencyCount: bucket.LatencyCount,
+					LossSum:      bucket.LossSum,
+					LossCount:    bucket.LossCount,
+					OKCount:      bucket.OKCount,
+					ResultCount:  bucket.ResultCount,
+				})
+			}
+		}
+		if scale == "hour" || scale == "day" {
+			appendArchived(history.Hourly)
+		}
+		if scale == "day" {
+			appendArchived(history.Daily)
+		}
+		byNode[nodeID] = acc
 	}
 
 	out := make([]dashboardPublicNetworkProbeItem, 0, len(byNode))
 	for _, acc := range byNode {
-		seriesList := make([]dashboardPublicNetworkSeries, 0, len(acc.series))
-		for _, series := range acc.series {
-			sort.SliceStable(series.Points, func(i, j int) bool {
-				return series.Points[i].Timestamp < series.Points[j].Timestamp
-			})
-			series.Points = bucketDashboardNetworkPoints(series.Points, scale)
+		seriesList := make([]dashboardPublicNetworkSeries, 0, len(acc.points))
+		for taskID, points := range acc.points {
+			taskName := strings.TrimSpace(taskNameMap[taskID])
+			if taskName == "" {
+				if taskID == "default" {
+					taskName = "未命名任务"
+				} else {
+					taskName = taskID
+				}
+			}
+			series := dashboardPublicNetworkSeries{TaskID: taskID, TaskName: taskName, Points: bucketDashboardWeightedNetworkPoints(points, scale)}
 			if len(series.Points) > maxDashboardNetworkPointsPerProbe {
 				series.Points = downsampleDashboardNetworkPoints(series.Points, maxDashboardNetworkPointsPerProbe)
 			}
 			if len(series.Points) == 0 {
 				continue
 			}
-			seriesList = append(seriesList, *series)
+			seriesList = append(seriesList, series)
 		}
 		sort.Slice(seriesList, func(i, j int) bool {
 			if seriesList[i].TaskName != seriesList[j].TaskName {
@@ -369,6 +419,73 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 		}
 		return i < j
 	})
+	return out
+}
+
+func parseDashboardNetworkTimestamp(raw string) time.Time {
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if parsed, err := time.Parse(layout, strings.TrimSpace(raw)); err == nil {
+			return parsed.UTC()
+		}
+	}
+	return time.Time{}
+}
+
+func bucketDashboardWeightedNetworkPoints(points []dashboardNetworkWeightedPoint, scale string) []dashboardPublicNetworkPoint {
+	type aggregate struct {
+		ts           time.Time
+		latencySum   float64
+		latencyCount int64
+		lossSum      float64
+		lossCount    int64
+		okCount      int64
+		resultCount  int64
+	}
+	buckets := map[string]*aggregate{}
+	for _, point := range points {
+		ts := parseDashboardNetworkTimestamp(point.Timestamp)
+		if ts.IsZero() {
+			continue
+		}
+		bucketTime := truncateDashboardNetworkTime(ts, scale)
+		key := bucketTime.Format(time.RFC3339)
+		bucket := buckets[key]
+		if bucket == nil {
+			bucket = &aggregate{ts: bucketTime}
+			buckets[key] = bucket
+		}
+		bucket.latencySum += point.LatencySum
+		bucket.latencyCount += point.LatencyCount
+		bucket.lossSum += point.LossSum
+		bucket.lossCount += point.LossCount
+		bucket.okCount += point.OKCount
+		bucket.resultCount += point.ResultCount
+	}
+	keys := make([]string, 0, len(buckets))
+	for key := range buckets {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make([]dashboardPublicNetworkPoint, 0, len(keys))
+	for _, key := range keys {
+		bucket := buckets[key]
+		if bucket.resultCount == 0 {
+			continue
+		}
+		latencyAvg, lossAvg := 0.0, 0.0
+		if bucket.latencyCount > 0 {
+			latencyAvg = bucket.latencySum / float64(bucket.latencyCount)
+		}
+		if bucket.lossCount > 0 {
+			lossAvg = bucket.lossSum / float64(bucket.lossCount)
+		}
+		out = append(out, dashboardPublicNetworkPoint{
+			Timestamp:    bucket.ts.Format(time.RFC3339),
+			LatencyAvgMS: latencyAvg,
+			LossPercent:  lossAvg,
+			OK:           bucket.okCount == bucket.resultCount,
+		})
+	}
 	return out
 }
 

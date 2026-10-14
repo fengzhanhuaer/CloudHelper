@@ -181,7 +181,7 @@ func TestDashboardNetworkRouteNoAuthRequired(t *testing.T) {
 	t.Cleanup(restorePath)
 	restoreTasks := core.SetProbeNodesAndNetworkMonitorTasksForTest(map[int]string{1: "probe-a"}, map[string]string{"task-1": "外网测试"})
 	t.Cleanup(restoreTasks)
-	if err := core.AppendProbeNetworkMonitorResultForTest("1", "task-1", "2026-01-01T00:00:00Z", 23.5, 1.5); err != nil {
+	if err := core.AppendProbeNetworkMonitorResultForTest("1", "task-1", time.Now().UTC().Add(-time.Minute).Format(time.RFC3339), 23.5, 1.5); err != nil {
 		t.Fatalf("AppendProbeNetworkMonitorResultForTest failed: %v", err)
 	}
 	mux := core.NewMux()
@@ -232,7 +232,7 @@ func TestDashboardNetworkExposesLocationsAndVendor(t *testing.T) {
 	}, map[string]string{"task-1": "外网测试"})
 	t.Cleanup(restoreStore)
 	core.UpdateProbeRuntimeReportWithIPsForTest("1", []string{"10.0.0.8"}, nil)
-	if err := core.AppendProbeNetworkMonitorResultForTest("1", "task-1", "2026-01-01T00:00:00Z", 23.5, 1.5); err != nil {
+	if err := core.AppendProbeNetworkMonitorResultForTest("1", "task-1", time.Now().UTC().Add(-time.Minute).Format(time.RFC3339), 23.5, 1.5); err != nil {
 		t.Fatalf("AppendProbeNetworkMonitorResultForTest failed: %v", err)
 	}
 	mux := core.NewMux()
@@ -275,8 +275,9 @@ func TestDashboardNetworkHideDeletedAndAndroidClients(t *testing.T) {
 		{NodeNo: 3, NodeName: "deleted-probe", TargetSystem: "linux", Deleted: true},
 	}, map[string]string{"task-1": "外网测试"})
 	t.Cleanup(restoreStore)
+	sampleAt := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
 	for _, nodeID := range []string{"1", "2", "3"} {
-		if err := core.AppendProbeNetworkMonitorResultForTest(nodeID, "task-1", "2026-01-01T00:00:00Z", 23.5, 1.5); err != nil {
+		if err := core.AppendProbeNetworkMonitorResultForTest(nodeID, "task-1", sampleAt, 23.5, 1.5); err != nil {
 			t.Fatalf("AppendProbeNetworkMonitorResultForTest node %s failed: %v", nodeID, err)
 		}
 	}

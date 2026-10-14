@@ -20,6 +20,9 @@ type probeSystemMetrics struct {
 	DiskTotalBytes    uint64  `json:"disk_total_bytes"`
 	DiskUsedBytes     uint64  `json:"disk_used_bytes"`
 	DiskUsedPercent   float64 `json:"disk_used_percent"`
+	NetworkRXBytes    uint64  `json:"network_rx_bytes"`
+	NetworkTXBytes    uint64  `json:"network_tx_bytes"`
+	NetworkAvailable  bool    `json:"network_traffic_available"`
 }
 
 type probeAdaptiveQueueSnapshot struct {
