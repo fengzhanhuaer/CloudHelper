@@ -159,8 +159,6 @@ jobs:
         include:
           - goarch: amd64
             output: cloudhelper-probe-router-linux-amd64
-          - goarch: arm64
-            output: cloudhelper-probe-router-linux-arm64
     steps:
       - name: Checkout Tagged Source
         uses: actions/checkout@v7
@@ -189,51 +187,6 @@ jobs:
         with:
           name: ${{ matrix.output }}
           path: probe_node/${{ matrix.output }}
-
-  build-probe-node-docker:
-    needs: prepare-release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Checkout Tagged Source
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 1
-          ref: v${{ needs.prepare-release.outputs.new_version }}
-
-      - name: Resolve Docker Image Name
-        id: image
-        shell: bash
-        run: |
-          IMAGE_REPO=$(printf 'ghcr.io/%s/cloudhelper-probe-node' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
-          echo "image_repo=$IMAGE_REPO" >> "$GITHUB_OUTPUT"
-
-      - name: Setup Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and Push Probe Node Docker Image
-        uses: docker/build-push-action@v7
-        with:
-          context: docker/probe_node
-          file: docker/probe_node/Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ${{ steps.image.outputs.image_repo }}:v${{ needs.prepare-release.outputs.new_version }}
-            ${{ steps.image.outputs.image_repo }}:${{ needs.prepare-release.outputs.new_version }}
-            ${{ steps.image.outputs.image_repo }}:latest
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.version=v${{ needs.prepare-release.outputs.new_version }}
 
   build-probe-node-android:
     needs: prepare-release
@@ -423,7 +376,6 @@ jobs:
       - build-probe-controller
       - build-probe-node
       - build-probe-router
-      - build-probe-node-docker
       - build-probe-node-android
     runs-on: ubuntu-latest
     permissions:
@@ -465,12 +417,6 @@ jobs:
           name: cloudhelper-probe-router-linux-amd64
           path: release-assets
 
-      - name: Download Linux Router Probe Artifact (linux arm64)
-        uses: actions/download-artifact@v8
-        with:
-          name: cloudhelper-probe-router-linux-arm64
-          path: release-assets
-
       - name: Download Probe Node Android Artifact (arm64)
         uses: actions/download-artifact@v8
         with:
@@ -483,16 +429,11 @@ jobs:
           NEW_VERSION: ${{ needs.prepare-release.outputs.new_version }}
         run: |
           set -euo pipefail
-          for ARCH in amd64 arm64; do
+          for ARCH in amd64; do
             PROGRAM_ASSET="cloudhelper-probe-router-linux-${ARCH}"
             PROGRAM_SHA256=$(sha256sum "release-assets/${PROGRAM_ASSET}" | awk '{print $1}')
-            if [ "${ARCH}" = "amd64" ]; then
-              MIHOMO_ASSET="mihomo-linux-amd64-compatible-v1.19.29.gz"
-              MIHOMO_SHA256="5612e698e96c8b8ad15abc4c0a4f098eba9234354b4f248cb97f2528e215b094"
-            else
-              MIHOMO_ASSET="mihomo-linux-arm64-v1.19.29.gz"
-              MIHOMO_SHA256="9a868b5e4e0ad91d9d71e1b41b0cfce78aaba44360c30df74a723f8e3926a86c"
-            fi
+            MIHOMO_ASSET="mihomo-linux-amd64-compatible-v1.19.29.gz"
+            MIHOMO_SHA256="5612e698e96c8b8ad15abc4c0a4f098eba9234354b4f248cb97f2528e215b094"
             cat > "release-assets/${PROGRAM_ASSET}-manifest.json" <<EOF
           {
             "schema_version": 1,
@@ -527,9 +468,7 @@ jobs:
             release-assets/cloudhelper-probe-node-linux-arm64
             release-assets/cloudhelper-probe-node-windows-amd64.exe
             release-assets/cloudhelper-probe-router-linux-amd64
-            release-assets/cloudhelper-probe-router-linux-arm64
             release-assets/cloudhelper-probe-router-linux-amd64-manifest.json
-            release-assets/cloudhelper-probe-router-linux-arm64-manifest.json
             release-assets/mihomo-LICENSE
             release-assets/cloudhelper-probe-node-android-arm64.apk
 

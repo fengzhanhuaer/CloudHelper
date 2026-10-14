@@ -1,11 +1,11 @@
 # 探针流量统计与月度周期
 
 - 任务标识：`2026-10-13-probe-traffic-dashboard`
-- 状态：`实现完成，待发布`
+- 状态：`进行中`
 - 创建时间：`2026-10-13 Asia/Singapore`
-- 更新时间：`2026-10-13 Asia/Singapore`
+- 更新时间：`2026-10-14 Asia/Singapore`
 - 用户原始需求：Dashboard 增加探针总流量（进/出分开）及月度流量；月度默认从每月1号开始，可在探针编辑页为每个探针单独设置月度起始日。
-- 用户最新指令：流量只统计实际物理出口，排除 probe node 等虚拟网卡。
+- 用户最新指令：暂时不发布截图所示 `cloudhelper-probe-router-linux-arm64` 及其 manifest；停止 Docker 发布；继续交付累计/月度上下行合计和独立流量统计页签。普通 ARM64 探针与 Android 保留。
 - 启用方式：明确长任务条件；涉及探针跨平台采集、WS上报、主控持久化、配置/API和Dashboard多个模块。
 
 ## 一、需求定义
@@ -31,6 +31,10 @@ Dashboard 当前探针卡片只显示 CPU、内存、磁盘和开机时长，没
 | REQ-001 | 探针上报物理出口流量计数 | Linux/Android/Windows 报告启用中的硬件设备接口累计 RX/TX，不包含 TUN 等纯虚拟接口；不破坏旧 JSON 上报 | 高 | `进行中` | 用户最新指令 |
 | REQ-002 | 统计总流量和当前月度流量 | 每探针显示累计 RX/TX 与当前周期 RX/TX，主控重启后总量仍保留；按每日分桶重算月度值 | 高 | `进行中` | 用户原始需求 |
 | REQ-003 | 每探针单独设置月度起始日 | 编辑页可配置1–31号，默认1号，保存后重载保持；短月使用最后一天 | 高 | `进行中` | 用户最新指令 |
+| REQ-004 | 累计与月度上下行合计 | 每探针两种周期均显示 RX+TX 合计，保留两个方向与账期 | 高 | `已完成` | 2026-10-14 用户追加 |
+| REQ-005 | 独立流量统计页签 | 第三个并列页签；状态卡片不再显示流量；点击后加载、刷新正常 | 高 | `已完成` | 2026-10-14 用户追加 |
+| REQ-006 | 停止 Docker 发布 | 工作流无 Docker 构建/登录/推送，Release 不依赖 Docker 任务，其他二进制/APK 发布保留 | 高 | `已完成` | 用户最新指令 |
+| REQ-007 | 暂停 ARM64 软路由发布 | 移除 ARM64 router 的构建矩阵、下载、manifest 和 Release 资产；普通 ARM64 探针及 APK 保留 | 高 | `已完成` | 用户截图追加 |
 
 ## 二、总体架构
 
@@ -41,6 +45,10 @@ Dashboard 当前探针卡片只显示 CPU、内存、磁盘和开机时长，没
 ### 2.2 目标架构
 
 各平台探针系统状态新增累计 `network_rx_bytes/network_tx_bytes`。主控接收上报后按节点持久化上一计数器、差值累计总量和最近400天 UTC 日增量；计数器下降按接口重置/重启处理，将当前计数作为该次增量。Dashboard API 在响应时按节点配置的月度起算日汇总日增量。探针配置持久化 `monthly_traffic_start_day`，缺省归一为1。
+
+2026-10-14 页面增量：复用 `/dashboard/probes` 的现有 traffic 字段，由页面先按字节求和再格式化；新流量页签只在激活后渲染，保持节点排序、名称、在线状态及 UTC 账期。接口与持久化不变。
+
+发布增量：删除 `build-probe-node-docker` 及对应 needs；暂停 ARM64 router 构建、下载、manifest 和上传；保留主控、普通探针、amd64 软路由、Android 共八项 Release 资产。只改变未来自动发布，不删除历史发布或源文件。用户最新发布契约优先于 release skill 的历史 Docker/双架构 router 要求。
 
 ### 2.3 关键模块与职责
 
@@ -87,6 +95,8 @@ Dashboard 当前探针卡片只显示 CPU、内存、磁盘和开机时长，没
 | UNIT-002 | controller runtime、`probe_traffic_store.go` | 解码后持久计量和按日期汇总 | node/counters/time/day | persistent totals and month usage | file store | REQ-001/002 |
 | UNIT-003 | `probe_registry.go`, `probe_store.go`, `mng_pages/probe.html` | 配置序列化、校验、编辑 | node metadata/update JSON | saved start day | ProbeStore | REQ-003 |
 | UNIT-004 | `status.go`, `dashboard/page.html` | 输出/展示探针流量 | total/month stats | RX/TX文字 | Dashboard API | REQ-002/003 |
+| UNIT-005 | `dashboard/page.html` 页签、流量卡片与刷新 | 按需展示上下行与合计 | 现有 traffic JSON | 独立累计/月度卡片 | IF-003 | REQ-004/005 |
+| UNIT-006 | `.github/workflows/release.yml`、`release_workflow_linux_router_test.go` | 非 Docker 产物发布及依赖回归 | 源提交 | 二进制/APK Release | GitHub Actions | REQ-006 |
 
 ### 3.2 处理与异常规则
 
@@ -101,12 +111,12 @@ Dashboard 当前探针卡片只显示 CPU、内存、磁盘和开机时长，没
 
 ### 4.1 当前交接
 
-- 当前阶段：实现与验证
-- 当前计划步骤：TASK-001 至 TASK-004
-- 当前门禁：流量功能实现和定向验证完成；完整 controller 测试存在网络监控/仪表盘用例失败，需区分上一批未提交改动的影响。
-- 最近完成检查点：探针跨平台报告、主控持久累计、月度配置及 dashboard 展示已实现。
-- 工作区状态：存在上一需求的未提交修改 `probe_network_monitor_store.go`、`status.go`、`dashboard/page.html` 和其任务账本；需原样保留并避免冲突覆盖。
-- 下一步唯一动作：如用户要求发布，走 CloudHelper 发布流程；若要求先清理全量测试，先排查网络监控用例失败。
+- 当前阶段：隔离检出提交与发布。
+- 当前计划步骤：TASK-006。
+- 当前门禁：本地功能验证通过；主控完整测试及 vet 通过。
+- 最近完成检查点：Chrome 1440x900/390x844 验证合计、零值、未上报、空列表、刷新、三个页签切换；无 JS 错误，窄屏无横向溢出。
+- 工作区状态：已有无关 `doc/tasks/2026-10-14-vrouter-backup-exit.md` 修改；本地领先远端三个华硕固件提交，发布时需隔离，禁止连带推送。
+- 下一步唯一动作：将四个本任务文件补丁应用到远端 mapledev 独立检出并预检。
 - 恢复时先读取：本账本、git status/diff、`probe_node/main.go`、`probe_node/mobilecore`、`probe_runtime.go`、`probe_ws.go`、管理probe页面和Dashboard页面。
 
 ### 4.2 任务计划
@@ -117,6 +127,9 @@ Dashboard 当前探针卡片只显示 CPU、内存、磁盘和开机时长，没
 | TASK-002 | 主控流量差值、持久化、月度汇总 | `完成` | REQ-001/002 | runtime、traffic store、status | 总量持久；月度按配置日分桶重算；counter reset合理 |
 | TASK-003 | 探针月度起算日编辑与保存 | `完成` | REQ-003 | registry、handlers、probe page | 每节点可选1–31、默认1并持久保存 |
 | TASK-004 | Dashboard流量显示与端到端验证 | `实现完成` | REQ-002/003 | dashboard API/UI | 每节点显示RX/TX总量与月度量；定向编译/脚本检查通过 |
+| TASK-005 | 增加合计并移入独立流量页签 | `已完成` | REQ-004/005 | UNIT-005 | 累计/月度求和正确、页签切换与刷新通过浏览器验证 |
+| TASK-006 | 增量回归与隔离发布 | `进行中` | REQ-004/005/006/007 | 页面、账本、发布工作流 | 回归通过；仅发布本增量，保留其他任务改动 |
+| TASK-007 | 停止 Docker 和 ARM64 软路由发布 | `已完成` | REQ-006/007 | UNIT-006 | YAML/依赖/资产验证及探针测试、Linux Router 交叉构建通过 |
 
 ### 4.3 变更记录
 
@@ -133,6 +146,9 @@ Dashboard 当前探针卡片只显示 CPU、内存、磁盘和开机时长，没
 | TEST-002 | baseline、正向增量、重启回退、持久化重载、旧口径切换 | REQ-002/TASK-002 | controller store单测 | RX/TX总量及日桶精确；旧口径不混入 | baseline、增量、counter reset、文件重载、旧统计口径清零测试通过 | `通过` | `go test ./internal/core -run 'Test(AccumulateProbeTraffic|ProbeTrafficPeriodStartClampsShortMonths|UpdateProbeNodeLockedStoresLocalConsoleEnabled)'` |
 | TEST-003 | start day 默认、1/31、无效输入与短月夹取 | REQ-003/TASK-003 | registry/API测试 | 配置规范化正确 | registry保存测试通过；周期1号、31号、短月和缺省用例通过 | `通过` | 同 TEST-002 命令 |
 | TEST-004 | Dashboard API月度汇总及UI显示 | REQ-002/003/TASK-004 | handler测试、页面静态检查 | JSON正确且两方向值清晰 | controller package编译通过；两页面脚本语法检查通过；全量 controller 测试含网络监控/网络 dashboard 用例失败 | `部分通过` | `go test ./...` 有 `TestProbeNetworkMonitorResultsPersistToPerNodeGobFiles` 和三个 `TestDashboardNetwork...` 失败 |
+| TEST-005 | 新流量页签与字节合计 | REQ-004/005/TASK-005 | 浏览器模拟 API，桌面/窄屏检查，零值/未上报/离线数据 | 两种合计正确、旧页签无流量、按需切换与刷新无错误 | 全部通过；2+3 GiB=5 GiB，512+1536 MiB=2 GiB；窄屏 scrollWidth=innerWidth=390，无 JS 错误 | `已完成` | 本机临时 Chrome CDP 验证，截图 `traffic-dashboard-desktop.png`/`traffic-dashboard-mobile.png` |
+| TEST-006 | 主控完整回归 | REQ-004/005/TASK-006 | `go test ./... -count=1`、`go vet ./...` | 通过 | 全部通过，历史网络监控用例本轮无失败；脚本语法通过 | `已完成` | 2026-10-14 本地命令输出 |
+| TEST-007 | 新发布契约 | REQ-006/007/TASK-007 | 工作流 YAML、needs、八项资产校验；`go test ./... -count=1`；Linux Router amd64/arm64 交叉构建 | 无 Docker 与 ARM64 router 发布、无悬空依赖，其余构建保留 | 探针完整测试与双架构交叉构建全部通过 | `已完成` | `TestReleaseWorkflowDefinesLinuxRouterArtifacts`；2026-10-14 命令输出 |
 
 ### 5.2 未执行测试
 
@@ -146,6 +162,10 @@ Dashboard 当前探针卡片只显示 CPU、内存、磁盘和开机时长，没
 | REQ-001 | 报告启用中的硬件出口RX/TX累计值并兼容旧探针 | DEC-001/UNIT-001 | TASK-001 | IF-001 | TEST-001 | Linux接口过滤、Android/Windows构建通过；probe测试通过 | `完成` |
 | REQ-002 | Dashboard分别显示持久的总流量与当前月度流量 | DEC-002/UNIT-002/004 | TASK-002/004 | IF-003 | TEST-002/004 | 主控差值累计、日桶持久化和月度重算测试通过；UI脚本语法通过 | `完成` |
 | REQ-003 | 每节点单独设置月度起始日，默认1号 | DEC-003/UNIT-003/004 | TASK-003 | IF-002/003 | TEST-003/004 | 1–31输入、缺省1及短月夹取测试通过 | `完成` |
+| REQ-004 | 累计/月度 RX+TX 合计 | UNIT-005 | TASK-005/006 | dashboard/page.html | TEST-005/006 | Chrome 合计与主控回归通过 | `已完成` |
+| REQ-005 | 独立页签，切换与刷新 | UNIT-005 | TASK-005/006 | dashboard/page.html | TEST-005/006 | 三页签切换、刷新与窄屏通过 | `已完成` |
+| REQ-006 | 停止 Docker 发布，保留程序/APK | UNIT-006 | TASK-007/006 | release.yml、工作流测试 | TEST-007 | YAML/依赖/资产验证通过 | `已完成` |
+| REQ-007 | 暂停 ARM64 router，普通 ARM64/APK 保留 | UNIT-006 | TASK-007/006 | release.yml、工作流测试 | TEST-007 | 新八项发布资产精确检查通过 | `已完成` |
 
 ## 七、决策与冲突记录
 
@@ -156,6 +176,7 @@ Dashboard 当前探针卡片只显示 CPU、内存、磁盘和开机时长，没
 | DEC-001 | 用户要求只统计实际出口 | 汇总启用中的硬件设备接口RX/TX，排除TUN等无硬件关联虚拟接口 | Linux/Android sysfs device link；Windows MIB_IF_ROW2 HardwareInterface flag | 汇总所有非loopback接口 | Probe report、Dashboard | 替代原全接口口径 | `有效` |
 | DEC-002 | 主控需要跨重启保留总量并按任意月度起日查询 | 持久化counter差值总量及400天UTC日桶 | 只存当月累加值无法在设置起日后重算 | 只用探针当前网卡counter | 存储/API | 无 | `有效` |
 | DEC-003 | 用户指定可分别设置月度起始日期 | 采用月内日号1–31，缺省1，短月截到月末 | 与“默认从1号开始”一致，且可自然表达各探针账期 | 每探针输入完整年月日 | 管理UI/API | 无 | `有效` |
+| DEC-004 | 用户停止 Docker 并暂缓 ARM64 router 发布 | 工作流仅发布八项程序/APK/manifest/license 资产；移除 Docker 与 ARM64 router 任务和关联步骤 | 用户最新明确要求；工作流测试校验全部 needs 与精确资产集 | 延续旧十项资产与 Docker 发布 | 发布工作流 | 替代旧发布产物契约 | `有效` |
 
 ### 7.2 冲突记录
 
@@ -168,6 +189,8 @@ Dashboard 当前探针卡片只显示 CPU、内存、磁盘和开机时长，没
 ## 九、回滚方案
 
 探针上报JSON字段为可选新增字段，可回滚Controller/Probe代码而无需改旧报文。节点配置新增字段缺省为1号，旧版本忽略此字段。流量持久文件独立于节点配置；回滚代码后不读取但不影响其他数据。不得在回滚时删除流量文件。
+
+新增页签回滚只恢复 Dashboard 展示；发布产物回滚恢复 Docker job 与 needs、ARM64 router 矩阵/下载/manifest/资产，无数据变更。
 
 ## 十、已验证事实
 
@@ -185,6 +208,7 @@ Dashboard 当前探针卡片只显示 CPU、内存、磁盘和开机时长，没
 | RISK-001 | 统计口径 | 部分驱动可能未暴露标准硬件接口标识 | 真实出口可能漏计 | Linux/Android 使用sysfs设备链接，Windows使用硬件标志；以目标探针实机状态复核 | 待实机观察 |
 | RISK-002 | 计数器重置 | 探针重启或接口重建时累计计数变小 | 差值算法误算 | 回退时把新counter视为新epoch增量，记录行为测试 | 待验证 |
 | RISK-003 | 日桶边界 | 月度切换在UTC日期边界计算 | 与用户本地时区账期有一天差异 | 明确页面展示UTC周期；如业务需要本地时区须改配置模型 | 已知假设 |
+| RISK-004 | 发布预检契约 | 全局 release skill 预检仍要求 Docker 与 ARM64 router，按新需求必然拒绝 | 发布预检 | 保留全局 skill，临时复制预检仅删除三项旧必需 marker，并加入暂停产物禁用检查；其余检查保留 | 已按用户新契约适配 |
 
 ## 十二、质量门禁
 
@@ -193,23 +217,31 @@ Dashboard 当前探针卡片只显示 CPU、内存、磁盘和开机时长，没
 - 门禁结论：有条件通过
 - 条件及关闭要求：已按用户最新要求切换为启用中的硬件接口；旧口径存量会在新口径首次样本时清零并baseline，防止历史虚拟网卡字节混入。
 
+2026-10-14 增量准备门禁：通过。新需求、字段、局部架构、单元、浏览器验收、工作区隔离及回滚已明确；回滚仅移除页签与合计展示，不删除统计数据。
+
+追加工作流准备门禁：通过。Docker 任务仅有 Release needs 引用，移除任务与依赖即可；已有镜像和容器文件保留，无数据迁移。回滚通过恢复该任务和依赖。
+
+ARM64 router 追加准备门禁：通过。构建矩阵、下载、manifest 生成和资产清单同步删除；回滚恢复这四个位置，不修改 router 功能代码或历史 Release。
+
 ### 12.2 完成门禁
 
-- 门禁结论：功能验收通过；全量回归有未解决失败。
-- 条件及关闭要求：流量定向测试通过；全量 controller 测试发现网络监控存储测试和三个 Dashboard 网络监控测试失败，关联上一批未提交网络指标改动。发布前应单独确认并修复或确认基线。
+- 门禁结论：有条件通过。
+- 条件及关闭要求：2026-10-14 主控全量测试/vet、探针全量测试、软路由双架构编译与浏览器验证通过。需完成本增量隔离发布和八项资产核验；生产主控尚未在线升级。
 
 ## 十三、检查点
 
 | 时间 | 已完成 | 新发现或变化 | 影响 | 下一步唯一动作 |
 |---|---|---|---|---|
 | 2026-10-14 | 根据最新口径新增Linux/Android sysfs设备接口筛选、Windows硬件接口标志筛选，并使旧统计口径重新baseline；对应定向测试和跨平台构建通过 | Linux/Android以sysfs `device`关联作为硬件设备判定；Windows以MIB_IF_ROW2硬件标志判定 | 虚拟接口流量不再混入；新口径首次样本后总量从零开始 | 等待用户指示发布或继续处理全量网络指标测试失败 |
+| 2026-10-14 | 新流量页签、累计/月度上下行合计及 Chrome 桌面/窄屏验证；主控全量测试/vet 通过 | 本地有三个未发布固件提交及无关脏账本；生产 v0.4.51 工作流重跑已成功 | 发布仅包含本增量两文件 | 建立远端 mapledev 的独立检出并发布 |
+| 2026-10-14 | 用户追加停止 Docker、暂停 ARM64 router；工作流与测试同步调整，探针测试及 router 双架构编译通过 | 发布改为八项资产，旧全局预检需按用户契约临时适配 | 本次四文件隔离发布 | 在远端基线独立检出应用补丁、预检、提交推送 |
 
 ## 十四、完成摘要
 
-- 交付结果：已实现 dashboard 总流量与月度 RX/TX、单探针月度起始日配置及只统计硬件出口接口的跨平台采集。
-- 需求验收：REQ-001/002/003 完成。
-- 测试结论：流量定向测试、Linux物理接口过滤测试、Windows/Android交叉构建通过；controller全量测试未通过，失败集中在网络监控用例。
+- 交付结果：新增独立流量页签和累计/月度上下行合计；停止 Docker 发布，暂停 ARM64 router 和配套 manifest。
+- 需求验收：REQ-001/002/003 原实现保留；REQ-004/005 浏览器验收通过。
+- 测试结论：主控全量/vet、探针全量、router 双架构编译、发布依赖/八项资产测试、Chrome 桌面与窄屏验证通过。
 - 缺陷与风险：RISK-001/002/003。
 - 回滚说明：第九章。
-- 完成门禁：功能通过；完整回归待清理既有网络指标测试失败。
-- 下一步唯一动作：等待用户指示发布或排查已记录的网络指标测试失败。
+- 完成门禁：有条件通过；待发布核验。
+- 下一步唯一动作：在远端基线独立检出应用四文件补丁、预检、提交推送。

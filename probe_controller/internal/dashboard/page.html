@@ -169,6 +169,12 @@
             grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
             gap: 14px;
         }
+        .traffic-grid {
+            grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
+        }
+        .traffic-grid .probe-item {
+            min-height: 0;
+        }
         .probe-item {
             border: 1px solid rgba(255, 255, 255, 0.08);
             background: rgba(0, 0, 0, 0.2);
@@ -479,6 +485,7 @@
             <div class="tabs" role="tablist">
                 <button class="tab-button active" type="button" data-tab="probe-status">探针状态</button>
                 <button class="tab-button" type="button" data-tab="network-status">网络状态</button>
+                <button class="tab-button" type="button" data-tab="traffic-status">流量统计</button>
             </div>
             <div id="probe-status" class="tab-panel active">
                 <div class="info-grid">
@@ -509,6 +516,15 @@
                     <div class="network-card">No network data</div>
                 </div>
             </div>
+            <div id="traffic-status" class="tab-panel">
+                <div class="panel-toolbar">
+                    <div class="probe-panel-title">流量统计</div>
+                    <button id="traffic-refresh" class="refresh-button" type="button">刷新</button>
+                </div>
+                <div id="traffic-grid" class="probe-grid traffic-grid">
+                    <div class="probe-item">点击页签加载流量统计</div>
+                </div>
+            </div>
         </div>
     </div>
     <script>
@@ -517,6 +533,9 @@
         const probeGridEl = document.getElementById('probe-grid');
         const networkGridEl = document.getElementById('network-grid');
         const networkRefreshEl = document.getElementById('network-refresh');
+        const trafficGridEl = document.getElementById('traffic-grid');
+        const trafficRefreshEl = document.getElementById('traffic-refresh');
+        let activeTab = 'probe-status';
         let currentNetworkScale = 'minute';
         let networkLoaded = false;
         let lastNetworkItems = [];
@@ -714,14 +733,6 @@
                 const vendorLine = vendor ? '<div class="probe-vendor">厂家: ' + vendor + '</div>' : '';
                 const locationText = formatLocations(item.locations);
                 const locationLine = locationText ? '<div class="probe-location">归属地: ' + escapeHTML(locationText) + '</div>' : '';
-                const traffic = item.traffic || {};
-                const trafficLine = traffic.available
-                    ? '<div class="probe-traffic" title="仅统计启用中的硬件出口接口；累计从本统计口径首次采样后开始；月度账期按 UTC 计算">'
-                        + '<div>总流量　↓ ' + formatTrafficBytes(traffic.total_rx_bytes) + '　↑ ' + formatTrafficBytes(traffic.total_tx_bytes) + '</div>'
-                        + '<div>月度流量　↓ ' + formatTrafficBytes(traffic.month_rx_bytes) + '　↑ ' + formatTrafficBytes(traffic.month_tx_bytes) + '</div>'
-                        + '<div class="probe-traffic-period">周期起始: ' + escapeHTML(traffic.period_start || '-') + ' UTC (每月 ' + (Number(traffic.monthly_start_day) || 1) + ' 日)</div>'
-                    + '</div>'
-                    : '<div class="probe-traffic probe-traffic-period">流量统计等待探针上报</div>';
                 return '<div class="probe-item">'
                     + '<div class="probe-item-head">'
                     + '<div class="probe-node-meta">'
@@ -739,21 +750,64 @@
                     + metricGauge('DISK', sys.disk_used_percent, sys.disk_used_bytes, sys.disk_total_bytes)
                     + '</div>'
                     + '<div class="probe-uptime">机器运行: ' + machineUptime + ' / 开机: ' + bootTime + '</div>'
-                    + trafficLine
                     + '<div class="probe-last-seen">Last Seen: ' + escapeHTML(lastSeen) + '</div>'
                     + '</div>';
             }).join('');
         }
 
         async function checkProbes() {
+            const requestedTab = activeTab;
+            if (requestedTab !== 'probe-status' && requestedTab !== 'traffic-status') return;
             try {
                 const res = await fetch('/dashboard/probes');
                 if (!res.ok) throw new Error('Not OK');
                 const data = await res.json();
-                renderProbes(data.items || []);
+                if (activeTab !== requestedTab) return;
+                if (requestedTab === 'traffic-status') renderTraffic(data.items || []);
+                else renderProbes(data.items || []);
             } catch (_) {
                 // keep old view
             }
+        }
+
+        function renderTraffic(items) {
+            const sorted = sortedByNodeNo(items);
+            if (!sorted.length) {
+                trafficGridEl.innerHTML = '<div class="probe-item">暂无探针流量数据</div>';
+                return;
+            }
+            trafficGridEl.innerHTML = sorted.map((item, index) => {
+                const nodeNo = nodeNoOf(item);
+                const name = String(item.node_name || '').trim() || ('probe #' + (nodeNo || index + 1));
+                const traffic = item.traffic || {};
+                const bytes = (value) => Math.max(0, Number(value) || 0);
+                const totalRX = bytes(traffic.total_rx_bytes);
+                const totalTX = bytes(traffic.total_tx_bytes);
+                const monthRX = bytes(traffic.month_rx_bytes);
+                const monthTX = bytes(traffic.month_tx_bytes);
+                const usage = traffic.available
+                    ? '<div class="probe-traffic" title="仅统计启用中的硬件出口接口；累计从本统计口径首次采样后开始">'
+                        + '<div>累计流量　合计 ' + formatTrafficBytes(totalRX + totalTX) + '</div>'
+                        + '<div>↓ 下行 ' + formatTrafficBytes(totalRX) + '　↑ 上行 ' + formatTrafficBytes(totalTX) + '</div>'
+                    + '</div>'
+                    + '<div class="probe-traffic">'
+                        + '<div>月度流量　合计 ' + formatTrafficBytes(monthRX + monthTX) + '</div>'
+                        + '<div>↓ 下行 ' + formatTrafficBytes(monthRX) + '　↑ 上行 ' + formatTrafficBytes(monthTX) + '</div>'
+                        + '<div class="probe-traffic-period">周期起始: ' + escapeHTML(traffic.period_start || '-') + ' UTC (每月 ' + (Number(traffic.monthly_start_day) || 1) + ' 日)</div>'
+                    + '</div>'
+                    : '<div class="probe-traffic probe-traffic-period">流量统计等待探针上报</div>';
+                return '<div class="probe-item">'
+                    + '<div class="probe-item-head">'
+                        + '<div class="probe-node-meta">'
+                            + '<div class="probe-node-name">' + escapeHTML(name) + '</div>'
+                            + '<div class="probe-node-no">序号: ' + (nodeNo || '-') + '</div>'
+                        + '</div>'
+                        + '<div class="probe-online ' + (item.online ? 'yes' : 'no') + '">' + (item.online ? 'online' : 'offline') + '</div>'
+                    + '</div>'
+                    + usage
+                    + '<div class="probe-last-seen">统计更新: ' + escapeHTML(traffic.updated_at || '-') + '</div>'
+                    + '</div>';
+            }).join('');
         }
 
         function renderNetwork(items) {
@@ -983,9 +1037,11 @@
         document.querySelectorAll('.tab-button').forEach((button) => {
             button.addEventListener('click', () => {
                 const tab = button.getAttribute('data-tab');
+                activeTab = tab;
                 document.querySelectorAll('.tab-button').forEach((item) => item.classList.toggle('active', item === button));
                 document.querySelectorAll('.tab-panel').forEach((panel) => panel.classList.toggle('active', panel.id === tab));
                 if (tab === 'network-status' && !networkLoaded) checkNetwork();
+                if (tab === 'probe-status' || tab === 'traffic-status') checkProbes();
             });
         });
 
@@ -999,6 +1055,9 @@
 
         if (networkRefreshEl) {
             networkRefreshEl.addEventListener('click', () => checkNetwork());
+        }
+        if (trafficRefreshEl) {
+            trafficRefreshEl.addEventListener('click', () => checkProbes());
         }
 
         checkStatus();

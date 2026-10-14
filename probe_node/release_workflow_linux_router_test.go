@@ -28,11 +28,10 @@ func TestReleaseWorkflowDefinesLinuxRouterArtifacts(t *testing.T) {
 		"build-probe-router:",
 		"go build -tags linux_router",
 		"cloudhelper-probe-router-linux-amd64",
-		"cloudhelper-probe-router-linux-arm64",
 		"cloudhelper-probe-router-linux-amd64-manifest.json",
-		"cloudhelper-probe-router-linux-arm64-manifest.json",
 		"mihomo-linux-amd64-compatible-v1.19.29.gz",
-		"mihomo-linux-arm64-v1.19.29.gz",
+		"cloudhelper-probe-node-linux-arm64",
+		"cloudhelper-probe-node-android-arm64.apk",
 		"Keep Latest 10 Releases",
 		"workflow_dispatch:",
 		"Explicit release version must use major.minor.patch format",
@@ -55,9 +54,17 @@ func TestReleaseWorkflowDefinesLinuxRouterArtifacts(t *testing.T) {
 		"cloudhelper-probe-exit-node-linux-amd64",
 		"cloudhelper-probe-exit-node-manifest.json",
 		"cloudhelper-probe-exit-node-shell",
+		"build-probe-node-docker",
+		"docker/setup-buildx-action",
+		"docker/login-action",
+		"docker/build-push-action",
+		"packages: write",
+		"ghcr.io/",
+		"cloudhelper-probe-router-linux-arm64",
+		"mihomo-linux-arm64",
 	} {
 		if strings.Contains(content, forbidden) {
-			t.Fatalf("release workflow still contains standalone Mihomo marker %q", forbidden)
+			t.Fatalf("release workflow still contains retired release marker %q", forbidden)
 		}
 	}
 	for _, action := range []string{
@@ -69,9 +76,6 @@ func TestReleaseWorkflowDefinesLinuxRouterArtifacts(t *testing.T) {
 		"actions/download-artifact@v8",
 		"android-actions/setup-android@v4",
 		"gradle/actions/setup-gradle@v6",
-		"docker/setup-buildx-action@v4",
-		"docker/login-action@v4",
-		"docker/build-push-action@v7",
 		"softprops/action-gh-release@v3",
 	} {
 		if !strings.Contains(content, action) {
@@ -94,6 +98,69 @@ func TestReleaseWorkflowDefinesLinuxRouterArtifacts(t *testing.T) {
 	} {
 		if strings.Contains(content, action) {
 			t.Fatalf("release workflow still contains Node.js 20 action %q", action)
+		}
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Needs yaml.Node `yaml:"needs"`
+			Steps []struct {
+				Name string `yaml:"name"`
+				With struct {
+					Files string `yaml:"files"`
+				} `yaml:"with"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := document.Decode(&workflow); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"prepare-release", "build-probe-controller", "build-probe-node", "build-probe-router", "build-probe-node-android", "create-release"} {
+		if _, ok := workflow.Jobs[name]; !ok {
+			t.Fatalf("release workflow missing required job %q", name)
+		}
+	}
+	for name, job := range workflow.Jobs {
+		var dependencies []string
+		switch job.Needs.Kind {
+		case yaml.ScalarNode:
+			dependencies = []string{job.Needs.Value}
+		case yaml.SequenceNode:
+			if err := job.Needs.Decode(&dependencies); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, dependency := range dependencies {
+			if _, ok := workflow.Jobs[dependency]; !ok {
+				t.Fatalf("job %q depends on missing job %q", name, dependency)
+			}
+		}
+	}
+	var files []string
+	for _, step := range workflow.Jobs["create-release"].Steps {
+		if step.Name == "Create Release" {
+			files = strings.Fields(step.With.Files)
+		}
+	}
+	expected := []string{
+		"cloudhelper-probe-controller-linux-amd64",
+		"cloudhelper-probe-node-linux-amd64",
+		"cloudhelper-probe-node-linux-arm64",
+		"cloudhelper-probe-node-windows-amd64.exe",
+		"cloudhelper-probe-router-linux-amd64",
+		"cloudhelper-probe-router-linux-amd64-manifest.json",
+		"mihomo-LICENSE",
+		"cloudhelper-probe-node-android-arm64.apk",
+	}
+	if len(files) != len(expected) {
+		t.Fatalf("release assets=%v, want %d assets", files, len(expected))
+	}
+	for _, asset := range expected {
+		found := false
+		for _, file := range files {
+			found = found || file == "release-assets/"+asset
+		}
+		if !found {
+			t.Fatalf("missing release asset %q", asset)
 		}
 	}
 }
