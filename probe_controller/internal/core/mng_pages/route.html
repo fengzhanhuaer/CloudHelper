@@ -650,7 +650,12 @@
 
 
     async function loadVirtualRouter(silent) {
-      const payload = await requestJSON('/mng/api/route/virtual_router');
+      const requestedTab = state.activeTab;
+      const path = requestedTab === 'fake-ip'
+        ? '/mng/api/route/virtual_router'
+        : '/mng/api/route/virtual_router?omit_fake_ip_library=1';
+      const payload = await requestJSON(path);
+      if (state.activeTab !== requestedTab) return;
       state.virtualRouter = payload.item || {
         enabled: true,
         fake_ip_cidr: '198.18.0.0/15',
@@ -659,11 +664,10 @@
         route_rules: [],
         fake_ip_library: { version: 1, updated_at: '', items: [] },
       };
-      state.routeRules = Array.isArray(state.virtualRouter.route_rules) ? state.virtualRouter.route_rules : state.routeRules;
       state.virtualRouterNodeIDs = Array.isArray(payload.node_ids) ? payload.node_ids.map((v) => String(v || '').trim()).filter(Boolean) : [];
       state.virtualRouterCFDomains = Array.isArray(payload.cf_domains) ? payload.cf_domains : [];
-      renderVirtualRouter();
-      renderFakeIPLibrary();
+      if (state.activeTab === 'topology') renderVirtualRouter();
+      if (state.activeTab === 'fake-ip') renderFakeIPLibrary();
       if (!silent) setStatus('拓扑规则已刷新', 'ok');
     }
 
@@ -692,8 +696,7 @@
       const payload = await requestJSON('/mng/api/route/virtual_router/route_rules');
       state.routeRules = Array.isArray(payload.items) ? payload.items : [];
       state.virtualRouter.route_rules = state.routeRules;
-      renderRouteRules();
-      renderFakeIPLibrary();
+      if (state.activeTab === 'route-rules') renderRouteRules();
       if (!silent) setStatus(`路由规则已刷新：${state.routeRules.length} 个`, 'ok');
     }
 
@@ -1932,7 +1935,10 @@
               <option value="reject" ${routeRuleAction(rule) === 'reject' ? 'selected' : ''}>拒绝</option>
             </select>
             <div class="route-rule-exit" style="${routeRuleAction(rule) === 'probe_exit' ? '' : 'display:none;'}">
+              <div class="small muted">主出口</div>
               <select data-route-rule-exit="${idx}">${routeRuleExitNodeOptions(rule.exit_node_id)}</select>
+              <div class="small muted">备用出口</div>
+              <select data-route-rule-backup-exit="${idx}"><option value="">不启用</option>${routeRuleExitNodeOptions(rule.backup_exit_node_id)}</select>
             </div>
           </td>
           <td class="rule-editor">
@@ -2033,6 +2039,7 @@
           state.routeRules[idx].action = action;
           if (action !== 'probe_exit') {
             state.routeRules[idx].exit_node_id = '';
+            state.routeRules[idx].backup_exit_node_id = '';
           } else if (!normalizeNodeID(state.routeRules[idx].exit_node_id)) {
             const first = state.virtualRouterNodeIDs[0] || (state.nodes[0] ? String(state.nodes[0].node_no || '') : '');
             state.routeRules[idx].exit_node_id = normalizeNodeID(first);
@@ -2046,6 +2053,18 @@
           if (idx >= 0 && idx < state.routeRules.length) {
             state.routeRules[idx].action = 'probe_exit';
             state.routeRules[idx].exit_node_id = normalizeNodeID(el.value);
+            if (state.routeRules[idx].backup_exit_node_id === state.routeRules[idx].exit_node_id) {
+              state.routeRules[idx].backup_exit_node_id = '';
+              renderRouteRules();
+            }
+          }
+        });
+      });
+      document.querySelectorAll('[data-route-rule-backup-exit]').forEach((el) => {
+        el.addEventListener('change', () => {
+          const idx = Number.parseInt(el.getAttribute('data-route-rule-backup-exit') || '-1', 10);
+          if (idx >= 0 && idx < state.routeRules.length) {
+            state.routeRules[idx].backup_exit_node_id = normalizeNodeID(el.value);
           }
         });
       });
@@ -2081,6 +2100,7 @@
         name: `route-rule-${state.routeRules.length + 1}`,
         action: 'direct',
         exit_node_id: '',
+        backup_exit_node_id: '',
         entries: [
           'domain_suffix:reddit.com',
           'domain_prefix:api.aaaa',
@@ -2100,6 +2120,7 @@
         name: String(rule.name || '').trim(),
         action: routeRuleAction(rule),
         exit_node_id: routeRuleAction(rule) === 'probe_exit' ? normalizeNodeID(rule.exit_node_id) : '',
+        backup_exit_node_id: routeRuleAction(rule) === 'probe_exit' ? normalizeNodeID(rule.backup_exit_node_id) : '',
         entries: Array.isArray(rule.entries) ? rule.entries.map((item) => String(item || '').trim()).filter(Boolean) : [],
         note: String(rule.note || '').trim(),
       };
@@ -2205,7 +2226,7 @@
             Promise.all([loadCloudflareDDNSRecords(), loadVirtualRouter(true)]).catch((err) => setStatus(`刷新拓扑规则失败：${err.message || err}`, 'err'));
           }
           if (state.activeTab === 'route-rules') {
-            Promise.all([loadVirtualRouter(true), loadRouteRules(true)]).catch((err) => setStatus(`刷新路由规则失败：${err.message || err}`, 'err'));
+            loadNodes().then(() => loadRouteRules(true)).catch((err) => setStatus(`刷新路由规则失败：${err.message || err}`, 'err'));
           }
           if (state.activeTab === 'linux-router') {
             loadNodes().then(() => loadLinuxRouters(false)).catch((err) => setStatus(`刷新旁路由失败：${err.message || err}`, 'err'));
@@ -2249,7 +2270,7 @@
         saveVirtualRouter().catch((err) => setStatus(`保存拓扑规则失败：${err.message || err}`, 'err'));
       });
       document.getElementById('btn-route-rules-refresh').addEventListener('click', () => {
-        Promise.all([loadVirtualRouter(true), loadRouteRules(false)]).catch((err) => setStatus(`刷新路由规则失败：${err.message || err}`, 'err'));
+        loadNodes().then(() => loadRouteRules(false)).catch((err) => setStatus(`刷新路由规则失败：${err.message || err}`, 'err'));
       });
       document.getElementById('btn-route-rule-add').addEventListener('click', addRouteRule);
       document.getElementById('btn-route-rules-save').addEventListener('click', () => {
@@ -2382,13 +2403,7 @@
         return;
       }
       await loadNodes();
-      await loadLinuxRouters(true).catch(() => {});
-      await loadCloudflareDDNSRecords().catch(() => {});
-      await loadVirtualRouter(true);
-      await loadRouteRules(true).catch(() => {});
-      await loadSpecialExits(true).catch(() => {});
-      await loadVirtualRouterStatus(true).catch(() => {});
-	  await loadVirtualRouterBuffers(true).catch(() => {});
+      await Promise.all([loadCloudflareDDNSRecords(), loadVirtualRouter(true)]);
       setStatus('路由管理页面初始化完成', 'ok');
     }
 

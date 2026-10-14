@@ -32,7 +32,7 @@ func probeVirtualRouterFakeIPTargetFromTransportID(addr tcpip.Address, port uint
 	}
 	if !ok {
 		rule, ruleOK := currentProbeVirtualRouterRouteRuleForIP(host)
-		if !ruleOK || sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) != "probe_exit" || normalizeProbeRouteNodeID(rule.ExitNodeID) != currentProbeVirtualRouterLocalNodeID() {
+		if !ruleOK || !probeVirtualRouterRuleAllowsExitNode(rule, currentProbeVirtualRouterLocalNodeID()) {
 			return probeVirtualRouterExitTarget{}, probeVirtualRouterFakeIPEntry{}, errors.New("fake ip mapping is unavailable")
 		}
 		if net.ParseIP(host) == nil {
@@ -42,7 +42,7 @@ func probeVirtualRouterFakeIPTargetFromTransportID(addr tcpip.Address, port uint
 			Domain:     host,
 			FakeIP:     host,
 			Action:     "probe_exit",
-			ExitNodeID: normalizeProbeRouteNodeID(rule.ExitNodeID),
+			ExitNodeID: currentProbeVirtualRouterLocalNodeID(),
 			RuleID:     strings.TrimSpace(rule.ID),
 		}, nil
 	}

@@ -99,7 +99,14 @@ func decideProbeVRouteProxyTarget(targetAddr string) (probeVRouteProxyTargetDeci
 		if localNodeID == "" {
 			return decision, errors.New("local virtual router node id is empty")
 		}
-		decision.Path = currentProbeVirtualRouterPathBetweenNodes(localNodeID, decision.ExitNodeID)
+		if matched && normalizeProbeRouteNodeID(rule.ExitNodeID) == decision.ExitNodeID {
+			decision.Path = currentProbeVirtualRouterExitPathForRule(localNodeID, rule)
+			if len(decision.Path) > 0 {
+				decision.ExitNodeID = decision.Path[len(decision.Path)-1]
+			}
+		} else {
+			decision.Path = currentProbeVirtualRouterPathBetweenNodes(localNodeID, decision.ExitNodeID)
+		}
 		if len(decision.Path) == 0 {
 			return decision, fmt.Errorf("virtual router proxy path is unavailable: %s>%s", localNodeID, decision.ExitNodeID)
 		}
@@ -191,8 +198,20 @@ func authorizeProbeVRouteProxyExitTarget(targetAddr string, path []string) error
 	if err != nil {
 		return err
 	}
-	if decision.Action != "probe_exit" || normalizeProbeRouteNodeID(decision.ExitNodeID) != localNodeID {
+	if decision.Action != "probe_exit" {
 		return errors.New("remote proxy target is not assigned to this exit node")
+	}
+	var rule probeVirtualRouterRouteRule
+	var matched bool
+	if decision.Domain != "" {
+		rule, matched = currentProbeVirtualRouterRouteRuleForDomain(decision.Domain)
+	} else {
+		rule, matched = currentProbeVirtualRouterRouteRuleForIP(decision.Host)
+	}
+	if !matched || !probeVirtualRouterRuleAllowsExitNode(rule, localNodeID) {
+		if normalizeProbeRouteNodeID(decision.ExitNodeID) != localNodeID {
+			return errors.New("remote proxy target is not assigned to this exit node")
+		}
 	}
 	_, err = resolveProbeVRouteProxyExitTarget(decision.TargetAddr)
 	return err

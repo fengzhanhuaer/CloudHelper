@@ -733,17 +733,23 @@ func sanitizeProbeVirtualRouterRouteRules(items []probeVirtualRouterRouteRule) [
 		sort.Strings(entries)
 		action := sanitizeProbeVirtualRouterRouteRuleAction(item.Action, item.ExitNodeID)
 		exitNodeID := ""
+		backupNodeID := ""
 		if action == "probe_exit" {
 			exitNodeID = normalizeProbeRouteNodeID(item.ExitNodeID)
+			backupNodeID = normalizeProbeRouteNodeID(item.BackupExitNodeID)
+			if backupNodeID == exitNodeID {
+				backupNodeID = ""
+			}
 		}
 		out = append(out, probeVirtualRouterRouteRule{
-			ID:         ruleID,
-			Name:       name,
-			Action:     action,
-			ExitNodeID: exitNodeID,
-			Entries:    entries,
-			Note:       strings.TrimSpace(item.Note),
-			UpdatedAt:  strings.TrimSpace(item.UpdatedAt),
+			ID:               ruleID,
+			Name:             name,
+			Action:           action,
+			ExitNodeID:       exitNodeID,
+			BackupExitNodeID: backupNodeID,
+			Entries:          entries,
+			Note:             strings.TrimSpace(item.Note),
+			UpdatedAt:        strings.TrimSpace(item.UpdatedAt),
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -1014,11 +1020,12 @@ func probeVirtualRouterTopologySignature(config probeVirtualRouterConfig, index 
 		)
 	}
 	for _, rule := range config.RouteRules {
-		fmt.Fprintf(&b, "route_rule|%s|%s|%s|%s\n",
+		fmt.Fprintf(&b, "route_rule|%s|%s|%s|%s|%s\n",
 			strings.TrimSpace(rule.ID),
 			strings.TrimSpace(rule.Name),
 			strings.TrimSpace(rule.Action),
 			normalizeProbeRouteNodeID(rule.ExitNodeID),
+			normalizeProbeRouteNodeID(rule.BackupExitNodeID),
 		)
 		for _, entry := range rule.Entries {
 			fmt.Fprintf(&b, "route_rule_entry|%s|%s\n", strings.TrimSpace(rule.ID), strings.TrimSpace(entry))
@@ -3008,12 +3015,15 @@ func currentProbeVirtualRouterPathToIP(ip string) []string {
 	probeVirtualRouterState.mu.RUnlock()
 	if targetNodeID == "" {
 		if entry, ok := currentProbeVirtualRouterFakeIPEntryByIP(targetIP.String()); ok {
+			if rule, matched := currentProbeVirtualRouterRouteRuleForDomain(entry.Domain); matched && normalizeProbeRouteNodeID(rule.ExitNodeID) == normalizeProbeRouteNodeID(entry.ExitNodeID) {
+				return currentProbeVirtualRouterExitPathForRule(nodeID, rule)
+			}
 			targetNodeID = normalizeProbeRouteNodeID(entry.ExitNodeID)
 		}
 	}
 	if targetNodeID == "" {
 		if rule, ok := currentProbeVirtualRouterRouteRuleForIP(targetIP.String()); ok && sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) == "probe_exit" {
-			targetNodeID = normalizeProbeRouteNodeID(rule.ExitNodeID)
+			return currentProbeVirtualRouterExitPathForRule(nodeID, rule)
 		}
 	}
 	return currentProbeVirtualRouterPathBetweenNodes(nodeID, targetNodeID)
@@ -3032,12 +3042,21 @@ func currentProbeVirtualRouterPathForPacket(packet []byte, dstIP string) []strin
 	probeVirtualRouterState.mu.RUnlock()
 	if targetNodeID == "" {
 		if entry, ok := currentProbeVirtualRouterFakeIPEntryByIP(targetIP.String()); ok {
+			if rule, matched := currentProbeVirtualRouterRouteRuleForDomain(entry.Domain); matched && normalizeProbeRouteNodeID(rule.ExitNodeID) == normalizeProbeRouteNodeID(entry.ExitNodeID) {
+				if nodeID == "" {
+					nodeID = sourceNodeID
+				}
+				return currentProbeVirtualRouterExitPathForRule(nodeID, rule)
+			}
 			targetNodeID = normalizeProbeRouteNodeID(entry.ExitNodeID)
 		}
 	}
 	if targetNodeID == "" {
 		if rule, ok := currentProbeVirtualRouterRouteRuleForIP(targetIP.String()); ok && sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) == "probe_exit" {
-			targetNodeID = normalizeProbeRouteNodeID(rule.ExitNodeID)
+			if nodeID == "" {
+				nodeID = sourceNodeID
+			}
+			return currentProbeVirtualRouterExitPathForRule(nodeID, rule)
 		}
 	}
 	if nodeID == "" {
@@ -3063,7 +3082,7 @@ func probeVirtualRouterPacketTargetsLocalDelivery(runtime *probeVirtualRouterRun
 		return false
 	}
 	localNodeID := currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)
-	if normalizeProbeRouteNodeID(entry.ExitNodeID) != localNodeID || localNodeID == "" {
+	if !probeVirtualRouterFakeIPEntryAllowsExitNode(entry, localNodeID) {
 		return false
 	}
 	return len(path) == 0 || normalizeProbeRouteNodeID(path[len(path)-1]) == localNodeID

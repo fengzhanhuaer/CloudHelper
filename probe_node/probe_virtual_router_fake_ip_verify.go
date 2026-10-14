@@ -123,6 +123,9 @@ func scheduleProbeVirtualRouterFakeIPVerifyForPacket(packet []byte, path []strin
 		return false
 	}
 	exitNodeID := normalizeProbeRouteNodeID(entry.ExitNodeID)
+	if pathExit := normalizeProbeRouteNodeID(cleanPath[len(cleanPath)-1]); probeVirtualRouterFakeIPEntryAllowsExitNode(entry, pathExit) {
+		exitNodeID = pathExit
+	}
 	if exitNodeID == "" {
 		exitNodeID = normalizeProbeRouteNodeID(cleanPath[len(cleanPath)-1])
 	}

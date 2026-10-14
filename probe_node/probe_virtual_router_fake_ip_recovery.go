@@ -169,7 +169,7 @@ func recoverProbeVirtualRouterFakeIPFirstPackets(fakeIP string) {
 	}
 	for _, item := range flows {
 		localNodeID := currentProbeVirtualRouterLocalNodeIDForRuntime(item.runtime)
-		if normalizeProbeRouteNodeID(entry.ExitNodeID) != normalizeProbeRouteNodeID(localNodeID) {
+		if !probeVirtualRouterFakeIPEntryAllowsExitNode(entry, localNodeID) {
 			err := fmt.Errorf("refreshed fake ip mapping targets another exit: fake_ip=%s exit=%s local=%s", fakeIP, entry.ExitNodeID, localNodeID)
 			recordProbeVirtualRouterRuntimeDeliveryError(item.runtime, err)
 			recordProbeVirtualRouterRecentPacket("fake_mapping", "recovery_error", item.runtime, item.packet, item.path, false, err)

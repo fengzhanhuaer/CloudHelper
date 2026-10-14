@@ -15,19 +15,31 @@ type mngProbeVirtualRouterCFDomain struct {
 	ServicePort int    `json:"service_port,omitempty"`
 }
 
-func getMngProbeVirtualRouterConfig() (map[string]interface{}, error) {
+func getMngProbeVirtualRouterConfig(includeFakeIPLibrary bool) (map[string]interface{}, error) {
 	if ProbeRouteConfigStore == nil {
 		return nil, fmt.Errorf("probe route config store is not initialized")
 	}
 	ensureProbeVirtualRouterStoredAuthFields()
 	ProbeRouteConfigStore.mu.RLock()
 	config := normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter)
-	config.FakeIPLibrary = normalizeProbeVirtualRouterFakeIPLibrary(ProbeRouteConfigStore.data.VirtualRouterFakeIP)
+	if includeFakeIPLibrary {
+		config.FakeIPLibrary = normalizeProbeVirtualRouterFakeIPLibrary(ProbeRouteConfigStore.data.VirtualRouterFakeIP)
+	}
 	ProbeRouteConfigStore.mu.RUnlock()
 	config = enrichProbeVirtualRouterAuthTickets(ensureProbeVirtualRouterAuthFields(ensureProbeVirtualRouterProbeIPsForKnownNodes(config)))
 	cfDomains := listMngProbeVirtualRouterCFDomains()
+	var item any = config
+	if !includeFakeIPLibrary {
+		item = map[string]any{
+			"enabled":        config.Enabled,
+			"fake_ip_cidr":   config.FakeIPCIDR,
+			"probe_ips":      config.ProbeIPs,
+			"topology_rules": config.TopologyRules,
+			"updated_at":     config.UpdatedAt,
+		}
+	}
 	return map[string]interface{}{
-		"item":       config,
+		"item":       item,
 		"node_ids":   listProbeVirtualRouterKnownNodeIDs(),
 		"pool_size":  probeVirtualRouterProbeIPPoolSize,
 		"cf_domains": cfDomains,
@@ -252,6 +264,16 @@ func validateMngProbeVirtualRouterRouteRule(item probeVirtualRouterRouteRule, in
 		if !isProbeVirtualRouterKnownNodeID(exitNodeID) {
 			return fmt.Errorf("route_rules[%d].exit_node_id is unknown", index)
 		}
+		if backupNodeID := normalizeProbeNodeID(item.BackupExitNodeID); backupNodeID != "" {
+			if backupNodeID == exitNodeID {
+				return fmt.Errorf("route_rules[%d].backup_exit_node_id must differ from exit_node_id", index)
+			}
+			if !isProbeVirtualRouterKnownNodeID(backupNodeID) {
+				return fmt.Errorf("route_rules[%d].backup_exit_node_id is unknown", index)
+			}
+		}
+	} else if strings.TrimSpace(item.BackupExitNodeID) != "" {
+		return fmt.Errorf("route_rules[%d].backup_exit_node_id requires probe_exit action", index)
 	}
 	if len(item.Entries) > probeVirtualRouterMaxRouteRuleEntries {
 		return fmt.Errorf("route_rules[%d].entries exceeded limit (%d)", index, probeVirtualRouterMaxRouteRuleEntries)

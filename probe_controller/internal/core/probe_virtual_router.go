@@ -92,13 +92,14 @@ type probeVirtualRouterTopologyRule struct {
 }
 
 type probeVirtualRouterRouteRule struct {
-	ID         string   `json:"id,omitempty"`
-	Name       string   `json:"name"`
-	Action     string   `json:"action,omitempty"`
-	ExitNodeID string   `json:"exit_node_id,omitempty"`
-	Entries    []string `json:"entries,omitempty"`
-	Note       string   `json:"note,omitempty"`
-	UpdatedAt  string   `json:"updated_at,omitempty"`
+	ID               string   `json:"id,omitempty"`
+	Name             string   `json:"name"`
+	Action           string   `json:"action,omitempty"`
+	ExitNodeID       string   `json:"exit_node_id,omitempty"`
+	BackupExitNodeID string   `json:"backup_exit_node_id,omitempty"`
+	Entries          []string `json:"entries,omitempty"`
+	Note             string   `json:"note,omitempty"`
+	UpdatedAt        string   `json:"updated_at,omitempty"`
 }
 
 type probeVirtualRouterRuntimeStats struct {
@@ -437,6 +438,16 @@ func validateAndNormalizeProbeVirtualRouterConfig(input probeVirtualRouterConfig
 			if !isProbeVirtualRouterKnownNodeID(exitNodeID) {
 				return probeVirtualRouterConfig{}, fmt.Errorf("route_rules[%d].exit_node_id is unknown", index)
 			}
+			if backupNodeID := normalizeProbeNodeID(item.BackupExitNodeID); backupNodeID != "" {
+				if backupNodeID == exitNodeID {
+					return probeVirtualRouterConfig{}, fmt.Errorf("route_rules[%d].backup_exit_node_id must differ from exit_node_id", index)
+				}
+				if !isProbeVirtualRouterKnownNodeID(backupNodeID) {
+					return probeVirtualRouterConfig{}, fmt.Errorf("route_rules[%d].backup_exit_node_id is unknown", index)
+				}
+			}
+		} else if strings.TrimSpace(item.BackupExitNodeID) != "" {
+			return probeVirtualRouterConfig{}, fmt.Errorf("route_rules[%d].backup_exit_node_id requires probe_exit action", index)
 		}
 		if len(item.Entries) > probeVirtualRouterMaxRouteRuleEntries {
 			return probeVirtualRouterConfig{}, fmt.Errorf("route_rules[%d].entries exceeded limit (%d)", index, probeVirtualRouterMaxRouteRuleEntries)
@@ -673,21 +684,27 @@ func normalizeProbeVirtualRouterRouteRules(items []probeVirtualRouterRouteRule) 
 		entries := normalizeProbeVirtualRouterRouteRuleEntries(item.Entries)
 		action := normalizeProbeVirtualRouterRouteRuleAction(item.Action, item.ExitNodeID)
 		exitNodeID := ""
+		backupNodeID := ""
 		if action == probeVirtualRouterRouteRuleActionExit {
 			exitNodeID = normalizeProbeNodeID(item.ExitNodeID)
+			backupNodeID = normalizeProbeNodeID(item.BackupExitNodeID)
+			if backupNodeID == exitNodeID {
+				backupNodeID = ""
+			}
 		}
 		updatedAt := strings.TrimSpace(item.UpdatedAt)
 		if updatedAt == "" {
 			updatedAt = now
 		}
 		out = append(out, probeVirtualRouterRouteRule{
-			ID:         ruleID,
-			Name:       name,
-			Action:     action,
-			ExitNodeID: exitNodeID,
-			Entries:    entries,
-			Note:       strings.TrimSpace(item.Note),
-			UpdatedAt:  updatedAt,
+			ID:               ruleID,
+			Name:             name,
+			Action:           action,
+			ExitNodeID:       exitNodeID,
+			BackupExitNodeID: backupNodeID,
+			Entries:          entries,
+			Note:             strings.TrimSpace(item.Note),
+			UpdatedAt:        updatedAt,
 		})
 		if len(out) >= probeVirtualRouterMaxRouteRules {
 			break

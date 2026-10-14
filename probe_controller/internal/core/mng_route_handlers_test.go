@@ -45,6 +45,28 @@ func TestMngRoutePageIncludesMultiCarrierAndBufferControls(t *testing.T) {
 	}
 }
 
+func TestMngRoutePageBootstrapsOnlyActiveTab(t *testing.T) {
+	start := strings.Index(mngRoutePageHTML, "    async function bootstrap() {")
+	end := strings.Index(mngRoutePageHTML, "    window.addEventListener('beforeunload'")
+	if start < 0 || end <= start {
+		t.Fatal("route page bootstrap not found")
+	}
+	bootstrap := mngRoutePageHTML[start:end]
+	for _, marker := range []string{"await loadNodes()", "loadCloudflareDDNSRecords()", "loadVirtualRouter(true)"} {
+		if !strings.Contains(bootstrap, marker) {
+			t.Fatalf("bootstrap missing active topology load %q", marker)
+		}
+	}
+	for _, marker := range []string{"loadLinuxRouters(", "loadRouteRules(", "loadSpecialExits(", "loadVirtualRouterStatus(", "loadVirtualRouterBuffers(", "loadDoHSettings(", "loadDoHQueries("} {
+		if strings.Contains(bootstrap, marker) {
+			t.Fatalf("bootstrap eagerly loads another tab: %q", marker)
+		}
+	}
+	if !strings.Contains(mngRoutePageHTML, "'/mng/api/route/virtual_router?omit_fake_ip_library=1'") {
+		t.Fatal("topology load does not omit the Fake IP library")
+	}
+}
+
 func TestMngVirtualRouterSideStatsErrorIgnoresStaleErrorAfterBridgeReconnect(t *testing.T) {
 	side := mngVirtualRouterRouteSideStatus{
 		VirtualRouter: &probeVirtualRouterRuntimeStats{
@@ -475,6 +497,54 @@ func TestMngLinkVirtualRouterHandlerSaveAndGet(t *testing.T) {
 	}
 }
 
+func TestMngLinkVirtualRouterHandlerCanOmitFakeIPLibrary(t *testing.T) {
+	oldStore := ProbeRouteConfigStore
+	oldProbeStore := ProbeStore
+	t.Cleanup(func() {
+		ProbeRouteConfigStore = oldStore
+		ProbeStore = oldProbeStore
+	})
+	ProbeRouteConfigStore = &probeRouteConfigStore{
+		data: probeRouteConfigStoreData{
+			VirtualRouter: defaultProbeVirtualRouterConfig(),
+			VirtualRouterFakeIP: probeVirtualRouterFakeIPLibrary{
+				Version: 7,
+				Items:   []probeVirtualRouterFakeIPEntry{{Domain: "example.com", FakeIP: "198.18.1.2"}},
+			},
+		},
+	}
+	ProbeStore = &probeConfigStore{data: probeConfigData{ProbeSecrets: map[string]string{}}}
+
+	for _, tc := range []struct {
+		path        string
+		wantLibrary bool
+	}{
+		{path: "/mng/api/route/virtual_router", wantLibrary: true},
+		{path: "/mng/api/route/virtual_router?omit_fake_ip_library=1", wantLibrary: false},
+	} {
+		rr := httptest.NewRecorder()
+		mngRouteVirtualRouterHandler(rr, httptest.NewRequest(http.MethodGet, tc.path, nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("GET %s status=%d body=%s", tc.path, rr.Code, rr.Body.String())
+		}
+		var payload struct {
+			Item map[string]json.RawMessage `json:"item"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("decode GET %s: %v", tc.path, err)
+		}
+		_, hasLibrary := payload.Item["fake_ip_library"]
+		if hasLibrary != tc.wantLibrary {
+			t.Fatalf("GET %s fake_ip_library present=%t, want %t", tc.path, hasLibrary, tc.wantLibrary)
+		}
+		if !tc.wantLibrary {
+			if _, ok := payload.Item["topology_rules"]; !ok {
+				t.Fatalf("GET %s missing topology_rules", tc.path)
+			}
+		}
+	}
+}
+
 func TestMngLinkVirtualRouterHandlerReturnsCloudflareCopilotDomainsWithoutChangingProbePort(t *testing.T) {
 	oldStore := ProbeRouteConfigStore
 	oldProbeStore := ProbeStore
@@ -682,6 +752,7 @@ func TestMngLinkVirtualRouterRouteRulesHandlerSaveSortsAndTopologySavePreserves(
 			ProbeNodes: []probeNodeRecord{
 				{NodeNo: 1, NodeName: "node-1"},
 				{NodeNo: 2, NodeName: "node-2"},
+				{NodeNo: 3, NodeName: "node-3"},
 			},
 			ProbeSecrets: map[string]string{},
 		},
@@ -693,6 +764,7 @@ func TestMngLinkVirtualRouterRouteRulesHandlerSaveSortsAndTopologySavePreserves(
       "name": "media",
       "action": "probe_exit",
       "exit_node_id": "2",
+      "backup_exit_node_id": "3",
       "entries": [
         "\"domain_suffix:.Reddit.COM\",",
         "\"cidr:91.108.4.9/22\",",
@@ -734,8 +806,8 @@ func TestMngLinkVirtualRouterRouteRulesHandlerSaveSortsAndTopologySavePreserves(
 		t.Fatalf("alpha action=%q exit=%q, want reject without exit", savePayload.Items[0].Action, savePayload.Items[0].ExitNodeID)
 	}
 	media := savePayload.Items[1]
-	if media.Action != probeVirtualRouterRouteRuleActionExit || media.ExitNodeID != "2" {
-		t.Fatalf("media action=%q exit=%q, want probe_exit node 2", media.Action, media.ExitNodeID)
+	if media.Action != probeVirtualRouterRouteRuleActionExit || media.ExitNodeID != "2" || media.BackupExitNodeID != "3" {
+		t.Fatalf("media action=%q exit=%q backup=%q, want probe_exit nodes 2/3", media.Action, media.ExitNodeID, media.BackupExitNodeID)
 	}
 	wantEntries := []string{
 		"cidr:198.51.100.7/32",
@@ -787,8 +859,22 @@ func TestMngLinkVirtualRouterRouteRulesHandlerSaveSortsAndTopologySavePreserves(
 	if len(getPayload.Items) != 2 || getPayload.Items[1].Name != "media" {
 		t.Fatalf("route rules should survive topology save: %+v", getPayload.Items)
 	}
-	if getPayload.Items[0].Action != probeVirtualRouterRouteRuleActionReject || getPayload.Items[1].Action != probeVirtualRouterRouteRuleActionExit || getPayload.Items[1].ExitNodeID != "2" {
+	if getPayload.Items[0].Action != probeVirtualRouterRouteRuleActionReject || getPayload.Items[1].Action != probeVirtualRouterRouteRuleActionExit || getPayload.Items[1].ExitNodeID != "2" || getPayload.Items[1].BackupExitNodeID != "3" {
 		t.Fatalf("route rule actions should survive topology save: %+v", getPayload.Items)
+	}
+	for _, test := range []struct {
+		name string
+		rule probeVirtualRouterRouteRule
+	}{
+		{"same node", probeVirtualRouterRouteRule{Name: "bad", Action: "probe_exit", ExitNodeID: "2", BackupExitNodeID: "2"}},
+		{"unknown node", probeVirtualRouterRouteRule{Name: "bad", Action: "probe_exit", ExitNodeID: "2", BackupExitNodeID: "99"}},
+		{"direct action", probeVirtualRouterRouteRule{Name: "bad", Action: "direct", BackupExitNodeID: "3"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateMngProbeVirtualRouterRouteRule(test.rule, 0); err == nil {
+				t.Fatalf("invalid backup exit accepted: %+v", test.rule)
+			}
+		})
 	}
 }
 

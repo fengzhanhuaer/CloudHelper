@@ -26,7 +26,7 @@ func mngRoutePageHandler(w http.ResponseWriter, r *http.Request) {
 func mngRouteVirtualRouterHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		result, err := getMngProbeVirtualRouterConfig()
+		result, err := getMngProbeVirtualRouterConfig(r.URL.Query().Get("omit_fake_ip_library") != "1")
 		writeMngRouteResult(w, result, err)
 	case http.MethodPost:
 		payload, err := readMngRawJSONPayload(r)

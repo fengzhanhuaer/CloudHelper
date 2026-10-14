@@ -266,6 +266,9 @@ func withProbeVirtualRouterRuleAuthForTest(t *testing.T, rule probeVirtualRouter
 
 func resetProbeVirtualRouterStateForTest() {
 	setProbeVirtualRouterNonDirectPathGuardEnabled(false)
+	probeVirtualRouterBackupExitProbeState.mu.Lock()
+	probeVirtualRouterBackupExitProbeState.next = make(map[string]time.Time)
+	probeVirtualRouterBackupExitProbeState.mu.Unlock()
 	probeVirtualRouterRelayServerState.mu.Lock()
 	relays := make([]*probeVirtualRouterRelayServer, 0, len(probeVirtualRouterRelayServerState.servers))
 	for _, relay := range probeVirtualRouterRelayServerState.servers {
