@@ -170,7 +170,7 @@
             gap: 14px;
         }
         .traffic-grid {
-            grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(min(400px, 100%), 1fr));
         }
         .traffic-grid .probe-item {
             min-height: 0;
@@ -238,6 +238,19 @@
         }
         .probe-traffic-period {
             color: var(--text-secondary);
+        }
+        .probe-traffic-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 8px;
+            white-space: nowrap;
+        }
+        @media (max-width: 480px) {
+            .probe-traffic-row {
+                font-size: 11px;
+                gap: 4px;
+            }
         }
         .probe-online {
             flex: 0 0 auto;
@@ -787,12 +800,8 @@
                 const monthTX = bytes(traffic.month_tx_bytes);
                 const usage = traffic.available
                     ? '<div class="probe-traffic" title="仅统计启用中的硬件出口接口；累计从本统计口径首次采样后开始">'
-                        + '<div>累计流量　合计 ' + formatTrafficBytes(totalRX + totalTX) + '</div>'
-                        + '<div>↓ 下行 ' + formatTrafficBytes(totalRX) + '　↑ 上行 ' + formatTrafficBytes(totalTX) + '</div>'
-                    + '</div>'
-                    + '<div class="probe-traffic">'
-                        + '<div>月度流量　合计 ' + formatTrafficBytes(monthRX + monthTX) + '</div>'
-                        + '<div>↓ 下行 ' + formatTrafficBytes(monthRX) + '　↑ 上行 ' + formatTrafficBytes(monthTX) + '</div>'
+                        + '<div class="probe-traffic-row"><span>累计</span><span>合计 ' + formatTrafficBytes(totalRX + totalTX) + '</span><span title="下行（接收）">↓' + formatTrafficBytes(totalRX) + '</span><span title="上行（发送）">↑' + formatTrafficBytes(totalTX) + '</span></div>'
+                        + '<div class="probe-traffic-row"><span>月度</span><span>合计 ' + formatTrafficBytes(monthRX + monthTX) + '</span><span title="下行（接收）">↓' + formatTrafficBytes(monthRX) + '</span><span title="上行（发送）">↑' + formatTrafficBytes(monthTX) + '</span></div>'
                         + '<div class="probe-traffic-period">周期起始: ' + escapeHTML(traffic.period_start || '-') + ' UTC (每月 ' + (Number(traffic.monthly_start_day) || 1) + ' 日)</div>'
                     + '</div>'
                     : '<div class="probe-traffic probe-traffic-period">流量统计等待探针上报</div>';
