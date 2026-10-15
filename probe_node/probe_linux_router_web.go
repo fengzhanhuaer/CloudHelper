@@ -47,7 +47,7 @@ func registerProbeLinuxRouterLocalConsoleRoutes(mux *http.ServeMux) {
 }
 
 func decorateProbeLinuxRouterLocalConsolePage(path, pageHTML string) string {
-	if path != "/local/virtual-router" {
+	if path != "/local/virtual-router" && path != "/local/virtual-router/gateway" {
 		return pageHTML
 	}
 	const marker = "<!-- product-virtual-router-subtabs -->"
@@ -142,6 +142,7 @@ func probeLinuxRouterWebStatusHandler(w http.ResponseWriter, r *http.Request) {
 		"controller_connected": controllerConnected,
 		"manual_fail_open":     manualFailOpen,
 		"config":               desired,
+		"remote_gateway":       currentProbeGatewayConfig(),
 		"runtime":              report,
 		"connections":          probeLocalVirtualRouterPathStatusPayloads(),
 		"interfaces":           listProbeLinuxRouterWebInterfaces(),

@@ -1,0 +1,31 @@
+#define _GNU_SOURCE
+#include "chvr.h"
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+static json_object *response;
+json_object *__wrap_vr_controller_call(const vr_config *c,const char *iface,const char *method,const char *path,json_object *body,char *err,size_t n)
+{(void)c;(void)iface;(void)method;(void)path;(void)body;if(n)*err=0;return json_object_get(response);}
+
+int main(void)
+{
+    const char *raw="{\"node_id\":\"7\",\"expected_node_kind\":\"asus_56uv2\",\"virtual_router\":{\"enabled\":true,\"fake_ip_cidr\":\"198.18.0.0/15\",\"probe_ips\":[{\"node_id\":\"7\",\"ip\":\"198.18.0.7\"}],\"topology_rules\":[],\"route_rules\":[{\"id\":\"gateway-proxy-23-test\",\"action\":\"probe_exit\",\"exit_node_id\":\"23\",\"entries\":[\"192.168.50.0/24\"]}]}}";
+    char root[]="/tmp/chvr-cache-XXXXXX",path[256],err[256];assert(mkdtemp(root));snprintf(path,sizeof(path),"%s/routes.json",root);
+    vr_config c;vr_config_default(&c);strcpy(c.node_id,"7");response=vr_json_parse(raw,strlen(raw));assert(response);
+    json_object *o=vr_policy_fetch_cached(&c,"",path,err,sizeof(err));assert(o);json_object_put(o);
+    struct stat before,after;assert(!stat(path,&before));assert((before.st_mode&0777)==0600);
+    o=vr_policy_fetch_cached(&c,"",path,err,sizeof(err));assert(o);json_object_put(o);assert(!stat(path,&after)&&before.st_ino==after.st_ino);
+    json_object *online=response;response=NULL;
+    o=vr_policy_fetch_cached(&c,"",path,err,sizeof(err));assert(o&&json_object_array_length(vr_member(vr_member(o,"virtual_router"),"route_rules"))==1);json_object_put(o);
+    strcpy(c.node_id,"8");assert(!vr_policy_fetch_cached(&c,"",path,err,sizeof(err)));strcpy(c.node_id,"7");
+    response=json_object_new_object();assert(!vr_policy_fetch_cached(&c,"",path,err,sizeof(err)));json_object_put(response);
+    response=online;json_object_object_add(vr_member(response,"virtual_router"),"route_rules",json_object_new_array());
+    o=vr_policy_fetch_cached(&c,"",path,err,sizeof(err));assert(o);json_object_put(o);response=NULL;
+    o=vr_policy_fetch_cached(&c,"",path,err,sizeof(err));assert(o&&json_object_array_length(vr_member(vr_member(o,"virtual_router"),"route_rules"))==0);json_object_put(o);
+    assert(!vr_atomic_write(path,"{",1));assert(!vr_policy_fetch_cached(&c,"",path,err,sizeof(err)));
+    json_object_put(online);unlink(path);rmdir(root);puts("PASS: persisted routes recover offline, revocation replaces cache, wrong identity/corruption/invalid online responses fail closed");return 0;
+}

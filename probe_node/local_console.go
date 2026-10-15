@@ -1774,6 +1774,8 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/logs", probeLocalLogsPageHandler)
 	mux.HandleFunc("/local/system", probeLocalSystemPageHandler)
 	mux.HandleFunc("/local/virtual-router", probeLocalVirtualRouterPageHandler)
+	mux.HandleFunc("/local/virtual-router/gateway", probeGatewayPageHandler)
+	mux.HandleFunc("/local/api/virtual_router/gateway", probeGatewayConfigHandler)
 	mux.HandleFunc("/local/sync", probeLocalSyncPageHandler)
 	mux.HandleFunc("/local/shell", probeLocalShellPageHandler)
 	mux.HandleFunc("/local/information", probeLocalInformationPageHandler)

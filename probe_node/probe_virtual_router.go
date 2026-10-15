@@ -830,7 +830,6 @@ func persistProbeRouteConfigCache(config probeVirtualRouterConfig) error {
 		return err
 	}
 	cacheItem := sanitizeProbeVirtualRouterConfigForCache(config)
-	cacheItem.RouteRules = stripProbeLinuxRouterPublishedRouteRules(cacheItem.RouteRules)
 	cacheItem.FakeIPLibrary = probeVirtualRouterFakeIPLibrary{}
 	payload := probeRouteConfigCacheFile{
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
@@ -843,7 +842,7 @@ func persistProbeRouteConfigCache(config probeVirtualRouterConfig) error {
 	if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(cachePath, append(encoded, '\n'), 0o600); err != nil {
+	if err := writeProbeGatewayAtomic(cachePath, append(encoded, '\n')); err != nil {
 		return err
 	}
 	return os.Chmod(cachePath, 0o600)
@@ -869,7 +868,6 @@ func loadProbeRouteConfigCache() (probeVirtualRouterConfig, error) {
 		return probeVirtualRouterConfig{}, err
 	}
 	config := sanitizeProbeVirtualRouterConfigForCache(payload.Item)
-	config.RouteRules = stripProbeLinuxRouterPublishedRouteRules(config.RouteRules)
 	config.FakeIPLibrary = probeVirtualRouterFakeIPLibrary{}
 	rememberProbeVirtualRouterAuthTickets(config)
 	return config, nil
@@ -6952,6 +6950,9 @@ func handleProbeVirtualRouterIPFrame(runtime *probeVirtualRouterRuntime, link *p
 	recordProbeVirtualRouterRuntimePacketReceived(runtime, len(packet))
 	if len(path) == 0 {
 		path = currentProbeVirtualRouterPathToIP(dstIP)
+	}
+	if handleProbeGatewayPacket(runtime, link, packet, path) {
+		return nil
 	}
 	srcIP := probeVirtualRouterIPv4Source(packet)
 	localIP := currentProbeVirtualRouterLocalIPForRuntime(runtime)

@@ -760,6 +760,10 @@ func ProbeProxyInstallScriptHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if node, found := getProbeNodeByID(nodeID); found && normalizeProbeNodeKind(node.NodeKind) == probeNodeKindAsus56UV2 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "华硕56UV2需要原厂系统JFFS插件，不能安装普通Probe程序"})
+		return
+	}
 	target := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("target")))
 	script := probeNodeInstallScriptLinux
 	contentType := "text/x-shellscript; charset=utf-8"
@@ -808,6 +812,9 @@ func ProbeProxyRouterInstallScriptHandler(w http.ResponseWriter, r *http.Request
 }
 
 func dispatchUpgradeToProbe(node probeNodeRecord, controllerBaseURL string) (probeUpgradeDispatchResult, error) {
+	if normalizeProbeNodeKind(node.NodeKind) == probeNodeKindAsus56UV2 {
+		return probeUpgradeDispatchResult{}, fmt.Errorf("华硕56UV2使用专用JFFS插件升级，不支持普通Probe二进制更新")
+	}
 	nodeID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
 	session, ok := getProbeSession(nodeID)
 	if !ok {
@@ -851,6 +858,9 @@ func dispatchUpgradeToProbe(node probeNodeRecord, controllerBaseURL string) (pro
 }
 
 func dispatchProbeLocalConsoleControl(node probeNodeRecord) (bool, error) {
+	if normalizeProbeNodeKind(node.NodeKind) == probeNodeKindAsus56UV2 {
+		return false, nil // Managed by the native ASUS authenticated UI.
+	}
 	nodeID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
 	if nodeID == "" {
 		return false, fmt.Errorf("node_id is required")

@@ -190,12 +190,31 @@ func buildProbeVirtualRouterConfigForNodeLocked(nodeID string) probeVirtualRoute
 	config = enrichProbeVirtualRouterAuthTickets(config)
 	config = enrichProbeVirtualRouterProbeIPDisplayNames(config)
 	config = scopeProbeVirtualRouterCredentialsForNode(config, nodeID)
+	config = applyProbeRouterTransportCapabilities(config)
 	config.RouteRules = appendProbeLinuxRouterPublishedRouteRules(config.RouteRules, listProbeRuntimes(), nodeID)
+	config.RouteRules = appendProbeGatewayPublishedRules(config.RouteRules, listProbeRuntimes(), nodeID)
 	config.FakeIPLibrary = probeVirtualRouterFakeIPLibrary{}
 	if !config.Enabled {
 		config.ProbeIPs = []probeVirtualRouterProbeIP{}
 		config.TopologyRules = []probeVirtualRouterTopologyRule{}
 		return config
+	}
+	return config
+}
+
+// Apply endpoint capabilities to both sides of an edge. The stored topology is
+// unchanged, so replacing an ASUS endpoint restores the original transport.
+func applyProbeRouterTransportCapabilities(config probeVirtualRouterConfig) probeVirtualRouterConfig {
+	config.TopologyRules = append([]probeVirtualRouterTopologyRule(nil), config.TopologyRules...)
+	for i := range config.TopologyRules {
+		rule := &config.TopologyRules[i]
+		for _, id := range []string{rule.FromNodeID, rule.ToNodeID} {
+			if node, ok := getProbeNodeByID(id); ok && normalizeProbeNodeKind(node.NodeKind) == probeNodeKindAsus56UV2 {
+				rule.RouteLayer = "http2" // Existing protocol name for TLS/WebSocket.
+				rule.CarrierCount = 1
+				break
+			}
+		}
 	}
 	return config
 }
@@ -213,7 +232,7 @@ func appendProbeLinuxRouterPublishedRouteRules(rules []probeVirtualRouterRouteRu
 		routerNodeID := normalizeProbeNodeID(runtime.NodeID)
 		report := runtime.LinuxRouter
 		routerNode, routerFound := getProbeNodeByID(routerNodeID)
-		if !routerFound || normalizeProbeNodeKind(routerNode.NodeKind) != probeNodeKindLinuxRouter || !runtime.Online || !report.Healthy || report.FailOpen || !report.LocalIPProxyEnabled || routerNodeID == "" || routerNodeID == nodeID || !probeLinuxRouterNodeAllowed(report.AllowedNodeIDs, nodeID) {
+		if runtime.GatewayProxy != nil || !routerFound || normalizeProbeNodeKind(routerNode.NodeKind) != probeNodeKindLinuxRouter || !runtime.Online || !report.Healthy || report.FailOpen || !report.LocalIPProxyEnabled || routerNodeID == "" || routerNodeID == nodeID || !probeLinuxRouterNodeAllowed(report.AllowedNodeIDs, nodeID) {
 			continue
 		}
 		for _, cidr := range report.PublishedCIDRs {

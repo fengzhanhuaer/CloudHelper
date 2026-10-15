@@ -47,6 +47,7 @@ const (
 )
 
 type probeVirtualRouterExitNetstack struct {
+	gateway         bool
 	stack           *stack.Stack
 	linkEP          *channel.Endpoint
 	outputDispatch  []*probeAdaptiveQueue[probeVirtualRouterExitNetstackOutputPacket]
@@ -169,7 +170,7 @@ func handleProbeVirtualRouterFakeIPExitICMPEchoRequest(runtime *probeVirtualRout
 	if !ok || info.Kind != "echo_request" {
 		return false
 	}
-	if !probeProductAllowsPhysicalICMPExit() {
+	if entry.Action != "gateway_proxy" && !probeProductAllowsPhysicalICMPExit() {
 		err := errors.New("icmp is unsupported by mihomo exit and physical fallback is disabled")
 		recordProbeVirtualRouterRuntimeDeliveryError(runtime, err)
 		log.Printf("probe virtual router fake ip icmp exit rejected: route=%s fake_ip=%s domain=%s err=%v", probeVirtualRouterRuntimeLogRouteID(runtime), info.DestinationIP, strings.TrimSpace(entry.Domain), err)
@@ -189,6 +190,12 @@ func handleProbeVirtualRouterFakeIPExitICMPEchoRequest(runtime *probeVirtualRout
 			recordProbeVirtualRouterRuntimeDeliveryError(runtime, err)
 			log.Printf("probe virtual router fake ip icmp exit failed: route=%s fake_ip=%s domain=%s targets=%s id=%d seq=%d err=%v", probeVirtualRouterRuntimeLogRouteID(runtime), info.DestinationIP, strings.TrimSpace(entry.Domain), strings.Join(targetIPs, ","), info.ID, info.Sequence, err)
 			return
+		}
+		if entry.Action == "gateway_proxy" {
+			gateway := currentProbeGatewayConfig()
+			if gateway == nil || !probeGatewayPacketAllowed(*gateway, request, ingressPath, currentProbeVirtualRouterLocalNodeIDForRuntime(runtime), currentProbeVirtualRouterConfig()) {
+				return
+			}
 		}
 		dstIP := probeVirtualRouterIPv4Destination(reply)
 		replyPath := probeVirtualRouterReversePath(ingressPath)
@@ -498,7 +505,11 @@ func (n *probeVirtualRouterExitNetstack) handleTCPForwarder(req *tcp.ForwarderRe
 	}
 	req.Complete(false)
 	inbound := gonet.NewTCPConn(&wq, ep)
-	go relayProbeVirtualRouterExitTCP(inbound, id.LocalAddress, id.LocalPort)
+	if n.gateway {
+		go relayProbeGatewayTCP(inbound, id.LocalAddress, id.LocalPort)
+	} else {
+		go relayProbeVirtualRouterExitTCP(inbound, id.LocalAddress, id.LocalPort)
+	}
 }
 
 func relayProbeVirtualRouterExitTCP(inbound net.Conn, localAddress tcpip.Address, localPort uint16) {
@@ -543,7 +554,11 @@ func (n *probeVirtualRouterExitNetstack) handleUDPForwarder(req *udp.ForwarderRe
 		return
 	}
 	inbound := gonet.NewUDPConn(&wq, ep)
-	go relayProbeVirtualRouterExitUDP(inbound, id.LocalAddress, id.LocalPort)
+	if n.gateway {
+		go relayProbeGatewayUDP(inbound, id.LocalAddress, id.LocalPort)
+	} else {
+		go relayProbeVirtualRouterExitUDP(inbound, id.LocalAddress, id.LocalPort)
+	}
 }
 
 func relayProbeVirtualRouterExitUDP(inbound *gonet.UDPConn, localAddress tcpip.Address, localPort uint16) {

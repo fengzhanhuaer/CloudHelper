@@ -1,0 +1,191 @@
+#define _GNU_SOURCE
+#include "engine.h"
+#include <errno.h>
+#include <poll.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+static void status(vr_engine *e,int ready)
+{
+    json_object *o=json_object_new_object(),*links=json_object_new_array(),*nodes=json_object_new_array();
+    json_object_object_add(o,"enabled",json_object_new_boolean(e->config.enabled));
+    json_object_object_add(o,"ready",json_object_new_boolean(ready));
+    pthread_mutex_lock(&e->mutex);int connected=e->controller_connected;pthread_mutex_unlock(&e->mutex);
+    json_object_object_add(o,"controller_connected",json_object_new_boolean(connected));
+    json_object_object_add(o,"error",json_object_new_string(e->error));
+    json_object_object_add(o,"lan",json_object_new_string(e->addresses.lan));json_object_object_add(o,"wan",json_object_new_string(e->addresses.wan));
+    json_object_object_add(o,"virtual_ip",json_object_new_string(e->own_ip));json_object_object_add(o,"node_id",json_object_new_string(e->config.node_id));
+    json_object_object_add(o,"route_count",json_object_new_int(e->policy?json_object_array_length(vr_member(e->policy,"route_rules")):0));
+    int count=0;pthread_mutex_lock(&e->mutex);for(size_t i=0;i<VR_MAPPING_MAX;i++)if(e->mappings[i].expires>time(NULL))count++;pthread_mutex_unlock(&e->mutex);
+    json_object_object_add(o,"mappings",json_object_new_int(count));
+    for(size_t i=0;i<e->link_count;i++) {
+        vr_link *l=&e->links[i];json_object *v=json_object_new_object();
+        json_object_object_add(v,"route",json_object_new_string(l->route));json_object_object_add(v,"peer",json_object_new_string(l->peer));
+        json_object_object_add(v,"state",json_object_new_string(l->ssl?"connected":"disconnected"));
+        json_object_object_add(v,"transport",json_object_new_string("TLS/WebSocket"));json_object_object_add(v,"error",json_object_new_string(l->error));
+        json_object_object_add(v,"rtt_ms",json_object_new_int64((int64_t)l->rtt));
+        json_object_object_add(v,"tx_bytes",json_object_new_int64((int64_t)l->tx));json_object_object_add(v,"rx_bytes",json_object_new_int64((int64_t)l->rx));json_object_array_add(links,v);
+    }
+    json_object *list=vr_member(e->policy,"probe_ips");
+    if(list)for(size_t i=0;i<(size_t)json_object_array_length(list);i++) {
+        json_object *src=json_object_array_get_idx(list,i),*v=json_object_new_object();
+        json_object_object_add(v,"node_id",json_object_new_string(vr_string(src,"node_id")));
+        json_object_object_add(v,"display_name",json_object_new_string(vr_string(src,"display_name")));json_object_array_add(nodes,v);
+    }
+    json_object_object_add(o,"links",links);json_object_object_add(o,"nodes",nodes);vr_service_status(e->service,o,e->generation);
+}
+
+void vr_link_frame(vr_link *l,const vr_frame *f,char path[VR_PATH_MAX][129],size_t n)
+{
+    if(f->main==1)vr_incoming(l->engine,f,path,n);
+    else if(f->main>=2&&f->main<=4)vr_measure_frame(l->engine,l,f,path,n);
+}
+
+static int replay_load(vr_engine *e)
+{
+    if(vr_copy(e->replay_path,sizeof(e->replay_path),e->service->config_path))return -1;
+    char *slash=strrchr(e->replay_path,'/');if(!slash)return -1;
+    if((size_t)(slash-e->replay_path)+sizeof("/auth-replay.json")>sizeof(e->replay_path))return -1;
+    strcpy(slash,"/auth-replay.json");
+    char *buf=malloc(128*1024);size_t n;int rc=-1;if(!buf)return -1;
+    if(vr_read_file(e->replay_path,buf,128*1024,&n)) {
+        if(errno==ENOENT){e->nonces=json_object_new_object();rc=0;}
+    } else {
+        e->nonces=vr_json_parse(buf,n);
+        if(e->nonces&&json_object_is_type(e->nonces,json_type_object)&&json_object_object_length(e->nonces)<=1024) {
+            rc=0;json_object_object_foreach(e->nonces,k,v){if(strlen(k)!=64||!json_object_is_type(v,json_type_int))rc=-1;}
+        }
+    }
+    free(buf);return rc;
+}
+
+
+static int cache_path(vr_engine *e,const char *name,char out[512])
+{
+    if(vr_copy(out,512,e->service->config_path))return -1;
+    char *slash=strrchr(out,'/');if(!slash||strlen(name)+(size_t)(slash-out)+2>512)return -1;
+    strcpy(slash+1,name);return 0;
+}
+static int prepare(vr_engine *e)
+{
+    if(vr_addresses_get(&e->addresses)){strcpy(e->error,"LAN/WAN discovery failed");return -1;}
+    char upstream[64];strcpy(upstream,e->config.dns_upstream);*strchr(upstream,':')=0;
+    if(!strcmp(upstream,e->addresses.lan)||!strcmp(upstream,e->addresses.wan)){strcpy(e->error,"DNS upstream cannot be this router");return -1;}
+    char policy_cache[512],cert_cache[512];
+    if(cache_path(e,"route-cache.json",policy_cache)||cache_path(e,"node-certificate.json",cert_cache))return -1;
+    e->snapshot=vr_policy_fetch_cached(&e->config,e->addresses.wan_if,policy_cache,e->error,sizeof(e->error));
+    if(!e->snapshot)return -1;
+    *e->error=0;
+    json_object *dns=vr_member(e->snapshot,"dns_upstreams");
+    if(dns) {
+        json_object *input=json_object_new_object();json_object_object_add(input,"dns_upstreams",json_object_get(dns));
+        vr_service *s=e->service;pthread_mutex_lock(&s->mutex);vr_config next;
+        int invalid=s->generation!=e->generation || vr_config_parse(&next,input,&s->config,e->error,sizeof(e->error));
+        char target[64]={0};if(!invalid)strcpy(target,next.dns_upstream);char *colon=strchr(target,':');if(colon)*colon=0;
+        if(!invalid&&(!strcmp(target,e->addresses.lan)||!strcmp(target,e->addresses.wan)))invalid=1;
+        if(!invalid && (strcmp(next.dns_doh,s->config.dns_doh)||strcmp(next.dns_dot,s->config.dns_dot)||strcmp(next.dns_upstream,s->config.dns_upstream))) {
+            invalid=vr_config_save(&next,s->config_path);
+            if(!invalid)s->config=next;
+        }
+        if(!invalid)e->config=next;
+        pthread_mutex_unlock(&s->mutex);json_object_put(input);
+        if(invalid){strcpy(e->error,"cannot apply controller DNS upstreams");return -1;}
+    }
+    strcpy(upstream,e->config.dns_upstream);*strchr(upstream,':')=0;
+    if(!strcmp(upstream,e->addresses.lan)||!strcmp(upstream,e->addresses.wan)){strcpy(e->error,"DNS upstream cannot be this router");return -1;}
+    e->policy=vr_member(e->snapshot,"virtual_router");
+    if(!json_object_get_boolean(vr_member(e->policy,"enabled"))){strcpy(e->error,"virtual routing is disabled on controller");return -1;}
+    if(vr_copy(e->cidr,sizeof(e->cidr),vr_string(e->policy,"fake_ip_cidr")))return -1;
+    json_object *nodes=vr_member(e->policy,"probe_ips");
+    for(size_t i=0;i<(size_t)json_object_array_length(nodes);i++) {
+        json_object *node=json_object_array_get_idx(nodes,i);
+        if(!strcmp(vr_string(node,"node_id"),e->config.node_id))vr_copy(e->own_ip,sizeof(e->own_ip),vr_string(node,"ip"));
+    }
+    if(replay_load(e)){strcpy(e->error,"authentication replay state invalid");return -1;}
+    json_object *cert=vr_controller_call(&e->config,e->addresses.wan_if,"GET","/api/probe/certificate",NULL,e->error,sizeof(e->error));
+    int fresh_cert=cert!=NULL;if(!cert)cert=vr_cache_load(cert_cache);
+    if(cert&&!strcmp(vr_string(cert,"node_id"),e->config.node_id))e->tls=vr_tls_server_context(vr_string(cert,"cert_pem"),vr_string(cert,"key_pem"));
+    if(e->tls && fresh_cert && vr_cache_save(cert_cache,cert)){SSL_CTX_free(e->tls);e->tls=NULL;}
+    json_object_put(cert);if(!e->tls){strcpy(e->error,"node TLS certificate unavailable");return -1;}
+    json_object *links=vr_member(e->policy,"topology_rules");
+    for(size_t i=0;i<(size_t)json_object_array_length(links);i++) {
+        json_object *r=json_object_array_get_idx(links,i);if(!json_object_get_boolean(vr_member(r,"enabled")))continue;
+        const char *from=vr_string(r,"from_node_id"),*to=vr_string(r,"to_node_id");if(strcmp(from,e->config.node_id)&&strcmp(to,e->config.node_id))continue;
+        if(e->link_count>=VR_LINK_MAX)return -1;
+        vr_link *l=&e->links[e->link_count++];l->engine=e;l->rule=r;l->fd=-1;
+        if(vr_route_id(vr_string(r,"id"),l->route)||vr_copy(l->peer,sizeof(l->peer),!strcmp(from,e->config.node_id)?to:from))return -1;
+    }
+    if(vr_service_stopped(e->service,e->generation))return -1;
+    e->lan=vr_bind4(e->addresses.lan,e->config.port,1);
+    if(e->config.allow_wan&&*e->addresses.wan)e->wan=vr_bind4(e->addresses.wan,e->config.port,1);
+    if(e->lan<0||(e->config.allow_wan&&*e->addresses.wan&&e->wan<0)){strcpy(e->error,"carrier address or port unavailable");return -1;}
+    e->tun=vr_platform_start(&e->config,&e->addresses,e->own_ip,e->cidr);
+    if(e->tun<0){strcpy(e->error,"TUN/routing/firewall initialization failed");return -1;}e->platform_started=1;
+    if(vr_platform_routes(e->policy)){strcpy(e->error,"published route initialization failed");return -1;}
+    if(vr_dataplane_start(e)){strcpy(e->error,"mapping resolver initialization failed");return -1;}
+    if(e->config.dns_enabled&&vr_dns_start(e)){strcpy(e->error,"DNS initialization failed");return -1;}
+    if(vr_control_start(e)){strcpy(e->error,"controller worker initialization failed");return -1;}
+    return 0;
+}
+
+void vr_engine_run(vr_service *service,const vr_config *config,unsigned generation)
+{
+    vr_engine *e=calloc(1,sizeof(*e));if(!e)return;
+    e->service=service;e->config=*config;e->generation=generation;e->tun=e->lan=e->wan=e->dns_udp=e->dns_tcp=-1;
+    pthread_mutex_init(&e->mutex,NULL);pthread_cond_init(&e->jobs_changed,NULL);
+    for(size_t i=0;i<VR_LINK_MAX;i++)e->links[i].fd=-1;
+    if(prepare(e))goto done;
+    uint64_t published=0,addresses_checked=vr_millis();
+    while(!vr_service_stopped(service,generation)) {
+        uint64_t now=vr_millis();
+        pthread_mutex_lock(&e->mutex);int refresh=e->refresh;pthread_mutex_unlock(&e->mutex);
+        if(refresh){strcpy(e->error,"controller configuration changed; reloading");break;}
+        vr_handshakes_poll(e,0);
+        vr_dataplane_tick(e);
+        for(size_t i=0;i<e->link_count;i++) {
+            vr_link *l=&e->links[i];
+            if(l->ssl && (l->auth_expires<=time(NULL)||now-l->last_rx>90000))vr_link_close(l,"link authorization or idle timeout");
+            if(!l->ssl)vr_link_dial(l);
+        }
+        struct pollfd fds[5+VR_LINK_MAX];fds[0]=(struct pollfd){e->tun,POLLIN,0};fds[1]=(struct pollfd){e->lan,POLLIN,0};
+        fds[2]=(struct pollfd){e->wan,POLLIN,0};fds[3]=(struct pollfd){e->dns_udp,POLLIN,0};fds[4]=(struct pollfd){e->dns_tcp,POLLIN,0};
+        for(size_t i=0;i<e->link_count;i++)fds[5+i]=(struct pollfd){e->links[i].fd,(short)(POLLIN|(e->links[i].used?POLLOUT:0)),0};
+        int result=poll(fds,5+e->link_count,50);if(result<0&&errno==EINTR)continue;if(result<0){strcpy(e->error,"network poll failed");break;}
+        for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl)vr_link_poll(&e->links[i],fds[5+i].revents);
+        if(fds[0].revents&POLLIN){uint8_t packet[2048];ssize_t n=read(e->tun,packet,sizeof(packet));if(n>0)vr_outgoing(e,packet,(size_t)n);}
+        for(size_t i=1;i<=2;i++)if(fds[i].revents&POLLIN){int fd=accept4(fds[i].fd,NULL,NULL,SOCK_CLOEXEC);if(fd>=0)vr_link_accept(e,fd);}
+        if(fds[3].revents&POLLIN)vr_dns_accept(e,0);
+        if(fds[4].revents&POLLIN)vr_dns_accept(e,1);
+        vr_measure_tick(e);
+        if(now-published>=1000){status(e,1);published=now;}
+        if(now-addresses_checked>=10000) {
+            vr_addresses next;
+            if(vr_addresses_get(&next)||memcmp(&next,&e->addresses,sizeof(next))){strcpy(e->error,"LAN/WAN changed; rebinding");break;}
+            if(!vr_platform_healthy()){strcpy(e->error,"firewall changed; restoring owned rules");break;}
+            if(e->config.dns_enabled&&vr_platform_dns(1)){strcpy(e->error,"DNS upstream reconciliation failed");break;}
+            addresses_checked=now;
+        }
+    }
+done:
+    /* Restore ordinary DNS before waiting for controller network deadlines. */
+    if(e->platform_started)vr_platform_dns(0);
+    vr_control_stop(e);
+    vr_measure_stop(e);
+    status(e,0);
+    if(*e->error)fprintf(stderr,"virtual router: %s\n",e->error);
+    /* Restore dnsmasq while worker sockets are still open, then join bounded jobs. */
+    vr_dns_stop(e);
+    vr_dataplane_stop(e);
+    vr_handshakes_poll(e,1);
+    for(size_t i=0;i<e->link_count;i++)vr_link_close(&e->links[i],"");
+    if(e->lan>=0)close(e->lan);
+    if(e->wan>=0)close(e->wan);
+    if(e->platform_started)vr_platform_stop(e->cidr);
+    if(e->tun>=0)close(e->tun);
+    for(size_t i=0;i<4;i++)json_object_put(e->receives[i].message);
+    json_object_put(e->speed_send);json_object_put(e->snapshot);json_object_put(e->nonces);SSL_CTX_free(e->tls);
+    pthread_cond_destroy(&e->jobs_changed);pthread_mutex_destroy(&e->mutex);OPENSSL_cleanse(&e->config,sizeof(e->config));free(e);
+}

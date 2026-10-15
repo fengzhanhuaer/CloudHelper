@@ -8,6 +8,7 @@ import (
 )
 
 type probeRouteConfigResponse struct {
+	DNSUpstreams     probeDNSUpstreams         `json:"dns_upstreams"`
 	NodeID           string                    `json:"node_id"`
 	ExpectedNodeKind string                    `json:"expected_node_kind,omitempty"`
 	VirtualRouter    probeVirtualRouterConfig  `json:"virtual_router,omitempty"`
@@ -59,6 +60,7 @@ func ProbeRouteConfigHandler(w http.ResponseWriter, r *http.Request) {
 		snapshot = &value
 	}
 	writeJSON(w, http.StatusOK, probeRouteConfigResponse{
+		DNSUpstreams:     currentProbeDNSUpstreams(),
 		NodeID:           nodeID,
 		ExpectedNodeKind: expectedNodeKind,
 		VirtualRouter:    virtualRouter,

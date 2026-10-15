@@ -14,6 +14,7 @@ import (
 const (
 	probeNodeKindNormal                = "normal"
 	probeNodeKindLinuxRouter           = "linux_router"
+	probeNodeKindAsus56UV2             = "asus_56uv2"
 	probeSpecialExitDirectTarget       = "DIRECT"
 	probeSpecialExitMaxCount           = 128
 	probeSpecialExitMaxRules           = 2048
@@ -91,6 +92,8 @@ func normalizeProbeNodeKind(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case probeNodeKindLinuxRouter:
 		return probeNodeKindLinuxRouter
+	case probeNodeKindAsus56UV2:
+		return probeNodeKindAsus56UV2
 	default:
 		return probeNodeKindNormal
 	}

@@ -37,7 +37,7 @@ func TestProbeLocalDNSBootstrapPrefersSystemServers(t *testing.T) {
 	}
 
 	got := currentProbeLocalDNSBootstrapServerTargets()
-	want := []string{"172.18.52.205:53", "223.5.5.5:53", "119.29.29.29:53"}
+	want := []string{"172.18.52.205:53", "223.5.5.5:53"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("bootstrap servers=%v want=%v", got, want)
 	}

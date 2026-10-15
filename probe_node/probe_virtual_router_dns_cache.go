@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
+
+	"github.com/cloudhelper/probe_node/internal/dnsupstream"
 )
 
 const (
@@ -149,17 +151,22 @@ func init() {
 	probeLocalDNSBootstrapLookupIPv4 = bootstrapProbeLocalDNSResolveIPv4s
 }
 
-func defaultProbeLocalDNSServers() []string {
-	return []string{"223.5.5.5", "119.29.29.29"}
-}
+var probeDNSUpstreamStore dnsupstream.Store
 
-func defaultProbeLocalDoTServers() []string {
-	return []string{"dns.alidns.com:853", "dot.pub:853"}
+func currentProbeDNSUpstreams() dnsupstream.Config {
+	dir, err := resolveDataDir()
+	if err != nil {
+		return dnsupstream.Default()
+	}
+	c, err := probeDNSUpstreamStore.Current(dir)
+	if err != nil {
+		return dnsupstream.Default()
+	}
+	return c
 }
-
-func defaultProbeLocalDoHServers() []string {
-	return []string{"https://dns.alidns.com/dns-query", "https://doh.pub/dns-query"}
-}
+func defaultProbeLocalDNSServers() []string { return []string{currentProbeDNSUpstreams().DNS} }
+func defaultProbeLocalDoTServers() []string { return []string{currentProbeDNSUpstreams().DoT} }
+func defaultProbeLocalDoHServers() []string { return []string{currentProbeDNSUpstreams().DoH} }
 
 func defaultProbeLocalDNSUpstreamHostIPv4s(host string) []string {
 	switch normalizeProbeLocalDNSDomain(host) {
@@ -383,16 +390,22 @@ func resolveProbeLocalDNSRealIPv4sFromUpstreamsWithContext(ctx context.Context, 
 }
 
 func defaultProbeLocalDNSQueryUpstream(candidate probeLocalDNSUpstreamCandidate, packet []byte) ([]byte, error) {
+	var reply []byte
+	var err error
 	switch candidate.Kind {
 	case "doh":
-		return queryProbeLocalDNSViaDoH(candidate.Address, packet)
+		reply, err = queryProbeLocalDNSViaDoH(candidate.Address, packet)
 	case "dot":
-		return queryProbeLocalDNSViaDoT(candidate.Address, packet)
+		reply, err = queryProbeLocalDNSViaDoT(candidate.Address, packet)
 	case "dns":
-		return queryProbeLocalDNSViaPlain(candidate.Address, packet)
+		reply, err = queryProbeLocalDNSViaPlain(candidate.Address, packet)
 	default:
-		return nil, fmt.Errorf("unsupported dns upstream kind: %s", strings.TrimSpace(candidate.Kind))
+		return nil, fmt.Errorf("unsupported dns upstream kind: %s", candidate.Kind)
 	}
+	if err == nil {
+		err = dnsupstream.ValidateReply(packet, reply)
+	}
+	return reply, err
 }
 
 func currentProbeLocalDNSUpstreamCandidatesForDecision(decision probeLocalDNSRouteDecision) []probeLocalDNSUpstreamCandidate {
@@ -543,7 +556,8 @@ func queryProbeLocalDNSViaDoH(endpoint string, packet []byte) ([]byte, error) {
 			return dialer.DialContext(ctx, network, addr)
 		},
 	}
-	client := &http.Client{Timeout: probeLocalDNSUpstreamTimeout, Transport: transport}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Timeout: probeLocalDNSUpstreamTimeout, Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("DoH redirect refused") }}
 	response, err := client.Do(request)
 	if err != nil {
 		return nil, err
@@ -605,32 +619,20 @@ func queryProbeLocalDNSViaDoT(address string, packet []byte) ([]byte, error) {
 func queryProbeLocalDNSViaPlain(address string, packet []byte) ([]byte, error) {
 	cleanAddress, ok := normalizeProbeLocalDNSHostPort(address, "53")
 	if !ok {
-		return nil, fmt.Errorf("invalid dns upstream: %q", address)
+		return nil, errors.New("invalid ordinary DNS upstream")
 	}
-	dialTarget, _, err := resolveProbeLocalDNSHostPortDialTarget(cleanAddress)
+	target, _, err := resolveProbeLocalDNSHostPortDialTarget(cleanAddress)
 	if err != nil {
 		return nil, err
 	}
 	ensureProbeLocalDNSUpstreamDirectBypass("dns", cleanAddress)
 	dialer := applyProbeRouteEgressDialer(&net.Dialer{Timeout: probeLocalDNSUpstreamTimeout})
-	conn, err := dialer.Dial(probeRouteEgressDialNetwork("udp", dialTarget), dialTarget)
-	if err != nil {
-		return nil, err
-	}
-	defer conn.Close()
-	_ = conn.SetDeadline(probeLocalDNSNow().Add(probeLocalDNSUpstreamTimeout))
-	if _, err := conn.Write(packet); err != nil {
-		return nil, err
-	}
-	response := make([]byte, probeLocalDNSReadBufferSize)
-	n, err := conn.Read(response)
-	if err != nil {
-		return nil, err
-	}
-	if n <= 0 {
-		return nil, errors.New("dns upstream returned empty payload")
-	}
-	return append([]byte(nil), response[:n]...), nil
+	resolver := dnsupstream.Resolver{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dialer.DialContext(ctx, probeRouteEgressDialNetwork(network, addr), addr)
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), probeLocalDNSUpstreamTimeout)
+	defer cancel()
+	return resolver.Query(ctx, dnsupstream.Candidate{Kind: "dns", Address: target}, packet, currentProbeDNSUpstreams(), probeLocalDNSSystemServers())
 }
 
 func parseProbeLocalDNSQueryDomainAndType(packet []byte) (string, dnsmessage.Type) {

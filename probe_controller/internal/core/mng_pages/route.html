@@ -373,6 +373,16 @@
             </div>
           </div>
         </div>
+        <div class="box" style="margin-bottom:12px;">
+          <h3>节点 DNS 上游</h3>
+          <div class="doh-config">
+            <label for="node-dns-doh">DoH</label><input id="node-dns-doh" type="text" class="mono" autocomplete="off" />
+            <label for="node-dns-dot">DoT</label><input id="node-dns-dot" type="text" class="mono" autocomplete="off" />
+            <label for="node-dns-dns">普通 DNS</label><input id="node-dns-dns" type="text" class="mono" autocomplete="off" />
+          </div>
+          <p class="muted small">Probe Node、安卓及华硕节点依次使用 DoH → DoT → 普通 DNS → 系统 DNS。保存后下发并保存在节点本地。</p>
+          <button id="btn-node-dns-save" class="btn primary" type="button">保存并下发节点 DNS</button>
+        </div>
         <div class="toolbar">
           <div class="toolbar-actions">
             <button id="btn-doh-query-refresh" class="btn" type="button">刷新记录</button>
@@ -1087,10 +1097,23 @@
       setStatus('二次分流配置已删除', 'ok');
     }
 
+    async function loadNodeDNSSettings() {
+      const payload = await requestJSON('/mng/api/route/dns-upstreams');
+      ['doh', 'dot', 'dns'].forEach(key => { document.getElementById('node-dns-' + key).value = payload.item[key]; });
+    }
+    async function saveNodeDNSSettings() {
+      const item = {};
+      ['doh', 'dot', 'dns'].forEach(key => { item[key] = document.getElementById('node-dns-' + key).value.trim(); });
+      await requestJSON('/mng/api/route/dns-upstreams', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(item) });
+      await loadNodeDNSSettings();
+      setStatus('节点 DNS 上游已保存，已通知在线节点同步', 'ok');
+    }
+
     async function loadDoHSettings(silent) {
       const payload = await requestJSON('/mng/api/route/doh');
       state.doh = payload.item || { enabled: false, upstream: '', endpoint_path: '', updated_at: '' };
       renderDoHSettings();
+      await loadNodeDNSSettings();
       if (!silent) setStatus('DoH 配置已刷新', 'ok');
     }
 
@@ -2324,6 +2347,7 @@
           .then(() => setStatus('DoH 配置与查询记录已刷新', 'ok'))
           .catch((err) => setStatus(`刷新 DoH 失败：${err.message || err}`, 'err'));
       });
+      document.getElementById('btn-node-dns-save').addEventListener('click', () => { saveNodeDNSSettings().catch(err => setStatus(`保存节点 DNS 失败：${err.message || err}`, 'err')); });
       document.getElementById('btn-doh-save').addEventListener('click', () => {
         saveDoHSettings(false).catch((err) => setStatus(`保存 DoH 配置失败：${err.message || err}`, 'err'));
       });

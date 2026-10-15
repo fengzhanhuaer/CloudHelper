@@ -166,6 +166,7 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("/mng/api/route/special_exit_subscriptions", mngAuthRequiredMiddleware(mngRouteSpecialExitSubscriptionsHandler))
 	mux.HandleFunc("/mng/api/route/special_exits/subscription/refresh", mngAuthRequiredMiddleware(mngRouteSpecialExitSubscriptionRefreshHandler))
 	mux.HandleFunc("/mng/api/route/special_exits/status", mngAuthRequiredMiddleware(mngRouteSpecialExitStatusHandler))
+	mux.HandleFunc("/mng/api/route/dns-upstreams", mngAuthRequiredMiddleware(mngRouteDNSUpstreamsHandler))
 	mux.HandleFunc("/mng/api/route/doh", mngAuthRequiredMiddleware(mngRouteDoHHandler))
 	mux.HandleFunc("/mng/api/route/doh/queries", mngAuthRequiredMiddleware(mngRouteDoHQueriesHandler))
 	mux.HandleFunc("/mng", mngEntryHandler)

@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/cloudhelper/probe_node/internal/dnsupstream"
 )
 
 func TestNormalizeProbeRouteNodeID(t *testing.T) {
@@ -61,6 +63,7 @@ func TestFetchProbeRouteConfigUsesRouteEndpoint(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(probeRouteConfigResponse{
+			DNSUpstreams:     &dnsupstream.Config{DoH: "https://dns.alidns.com/dns-query", DoT: "dns.alidns.com:853", DNS: "192.0.2.53:53"},
 			ExpectedNodeKind: currentProbeBuildKind(),
 			VirtualRouter: probeVirtualRouterConfig{
 				Enabled:    true,
@@ -85,6 +88,11 @@ func TestFetchProbeRouteConfigUsesRouteEndpoint(t *testing.T) {
 	config, err := fetchProbeRouteConfig(context.Background(), server.URL, nodeIdentity{NodeID: "7", Secret: "secret-7"})
 	if err != nil {
 		t.Fatalf("fetchProbeRouteConfig failed: %v", err)
+	}
+	var restarted dnsupstream.Store
+	c, dnsErr := restarted.Current(dataDir)
+	if dnsErr != nil || c.DNS != "192.0.2.53:53" {
+		t.Fatalf("DNS config was not persisted: %+v %v", c, dnsErr)
 	}
 	if requestedPath != probeRouteConfigAPIPath {
 		t.Fatalf("requested path=%q, want %q", requestedPath, probeRouteConfigAPIPath)

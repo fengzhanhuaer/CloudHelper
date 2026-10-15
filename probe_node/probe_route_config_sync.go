@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/cloudhelper/probe_node/internal/dnsupstream"
 )
 
 const (
@@ -24,6 +26,7 @@ const (
 )
 
 type probeRouteConfigResponse struct {
+	DNSUpstreams     *dnsupstream.Config       `json:"dns_upstreams,omitempty"`
 	NodeID           string                    `json:"node_id"`
 	ExpectedNodeKind string                    `json:"expected_node_kind,omitempty"`
 	SpecialExit      *probeSpecialExitSnapshot `json:"special_exit,omitempty"`
@@ -361,6 +364,13 @@ func requestProbeRouteConfig(ctx context.Context, controllerBaseURL string, iden
 	}
 	if err := probeApplyLinuxRouterConfig(payload.LinuxRouter, identity.NodeID); err != nil {
 		return probeVirtualRouterConfig{}, fmt.Errorf("route config rejected: linux_router: %w", err)
+	}
+	dir, err := resolveDataDir()
+	if err != nil {
+		return probeVirtualRouterConfig{}, err
+	}
+	if err = probeDNSUpstreamStore.Apply(dir, payload.DNSUpstreams); err != nil {
+		return probeVirtualRouterConfig{}, fmt.Errorf("DNS upstream configuration: %w", err)
 	}
 	return sanitizeProbeVirtualRouterConfigForCache(payload.VirtualRouter), nil
 }

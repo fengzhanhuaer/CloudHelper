@@ -421,3 +421,33 @@ func TestProbeLinuxRouterHealthCheckRepairsDriftBeforeFailOpen(t *testing.T) {
 		t.Fatalf("unexpected repaired report: %+v", report)
 	}
 }
+
+func TestProbeGatewayImportsLegacyRouterConfigOnlyOnce(t *testing.T) {
+	prepareGatewayTest(t)
+	old := probeLinuxRouterPlatformResolve
+	probeLinuxRouterPlatformResolve = func(s probeLinuxRouterSnapshot) (probeLinuxRouterSnapshot, error) {
+		s.LocalIPProxy.PublishedCIDRs = []string{"192.168.50.0/24"}
+		return s, nil
+	}
+	t.Cleanup(func() { probeLinuxRouterPlatformResolve = old })
+	legacy := probeLinuxRouterSnapshot{Version: 1, NodeID: "23", LocalIPProxy: probeLinuxRouterLocalIPConfig{Enabled: true, AllowedNodeIDs: []string{"9"}}}
+	if err := persistProbeLinuxRouterSnapshot(&legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadProbeGatewayConfig(); err != nil {
+		t.Fatal(err)
+	}
+	first := currentProbeGatewayConfig()
+	if !first.Enabled || len(first.ProxyCIDRs) != 1 || len(first.AllowedNodeIDs) != 1 {
+		t.Fatalf("legacy migration: %+v", first)
+	}
+	if err := saveProbeGatewayConfig(probeGatewayProxyConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := loadProbeGatewayConfig(); err != nil {
+		t.Fatal(err)
+	}
+	if currentProbeGatewayConfig().Enabled {
+		t.Fatal("legacy file reenabled a revoked shared gateway")
+	}
+}

@@ -121,6 +121,7 @@
           <select id="create-node-kind" aria-label="探针类型">
             <option value="normal">普通探针</option>
             <option value="linux_router">Linux 旁路由探针</option>
+            <option value="asus_56uv2">华硕56UV2</option>
           </select>
           <button id="btn-create-node" class="btn primary" type="button">创建</button>
           <button id="btn-refresh-nodes" class="btn" type="button">刷新列表</button>
@@ -296,6 +297,7 @@
           <select id="edit-node-kind">
             <option value="normal">普通探针</option>
             <option value="linux_router">Linux 旁路由探针</option>
+            <option value="asus_56uv2">华硕56UV2</option>
           </select>
         </div>
         <div class="form-field">
@@ -699,7 +701,7 @@
 
     function normalizeNodeKind(node) {
       const value = String((node && node.node_kind) || '').trim().toLowerCase();
-      return value === 'linux_router' ? value : 'normal';
+      return ['linux_router', 'asus_56uv2'].includes(value) ? value : 'normal';
     }
 
     async function buildNodeInstallCommand(node) {
@@ -794,12 +796,12 @@
           const ddns = escapeHTML(item.ddns || '-');
           const vendor = formatVendorLink(item.vendor_name, item.vendor_url);
           const nodeKind = normalizeNodeKind(item);
-          const kindLabel = nodeKind === 'linux_router' ? '<span class="pill online">Linux 旁路由</span>' : '';
-          const systemLabel = nodeKind === 'linux_router'
+          const kindLabel = nodeKind === 'asus_56uv2' ? '<span class="pill online">华硕56UV2</span>' : nodeKind === 'linux_router' ? '<span class="pill online">Linux 旁路由</span>' : '';
+          const systemLabel = nodeKind === 'asus_56uv2' ? 'ASUS ARMv7 插件' : nodeKind === 'linux_router'
             ? 'Alpine Linux x64/ARM64'
             : escapeHTML(item.target_system || '-');
           const installButton = `<button class="btn" type="button" data-action="node-install-command" data-node-no="${item.node_no}">安装</button>`;
-          const upgradeButton = `<button class="btn" type="button" data-action="node-upgrade" data-node-no="${item.node_no}">升级</button>`;
+          const upgradeButton = nodeKind === 'asus_56uv2' ? '<span class="muted">JFFS插件升级</span>' : `<button class="btn" type="button" data-action="node-upgrade" data-node-no="${item.node_no}">升级</button>`;
           return `<tr>
             <td>${escapeHTML(item.node_no)}</td>
             <td>${escapeHTML(item.node_name || '-')}${kindLabel}</td>
@@ -809,7 +811,7 @@
             <td>
               <button class="btn" type="button" data-action="node-edit" data-node-no="${item.node_no}">编辑</button>
               ${upgradeButton}
-              <button class="btn" type="button" data-action="node-console" data-node-no="${item.node_no}">控制台</button>
+              ${nodeKind === 'asus_56uv2' ? '<span class="muted">在华硕后台管理</span>' : `<button class="btn" type="button" data-action="node-console" data-node-no="${item.node_no}">控制台</button>`}
               ${installButton}
               <button class="btn warn" type="button" data-action="node-delete" data-node-no="${item.node_no}">删除</button>
             </td>
@@ -1449,7 +1451,7 @@
       const nodeName = String((node && node.node_name) || '').trim();
       state.installCommandText = String(command || '');
       const nodeKind = normalizeNodeKind(node);
-      const kindLabel = nodeKind === 'linux_router' ? 'Linux 旁路由探针' : '普通探针';
+      const kindLabel = nodeKind === 'asus_56uv2' ? '华硕56UV2' : nodeKind === 'linux_router' ? 'Linux 旁路由探针' : '普通探针';
       document.getElementById('install-modal-title').textContent = `${kindLabel}安装信息：#${nodeNo}${nodeName ? ' ' + nodeName : ''}`;
       document.getElementById('install-modal-content').textContent = state.installCommandText;
       document.getElementById('node-install-modal').removeAttribute('hidden');
@@ -1478,7 +1480,7 @@
     async function createNode() {
       const nodeName = String(document.getElementById('create-node-name').value || '').trim();
       const selectedKind = document.getElementById('create-node-kind').value;
-      const nodeKind = selectedKind === 'linux_router' ? selectedKind : 'normal';
+      const nodeKind = ['linux_router', 'asus_56uv2'].includes(selectedKind) ? selectedKind : 'normal';
       if (!nodeName) {
         setStatus('请输入探针名称', 'warn');
         return;
@@ -1490,7 +1492,7 @@
       });
       document.getElementById('create-node-name').value = '';
       await refreshNodes(true);
-      const kindLabel = nodeKind === 'linux_router' ? 'Linux 旁路由探针' : '普通探针';
+      const kindLabel = nodeKind === 'asus_56uv2' ? '华硕56UV2' : nodeKind === 'linux_router' ? 'Linux 旁路由探针' : '普通探针';
       setStatus(`${kindLabel}创建成功：${payload.node && payload.node.node_name ? payload.node.node_name : nodeName}`, 'ok');
     }
 
@@ -1528,15 +1530,15 @@
       const nodeKind = String(document.getElementById('edit-node-kind').value || 'normal');
       const targetSystemSelect = document.getElementById('edit-target-system');
       Array.from(targetSystemSelect.options).forEach((option) => {
-        option.disabled = nodeKind === 'linux_router' && option.value !== 'linux';
+        option.disabled = nodeKind !== 'normal' && option.value !== 'linux';
       });
-      if (nodeKind === 'linux_router') {
+      if (nodeKind !== 'normal') {
         targetSystemSelect.value = 'linux';
       }
       targetSystemSelect.disabled = false;
       const localConsoleEnabled = document.getElementById('edit-local-console-enabled');
-      localConsoleEnabled.checked = nodeKind === 'linux_router' || localConsoleEnabled.checked;
-      localConsoleEnabled.disabled = nodeKind === 'linux_router';
+      localConsoleEnabled.checked = nodeKind !== 'asus_56uv2' && (nodeKind === 'linux_router' || localConsoleEnabled.checked);
+      localConsoleEnabled.disabled = nodeKind !== 'normal';
     }
 
     function buildEditValidationError(message) {
@@ -1593,8 +1595,8 @@
         throw buildEditValidationError('target_system 只能是 linux、windows、android 或 docker');
       }
       const nodeKind = String(document.getElementById('edit-node-kind').value || 'normal');
-      if (nodeKind === 'linux_router' && targetSystem !== 'linux') {
-        throw buildEditValidationError('Linux 旁路由探针只能选择 Linux');
+      if (nodeKind !== 'normal' && targetSystem !== 'linux') {
+        throw buildEditValidationError('路由器探针只能选择 Linux');
       }
       if (expireAt && !/^\d{4}-\d{2}-\d{2}$/.test(expireAt)) {
         throw buildEditValidationError('expire_at 格式必须是 YYYY-MM-DD');

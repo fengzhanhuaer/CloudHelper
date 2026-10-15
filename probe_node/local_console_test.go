@@ -1095,11 +1095,8 @@ func TestCurrentProbeLocalDNSUpstreamCandidatesAppendsSystemDNSLast(t *testing.T
 	}
 	want := []string{
 		"doh|https://dns.alidns.com/dns-query",
-		"doh|https://doh.pub/dns-query",
 		"dot|dns.alidns.com:853",
-		"dot|dot.pub:853",
 		"dns|223.5.5.5:53",
-		"dns|119.29.29.29:53",
 		"dns|192.168.1.1:53",
 		"dns|8.8.8.8:53",
 	}

@@ -1,0 +1,188 @@
+#!/bin/sh
+# Run only from a verified release under /jffs/cloudhelper-router/releases/.
+set -eu
+umask 077
+base=/jffs/cloudhelper-router
+release=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+case "$release" in "$base"/releases/*) ;; *) echo 'Invalid plugin release path' >&2; exit 1;; esac
+stored_binary=$release/cloudhelper-router-plugin
+local_root=/usr/local
+binary=$local_root/cloudhelper-router/cloudhelper-router-plugin
+runtime=/var/run/cloudhelper-router
+pidfile=$runtime/admin.sock.pid
+target=/www/require/modules/menuTree.js
+menu=/tmp/cloudhelper-router.menu.js
+owned_pid() {
+    test -r "$pidfile" || return 1
+    pid=$(cat "$pidfile")
+    case "$pid" in ''|*[!0-9]*) return 1;; esac
+    exe=$(readlink "/proc/$pid/exe") || return 1
+    test "$exe" = "$binary"
+}
+local_owned() {
+    awk '$1=="chvr-local" && $2=="/usr/local" && $3=="tmpfs" {ok=1} END {exit !ok}' /proc/mounts &&
+        test -f "$local_root/cloudhelper-router/.owned"
+}
+local_prepare() {
+    if ! local_owned;then
+        # The stock directory contains only share -> /tmp/share. Preserve that
+        # entry; reject unknown layouts or another component's mount.
+        test -d "$local_root" && ! test -L "$local_root" || return 1
+        if awk '$2=="/usr/local" {ok=1} END {exit !ok}' /proc/mounts;then return 1;fi
+        test "$(readlink "$local_root/share")" = /tmp/share || return 1
+        test "$(ls -A "$local_root")" = share || return 1
+        mount -t tmpfs -o size=2m,mode=755,exec,nodev,nosuid chvr-local "$local_root"
+        ln -s /tmp/share "$local_root/share"
+        mkdir "$local_root/cloudhelper-router"
+        chmod 700 "$local_root/cloudhelper-router"
+        : > "$local_root/cloudhelper-router/.owned"
+    fi
+    # The stock OpenSSL permits /usr executables. Use 90 KiB of RAM, retaining
+    # all persistent payloads in JFFS, without changing libraries or debug flags.
+    cp "$stored_binary" "$binary.new"
+    chmod 700 "$binary.new"
+    mv "$binary.new" "$binary"
+}
+local_remove() {
+    if local_owned;then umount "$local_root";fi
+}
+menu_remove() {
+    if grep -q 'CHVR_JFFS_MENU' "$target"; then
+        umount "$target" || return 1
+    fi
+    rm -f "$menu"
+}
+menu_add() {
+    ip=$(nvram get lan_ipaddr)
+    case "$ip" in ''|*[!0-9.]*) return 1;; esac
+    if grep -q 'CHVR_JFFS_MENU' "$target"; then
+        grep -q "user/cloudhelper-router/VirtualRouter.asp" "$target" && return 0
+        menu_remove
+    fi
+    # Reject an existing third-party file mount; never unmount another plugin.
+    if awk -v t="$target" '$2==t {found=1} END {exit !found}' /proc/mounts; then
+        echo 'Menu already mounted by another component' >&2;return 1
+    fi
+    grep -q 'menu_NekworkTool' "$target" || return 1
+    test "$(grep -c 'return menuTree;' "$target")" = 1 || return 1
+    awk -v ip="$ip" '
+      /return menuTree;/ {
+        print "/* CHVR_JFFS_MENU */"
+        print "for(var chvrIndex=0;chvrIndex<menuTree.list.length;chvrIndex++){"
+        print "if(menuTree.list[chvrIndex].index===\"menu_NekworkTool\"){"
+        print "menuTree.list.splice(chvrIndex+1,0,{menuName:\"虚拟路由\",index:\"menu_VirtualRouter\",tab:[{url:\"user/cloudhelper-router/VirtualRouter.asp\",tabName:\"虚拟路由\"}]});break;}}"
+      }
+      {print}
+    ' "$target" > "$menu"
+    mount -o bind "$menu" "$target"
+}
+web_root=/tmp/var/wwwext/cloudhelper-router
+httpd=/usr/sbin/httpd
+stock_hash=144f9083c6ae57632cf59b4012d5ad46aff6f4f64012ce3fed50e0f1b8ebf6d1
+httpd_owned() {
+    awk '$2=="/usr/sbin/httpd" {ok=1} END {exit !ok}' /proc/mounts &&
+        grep -q CHVR_HTTPD_WRAPPER "$httpd"
+}
+httpd_extended() {
+    for web_pid in $(pidof httpd httpds 2>/dev/null || true);do
+        if grep -q '/usr/local/cloudhelper-router/httpd-bridge.so' "/proc/$web_pid/maps";then return 0;fi
+    done
+    return 1
+}
+web_remove() {
+    if httpd_owned;then
+        umount "$httpd"
+        service restart_httpd
+        count=0
+        while httpd_extended && test "$count" -lt 12;do sleep 1;count=$((count+1));done
+        if httpd_extended;then echo 'Original httpd restoration pending; RAM retained' >&2;return 1;fi
+    fi
+    if test -f "$web_root/.owned";then
+        rm -f "$web_root/VirtualRouter.asp" "$web_root/api.asp" "$web_root/.owned"
+        rmdir "$web_root"
+    fi
+}
+web_add() {
+    if ! httpd_owned;then
+        if awk '$2=="/usr/sbin/httpd" {ok=1} END {exit !ok}' /proc/mounts;then return 1;fi
+        test "$(openssl dgst -sha256 "$httpd" | awk '{print $NF}')" = "$stock_hash" || {
+            echo 'Unsupported stock httpd; original web server retained' >&2;return 1;
+        }
+        cp "$httpd" "$local_root/cloudhelper-router/httpd"
+        cp "$release/httpd-bridge.so" "$local_root/cloudhelper-router/httpd-bridge.so"
+        chmod 700 "$local_root/cloudhelper-router/httpd"
+        chmod 600 "$local_root/cloudhelper-router/httpd-bridge.so"
+        cat > "$local_root/cloudhelper-router/httpd-launch" <<'HTTPD'
+#!/bin/sh
+# CHVR_HTTPD_WRAPPER: original executable, optional authenticated ASP extension.
+LD_PRELOAD=/usr/local/cloudhelper-router/httpd-bridge.so
+export LD_PRELOAD
+exec /usr/local/cloudhelper-router/httpd "$@"
+HTTPD
+        chmod 700 "$local_root/cloudhelper-router/httpd-launch"
+        if test -e "$web_root";then test -f "$web_root/.owned" || return 1;fi
+        mkdir -p "$web_root"
+        chmod 700 "$web_root"
+        : > "$web_root/.owned"
+        cp "$release/web/VirtualRouter.asp" "$web_root/VirtualRouter.asp"
+        : > "$web_root/api.asp"
+        mount -o bind "$local_root/cloudhelper-router/httpd-launch" "$httpd"
+        service restart_httpd
+        count=0
+        while ! httpd_extended && test "$count" -lt 12;do sleep 1;count=$((count+1));done
+        httpd_extended || { echo 'Stock httpd extension failed to load' >&2;return 1; }
+    fi
+}
+prepare() {
+    mkdir -p "$base" "$runtime"
+    chmod 700 "$base" "$runtime"
+    local_prepare
+}
+case "${1:-}" in
+ start|ensure)
+    if test "$1" = ensure && test -e "$runtime/stopped";then exit 0;fi
+    if test "$1" = start;then
+        mkdir -p "$runtime"
+        rm -f "$runtime/stopped"
+    fi
+    if owned_pid; then
+        web_add
+        menu_add
+        if test "$1" = start;then cru a CHVR '* * * * * /jffs/cloudhelper-router/service ensure </dev/null >/dev/console 2>&1';fi
+        exit 0
+    fi
+    prepare
+    "$binary" --config "$base/config.json" --socket "$runtime/admin.sock" </dev/null >/dev/console 2>&1 &
+    count=0
+    while ! owned_pid && test "$count" -lt 8;do sleep 1;count=$((count+1));done
+    owned_pid || { echo 'Service failed; inspect console output' >&2;exit 1; }
+    web_add
+    # cru watches only this boot and is registered only after startup succeeds.
+    if test "$1" = start;then cru a CHVR '* * * * * /jffs/cloudhelper-router/service ensure </dev/null >/dev/console 2>&1';fi
+    if ! menu_add;then echo 'Service started; stock menu unavailable' >&2;fi
+    ;;
+ run)
+    prepare
+    exec "$binary" --config "$base/config.json" --socket "$runtime/admin.sock"
+    ;;
+ stop)
+    mkdir -p "$runtime"
+    : > "$runtime/stopped"
+    cru d CHVR
+    if owned_pid;then
+        kill -TERM "$pid"
+        count=0
+        while owned_pid && test "$count" -lt 60;do sleep 1;count=$((count+1));done
+        if owned_pid;then echo 'Stop deadline exceeded; process retained for diagnosis' >&2;exit 1;fi
+    fi
+    mkdir -p "$runtime"
+    if local_owned;then "$binary" --config "$base/config.json" --socket "$runtime/admin.sock" --cleanup;fi
+    menu_remove
+    web_remove
+    local_remove
+    ;;
+ menu) menu_add;;
+ unmenu) menu_remove;;
+ status) if owned_pid;then echo "running PID $pid";else echo stopped;exit 1;fi;;
+ *) echo 'usage: service start|run|stop|ensure|status|menu|unmenu' >&2;exit 2;;
+esac

@@ -457,6 +457,10 @@ func normalizeProbeNodes(items []probeNodeRecord) ([]probeNodeRecord, map[string
 		node.CloudflareDDNSRecords = normalizeCloudflareRecords(node.CloudflareDDNSRecords)
 		node.NodeSecret = strings.TrimSpace(node.NodeSecret)
 		node.TargetSystem = normalizeProbeTargetSystem(node.TargetSystem)
+		if node.NodeKind == probeNodeKindAsus56UV2 {
+			node.TargetSystem = "linux"
+			node.LocalConsoleEnabled = false
+		}
 		if node.TargetSystem == "" {
 			node.TargetSystem = "linux"
 		}
@@ -542,8 +546,8 @@ func createProbeNodeWithKindLocked(nodeName string, nodeKind string) (probeNodeR
 	if kind == "" {
 		kind = probeNodeKindNormal
 	}
-	if kind != probeNodeKindNormal && kind != probeNodeKindLinuxRouter {
-		return probeNodeRecord{}, fmt.Errorf("node kind must be normal or linux_router")
+	if kind != probeNodeKindNormal && kind != probeNodeKindLinuxRouter && kind != probeNodeKindAsus56UV2 {
+		return probeNodeRecord{}, fmt.Errorf("node kind must be normal or linux_router or asus_56uv2")
 	}
 
 	nodes := loadProbeNodesLocked()
@@ -732,12 +736,12 @@ func updateProbeNodeLocked(req probeNodeUpdateRequest) (probeNodeRecord, error) 
 	existingKind := normalizeProbeNodeKind(nodes[found].NodeKind)
 	requestedKind := existingKind
 	if rawKind := strings.ToLower(strings.TrimSpace(req.NodeKind)); rawKind != "" {
-		if rawKind != probeNodeKindNormal && rawKind != probeNodeKindLinuxRouter {
-			return probeNodeRecord{}, fmt.Errorf("node kind must be normal or linux_router")
+		if rawKind != probeNodeKindNormal && rawKind != probeNodeKindLinuxRouter && rawKind != probeNodeKindAsus56UV2 {
+			return probeNodeRecord{}, fmt.Errorf("node kind must be normal or linux_router or asus_56uv2")
 		}
 		requestedKind = rawKind
 	}
-	if requestedKind == probeNodeKindLinuxRouter && system != "linux" {
+	if (requestedKind == probeNodeKindLinuxRouter || requestedKind == probeNodeKindAsus56UV2) && system != "linux" {
 		return probeNodeRecord{}, fmt.Errorf("linux router node target system must be linux")
 	}
 	kindChanged := requestedKind != existingKind
@@ -748,7 +752,7 @@ func updateProbeNodeLocked(req probeNodeUpdateRequest) (probeNodeRecord, error) 
 	nodes[found].DDNS = strings.TrimSpace(req.DDNS)
 	nodes[found].TargetSystem = system
 	nodes[found].DirectConnect = req.DirectConnect
-	nodes[found].LocalConsoleEnabled = req.LocalConsoleEnabled || requestedKind == probeNodeKindLinuxRouter
+	nodes[found].LocalConsoleEnabled = requestedKind != probeNodeKindAsus56UV2 && (req.LocalConsoleEnabled || requestedKind == probeNodeKindLinuxRouter)
 	nodes[found].PaymentCycle = strings.TrimSpace(req.PaymentCycle)
 	nodes[found].Cost = strings.TrimSpace(req.Cost)
 	nodes[found].ExpireAt = strings.TrimSpace(req.ExpireAt)

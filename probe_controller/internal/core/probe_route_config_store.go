@@ -18,6 +18,7 @@ type probeRouteConfigStore struct {
 }
 
 type probeRouteConfigStoreData struct {
+	DNSUpstreams        probeDNSUpstreams               `json:"dns_upstreams"`
 	VirtualRouter       probeVirtualRouterConfig        `json:"virtual_router,omitempty"`
 	VirtualRouterFakeIP probeVirtualRouterFakeIPLibrary `json:"virtual_router_fake_ip,omitempty"`
 	SpecialExitLibrary  probeSpecialExitLibrary         `json:"special_exit_library,omitempty"`
@@ -32,6 +33,7 @@ func initProbeRouteConfigStore() {
 	ProbeRouteConfigStore = &probeRouteConfigStore{
 		path: storePath,
 		data: probeRouteConfigStoreData{
+			DNSUpstreams:        defaultProbeDNSUpstreams(),
 			VirtualRouter:       defaultProbeVirtualRouterConfig(),
 			VirtualRouterFakeIP: defaultProbeVirtualRouterFakeIPLibrary(),
 			SpecialExitLibrary:  probeSpecialExitLibrary{Subscriptions: []probeSpecialExitSubscription{}, Proxies: []map[string]interface{}{}, ProxySourceIDs: map[string]string{}},
@@ -49,6 +51,9 @@ func initProbeRouteConfigStore() {
 			var raw probeRouteConfigStoreData
 			if unmarshalErr := json.Unmarshal(content, &raw); unmarshalErr != nil {
 				log.Fatalf("failed to parse probe route config store: %v", unmarshalErr)
+			}
+			if raw.DNSUpstreams.Validate() == nil {
+				ProbeRouteConfigStore.data.DNSUpstreams = raw.DNSUpstreams
 			}
 			ProbeRouteConfigStore.data.VirtualRouter = normalizeProbeVirtualRouterConfig(raw.VirtualRouter)
 			ProbeRouteConfigStore.data.VirtualRouterFakeIP = normalizeProbeVirtualRouterFakeIPLibrary(raw.VirtualRouterFakeIP)

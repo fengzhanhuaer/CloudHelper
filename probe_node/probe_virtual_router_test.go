@@ -232,7 +232,7 @@ func TestProbeVirtualRouterCacheDoesNotPersistFakeIPLibrary(t *testing.T) {
 	}
 }
 
-func TestProbeVirtualRouterCacheDoesNotPersistLinuxRouterPublishedRules(t *testing.T) {
+func TestProbeVirtualRouterCacheRestoresPublishedRulesAndRevocation(t *testing.T) {
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
 	config := probeVirtualRouterConfig{RouteRules: []probeVirtualRouterRouteRule{
 		{ID: "manual-direct", Name: "manual", Action: "direct", Entries: []string{"cidr:203.0.113.0/24"}},
@@ -245,8 +245,19 @@ func TestProbeVirtualRouterCacheDoesNotPersistLinuxRouterPublishedRules(t *testi
 	if err != nil {
 		t.Fatalf("load cache failed: %v", err)
 	}
+	if len(loaded.RouteRules) != 2 {
+		t.Fatalf("cached authorized routes lost: %+v", loaded.RouteRules)
+	}
+	config.RouteRules = config.RouteRules[:1]
+	if err := persistProbeRouteConfigCache(config); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = loadProbeRouteConfigCache()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(loaded.RouteRules) != 1 || loaded.RouteRules[0].ID != "manual-direct" {
-		t.Fatalf("cached route rules=%+v, want only manual rule", loaded.RouteRules)
+		t.Fatalf("revoked route retained: %+v", loaded.RouteRules)
 	}
 }
 

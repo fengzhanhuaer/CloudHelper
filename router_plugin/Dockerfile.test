@@ -1,0 +1,6 @@
+FROM cloudhelper-asuswrt-build:ubuntu18
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends libjson-c-dev libcurl4-openssl-dev iproute2 iptables python3 \
+    && rm -rf /var/lib/apt/lists/*
+USER builder
+WORKDIR /module

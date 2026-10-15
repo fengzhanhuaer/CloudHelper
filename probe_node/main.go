@@ -74,6 +74,7 @@ type nodeIdentity struct {
 }
 
 type probeReportPayload struct {
+	GatewayProxy         *probeGatewayProxyConfig       `json:"gateway_proxy,omitempty"`
 	Type                 string                         `json:"type"`
 	NodeID               string                         `json:"node_id"`
 	Platform             string                         `json:"platform,omitempty"`
@@ -392,6 +393,9 @@ func runProbeNode(options probeLaunchOptions) error {
 	identity, err := resolveNodeIdentity(strings.TrimSpace(options.NodeID), strings.TrimSpace(options.NodeSecret))
 	if err != nil {
 		return fmt.Errorf("failed to load node identity: %w", err)
+	}
+	if err := loadProbeGatewayConfig(); err != nil {
+		logProbeWarnf("gateway config unavailable: %v", err)
 	}
 	if err := startProbeProductRuntime(identity.NodeID); err != nil {
 		logProbeWarnf("probe product runtime startup pending: %v", err)
@@ -839,6 +843,7 @@ func sendProbeReport(stream net.Conn, encoder *json.Encoder, identity nodeIdenti
 		BuildKind:            currentProbeBuildKind(),
 		SpecialExit:          probeProductSpecialExitReport(),
 		LinuxRouter:          probeProductLinuxRouterReport(),
+		GatewayProxy:         currentProbeGatewayConfig(),
 		RelayStatus:          snapshotProbeRouteRelayReports(),
 		VirtualRouterBuffers: snapshotProbeVirtualRouterBuffers(),
 		Timestamp:            time.Now().UTC().Format(time.RFC3339),

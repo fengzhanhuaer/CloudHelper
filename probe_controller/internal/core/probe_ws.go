@@ -11,6 +11,9 @@ import (
 )
 
 type probeReportMessage struct {
+	GatewayProxy         *probeGatewayProxyConfig       `json:"gateway_proxy,omitempty"`
+	LANIP                string                         `json:"lan_ip,omitempty"`
+	WANIP                string                         `json:"wan_ip,omitempty"`
 	Type                 string                         `json:"type"`
 	NodeID               string                         `json:"node_id"`
 	Platform             string                         `json:"platform,omitempty"`
@@ -118,7 +121,9 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 					logControllerWarnf("failed to persist probe traffic: node=%s err=%v", normalizeProbeNodeID(nodeID), err)
 				}
 			}
-			if updateProbeRuntimeProductStatus(nodeID, msg.BuildKind, msg.SpecialExit, msg.LinuxRouter) {
+			gatewayChanged := updateProbeRuntimeGatewayProxy(nodeID, msg.GatewayProxy)
+			updateProbeRuntimePhysicalInterfaces(nodeID, msg.LANIP, msg.WANIP)
+			if updateProbeRuntimeProductStatus(nodeID, msg.BuildKind, msg.SpecialExit, msg.LinuxRouter) || gatewayChanged {
 				scheduleProbeRouteConfigSyncToKnownNodes()
 			}
 

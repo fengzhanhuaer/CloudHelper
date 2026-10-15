@@ -144,6 +144,11 @@ func mngProbeNodeInstallHandler(w http.ResponseWriter, r *http.Request) {
 	var result map[string]interface{}
 	var err error
 	switch normalizeProbeNodeKind(node.NodeKind) {
+	case probeNodeKindAsus56UV2:
+		result = map[string]interface{}{
+			"node_kind": probeNodeKindAsus56UV2, "install_mode": "jffs_plugin",
+			"command": fmt.Sprintf("华硕56UV2使用原厂系统JFFS插件。安装插件后，进入路由器后台「虚拟路由」，填写主控地址 %s、Node ID %s 和本节点密钥。不要运行普通Probe或Linux旁路由安装脚本。", controllerBaseURLFromRequest(r), normalizeProbeNodeID(nodeID)),
+		}
 	case probeNodeKindLinuxRouter:
 		result, err = buildMngProbeLinuxRouterInstallInfo(nodeID, controllerBaseURLFromRequest(r))
 	default:

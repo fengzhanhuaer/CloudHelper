@@ -83,6 +83,7 @@ func (e *probeLinuxRouterLocalConfigError) Unwrap() error {
 }
 
 func init() {
+	probeGatewayLegacyConfig = importProbeLinuxRouterGatewayConfig
 	probeMihomoASNDatabaseEnabled = true
 	probeProductActivateMihomoASNDatabase = activateProbeLinuxRouterASNDatabase
 	probeLinuxRouterRouteConfigApplier = applyProbeLinuxRouterSnapshot
@@ -316,6 +317,13 @@ func setProbeLinuxRouterManualFailOpen(enabled bool) error {
 }
 
 func applyProbeLinuxRouterLocalConfig(config probeLinuxRouterLocalConfig) error {
+	// Remote LAN access is now edited only by the shared gateway API.
+	if currentProbeGatewayConfig() != nil {
+		if old, _, _ := currentProbeLinuxRouterLocalState(); old != nil {
+			config.LocalIPProxy = old.LocalIPProxy
+		}
+	}
+
 	config.GatewayProxy.Interface = strings.TrimSpace(config.GatewayProxy.Interface)
 	if config.GatewayProxy.Interface == "" {
 		config.GatewayProxy.Interface = "auto"
@@ -837,4 +845,22 @@ func cloneProbeLinuxRouterSnapshot(snapshot *probeLinuxRouterSnapshot) *probeLin
 	sort.Strings(clone.LocalIPProxy.PublishedCIDRs)
 	sort.Strings(clone.LocalIPProxy.AllowedNodeIDs)
 	return &clone
+}
+
+func importProbeLinuxRouterGatewayConfig() (probeGatewayProxyConfig, error) {
+	s, err := loadProbeLinuxRouterSnapshot()
+	if errors.Is(err, os.ErrNotExist) || s == nil {
+		return probeGatewayProxyConfig{}, nil
+	}
+	if err != nil {
+		return probeGatewayProxyConfig{}, err
+	}
+	if !s.LocalIPProxy.Enabled {
+		return probeGatewayProxyConfig{}, nil
+	}
+	effective, err := probeLinuxRouterPlatformResolve(*s)
+	if err != nil {
+		return probeGatewayProxyConfig{}, err
+	}
+	return probeGatewayProxyConfig{Enabled: true, ProxyCIDRs: effective.LocalIPProxy.PublishedCIDRs, AllowedNodeIDs: effective.LocalIPProxy.AllowedNodeIDs}, nil
 }

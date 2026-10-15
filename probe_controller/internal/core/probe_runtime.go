@@ -52,6 +52,9 @@ type probeVirtualRouterBufferReport struct {
 }
 
 type probeRuntimeStatus struct {
+	GatewayProxy         *probeGatewayProxyConfig       `json:"gateway_proxy,omitempty"`
+	LANIP                string                         `json:"lan_ip,omitempty"`
+	WANIP                string                         `json:"wan_ip,omitempty"`
 	NodeID               string                         `json:"node_id"`
 	Online               bool                           `json:"online"`
 	LastSeen             string                         `json:"last_seen"`
