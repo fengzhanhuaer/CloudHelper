@@ -790,3 +790,12 @@ CON-012/DEC-043：fetch后确认origin/mapledev已前进至94422f3b，018210eb�
 本轮提交范围：共享网关、ASUS C JFFS插件及必要的Probe/主控接入和普通Probe/ASUS DNS；Android DNS mobilecore/Kotlin变更保留原工作区，不纳入发布。候选树使用远端现有Android代码，并完成Go回归，发布时CI仍构建原有Android产品，不冒充新版Android DNS交付。REQ026~030源码及本地功能完成；真实跨节点业务需要用户后续填写身份联调。TASK023仍唯一进行中，下一步唯一动作：完成Linux专用最终回归，提交候选树并推送GitHub，核对对应Actions及产物。
 
 最终发布前回归：Linux专用TestProbeGateway（含一次迁移）、TestProbeLinuxRouter、TestBuildProbeVirtualRouterLinuxPublished、TestEnsureProbeVirtualRouterLinuxPublished全部通过；新断言发现单臂旧选择框实际残留，现已清理并以真实浏览器双模式导航复测通过，非仅调整测试。正式候选树Controller/Probe全包、Controller vet、发布工作流契约测试通过；linux_router amd64测试可执行文件及arm64程序构建通过。112个明确文件入暂存，凭据扫描与diff --cached --check通过；未暂存Android/固件基线/生成文件或其他任务。提交门禁通过，真实业务与自启动门禁继续保留。
+
+
+### 2026-10-16 GitHub提交与发布验收
+
+本轮独立交付已完成：功能提交66aeb79dfcb5203b3e21bafddfeb3e95d6e2514f，已推送origin/mapledev；Actions https://github.com/fengzhanhuaer/CloudHelper/actions/runs/38768096220 全部success，自动版本提交8b1df2d9与标签v0.4.54仅修改version。发布 https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.54 为正式非草稿，当前工作流规定的8个产物及额外ASUS JFFS包/manifest共10项均非空。已下载ASUS发布包核对SHA256 ebd2e4cb208cd8eb834a6b0b3849beb04f06f752839ec09c80040080c5c2a263，manifest明确绑定上述功能提交；未把本地生成文件提交Git。Docker/router-arm64依远端018210eb的既有裁剪不发布，未擅自恢复。
+
+本轮REQ026~030源码、独立产物及本地/隔离环境验收完成；整体产品TASK023继续进行中（真实用户身份联调、跨重启自启、WAN重建/业务峰值及Android新DNS产物仍待验证）。普通Probe/生产主控未执行在线升级；华硕只做已授权的JFFS插件更新及同源Web验收，业务保持关闭，固件/启动ROM/系统分区与boot_id未改变。noconsole保持开发期0，整体开发结束后再恢复。后续唯一动作：用户在原厂“虚拟路由”页面填写主控/Node ID/密钥后，按在线升级流程联调实际跨节点LAN访问与上报；不将测试fixture或当前PC状态当作远端实机状态。
+
+为保留原工作区其他任务和Android未完成改动，代码从D:/Code/CloudHelper-gateway-release隔离工作区提交；原D:/Code/CloudHelper未被reset/checkout/stash。验收结果只更新本账本，以[skip ci]提交，不触发新的业务版本。
