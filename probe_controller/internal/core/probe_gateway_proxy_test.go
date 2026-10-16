@@ -2,8 +2,77 @@ package core
 
 import (
 	"encoding/json"
+	"net"
 	"testing"
+	"time"
 )
+
+func TestGatewayProxyReconnectUsesLatestAuthorization(t *testing.T) {
+	const id = "gateway-reconnect-test"
+	probeRuntimeStore.mu.Lock()
+	old, exists := probeRuntimeStore.data[id]
+	probeRuntimeStore.data[id] = probeRuntimeStatus{NodeID: id, Online: true, BuildKind: probeNodeKindNormal,
+		GatewayProxy: &probeGatewayProxyConfig{true, []string{"192.168.50.0/24"}, []string{"9"}}}
+	probeRuntimeStore.mu.Unlock()
+	t.Cleanup(func() {
+		probeRuntimeStore.mu.Lock()
+		defer probeRuntimeStore.mu.Unlock()
+		if exists {
+			probeRuntimeStore.data[id] = old
+		} else {
+			delete(probeRuntimeStore.data, id)
+		}
+	})
+	if !setProbeRuntimeOnline(id, false) {
+		t.Fatal("ordinary gateway disconnect did not invalidate routes")
+	}
+	// A grant/revocation received while a consumer is offline must not wait for it.
+	updateProbeRuntimeGatewayProxy(id, &probeGatewayProxyConfig{true, []string{"192.168.50.0/24"}, []string{"14"}})
+	if !setProbeRuntimeOnline(id, true) {
+		t.Fatal("ordinary gateway reconnect did not restore routes")
+	}
+	r, _ := getProbeRuntime(id)
+	if got := appendProbeGatewayPublishedRules(nil, []probeRuntimeStatus{r}, "14"); len(got) != 1 {
+		t.Fatal("returning authorized node did not receive latest grant", got)
+	}
+	if got := appendProbeGatewayPublishedRules(nil, []probeRuntimeStatus{r}, "9"); len(got) != 0 {
+		t.Fatal("returning revoked node retained old grant", got)
+	}
+}
+
+func TestOrdinaryProbeSessionReconnectRequestsRouteConfig(t *testing.T) {
+	const id = "ordinary-gateway-consumer-test"
+	// Register twice: a first connection and a later reconnection must both pull
+	// missed changes, even though this ordinary node publishes no LAN of its own.
+	for i := 0; i < 2; i++ {
+		server, client := net.Pipe()
+		_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+		session := registerProbeSession(id, server)
+		decoder := json.NewDecoder(client)
+		found := false
+		for j := 0; j < 8; j++ {
+			var message struct {
+				Type string `json:"type"`
+			}
+			if err := decoder.Decode(&message); err != nil {
+				t.Error("session did not request refresh", err)
+				break
+			}
+			if message.Type == "route_config_sync" {
+				found = true
+				break
+			}
+		}
+		unregisterProbeSession(id, session)
+		_ = client.Close()
+		if !found {
+			t.Fatal("ordinary reconnect missed config refresh")
+		}
+	}
+	probeRuntimeStore.mu.Lock()
+	delete(probeRuntimeStore.data, id)
+	probeRuntimeStore.mu.Unlock()
+}
 
 func TestGatewayProxyRoutesScopedToAuthorizedSources(t *testing.T) {
 	c := &probeGatewayProxyConfig{true, []string{"192.168.50.0/24", "10.20.0.0/16"}, []string{"9", "14"}}

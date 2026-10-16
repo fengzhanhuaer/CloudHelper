@@ -258,7 +258,7 @@ func setProbeRuntimeOnline(nodeID string, online bool) bool {
 	}
 	probeRuntimeStore.data[nodeID] = current
 	probeRuntimeStore.mu.Unlock()
-	routeConfigChanged := existed && prevOnline != online && normalizeProbeNodeKind(current.BuildKind) == probeNodeKindLinuxRouter
+	routeConfigChanged := existed && prevOnline != online && (normalizeProbeNodeKind(current.BuildKind) == probeNodeKindLinuxRouter || (current.GatewayProxy != nil && current.GatewayProxy.Enabled))
 
 	// Notify only on a real edge for an already-seen node so controller restarts
 	// (which re-register every node) do not spam online notifications.

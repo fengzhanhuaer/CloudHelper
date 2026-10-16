@@ -332,6 +332,9 @@ func registerProbeSession(nodeID string, stream net.Conn) *probeSession {
 		})
 		dispatchCurrentProbeInfoBoxRevision(s)
 		dispatchProbeNetworkMonitorTasksForNode(nodeID)
+		// A node may have missed authorization changes while disconnected.
+		// Refresh this session without waiting for any other node to be online.
+		dispatchProbeRouteConfigSyncToNodes([]string{nodeID}, "")
 	}()
 	return s
 }
