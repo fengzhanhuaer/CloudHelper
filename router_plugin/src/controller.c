@@ -1,4 +1,4 @@
-#include "chvr.h"
+#include "transport.h"
 #include <curl/curl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,14 +23,13 @@ static size_t receive(void *data,size_t size,size_t count,void *arg)
 
 static json_object *request(const vr_config *c,const char *iface,const char *method,const char *path,json_object *body,struct curl_slist *headers,char *err,size_t n)
 {
-    char url[2048],host[254],ip[16],resolve[320];int port,tls;
+    char url[2048],host[254],ips[4][16],resolve[320];int port,tls;
     if(vr_origin(c->controller,host,&port,&tls) || snprintf(url,sizeof(url),"%s%s",c->controller,path)>=(int)sizeof(url)) {snprintf(err,n,"invalid controller URL");return NULL;}
     /* Resolve outside dnsmasq to prevent recursion when DNS routing is enabled. */
-    if(vr_resolve_config4(host,c,iface,ip)){snprintf(err,n,"controller DNS failed");return NULL;}
-    snprintf(resolve,sizeof(resolve),"%s:%d:%s",host,port,ip);
-    struct curl_slist *addresses=curl_slist_append(NULL,resolve);
+    int count=vr_resolve_config4_all(host,c,iface,ips);if(count<1){snprintf(err,n,"controller DNS failed");return NULL;}
+    struct curl_slist *addresses=NULL;
     CURL *curl=curl_easy_init();response r={0};json_object *result=NULL;
-    if(!curl || !addresses){snprintf(err,n,"controller allocation failed");goto done;}
+    if(!curl){snprintf(err,n,"controller allocation failed");goto done;}
     curl_easy_setopt(curl,CURLOPT_URL,url);
     curl_easy_setopt(curl,CURLOPT_PROXY,"");
     curl_easy_setopt(curl,CURLOPT_PROTOCOLS,(long)(CURLPROTO_HTTP|CURLPROTO_HTTPS));
@@ -44,7 +43,26 @@ static json_object *request(const vr_config *c,const char *iface,const char *met
     curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,receive);curl_easy_setopt(curl,CURLOPT_WRITEDATA,&r);
     curl_easy_setopt(curl,CURLOPT_CUSTOMREQUEST,method);
     if(body)curl_easy_setopt(curl,CURLOPT_POSTFIELDS,json_object_to_json_string_ext(body,JSON_C_TO_STRING_PLAIN));
-    CURLcode rc=curl_easy_perform(curl);long status=0;curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status);
+    CURLcode rc=CURLE_OPERATION_TIMEDOUT;long status=0;uint64_t deadline=vr_millis()+10000;
+    for(int i=0;i<count;i++) {
+        uint64_t now=vr_millis();if(now>=deadline)break;
+        long remaining=(long)(deadline-now),connect_budget=remaining/(count-i);if(connect_budget>5000)connect_budget=5000;
+        /* Older vendor libcurl retains a permanent RESOLVE entry. Explicitly
+           remove it before replacing the address on this easy handle. */
+        snprintf(resolve,sizeof(resolve),"-%s:%d",host,port);
+        curl_slist_free_all(addresses);addresses=curl_slist_append(NULL,resolve);
+        if(!addresses){snprintf(err,n,"controller allocation failed");goto done;}
+        snprintf(resolve,sizeof(resolve),"%s:%d:%s",host,port,ips[i]);
+        struct curl_slist *next=curl_slist_append(addresses,resolve);
+        if(!next){snprintf(err,n,"controller allocation failed");goto done;}addresses=next;
+        curl_easy_setopt(curl,CURLOPT_RESOLVE,addresses);curl_easy_setopt(curl,CURLOPT_FRESH_CONNECT,1L);
+        curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT_MS,connect_budget);curl_easy_setopt(curl,CURLOPT_TIMEOUT_MS,remaining);
+        r.used=0;status=0;rc=curl_easy_perform(curl);curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status);
+        if(rc==CURLE_OK||status)break;
+        double handshake=0;curl_easy_getinfo(curl,CURLINFO_APPCONNECT_TIME,&handshake);
+        /* Retry GET safely; never replay a POST after TLS accepted its body. */
+        if(strcmp(method,"GET")&&handshake>0)break;
+    }
     if(rc!=CURLE_OK){snprintf(err,n,"controller transport failed (%d)",(int)rc);goto done;}
     if(status!=200){snprintf(err,n,"controller HTTP %ld",status);goto done;}
     result=vr_json_parse(r.bytes,r.used);

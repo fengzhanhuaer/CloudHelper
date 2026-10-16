@@ -143,9 +143,9 @@ int vr_dns_chain(const vr_config *c,const char *iface,const void *query,size_t q
     return -1;
 }
 
-int vr_resolve_config4(const char *host,const vr_config *c,const char *iface,char out[16])
+int vr_resolve_config4_all(const char *host,const vr_config *c,const char *iface,char out[4][16])
 {
-    struct in_addr ip;if(inet_pton(AF_INET,host,&ip)==1)return vr_copy(out,16,host);
+    struct in_addr ip;if(inet_pton(AF_INET,host,&ip)==1){strcpy(out[0],host);return 1;}
     uint8_t query[512]={0},reply[4096];size_t off=12,n;
     if(RAND_bytes(query,2)!=1)return -1;
     query[2]=1;query[5]=1;const char *p=host;
@@ -153,5 +153,8 @@ int vr_resolve_config4(const char *host,const vr_config *c,const char *iface,cha
         query[off++]=(uint8_t)k;memcpy(query+off,p,k);off+=k;if(!dot)break;p=dot+1;}
     query[off++]=0;query[off++]=0;query[off++]=1;query[off++]=0;query[off++]=1;
     if(vr_dns_chain(c,iface,query,off,reply,sizeof(reply),&n))return -1;
-    return vr_dns_address4(reply,n,out);
+    return vr_dns_addresses4(reply,n,out);
 }
+
+int vr_resolve_config4(const char *host,const vr_config *c,const char *iface,char out[16])
+{char addresses[4][16];if(vr_resolve_config4_all(host,c,iface,addresses)<1)return -1;return vr_copy(out,16,addresses[0]);}

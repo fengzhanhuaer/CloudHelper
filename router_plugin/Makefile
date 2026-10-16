@@ -5,7 +5,7 @@ CFLAGS ?= -Os -g
 CFLAGS += -std=c99 -Wall -Wextra -Werror -Wformat=2 -fstack-protector-strong -ffunction-sections -fdata-sections
 LDLIBS += -lcurl -lssl -lcrypto -ljson-c -lpthread
 LDFLAGS += $(DEP_LDFLAGS) -Wl,--gc-sections -Wl,-z,relro,-z,now
-CORE = src/cache.c src/gateway.c src/report.c src/common.c src/config.c src/wire.c src/dns.c src/dns_upstream.c src/policy.c src/auth.c src/controller.c src/websocket.c src/tls.c src/packet.c
+CORE = src/log.c src/cache.c src/gateway.c src/report.c src/common.c src/config.c src/wire.c src/dns.c src/dns_upstream.c src/policy.c src/auth.c src/controller.c src/websocket.c src/tls.c src/packet.c
 RUNTIME = src/main.c src/engine.c src/carrier.c src/dataplane.c src/platform.c src/dns_service.c src/measure.c src/control.c
 .PHONY: all test clean
 all: $(BUILD)/cloudhelper-router-plugin $(BUILD)/httpd-bridge.so
@@ -21,6 +21,8 @@ $(BUILD)/test-core: $(CORE) tests/test_core.c include/chvr.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_core.c $(LDFLAGS) $(LDLIBS) -o $@
 test: $(BUILD)/test-core
 	$(BUILD)/test-core
+$(BUILD)/test-logs: $(CORE) tests/test_logs.c $(wildcard include/*.h) | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_logs.c $(LDFLAGS) $(LDLIBS) -o $@
 $(BUILD)/test-dataplane: $(CORE) src/dataplane.c tests/test_dataplane.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/dataplane.c tests/test_dataplane.c $(LDFLAGS) -Wl,--wrap=vr_controller_call $(LDLIBS) -o $@
 $(BUILD)/test-platform: $(CORE) src/dataplane.c src/platform.c tests/test_platform.c $(wildcard include/*.h) | $(BUILD)
@@ -28,9 +30,11 @@ $(BUILD)/test-platform: $(CORE) src/dataplane.c src/platform.c tests/test_platfo
 $(BUILD)/test-dns: $(CORE) src/dns_service.c tests/test_dns_service.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_dns_service.c $(LDFLAGS) $(LDLIBS) -o $@
 $(BUILD)/test-control: $(CORE) src/control.c tests/test_control.c $(wildcard include/*.h) | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/control.c tests/test_control.c $(LDFLAGS) $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/control.c tests/test_control.c $(LDFLAGS) -Wl,--wrap=vr_resolve_config4_all $(LDLIBS) -o $@
 $(BUILD)/test-carrier: $(CORE) src/carrier.c src/measure.c src/platform.c tests/test_carrier.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/carrier.c src/measure.c src/platform.c tests/test_carrier.c $(LDFLAGS) $(LDLIBS) -o $@
+$(BUILD)/test-measure: $(CORE) src/measure.c tests/test_measure.c $(wildcard include/*.h) | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/measure.c tests/test_measure.c $(LDFLAGS) -Wl,--wrap=vr_millis $(LDLIBS) -o $@
 clean:
 	rm -f $(BUILD)/cloudhelper-router-plugin $(BUILD)/test-core
 

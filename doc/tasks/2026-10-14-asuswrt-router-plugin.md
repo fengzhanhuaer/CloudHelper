@@ -887,4 +887,33 @@ TEST060实机子阶段通过（普通B启动例外，ONCE/故障自动回退仍�
 
 最终分区校验：A raw bf9699a332e90fa00a6dfbf1123a95ec1aecb8d9fe193d5892a8bbbf9327c0ed，仅物理UBI搬迁，全部269逻辑载荷与原始备份相同；CFE原始SHA完全不变。B启动前后首次严格逻辑比对发现两份内部layout卷表变化，定位为rootfs_ubifs原生autoresize：239→368 reserved PEBs、autoresize位1→0和CRC重算；逐字节白名单重建两份卷表相符，其他所有逻辑载荷（内核/rootfs/启动metadata）完全一致，不修改原始预期或将差异忽略。具体报告final-b-postboot-content.json；全部备份与串口日志附最终SHA清单。
 
+### 2026-10-17 华硕到节点23的自定义端口兼容修复
+
+REQ-034：真实华硕25按主控节点表service_port连接节点23，修复“TLS connection failed”，保持C/JFFS独立产物、不刷固件、不改业务身份。用户说明同局域网Ies_Sub_Route能连接23；SSH实际证明172.18.52.205的四条Carrier连接目标均为123.171.243.171:12041，华硕拨12040被拒。华硕缓存probe_ips节点23已下发12041，拓扑端口省略；C只读拓扑并默认12040。华硕WAN绑定curl测试12041的TCP/TLS1.3/HTTP200通过，不能归因23整体不可用。DEF-005：C与Go节点端口选择不一致（已定位）。
+
+总体架构/UNIT-016：policy.c提供与Go probeVirtualRouterServicePortForNode一致的节点端口选择，probe_ips匹配节点优先，缺省节点端口为12040；没有节点记录才用拓扑端口/12040。carrier.c拨号复用该函数，认证/SPKI/主控配置均保持。IF-015：已有probe_ips[].service_port契约，未新增协议或依赖。回滚使用previous JFFS发布，保留当前0945c1b32149e62d和配置私有备份；不触碰A/B/CFE。
+
+TASK-024进行中：修复、C核心回归、真实C/Go握手与ping/双向测速、自有ARM构建/现有系统依赖验证、独立JFFS包；沿用用户已授权的华硕更新与可逆修复范围安装后核验配置不变、boot_id不变、#25→#23 connected与测速往返。TEST-061：节点自定义/覆盖拓扑/默认/缺节点回退及C客户端仅节点表携带随机监听端口的真实互通回归；TEST-062：实机连接状态及测速、打包/安装回读。REQ034→UNIT016/IF015→TASK024→TEST061/062。准备门禁通过，整体历史TASK023其余业务仍待验收；当前唯一下一步：执行C/Go互通回归及ARM构建。
+
+用户继续授权“调试升级路由器插件，测试迭代dns虚拟路由功能”；并明确本机监听端口不在华硕配置、只由主控配置，增加日志显示且不写文件。REQ-035：主控节点表为本机监听及对端拨号端口唯一正常配置来源，旧本地port兼容读取但不决定监听，删除UI输入/保存字段，状态显示实际端口。REQ-036：增加日志标签，最近64条固定内存环、连续相同错误合并、只在查看时读取，stderr沿原有console输出，不写Flash/磁盘、不保存请求凭据或报文。UNIT-017/IF-016：service.h与log.c有界线程安全环，原厂认证下的logs只读动作，记录主控和链路建立/失败/断开、实际对端地址/端口；无新端口/依赖。TEST-063：64条覆盖/顺序/重复合并与logs动作不产生文件、真实页面标签/端口移除/只查看时请求日志。TEST-064：真实路由器DNS直连、fake IP分流及一次实际访问；分别记录链路、DNS、数据面结果。REQ035/036及REQ001/002实机子目标→TASK024继续唯一进行中→TEST061—064。后续未知业务问题按实证迭代，不修改无关节点或主控设置、不凭缓存ready宣称链路成功。
+
 交付记录：upgrade-conclusion.json与final-SHA256-manifest.json在独立备份目录；仓库baseline.lock.json追加minimal_jffs_autostart_upgrade保留旧历史，ignored artifacts/autostart/delivery.json反映实机已刷入/自启验收。REQ033本次“刷入与跨重启自启”子目标完成门禁通过；整体TASK023继续进行中（用户身份及实际跨节点DNS/fakeIP/网关代理联调尚未完成，ONCE缺陷独立保留）。noconsole仍按开发期授权0，不提前关闭调试控制台。当前子任务无待执行升级动作；整体下一步唯一动作：用户填写主控/Node ID/密钥后验证真实业务，不自行启用或填写身份。最终仅提交本轮账本、README、baseline.lock.json，秘密/备份/日志/镜像不入Git。
+
+
+### 2026-10-17 DNS/虚拟路由联调迭代与JFFS升级
+
+REQ-037/UNIT-018：主控和链路的IPv4解析最多返回4个去重地址，在既有HTTP/TLS连接预算内顺序回退；保留证书、主机名与SPKI校验，不重放已完成TLS的POST。配置HTTP临时失败保留已认证控制流和当前策略，周期重试；真实变化仍按原流程重建。IF-017复用原HTTP/WS/yamux协议，不新增帧、管理端口或依赖。TEST-065：第一地址不可用后真实TLS认证/配置/控制流走第二地址，首次配置503后同一会话仍报告/ACK，后续同步成功。原厂旧libcurl永久RESOLVE项必须显式删除再替换，首轮回归失败后已修正并通过。
+
+REQ-038/UNIT-019：清理每次OpenSSL读写/握手前的线程错误队列，防止证书PEM读取遗留错误被误当作非阻塞发送失败；新增有界TLS错误原因日志。每轮最多读16条TLS记录，已有解密数据不额外睡眠。接收测速按首帧起3秒加500毫秒宽限结算，不等待积压的结束帧；无数据失败，迟到结束帧不覆盖结果。TEST-066覆盖遗留PEM错误/4096字节发送缓冲的C与Go双角色真实互通、假时钟结算及迟到帧；最终实机23上传2.370Mbps/1024000字节/3456ms，下载4.625Mbps/2010112字节/3477ms；25→23 Ping24ms、25→23→24 Ping202ms，均收到目标响应。测速数字仅为当次3秒窗口，不代表设备极限。
+
+DEF-006/REQ-039/UNIT-020：追加AAAA检查发现LAN仍返回上游IPv6，而插件1053直接查询已为空。真实原厂dnsmasq为nobody；通用原子写0600令它在HUP重载时读不到servers-file，保留旧上游。实机只改公开/tmp/resolv.dnsmasq为0644并HUP后A变为30秒fake IP、AAAA为空，证据定位权限问题。platform.c接管/恢复均设置0644，已接管旧0600文件主动修复并HUP；RAM私有备份和身份文件保持0600。TEST-067要求原厂ARM dnsmasq实际降权为65534进行UDP/TCP接管/恢复，并覆盖旧权限自愈、幂等及WAN文件更新。旧测试以root运行掩盖权限缺陷，测试上游也缺TCP监听；改用files NSS与双协议上游。旧QEMU2.11不支持当前WSL内核IFA11导致初始化失败，隔离容器改用本机QEMU10运行原厂ARM ELF，不改产品或原厂二进制。
+
+TEST-061/063/065/066已通过：C核心/64条内存日志/API认证CSRF和密钥脱敏/重启配置/异步映射NAT，真实C-Go Carrier与TLS/WebSocket/yamux控制面；probe_node全包和发布契约测试、probe_controller全包与vet通过。容器结束时的EOF/close1006、无CAP_NET_ADMIN导致套接字缓冲低于请求是明确测试环境输出，非隐藏失败。ARM正式工具链、QEMU核心、原厂动态依赖/真实SSL初始化/BusyBox脚本语法通过，无新增库。原厂页面真实Chrome桌面1366及390视口检查通过：原厂登录、删除本地端口输入和保存载荷、日志仅显示时取数、真实12041事件和网关标签，零脚本错误；手机仍沿用原厂固定宽度横向滚动。
+
+TEST-062/064最终实机验收：JFFS发布9b428dd04774a2c8，包69081字节，SHA256 85c300e53e61b13744040941944e68330a7ffb9faef00950dc3ce88e6bfe38d9，程序103800字节，SHA256 0e304cef18cc105ea171dad429483d26d1a46cd2974fa09a92ad54ec8b0d6388，四载荷136317字节。安装回读、原厂Web认证/菜单、服务PID4174通过；JFFS剩余12872KiB。config.json与升级前私有备份逐字节一致，boot_id仍e53728f3-4a36-4ba8-8b60-c5dfeb30e59a，本轮未重启/刷写系统或改A/B/CFE。原始JFFS恢复包、配置、boot_id与哈希保留在D:/Code/RouterFirmware/router-backups/20261017-005251-jffs-port-logs（不入Git），当前与previous版本可回退。
+
+最终设备DNS实测：电脑Wi-Fi192.168.52.170/ifindex10，example.com的LAN UDP125ms/TCP17ms返回真实A；www.anthropic.com返回198.18.7.31/TTL30，首查4.225秒，AAAA成功空答案，TCP fake IP一致。强制Wi-Fi源接口访问该fake IP，TLS1.3正常校验证书并在1.165秒收到HTTP200。独立主控远程控制台和AWS只读诊断此前确认路径25→23→24、域名和TCP校验均正确、delivered且无错误，未将本机节点9的状态当作华硕。临时抓包/测试程序已随安装移除，插件无文件日志。限制：主控公网某个Cloudflare地址不可达，地址回退可恢复但仍偶发HTTP超时/404及控制流重连；此前实际TCP首连曾等待约12秒，长期稳定性/其他出口未验收，不声称弱网完全解决。真实外网访问已通过，不能因ready或缓存单独宣称成功。
+
+本轮REQ034—039→UNIT016—020/IF015—017→TASK024→TEST061—067。TASK024进入提交发布阶段，唯一下一步：完成权限回归核对、秘密扫描后提交本轮明确源码/测试/文档并推送mapledev，核对功能SHA对应Actions和独立JFFS资产。历史TASK023整体其余业务不因本次DNS成功自动关闭；生产Go Probe/主控未部署或重启。
+
+TEST-067最终通过：QEMU10运行未修改原厂ARM dnsmasq，/proc确认四个UID均65534；真实UDP/TCP接管和恢复成功。JFFS测试的旧0600文件自愈/0644可读/0600私有备份/幂等/WAN更新/恢复及真实菜单挂载回滚均通过。最终设备回读公开文件0644、备份0600，未留下测试程序。秘密扫描30个源码文件通过，git diff --check通过。技能旧预检仍仅因已退役Docker及router-arm64标记失败，沿用CON012/DEC043的当前8产物契约；实际mapledev/origin/GitHub Actions权限和配套发布测试均核实，本轮不恢复旧产物。

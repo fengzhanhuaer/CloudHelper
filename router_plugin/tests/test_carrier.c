@@ -8,6 +8,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <openssl/err.h>
 
 void vr_link_frame(vr_link *l,const vr_frame *f,char path[VR_PATH_MAX][129],size_t count)
 {vr_measure_frame(l->engine,l,f,path,count);}
@@ -18,6 +19,9 @@ static void tick(vr_engine *e)
     if(e->lan>=0){int fd=accept4(e->lan,NULL,NULL,SOCK_CLOEXEC);if(fd>=0)vr_link_accept(e,fd);}
     if(!l->ssl){vr_link_dial(l);poll(NULL,0,10);return;}
     struct pollfd fd={l->fd,(short)(POLLIN|(l->used?POLLOUT:0)),0};assert(poll(&fd,1,10)>=0);
+    /* Certificate parsing/curl can leave a thread-local OpenSSL error. A
+       nonblocking WANT_READ/WANT_WRITE must not misclassify that old error. */
+    ERR_put_error(ERR_LIB_PEM,0,PEM_R_NO_START_LINE,__FILE__,__LINE__);
     vr_link_poll(l,fd.revents);vr_measure_tick(e);
 }
 
@@ -40,6 +44,7 @@ int main(int argc,char **argv)
     while(!l->ssl&&vr_millis()<deadline)tick(e);
     if(!l->ssl)fprintf(stderr,"carrier: %s\n",l->error);
     assert(l->ssl);
+    int small_buffer=4096;assert(!setsockopt(l->fd,SOL_SOCKET,SO_SNDBUF,&small_buffer,sizeof(small_buffer)));
     const char *kinds[]={"ping","upload","download"};
     for(unsigned i=0;i<3;i++) {
         strcpy(s.measure_node,"8");strcpy(s.measure_kind,kinds[i]);json_object_put(s.measurement);s.measurement=json_object_new_object();

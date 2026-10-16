@@ -11,10 +11,18 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <openssl/pem.h>
+#include <openssl/err.h>
 #include <openssl/sha.h>
 #include <openssl/x509v3.h>
 
 uint64_t vr_millis(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (uint64_t)t.tv_sec*1000+(uint64_t)t.tv_nsec/1000000;}
+
+void vr_tls_error(char *out,size_t cap,const char *operation,int error)
+{
+    const char *reason=ERR_reason_error_string(ERR_peek_last_error());
+    if(!reason&&error==SSL_ERROR_SYSCALL&&errno)reason=strerror(errno);
+    snprintf(out,cap,"TLS %s failed (%d): %.64s",operation,error,reason?reason:"connection closed");
+}
 
 static int wait_fd(int fd,short events,uint64_t deadline)
 {
@@ -28,6 +36,7 @@ int vr_tls_io(SSL *ssl,int write,void *bytes,size_t n,uint64_t deadline)
 {
     size_t off=0;
     while(off<n) {
+        ERR_clear_error();errno=0;
         int k=write?SSL_write(ssl,(char *)bytes+off,(int)(n-off)):SSL_read(ssl,(char *)bytes+off,(int)(n-off));
         if(k>0){off+=(size_t)k;continue;}
         int err=SSL_get_error(ssl,k);short events=err==SSL_ERROR_WANT_READ?POLLIN:err==SSL_ERROR_WANT_WRITE?POLLOUT:0;
@@ -39,6 +48,7 @@ int vr_tls_io(SSL *ssl,int write,void *bytes,size_t n,uint64_t deadline)
 static int handshake(SSL *ssl,int client,uint64_t deadline)
 {
     while(vr_millis()<deadline) {
+        ERR_clear_error();errno=0;
         int n=client?SSL_connect(ssl):SSL_accept(ssl);if(n==1)return 0;
         int err=SSL_get_error(ssl,n);short events=err==SSL_ERROR_WANT_READ?POLLIN:err==SSL_ERROR_WANT_WRITE?POLLOUT:0;
         if(!events || wait_fd(SSL_get_fd(ssl),events,deadline))return -1;
@@ -113,8 +123,15 @@ fail:SSL_free(ssl);SSL_CTX_free(ctx);close(sock);return NULL;
 SSL *vr_tls_connect(const char *host,int port,const char *pin,const vr_config *config,const char *iface,int *fd,uint64_t deadline)
 {
     uint64_t now=vr_millis(),budget=deadline>now?deadline-now:0;
-    char ip[16];*fd=-1;if(!budget||vr_resolve_config4(host,config,iface,ip))return NULL;
-    return vr_tls_connect_at(host,ip,port,pin,iface,fd,vr_millis()+budget);
+    char addresses[4][16];*fd=-1;int count=vr_resolve_config4_all(host,config,iface,addresses);
+    if(!budget||count<1)return NULL;
+    uint64_t end=vr_millis()+budget;
+    for(int i=0;i<count;i++) {
+        now=vr_millis();if(now>=end)break;
+        SSL *ssl=vr_tls_connect_at(host,addresses[i],port,pin,iface,fd,now+(end-now)/(uint64_t)(count-i));
+        if(ssl)return ssl;
+    }
+    return NULL;
 }
 
 int vr_http_header(SSL *ssl,char *header,size_t cap,uint64_t deadline)

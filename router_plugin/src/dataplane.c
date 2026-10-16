@@ -60,7 +60,9 @@ int vr_mapping_get(vr_engine *e,const char *domain,const char *ip,vr_decision de
     pthread_mutex_lock(&e->mutex);size_t slot=0;
     for(size_t i=0;i<VR_MAPPING_MAX;i++){if(e->mappings[i].expires<=now){slot=i;break;}if(e->mappings[i].used<e->mappings[slot].used)slot=i;}
     e->mappings[slot]=m;pthread_mutex_unlock(&e->mutex);*out=m;rc=0;
-done:json_object_put(response);return rc;
+done:
+    if(rc&&e->service){char event[240];snprintf(event,sizeof(event),"Fake IP lookup failed: %.160s",*error?error:"invalid authoritative mapping");vr_service_log(e->service,"dns",event);}
+    json_object_put(response);return rc;
 }
 
 static int same(const vr_packet *a,const vr_packet *b)

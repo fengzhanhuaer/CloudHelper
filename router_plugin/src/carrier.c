@@ -10,6 +10,7 @@
 #include <openssl/crypto.h>
 #include <openssl/sha.h>
 #include <openssl/rand.h>
+#include <openssl/err.h>
 
 static int connected(vr_engine *e,const char *peer)
 {for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl&&!strcmp(e->links[i].peer,peer))return 1;return 0;}
@@ -50,6 +51,7 @@ int vr_path(vr_engine *e,const char *target,char path[VR_PATH_MAX][129],size_t *
 
 void vr_link_close(vr_link *l,const char *error)
 {
+    if(l->ssl&&*error){char event[240];snprintf(event,sizeof(event),"Peer %.32s disconnected: %.96s",l->peer,error);vr_service_log(l->engine->service,"link",event);}
     SSL_free(l->ssl);l->ssl=NULL;if(l->fd>=0)close(l->fd);l->fd=-1;l->used=0;l->head=0;l->write_pending=0;
     l->retry=vr_millis()+5000;snprintf(l->error,sizeof(l->error),"%s",error);
     memset(&l->decoder,0,sizeof(l->decoder));memset(&l->ws,0,sizeof(l->ws));
@@ -112,16 +114,21 @@ void vr_link_poll(vr_link *l,short events)
 {
     if(events&(POLLERR|POLLHUP|POLLNVAL)){vr_link_close(l,"connection closed");return;}
     if((events&POLLIN)||SSL_pending(l->ssl)) {
-        uint8_t bytes[16384];int n=SSL_read(l->ssl,bytes,sizeof(bytes));
-        if(n>0){l->rx+=(unsigned)n;l->last_rx=vr_millis();if(vr_ws_feed(&l->ws,bytes,(size_t)n,ws_received,l)){vr_link_close(l,"invalid carrier frame");return;}}
-        else {int error=SSL_get_error(l->ssl,n);if(error!=SSL_ERROR_WANT_READ&&error!=SSL_ERROR_WANT_WRITE){vr_link_close(l,"TLS receive failed");return;}}
+        /* Drain a bounded batch. Reading one record per 50 ms poll can leave
+           decrypted records stranded in OpenSSL and stall a remote download. */
+        for(unsigned batch=0;batch<16;batch++) {
+            ERR_clear_error();errno=0;
+            uint8_t bytes[16384];int n=SSL_read(l->ssl,bytes,sizeof(bytes));
+            if(n>0){l->rx+=(unsigned)n;l->last_rx=vr_millis();if(vr_ws_feed(&l->ws,bytes,(size_t)n,ws_received,l)){vr_link_close(l,"invalid carrier frame");return;}}
+            else {int error=SSL_get_error(l->ssl,n);if(error!=SSL_ERROR_WANT_READ&&error!=SSL_ERROR_WANT_WRITE){char detail[96];vr_tls_error(detail,sizeof(detail),"receive",error);vr_link_close(l,detail);return;}break;}
+        }
     }
     if(l->used && (events&POLLOUT)) {
         size_t n=l->write_pending;
         if(!n){n=VR_TX_CAP-l->head;if(n>l->used)n=l->used;l->write_pending=n;}
-        int sent=SSL_write(l->ssl,l->queue+l->head,(int)n);
+        ERR_clear_error();errno=0;int sent=SSL_write(l->ssl,l->queue+l->head,(int)n);
         if(sent>0){l->head=(l->head+(size_t)sent)%VR_TX_CAP;l->used-=(size_t)sent;l->write_pending=0;l->tx+=(unsigned)sent;}
-        else {int error=SSL_get_error(l->ssl,sent);if(error!=SSL_ERROR_WANT_READ&&error!=SSL_ERROR_WANT_WRITE)vr_link_close(l,"TLS send failed");}
+        else {int error=SSL_get_error(l->ssl,sent);if(error!=SSL_ERROR_WANT_READ&&error!=SSL_ERROR_WANT_WRITE){char detail[96];vr_tls_error(detail,sizeof(detail),"send",error);vr_link_close(l,detail);}}
     }
 }
 
@@ -191,11 +198,12 @@ static void dial_blocking(vr_link *l)
     if(l->ssl || strcmp(vr_string(r,"from_node_id"),e->config.node_id) || vr_millis()<l->retry)return;
     l->retry=vr_millis()+10000;
     const char *host=vr_string(r,"to_service_domain"),*pin=vr_string(r,"to_tls_spki_sha256");int port=json_object_get_int(vr_member(r,"to_service_port"));
-    if(port<1)port=12040;
+    port=vr_policy_service_port(e->policy,vr_string(r,"to_node_id"),port);
     time_t expires;
     if(vr_ticket_verify(vr_string(r,"auth_ticket"),vr_string(r,"user_public_key"),l->route,vr_string(r,"from_node_id"),vr_string(r,"to_node_id"),time(NULL),&expires)){strcpy(l->error,"route ticket invalid or expired");return;}
-    uint64_t deadline=vr_millis()+5000;int fd=-1;
-    SSL *ssl=vr_tls_connect(host,port,pin,&e->config,e->addresses.wan_if,&fd,deadline);if(!ssl){strcpy(l->error,"TLS connection failed");return;}
+    uint64_t deadline=vr_millis()+5000;int fd=-1;char event[240];
+    SSL *ssl=vr_tls_connect(host,port,pin,&e->config,e->addresses.wan_if,&fd,deadline);if(!ssl){strcpy(l->error,"DNS/TCP/TLS connection failed");
+        snprintf(event,sizeof(event),"Peer %.32s %.120s:%d: %.64s",l->peer,host,port,l->error);vr_service_log(e->service,"link",event);return;}
     char nonce[49],text[1024],mac[65],ws_key[25],accept[29],actual[64];unsigned char random[16];
     char *request=malloc(16384),*response=malloc(4096);
     if(!request || !response || vr_random_hex(nonce,24) || RAND_bytes(random,16)!=1)goto fail;
@@ -205,8 +213,10 @@ static void dial_blocking(vr_link *l)
     int len=snprintf(request,16384,"GET %s HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: %s\r\nAuthorization: Bearer %s\r\nX-Codex-Route-Id: %s\r\nX-Codex-Api-Version: 2025-03-22\r\nX-Codex-Auth-Mode: secret_hmac\r\nX-Codex-Relay-Mode: bridge\r\nX-Codex-Relay-Role: to_next\r\nX-Codex-Source-Node-Id: %s\r\nX-Codex-User-Auth-Ticket: %s\r\nX-Codex-VRouter-Carrier-Slot: 0\r\nX-Codex-Mac: %s\r\n\r\n",VR_RELAY_PATH,host,port,ws_key,nonce,l->route,e->config.node_id,vr_string(r,"auth_ticket"),mac);
     if(len<0||len>=16384 || vr_tls_io(ssl,1,request,(size_t)len,deadline) || vr_http_header(ssl,response,4096,deadline) || strncmp(response,"HTTP/1.1 101 ",13) ||
         !header_equals(response,"Upgrade","websocket") || !vr_http_token(response,"Connection","Upgrade") || !vr_http_field(response,"Sec-WebSocket-Accept",actual,sizeof(actual)) || strcmp(actual,accept))goto fail;
-    l->ssl=ssl;l->fd=fd;l->client=1;l->ws.expect_mask=0;l->last_rx=vr_millis();l->auth_expires=expires;*l->error=0;free(request);free(response);return;
+    l->ssl=ssl;l->fd=fd;l->client=1;l->ws.expect_mask=0;l->last_rx=vr_millis();l->auth_expires=expires;*l->error=0;free(request);free(response);
+    snprintf(event,sizeof(event),"Peer %.32s %.120s:%d connected",l->peer,host,port);vr_service_log(e->service,"link",event);return;
 fail:free(request);free(response);SSL_free(ssl);close(fd);strcpy(l->error,"carrier handshake failed");
+    snprintf(event,sizeof(event),"Peer %.32s %.120s:%d: carrier handshake failed",l->peer,host,port);vr_service_log(e->service,"link",event);
 }
 
 static void *handshake_worker(void *arg)

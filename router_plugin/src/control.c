@@ -8,6 +8,7 @@
 #include <sys/sysinfo.h>
 #include <unistd.h>
 #include <openssl/rand.h>
+#include <openssl/err.h>
 
 /* The existing controller carries one JSON control stream over yamux/WS.
  * Implement only that bounded stream; no general mux runtime or new library. */
@@ -74,7 +75,7 @@ static int received(int opcode,const uint8_t *data,size_t n,void *arg)
                 if(flags==1 && send_mux(c,2,2,0,length,NULL))return -1;
                 c->header_used=0;continue;
             }
-            if(h[1]==3||stream!=1||(flags&(1|4|8)))return -1;
+            if(h[1]==3||stream!=1||(flags&(1|4|8))){char detail[120];snprintf(detail,sizeof(detail),"Control mux closed: type %u stream %u flags %u",h[1],stream,flags);vr_service_log(c->engine->service,"controller",detail);return -1;}
             if(h[1]==1) {
                 if(length>16*1024*1024u || c->send_window>16*1024*1024u-length)return -1;
                 c->send_window+=length;c->header_used=0;continue;
@@ -102,11 +103,14 @@ static int received(int opcode,const uint8_t *data,size_t n,void *arg)
 static int connect_controller(control *c)
 {
     vr_engine *e=c->engine;char challenge[513],signature[65],host[254],key[25],accept[29],actual[64];int port,tls;
-    char error[128];
+    char error[128]="invalid controller URL";
     if(vr_origin(e->config.controller,host,&port,&tls)||!tls||
-       vr_controller_auth(&e->config,e->addresses.wan_if,"GET","/api/probe",challenge,signature,error,sizeof(error))||stopped(e))return -1;
+       vr_controller_auth(&e->config,e->addresses.wan_if,"GET","/api/probe",challenge,signature,error,sizeof(error))||stopped(e)){
+        if(!stopped(e))vr_service_log(e->service,"controller",error);
+        return -1;
+    }
     uint64_t deadline=vr_millis()+5000;
-    c->ssl=vr_tls_connect(host,port,"",&e->config,e->addresses.wan_if,&c->fd,deadline);if(!c->ssl)return -1;
+    c->ssl=vr_tls_connect(host,port,"",&e->config,e->addresses.wan_if,&c->fd,deadline);if(!c->ssl){vr_service_log(e->service,"controller","Control stream DNS/TCP/TLS connection failed");return -1;}
     uint8_t random[16];if(RAND_bytes(random,16)!=1)return -1;EVP_EncodeBlock((unsigned char *)key,random,16);
     if(vr_ws_accept_key(key,accept))return -1;
     char header[4096];int len=snprintf(header,sizeof(header),"GET /api/probe HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: %s\r\nX-Probe-Node-Id: %s\r\nX-Probe-Rand: %s\r\nX-Probe-Signature: %s\r\n\r\n",host,port,key,e->config.node_id,challenge,signature);
@@ -130,7 +134,7 @@ static int refresh(control *c,const char *original)
 {
     vr_engine *e=c->engine;char error[256];
     json_object *next=vr_controller_call(&e->config,e->addresses.wan_if,"GET","/api/probe/route/config",NULL,error,sizeof(error));
-    if(!next)return -1;
+    if(!next){vr_service_log(e->service,"controller","Configuration refresh failed; retaining current policy and control stream");return -1;}
     int changed=strcmp(original,json_object_to_json_string_ext(next,JSON_C_TO_STRING_PLAIN))!=0;
     if(changed){pthread_mutex_lock(&e->mutex);e->refresh=1;pthread_mutex_unlock(&e->mutex);}
     json_object_put(next);return changed?1:0;
@@ -142,22 +146,24 @@ static void *control_worker(void *arg)
     while(!stopped(e)) {
         control *c=calloc(1,sizeof(*c));if(!c)break;c->engine=e;c->fd=-1;
         if(!connect_controller(c)) {
-            uint64_t sent=0,checked=vr_millis();
+            vr_service_log(e->service,"controller","Control stream established");uint64_t sent=0,checked=vr_millis();
             while(!stopped(e)) {
                 uint64_t now=vr_millis();
                 if(now-c->ack_at>65000)break;
                 if(c->report||now-sent>=20000){if(report(c))break;sent=now;c->report=0;}
-                if(c->refresh||now-checked>=60000){int rc=refresh(c,original);checked=vr_millis();c->refresh=0;if(rc)break;}
+                if(c->refresh||now-checked>=60000){int rc=refresh(c,original);checked=vr_millis();c->refresh=0;if(rc>0)break;}
                 struct pollfd fd={c->fd,POLLIN,0};int rc=poll(&fd,1,100);
                 if(rc<0&&errno==EINTR)continue;
                 if(rc<0||(fd.revents&(POLLERR|POLLHUP|POLLNVAL)))break;
                 if((fd.revents&POLLIN)||SSL_pending(c->ssl)) {
+                    ERR_clear_error();errno=0;
                     uint8_t buf[4096];int n=SSL_read(c->ssl,buf,sizeof(buf));
-                    if(n>0){if(vr_ws_feed(&c->ws,buf,(size_t)n,received,c))break;}
-                    else {int err=SSL_get_error(c->ssl,n);if(err!=SSL_ERROR_WANT_READ&&err!=SSL_ERROR_WANT_WRITE)break;}
+                    if(n>0){if(vr_ws_feed(&c->ws,buf,(size_t)n,received,c)){vr_service_log(e->service,"controller","Control WebSocket/mux decode failed");break;}}
+                    else {int err=SSL_get_error(c->ssl,n);if(err!=SSL_ERROR_WANT_READ&&err!=SSL_ERROR_WANT_WRITE){char detail[120];vr_tls_error(detail,sizeof(detail),"control receive",err);vr_service_log(e->service,"controller",detail);break;}}
                 }
             }
         }
+        if(c->ssl&&!stopped(e))vr_service_log(e->service,"controller","Control stream disconnected or handshake failed; retrying");
         SSL_free(c->ssl);if(c->fd>=0)close(c->fd);free(c);
         pthread_mutex_lock(&e->mutex);e->controller_connected=0;int changed=e->refresh;pthread_mutex_unlock(&e->mutex);if(changed)break;
         for(int i=0;i<50&&!stopped(e);i++)poll(NULL,0,100);

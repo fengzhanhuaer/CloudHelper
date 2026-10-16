@@ -73,6 +73,11 @@ func testRouterCCarrier(t *testing.T, binary string, serverMode bool) {
 	rule.ToServiceDomain = "127.0.0.1"
 	rule.ToServicePort = server.Listener.Addr().(*net.TCPAddr).Port
 	config := probeVirtualRouterConfig{Enabled: true, FakeIPCIDR: "198.18.0.0/15", ProbeIPs: []probeVirtualRouterProbeIP{{NodeID: "7", IP: "198.18.0.7"}, {NodeID: "8", IP: "198.18.0.8"}}, TopologyRules: []probeVirtualRouterTopologyRule{rule}}
+	if !serverMode {
+		// Match controller snapshots: the node port is authoritative; a link may omit it.
+		config.ProbeIPs[1].ServicePort = rule.ToServicePort
+		config.TopologyRules[0].ToServicePort = 0
+	}
 	applyProbeVirtualRouterConfigForNode(config, "8")
 	data, err := json.Marshal(config)
 	if err != nil {

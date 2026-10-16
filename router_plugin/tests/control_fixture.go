@@ -113,7 +113,10 @@ func main() {
 			http.Error(w, "auth", 403)
 			return
 		}
-		refreshed.Add(1)
+		if refreshed.Add(1) == 1 {
+			http.Error(w, "temporary configuration outage", 503)
+			return
+		}
 		io.WriteString(w, `{"revision":2}`)
 	})
 	mux.HandleFunc("/api/probe", func(w http.ResponseWriter, r *http.Request) {
@@ -165,6 +168,16 @@ func main() {
 			}
 		}
 		encoder.Encode(map[string]string{"type": "route_config_sync"})
+		// A failed config fetch must preserve this authenticated control
+		// session, accept another report, then apply a later refresh.
+		encoder.Encode(map[string]string{"type": "report_once"})
+		var report map[string]interface{}
+		if decoder.Decode(&report) != nil {
+			return
+		}
+		reports.Add(1)
+		encoder.Encode(map[string]string{"type": "ack"})
+		encoder.Encode(map[string]string{"type": "route_config_sync"})
 		var b [1]byte
 		stream.Read(b[:])
 	})
@@ -176,7 +189,7 @@ func main() {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	must(cmd.Run())
-	if authenticated.Load() != 1 || reports.Load() != 2 || refreshed.Load() != 1 {
+	if authenticated.Load() != 1 || reports.Load() != 3 || refreshed.Load() != 2 {
 		log.Fatalf("bad protocol result auth=%d reports=%d refresh=%d", authenticated.Load(), reports.Load(), refreshed.Load())
 	}
 	fmt.Println("PASS: existing Go WebSocket/yamux accepted C peer and keepalive")

@@ -18,6 +18,7 @@ static void status(vr_engine *e,int ready)
     json_object_object_add(o,"error",json_object_new_string(e->error));
     json_object_object_add(o,"lan",json_object_new_string(e->addresses.lan));json_object_object_add(o,"wan",json_object_new_string(e->addresses.wan));
     json_object_object_add(o,"virtual_ip",json_object_new_string(e->own_ip));json_object_object_add(o,"node_id",json_object_new_string(e->config.node_id));
+    json_object_object_add(o,"listen_port",json_object_new_int(e->config.port));
     json_object_object_add(o,"route_count",json_object_new_int(e->policy?json_object_array_length(vr_member(e->policy,"route_rules")):0));
     int count=0;pthread_mutex_lock(&e->mutex);for(size_t i=0;i<VR_MAPPING_MAX;i++)if(e->mappings[i].expires>time(NULL))count++;pthread_mutex_unlock(&e->mutex);
     json_object_object_add(o,"mappings",json_object_new_int(count));
@@ -97,6 +98,8 @@ static int prepare(vr_engine *e)
     strcpy(upstream,e->config.dns_upstream);*strchr(upstream,':')=0;
     if(!strcmp(upstream,e->addresses.lan)||!strcmp(upstream,e->addresses.wan)){strcpy(e->error,"DNS upstream cannot be this router");return -1;}
     e->policy=vr_member(e->snapshot,"virtual_router");
+    e->config.port=vr_policy_service_port(e->policy,e->config.node_id,0);
+    char event[240];snprintf(event,sizeof(event),"Listening port from controller: %d",e->config.port);vr_service_log(e->service,"service",event);
     if(!json_object_get_boolean(vr_member(e->policy,"enabled"))){strcpy(e->error,"virtual routing is disabled on controller");return -1;}
     if(vr_copy(e->cidr,sizeof(e->cidr),vr_string(e->policy,"fake_ip_cidr")))return -1;
     json_object *nodes=vr_member(e->policy,"probe_ips");
@@ -110,6 +113,7 @@ static int prepare(vr_engine *e)
     if(cert&&!strcmp(vr_string(cert,"node_id"),e->config.node_id))e->tls=vr_tls_server_context(vr_string(cert,"cert_pem"),vr_string(cert,"key_pem"));
     if(e->tls && fresh_cert && vr_cache_save(cert_cache,cert)){SSL_CTX_free(e->tls);e->tls=NULL;}
     json_object_put(cert);if(!e->tls){strcpy(e->error,"node TLS certificate unavailable");return -1;}
+    *e->error=0; /* A valid cached certificate recovered a transient HTTP error. */
     json_object *links=vr_member(e->policy,"topology_rules");
     for(size_t i=0;i<(size_t)json_object_array_length(links);i++) {
         json_object *r=json_object_array_get_idx(links,i);if(!json_object_get_boolean(vr_member(r,"enabled")))continue;
@@ -153,7 +157,8 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
         struct pollfd fds[5+VR_LINK_MAX];fds[0]=(struct pollfd){e->tun,POLLIN,0};fds[1]=(struct pollfd){e->lan,POLLIN,0};
         fds[2]=(struct pollfd){e->wan,POLLIN,0};fds[3]=(struct pollfd){e->dns_udp,POLLIN,0};fds[4]=(struct pollfd){e->dns_tcp,POLLIN,0};
         for(size_t i=0;i<e->link_count;i++)fds[5+i]=(struct pollfd){e->links[i].fd,(short)(POLLIN|(e->links[i].used?POLLOUT:0)),0};
-        int result=poll(fds,5+e->link_count,50);if(result<0&&errno==EINTR)continue;if(result<0){strcpy(e->error,"network poll failed");break;}
+        int pending=0;for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl&&SSL_pending(e->links[i].ssl))pending=1;
+        int result=poll(fds,5+e->link_count,pending?0:50);if(result<0&&errno==EINTR)continue;if(result<0){strcpy(e->error,"network poll failed");break;}
         for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl)vr_link_poll(&e->links[i],fds[5+i].revents);
         if(fds[0].revents&POLLIN){uint8_t packet[2048];ssize_t n=read(e->tun,packet,sizeof(packet));if(n>0)vr_outgoing(e,packet,(size_t)n);}
         for(size_t i=1;i<=2;i++)if(fds[i].revents&POLLIN){int fd=accept4(fds[i].fd,NULL,NULL,SOCK_CLOEXEC);if(fd>=0)vr_link_accept(e,fd);}
@@ -175,7 +180,7 @@ done:
     vr_control_stop(e);
     vr_measure_stop(e);
     status(e,0);
-    if(*e->error)fprintf(stderr,"virtual router: %s\n",e->error);
+    if(*e->error)vr_service_log(e->service,"service",e->error);
     /* Restore dnsmasq while worker sockets are still open, then join bounded jobs. */
     vr_dns_stop(e);
     vr_dataplane_stop(e);

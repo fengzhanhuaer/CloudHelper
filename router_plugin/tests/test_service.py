@@ -48,6 +48,9 @@ def main(binary):
             assert response["ok"] and not response["config"]["enabled"]
             assert response["config"]["port"] == 12040
             assert not response["config"]["allow_wan"]
+            files_before=set(root.iterdir())
+            logs=request(sock,{"action":"logs"})
+            assert logs["ok"] and logs["items"]==[] and set(root.iterdir())==files_before
             assert os.stat(sock).st_mode & 0o777 == 0o600
             assert not request(sock, {"action": "configure", "csrf": "invalid", "config": {"allow_wan": True}})["ok"]
             updated = dict(response["config"], controller="https://controller.test", node_id="7", node_key=secret)

@@ -11,11 +11,16 @@
 int vr_service_stopped(vr_service *s,unsigned generation)
 {return s->stop||s->generation!=generation;}
 
+/* The first resolved origin is unavailable; both HTTP authentication/config
+   and the raw TLS control stream must reach the second verified address. */
+int __wrap_vr_resolve_config4_all(const char *host,const vr_config *config,const char *iface,char out[4][16])
+{(void)config;(void)iface;assert(!strcmp(host,"127.0.0.1"));strcpy(out[0],"127.0.0.2");strcpy(out[1],"127.0.0.1");return 2;}
+
 int main(int argc,char **argv)
 {
     assert(argc==2);signal(SIGPIPE,SIG_IGN);assert(!curl_global_init(CURL_GLOBAL_DEFAULT));
     vr_engine *e=calloc(1,sizeof(*e));assert(e);vr_service s={0};e->service=&s;
-    pthread_mutex_init(&e->mutex,NULL);vr_config_default(&e->config);
+    pthread_mutex_init(&e->mutex,NULL);pthread_mutex_init(&s.mutex,NULL);vr_config_default(&e->config);
     assert(!vr_copy(e->config.controller,sizeof(e->config.controller),argv[1]));
     strcpy(e->config.node_id,"7");strcpy(e->config.node_key,"fixture-only-key");strcpy(e->addresses.lan,"127.0.0.2");
     const char *snapshot="{\"revision\":1}";e->snapshot=vr_json_parse(snapshot,strlen(snapshot));assert(e->snapshot);

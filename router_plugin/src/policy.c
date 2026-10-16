@@ -79,6 +79,18 @@ vr_decision vr_policy_match(json_object *policy,const char *domain,const char *i
     return d;
 }
 
+int vr_policy_service_port(json_object *policy,const char *node_id,int fallback)
+{
+    json_object *nodes=vr_member(policy,"probe_ips");
+    for(size_t i=0;i<(size_t)json_object_array_length(nodes);i++) {
+        json_object *node=json_object_array_get_idx(nodes,i);
+        if(!strcmp(vr_string(node,"node_id"),node_id)) {
+            fallback=json_object_get_int(vr_member(node,"service_port"));break;
+        }
+    }
+    return fallback>0 && fallback<=65535?fallback:12040;
+}
+
 int vr_policy_validate(json_object *s,const char *node_id,char *err,size_t n)
 {
     const char *why="invalid controller configuration";

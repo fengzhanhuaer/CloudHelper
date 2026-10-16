@@ -12,6 +12,7 @@ typedef int (*vr_ws_handler)(int opcode,const uint8_t *bytes,size_t n,void *arg)
 int vr_ws_feed(vr_ws_decoder *d,const void *bytes,size_t n,vr_ws_handler fn,void *arg);
 int vr_ws_encode(int opcode,int mask,const void *bytes,size_t n,uint8_t *out,size_t cap,size_t *length);
 uint64_t vr_millis(void);
+void vr_tls_error(char *out,size_t cap,const char *operation,int error);
 int vr_tls_io(SSL *ssl,int write,void *bytes,size_t n,uint64_t deadline);
 SSL_CTX *vr_tls_server_context(const char *cert,const char *key);
 SSL *vr_tls_accept(SSL_CTX *ctx,int fd,uint64_t deadline);

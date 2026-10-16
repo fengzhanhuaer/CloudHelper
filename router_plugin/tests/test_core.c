@@ -53,6 +53,12 @@ static void test_dns(void)
     assert(!vr_dns_question(b,n,&q));
     char ip[16];assert(!vr_dns_address4(b,n,ip)&&!strcmp(ip,"198.18.0.5"));
     assert(vr_dns_address4(b,n-1,ip)<0);
+    char addresses[4][16];assert(vr_dns_addresses4(b,n,addresses)==1);
+    memcpy(b+n,b+n-16,16);b[7]=2;n+=16;
+    assert(vr_dns_addresses4(b,n,addresses)==1); /* duplicate A */
+    b[n-1]=6;assert(vr_dns_addresses4(b,n,addresses)==2);
+    assert(!strcmp(addresses[1],"198.18.0.6"));
+    assert(vr_dns_addresses4(b,n-1,addresses)<0);
     assert(!vr_dns_reply(dns_query,sizeof(dns_query),b,sizeof(b),5,NULL,&n));assert((b[3]&15)==5&&b[7]==0);
     for(size_t i=0;i<sizeof(dns_query);i++)assert(vr_dns_question(dns_query,i,&q)<0);
     memcpy(b,dns_query,sizeof(dns_query));b[12]=0xc0;b[13]=12;assert(vr_dns_question(b,sizeof(dns_query),&q)<0);
@@ -93,6 +99,13 @@ static void test_config(void)
 
 static void test_policy(void)
 {
+    json_object *ports=parse("{\"probe_ips\":[{\"node_id\":\"23\",\"service_port\":12041},{\"node_id\":\"25\"}]}");
+    assert(vr_policy_service_port(ports,"23",0)==12041);
+    assert(vr_policy_service_port(ports,"23",443)==12041);
+    assert(vr_policy_service_port(ports,"25",443)==12040);
+    assert(vr_policy_service_port(ports,"missing",443)==443);
+    assert(vr_policy_service_port(ports,"missing",0)==12040);
+    json_object_put(ports);
     json_object *p=parse("{\"route_rules\":[{\"id\":\"reject\",\"action\":\"reject\",\"entries\":[\"domain_suffix:blocked.test\"]},{\"id\":\"exit\",\"action\":\"probe_exit\",\"exit_node_id\":\"2\",\"entries\":[\"domain_suffix:example.com\",\"cidr:203.0.113.0/24\"]}]}" );
     assert(vr_policy_match(p,"a.blocked.test",NULL).action==VR_REJECT);
     assert(vr_policy_match(p,"notexample.com",NULL).action==VR_DIRECT);

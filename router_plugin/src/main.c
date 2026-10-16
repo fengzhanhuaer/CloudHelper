@@ -80,6 +80,7 @@ json_object *vr_service_dispatch(vr_service *s,json_object *request)
 {
     const char *action=vr_string(request,"action");
     if(!strcmp(action,"status"))return status_reply(s);
+    if(!strcmp(action,"logs"))return vr_service_logs(s);
     const char *token=vr_string(request,"csrf");
     if(strlen(token)!=48 || CRYPTO_memcmp(token,s->csrf,48))return error_reply("invalid CSRF token");
     if(!strcmp(action,"configure")) {

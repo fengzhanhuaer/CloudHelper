@@ -12,25 +12,44 @@ import time
 if os.environ.get('CHVR_DISPOSABLE_TEST')!='1' or not Path('/.dockerenv').exists():
     raise SystemExit('Disposable container only')
 stock=Path('/stock')
+# Match the router's files-based account lookup instead of the container's
+# compat/systemd NSS modules, which do not exist in this ARM rootfs.
+Path('/etc/nsswitch.conf').write_text('passwd: files\ngroup: files\nhosts: files dns\n')
 stop=threading.Event()
 threads=[]
-def upstream(port,answer):
-    sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+def upstream(port,answer,tcp):
+    sock=socket.socket(socket.AF_INET,socket.SOCK_STREAM if tcp else socket.SOCK_DGRAM)
     sock.bind(('127.0.0.1',port));sock.settimeout(.2)
+    if tcp:sock.listen(4)
+    def read(peer,n):
+        data=b''
+        while len(data)<n:
+            part=peer.recv(n-len(data))
+            if not part:raise OSError('upstream closed')
+            data+=part
+        return data
     while not stop.is_set():
+        client=None
         try:
-            query,peer=sock.recvfrom(4096)
+            if tcp:
+                client,peer=sock.accept();client.settimeout(1)
+                query=read(client,struct.unpack('!H',read(client,2))[0])
+            else:query,peer=sock.recvfrom(4096)
+            reply=query[:2]+b'\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00'+query[12:]+b'\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x00\x00\x04'+socket.inet_aton(answer)
+            if tcp:client.sendall(struct.pack('!H',len(reply))+reply)
+            else:sock.sendto(reply,peer)
         except socket.timeout:
             continue
-        reply=query[:2]+b'\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00'+query[12:]+b'\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x00\x00\x04'+socket.inet_aton(answer)
-        sock.sendto(reply,peer)
+        finally:
+            if client:client.close()
     sock.close()
 for port,answer in ((15553,'203.0.113.5'),(1053,'198.18.0.20')):
-    thread=threading.Thread(target=upstream,args=(port,answer),daemon=True);thread.start();threads.append(thread)
+    for tcp in (False,True):
+        thread=threading.Thread(target=upstream,args=(port,answer,tcp),daemon=True);thread.start();threads.append(thread)
 path=Path('/tmp/resolv.dnsmasq');path.write_text('server=127.0.0.1#15553\n')
 proc=subprocess.Popen(['qemu-arm','-L',str(stock),'-E','LD_LIBRARY_PATH=/usr/lib:/lib',str(stock/'usr/sbin/dnsmasq'),
-    '--keep-in-foreground','--conf-file=/dev/null','--user=root','--group=root','--no-resolv','--no-hosts','--bind-interfaces','--listen-address=127.0.0.1',
-    '--port=15353','--cache-size=0','--servers-file='+str(path),'--pid-file=/tmp/stock-dnsmasq.pid'],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    '--keep-in-foreground','--conf-file=/dev/null','--user=nobody','--group=nogroup','--no-resolv','--no-hosts','--bind-interfaces','--listen-address=127.0.0.1',
+    '--log-facility=-','--port=15353','--cache-size=0','--servers-file='+str(path),'--pid-file=/tmp/stock-dnsmasq.pid'],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
 fixture=Path('/tmp/chvr-stock-bin');fixture.mkdir()
 (fixture/'killall').write_text('#!/bin/sh\nkill -HUP '+str(proc.pid)+'\n')
 (fixture/'killall').chmod(0o700)
@@ -54,6 +73,9 @@ try:
             if lookup()=='203.0.113.5':break
         except OSError:time.sleep(.05)
     else:raise AssertionError('Stock dnsmasq readiness timeout')
+    # Startup runs as root, but every HUP must work after the real privilege drop.
+    status=Path('/proc/'+str(proc.pid)+'/status').read_text()
+    assert 'Uid:\t65534\t65534\t65534\t65534' in status,status
     for enabled,expected in ((1,'198.18.0.20'),(0,'203.0.113.5')):
         subprocess.check_call([sys.argv[1],'--dns',str(enabled)],env=env)
         for _ in range(30):
@@ -61,8 +83,9 @@ try:
             time.sleep(.05)
         else:raise AssertionError('SIGHUP did not change upstream')
         assert lookup(True)==expected
-    print('PASS: unmodified stock 52332 dnsmasq TCP/UDP with servers-file + SIGHUP takeover/restore')
+    print('PASS: stock dnsmasq as nobody TCP/UDP + SIGHUP takeover/restore')
 finally:
-    proc.terminate();proc.communicate(timeout=5)
+    proc.terminate();stdout,stderr=proc.communicate(timeout=5)
+    if sys.exc_info()[0] and stderr:sys.stderr.write(stderr.decode(errors='replace'))
     stop.set()
     for thread in threads:thread.join(timeout=2)

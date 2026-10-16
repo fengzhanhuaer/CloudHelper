@@ -14,6 +14,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -150,14 +151,19 @@ int vr_platform_dns(int enabled)
     if(vr_read_file(path,current,sizeof(current),&n))return enabled?-1:0;
     int ours=n==strlen(owned)&&!memcmp(current,owned,n);
     if(enabled) {
-        if(ours)return 0;
+        if(ours){struct stat st;if(stat(path,&st))return -1;
+            if((st.st_mode&0777)==0644)return 0;
+            if(chmod(path,0644))return -1;
+            return RUN("killall","-HUP","dnsmasq");}
         /* Capture the latest vendor update (DHCP/WAN/DNS settings), only in RAM.
            The stock servers-file is reloaded by SIGHUP without restarting DHCP. */
-        if(vr_atomic_write(backup,current,n)||vr_atomic_write(path,owned,strlen(owned)))return -1;
+        /* dnsmasq reloads after dropping to nobody; private atomic-write mode
+           is appropriate for the backup, but not its public servers file. */
+        if(vr_atomic_write(backup,current,n)||vr_atomic_write(path,owned,strlen(owned))||chmod(path,0644))return -1;
         return RUN("killall","-HUP","dnsmasq");
     }
     if(ours) {
-        if(vr_read_file(backup,original,sizeof(original),&saved)||vr_atomic_write(path,original,saved))return -1;
+        if(vr_read_file(backup,original,sizeof(original),&saved)||vr_atomic_write(path,original,saved)||chmod(path,0644))return -1;
         if(RUN("killall","-HUP","dnsmasq"))return -1;
     }
     /* If the vendor already replaced our file, keep its new contents. */

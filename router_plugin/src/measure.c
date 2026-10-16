@@ -18,6 +18,22 @@ static void complete(vr_engine *e,json_object *result,const char *error)
     json_object_put(s->measurement);s->measurement=job;*s->measure_node=0;pthread_mutex_unlock(&s->mutex);*e->measure_id=0;
 }
 
+static void finish_receive(vr_engine *e,vr_speed_rx *r)
+{
+    uint64_t duration=r->frames?r->last-r->first:0;if(!duration)duration=1;
+    json_object_object_add(r->message,"bytes",json_object_new_int64((int64_t)r->bytes));
+    json_object_object_add(r->message,"frames",json_object_new_int64((int64_t)r->frames));
+    json_object_object_add(r->message,"duration_ms",json_object_new_int64((int64_t)duration));
+    json_object_object_add(r->message,"mbps",json_object_new_double((double)r->bytes*8/(double)duration/1000));
+    json_object_object_add(r->message,"ok",json_object_new_boolean(r->frames>0));
+    if(!r->frames)json_object_object_add(r->message,"error",json_object_new_string("no measurement data received"));
+    json_object_object_add(r->message,"responder",json_object_new_string(e->config.node_id));
+    if(!strcmp(vr_string(r->message,"result_node_id"),e->config.node_id)) {
+        if(!strcmp(r->id,e->measure_id))complete(e,r->message,NULL);
+    } else {reverse(r->path,r->count);message_path(r->message,r->path,r->count);vr_send_json(e,4,4,r->path,r->count,r->message);}
+    json_object_put(r->message);memset(r,0,sizeof(*r));
+}
+
 static int send_start(vr_engine *e,json_object *m,char path[VR_PATH_MAX][129],size_t n)
 {
     if(e->speed_send)return -1;
@@ -39,7 +55,9 @@ void vr_measure_frame(vr_engine *e,vr_link *l,const vr_frame *f,char path[VR_PAT
             vr_speed_rx *r=&e->receives[i];
             if(!r->message || strlen(r->id)!=len || memcmp(r->id,f->data+6,len) || r->count!=n || memcmp(r->path,path,n*129))continue;
             if(f->data_len>r->limit-r->bytes || vr_millis()>r->deadline)return;
-            if(!r->frames)r->first=vr_millis();
+            if(!r->frames){r->first=vr_millis();int64_t duration=json_object_get_int64(vr_member(r->message,"max_duration_ms"));
+                if(duration<=0||duration>3000)duration=3000;
+                r->deadline=r->first+(uint64_t)duration+500;}
             r->last=vr_millis();r->bytes+=f->data_len;r->frames++;return;
         }
         return;
@@ -63,13 +81,7 @@ void vr_measure_frame(vr_engine *e,vr_link *l,const vr_frame *f,char path[VR_PAT
         } else if(f->sub==3) {
             for(size_t i=0;i<4;i++) {
                 vr_speed_rx *r=&e->receives[i];if(!r->message||strcmp(r->id,id)||r->count!=n||memcmp(r->path,path,n*129))continue;
-                uint64_t duration=r->last-r->first;if(!duration||!r->frames)duration=1;
-                json_object_object_add(r->message,"bytes",json_object_new_int64((int64_t)r->bytes));json_object_object_add(r->message,"frames",json_object_new_int64((int64_t)r->frames));
-                json_object_object_add(r->message,"duration_ms",json_object_new_int64((int64_t)duration));json_object_object_add(r->message,"mbps",json_object_new_double((double)r->bytes*8/(double)duration/1000));
-                json_object_object_add(r->message,"ok",json_object_new_boolean(1));json_object_object_add(r->message,"responder",json_object_new_string(e->config.node_id));
-                if(!strcmp(vr_string(r->message,"result_node_id"),e->config.node_id)) {if(!strcmp(id,e->measure_id))complete(e,r->message,NULL);}
-                else {reverse(path,n);message_path(r->message,path,n);vr_send_json(e,4,4,path,n,r->message);}
-                json_object_put(r->message);memset(r,0,sizeof(*r));break;
+                finish_receive(e,r);break;
             }
         } else if(f->sub==4) {
             if(!strcmp(id,e->measure_id)&&!strcmp(vr_string(m,"result_node_id"),e->config.node_id))complete(e,m,NULL);
@@ -84,6 +96,9 @@ void vr_measure_frame(vr_engine *e,vr_link *l,const vr_frame *f,char path[VR_PAT
 void vr_measure_tick(vr_engine *e)
 {
     uint64_t now=vr_millis();
+    /* Like the existing Go receiver, finish on the receive window even when
+       the sender's final frame is delayed behind queued bulk traffic. */
+    for(size_t i=0;i<4;i++)if(e->receives[i].message&&now>=e->receives[i].deadline)finish_receive(e,&e->receives[i]);
     for(size_t i=0;i<e->link_count;i++) {
         vr_link *l=&e->links[i];if(!l->ssl || now-l->ping_time<20000)continue;
         char path[VR_PATH_MAX][129]={{0}};strcpy(path[0],e->config.node_id);strcpy(path[1],l->peer);

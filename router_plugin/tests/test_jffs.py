@@ -22,15 +22,22 @@ original='server=192.0.2.1\nserver=/internal.test/192.0.2.2\n'
 servers.write_text(original)
 run(helper,'--dns','1')
 assert '127.0.0.1#1053' in servers.read_text() and backup.read_text()==original
+assert servers.stat().st_mode & 0o777 == 0o644
+assert backup.stat().st_mode & 0o777 == 0o600
 signals=Path('/tmp/chvr-signals').read_text()
 run(helper,'--dns','1')
 assert Path('/tmp/chvr-signals').read_text()==signals
+servers.chmod(0o600)  # repair an older installed release's unreadable file
+run(helper,'--dns','1')
+assert servers.stat().st_mode & 0o777 == 0o644
+assert Path('/tmp/chvr-signals').read_text()!=signals
 updated='server=203.0.113.1\n'
 servers.write_text(updated)  # vendor WAN/DHCP regeneration
 run(helper,'--dns','1')
 assert backup.read_text()==updated
 run(helper,'--dns','0')
 assert servers.read_text()==updated and not backup.exists()
+assert servers.stat().st_mode & 0o777 == 0o644
 run(helper,'--dns','0')
 run(helper,'--dns','1')
 servers.write_text(original)

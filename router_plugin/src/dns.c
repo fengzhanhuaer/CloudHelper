@@ -112,21 +112,28 @@ done:close(fd);
     return rc;
 }
 
-int vr_dns_address4(const uint8_t *reply,size_t n,char out[16])
+int vr_dns_addresses4(const uint8_t *reply,size_t n,char out[4][16])
 {
     struct in_addr ip;
     vr_question q;if(vr_dns_question(reply,n,&q))return -1;
     if(!(reply[2]&0x80)||(reply[3]&15))return -1;
-    size_t off=q.end;unsigned count=u16(reply+6);
+    size_t off=q.end;unsigned count=u16(reply+6);int used=0;
     for(unsigned i=0;i<count && i<128;i++) {
         char name[254];if(dns_name(reply,n,&off,name) || off+10>n)return -1;
         uint16_t type=u16(reply+off),cls=u16(reply+off+2),len=u16(reply+off+8);off+=10;
         if(off+len>n)return -1;
-        if(type==1 && cls==1 && len==4) {memcpy(&ip,reply+off,4);return inet_ntop(AF_INET,&ip,out,16)?0:-1;}
+        if(type==1 && cls==1 && len==4 && used<4) {
+            char text[16];memcpy(&ip,reply+off,4);if(!inet_ntop(AF_INET,&ip,text,sizeof(text)))return -1;
+            int duplicate=0;for(int j=0;j<used;j++)if(!strcmp(out[j],text))duplicate=1;
+            if(!duplicate)strcpy(out[used++],text);
+        }
         off+=len;
     }
-    return -1;
+    return used?used:-1;
 }
+
+int vr_dns_address4(const uint8_t *reply,size_t n,char out[16])
+{char addresses[4][16];if(vr_dns_addresses4(reply,n,addresses)<1)return -1;return vr_copy(out,16,addresses[0]);}
 
 int vr_resolve4(const char *host,const char *upstream,const char *iface,char out[16])
 {
