@@ -799,3 +799,14 @@ CON-012/DEC-043：fetch后确认origin/mapledev已前进至94422f3b，018210eb�
 本轮REQ026~030源码、独立产物及本地/隔离环境验收完成；整体产品TASK023继续进行中（真实用户身份联调、跨重启自启、WAN重建/业务峰值及Android新DNS产物仍待验证）。普通Probe/生产主控未执行在线升级；华硕只做已授权的JFFS插件更新及同源Web验收，业务保持关闭，固件/启动ROM/系统分区与boot_id未改变。noconsole保持开发期0，整体开发结束后再恢复。后续唯一动作：用户在原厂“虚拟路由”页面填写主控/Node ID/密钥后，按在线升级流程联调实际跨节点LAN访问与上报；不将测试fixture或当前PC状态当作远端实机状态。
 
 为保留原工作区其他任务和Android未完成改动，代码从D:/Code/CloudHelper-gateway-release隔离工作区提交；原D:/Code/CloudHelper未被reset/checkout/stash。验收结果只更新本账本，以[skip ci]提交，不触发新的业务版本。
+
+
+### 2026-10-16 补齐所有自有源码提交（用户最新指令）
+
+用户明确要求剩余源码均入Git，包括Android APK源码；并明确“不要提交密码”。REQ-031：提交Android DNS/mobilecore/Kotlin、相关测试与说明、历史固件自有构建/补丁/串口工具及剩余任务记录，排除上游源码、SDK、镜像、设备备份、生成文件和任何真实密码/Token/私钥/签名密钥。此前将源码与未完成APK产物门禁一起留在未提交状态的处理已替代；源码交付与CI打包结果分别记录，不把旧AAR打包当作新功能验证。
+
+UNIT-013：保留firmware/asuswrt历史来源锁与自有构建/集成代码，README明确当前产品仍是原厂JFFS插件，历史补丁未针对最新插件做整机编译；串口工具Windows及本机WSL测试验证。Android复用已提交的dnsupstream配置/协议模块，Go测试覆盖主控下发和重启保存，Kotlin传递非VPN物理DNS并跟随网络变化；新版AAR/APK由现有CI重建验收，不使用HomePc。IF-010保持不变。
+
+TEST-055：检查所有明确文件清单及其秘密字段；实际路由器密码从私有备份仅在内存比较，不输出；源目录禁止设备cfg、密钥容器和私有证书，新忽略规则补齐。TEST-056：Probe全包、共享DNS测试、Kotlin/lint、串口8项（WSL实际shell往返）与构建工具语法；CI新版AAR/APK最终打包签名验证。提交在当前D:/Code/CloudHelper的mapledev完成，同步自动版本提交并确认工作区不再遗留本轮源码。TASK023继续唯一进行中；下一步唯一动作：完成本地回归及秘密扫描，明确暂存清单，提交推送并验证CI。自启动咨询仍待后续完成，未持久更改路由器启动或重启。
+
+本地提交门禁：TEST-055通过，37个明确文件与实际私有路由器密码、常见Token和私钥头逐项检查无匹配；签名密码仅内存比较，秘密/备份/SDK/输出路径忽略验证通过。TEST-056本地通过：Probe全包、Controller全包及vet、发布契约、Android compileDebugKotlin/lintDebug、Windows串口7项+POSIX项跳过及本机WSL串口8项全部通过，所有新增Python AST与9个shell入口语法通过。本机没有完整NDK，Kotlin检查使用已有AAR；新Go实现的原生AAR与签名APK仍须由本次CI重建，尚不宣称通过。历史固件补丁仅归档自有源码，没有重新编译或刷写整机。下一步唯一动作：明确暂存37个文件，提交推送并核对功能SHA对应CI与APK。

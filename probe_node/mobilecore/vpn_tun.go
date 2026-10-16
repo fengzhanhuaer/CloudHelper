@@ -28,6 +28,8 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.dev/gvisor/pkg/waiter"
+
+	"github.com/cloudhelper/probe_node/internal/dnsupstream"
 )
 
 const (
@@ -1437,38 +1439,32 @@ func collectAndroidVPNDNSQuestions(parser *dnsmessage.Parser) ([]dnsmessage.Ques
 	return questions, nil
 }
 
+var mobileSystemDNS struct {
+	sync.RWMutex
+	servers []string
+}
+
+// SetSystemDNS receives DNS addresses from non-VPN Android LinkProperties.
+func SetSystemDNS(raw string) string {
+	var servers []string
+	if json.Unmarshal([]byte(raw), &servers) != nil {
+		return "invalid system DNS JSON"
+	}
+	mobileSystemDNS.Lock()
+	mobileSystemDNS.servers = append([]string(nil), servers...)
+	mobileSystemDNS.Unlock()
+	return "system DNS updated"
+}
+
 func queryAndroidVPNDNSUpstream(packet []byte) ([]byte, error) {
-	upstreams := []string{"1.1.1.1:53", "8.8.8.8:53"}
-	var lastErr error
-	for _, upstream := range upstreams {
-		conn, err := net.DialTimeout("udp", upstream, vpnDNSLookupTimeout)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		_ = conn.SetDeadline(time.Now().Add(vpnDNSLookupTimeout))
-		if _, err := conn.Write(packet); err != nil {
-			lastErr = err
-			_ = conn.Close()
-			continue
-		}
-		buf := make([]byte, 4096)
-		n, err := conn.Read(buf)
-		_ = conn.Close()
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if n <= 0 {
-			lastErr = errors.New("empty dns upstream response")
-			continue
-		}
-		return append([]byte(nil), buf[:n]...), nil
+	c, err := mobileDNSUpstreamStore.Current(currentAndroidVPNConfigDir())
+	if err != nil {
+		return nil, err
 	}
-	if lastErr == nil {
-		lastErr = errors.New("dns upstream resolve failed")
-	}
-	return nil, lastErr
+	mobileSystemDNS.RLock()
+	system := append([]string(nil), mobileSystemDNS.servers...)
+	mobileSystemDNS.RUnlock()
+	return (dnsupstream.Resolver{}).Resolve(packet, c, system)
 }
 
 func storeAndroidVPNDNSRouteHints(domain string, response []byte, route androidRouteDecision) {

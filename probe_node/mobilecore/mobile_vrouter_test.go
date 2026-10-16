@@ -22,6 +22,8 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"golang.org/x/net/dns/dnsmessage"
+
+	"github.com/cloudhelper/probe_node/internal/dnsupstream"
 )
 
 func resetMobileVRouteVPNStateForTest(t *testing.T, configDir string) {
@@ -2388,5 +2390,26 @@ func TestAndroidVPNRealIPFakeNATRewritesPacketsLocally(t *testing.T) {
 	udpInfo, ok := parseAndroidVPNIPv4TransportPacket(udpRewritten)
 	if !ok || udpInfo.DestinationIP != fakeIP || udpInfo.Protocol != 17 {
 		t.Fatalf("unexpected rewritten udp outbound: %+v fake=%s", udpInfo, fakeIP)
+	}
+}
+
+func TestMobileControllerDNSOverridePersistsAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	want := dnsupstream.Default()
+	want.DNS = "192.0.2.53:5353"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveMobileProbeChallengeForTest(w, r) {
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"node_id": "7", "dns_upstreams": want, "virtual_router": map[string]any{"enabled": false}})
+	}))
+	defer server.Close()
+	if _, err := refreshMobileVRouteConfig(server.URL, "7", "fixture-secret", dir); err != nil {
+		t.Fatal(err)
+	}
+	var restarted dnsupstream.Store
+	c, err := restarted.Current(dir)
+	if err != nil || c != want {
+		t.Fatalf("mobile saved DNS %+v %v", c, err)
 	}
 }

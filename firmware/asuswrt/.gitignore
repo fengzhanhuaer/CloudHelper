@@ -1,0 +1,34 @@
+# Downloaded upstream is a local build dependency, not our Git source.
+/upstream/
+/baseline.manifest.json
+# One-time Windows snapshot migration helpers stay local.
+/tools/materialize_repo_source.py
+/tools/pack_repository_source.py
+/tools/preserve_upstream_ignores.py
+/tools/merge_source_cache.py
+/downloads/
+/toolchains/
+/build/
+/work/
+/artifacts/
+/logs/
+/backups/
+/*.cfg
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+.env
+/*.tar
+/*.tar.gz
+/*.tar.xz
+/*.zip
+/*.w
+/*.trx
+/*.img
+/*.log
+*.partial
+__pycache__/
+*.py[cod]

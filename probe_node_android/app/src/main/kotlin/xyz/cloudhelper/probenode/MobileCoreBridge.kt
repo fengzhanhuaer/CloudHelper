@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.LinkProperties
+import android.net.NetworkCapabilities
 import android.os.Build
 import org.json.JSONArray
 import java.net.Inet4Address
@@ -45,12 +46,27 @@ object MobileCoreBridge {
     }
 
     fun setNativeIPs(context: Context): String {
+        setSystemDNS(context)
         val ips = collectNativeIPs(context)
         return callString(
             methodName = "setNativeIPs",
             parameterTypes = arrayOf(String::class.java, String::class.java),
             args = arrayOf(JSONArray(ips.first).toString(), JSONArray(ips.second).toString()),
         )
+    }
+
+    fun setSystemDNS(context: Context): String {
+        val servers = linkedSetOf<String>()
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        cm.allNetworks.forEach { network ->
+            val caps = cm.getNetworkCapabilities(network) ?: return@forEach
+            if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
+                cm.getLinkProperties(network)?.dnsServers?.forEach { address ->
+                    address.hostAddress?.let { servers.add(it) }
+                }
+            }
+        }
+        return callString("setSystemDNS", arrayOf(String::class.java), arrayOf(JSONArray(servers.toList()).toString()))
     }
 
     fun stop(): String {

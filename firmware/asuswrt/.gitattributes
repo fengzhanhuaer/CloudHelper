@@ -1,0 +1,4 @@
+*.sh text eol=lf
+/overlay/usr/sbin/cloudhelper-router-service text eol=lf
+*.py text eol=lf
+*.patch -text whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab

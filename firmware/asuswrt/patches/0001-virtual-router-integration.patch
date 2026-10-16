@@ -1,0 +1,175 @@
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -35,6 +35,7 @@
+ #include <sys/types.h>
+ #include <sys/stat.h>
+ #include <sys/socket.h>
++#include <sys/un.h>
+ #include <netinet/in.h>
+ #include <arpa/inet.h>
+ #include <fcntl.h>
+@@ -22510,9 +22511,81 @@
+ }
+ #endif
+ 
++
++/* CloudHelper: authenticated LAN-only proxy to a root-owned Unix socket.
++ * Dedicated input handler avoids vendor HTTPD_DBG logging node credentials. */
++static char chvr_body[16385];
++static int chvr_length;
++static void chvr_input(char *url, FILE *stream, int len, char *boundary)
++{
++    int i, c;
++    memset(chvr_body, 0, sizeof(chvr_body));
++    chvr_length = 0;
++    if (len <= 0 || len > 16384) {
++        while (len-- > 0 && (c=fgetc(stream)) != EOF) {}
++        return;
++    }
++    for (i=0; i<len; ++i) {
++        c=fgetc(stream);
++        if (c==EOF || c==0) { memset(chvr_body,0,sizeof(chvr_body)); return; }
++        chvr_body[i]=(char)c;
++    }
++    chvr_length=len;
++}
++static void chvr_output(char *url, FILE *stream)
++{
++    int fd=-1, n, total=0, header_done=0;
++    FILE *local=NULL;
++    struct sockaddr_un sa;
++    struct sockaddr_in peer;
++    socklen_t peer_len=sizeof(peer);
++    struct in_addr lan, mask;
++    struct timeval timeout={8,0};
++    char line[4096];
++    int client_fd=fileno(stream);
++#ifdef RTCONFIG_HTTPS
++    extern int do_ssl;
++    extern int ssl_stream_fd;
++    if (do_ssl) client_fd=ssl_stream_fd;
++#endif
++    memset(&peer,0,sizeof(peer));
++    if (!chvr_length || getpeername(client_fd,(struct sockaddr *)&peer,&peer_len)<0 ||
++        peer.sin_family!=AF_INET || !inet_aton(nvram_safe_get("lan_ipaddr"),&lan) ||
++        !inet_aton(nvram_safe_get("lan_netmask"),&mask) ||
++        (peer.sin_addr.s_addr & mask.s_addr)!=(lan.s_addr & mask.s_addr)) goto fail;
++    fd=socket(AF_UNIX,SOCK_STREAM,0);
++    if (fd<0) goto fail;
++    setsockopt(fd,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));
++    setsockopt(fd,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));
++    memset(&sa,0,sizeof(sa)); sa.sun_family=AF_UNIX;
++    strlcpy(sa.sun_path,"/var/run/cloudhelper-router/admin.sock",sizeof(sa.sun_path));
++    if (connect(fd,(struct sockaddr *)&sa,sizeof(sa))<0) goto fail;
++    local=fdopen(fd,"r+"); if (!local) goto fail;
++    fprintf(local,"POST / HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",chvr_length);
++    if (fwrite(chvr_body,1,chvr_length,local)!=(size_t)chvr_length || fflush(local)!=0) goto fail;
++    memset(chvr_body,0,sizeof(chvr_body));chvr_length=0;
++    while (fgets(line,sizeof(line),local)) {
++        total+=strlen(line);
++        if (total>16384) goto fail;
++        if (!strcmp(line,"\r\n") || !strcmp(line,"\n")) {header_done=1;break;}
++    }
++    if (!header_done) goto fail;
++    total=0;
++    while ((n=fread(line,1,sizeof(line),local))>0) {
++        total+=n;if (total>524288) break;
++        fwrite(line,1,n,stream);
++    }
++    fclose(local);return;
++fail:
++    if (local) fclose(local); else if (fd>=0) close(fd);
++    memset(chvr_body,0,sizeof(chvr_body));chvr_length=0;
++    fputs("{\"ok\":false,\"error\":\"LAN management service unavailable\"}",stream);
++}
++
+ //2008.08 magic{
+ struct mime_handler mime_handlers[] =
+ {
++	{ "cloudhelper_router.cgi", "application/json", no_cache_IE7, chvr_input, chvr_output, do_auth },
+ 	{ "Main_Login.asp", "text/html", no_cache_IE7, do_html_post_and_get, do_ej, NULL },
+ #ifdef RTCONFIG_CAPTCHA
+ 	{ "captcha.gif", "image/gif", no_cache_IE7, NULL, do_captcha_file, NULL },
+--- a/release/src/router/www/require/modules/menuTree.js
++++ b/release/src/router/www/require/modules/menuTree.js
+@@ -304,7 +304,8 @@
+ 					{url: "Advanced_Smart_Connect.asp", tabName: "<#smart_connect_rule#>"},
+ 					{url: "NULL", tabName: "__INHERIT__"}
+ 				]
+-			}
++			},
++			{menuName: "虚拟路由", index: "menu_VirtualRouter", tab: [{url: "VirtualRouter.asp", tabName: "虚拟路由"}]}
+ 		],
+ 
+ 		exclude: {
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -1632,7 +1632,7 @@
+ 		    "no-negcache\n"		// don't cace nxdomain
+ 		    "cache-size=%u\n"		// dns cache size
+ 		    "min-port=%u\n",		// min port used for random src port
+-		dmservers, 1500, nvram_get_int("dns_minport") ? : 4096);
++		f_exists("/tmp/cloudhelper-dns.servers") ? "/tmp/cloudhelper-dns.servers" : dmservers, 1500, nvram_get_int("dns_minport") ? : 4096);
+ 
+ 	/* limit number of outstanding requests */
+ 	{
+@@ -10628,6 +10628,8 @@
+ int
+ start_services(void)
+ {
++	/* Starts management even when routing is disabled. */
++	eval("/usr/sbin/cloudhelper-router-service", "start");
+ #ifdef HND_ROUTER
+ 	start_jitterentropy();
+ #endif /* HND_ROUTER */
+@@ -11024,6 +11026,7 @@
+ void
+ stop_services(void)
+ {
++	eval("/usr/sbin/cloudhelper-router-service", "stop");
+ #ifdef RTCONFIG_WIREGUARD
+ 	stop_wgsall();
+ #endif
+@@ -12506,6 +12509,7 @@
+ 
+ void check_services(void)
+ {
++	eval("/usr/sbin/cloudhelper-router-service", "ensure");
+ //	TRACE_PT("keep alive\n");
+ 
+ 	// Periodically reap any zombies
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -688,6 +688,7 @@
+ endif
+ obj-y += $(BUSYBOX)
+ obj-y += shared
++obj-y += cloudhelper-router
+ obj-y += nvram$(BCMEX)$(EX7)
+ 
+ ifeq ($(RTCONFIG_OPENSSL11),y)
+@@ -2988,6 +2989,7 @@
+ 	-mkdir $(SRCBASE)/image
+ endif
+ 	@$(MAKE) -C www install INSTALLDIR=$(INSTALLDIR)/www TOMATO_EXPERIMENTAL=$(TOMATO_EXPERIMENTAL)
++	install -D -m 644 cloudhelper-router/VirtualRouter.asp $(INSTALLDIR)/www/www/VirtualRouter.asp
+ 
+ ifeq ($(HND_ROUTER),y)
+ fsbuild:
+@@ -9399,3 +9401,16 @@
+ .PHONY: dummy libnet libpcap
+ 
+ 
++
++
++# Produced from this repository's C sources by build-router-firmware.sh.
++.PHONY: cloudhelper-router cloudhelper-router-install cloudhelper-router-clean
++cloudhelper-router:
++	test -s cloudhelper-router/cloudhelper-router-plugin
++	test -s cloudhelper-router/build-manifest.json
++cloudhelper-router-install: cloudhelper-router
++	install -D -m 755 cloudhelper-router/cloudhelper-router-plugin $(INSTALLDIR)/cloudhelper-router/usr/sbin/cloudhelper-router-plugin
++	install -D -m 755 cloudhelper-router/cloudhelper-router-service $(INSTALLDIR)/cloudhelper-router/usr/sbin/cloudhelper-router-service
++	install -D -m 644 cloudhelper-router/build-manifest.json $(INSTALLDIR)/cloudhelper-router/etc/cloudhelper-router-build.json
++cloudhelper-router-clean:
++	@true

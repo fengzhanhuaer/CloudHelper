@@ -7,6 +7,9 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.net.VpnService
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.LinkProperties
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import androidx.core.app.NotificationCompat
@@ -21,10 +24,19 @@ class ProbeNodeVpnService : VpnService() {
     @Volatile private var dataPlaneRunning = false
     @Volatile private var startGeneration = 0
 
+    private val dnsNetworkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) {
+            MobileCoreBridge.setSystemDNS(this@ProbeNodeVpnService)
+        }
+        override fun onLost(network: Network) { MobileCoreBridge.setSystemDNS(this@ProbeNodeVpnService) }
+    }
+
     override fun onCreate() {
         super.onCreate()
         AndroidLogStore.add("vpn", "ProbeNodeVpnService created")
         ensureNotificationChannel()
+        (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).registerNetworkCallback(
+            android.net.NetworkRequest.Builder().addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET).build(), dnsNetworkCallback)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -54,6 +66,7 @@ class ProbeNodeVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).unregisterNetworkCallback(dnsNetworkCallback)
         stopVpn()
         super.onDestroy()
     }

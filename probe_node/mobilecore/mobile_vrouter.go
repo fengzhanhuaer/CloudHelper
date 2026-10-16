@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/cloudhelper/probe_node/internal/dnsupstream"
 )
 
 const (
@@ -119,9 +121,14 @@ func requestMobileVRouteControllerFakeIP(domain string, route androidRouteDecisi
 	return fakeIP.String(), true, nil
 }
 
+type mobileDNSConfigDirKey struct{}
+
+var mobileDNSUpstreamStore dnsupstream.Store
+
 type mobileVRouteConfigResponse struct {
-	NodeID        string             `json:"node_id"`
-	VirtualRouter mobileVRouteConfig `json:"virtual_router,omitempty"`
+	DNSUpstreams  *dnsupstream.Config `json:"dns_upstreams,omitempty"`
+	NodeID        string              `json:"node_id"`
+	VirtualRouter mobileVRouteConfig  `json:"virtual_router,omitempty"`
 }
 
 type mobileVRouteConfigCacheFile struct {
@@ -199,6 +206,7 @@ func refreshMobileVRouteConfig(controllerURL string, nodeID string, nodeSecret s
 	setMobileVRouteControllerIdentity(baseURL, nodeID, nodeSecret)
 	ctx, cancel := context.WithTimeout(context.Background(), mobileVRouteConfigFetchTimeout)
 	defer cancel()
+	ctx = context.WithValue(ctx, mobileDNSConfigDirKey{}, configDir)
 	config, err := fetchMobileVRouteConfig(ctx, baseURL, nodeID, nodeSecret)
 	if err != nil {
 		return mobileVRouteConfig{}, err
@@ -233,6 +241,11 @@ func fetchMobileVRouteConfig(ctx context.Context, controllerURL string, nodeID s
 	var payload mobileVRouteConfigResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&payload); err != nil {
 		return mobileVRouteConfig{}, err
+	}
+	if dir, ok := ctx.Value(mobileDNSConfigDirKey{}).(string); ok {
+		if err := mobileDNSUpstreamStore.Apply(dir, payload.DNSUpstreams); err != nil {
+			return mobileVRouteConfig{}, err
+		}
 	}
 	config := sanitizeMobileVRouteConfig(payload.VirtualRouter)
 	if config.LocalNodeID == "" {

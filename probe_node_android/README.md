@@ -70,3 +70,17 @@ Encode the keystore for GitHub Environment Secrets:
 ```
 
 The local `.secrets/` directory is ignored by git. Keep an offline backup of the `.p12` file and password; Android upgrades require every future APK to be signed by the same key.
+
+## DNS upstreams
+
+Android and desktop Probe Node use one DoH, one DoT, one ordinary DNS, then the physical network's system DNS. Local defaults are stored in `dns_upstreams.json` in the node config directory:
+
+```json
+{
+  "doh": "https://dns.alidns.com/dns-query",
+  "dot": "dns.alidns.com:853",
+  "dns": "223.5.5.5:53"
+}
+```
+
+The controller's `/mng/route` DoH tab has a separate **节点 DNS 上游** section. Saving validates all three values and notifies connected nodes to refresh; the `/api/probe/route/config` response carries `dns_upstreams`. Nodes validate and atomically save controller values, retaining them across offline restarts. An older controller omitting the field preserves local values. Identical values do not rewrite the file. Android supplies physical DNS via non-VPN `LinkProperties`, refreshed on network changes; VPN DNS is excluded. TLS certificates and names are verified, with UDP truncation retried over TCP. The shared configuration currently accepts IPv4 plain DNS and IPv4/hostname encrypted endpoints.

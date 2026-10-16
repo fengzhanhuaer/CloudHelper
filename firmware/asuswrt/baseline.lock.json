@@ -1,0 +1,207 @@
+{
+  "schema_version": 2,
+  "source": {
+    "type": "asus-official-gpl",
+    "url": "https://www.asus.com/supportonly/rt-ax55/helpdesk_download/",
+    "version": "3.0.0.4.386_53297",
+    "commit": "ee411da",
+    "source_identifier": "official GPL 53297-gee411da archive, not a Git checkout",
+    "workspace_path": "firmware/asuswrt/upstream/official",
+    "archive_name": "GPL_RT-AX55_3.0.0.4.386.53297-gee411da.tgz",
+    "archive_sha256": "65aa57c4e40c7fc3a56953e9e68146005077980fdd91a3da6df910d015358110",
+    "archive_bytes": 1228389947,
+    "download_zip_name": "GPL_RT_AX55_300438653297.zip",
+    "download_zip_sha256": "54769b983b0d33f631408cfdae6ecda6441221bb9d580b5252266342bff03e98",
+    "download_zip_bytes": 1223570375,
+    "linux_task_root": "/home/maple/cloudhelper-firmware-official-53297",
+    "linux_source_relative_path": "source/asuswrt",
+    "storage": "Ignored official source archive in this repository; native Linux tree only for builds; Git tracks our overlays/tooling and ledger",
+    "overlay_path": "firmware/asuswrt/patches/*.patch",
+    "complete_source_download": true,
+    "commit_kind": "vendor short revision from official archive name; full Git SHA not provided"
+  },
+  "toolchains": {
+    "type": "bundled-in-official-gpl",
+    "relative_path": "release/src-rt-5.02axhnd.675x/bcmdrivers/broadcom/net/wl/impl69/main/src/toolchains",
+    "primary_directory": "crosstools-arm-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1",
+    "static_armv7_compile_verified": true,
+    "qemu_armv7_execution_verified": true
+  },
+  "auxiliary_toolchains": {
+    "url": "https://github.com/SWRT-dev/bcmhnd-toolchains.git",
+    "commit": "7710a1e09d994598ac6c2db8ab16dc54ca5aed3d",
+    "archive_sha256": "d2b1a93d4853c50c6cee7c8b6f9cf6553e8632935d8084eed1c3feb69291acfc",
+    "archive_path": "D:/Code/RouterFirmware/downloads/toolchains-baseline.tar",
+    "linux_directory": "/home/maple/cloudhelper-firmware-official-53297/auxiliary-toolchains",
+    "purpose": "Legacy hndtools-armeabi-2013.11/fwtag.ini build helpers absent from official archive; no SWRT firmware source or router prebuild objects reused"
+  },
+  "target": {
+    "make_target": "rt-ax55",
+    "directory": "release/src-rt-5.02axhnd.675x",
+    "profile": "947622GW",
+    "chip": "47622",
+    "device_productid": "RT-AX55",
+    "device_odmpid": "RT-AX56U_V2",
+    "image_partition_bytes": 53477376,
+    "compatibility_status": "Official rt-ax55/947622GW build booted successfully on live BCM6755 RT-AX56U_V2; basic health passed"
+  },
+  "build_environment": {
+    "base_image": "ubuntu:18.04",
+    "base_config_digest": "sha256:f9a80a55f492e823bf5d51f1bd5f87ea3eed1cb31788686aa99a2fb61a27af6a",
+    "base_load_archive_sha256": "fe17469c6068c8713e472af9ad49ef4d97299e0465b4f77625034e22abe27585",
+    "local_image": "cloudhelper-asuswrt-build:ubuntu18",
+    "local_image_id": "sha256:81912f3f0888431738c6e33ac0249dea9ed60a6aa12e2e3f4b5580d9a9bf088e",
+    "compile_uid": 1000
+  },
+  "phase_order": [
+    "upstream-baseline-build-and-run",
+    "user-specified-module-trimming",
+    "cloudhelper-features"
+  ],
+  "trim_modules": null,
+  "baseline_module_config_modified": false,
+  "complete_source_download": true,
+  "firmware_build_completed": true,
+  "on_device_boot_verified": true,
+  "baseline_build_status": "Official build/offline/native-write checks and explicitly authorized ordinary B boot passed; UART, PID1 hash and baseline network health verified; ONCE/failure fallback remain unverified",
+  "applied_patches": [],
+  "preservation_reference": {
+    "stock_first_sha256": "5877cf14088f149b5195820c15b0a45d1467e7b51ef5b7ead0ce7925dd50257a",
+    "cfe_rom_sha256": "d3be3cb5ba9251eb5eaa1f4d8aacd9a4b3dfa2bcd500121e0d9ec130b2eba91f",
+    "original_backup_directory": "D:/Code/RouterFirmware/router-backups/20261014-localrouter"
+  },
+  "generated_images": [
+    {
+      "name": "RT-AX55_3.0.0.4_386_53297-gee411da_cferom_puresqubi.w",
+      "bytes": 37093396,
+      "sha256": "dae37c27d99ef2bb600ead0a4d76f01163901ec025bef789f55238b11368b476",
+      "image_crc32": "2d282b2c",
+      "token_magic": 22322,
+      "chip": 292386,
+      "flash_type": 3,
+      "flags": 6,
+      "ubi_offset": 1048576,
+      "fits_partition": true
+    },
+    {
+      "name": "RT-AX55_3.0.0.4_386_53297-gee411da_puresqubi.w",
+      "bytes": 36044820,
+      "sha256": "b7ec46c022c8981e9c79820a609c04d2f9b0089f2642bab2257e4f82d028ab12",
+      "image_crc32": "c490fc47",
+      "token_magic": 22322,
+      "chip": 292386,
+      "flash_type": 3,
+      "flags": 2,
+      "ubi_offset": 0,
+      "fits_partition": true
+    }
+  ],
+  "current_device_state": {
+    "verified_at": "2026-10-15T18:32:00+08:00",
+    "firmware_origin": "Original vendor firmware restored to B from original A backup; GPL build records below are historical",
+    "version": "52332-gfbf3b9c",
+    "actual_partition": "Second/B",
+    "next_partition": "Second/B",
+    "boot_id": "f9b282a3-b242-43d1-89dc-dac58ed3a30f",
+    "restore_image_sha256": "40681a74f198a56058f20c8db65b38ba5bc62d30544b281428352c040b0e85de",
+    "backup_directory": "D:/Code/RouterFirmware/router-backups/20261015-restore-b-from-a",
+    "all_269_b_logical_blocks_verified": true,
+    "b_metadata_only_sequence_and_crc_adjusted": true,
+    "a_all_269_logical_payloads_preserved": true,
+    "cfe_rom_raw_unchanged": true,
+    "pid1_matches_vendor_52332": true,
+    "health_passed": true,
+    "noconsole": 0,
+    "plugin_installed": true,
+    "b_restore_early_cfe_serial_captured": false,
+    "plugin": {
+      "deployment": "JFFS independent C plugin",
+      "release_id": "83dcc8ed5eb72c3f",
+      "management": "Original ASUS session and HTTP port 80; no separate plugin TCP port",
+      "business_enabled": false,
+      "stock_httpd_sha256": "144f9083c6ae57632cf59b4012d5ad46aff6f4f64012ce3fed50e0f1b8ebf6d1",
+      "original_web_layout_verified": true,
+      "boot_persistence": "Manual SSH/serial start; current-boot cru only",
+      "dns_upstreams": {
+        "doh": "https://dns.alidns.com/dns-query",
+        "dot": "dns.alidns.com:853",
+        "dns": "223.5.5.5:53"
+      },
+      "dns_chain": "DoH -> DoT -> ordinary DNS -> original system DNS"
+    },
+    "plugin_verified_at": "2026-10-15T21:21:30+08:00"
+  },
+  "upgrade_progress": {
+    "backup_directory": "D:/Code/RouterFirmware/router-backups/20261014-official53297",
+    "native_write_exit": 99,
+    "target_partition": "physical B/mtd5",
+    "native_once_verified": false,
+    "once_attempts_actual_partition": "First",
+    "a_original_raw_sha256": "5877cf14088f149b5195820c15b0a45d1467e7b51ef5b7ead0ce7925dd50257a",
+    "a_current_raw_sha256": "cbb74a77af3840cf2e4d2eefa032af80cb7706ac8ae37103e75f4e478269f73e",
+    "a_all_269_ubi_logical_payloads_unchanged": true,
+    "a_raw_difference_reason": "UBI wear-level relocation of METADATA/METADATACOPY from PEB0/1 to PEB300/301, payloads identical",
+    "cfe_rom_raw_unchanged": true,
+    "boot_log_audit": {
+      "directory": "D:/Code/RouterFirmware/router-backups/20261014-official53297/boot-log-audit-20261015",
+      "current_partition": "First/A",
+      "current_version": "52332-gfbf3b9c",
+      "official_53297_syslog_marker_found": false,
+      "b_early_boot_attempt_unknown": true,
+      "cfe_serial_capture_available": false,
+      "persistent_crash_logs_available": false
+    },
+    "uart_trial": {
+      "directory": "D:/Code/RouterFirmware/router-backups/20261014-official53297/b-once-uart-20261015-105733",
+      "scope": "Single UART-recorded B ONCE trial on 2026-10-15; earlier uncaptured attempts remain ambiguous",
+      "try_markers": [
+        "TRY1"
+      ],
+      "cfe_banners": 1,
+      "linux_banners": 1,
+      "selected_partition": "First/A",
+      "selected_address": "0x00100000",
+      "actual_version": "52332-gfbf3b9c",
+      "boot_id": "730a47d6-ae22-452f-87a1-50640a87922f",
+      "b_kernel_boot_observed": false,
+      "once_expected_behavior_verified": false,
+      "cause_confirmed": false,
+      "native_console_authenticated_without_ssh_bootstrap": true,
+      "noconsole_after_reboot": 0,
+      "cfe_rom_unchanged": true,
+      "a_269_logical_payloads_unchanged": true,
+      "final_boot_state": "BOOT_SET_PART1_IMAGE",
+      "final_reboot_partition": "First",
+      "trial_mailbox_cleared": true,
+      "cleanup_reboot_performed": false,
+      "cleanup_report": "trial-marker-cleanup.json",
+      "source_reference": "https://raw.githubusercontent.com/SWRT-dev/asuswrt-bcm/386/release/src-rt-5.02axhnd.675x/bcmdrivers/opensource/char/board/bcm963xx/impl1/board_ioctl.c"
+    },
+    "ordinary_b_boot": {
+      "directory": "D:/Code/RouterFirmware/router-backups/20261014-official53297/b-normal-uart-20261015-113047",
+      "authorized_mode": "User explicitly requested ordinary/persistent B boot",
+      "one_reboot": true,
+      "try_markers": [
+        "TRY2"
+      ],
+      "selected_address": "0x03400000",
+      "boot_id": "1afc7abc-8bd3-41f7-8ad5-c1d081e386d2",
+      "version": "53297-gee411da",
+      "actual_partition": "Second/B",
+      "next_partition": "Second/B",
+      "running_pid1_matches_build": {
+        "bytes": 1755988,
+        "sha256": "3376e6960a97a8d30bfe88c463b8ce1888bee5597f92b3c8842240b914930fd4"
+      },
+      "health_passed": true,
+      "health_report": "D:\\Code\\RouterFirmware\\router-backups\\20261014-official53297\\normal-b-20261015-113047-health.json",
+      "native_uart_login_passed": true,
+      "cfe_rom_raw_unchanged": true,
+      "a_all_269_logical_payloads_unchanged": true,
+      "noconsole": 0,
+      "once_functionality_verified": false,
+      "automatic_failure_fallback_verified": false,
+      "repeat_b_reboot_performed": false
+    }
+  }
+}
