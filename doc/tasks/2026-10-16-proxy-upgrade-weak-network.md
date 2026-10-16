@@ -146,3 +146,11 @@ DEF003（安装工具，已定位）：首次安装器使用PATH中的sh，实�
 TEST007通过、DEF003修复并实际安装验证通过。证据位于忽略的router_plugin/artifacts/jffs/device-import-update.json、device-import-preservation.json、device-import-browser.json，截图在仓库外Codex visualizations/asus-import/installed-asus-import.png；私有备份D:/Code/RouterFirmware/router-backups/20261016-jffs-import-update-222732。CON002：早期范围“不经SSH替换生产程序”不应阻止当前明确授权的华硕独立JFFS安装器；其他Go Probe/Controller线上升级约束保持，已按最新用户指令更新范围。无固件分区操作或新运行包构建。
 
 REQ001—007验收闭合，TASK001—005完成，准备/实现/完成门禁通过。仅提交PC安装工具与验收账本，不改已发布附件，不触发全产品重复构建。代码归档后下一步唯一动作：无。
+
+## 用户追加：华硕不支持在线升级就不显示升级提示
+
+REQ008：华硕独立C/JFFS插件不支持普通Probe在线升级，探针列表与状态页仅展示实际插件版本，隐藏升级比较、检查中/未知/最新等状态；普通Probe和Linux旁路由行为保持。UNIT007：主控probe.html按注册类型和运行时build_kind识别华硕，两处版本列共用判断。TASK006进行中→TEST008：实际浏览器混合节点列表/状态页、在线/离线/缺版本、版本检查中/成功/失败，桌面和窄屏验证；主控全量测试与vet。REQ008→UNIT007→TASK006→TEST008。不开发在线升级、不改插件包、不刷固件，生产主控交付仍须在线升级。
+
+TLS诊断补记：用户配置节点25后曾显示node TLS certificate unavailable；只读检查期间证书缓存已生成，插件ready=true、error为空，尚未证实controller_connected=true，不据此宣称主控链路正常。当前按用户最新指令先修正升级提示。准备门禁通过，新增完成门禁待验证/发布。唯一下一步：浏览器验证两个版本列与其他节点不回归。
+
+TEST008通过：实际Chrome加载修改页面、模拟API六类节点，两个版本列在检查中/成功/503失败均保持华硕仅原始版本（包括离线无版本、注册类型识别、仅runtime.build_kind识别）；普通Probe/Linux旁路由的可升级/有新版本/已是最新仍保留。1366x900和390x844截图已检查，位于仓库外visualizations/asus-version，无应用JS异常，没有操作生产配置。主控全量go test与go vet通过。仅主控HTML改动，未重复测试或构建未改的C插件/Android/Go Probe业务。发布preflight仍因已退役Docker/ARM64路由器资产误报CON001，按实际工作流及TestReleaseWorkflow核验。实现门禁通过；唯一下一步：提交明确HTML与账本两个文件并发布，完成门禁待匹配SHA的Actions与产物确认。

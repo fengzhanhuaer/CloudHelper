@@ -503,6 +503,15 @@
       return `<div class="version-cell">${currentHTML}<span class="pill version-upgrade">${label}至 ${escapeHTML(latest)}</span>${offlineHint}</div>`;
     }
 
+    function renderNodeVersion(version, online, node) {
+      const registeredNode = state.nodes.find((entry) => Number(entry.node_no) === Number(node.node_no));
+      const buildKind = String((node.runtime || {}).build_kind || '').trim().toLowerCase();
+      if (normalizeNodeKind(node) === 'asus_56uv2' || normalizeNodeKind(registeredNode) === 'asus_56uv2' || buildKind === 'asus_56uv2') {
+        return `<div class="version-cell"><span class="mono">${escapeHTML(String(version || '').trim() || '-')}</span></div>`;
+      }
+      return renderProbeVersion(version, online);
+    }
+
     async function refreshProbeLatestVersion(force) {
       if (!force && state.probeVersionCheckCompleted) return;
       if (state.probeVersionCheckPromise) return state.probeVersionCheckPromise;
@@ -808,7 +817,7 @@
             <td>${escapeHTML(item.node_name || '-')}${kindLabel}</td>
             <td>${systemLabel}<br><span class="muted">${item.direct_connect ? '直连' : '主控转发'} / 本机控制台${item.local_console_enabled ? '启用' : '关闭'}</span></td>
             <td>${remark}<br><span class="muted">${ddns}</span><br><span class="muted">厂家：${vendor}</span></td>
-            <td>${renderProbeVersion(version, online)}<span class="muted">${escapeHTML(formatTime(item.updated_at))}</span></td>
+            <td>${renderNodeVersion(version, online, status || item)}<span class="muted">${escapeHTML(formatTime(item.updated_at))}</span></td>
             <td>
               <button class="btn" type="button" data-action="node-edit" data-node-no="${item.node_no}">编辑</button>
               ${upgradeButton}
@@ -872,7 +881,7 @@
               <div><span class="label">剩余时间</span><span class="${remainingClass(item.expire_at)}">${escapeHTML(formatRemainingTime(item.expire_at))}</span></div>
             </div>
           </td>
-          <td>${renderProbeVersion(rt.version, online)}</td>
+          <td>${renderNodeVersion(rt.version, online, item)}</td>
           <td>${ips4Html}${ips6Html}</td>
           <td class="mono">
             <div>CPU：相对 ${cpuPercent} / 绝对 -</div>
