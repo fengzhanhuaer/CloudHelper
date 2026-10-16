@@ -154,3 +154,5 @@ REQ008：华硕独立C/JFFS插件不支持普通Probe在线升级，探针列表
 TLS诊断补记：用户配置节点25后曾显示node TLS certificate unavailable；只读检查期间证书缓存已生成，插件ready=true、error为空，尚未证实controller_connected=true，不据此宣称主控链路正常。当前按用户最新指令先修正升级提示。准备门禁通过，新增完成门禁待验证/发布。唯一下一步：浏览器验证两个版本列与其他节点不回归。
 
 TEST008通过：实际Chrome加载修改页面、模拟API六类节点，两个版本列在检查中/成功/503失败均保持华硕仅原始版本（包括离线无版本、注册类型识别、仅runtime.build_kind识别）；普通Probe/Linux旁路由的可升级/有新版本/已是最新仍保留。1366x900和390x844截图已检查，位于仓库外visualizations/asus-version，无应用JS异常，没有操作生产配置。主控全量go test与go vet通过。仅主控HTML改动，未重复测试或构建未改的C插件/Android/Go Probe业务。发布preflight仍因已退役Docker/ARM64路由器资产误报CON001，按实际工作流及TestReleaseWorkflow核验。实现门禁通过；唯一下一步：提交明确HTML与账本两个文件并发布，完成门禁待匹配SHA的Actions与产物确认。
+
+REQ008发布验收：功能提交64db88ca95ef282e890c044e27506c8c1a60129f已推送；匹配Actions 38924263141全部成功，v0.4.59标签父提交与该功能SHA一致，版本提交312ccd91，正式Release八项当前工作流资产齐全且非草稿。TestReleaseWorkflow全部通过。TASK006完成，REQ008→TEST008闭合，准备/实现/完成门禁通过。生产主控未升级，需要主控在线更新后页面生效；华硕插件包未变。唯一下一步：无，等待用户的后续操作指令。
