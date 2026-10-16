@@ -49,7 +49,8 @@ try:
     remote('cat > '+q(directory+'/bundle.tar.gz'),data)
     assert hashlib.sha256(remote('cat '+q(directory+'/bundle.tar.gz'))).digest()==hashlib.sha256(data).digest()
     remote('tar xzf '+q(directory+'/bundle.tar.gz')+' -C '+q(directory))
-    output=remote('sh '+q(directory+'/cloudhelper-router/install.sh'),timeout=60)
+    # Some vendor PATHs contain a memory-debug utility also named "sh".
+    output=remote('/bin/sh '+q(directory+'/cloudhelper-router/install.sh'),timeout=60)
     print(output.decode(errors='replace'),end='')
     base='/jffs/cloudhelper-router'
     assert remote('cat '+base+'/active').decode().strip()==release
@@ -71,7 +72,9 @@ try:
         'service':remote(base+'/service status').decode().strip(),
         'jffs_usage':remote('du -sk '+base+'; df -k /jffs').decode(),
         'menu_mounted':b'CHVR_JFFS_MENU' in remote('cat /www/require/modules/menuTree.js'),
-        'boot_persistence':'manual SSH start after stock firmware reboot'}
+        'boot_persistence':'automatic via minimal firmware JFFS startup hook'
+            if remote('test -x /rom/etc/cloudhelper-jffs-start && echo yes || true').strip()==b'yes'
+            else 'manual SSH start after stock firmware reboot'}
     print(json.dumps(report,indent=2))
     if args.report:
         args.report.parent.mkdir(parents=True,exist_ok=True)
