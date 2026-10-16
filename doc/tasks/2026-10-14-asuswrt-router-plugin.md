@@ -917,3 +917,12 @@ TEST-062/064最终实机验收：JFFS发布9b428dd04774a2c8，包69081字节，S
 本轮REQ034—039→UNIT016—020/IF015—017→TASK024→TEST061—067。TASK024进入提交发布阶段，唯一下一步：完成权限回归核对、秘密扫描后提交本轮明确源码/测试/文档并推送mapledev，核对功能SHA对应Actions和独立JFFS资产。历史TASK023整体其余业务不因本次DNS成功自动关闭；生产Go Probe/主控未部署或重启。
 
 TEST-067最终通过：QEMU10运行未修改原厂ARM dnsmasq，/proc确认四个UID均65534；真实UDP/TCP接管和恢复成功。JFFS测试的旧0600文件自愈/0644可读/0600私有备份/幂等/WAN更新/恢复及真实菜单挂载回滚均通过。最终设备回读公开文件0644、备份0600，未留下测试程序。秘密扫描30个源码文件通过，git diff --check通过。技能旧预检仍仅因已退役Docker及router-arm64标记失败，沿用CON012/DEC043的当前8产物契约；实际mapledev/origin/GitHub Actions权限和配套发布测试均核实，本轮不恢复旧产物。
+
+
+### 2026-10-17 本轮交付完成门禁
+
+TASK024完成：REQ034自定义端口、REQ035主控唯一端口配置、REQ036内存日志、REQ037地址回退及策略刷新容错、REQ038 TLS错误与测速、REQ039原厂降权DNS接管均有对应TEST061—067通过记录；DEF005/006本轮修复。最后安装后Chrome再次实测PASS，保存请求不含port、日志认证/实际内容/仅可见时轮询、桌面/窄屏标签且零脚本错误，用户配置未写入测试值。
+
+功能提交6301ea4b2534f6bd3b48cd855ff68345ea45d6c7已推送origin/mapledev。对应Actions 38951377838完整success（https://github.com/fengzhanhuaer/CloudHelper/actions/runs/38951377838），自动版本提交fe659a92和v0.4.60的父提交恰为功能SHA，未手工改version或打tag。Release https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.60 已公开；当前契约8项产物全部存在，另上传华硕9b428dd04774a2c8 JFFS压缩包与JSON清单，两附件GitHub digest和字节数逐项与本地SHA256相同，共10附件。生产Go主控/其他Probe未升级，未修改其服务或配置。
+
+交付包约67.5KiB，路由器运行同一回读验证程序；本轮没有刷固件或重启、用户身份和boot_id不变。最近64条日志只占内存并输出console。弱网控制面偶发超时/重连、未知或过期fake IP的404、长期吞吐/其他出口和历史B ONCE缺陷保持独立边界，不声称全部消除。本轮子目标无待办；历史TASK023其余功能继续按用户后续要求验收。检查点下一步：无本轮自动执行动作，等待新的具体问题或验收范围。
