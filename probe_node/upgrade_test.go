@@ -340,6 +340,7 @@ func TestDownloadProbeAssetResumeDirect(t *testing.T) {
 			t.Fatalf("unexpected range header: %q", got)
 		}
 		w.Header().Set("Content-Length", "5")
+		w.Header().Set("Content-Range", "bytes 6-10/11")
 		w.WriteHeader(http.StatusPartialContent)
 		_, _ = w.Write(remaining)
 	}))
@@ -382,6 +383,7 @@ func TestDownloadProbeAssetRetriesUnexpectedEOFAndResumes(t *testing.T) {
 				t.Fatalf("resume range=%q, want bytes=6-", got)
 			}
 			w.Header().Set("Content-Length", "5")
+			w.Header().Set("Content-Range", "bytes 6-10/11")
 			w.WriteHeader(http.StatusPartialContent)
 			_, _ = w.Write([]byte("world"))
 		default:
@@ -424,6 +426,7 @@ func TestDownloadProbeAssetStreamsThroughController(t *testing.T) {
 		gotNodeID = r.Header.Get("X-Probe-Node-Id")
 		gotURL = r.URL.Query().Get("url")
 		w.Header().Set("Content-Length", strconv.Itoa(len(remaining)))
+		w.Header().Set("Content-Range", "bytes 6-10/11")
 		w.WriteHeader(http.StatusPartialContent)
 		_, _ = w.Write(remaining)
 	}))
@@ -442,7 +445,7 @@ func TestDownloadProbeAssetStreamsThroughController(t *testing.T) {
 	if gotPath != "/api/probe/proxy/download" {
 		t.Fatalf("proxy path=%q", gotPath)
 	}
-	if gotRange != "bytes=6-" {
+	if gotRange != "bytes=6-4194309" {
 		t.Fatalf("range=%q", gotRange)
 	}
 	if gotNodeID != "9" {

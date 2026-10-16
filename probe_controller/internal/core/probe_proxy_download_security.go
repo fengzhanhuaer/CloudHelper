@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 )
 
 const probeProxyDownloadMaxRedirects = 10
@@ -76,6 +77,20 @@ func doProbeProxyDownload(req *http.Request) (*http.Response, error) {
 		base = &http.Client{}
 	}
 	client := *base
+	client.Timeout = 0 // The request context bounds the operation; streaming has its own lifetime.
+	if transport, ok := client.Transport.(*http.Transport); ok {
+		transport = transport.Clone()
+		transport.ResponseHeaderTimeout = 20 * time.Second
+		transport.TLSHandshakeTimeout = 10 * time.Second
+		client.Transport = transport
+		defer transport.CloseIdleConnections()
+	} else if client.Transport == nil {
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.ResponseHeaderTimeout = 20 * time.Second
+		transport.TLSHandshakeTimeout = 10 * time.Second
+		client.Transport = transport
+		defer transport.CloseIdleConnections()
+	}
 	client.CheckRedirect = func(next *http.Request, via []*http.Request) error {
 		if len(via) >= probeProxyDownloadMaxRedirects {
 			return fmt.Errorf("too many download redirects")

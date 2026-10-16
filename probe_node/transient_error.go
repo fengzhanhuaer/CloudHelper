@@ -21,6 +21,10 @@ func isProbeTransientHTTPError(err error) bool {
 	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
 		return true
 	}
+	var statusErr *probeUpgradeHTTPError
+	if errors.As(err, &statusErr) {
+		return probeUpgradeRetryableStatus(statusErr.Status)
+	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr != nil {
 		return netErr.Timeout()

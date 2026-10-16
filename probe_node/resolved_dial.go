@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -19,6 +20,7 @@ const probeResolvedDialDefaultTimeout = 15 * time.Second
 type probeResolvedURLDialTarget struct {
 	OriginalEndpoint string
 	DialEndpoint     string
+	DialEndpoints    []string
 	ServerName       string
 	TLSEnabled       bool
 }
@@ -65,7 +67,15 @@ func resolveProbeLocalURLDialTarget(rawURL string) (probeResolvedURLDialTarget, 
 	if len(ips) == 0 {
 		return probeResolvedURLDialTarget{}, fmt.Errorf("resolved url host has no ipv4 result: %s", host)
 	}
-	target.DialEndpoint = net.JoinHostPort(strings.TrimSpace(ips[0]), strconv.Itoa(portNum))
+	for _, ip := range ips {
+		if parsed := net.ParseIP(strings.TrimSpace(ip)); parsed != nil && parsed.To4() != nil {
+			target.DialEndpoints = append(target.DialEndpoints, net.JoinHostPort(parsed.String(), strconv.Itoa(portNum)))
+		}
+	}
+	if len(target.DialEndpoints) == 0 {
+		return target, errors.New("resolved url host has no valid ipv4 result")
+	}
+	target.DialEndpoint = target.DialEndpoints[0]
 	target.ServerName = host
 	return target, nil
 }
@@ -78,19 +88,85 @@ func normalizeProbeResolvedDialTimeout(timeout time.Duration) time.Duration {
 }
 
 func newProbeResolvedDialContext(target probeResolvedURLDialTarget, timeout time.Duration) func(context.Context, string, string) (net.Conn, error) {
-	dialTimeout := normalizeProbeResolvedDialTimeout(timeout)
-	return func(ctx context.Context, network string, addr string) (net.Conn, error) {
-		dialer := applyProbeRouteEgressDialer(&net.Dialer{
-			Timeout:   dialTimeout,
-			KeepAlive: 30 * time.Second,
-		})
-		if strings.EqualFold(strings.TrimSpace(addr), strings.TrimSpace(target.OriginalEndpoint)) {
-			if err := ensureProbeRouteTransportDirectBypass(target.DialEndpoint); err != nil {
-				logProbeWarnf("probe resolved dial direct bypass failed: target=%s err=%v", target.DialEndpoint, err)
+	return newProbeResolvedConnectionDialContext(target, timeout, nil)
+}
+
+// Race full TLS handshakes too: a CDN address can accept TCP and then stall TLS.
+func newProbeResolvedConnectionDialContext(target probeResolvedURLDialTarget, timeout time.Duration, tlsConfig *tls.Config) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		ctx, cancel := context.WithTimeout(ctx, normalizeProbeResolvedDialTimeout(timeout))
+		defer cancel()
+		endpoints := []string{addr}
+		matched := strings.EqualFold(strings.TrimSpace(addr), strings.TrimSpace(target.OriginalEndpoint))
+		if matched {
+			endpoints = target.DialEndpoints
+			if len(endpoints) == 0 {
+				endpoints = []string{target.DialEndpoint}
 			}
-			return dialer.DialContext(ctx, probeRouteEgressDialNetwork(network, target.DialEndpoint), target.DialEndpoint)
 		}
-		return dialer.DialContext(ctx, network, addr)
+		// Limit parallel sockets for domains publishing many records.
+		if len(endpoints) > 4 {
+			endpoints = endpoints[:4]
+		}
+		type result struct {
+			conn net.Conn
+			err  error
+		}
+		results := make(chan result)
+		dialCtx, stop := context.WithCancel(ctx)
+		defer stop()
+		for index, endpoint := range endpoints {
+			go func(index int, endpoint string) {
+				if index > 0 {
+					if err := waitProbeUpgradeRetry(dialCtx, time.Duration(index)*250*time.Millisecond); err != nil {
+						return
+					}
+				}
+				if dialCtx.Err() != nil {
+					return
+				}
+				if matched {
+					if err := ensureProbeRouteTransportDirectBypass(endpoint); err != nil {
+						logProbeWarnf("probe resolved dial direct bypass failed: target=%s err=%v", endpoint, err)
+					}
+				}
+				dialer := applyProbeRouteEgressDialer(&net.Dialer{Timeout: normalizeProbeResolvedDialTimeout(timeout), KeepAlive: 30 * time.Second})
+				conn, err := dialer.DialContext(dialCtx, probeRouteEgressDialNetwork(network, endpoint), endpoint)
+				if err == nil && tlsConfig != nil {
+					config := tlsConfig.Clone()
+					if config.ServerName == "" {
+						config.ServerName, _, _ = net.SplitHostPort(addr)
+					}
+					secured := tls.Client(conn, config)
+					if err = secured.HandshakeContext(dialCtx); err != nil {
+						conn.Close()
+						conn = nil
+					} else {
+						conn = secured
+					}
+				}
+				select {
+				case results <- result{conn, err}:
+				case <-dialCtx.Done():
+					if conn != nil {
+						conn.Close()
+					}
+				}
+			}(index, endpoint)
+		}
+		var failures []error
+		for range endpoints {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case result := <-results:
+				if result.err == nil {
+					return result.conn, nil
+				}
+				failures = append(failures, result.err)
+			}
+		}
+		return nil, errors.Join(failures...)
 	}
 }
 
@@ -110,6 +186,7 @@ func newProbeResolvedHTTPClientForURL(rawURL string, timeout time.Duration) (*ht
 			MinVersion: tls.VersionTLS12,
 			ServerName: strings.TrimSpace(target.ServerName),
 		}
+		transport.DialTLSContext = newProbeResolvedConnectionDialContext(target, dialTimeout, transport.TLSClientConfig)
 	}
 	client := &http.Client{
 		Timeout:   dialTimeout,
@@ -133,6 +210,7 @@ func newProbeResolvedWebSocketDialerForURL(rawURL string, timeout time.Duration)
 			MinVersion: tls.VersionTLS12,
 			ServerName: strings.TrimSpace(target.ServerName),
 		}
+		dialer.NetDialTLSContext = newProbeResolvedConnectionDialContext(target, timeout, dialer.TLSClientConfig)
 	}
 	return dialer, nil
 }

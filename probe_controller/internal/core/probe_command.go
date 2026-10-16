@@ -700,19 +700,35 @@ func ProbeProxyDownloadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	proxyReq.Header.Set("User-Agent", "cloudhelper-probe-proxy-download")
 	proxyReq.Header.Set("Accept", "application/octet-stream")
+	proxyReq.Header.Set("Accept-Encoding", "identity")
+	if value := r.Header.Get("If-Range"); value != "" {
+		proxyReq.Header.Set("If-Range", value)
+	}
 	if rangeHeader := strings.TrimSpace(r.Header.Get("Range")); rangeHeader != "" {
 		proxyReq.Header.Set("Range", rangeHeader)
 	}
-	resp, err := doProbeProxyDownload(proxyReq)
+	resp, err := doProbeProxyDownloadWithRetry(proxyReq)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("proxy download failed: %v", err)})
 		return
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+		w.Header().Set("Content-Range", resp.Header.Get("Content-Range"))
+		w.WriteHeader(resp.StatusCode)
+		return
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": fmt.Sprintf("upstream status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))})
+		status := resp.StatusCode
+		if status < 400 || status > 599 {
+			status = http.StatusBadGateway
+		}
+		if value := resp.Header.Get("Retry-After"); value != "" {
+			w.Header().Set("Retry-After", value)
+		}
+		writeJSON(w, status, map[string]string{"error": fmt.Sprintf("upstream status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))})
 		return
 	}
 
@@ -737,8 +753,16 @@ func ProbeProxyDownloadHandler(w http.ResponseWriter, r *http.Request) {
 	if etag := strings.TrimSpace(resp.Header.Get("ETag")); etag != "" {
 		w.Header().Set("ETag", etag)
 	}
+	if value := resp.Header.Get("Last-Modified"); value != "" {
+		w.Header().Set("Last-Modified", value)
+	}
+	w.Header().Set("Cache-Control", "no-store, no-transform")
+	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	if err := streamProbeProxyDownload(w, proxyReq, resp); err != nil {
+		// Abort instead of writing a successful chunk terminator for an incomplete asset.
+		panic(http.ErrAbortHandler)
+	}
 }
 
 func ProbeProxyInstallScriptHandler(w http.ResponseWriter, r *http.Request) {

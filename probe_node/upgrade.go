@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -164,13 +166,18 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 		Mode:        mode,
 		ReleaseRepo: repo,
 	})
-	tmpDir, err := createProbeUpgradeWorkspace()
+	tmpDir, err := createProbeUpgradeWorkspaceForAsset(release.TagName, asset)
 	if err != nil {
 		log.Printf("probe upgrade failed: temp dir: %v", err)
 		reportProbeLocalUpgradeFailed("prepare_workspace", err, mode, repo, 28)
 		return
 	}
-	defer cleanupProbeUpgradeWorkspace(tmpDir)
+	upgradeSucceeded := false
+	defer func() {
+		if upgradeSucceeded || !probeUpgradeWorkspaceHasPartial(tmpDir) {
+			cleanupProbeUpgradeWorkspace(tmpDir)
+		}
+	}()
 
 	assetFile := filepath.Join(tmpDir, filepath.Base(asset.Name))
 	downloadMode := mode
@@ -203,7 +210,8 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 			SpeedBPS:        speedBPS,
 		})
 	}
-	if err := downloadProbeAsset(ctx, downloadMode, asset.DownloadURL, controllerBase, identity, assetFile, reportDownloadProgress); err != nil {
+	err = downloadProbeAsset(ctx, downloadMode, asset.DownloadURL, controllerBase, identity, assetFile, reportDownloadProgress)
+	if err != nil {
 		if shouldFallbackProbeUpgradeDownloadToProxy(downloadMode, controllerBase, err) {
 			log.Printf("probe upgrade direct download failed, fallback to controller proxy: err=%v", err)
 			reportProbeLocalUpgradeProgress(probeLocalUpgradeRuntimeState{
@@ -227,7 +235,13 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 		reportProbeLocalUpgradeFailed("download", err, downloadMode, repo, 42)
 		return
 	}
-	if st, err := os.Stat(assetFile); err == nil {
+	if st, statErr := os.Stat(assetFile); statErr != nil || !st.Mode().IsRegular() || st.Size() == 0 {
+		if statErr == nil {
+			statErr = errors.New("downloaded asset is empty or not a regular file")
+		}
+		reportProbeLocalUpgradeFailed("download", statErr, downloadMode, repo, 54)
+		return
+	} else {
 		log.Printf("probe upgrade download complete: file=%s size=%d", assetFile, st.Size())
 	}
 
@@ -334,6 +348,7 @@ func runProbeUpgrade(cmd probeControlMessage, identity nodeIdentity) {
 		reportProbeLocalUpgradeFailed("restart", err, mode, repo, 96)
 		return
 	}
+	upgradeSucceeded = true
 	reportProbeLocalUpgradeSuccess("升级完成，服务重启中", mode, repo)
 }
 
@@ -505,200 +520,236 @@ func pickAndroidProbeNodeAsset(probeAssets []releaseAsset, platform runtimePlatf
 	return releaseAsset{}, fmt.Errorf("matching android probe_node apk not found for goarch=%s, probe assets=[%s]", platform.GOARCH, summarizeAssetNames(probeAssets, 20))
 }
 
+// A bounded range keeps proxy requests short even when a CDN terminates long responses.
+const probeUpgradeProxyChunkSize int64 = 4 * 1024 * 1024
+
+type probeUpgradePartialState struct {
+	AssetHash string `json:"asset_hash"`
+	Validator string `json:"validator,omitempty"`
+	SHA256    string `json:"sha256,omitempty"`
+	Total     int64  `json:"total"`
+}
+
+type probeUpgradeHTTPError struct {
+	Status int
+	Detail string
+}
+
+func (e *probeUpgradeHTTPError) Error() string {
+	return fmt.Sprintf("download failed: %d %s", e.Status, e.Detail)
+}
+func probeUpgradeRetryableStatus(status int) bool {
+	return status == 408 || status == 429 || status == 500 || status == 502 || status == 503 || status == 504 || status == 520 || status == 522 || status == 524
+}
+func waitProbeUpgradeRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+func parseProbeUpgradeContentRange(raw string) (start, end, total int64, err error) {
+	var n int
+	n, err = fmt.Sscanf(strings.TrimSpace(raw), "bytes %d-%d/%d", &start, &end, &total)
+	if err != nil || n != 3 || start < 0 || end < start || total <= end {
+		return 0, 0, 0, errors.New("invalid download Content-Range")
+	}
+	return
+}
 func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase string, identity nodeIdentity, output string, onProgress func(downloaded, total, speedBPS int64)) error {
 	partPath := output + ".part"
-	resumeOffset := int64(0)
-	if st, err := os.Stat(partPath); err == nil && st.Mode().IsRegular() {
-		resumeOffset = st.Size()
+	if raw, err := os.ReadFile(output + ".complete.json"); err == nil {
+		var state probeUpgradePartialState
+		if json.Unmarshal(raw, &state) == nil && state.AssetHash == fmt.Sprintf("%x", sha256.Sum256([]byte(assetURL))) {
+			if hash, size, err := hashProbeUpgradeFile(output); err == nil && size > 0 && size == state.Total && hash == state.SHA256 {
+				return nil
+			}
+		}
 	}
-
-	openPartFile := func(truncate bool) (*os.File, int64, error) {
-		flags := os.O_CREATE | os.O_WRONLY
-		if truncate {
-			flags |= os.O_TRUNC
-		} else {
-			flags |= os.O_APPEND
+	var validator string
+	knownTotal := int64(-1)
+	if raw, err := os.ReadFile(partPath + ".json"); err == nil {
+		var state probeUpgradePartialState
+		if err := json.Unmarshal(raw, &state); err != nil || state.AssetHash != fmt.Sprintf("%x", sha256.Sum256([]byte(assetURL))) {
+			return errors.New("partial download metadata does not match requested asset")
 		}
-		f, err := os.OpenFile(partPath, flags, 0o644)
-		if err != nil {
-			return nil, 0, err
-		}
-		st, err := f.Stat()
-		if err != nil {
-			f.Close()
-			return nil, 0, err
-		}
-		return f, st.Size(), nil
+		validator = state.Validator
+		knownTotal = state.Total
 	}
-
-	downloadOnce := func(offset int64) (int64, error) {
-		start := time.Now()
-		reqCtx, cancelRequest := context.WithCancel(ctx)
-		defer cancelRequest()
-		var (
-			reader     io.ReadCloser
-			statusCode int
-			total      int64 = -1
-		)
-		if mode == "proxy" {
-			requestURL, err := buildProbeUpgradeProxyDownloadURL(controllerBase, assetURL)
-			if err != nil {
-				return 0, err
-			}
-			log.Printf("probe upgrade asset download via controller proxy: %s offset=%d", safeURLForLog(requestURL), offset)
-			req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, requestURL, nil)
-			if err != nil {
-				return 0, err
-			}
-			if err := applyProbeAuthHeaders(req, identity); err != nil {
-				return 0, err
-			}
-			req.Header.Set("Accept", "application/octet-stream")
-			req.Header.Set("User-Agent", "cloudhelper-probe-node")
-			if offset > 0 {
-				req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
-			}
-			client, closeClient, err := newProbeUpgradeResolvedDownloadHTTPClientForURL(requestURL)
-			if err != nil {
-				return 0, err
-			}
-			resp, err := client.Do(req)
-			if err != nil {
-				closeClient()
-				log.Printf("warning: probe upgrade proxy download request failed: elapsed=%s offset=%d err=%v", time.Since(start).String(), offset, err)
-				return 0, err
-			}
-			defer closeClient()
-			if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
-				resp.Body.Close()
-				if err := os.Rename(partPath, output); err == nil {
-					return 0, nil
-				}
-				return 0, fmt.Errorf("download failed: %d", resp.StatusCode)
-			}
-			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-				body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-				resp.Body.Close()
-				return 0, fmt.Errorf("download failed: %d %s", resp.StatusCode, strings.TrimSpace(string(body)))
-			}
-			reader = resp.Body
-			statusCode = resp.StatusCode
-			total = resp.ContentLength
-			if total >= 0 && statusCode == http.StatusPartialContent && offset > 0 {
-				total += offset
-			}
-		} else {
-			log.Printf("probe upgrade asset download direct: %s offset=%d", safeURLForLog(assetURL), offset)
-			req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, assetURL, nil)
-			if err != nil {
-				return 0, err
-			}
-			req.Header.Set("Accept", "application/octet-stream")
-			req.Header.Set("User-Agent", "cloudhelper-probe-node")
-			if offset > 0 {
-				req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
-			}
-			client, closeClient := newProbeUpgradeDirectDownloadHTTPClient()
-			resp, err := client.Do(req)
-			if err != nil {
-				closeClient()
-				log.Printf("warning: probe upgrade direct download request failed: elapsed=%s offset=%d err=%v", time.Since(start).String(), offset, err)
-				return 0, err
-			}
-			defer closeClient()
-			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-				body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-				resp.Body.Close()
-				return 0, fmt.Errorf("download failed: %d %s", resp.StatusCode, strings.TrimSpace(string(body)))
-			}
-			reader = resp.Body
-			statusCode = resp.StatusCode
-			total = resp.ContentLength
-			if total >= 0 && statusCode == http.StatusPartialContent && offset > 0 {
-				total += offset
-			}
-		}
-		defer reader.Close()
-
-		if statusCode == http.StatusRequestedRangeNotSatisfiable {
-			if err := os.Rename(partPath, output); err == nil {
-				return 0, nil
-			}
-		}
-
-		truncate := offset == 0 || statusCode == http.StatusOK
-		if offset > 0 && statusCode == http.StatusOK {
-			log.Printf("probe upgrade resume unsupported, restarting full download: url=%s", safeURLForLog(assetURL))
-		}
-		f, currentSize, err := openPartFile(truncate)
-		if err != nil {
-			return 0, err
-		}
-		written, copyErr := copyProbeUpgradeWithProgressAndIdleTimeout(
-			f,
-			reader,
-			probeUpgradeDownloadIdleTimeout,
-			cancelRequest,
-			func(n int64) {
-				finalSize := currentSize + n
-				if truncate {
-					finalSize = n
-				}
-				speed := int64(0)
-				elapsed := time.Since(start).Seconds()
-				if elapsed > 0 {
-					speed = int64(float64(n) / elapsed)
-				}
-				if onProgress != nil {
-					onProgress(finalSize, total, speed)
-				}
-			},
-		)
-		closeErr := f.Close()
-		if copyErr != nil {
-			if closeErr != nil {
-				return 0, errors.Join(copyErr, closeErr)
-			}
-			return 0, copyErr
-		}
-		if closeErr != nil {
-			return 0, closeErr
-		}
-		finalSize := currentSize + written
-		if truncate {
-			finalSize = written
-		}
-		if total >= 0 && finalSize < total {
-			return finalSize, nil
-		}
-		if err := os.Rename(partPath, output); err != nil {
-			return 0, err
-		}
-		log.Printf("probe upgrade download chunk complete: mode=%s status=%d offset=%d total=%d elapsed=%s", mode, statusCode, offset, finalSize, time.Since(start).String())
-		return 0, nil
-	}
-
-	retryCount := 0
+	retries := 0
 	for {
-		nextOffset, err := downloadOnce(resumeOffset)
-		if err != nil {
-			if retryCount < probeUpgradeDownloadMaxRetries && isProbeTransientHTTPError(err) && ctx.Err() == nil {
-				retryCount++
-				if st, statErr := os.Stat(partPath); statErr == nil && st.Mode().IsRegular() {
-					resumeOffset = st.Size()
-				}
-				log.Printf("probe upgrade download transient error, retry=%d offset=%d err=%v", retryCount, resumeOffset, err)
-				time.Sleep(probeUpgradeDownloadRetryDelay(retryCount))
-				continue
-			}
+		if err := ctx.Err(); err != nil {
 			return err
 		}
-		retryCount = 0
-		if nextOffset == 0 {
-			return nil
+		offset := int64(0)
+		if st, err := os.Stat(partPath); err == nil {
+			offset = st.Size()
 		}
-		resumeOffset = nextOffset
+		started := time.Now()
+		next, total, err := downloadProbeAssetChunk(ctx, mode, assetURL, controllerBase, identity, partPath, offset, &validator, knownTotal, func(n, total int64) {
+			if onProgress != nil {
+				elapsed := time.Since(started).Seconds()
+				speed := int64(0)
+				if elapsed > 0 {
+					speed = int64(float64(n-offset) / elapsed)
+				}
+				onProgress(n, total, speed)
+			}
+		})
+		if err != nil {
+			if retries >= probeUpgradeDownloadMaxRetries || !isProbeTransientHTTPError(err) || ctx.Err() != nil {
+				return err
+			}
+			retries++
+			log.Printf("probe upgrade download retry: mode=%s attempt=%d offset=%d err=%v", mode, retries, offset, err)
+			if err := waitProbeUpgradeRetry(ctx, probeUpgradeDownloadRetryDelay(retries)); err != nil {
+				return err
+			}
+			continue
+		}
+		if total >= 0 {
+			knownTotal = total
+		}
+		if next == 0 {
+			return errors.New("downloaded asset is empty")
+		}
+		if knownTotal >= 0 && next < knownTotal {
+			retries = 0
+			continue
+		}
+		if err := os.Rename(partPath, output); err != nil {
+			return err
+		}
+		hash, size, err := hashProbeUpgradeFile(output)
+		if err != nil {
+			return err
+		}
+		receipt, _ := json.Marshal(probeUpgradePartialState{AssetHash: fmt.Sprintf("%x", sha256.Sum256([]byte(assetURL))), Total: size, SHA256: hash})
+		if err := os.WriteFile(output+".complete.json", receipt, 0600); err != nil {
+			return err
+		}
+		_ = os.Remove(partPath + ".json")
+		return nil
 	}
+}
+func downloadProbeAssetChunk(ctx context.Context, mode, assetURL, controllerBase string, identity nodeIdentity, partPath string, offset int64, validator *string, knownTotal int64, progress func(int64, int64)) (int64, int64, error) {
+	reqCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	requestURL := assetURL
+	var err error
+	if mode == "proxy" {
+		requestURL, err = buildProbeUpgradeProxyDownloadURL(controllerBase, assetURL)
+		if err != nil {
+			return 0, 0, err
+		}
+	}
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	req.Header.Set("Accept", "application/octet-stream")
+	req.Header.Set("Accept-Encoding", "identity")
+	req.Header.Set("User-Agent", "cloudhelper-probe-node")
+	if mode == "proxy" {
+		if err := applyProbeAuthHeaders(req, identity); err != nil {
+			return 0, 0, err
+		}
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, offset+probeUpgradeProxyChunkSize-1))
+	} else if offset > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+	}
+	if offset > 0 && *validator != "" {
+		req.Header.Set("If-Range", *validator)
+	}
+	var client *http.Client
+	var closeClient func()
+	if mode == "proxy" {
+		client, closeClient, err = newProbeUpgradeResolvedDownloadHTTPClientForURL(requestURL)
+	} else {
+		client, closeClient = newProbeUpgradeDirectDownloadHTTPClient()
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+	defer closeClient()
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+		raw := strings.TrimPrefix(resp.Header.Get("Content-Range"), "bytes */")
+		size, e := strconv.ParseInt(raw, 10, 64)
+		if e == nil && size > 0 && size == offset && (knownTotal < 0 || knownTotal == size) {
+			return size, size, nil
+		}
+		return 0, 0, errors.New("download range rejected: partial file does not match upstream size")
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return 0, 0, &probeUpgradeHTTPError{resp.StatusCode, strings.TrimSpace(string(body))}
+	}
+	total := resp.ContentLength
+	expectedChunk := resp.ContentLength
+	if resp.StatusCode == http.StatusPartialContent {
+		start, end, size, e := parseProbeUpgradeContentRange(resp.Header.Get("Content-Range"))
+		if e != nil || start != offset || (resp.ContentLength >= 0 && resp.ContentLength != end-start+1) || (knownTotal >= 0 && knownTotal != size) {
+			return 0, 0, errors.New("download Content-Range does not match requested offset or size")
+		}
+		total = size
+		expectedChunk = end - start + 1
+	} else {
+		offset = 0
+	}
+	nextValidator := strings.TrimSpace(resp.Header.Get("ETag"))
+	if strings.HasPrefix(nextValidator, "W/") {
+		nextValidator = ""
+	}
+	if nextValidator == "" {
+		nextValidator = strings.TrimSpace(resp.Header.Get("Last-Modified"))
+	}
+	if offset > 0 && *validator != "" && nextValidator != *validator {
+		return 0, 0, errors.New("download object changed during resume")
+	}
+	if nextValidator != "" {
+		*validator = nextValidator
+	}
+	flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND
+	if offset == 0 {
+		flags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	}
+	f, err := os.OpenFile(partPath, flags, 0o644)
+	if err != nil {
+		return 0, 0, err
+	}
+	state := probeUpgradePartialState{AssetHash: fmt.Sprintf("%x", sha256.Sum256([]byte(assetURL))), Validator: *validator, Total: total}
+	raw, _ := json.Marshal(state)
+	if err := os.WriteFile(partPath+".json.tmp", raw, 0600); err != nil {
+		f.Close()
+		return 0, 0, err
+	}
+	if err := os.Rename(partPath+".json.tmp", partPath+".json"); err != nil {
+		f.Close()
+		return 0, 0, err
+	}
+	written, copyErr := copyProbeUpgradeWithProgressAndIdleTimeout(f, resp.Body, probeUpgradeDownloadIdleTimeout, cancel, func(n int64) { progress(offset+n, total) })
+	closeErr := f.Close()
+	if copyErr != nil {
+		return 0, 0, errors.Join(copyErr, closeErr)
+	}
+	if closeErr != nil {
+		return 0, 0, closeErr
+	}
+	if expectedChunk >= 0 && written != expectedChunk {
+		return 0, 0, io.ErrUnexpectedEOF
+	}
+	if written == 0 && (total < 0 || offset != total) {
+		return 0, 0, io.ErrUnexpectedEOF
+	}
+	return offset + written, total, nil
 }
 
 func buildProbeUpgradeProxyDownloadURL(controllerBase string, assetURL string) (string, error) {
@@ -746,6 +797,7 @@ func newProbeUpgradeResolvedDownloadHTTPClientForURL(rawURL string) (*http.Clien
 			MinVersion: tls.VersionTLS12,
 			ServerName: strings.TrimSpace(target.ServerName),
 		}
+		transport.DialTLSContext = newProbeResolvedConnectionDialContext(target, probeUpgradeDownloadIdleTimeout, transport.TLSClientConfig)
 	}
 	client := &http.Client{Transport: transport}
 	return client, func() { transport.CloseIdleConnections() }, nil
@@ -1529,6 +1581,51 @@ func archTokens(goarch string) []string {
 func assetLooksWindows(name string) bool {
 	n := strings.ToLower(strings.TrimSpace(name))
 	return strings.Contains(n, "windows") || strings.HasSuffix(n, ".exe")
+}
+
+func hashProbeUpgradeFile(name string) (string, int64, error) {
+	f, err := os.Open(name)
+	if err != nil {
+		return "", 0, err
+	}
+	defer f.Close()
+	h := sha256.New()
+	size, err := io.Copy(h, f)
+	return fmt.Sprintf("%x", h.Sum(nil)), size, err
+}
+func probeUpgradeWorkspaceHasPartial(workDir string) bool {
+	entries, err := os.ReadDir(workDir)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".part") {
+			if info, err := entry.Info(); err == nil && info.Mode().IsRegular() && info.Size() > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Reuse only the same release/asset so a later upgrade attempt can resume safely.
+func createProbeUpgradeWorkspaceForAsset(version string, asset releaseAsset) (string, error) {
+	baseDir, err := probeUpgradeWorkspaceBaseDir()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		return "", err
+	}
+	cleanupProbeStaleUpgradeWorkspaces(baseDir)
+	key := sha256.Sum256([]byte(version + "\n" + asset.Name + "\n" + asset.DownloadURL))
+	workDir := filepath.Join(baseDir, fmt.Sprintf("%s%x", probeProductUpgradeWorkspacePrefix(), key[:16]))
+	if err := os.MkdirAll(workDir, 0755); err != nil {
+		return "", err
+	}
+	now := time.Now()
+	_ = os.Chtimes(workDir, now, now)
+	return workDir, nil
 }
 
 func createProbeUpgradeWorkspace() (string, error) {
