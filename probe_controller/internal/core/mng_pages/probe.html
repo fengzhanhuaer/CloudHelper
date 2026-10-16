@@ -366,6 +366,7 @@
   <div id="node-install-modal" class="modal-backdrop" hidden>
     <div class="modal">
       <h3 id="install-modal-title">探针安装信息</h3>
+      <p id="install-modal-help" class="muted" hidden></p>
       <pre id="install-modal-content" class="mono"></pre>
       <div class="row" style="margin-top:12px; justify-content:flex-end;">
         <button id="btn-install-copy" class="btn primary" type="button">复制</button>
@@ -801,7 +802,7 @@
             ? 'Alpine Linux x64/ARM64'
             : escapeHTML(item.target_system || '-');
           const installButton = `<button class="btn" type="button" data-action="node-install-command" data-node-no="${item.node_no}">安装</button>`;
-          const upgradeButton = nodeKind === 'asus_56uv2' ? '<span class="muted">JFFS插件升级</span>' : `<button class="btn" type="button" data-action="node-upgrade" data-node-no="${item.node_no}">升级</button>`;
+          const upgradeButton = nodeKind === 'asus_56uv2' ? '' : `<button class="btn" type="button" data-action="node-upgrade" data-node-no="${item.node_no}">升级</button>`;
           return `<tr>
             <td>${escapeHTML(item.node_no)}</td>
             <td>${escapeHTML(item.node_name || '-')}${kindLabel}</td>
@@ -811,7 +812,7 @@
             <td>
               <button class="btn" type="button" data-action="node-edit" data-node-no="${item.node_no}">编辑</button>
               ${upgradeButton}
-              ${nodeKind === 'asus_56uv2' ? '<span class="muted">在华硕后台管理</span>' : `<button class="btn" type="button" data-action="node-console" data-node-no="${item.node_no}">控制台</button>`}
+              ${nodeKind === 'asus_56uv2' ? '' : `<button class="btn" type="button" data-action="node-console" data-node-no="${item.node_no}">控制台</button>`}
               ${installButton}
               <button class="btn warn" type="button" data-action="node-delete" data-node-no="${item.node_no}">删除</button>
             </td>
@@ -1453,6 +1454,9 @@
       const nodeKind = normalizeNodeKind(node);
       const kindLabel = nodeKind === 'asus_56uv2' ? '华硕56UV2' : nodeKind === 'linux_router' ? 'Linux 旁路由探针' : '普通探针';
       document.getElementById('install-modal-title').textContent = `${kindLabel}安装信息：#${nodeNo}${nodeName ? ' ' + nodeName : ''}`;
+      const help = document.getElementById('install-modal-help');
+      help.hidden = nodeKind !== 'asus_56uv2';
+      help.textContent = nodeKind === 'asus_56uv2' ? '复制以下配置，到华硕后台「虚拟路由 → 从主控导入」粘贴，解析后保存并应用。' : '';
       document.getElementById('install-modal-content').textContent = state.installCommandText;
       document.getElementById('node-install-modal').removeAttribute('hidden');
     }
@@ -1460,6 +1464,8 @@
     function closeNodeInstallModal() {
       state.installingNodeNo = 0;
       state.installCommandText = '';
+      document.getElementById('install-modal-content').textContent = '';
+      document.getElementById('install-modal-help').textContent = '';
       document.getElementById('node-install-modal').setAttribute('hidden', 'hidden');
     }
 

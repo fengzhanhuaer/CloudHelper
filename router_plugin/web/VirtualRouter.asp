@@ -6,7 +6,11 @@
 .vr{padding:22px;color:#fff;max-width:900px}.vr h2{color:#00ddd0}.vr section{background:#3c4b50;padding:18px;margin:16px 0;border-radius:6px}.vr label{display:flex;align-items:center;gap:15px;margin:12px 0}.vr label span{width:180px;flex-shrink:0}.vr input[type=text],.vr input[type=password],.vr input[type=number],.vr select{box-sizing:border-box;background:#26363c;border:1px solid #71848a;color:#fff;padding:8px;width:340px;max-width:100%}.vr textarea{box-sizing:border-box;width:100%;min-height:100px;background:#26363c;border:1px solid #71848a;color:#fff;padding:8px}.vr .tabs{display:flex;gap:8px}.vr .tabs button[aria-selected=true]{background:#00a79b}.vr button{padding:9px 18px;border:0;border-radius:4px;background:#168b89;color:#fff;cursor:pointer}.vr button:disabled{opacity:.5;cursor:wait}.vr .hint{color:#bdced1;font-size:12px;line-height:1.7}.vr table{width:100%;border-collapse:collapse;font-size:13px}.vr td,.vr th{padding:9px 6px;text-align:left;border-bottom:1px solid #64777e}.vr .scroll{overflow-x:auto}.vr .error{color:#ffcf9d;white-space:pre-wrap}.vr .status{line-height:1.8}.vr .actions{display:flex;gap:8px;flex-wrap:wrap}.menu_VirtualRouter{background-position:0 -812px!important}@media(max-width:700px){.vr label{display:block}.vr label span{display:block;margin-bottom:6px}.vr{padding:12px}}
 </style></head><body onload="initVR()"><div id="TopBanner"></div><div id="Loading" class="popup_bg"></div><div id="hiddenMask" class="popup_bg"><table><tr><td><div id="loadingBlock"></div></td></tr></table></div>
 <table class="content" align="center" cellpadding="0" cellspacing="0"><tr><td width="17"></td><td valign="top" width="202"><div id="mainMenu"></div><div id="subMenu"></div></td><td valign="top"><div id="tabMenu" class="submenuBlock"></div><table width="98%" border="0" align="left" cellpadding="0" cellspacing="0"><tr><td align="left" valign="top"><table width="760px" border="0" cellpadding="5" cellspacing="0" class="FormTitle" id="FormTitle"><tr><td bgcolor="#4D595D" valign="top"><main class="vr"><h2>虚拟路由</h2>
-<div class="tabs"><button id="routing_tab" onclick="tabVR(false)" aria-selected="true">虚拟路由</button><button id="gateway_tab" onclick="tabVR(true)" aria-selected="false">网关代理</button></div><div id="notice" role="status" class="error"></div><div id="routing_panel"><section><h3>连接设置</h3>
+<div class="tabs"><button id="routing_tab" onclick="tabVR(false)" aria-selected="true">虚拟路由</button><button id="gateway_tab" onclick="tabVR(true)" aria-selected="false">网关代理</button></div><div id="notice" role="status" class="error"></div><div id="routing_panel"><section><h3>从主控导入</h3>
+<p class="hint">在主控探针列表点击本节点的「安装」并复制配置，粘贴到这里自动填入连接设置。</p>
+<textarea id="import_config" maxlength="8192" autocomplete="off" spellcheck="false" placeholder="粘贴主控复制的配置" onpaste="setTimeout(importVR,0)"></textarea>
+<div class="actions"><button id="import_apply" onclick="importVR()">解析配置</button></div><div id="import_notice" class="hint" role="status"></div>
+</section><section><h3>连接设置</h3>
 <label><span>启用虚拟路由</span><input id="enabled" type="checkbox"></label>
 <label><span>主控地址</span><input id="controller" type="text" placeholder="https://controller.example.com" autocomplete="off"></label>
 <label><span>Node ID</span><input id="node_id" type="text" maxlength="128" autocomplete="off"></label>
@@ -43,6 +47,19 @@ gatewayCandidates=s.nodes||[];var candidates=el('gateway_candidate'),chosen=cand
 var select=el('target'),selected=select.value;select.textContent='';(s.nodes||[]).filter(function(n){return n.node_id!==s.node_id}).forEach(function(n){var o=document.createElement('option');o.value=n.node_id;o.textContent=n.display_name||n.node_id;select.appendChild(o)});if(selected)select.value=selected;
 var job=r.measurement||{},result=job.result||{};el('measurement').textContent=job.running?'正在测速…':job.error||result.error||(result.request_id?(job.kind==='ping'?'延迟 '+result.latency_ms+' ms':(result.mbps||0).toFixed(2)+' Mbps · '+bytes(result.bytes)+' · '+result.duration_ms+' ms'):'');Array.prototype.forEach.call(document.querySelectorAll('.measure'),function(b){b.disabled=!!job.running||!s.ready||!select.options.length})}
 function refreshVR(){if(document.hidden||polling)return;polling=true;api({action:'status'},function(r){polling=false;if(r)render(r)})}
+function importVR(){
+try{
+if(!csrf)throw new Error('正在读取路由器配置，请稍后再解析');
+var c;try{c=JSON.parse(el('import_config').value)}catch(parseError){throw new Error('配置不是有效的 JSON')}
+if(!c||Array.isArray(c)||c.schema_version!==1||c.product!=='cloudhelper-asus56uv2')throw new Error('请粘贴主控提供的华硕配置');
+if(typeof c.controller!=='string'||typeof c.node_id!=='string'||typeof c.node_key!=='string')throw new Error('配置缺少主控地址、Node ID 或节点密钥');
+var address=c.controller.trim(),id=c.node_id.trim(),key=c.node_key.trim(),u=new URL(address);
+if(u.protocol!=='https:'||!u.hostname||u.username||u.password||u.search||u.hash||address.length>512)throw new Error('主控地址必须为有效的 HTTPS 地址');
+if(!/^[1-9][0-9]*$/.test(id)||id.length>128||!key||key.length>1024)throw new Error('Node ID 或节点密钥无效');
+el('controller').value=address.replace(/\/+$/,'');el('node_id').value=id;el('node_key').value=key;loaded=true;
+el('import_config').value='';el('import_notice').textContent='已填入连接设置，请确认后保存并应用。';
+}catch(e){el('import_notice').textContent='导入失败：'+(e.message||'配置格式错误')}
+}
 function saveVR(){el('save').disabled=true;api({action:'configure',csrf:csrf,config:{enabled:el('enabled').checked,controller:el('controller').value.trim(),node_id:el('node_id').value.trim(),node_key:el('node_key').value,port:Number(el('port').value),allow_wan:el('allow_wan').checked,dns_enabled:el('dns_enabled').checked,dns_upstreams:{doh:el('dns_doh').value.trim(),dot:el('dns_dot').value.trim(),dns:el('dns_upstream').value.trim()}}},function(r){el('save').disabled=false;if(r){el('node_key').value='';loaded=false;refreshVR()}})}
 function tabVR(gateway){el('gateway_panel').style.display=gateway?'':'none';el('routing_panel').style.display=gateway?'none':'';el('gateway_tab').setAttribute('aria-selected',gateway?'true':'false');el('routing_tab').setAttribute('aria-selected',gateway?'false':'true')}
 function renderGatewayNodes(){var list=el('gateway_nodes');list.textContent='';gatewayNodes.forEach(function(id){var b=document.createElement('button'),name=id;gatewayCandidates.forEach(function(n){if(n.node_id===id)name=n.display_name||id});b.textContent=name+' ×';b.onclick=function(){gatewayNodes=gatewayNodes.filter(function(v){return v!==id});renderGatewayNodes()};list.appendChild(b)})}

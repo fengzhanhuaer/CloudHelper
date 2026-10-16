@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -79,5 +80,37 @@ func TestAsusEdgesUseTLSWebSocketInBothEndpointSnapshots(t *testing.T) {
 	stored := ProbeRouteConfigStore.data.VirtualRouter.TopologyRules
 	if stored[0].RouteLayer != "http3" || stored[0].CarrierCount != 64 || stored[1].RouteLayer != "auto" {
 		t.Fatal("capability adaptation mutated stored topology")
+	}
+}
+
+func TestAsusInstallInfoExportsImportableConfig(t *testing.T) {
+	old := ProbeStore
+	ProbeStore = &probeConfigStore{data: probeConfigData{}}
+	t.Cleanup(func() { ProbeStore = old })
+	node, err := createProbeNodeWithKindLocked("asus-import-test", probeNodeKindAsus56UV2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "https://controller.example/mng/api/probe/node/install?node_id=1", nil)
+	w := httptest.NewRecorder()
+	mngProbeNodeInstallHandler(w, req)
+	if w.Code != 200 || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("status=%d cache=%s", w.Code, w.Header().Get("Cache-Control"))
+	}
+	var response struct {
+		Command string                 `json:"command"`
+		Config  map[string]interface{} `json:"config"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	var copied map[string]interface{}
+	if err := json.Unmarshal([]byte(response.Command), &copied); err != nil {
+		t.Fatal("copy content is not JSON", err)
+	}
+	for _, config := range []map[string]interface{}{response.Config, copied} {
+		if config["schema_version"] != float64(1) || config["product"] != "cloudhelper-asus56uv2" || config["controller"] != "https://controller.example" || config["node_id"] != "1" || config["node_key"] != node.NodeSecret {
+			t.Fatal("exported config does not match node identity")
+		}
 	}
 }

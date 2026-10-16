@@ -21,6 +21,8 @@ python router_plugin/tools/install-router.py <生成的tar.gz> --settings <私�
 
 安装包只含本插件的程序、httpd 扩展、服务脚本和 ASP 页面，以及安装器/校验清单。不会打包整个上游、系统库或备份。ARM ELF/原厂动态库、SSL 真正初始化、httpd 导出契约、ARM 扩展加载及原厂 BusyBox 语法验证通过后才允许打包。
 
+连接主控：在主控探针列表找到华硕节点，点击“安装”，弹窗显示包含主控地址、Node ID、节点密钥的 JSON，点击“复制”。进入华硕后台“虚拟路由 → 从主控导入”并粘贴，页面会自动校验并填入连接字段，再按需启用并“保存并应用”。导入保留 DNS、监听端口和公网连接设置；无效配置不覆盖原值，密钥填入密码框，成功后清空粘贴框。
+
 ```sh
 # 路由器 SSH，或已认证的串口 shell。
 /jffs/cloudhelper-router/service start
