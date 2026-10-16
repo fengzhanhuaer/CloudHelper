@@ -810,3 +810,15 @@ UNIT-013：保留firmware/asuswrt历史来源锁与自有构建/集成代码，R
 TEST-055：检查所有明确文件清单及其秘密字段；实际路由器密码从私有备份仅在内存比较，不输出；源目录禁止设备cfg、密钥容器和私有证书，新忽略规则补齐。TEST-056：Probe全包、共享DNS测试、Kotlin/lint、串口8项（WSL实际shell往返）与构建工具语法；CI新版AAR/APK最终打包签名验证。提交在当前D:/Code/CloudHelper的mapledev完成，同步自动版本提交并确认工作区不再遗留本轮源码。TASK023继续唯一进行中；下一步唯一动作：完成本地回归及秘密扫描，明确暂存清单，提交推送并验证CI。自启动咨询仍待后续完成，未持久更改路由器启动或重启。
 
 本地提交门禁：TEST-055通过，37个明确文件与实际私有路由器密码、常见Token和私钥头逐项检查无匹配；签名密码仅内存比较，秘密/备份/SDK/输出路径忽略验证通过。TEST-056本地通过：Probe全包、Controller全包及vet、发布契约、Android compileDebugKotlin/lintDebug、Windows串口7项+POSIX项跳过及本机WSL串口8项全部通过，所有新增Python AST与9个shell入口语法通过。本机没有完整NDK，Kotlin检查使用已有AAR；新Go实现的原生AAR与签名APK仍须由本次CI重建，尚不宣称通过。历史固件补丁仅归档自有源码，没有重新编译或刷写整机。下一步唯一动作：明确暂存37个文件，提交推送并核对功能SHA对应CI与APK。
+
+### 2026-10-16 源码提交完成与原厂自启动复核
+
+REQ031源码提交558dca945cba71c439b24accab9d0fb243b1fb63已在origin/mapledev，37个文件；自动版本提交16d645b2及v0.4.55，本工作区已快进同步。Actions https://github.com/fengzhanhuaer/CloudHelper/actions/runs/38852875864 全部success；新mobilecore AAR、Android release、固定密钥签名及apksigner校验、上传步骤成功，正式发布8个当前工作流资产非空。APK18597185字节、GitHub资产SHA256 f3f5c116714210dbe5635f61858d75f216f818c9ac77e0b86e95a1388ea19f4b。未部署生产Controller/Probe，也未升级或重启路由器。源码门禁和CI产物门禁闭合，Android真机多网络切换仍未验收。
+
+用户最新追问：能否让插件在路由器重启后自动启动。只读复核localrouter仍为原厂52332-gfbf3b9c、boot_id f9b282a3-b242-43d1-89dc-dac58ed3a30f；/jffs为原JFFS2，/var/spool/cron在运行时目录，crond存在。实际/sbin/rc1755936字节，SHA256 c958494dfca7126a3c92b3e8292687e9607aa07dcd72db28a7bd684efa49c606，不含/jffs/scripts、services-start、init-start或jffs2_exec等入口字符串；字符串缺失只作为辅助证据，不单独证明所有可能机制都不存在。对应官方53297源码rc/jffs2.c459~466、ubifs.c287~294明确禁用legacy/asus autoexec；shared/scripts.c虽保留run_custom_script定义，rc没有启动调用，不能因函数/目录存在就承诺可用。
+
+现有service start只注册当前启动周期cru任务；重启后RAM挂载菜单/httpd扩展和任务均需恢复。保持原厂不刷写的独立JFFS开机入口尚未找到，不能把写services-start或nvram jffs2_scripts=1冒充解决。CIFS挂载后执行机制在源码存在，但依赖外部SMB且并未实机验证，不为启动小插件引入额外重型服务或劫持VPN/网络配置。可选后续为外部常开设备SSH唤起，或在固件rc添加最小启动钩子后做B试启动；后者改变当前纯原厂约束，需要用户明确选择后再执行。未更改持久启动设置、NVRAM、A/B或CFE。
+
+TASK023继续唯一进行中；源码提交子阶段完成门禁通过，整体功能/跨重启自启仍未完成。下一步唯一动作：根据用户对保持原厂与增加启动钩子的选择，实施对应持久启动方案并做真实重启验收；当前只读诊断不授权刷写或重启。此账本以[skip ci]提交记录本轮验收。
+
+发布APK下载因网络中断首次失败，经断点重传成功；本地完整18597185字节及SHA256与GitHub一致，DEX存在setSystemDNS、新libgojni.so含SetSystemDNS实现，确认不是旧AAR产物。Actions逐步日志下载超时，不据此声称查看了签名日志；签名验证成功由具体步骤状态及工作流命令证实。TEST056新版原生产物构建验证通过，真机运行另行验收。
