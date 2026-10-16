@@ -6,7 +6,7 @@
 - 更新时间：`2026-10-16`
 - 用户原始需求：开始需求跟踪；路由器插件核心功能为 DNS 分配 fake IP 并确定直连或代理、fake IP 代理、Probe Node 物理链路 12040 服务端及客户端。
 - 历史指令：“继续开发”。B已按前一指令恢复为A备份的原厂52332；继续C实现的JFFS独立插件，完成原厂兼容、安装包、菜单/HTTPS管理、DNS/分流/12040及Probe Link测速验证，不再编译或刷写系统。最新补充：页面直接嵌入原厂后台菜单，沿用原厂登录和端口，不开独立管理端口或插件登录。主控地址、Node ID和密钥由用户后续填写。
-- 用户最新指令：“改一版固件吧”。基于已在本机验证的官方GPL53297制作最小JFFS插件自启固件，业务继续由JFFS独立插件提供；保留此前网关代理、DNS、地址/流量上报成果。当前完成源码、构建及离线验收，再针对具体镜像处理刷写/启动；不因历史B启动授权跳过尚未解决的ONCE门禁。
+- 用户最新指令：“刷入路由器”。将已离线验收的 a76398d1 最小自启固件写入物理B，配套新版JFFS插件并验证启动与自启；保留物理A和CFE及原配置。当前B运行52332，必须先切A再用原生inactive写入器，沿用本次升级授权完成必要重启与管理恢复；历史ONCE异常仍须调查并保留证据。
 - 开发收尾必做：恢复`noconsole=1`并`nvram commit`，回读确认；若控制台已启动，关闭其运行态并验证后续启动行为。该恢复是用户已授权的收尾步骤，不能因固件切换A/B遗漏（共享配置）。
 - 启用方式：用户明确“开始需求跟踪”，按用户级 AGENTS.md 强制启用 manage-long-tasks。
 - 已提交：d179308固定上游+定制覆盖，9f8ff875基础构建验证，e8f85802镜像字段修正，7bbff0d1升级保留证据，3dffc397原JFFS2挂载兼容补丁。Git只保留自有构建/版本/补丁与账本。
@@ -866,3 +866,25 @@ TEST-059：异步调用位置、无插件/禁用/错误型号或挂载跳过、�
 本轮产物：`firmware/asuswrt/artifacts/autostart/CloudHelper_RT-AX56U_V2_53297_jffs-autostart_dcb1a7f5486b_puresqubi.w`，35,258,388 字节；同名 JSON/SHA256。JFFS 包 `router_plugin/artifacts/jffs/cloudhelper-asus56uv2-jffs-df505ecea68822cf.tar.gz`，65,376 字节、SHA256 `53b92fac473ec6d9d531905c753a73ad95182648f74aa6883439873871d94055`。插件二进制99,708字节、Web扩展9,440字节，无新增库。TEST060的实机跨重启自启部分待单独刷写验收；TASK023整体继续进行中。下一步唯一动作：提交本轮明确源文件并核对发布，随后等待具体镜像升级授权与B试启动方案；不在发布操作中刷写或重启设备。
 
 发布网络检查点：当前 API 请求将 api.github.com 解析为 198.18.4.58，gh Actions/Release 请求超时；显式查询 223.5.5.5 返回 20.205.243.168。未修改系统 DNS、hosts 或路由。先完成本地源码提交；仅在 GitHub 实际可达并核对远端后继续推送，不将本地提交称作已推送/发布。
+
+### 2026-10-16 最小自启固件实机升级启动
+
+用户明确授权刷入已交付镜像。当前实机：RT-AX55/RT-AX56U_V2、原厂52332、boot_id f9b282a3-b242-43d1-89dc-dac58ed3a30f，当前/下次B，A序号16/B17且均commit1，原JFFS2可用、noconsole0，活动插件89529b40cd325596。COM4存在、原生登录提示可读，尚未认证shell。REQ033→TASK023→TEST060实机阶段进行中。先新建独立备份目录保存当前A/B/ROM/JFFS/配置/密钥哈希，再从B选择A并在已开始串口捕获时重启。升级期间不改电脑默认路由、密码或分区，不覆盖历史原厂备份。准备门禁有条件通过：写入前须确认A实际运行，B启动前须解决或明确处理历史ONCE选择异常。下一步唯一动作：完成当次备份与A切换。
+
+写入完成检查点：新备份目录 `D:/Code/RouterFirmware/router-backups/20261016-jffs-autostart` 含当前A/B完整51MiB原始分区、ROM、JFFS、导出配置及三把SSH主机密钥哈希。已在完整UART捕获下从原厂B切回原厂A，boot_id 6ff87a34-497a-40cf-939a-462ea7753758，明确当前First；原生firmware_check=1、restore_defaults=0且RAM上传回读SHA相符。原生 hnd-write 仅写inactive物理B，退出99/hndwr99及完整日志已保存，无自动重启。写后A原始SHA仍4479aa9dd035f551d31143a34082a369189fac3d050bcf933e2b933311e42a87，ROM原始SHA与20261014完全相同；A全部269逻辑块一致。B全部269逻辑块核验通过，267个系统/布局载荷逐字节相同，仅两份metadata被平台改commit1/sequence017及相应CRC；无额外CFE写入。当前仍运行原厂A，写入器已选下次B；首次重启前必须调整并核实试启动选择。下一步唯一动作：配套JFFS升级并调查/执行有完整串口证据的B试启动。
+
+启动前检查点：已在A安装配套JFFS发布df505ecea68822cf，活动版本及运行状态回读通过，autostart.disabled不存在，配置身份未改。原生B ONCE8已回读为当前First/下次Second且Bcommit0；为避免历史mailbox失效直接回A而无法验证，开始完整串口捕获并在CFE自动运行提示处请求暂停，仅查询help及help r，寻找不预先长期commit B的临时启动方式。未向CFE发送擦写、配置修改或Flash命令；不能把CFE暂停当作新内核已启动。下一步唯一动作：根据实际CFE帮助确定一次B启动方法；若没有可靠接口，保持证据并恢复A后按门禁处理，不猜测写命令。
+
+ONCE核对结论：UART捕获在CFE自动运行窗口暂停，仅执行help/help r/p读取；实际help r只支持文档化r运行（f/h/c由bootline控制），未发现安全的单次物理B选择参数。文档化r后明确从previous image 0x00100000启动原厂A，boot_id1d128574-3960-4ba8-9688-b621fca69b96，B ONCE仍未消费；没有B内核启动证据。未更改CFE配置、RAM地址或Flash。DEF004仍有效，不能声称ONCE或故障自动回A有效。
+DEC045/CON013：用户会话已明确“正式启动B试试”，本轮又对已交付具体镜像明确“刷入路由器”；按持续授权不重复询问，将普通B启动例外用于本轮已回读验证的最小变体。此为保留A和完整UART监护的普通B启动，不冒充健康后提升/有效ONCE流程；先用已核对本机ARM32 ioctl62助手清除未消费mailbox，确认A安全回退选项，再选择普通B并一次重启。若新B不健康而管理可达，立即按已有恢复授权回原厂A；不可达则保留串口证据定位，不盲目重刷。下一步唯一动作：普通B启动和新固件/插件自启健康验收。
+
+首轮B启动健康通过：UART TRY2、latest image 0x03400000、本轮builder内核与“CloudHelper JFFS startup completed”构成完整启动证据；实际/下次Second、53297-gee411da、boot_id7911d888-0e2e-4a7d-a0b2-7b2bbe847c88。运行/proc/1/exe完整SHA b1c81f968330dcd498ce4c7a6c3c47dad255441503a91ab679e70333e342b724与镜像rc一致，启动RAM成功标记存在，插件PID1721/活动df505ecea68822cf，未手工service start。原JFFS2自动挂载、20项含密码在内的配置布尔比对及3把SSH主机密钥、双无线UP/AP、WAN网关/外网ping、LAN TCP/UDP DNS与Wi-Fi ifindex10绑定出站HTTPS200通过；原厂Web认证/设置页正常。虚拟路由页面、实际菜单URL及同端口认证API成功，匿名API拒绝。插件业务仍关闭，身份/主控/密钥未填，不能把插件管理自启当成主控/跨节点业务联调通过。
+A在重启后有UBI元数据物理搬迁，raw变化为bf9699a332e90fa00a6dfbf1123a95ec1aecb8d9fe193d5892a8bbbf9327c0ed；保留所有原raw参照，全部269逻辑载荷与原始A仍逐字节一致。CFE原始SHA d3be3cb5ba9251eb5eaa1f4d8aacd9a4b3dfa2bcd500121e0d9ec130b2eba91f不变。健康通过后显式选择长期B并执行一次持久启动/自启重启验收，已先准备UART捕获。下一步唯一动作：核对第二次B新boot_id、自动插件和网络，再形成交付记录；ONCE/故障自动回退仍标未通过。
+
+### 2026-10-16 最小自启固件升级验收完成
+
+TEST060实机子阶段通过（普通B启动例外，ONCE/故障自动回退仍未通过）：第二次B启动boot_id e53728f3-4a36-4ba8-8b60-c5dfeb30e59a，与首轮不同，UART再次TRY2/0x03400000和CloudHelper JFFS startup completed。未手工拉起插件，活动df505ecea68822cf及实际运行二进制/ROM声明HTTPD/四个JFFS载荷哈希与交付产物一致，自动启动RAM标记与原厂菜单挂载存在。二次完整健康、原厂Web与匿名API拒绝、LAN TCP/UDP DNS、Wi-Fi绑定HTTPS200均通过；仅业务关闭/身份未填，保留用户原配置。原生UART登录认证及独立查询成功，无SSH桥接，凭据不落日志。插件目录无文件日志；本机BusyBox缺少find，改以只读tar枚举实际目录核验，并比对用户config.json与升级前备份完全一致。
+
+最终分区校验：A raw bf9699a332e90fa00a6dfbf1123a95ec1aecb8d9fe193d5892a8bbbf9327c0ed，仅物理UBI搬迁，全部269逻辑载荷与原始备份相同；CFE原始SHA完全不变。B启动前后首次严格逻辑比对发现两份内部layout卷表变化，定位为rootfs_ubifs原生autoresize：239→368 reserved PEBs、autoresize位1→0和CRC重算；逐字节白名单重建两份卷表相符，其他所有逻辑载荷（内核/rootfs/启动metadata）完全一致，不修改原始预期或将差异忽略。具体报告final-b-postboot-content.json；全部备份与串口日志附最终SHA清单。
+
+交付记录：upgrade-conclusion.json与final-SHA256-manifest.json在独立备份目录；仓库baseline.lock.json追加minimal_jffs_autostart_upgrade保留旧历史，ignored artifacts/autostart/delivery.json反映实机已刷入/自启验收。REQ033本次“刷入与跨重启自启”子目标完成门禁通过；整体TASK023继续进行中（用户身份及实际跨节点DNS/fakeIP/网关代理联调尚未完成，ONCE缺陷独立保留）。noconsole仍按开发期授权0，不提前关闭调试控制台。当前子任务无待执行升级动作；整体下一步唯一动作：用户填写主控/Node ID/密钥后验证真实业务，不自行启用或填写身份。最终仅提交本轮账本、README、baseline.lock.json，秘密/备份/日志/镜像不入Git。

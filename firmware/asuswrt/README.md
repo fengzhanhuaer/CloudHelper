@@ -18,6 +18,8 @@ wsl -d BuildServer -u maple -- bash /mnt/d/Code/CloudHelper/firmware/asuswrt/bui
 
 验证通过后仅将无 CFE 前缀镜像复制到被忽略的 `artifacts/autostart/`，附 SHA256 和 JSON 报告。保留 A/CFE；B ONCE 行为未解决前不得自动刷写或设置长期 B。
 
+2026-10-16 实机验收通过：本轮无 CFE 镜像35,258,388字节，SHA256 `dcb1a7f5486bc373fe6ce4ff8b7f65aa70ba94508164255bef17feab3cf3d5dd`，配套JFFS发布 `df505ecea68822cf`。两次B启动均由串口确认TRY2/0x03400000与插件自动启动完成；运行PID1完整哈希与镜像一致，配置/密钥、Wi-Fi、LAN TCP/UDP DNS、经Wi-Fi路由器出站HTTPS、原厂认证菜单/API均通过。当前与下次均B；A全部269逻辑载荷及CFE原始哈希保留。B ONCE仍直接选A，本轮沿会话已授权普通B例外启动，不能声称ONCE/故障自动回退已验证。备份和完整报告在 `D:/Code/RouterFirmware/router-backups/20261016-jffs-autostart`，当前状态在 `baseline.lock.json` 的 `minimal_jffs_autostart_upgrade`。插件业务关闭，待用户填写主控/节点身份；开发期noconsole保持0，整体开发完成后恢复1。
+
 ## Python 串口调试
 
 工具在 `tools/router_serial.py`，依赖 `tools/requirements-serial.txt`；已安装到本地忽略的 `artifacts/serial-venv`，同一脚本同步到用户技能 `asuswrt-router-upgrade-debug/scripts`。

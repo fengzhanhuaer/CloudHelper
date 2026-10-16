@@ -203,5 +203,39 @@
       "automatic_failure_fallback_verified": false,
       "repeat_b_reboot_performed": false
     }
+  },
+  "minimal_jffs_autostart_upgrade": {
+    "source_commit": "a76398d10d4b3c1bc844796ac58fe4a34d6720e8",
+    "source": "official ASUS GPL 53297 plus minimal JFFS hook",
+    "firmware_sha256": "dcb1a7f5486bc373fe6ce4ff8b7f65aa70ba94508164255bef17feab3cf3d5dd",
+    "firmware_bytes": 35258388,
+    "plugin_release": "df505ecea68822cf",
+    "backup_directory": "D:\\Code\\RouterFirmware\\router-backups\\20261016-jffs-autostart",
+    "runtime_version": "53297-gee411da",
+    "booted_partition": "Second/B",
+    "next_partition": "Second/B",
+    "boot_ids": [
+      "7911d888-0e2e-4a7d-a0b2-7b2bbe847c88",
+      "e53728f3-4a36-4ba8-8b60-c5dfeb30e59a"
+    ],
+    "two_b_boots_verified": true,
+    "plugin_autostart_after_both_boots": true,
+    "pid1_sha256": "b1c81f968330dcd498ce4c7a6c3c47dad255441503a91ab679e70333e342b724",
+    "network_and_authenticated_web_health_verified": true,
+    "a_all_269_logical_payloads_preserved": true,
+    "a_final_raw_sha256": "bf9699a332e90fa00a6dfbf1123a95ec1aecb8d9fe193d5892a8bbbf9327c0ed",
+    "a_raw_difference": "Normal UBI metadata physical relocation; all original logical payloads identical",
+    "cfe_rom_original_sha256": "d3be3cb5ba9251eb5eaa1f4d8aacd9a4b3dfa2bcd500121e0d9ec130b2eba91f",
+    "cfe_rom_unchanged": true,
+    "b_postboot_layout_change": "Native rootfs_ubifs autoresize from 239 to 368 reserved PEBs; flag cleared and table CRCs verified; code/rootfs/boot metadata unchanged",
+    "once_verified": false,
+    "automatic_failure_fallback_verified": false,
+    "boot_mode": "ordinary B under existing explicit B boot and current upgrade authorization; ONCE8 again selected A and mailbox cleared",
+    "business_enabled": false,
+    "identity_configured": false,
+    "native_uart_authenticated": true,
+    "noconsole_development_setting": 0,
+    "noconsole_restore_to_1_when_project_development_complete": true,
+    "health_report": "D:\\Code\\RouterFirmware\\router-backups\\20261016-jffs-autostart\\health-autostart-second.json"
   }
 }
