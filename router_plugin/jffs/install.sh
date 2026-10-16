@@ -106,4 +106,8 @@ for path in "$base"/releases/*;do
     rmdir "$path/web" "$path" 2>/dev/null || true
 done
 echo 'Installed. Sign in to the original ASUS web UI and open Virtual Router below Network Tools.'
-echo 'Stock boot persistence is unavailable: after reboot run /jffs/cloudhelper-router/service start via SSH.'
+if test -x /rom/etc/cloudhelper-jffs-start;then
+    echo 'Minimal firmware startup hook detected; plugin starts automatically after reboot.'
+else
+    echo 'Stock boot persistence is unavailable: after reboot run /jffs/cloudhelper-router/service start via SSH.'
+fi

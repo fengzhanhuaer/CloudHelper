@@ -38,7 +38,7 @@ data['release-id'] = (release + '\n').encode()
 report = {
     'product': 'asus_56uv2', 'release_id': release, 'deployment': 'stock-asuswrt-jffs',
     'language': 'C', 'transport': 'TLS/WebSocket', 'management': 'stock ASUS authenticated menu and management port',
-    'boot_persistence': 'manual SSH bootstrap required on stock firmware',
+    'boot_persistence': 'automatic with CloudHelper minimal JFFS-start firmware; manual SSH bootstrap on unmodified stock firmware',
     'stock_runtime_abi': validation,
     'files': {name: {'bytes': len(body), 'sha256': hashlib.sha256(body).hexdigest()} for name, body in data.items()},
     'uncompressed_bytes': sum(map(len, data.values())),

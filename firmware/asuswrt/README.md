@@ -1,8 +1,22 @@
 # 华硕固件定制构建
 
-此目录保留历史固件基线、构建/补丁源码和仍在使用的串口调试工具。当前产品采用原厂固件上的 [`router_plugin`](../../router_plugin/README.md) JFFS 插件；这里的固件集成补丁不作为当前插件的安装入口，也未针对最新插件重新进行整机编译验收。
+当前采用官方 ASUS GPL 53297 加最小 JFFS 启动补丁。业务仍由 [`router_plugin`](../../router_plugin/README.md) 的 C 插件提供；系统仅增加异步启动入口与只读 HTTPD 哈希声明，不编入业务服务、页面或配置。历史的完整业务集成补丁不是当前构建入口。
 
 原厂源码、SDK、镜像、备份、串口日志和私有凭据均留在本机忽略目录；Git 只保存自有源码、测试、来源锁及说明。签名密钥和密码不得放进该目录的受控源码。
+
+## 最小自启固件
+
+在已准备的官方基线环境执行（WSL 侧需 `git`、`python3`、`qemu-arm`、`readelf`、`unsquashfs` 和 Docker）：
+
+```powershell
+wsl -d BuildServer -u maple -- bash /mnt/d/Code/CloudHelper/firmware/asuswrt/build-autostart-firmware.sh
+```
+
+`prepare-autostart.py` 校验锁定的官方归档，撤销已知的旧业务集成补丁，并拒绝未知源码改动；应用 `0002-jffs-autostart.patch`。原厂服务完成后异步执行 `/rom/etc/cloudhelper-jffs-start`，仅 RT-AX55/RT-AX56U_V2 且 JFFS2 已挂载时调用 `/jffs/cloudhelper-router/service start`。插件缺失、禁用或启动失败不阻塞原厂启动。成功标记仅在 RAM；日志到控制台，不产生文件日志。创建 `/jffs/cloudhelper-router/autostart.disabled` 可禁用下次自启，删除可恢复。
+
+须同时安装新版 JFFS 插件包，以识别只读 ROM 中声明的 HTTPD 精确哈希；未知版本继续拒绝接入。插件启停会重启 Web 进程。系统镜像离线解包验证与实机自启验证分别记录；不得将前者当作后者。
+
+验证通过后仅将无 CFE 前缀镜像复制到被忽略的 `artifacts/autostart/`，附 SHA256 和 JSON 报告。保留 A/CFE；B ONCE 行为未解决前不得自动刷写或设置长期 B。
 
 ## Python 串口调试
 
@@ -25,7 +39,7 @@ $uart = 'D:/Code/CloudHelper/firmware/asuswrt/tools/router_serial.py'
 
 ## 固件基线
 
-2026-10-15 18:32 当前实机状态：按用户要求，已在A原厂系统下使用原生升级器，将B恢复为原始A备份的原厂52332-gfbf3b9c。当前/下次均B；运行PID1与厂商原厂52332一致，网络/后台/JFFS/配置检查通过，A全部269个逻辑载荷和CFE保留。恢复证据在`D:/Code/RouterFirmware/router-backups/20261015-restore-b-from-a`。下述53297构建/启动是历史验证记录，当前没有运行自编译53297或安装业务插件；后续交付按原厂系统＋JFFS独立插件，不再为业务编译系统。
+2026-10-15 18:32 当前实机状态：按用户要求，已在A原厂系统下使用原生升级器，将B恢复为原始A备份的原厂52332-gfbf3b9c。当前/下次均B；运行PID1与厂商原厂52332一致，网络/后台/JFFS/配置检查通过，A全部269个逻辑载荷和CFE保留。恢复证据在`D:/Code/RouterFirmware/router-backups/20261015-restore-b-from-a`。下述53297构建/启动是历史验证记录，当前没有运行自编译53297或安装业务插件；该记录为历史恢复状态；2026-10-16 用户另授权制作仅增加 JFFS 自启入口的最小定制固件。
 
 活动基线为华硕官方 RT-AX55 GPL `3.0.0.4.386_53297-gee411da`，目标是已核验的 BCM6755 RT-AX56U V2，构建入口 `make rt-ax55`，板级 profile `947622GW`。普通 RT-AX56U 及其他芯片批次不能套用本结论。
 

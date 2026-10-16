@@ -6,6 +6,13 @@ test "$(cat "$task_root/.official-archive.sha256")" = "$expected_sha"
 cd "$source_root"
 shopt -s nullglob
 for patch_file in "$firmware_root"/patches/*.patch; do
+    if [[ "$(basename "$patch_file")" == "0002-jffs-autostart.patch" && "${CHVR_AUTOSTART_FIRMWARE:-0}" != 1 ]]; then
+        if git apply --reverse --check "$patch_file" 2>/dev/null; then
+            echo 'This source tree contains the minimal startup variant; use build-autostart-firmware.sh.' >&2
+            exit 1
+        fi
+        continue
+    fi
     if [[ "$(basename "$patch_file")" == "0001-virtual-router-integration.patch" && "${CHVR_FIRMWARE:-0}" != 1 ]]; then
         if git apply --reverse --check "$patch_file" 2>/dev/null; then
             echo 'This source tree contains router integration; use build-router-firmware.sh.' >&2

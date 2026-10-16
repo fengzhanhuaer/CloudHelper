@@ -1,0 +1,54 @@
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -11018,6 +11018,8 @@
+ #ifdef RTCONFIG_SSH
+ 	start_sshd();
+ #endif
++	/* CloudHelper: never block stock boot on a JFFS plugin. */
++	xstart("/bin/sh", "/rom/etc/cloudhelper-jffs-start");
+ 	return 0;
+ }
+ 
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -2054,6 +2054,7 @@
+ 	# prune misc
+ 	rm -rf $(INSTALLDIR)/eapd${BCMEX}${EX7}
+ 	rm -rf $(INSTALLDIR)/rom/rom/etc
++	sha256sum $(INSTALLDIR)/usr/sbin/httpd | cut -d " " -f 1 > $(INSTALLDIR)/rom/etc/cloudhelper-httpd.sha256
+ 
+ 	# strip size for tmp
+ 	#rm -rf $(INSTALLDIR)/rom/*.ipk
+@@ -3226,6 +3227,7 @@
+ 
+ rc-install:
+ 	$(MAKE) -C rc INSTALLDIR=$(INSTALLDIR)/rc install
++	install -D -m 755 rc/cloudhelper-jffs-start $(INSTALLDIR)/rc/rom/etc/cloudhelper-jffs-start
+ 
+ networkmap: shared json-c libasc libletsencrypt $(if $(BCM_502L07P2),ethctl_lib) $(if $(RTCONFIG_BWDPI),bwdpi_source) 
+ 
+--- /dev/null
++++ b/release/src/router/rc/cloudhelper-jffs-start
+@@ -0,0 +1,22 @@
++#!/bin/sh
++# Fixed JFFS plugin entry; launched asynchronously after stock services.
++set -eu
++umask 077
++exec </dev/null >/dev/console 2>&1
++base=/jffs/cloudhelper-router
++runtime=/var/run/cloudhelper-jffs-start
++test "$(nvram get productid)" = RT-AX55 || exit 0
++test "$(nvram get odmpid)" = RT-AX56U_V2 || exit 0
++awk '$2=="/jffs" && $3=="jffs2" {ok=1} END {exit !ok}' /proc/mounts || exit 0
++test ! -e "$base/autostart.disabled" || exit 0
++test -f "$base/service" && test -x "$base/service" || exit 0
++# Keep the success marker in RAM until reboot. Failure permits a later retry.
++mkdir "$runtime" 2>/dev/null || exit 0
++if "$base/service" start; then
++    echo 'CloudHelper JFFS startup completed'
++else
++    result=$?
++    rmdir "$runtime"
++    echo "CloudHelper JFFS startup failed ($result); stock services remain available"
++    exit "$result"
++fi

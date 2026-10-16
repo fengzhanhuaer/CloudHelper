@@ -79,6 +79,17 @@ menu_add() {
 web_root=/tmp/var/wwwext/cloudhelper-router
 httpd=/usr/sbin/httpd
 stock_hash=144f9083c6ae57632cf59b4012d5ad46aff6f4f64012ce3fed50e0f1b8ebf6d1
+httpd_supported() {
+    actual=$(openssl dgst -sha256 "$httpd" | awk '{print $NF}')
+    test "$actual" = "$stock_hash" && return 0
+    # This declaration is part of the verified read-only minimal firmware.
+    # Never accept a writable /tmp or JFFS whitelist for a different HTTPD.
+    declaration=/rom/etc/cloudhelper-httpd.sha256
+    test -x /rom/etc/cloudhelper-jffs-start && test -f "$declaration" || return 1
+    expected=$(cat "$declaration")
+    case "$expected" in ''|*[!a-f0-9]*) return 1;; esac
+    test "${#expected}" -eq 64 && test "$actual" = "$expected"
+}
 httpd_owned() {
     awk '$2=="/usr/sbin/httpd" {ok=1} END {exit !ok}' /proc/mounts &&
         grep -q CHVR_HTTPD_WRAPPER "$httpd"
@@ -105,7 +116,7 @@ web_remove() {
 web_add() {
     if ! httpd_owned;then
         if awk '$2=="/usr/sbin/httpd" {ok=1} END {exit !ok}' /proc/mounts;then return 1;fi
-        test "$(openssl dgst -sha256 "$httpd" | awk '{print $NF}')" = "$stock_hash" || {
+        httpd_supported || {
             echo 'Unsupported stock httpd; original web server retained' >&2;return 1;
         }
         cp "$httpd" "$local_root/cloudhelper-router/httpd"

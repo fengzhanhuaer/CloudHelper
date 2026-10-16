@@ -4,7 +4,7 @@
 
 管理入口直接位于原厂后台的“网络工具”下方，名称为“虚拟路由”，使用同一管理端口和原厂登录。插件本身只提供 root 所有的 Unix socket，不开 TCP 管理端口，不要求额外管理口令。页面提供主控、Node ID/密钥、端口、公网连接、DNS 上游设置，以及 Probe Link 状态和手动测速。
 
-原厂 Web 的接入采用一个约 9 KiB 的 httpd 扩展，保留原厂认证回调。当前严格匹配原厂 52332 的 httpd SHA256；未知版本拒绝接入。启动时在私有 RAM 目录复制原版 httpd，并通过可撤销的启动入口挂载加载扩展；原版可执行文件内容不变。停止时撤销挂载并重启原版 Web，Flash 系统分区不变。原厂 SSL 限制程序执行路径，故服务也从 RAM 的 `/usr/local/cloudhelper-router` 运行；JFFS 保存发布文件，RAM 中保留原来的 `share -> /tmp/share`，未知目录布局拒绝覆盖。
+原厂 Web 的接入采用一个约 9 KiB 的 httpd 扩展，保留原厂认证回调。严格匹配原厂 52332 的 httpd SHA256，或最小自启固件只读 ROM 声明的精确哈希（须同时存在专用启动入口）；未知版本拒绝接入。启动时在私有 RAM 目录复制原版 httpd，并通过可撤销的启动入口挂载加载扩展；原版可执行文件内容不变。停止时撤销挂载并重启原版 Web，Flash 系统分区不变。原厂 SSL 限制程序执行路径，故服务也从 RAM 的 `/usr/local/cloudhelper-router` 运行；JFFS 保存发布文件，RAM 中保留原来的 `share -> /tmp/share`，未知目录布局拒绝覆盖。
 
 构建与安装：
 
@@ -31,7 +31,7 @@ python router_plugin/tools/install-router.py <生成的tar.gz> --settings <私�
 
 `stop` 恢复原厂菜单、Web 启动入口和受管 DNS/防火墙。安装保留活动与上一个版本；回滚不允许恢复旧的独立端口管理方案。卸载保留用户配置及历史版本遗留的私有密钥/证书，但当前方案不生成或使用独立管理凭据。
 
-**原厂开机自启尚未解决**：当前固件未提供已验证的 JFFS 开机钩子。重启后需通过 SSH/串口执行 `service start`；本轮 `cru` 仅看护当前启动周期，不能宣称跨重启自启。管理页接入会短暂重启 Web 进程，不重启路由器。
+**开机自启**：未修改的原厂 52332 仍需 SSH/串口执行 `service start`，`cru` 仅看护当前启动周期。`firmware/asuswrt/build-autostart-firmware.sh` 制作的最小官方定制固件提供专用 JFFS 异步启动入口；需配合新版插件包，实机重启验证须单独完成。创建 `/jffs/cloudhelper-router/autostart.disabled` 禁用该入口，删除恢复。管理页接入会短暂重启 Web 进程，不重启路由器。
 
 DNS 由原厂 dnsmasq 继续处理 LAN 名称，外部查询交给插件；原厂上游文件在 RAM 备份，SIGHUP 重新加载，停用恢复。代理规则的 fake IP 和映射由主控权威提供，直连返回真实 IP，拒绝明确响应。仅 fake IP/必要虚拟网段及获准的远端代理网段进入 TUN，普通上网仍走原厂路径。LAN 始终监听配置端口（默认 12040）；开启公网连接才额外绑定 WAN 并放行，所有链路需要节点认证。
 

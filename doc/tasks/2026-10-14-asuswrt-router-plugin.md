@@ -3,10 +3,10 @@
 - 任务标识：`2026-10-14-asuswrt-router-plugin`
 - 状态：`进行中`
 - 创建时间：`2026-10-14 10:52 +08:00`
-- 更新时间：`2026-10-15`
+- 更新时间：`2026-10-16`
 - 用户原始需求：开始需求跟踪；路由器插件核心功能为 DNS 分配 fake IP 并确定直连或代理、fake IP 代理、Probe Node 物理链路 12040 服务端及客户端。
 - 历史指令：“继续开发”。B已按前一指令恢复为A备份的原厂52332；继续C实现的JFFS独立插件，完成原厂兼容、安装包、菜单/HTTPS管理、DNS/分流/12040及Probe Link测速验证，不再编译或刷写系统。最新补充：页面直接嵌入原厂后台菜单，沿用原厂登录和端口，不开独立管理端口或插件登录。主控地址、Node ID和密钥由用户后续填写。
-- 用户最新指令：提取远程访问LAN/SNAT为虚拟路由下独立“网关代理”标签，普通Probe、旁路由、单臂路由和华硕C/JFFS插件共用；代理网段支持多个，允许远程节点可配置；允许访问的节点收到路由设置后本地备份，重启恢复。华硕还须上送WAN/LAN物理IP及WAN口收发流量，随地址变化更新；保留前轮统一DNS成果与未完成Android产物门禁。
+- 用户最新指令：“改一版固件吧”。基于已在本机验证的官方GPL53297制作最小JFFS插件自启固件，业务继续由JFFS独立插件提供；保留此前网关代理、DNS、地址/流量上报成果。当前完成源码、构建及离线验收，再针对具体镜像处理刷写/启动；不因历史B启动授权跳过尚未解决的ONCE门禁。
 - 开发收尾必做：恢复`noconsole=1`并`nvram commit`，回读确认；若控制台已启动，关闭其运行态并验证后续启动行为。该恢复是用户已授权的收尾步骤，不能因固件切换A/B遗漏（共享配置）。
 - 启用方式：用户明确“开始需求跟踪”，按用户级 AGENTS.md 强制启用 manage-long-tasks。
 - 已提交：d179308固定上游+定制覆盖，9f8ff875基础构建验证，e8f85802镜像字段修正，7bbff0d1升级保留证据，3dffc397原JFFS2挂载兼容补丁。Git只保留自有构建/版本/补丁与账本。
@@ -832,3 +832,37 @@ REQ032实现与本地门禁通过：POST成功落盘后仅启动有界、可合�
 发布检查点：功能提交212bc637022d6e159090202fe6261006c8c5bce5已推送origin/mapledev，工作区源码无遗留；Actions https://github.com/fengzhanhuaer/CloudHelper/actions/runs/38855979200 与该SHA对应，正在构建。当前没有升级生产Controller/Probe；完整行为需新版主控与相关Probe在线更新后生效。下一步唯一动作：核对该CI及自动发布资产，记录最终验收并提交账本。
 
 REQ032发布验收通过：Actions38855979200全部success并精确对应212bc637022d6e159090202fe6261006c8c5bce5；自动版本提交d1058f75、正式v0.4.56及当前工作流8个非空资产已核对。本工作区快进同步version且源码全部已提交。此次子需求实现/本地测试/浏览器和发布门禁通过，主控及生产Probe未在线升级，实际跨节点离线→上线业务尚需升级后验证；不得把本地net.Pipe/浏览器fixture当生产运行结果。整体TASK023仍进行中，原厂自启及真实用户身份联调继续待验收。下一步唯一动作：按用户后续部署指令通过产品在线更新主控/相关Probe，验证真实离线节点重连获得最新授权；不通过SSH替换生产程序。无新增依赖、协议字段、密码或签名材料提交。
+
+### 2026-10-16 原厂自启补充调研与梅林来源澄清
+
+用户最新范围：继续查资料寻找不刷机的自启方式；追问梅林是否为原厂改版。本轮仅查询资料、官方GPL源码及SSH只读核对，没有安装启动方案、修改NVRAM、重启或刷写。TASK023仍为唯一整体进行中任务；本次调研完成不表示自启验收完成。
+
+实机仍为原厂386_52332-gfbf3b9c、boot_id f9b282a3-b242-43d1-89dc-dac58ed3a30f。没有/sbin/mount-cifs、/usr/sbin/mount-cifs、/usr/bin/mount-cifs、CIFS内核模块或已注册CIFS文件系统；没有/usr/sbin/app_init_run.sh及app_base_*应用启动脚本。因此其他机型通过CIFS挂载或USB应用启动的教程不能直接套用本机。官方GPL53297（与实机52332版本不同）rc/jffs2.c、ubifs.c将旧exec/.asusrouter入口置于#if 0；rc中未找到run_custom_script启动调用，不能通过设置同名NVRAM就宣称启用梅林钩子。
+
+外部一手资料：jacklul/asuswrt-scripts README明确原厂需要USB接口与Download Master支持，较新固件屏蔽script_usbmount，改用asusware USB应用机制；Entware官方Wiki也记录USB asusware.arm替代启动法。JACK-THINK/SCRIPTS-BOOTLOADER-FOR-ASUS-ROUTER同样依赖U盘。以上项目并非无USB/JFFS独立启动证据。参考：https://github.com/jacklul/asuswrt-scripts 、https://github.com/Entware/Entware/wiki/Install-on-Asus-stock-firmware 、https://github.com/JACK-THINK/SCRIPTS-BOOTLOADER-FOR-ASUS-ROUTER 。
+
+VPN为未验证候选：实机存在/usr/sbin/openvpn与/usr/lib/libvpn.so，后者包含_filter_custom_config、script-security与配置生成字符串；GPL libvpn/openvpn_options.c有导入参数白名单，WAN启动调用start_ovpn_eas。OpenVPN上游文档支持config嵌套及up脚本，但这只证明上游能力，不证明本机ASUS过滤、配置跨重启保存与启动时序允许该组合。论坛提到config包含JFFS配置的绕行仅作为线索，未作为可用方案结论，未提供或执行绕过配置。后续若继续该方向，应先核实过滤函数与持久化，再设计隔离的最小标记验证，不能拿手工OpenVPN执行成功当系统冷启动自启通过。
+
+梅林项目README确认其基于原厂Asuswrt修改，目的包括修复和少量增强；其自定义脚本钩子属于固件修改。当前官方Supported-Devices未列RT-AX55或RT-AX56U V2，旧RT-AX56U列于停止支持，不据此推断V2兼容。参考：https://github.com/RMerl/asuswrt-merlin.ng 、https://github.com/RMerl/asuswrt-merlin.ng/wiki/Supported-Devices 。若借鉴梅林只移植JFFS启动钩子，业务仍可留在JFFS，但需编译/刷入修改固件；不属于纯SSH设置。既有“必须改固件”说法应限缩为“尚未找到并验证本机原厂纯SSH、无外部设备的独立自启入口”，保留VPN候选的不确定性。无源码/API变更，无需代码测试；本轮只读核验通过，跨重启自启未测。下一步唯一动作：如继续不刷机路线，先核查本机libvpn过滤和配置持久化，未获得实证前不宣布可行或持久部署。
+
+
+### 2026-10-16 最小自启动固件（用户最新选择）
+
+REQ-033：官方GPL53297基础固件只增加JFFS插件开机启动入口，插件/页面/配置继续独立放在JFFS，保留原厂模块及分区，不带CFE前缀、不内置业务二进制。不迁移整个梅林，不自行精简。当前授权完成固件制作；刷写具体镜像及尚未验证的B ONCE另按升级门禁，不在构建中修改设备。
+UNIT-015/IF-014：rc在原厂全部服务启动后异步调用ROM内固定启动脚本；脚本确认本机型号、JFFS2挂载、插件入口及禁用标记，调用/jffs/cloudhelper-router/service start；RAM锁防重入，无插件无副作用，输出console。插件既有当前启动周期cru负责后续恢复，固件不增加轮询/库/日志文件。构建生成只读httpd哈希声明供插件严格验证此定制固件的Web兼容；禁止简单取消原有httpd哈希门禁。业务服务、端口及协议不变。
+DEC-044：从旧完整业务集成构建切换为最小自启变体，旧0001集成补丁保持历史用途并明确互斥；构建先恢复官方受影响文件、排除旧集成残留，再应用新自启补丁。来源仍为锁定官方归档及工具链；源码工作树/SDK/镜像/备份不入Git。
+TEST-059：异步调用位置、无插件/禁用/错误型号或挂载跳过、重复启动锁与失败恢复、真实shell执行及console输出、无磁盘日志；TEST-060：官方ARM整机编译、最终SquashFS取出启动脚本及rc核对、无旧内置业务残留、镜像WFI/UBI/容量与无CFE前缀、插件ARM加载及Web桥接兼容、产物manifest和SHA。实机跨重启自启为待后续刷写验收，不能用离线测试冒充。
+追踪：REQ033→UNIT015/IF014/DEC044→TASK023→TEST059/060→firmware/asuswrt新自启构建/补丁与router_plugin兼容启动。准备门禁通过；回滚保留原厂A/现有B及JFFS备份，构建阶段无需设备回滚。当前唯一下一步：制作最小补丁及构建入口，完成测试后生成可审阅镜像。
+
+### 2026-10-16 最小自启固件构建检查点
+
+- 已撤销旧 `0001-virtual-router-integration.patch`，恢复官方 HTTPD 与菜单源码；本轮仅应用 `0002-jffs-autostart.patch`。源码校验拒绝未知覆盖，业务仍留 JFFS。
+- 实际 `make rt-ax55 PARALLEL_BUILD=-j6` 成功；无 CFE 镜像 35,258,388 字节，SHA256 `dcb1a7f5486bc373fe6ce4ff8b7f65aa70ba94508164255bef17feab3cf3d5dd`。WFI CRC/芯片/NAND、UBI 头、容量、原生 JFFS2、ARM ELF 检查通过；补丁报告确认仅 0002。
+- 启动脚本与 HTTPD 白名单 5 项 POSIX 测试通过；一次性特权容器中的插件安装、更新、回滚、卸载与原厂菜单挂载测试通过。测试镜像缺少 iproute2，补齐该临时容器依赖后通过。
+- 构建后台正常运行期间重复启动曾因容器同名拒绝，未终止原构建。构建结束时运行中的 shell 脚本因被编辑发生读取偏移，后置校验中断；脚本静态语法通过，单独重跑实际产物校验通过。后续不编辑正在执行的包装脚本。
+- TEST059/060 离线门禁已通过：5 项真实 POSIX shell 测试、隔离安装/升级/回滚/卸载；ARM 插件在原厂 52332 与当前 53297 的依赖、核心、HTTPD 桥接、SSL 实际初始化及 BusyBox 语法全部通过，无新增运行库。直接从本轮无 CFE 镜像提取 SquashFS 验证启动脚本、rc 调用、HTTPD 精确哈希声明、原厂 Web 源码与无旧内置业务残留通过。没有刷写、重启或改设备配置。
+- 发布技能旧 preflight 因已退役产物标记失败；重新查账本确认既有 CON012/DEC043 已记录该有意变更，沿已确认的当前契约完成等价预检及全部 TestReleaseWorkflow 测试，不恢复 router-arm64/Docker。待源码提交后核对对应 Actions，并将独立固件与新版 JFFS 包作为发布附件，构建输入与产物不入 Git。
+
+本轮产物：`firmware/asuswrt/artifacts/autostart/CloudHelper_RT-AX56U_V2_53297_jffs-autostart_dcb1a7f5486b_puresqubi.w`，35,258,388 字节；同名 JSON/SHA256。JFFS 包 `router_plugin/artifacts/jffs/cloudhelper-asus56uv2-jffs-df505ecea68822cf.tar.gz`，65,376 字节、SHA256 `53b92fac473ec6d9d531905c753a73ad95182648f74aa6883439873871d94055`。插件二进制99,708字节、Web扩展9,440字节，无新增库。TEST060的实机跨重启自启部分待单独刷写验收；TASK023整体继续进行中。下一步唯一动作：提交本轮明确源文件并核对发布，随后等待具体镜像升级授权与B试启动方案；不在发布操作中刷写或重启设备。
+
+发布网络检查点：当前 API 请求将 api.github.com 解析为 198.18.4.58，gh Actions/Release 请求超时；显式查询 223.5.5.5 返回 20.205.243.168。未修改系统 DNS、hosts 或路由。先完成本地源码提交；仅在 GitHub 实际可达并核对远端后继续推送，不将本地提交称作已推送/发布。

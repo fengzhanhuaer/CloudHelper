@@ -1,0 +1,22 @@
+#!/bin/sh
+# Fixed JFFS plugin entry; launched asynchronously after stock services.
+set -eu
+umask 077
+exec </dev/null >/dev/console 2>&1
+base=/jffs/cloudhelper-router
+runtime=/var/run/cloudhelper-jffs-start
+test "$(nvram get productid)" = RT-AX55 || exit 0
+test "$(nvram get odmpid)" = RT-AX56U_V2 || exit 0
+awk '$2=="/jffs" && $3=="jffs2" {ok=1} END {exit !ok}' /proc/mounts || exit 0
+test ! -e "$base/autostart.disabled" || exit 0
+test -f "$base/service" && test -x "$base/service" || exit 0
+# Keep the success marker in RAM until reboot. Failure permits a later retry.
+mkdir "$runtime" 2>/dev/null || exit 0
+if "$base/service" start; then
+    echo 'CloudHelper JFFS startup completed'
+else
+    result=$?
+    rmdir "$runtime"
+    echo "CloudHelper JFFS startup failed ($result); stock services remain available"
+    exit "$result"
+fi

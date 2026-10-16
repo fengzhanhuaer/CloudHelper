@@ -13,11 +13,13 @@ import shutil
 p=argparse.ArgumentParser()
 p.add_argument('rootfs',type=Path)
 p.add_argument('--readelf',default='readelf')
+p.add_argument('--baseline',default='ASUS vendor 3.0.0.4.386_52332-gfbf3b9c')
+p.add_argument('--report',type=Path)
 args=p.parse_args()
 module=Path(__file__).resolve().parents[1]
 binary=module/'bin/arm/cloudhelper-router-plugin'
 bridge=module/'bin/arm/httpd-bridge.so'
-out=module/'artifacts/stock-runtime-validation.json'
+out=args.report or module/'artifacts/stock-runtime-validation.json'
 if out.exists():out.unlink()
 subprocess.check_call([sys.executable,str(module/'tools/check-elf-deps.py'),str(binary),str(args.rootfs),'--readelf',args.readelf])
 subprocess.check_call([sys.executable,str(module/'tools/check-elf-deps.py'),str(bridge),str(args.rootfs),'--readelf',args.readelf])
@@ -41,7 +43,7 @@ with tempfile.TemporaryDirectory(prefix='chvr-check-',dir='/usr/local') as direc
 for name in ('service','install.sh'):
     subprocess.check_call(prefix+[str(args.rootfs/'bin/busybox'),'sh','-n',str(module/'jffs'/name)])
 report={
-    'result':'PASS','baseline':'ASUS vendor 3.0.0.4.386_52332-gfbf3b9c',
+    'result':'PASS','baseline':args.baseline,
     'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),
     'httpd_bridge_sha256':hashlib.sha256(bridge.read_bytes()).hexdigest(),
     'stock_httpd_sha256':hashlib.sha256((args.rootfs/'usr/sbin/httpd').read_bytes()).hexdigest(),

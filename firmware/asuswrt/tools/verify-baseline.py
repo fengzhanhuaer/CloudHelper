@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import struct
+import subprocess
 import zlib
 from pathlib import Path
 
@@ -71,7 +72,10 @@ def main():
     if not modules:
         raise ValueError('Built root filesystem is missing tun.ko')
     patches = [dict(path=str(path.relative_to(firmware_root)), sha256=hashlib.sha256(path.read_bytes()).hexdigest())
-               for path in sorted((firmware_root / 'patches').glob('*.patch'))]
+               for path in sorted((firmware_root / 'patches').glob('*.patch'))
+               if subprocess.run(['git', 'apply', '--reverse', '--check', str(path)],
+                                 cwd=str(source_root), stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL).returncode == 0]
     if (firmware_root / 'patches/0001-rtax55-preserve-stock-jffs2.patch').exists():
         if b'Preserved original RT-AX55/V2 JFFS2 partition' not in (target / 'fs/sbin/rc').read_bytes():
             raise ValueError('Built rc is missing the stock JFFS2 compatibility patch')
