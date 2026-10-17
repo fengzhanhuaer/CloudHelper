@@ -1220,3 +1220,5 @@ TASK034发布前门禁：公开下载输入从空目录完成SDK准备，最终n
 两台实机完成一次v0.4.69-dev在线升级能力引导：AX active=541aaab7e0c3c7ec，BE active=2cbe5e39198b58dd；12项包结构和4载荷逐字节回读、配置语义/boot_id保持、软件中心登记版本/入口、boot-status=koolcenter enabled通过。BE安装SSH会话超时后独立会话核对成功，未盲目重装。配置私有备份及验收在仓库外plugin-ci-20261018目录，不入Git。公网主控API普通Python UA返回403、浏览器UA验证成功，未重复失败登录；原版本v0.4.69。
 
 发布预检旧脚本仍因已退役Docker/router-arm64标记失败，沿CON012/DEC043使用当前工作流及TestReleaseWorkflow等价检查：仅8项标准附件加4项ASUS包/manifest，分支mapledev、origin仓库与认证正常；不恢复退役构建、不手改version/tag。REQ062/063源码与隔离门禁通过，最终Actions和正式在线升级尚未完成，当前下一步唯一动作：提交本任务明确源码并推送，核对同一功能SHA的Actions和发布附件，再经产品接口升级生产主控与两台插件。
+
+DEF034（发布复核修正）：独立升级helper必须持有任务锁直到安装结束，但旧实现将fd3继续传给安装shell和新服务，可能使下一次升级永久被判为running。已在安装/回滚子进程exec前关闭fd3，helper自身继续持锁；回归夹具显式传入fd3并验证安装器未继承、失败后active恢复。修改后完整native/ARM/四ABI与两包构建再次通过。首次4a409198的Actions仍在运行，不部署该候选；追加修复将生成下一正式版本，最终以包含DEF034修复的功能SHA和实际在线升级验收关闭。

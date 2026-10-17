@@ -286,13 +286,13 @@ int vr_upgrade_apply(const char *dir)
  char previous[32]={0};size_t previous_size=0;
  if(!vr_read_file("/jffs/cloudhelper-router/active",previous,sizeof(previous)-1,&previous_size))previous[previous_size]=0;
  snprintf(p,sizeof(p),"%s/cloudhelper/install.sh",dir);pid_t pid=fork();int status=0;
- if(!pid){execl("/bin/sh","sh",p,(char *)NULL);_exit(127);}if(pid<0)status=-1;else while(waitpid(pid,&status,0)<0&&errno==EINTR){}
+ if(!pid){close(3);execl("/bin/sh","sh",p,(char *)NULL);_exit(127);}if(pid<0)status=-1;else while(waitpid(pid,&status,0)<0&&errno==EINTR){}
  int ok=status>=0&&WIFEXITED(status)&&!WEXITSTATUS(status);
  if(!ok&&*previous){
   char current[32]={0};size_t current_size=0;
   if(!vr_read_file("/jffs/cloudhelper-router/active",current,sizeof(current)-1,&current_size)&&
      (current_size!=previous_size||memcmp(current,previous,previous_size))){
-   pid=fork();if(!pid){execl("/bin/sh","sh",p,"--rollback",(char *)NULL);_exit(127);}
+   pid=fork();if(!pid){close(3);execl("/bin/sh","sh",p,"--rollback",(char *)NULL);_exit(127);}
    if(pid>0)while(waitpid(pid,&status,0)<0&&errno==EINTR){}
   }
  }

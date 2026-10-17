@@ -59,12 +59,14 @@ with tempfile.TemporaryDirectory(prefix='chvr-upgrade-test-') as work:
         (stage/'cloudhelper').mkdir()
         packed=stage/'package.tar.gz';packed.write_bytes(b'fixture-verified-archive')
         (stage/'job.json').write_text(json.dumps({'sha256':hashlib.sha256(packed.read_bytes()).hexdigest(),'version':'v0.4.70'}))
-        (stage/'cloudhelper/install.sh').write_text('#!/bin/sh\nif test "${1:-}" = --rollback;then printf "%s\\n" '+('a'*16)+' > /jffs/cloudhelper-router/active;exit 0;fi\nprintf "%s\\n" '+('b'*16)+' > /jffs/cloudhelper-router/active\nexit 1\n')
-        rc=subprocess.call([str(Path('bin/native/cloudhelper-router-plugin').resolve()),'--apply-upgrade',str(stage)])
+        marker=base/'installer-lock-closed'
+        (stage/'cloudhelper/install.sh').write_text('#!/bin/sh\ntest ! -e /proc/$$/fd/3 || exit 9\nprintf closed > /jffs/cloudhelper-router/installer-lock-closed\nif test "${1:-}" = --rollback;then printf "%s\\n" '+('a'*16)+' > /jffs/cloudhelper-router/active;exit 0;fi\nprintf "%s\\n" '+('b'*16)+' > /jffs/cloudhelper-router/active\nexit 1\n')
+        rc=subprocess.call(['/bin/sh','-c','exec 3>"$1"; exec "$2" --apply-upgrade "$3"', 'fixture',str(root/'upgrade.lock'),str(Path('bin/native/cloudhelper-router-plugin').resolve()),str(stage)])
         assert rc!=0 and active.read_text().strip()=='a'*16
+        assert marker.read_text()=='closed'
         assert not stage.exists() and json.loads((progress/'upgrade.json').read_text())['phase']=='failed'
     finally:
-        active.unlink();base.rmdir();base.parent.rmdir()
+        active.unlink();marker.unlink();base.rmdir();base.parent.rmdir()
     # The fixture CA is installed only in this disposable test container.
     cert, key = root/'cert.pem', root/'key.pem'
     subprocess.check_call(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
