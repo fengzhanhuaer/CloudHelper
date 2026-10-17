@@ -85,7 +85,7 @@ func appendProbeGatewayPublishedRules(rules []probeVirtualRouterRouteRule, runti
 		// A control-stream outage does not revoke the last authenticated LAN
 		// grant. The packet carrier may remain usable, and consumers must keep
 		// routing the subnet into the overlay rather than their WAN default.
-		if r.GatewayProxy == nil || r.NodeID == nodeID {
+		if r.GatewayProxy == nil || r.NodeID == nodeID || isDeletedProbeNodeID(r.NodeID) {
 			continue
 		}
 		c, err := normalizeProbeGatewayConfig(*r.GatewayProxy)

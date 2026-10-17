@@ -262,6 +262,7 @@ func AdminSyncProbeNodesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reconcileProbeVirtualRouterStoredProbeIPsBestEffort()
+	scheduleProbeRouteConfigSyncToKnownNodes()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":    true,
