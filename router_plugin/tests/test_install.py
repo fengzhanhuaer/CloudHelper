@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import socket
 import json
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -111,6 +112,7 @@ with tempfile.TemporaryDirectory(prefix='chvr-install-') as directory:
             assert subprocess.call([plugin,'--runtime-mount','unmenu'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)!=0
             assert target.read_text(encoding='utf-8')=='third party menu'
             run('umount',str(target))
+            foreign.unlink()
         run('sh',str(root/'install.sh'))
         assert status()
         assert 'CHVR_JFFS_MENU' in target.read_text(encoding='utf-8')
@@ -160,6 +162,18 @@ with tempfile.TemporaryDirectory(prefix='chvr-install-') as directory:
         assert (base/'admin.key').read_bytes()==key
         run('sh',str(root/'install.sh'),'--rollback')
         assert (base/'active').read_text(encoding='utf-8').strip()=='a'*16 and status()
+        # Execute the helper from the staged verified payload, as the online
+        # worker does. The live service tmpfs must be removable during install.
+        prepare('c'*16)
+        stage=Path('/tmp/chvr-upgrade.'+secrets.token_hex(3));stage.mkdir(mode=0o700)
+        shutil.copytree(str(root),str(stage/'cloudhelper'))
+        (stage/'package.tar.gz').write_bytes(b'verified-package-fixture')
+        (stage/'job.json').write_text(json.dumps({'sha256':hashlib.sha256((stage/'package.tar.gz').read_bytes()).hexdigest(),'version':'v0.4.72'}))
+        run(str(stage/'cloudhelper/payload/cloudhelper-router-plugin'),'--apply-upgrade',str(stage))
+        assert not stage.exists()
+        assert (base/'active').read_text(encoding='utf-8').strip()=='c'*16 and status()
+        assert json.loads(Path('/var/run/cloudhelper-router/upgrade.json').read_text(encoding='utf-8'))['phase']=='complete'
+        assert (base/'admin.key').read_bytes()==key
         if koolcenter:run('sh','/koolshare/scripts/uninstall_cloudhelper.sh')
         else:run('sh',str(root/'install.sh'),'--uninstall')
         assert not (base/'active').exists() and not (base/'service').exists()

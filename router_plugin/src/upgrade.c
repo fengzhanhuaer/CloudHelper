@@ -246,12 +246,15 @@ static void *run(void *arg)
  snprintf(path,sizeof(path),"%s/job.json",job->directory);const char *text=json_object_to_json_string_ext(asset,JSON_C_TO_STRING_PLAIN);
  if(vr_atomic_write(path,text,strlen(text)))goto failed;
  state(job,"applying","正在安装，管理页面将短暂重连",1,1,bytes,bytes);
+ /* The installed service lives on a removable tmpfs. Run the helper from the
+  * verified new payload so stopping the old service can unmount that tmpfs. */
+ snprintf(path,sizeof(path),"%s/cloudhelper/payload/cloudhelper-router-plugin",job->directory);
  int console=open("/dev/console",O_WRONLY|O_CLOEXEC);long maxfd=sysconf(_SC_OPEN_MAX);if(maxfd<0||maxfd>65536)maxfd=65536;
  pid_t pid=fork();if(pid<0){if(console>=0)close(console);goto failed;}
  if(!pid){setsid();if(console>=0){dup2(console,STDOUT_FILENO);dup2(console,STDERR_FILENO);}dup2(job->lock,3);fcntl(3,F_SETFD,0);
   for(int i=4;i<maxfd;i++)close(i);
   close(STDIN_FILENO);
-  char *argv[]={"cloudhelper-router-plugin","--apply-upgrade",job->directory,NULL};execv("/proc/self/exe",argv);_exit(127);
+  char *argv[]={"cloudhelper-router-plugin","--apply-upgrade",job->directory,NULL};execv(path,argv);_exit(127);
  }
  if(console>=0)close(console);
  goto done;
@@ -295,6 +298,10 @@ int vr_upgrade_apply(const char *dir)
    pid=fork();if(!pid){close(3);execl("/bin/sh","sh",p,"--rollback",(char *)NULL);_exit(127);}
    if(pid>0)while(waitpid(pid,&status,0)<0&&errno==EINTR){}
   }
+  /* A failed stop can leave the unchanged old release stopped. Restore its
+   * service even when no active-release swap occurred. */
+  pid=fork();if(!pid){close(3);execl("/bin/sh","sh","/jffs/cloudhelper-router/service","start",(char *)NULL);_exit(127);}
+  if(pid>0)while(waitpid(pid,&status,0)<0&&errno==EINTR){}
  }
  state(&job,ok?"complete":"failed",ok?"升级完成，请刷新页面":"安装失败，已尝试恢复上一版本；请检查当前状态",0,0,0,0);
  json_object_put(o);cleanup(dir);return ok?0:1;

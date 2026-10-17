@@ -53,6 +53,8 @@ with tempfile.TemporaryDirectory(prefix='chvr-upgrade-test-') as work:
     # even when failure happens after the installer's own startup guard.
     base=Path('/jffs/cloudhelper-router');base.mkdir(parents=True)
     active=base/'active';active.write_text('a'*16+'\n')
+    launcher=base/'service';launcher.write_text('#!/bin/sh\ntest "$1" = start || exit 1\nprintf started > /jffs/cloudhelper-router/service-restored\n')
+    restored=base/'service-restored'
     progress=Path('/var/run/cloudhelper-router');progress.mkdir(parents=True,exist_ok=True)
     stage=Path('/tmp/chvr-upgrade.'+secrets.token_hex(3));stage.mkdir(mode=0o700)
     try:
@@ -64,9 +66,10 @@ with tempfile.TemporaryDirectory(prefix='chvr-upgrade-test-') as work:
         rc=subprocess.call(['/bin/sh','-c','exec 3>"$1"; exec "$2" --apply-upgrade "$3"', 'fixture',str(root/'upgrade.lock'),str(Path('bin/native/cloudhelper-router-plugin').resolve()),str(stage)])
         assert rc!=0 and active.read_text().strip()=='a'*16
         assert marker.read_text()=='closed'
+        assert restored.read_text()=='started'
         assert not stage.exists() and json.loads((progress/'upgrade.json').read_text())['phase']=='failed'
     finally:
-        active.unlink();marker.unlink();base.rmdir();base.parent.rmdir()
+        active.unlink();marker.unlink();launcher.unlink();restored.unlink();base.rmdir();base.parent.rmdir()
     # The fixture CA is installed only in this disposable test container.
     cert, key = root/'cert.pem', root/'key.pem'
     subprocess.check_call(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
