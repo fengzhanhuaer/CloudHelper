@@ -1087,3 +1087,9 @@ TEST087通过：BE已装2c012311d325418b（76098字节，包SHA256 01444ce176783
 TEST088通过：HM-Desktop16经HomeAlpine23到AX节点25，HTTP GET 192.168.52.1:80返回HTTP/1.0 200 OK，远端记录正反路径、IP/TCP校验均ok、dropped0/errors0；未新增诊断手工规则。首次HTTP复测时25恰为offline并连接超时，后续online时成功，证实既有主控控制流波动仍可让网关路由暂时不可用；该独立问题未随INPUT修复宣称解决。用户具体目标未回复，验收限定上述地址/端口。BE相同平台规则已安装，不冒称其所有业务网段实机逐一验证。
 
 TASK029组件/设备门禁通过，下一步唯一动作：提交明确四路径并核对该SHA的Actions与两型号JFFS发布附件。BE持久自启及25主控弱网波动仍是独立已知边界，不计入本轮修复结果。
+
+TASK029发布检查点：4个明确文件实际设备密钥/私钥及token模式扫描通过，功能提交98ed237eb4c6bb4371ee236a415902b4451e9648已推送origin/mapledev。对应Actions39024303299正在执行，当前唯一动作是等待该SHA工作流完成，再上传核对两型号JFFS附件；不得重复推送触发第二发布。
+
+2026-10-17 TASK029交付完成：功能提交98ed237eb4c6bb4371ee236a415902b4451e9648已推送，Actions39024303299全部success（https://github.com/fengzhanhuaer/CloudHelper/actions/runs/39024303299）。工作流自动版本0623630f及v0.4.67父提交恰为功能SHA；Release https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.67 非草稿/非预发布，标准8项及两型号JFFS tar/JSON共12附件，4项大小及GitHub SHA256 digest与本地完全相同。未手工修改version/tag、未替换生产Go服务，无凭据/备份/厂商库入Git。
+
+TASK029状态已完成；本轮INPUT修复完成门禁通过，REQ052→UNIT032/IF026→TEST086/087/088追踪闭合。设备配置与boot_id保持、临时规则/上传目录和诊断会话已清理。用户尚未补充其他目标，当前业务验收准确限定HM-Desktop16→23→25访问192.168.52.1:80 HTTP200；截图Netcup2O只是下拉候选，只有已添加的HM-Desktop被授权，已向用户明确。独立主控连接波动和BE86U持久自启没有解决，不冒称整个历史项目完成。下一步唯一动作：无（本轮修复）。
