@@ -22,9 +22,12 @@ int main(int argc,char **argv)
     if(argc==3&&!strcmp(argv[1],"--dns"))return vr_platform_dns(atoi(argv[2]))?1:0;
     assert(argc==2);signal(SIGTERM,stop);signal(SIGINT,stop);signal(SIGPIPE,SIG_IGN);
     vr_engine *e=calloc(1,sizeof(*e));assert(e);pthread_mutex_init(&e->mutex,NULL);vr_config_default(&e->config);
-    int gateway=!strcmp(argv[1],"gateway");
+    int gateway=!strncmp(argv[1],"gateway",7);
     strcpy(e->config.node_id,"8");e->config.allow_wan=atoi(argv[1]);
     if(gateway){e->config.gateway.enabled=1;e->config.gateway.cidr_count=1;e->config.gateway.node_count=1;strcpy(e->config.gateway.cidrs[0],"192.168.52.0/24");strcpy(e->config.gateway.nodes[0],"7");}
+    if(!strcmp(argv[1],"gateway-disabled"))e->config.gateway.enabled=0;
+    if(!strcmp(argv[1],"gateway-excluded"))strcpy(e->config.gateway.cidrs[0],"192.168.52.128/25");
+    if(!strcmp(argv[1],"gateway-revoked"))strcpy(e->config.gateway.nodes[0],"9");
     strcpy(e->addresses.lan,"192.168.52.1");strcpy(e->addresses.lan_if,"chvrlan");
     strcpy(e->addresses.wan,"203.0.113.1");strcpy(e->addresses.wan_if,"chvrwan");
     strcpy(e->own_ip,"198.18.0.8");strcpy(e->cidr,"198.18.0.0/15");

@@ -6,7 +6,7 @@
 - 更新时间：`2026-10-17`
 - 用户原始需求：开始需求跟踪；路由器插件核心功能为 DNS 分配 fake IP 并确定直连或代理、fake IP 代理、Probe Node 物理链路 12040 服务端及客户端。
 - 历史指令：“继续开发”。B已按前一指令恢复为A备份的原厂52332；继续C实现的JFFS独立插件，完成原厂兼容、安装包、菜单/HTTPS管理、DNS/分流/12040及Probe Link测速验证，不再编译或刷写系统。最新补充：页面直接嵌入原厂后台菜单，沿用原厂登录和端口，不开独立管理端口或插件登录。主控地址、Node ID和密钥由用户后续填写。
-- 用户最新指令：主控节点类型展示统一由“华硕56UV2”改为“路由器插件”；继续适配 homerouter（192.168.50.1:10022）的 RT-BE86U 官方 3.0.0.6.102_39436 固件。Koolshare 是历史残留，不作为启动能力证据。继续 C/JFFS 插件与原厂同端口后台，不刷固件、不重启、不改启动分区，不复制其他节点身份。
+- 用户最新指令：排查并修复网关代理启用192.168.52.0/24、授权HM-Desktop后不起作用；当前TASK029，已确认访问路由器本机INPUT漏放行。保留C/JFFS、原厂认证/端口、不新增库、不刷机/重启/复制身份的约束；BE86U持久自启仍属未实现边界。
 - 开发收尾必做：恢复`noconsole=1`并`nvram commit`，回读确认；若控制台已启动，关闭其运行态并验证后续启动行为。该恢复是用户已授权的收尾步骤，不能因固件切换A/B遗漏（共享配置）。
 - 启用方式：用户明确“开始需求跟踪”，按用户级 AGENTS.md 强制启用 manage-long-tasks。
 - 已提交：d179308固定上游+定制覆盖，9f8ff875基础构建验证，e8f85802镜像字段修正，7bbff0d1升级保留证据，3dffc397原JFFS2挂载兼容补丁。Git只保留自有构建/版本/补丁与账本。
@@ -1069,3 +1069,21 @@ TEST085：两型号标准包安装后四载荷逐字节回读，原config及本�
 BE86U包f48ae60f3cf4aa53（76016字节，SHA256 712bce6d56db74960c5999f59462f5071db0524ff3b17e549f96d860962ff47f）；AX56U V2包a1eac2d723feabed（76104字节，SHA256 3a871ba7db0b0eb4fefbcfb0913b8ca7238eae487725111d48e7ad1ef368e5d6）。本轮仅改ASP及账本，C二进制复用上轮已通过两型号原厂库验证的同一内容；纯前端不重复全Go测试。准备/实现与组件验证通过，下一步唯一动作：扫描两个明确源码路径，提交推送，核对Actions及两型号发布附件。BE86U持久自启保持未实现边界，不计入本轮完成声明。
 
 2026-10-17 TASK028交付核对：功能提交96bf50831f06ede1d040fcd23b751cf07d026f27已推送；Actions39019469118全部success。工作流自动版本b17f0ea2及v0.4.66的父提交恰为此SHA，未手工改版本/tag。Release https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.66 标准8项及两型号JFFS包/JSON4项齐全，4项digest/大小与本地完全一致。两台节点25/26更新后ready=true、controller_connected=true、error为空。源码秘密扫描通过，仅ASP/账本入Git；UI修改及当前BE86U服务恢复完成，持久自启仍未实现，已向用户明确说明。后续无本轮待自动执行动作。
+
+### TASK029 网关代理访问路由器自身 LAN 地址（2026-10-17，当前唯一活动任务）
+
+REQ-052/DEF-029：用户截图在节点25启用192.168.52.0/24、授权HM-Desktop16，反馈不起作用。以控制器远程控制台核实16的Maple路由和真实路径16→23→25，SYN从198.18.0.10到192.168.52.1:80已到25 TUN，无回包。仅临时INPUT精确放行该源/目标/TCP80后立即连接成功并收到返回帧，finally撤销原规则。根因：平台只有FORWARD/SNAT规则，路由器自身LAN地址走INPUT，被原厂末尾DROP拦截。最初怀疑16总接管开关关闭，已由独立网关路由与实际报文推翻；该开关不是本次原因。用户具体业务目标/端口尚待回复，192.168.52.1:80为本轮明确诊断目标，不冒称用户已确认。
+
+UNIT-032/IF-026：platform.c在CHVR_IN载波端口保护前，仅当gateway.enabled且代理CIDR包含当前LAN IP，允许iif=chvr0、源为既有虚拟网段、目标为自身LAN IP。节点身份、原始源IP和允许节点/CIDR校验仍在vr_incoming注入TUN前完成；不扩大WAN INPUT，不为INPUT声称SNAT。普通LAN主机仍走现有FORWARD/MASQUERADE；停用/重建移除自有链。追踪REQ052→UNIT032/IF026→TASK029→TEST086（真实内核授权/关闭/撤销/排除CIDR、TCP/UDP及载波顺序）/TEST087（两型号构建/原厂库及更新）/TEST088（16→23→25实机TCP回归）。
+
+TASK029进行中：基线25447416干净；修改限定platform.c、test_platform.c、test_gateway_kernel.py及本账本。准备门禁通过。启用既有manage-long-tasks账本，因任务跨诊断、实现、内核验证与可逆设备交付。回滚用标准安装器previous，保留配置和boot_id，核对原厂Web/SSH；不刷固件、不重启、不更改允许列表、不升级生产Go程序。下一步唯一动作：完成隔离内核测试与两型号原厂库验证，再打包实机更新。
+
+TEST086通过：默认INPUT/FORWARD DROP的独立内核容器，真实TCP/UDP帧到LAN主机SNAT及到自身LAN INPUT回包、载波端口顺序、停用/排除CIDR/撤销授权与伪造源拒绝、自有链及TUN清理通过。普通fake IP TCP/UDP、LAN/WAN监听开关和非自有规则保留回归通过。首次将两个独立网络夹具放入同容器串行执行，第二个因veth重名RTNETLINK File exists失败，属于执行隔离错误；改为各自一次性容器后完整通过，未放宽断言。C core/dataplane、ARM构建及两型号原厂动态库/SSL初始化通过；BE旧QEMU syscall403提示后核心与初始化仍PASS，无新增库。Probe发布契约测试通过；本轮仅C平台及测试，未修改Go/Android，未重复无关全套。发布旧技能预检仍因退役Docker/router-arm64标记失败，沿用CON012/DEC043，已复核当前工作流8标准附件。
+
+更新前两设备私有备份在D:/Code/RouterFirmware/router-backups/gateway-input-20261017；AX158641字节SHA256 2fc5ebc00e65b4e67ee10529038731517d34ffd90b57bfc3aeb00b558bd42787，BE154446字节SHA256 708e44b1c0863748c6fdeddc5be615395bba3598877a1d2be9813454fb86e557，tar可读且包含配置，不入Git。AX已装e2317f07bc1ac40b（76197字节，包SHA256 7fcb7493383ce7df6fce66020d8712806b9b5f96f1af63f8f604c9e4abe147d2），PID13428，四载荷回读、配置与boot_id逐字节不变，临时文件精确清理。BE首次SSH连接超时尚未写入，随后重试已执行标准安装，正在核对回读与清理。TEST088初次实机回归：16经23到25连接192.168.52.1:80成功，远端返回conn记录544bytes/dropped0/errors0，非手工临时规则；正核查HTTP返回。下一步唯一动作：完成BE回读及HTTP回归，再进行明确四路径秘密扫描和提交发布。
+
+TEST087通过：BE已装2c012311d325418b（76098字节，包SHA256 01444ce176783e04e8f12e8ffdc2880af34a08eb28010bbf95790c61fe2d5afa），PID597。大载荷SSH逐字节回读因现有网关链路超时未完成，改为一次小响应读取设备SHA256，与四个本地载荷逐一匹配；配置SHA256与更新前私有备份完全相同、boot_id未变，安装临时目录4949a6e3370a精确删除。两台ready=true/controller_connected=true/error为空，原厂菜单/SSH保留。
+
+TEST088通过：HM-Desktop16经HomeAlpine23到AX节点25，HTTP GET 192.168.52.1:80返回HTTP/1.0 200 OK，远端记录正反路径、IP/TCP校验均ok、dropped0/errors0；未新增诊断手工规则。首次HTTP复测时25恰为offline并连接超时，后续online时成功，证实既有主控控制流波动仍可让网关路由暂时不可用；该独立问题未随INPUT修复宣称解决。用户具体目标未回复，验收限定上述地址/端口。BE相同平台规则已安装，不冒称其所有业务网段实机逐一验证。
+
+TASK029组件/设备门禁通过，下一步唯一动作：提交明确四路径并核对该SHA的Actions与两型号JFFS发布附件。BE持久自启及25主控弱网波动仍是独立已知边界，不计入本轮修复结果。

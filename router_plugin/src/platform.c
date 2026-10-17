@@ -147,6 +147,11 @@ int vr_platform_start(const vr_config *c,const vr_addresses *a,const char *ip,co
        RUN("ip","rule","add","priority","18600","iif","chvr0","lookup","186"))goto fail;
     RUN("iptables","-N","CHVR_IN");RUN("iptables","-N","CHVR_FWD");RUN("iptables","-t","nat","-N","CHVR_NAT");
     if(RUN("iptables","-F","CHVR_IN") || RUN("iptables","-F","CHVR_FWD") || RUN("iptables","-t","nat","-F","CHVR_NAT"))goto fail;
+    /* vr_incoming authenticates the original node and checks the gateway CIDR
+       before injecting traffic. The router's own LAN address uses INPUT,
+       unlike other LAN hosts; place this before the carrier-port guard. */
+    if(c->gateway.enabled&&vr_gateway_contains(&c->gateway,a->lan)&&
+       RUN("iptables","-A","CHVR_IN","-i","chvr0","-s",cidr,"-d",a->lan,"-j","ACCEPT"))goto fail;
     if(RUN("iptables","-A","CHVR_IN","-i",a->lan_if,"-d",a->lan,"-p","tcp","--dport",port,"-j","ACCEPT") ||
        RUN("iptables","-A","CHVR_IN","!","-i",a->lan_if,"-d",a->lan,"-p","tcp","--dport",port,"-j","DROP") ||
        RUN("iptables","-A","CHVR_FWD","-i",a->lan_if,"-o","chvr0","-d",cidr,"-j","ACCEPT") ||
