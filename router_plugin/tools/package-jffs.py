@@ -25,8 +25,20 @@ if binary[:4] != b'\x7fELF' or binary[4:6] != b'\x01\x01' or int.from_bytes(bina
     raise SystemExit('Require a little-endian 32-bit ARM ELF')
 validation_path='stock-runtime-validation.json' if args.profile=='ax56uv2' else 'be86u-runtime-validation.json'
 validation=json.loads((root/'artifacts'/validation_path).read_text(encoding='utf-8'))
+extra_validation=[]
+if args.profile=='ax56uv2':
+    extra_validation.append(json.loads((root/'artifacts/ax56uv2-koolshare-runtime-validation.json').read_text(encoding='utf-8')))
+    if extra_validation[0].get('device_profile')!='ax56uv2-koolshare':
+        raise SystemExit('Require current AX56U V2 KoolShare runtime verification')
+if args.profile=='be86u':
+    extra_validation.append(json.loads((root/'artifacts/be86u-koolcenter-runtime-validation.json').read_text(encoding='utf-8')))
+    if extra_validation[0].get('device_profile')!='be86u-koolcenter' or not extra_validation[0].get('hidden_httpd_layout_verified'):
+        raise SystemExit('Require current KoolCenter runtime and hidden handler verification')
 if args.profile=='be86u' and (validation.get('device_profile')!='be86u' or not validation.get('hidden_httpd_layout_verified')):
     raise SystemExit('Require exact BE86U stock runtime and hidden handler verification')
+for record in extra_validation:
+    for key in ('result','binary_sha256','httpd_bridge_sha256','verifier_sha256','profile_verifier_sha256','profile_header_sha256','shell_sha256','version','runtime_initialization_verified'):
+        if record.get(key)!=validation.get(key):raise SystemExit('Re-run all firmware runtime profiles for the same payloads')
 if validation.get('result')!='PASS' or validation.get('binary_sha256')!=hashlib.sha256(binary).hexdigest():
     raise SystemExit('Re-run stock runtime verification for this exact binary before packaging')
 if not validation.get('runtime_initialization_verified') or validation.get('verifier_sha256')!=hashlib.sha256((root/'tools/check-stock-runtime.py').read_bytes()).hexdigest():
@@ -49,10 +61,12 @@ data['release-id'] = (release + '\n').encode()
 report = {
     'product': 'asus_56uv2' if args.profile=='ax56uv2' else 'asus_be86u',
     'device_profile':args.profile,'release_id': release, 'deployment': 'stock-asuswrt-jffs',
+    'version':validation['version'],
     'language': 'C', 'transport': 'TLS/WebSocket', 'management': 'stock ASUS authenticated menu and management port',
-    'boot_persistence': ('manual SSH bootstrap; no BE86U stock boot hook verified' if args.profile=='be86u' else
-        'automatic with CloudHelper minimal JFFS-start firmware; manual SSH bootstrap on unmodified stock firmware'),
+    'boot_persistence': ('automatic on verified 39125_koolcenter startup hooks; manual SSH bootstrap on official 39436' if args.profile=='be86u' else
+        'automatic on verified 49559_koolshare or CloudHelper minimal JFFS-start firmware; manual SSH bootstrap on unmodified stock firmware'),
     'stock_runtime_abi': validation,
+    'additional_runtime_abi':extra_validation,
     'files': {name: {'bytes': len(body), 'sha256': hashlib.sha256(body).hexdigest()} for name, body in data.items()},
     'uncompressed_bytes': sum(map(len, data.values())),
 }

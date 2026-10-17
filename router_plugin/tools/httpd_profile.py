@@ -7,9 +7,13 @@ import struct
 
 def verify_be86u(path):
     header=(Path(__file__).resolve().parents[1]/'include/httpd_profile.h').read_text()
-    def value(key):
-        return re.search(r'^#define CHVR_BE86U_'+key+r' (.+)$',header,re.M)[1]
     blob=Path(path).read_bytes()
+    prefix='CHVR_BE86U_'
+    digest=hashlib.sha256(blob).hexdigest()
+    if digest==re.search(r'^#define CHVR_BE86U_KOOL_HTTPD_SHA256 "([a-f0-9]+)"$',header,re.M)[1]:
+        prefix='CHVR_BE86U_KOOL_'
+    def value(key):
+        return re.search(r'^#define '+prefix+key+r' (.+)$',header,re.M)[1]
     assert len(blob)==int(value('HTTPD_BYTES')), 'Unrecognized HTTPD size'
     assert hashlib.sha256(blob).hexdigest()==value('HTTPD_SHA256').strip('"'), 'Unrecognized HTTPD hash'
     assert blob[:6]==b'\x7fELF\x01\x01' and struct.unpack_from('<HH',blob,16)==(2,40), 'Expected ARM32 EXEC'
@@ -27,7 +31,8 @@ def verify_be86u(path):
     assert blob[offset(fields[0],8):offset(fields[0],8)+8]==b'**.asp*\0'
     for address in fields[3:]:offset(address,4,5)
     # Both SSL globals were traced from the HTTPD accept/TLS branch, via GOT.
-    for name,got in [('SSL_ENABLED',0xdb9a4),('SSL_FD',0xdb964)]:
+    for name in ('SSL_ENABLED','SSL_FD'):
+        got=int(value(name+'_GOT'),0)
         address=int(value(name),0)
         assert struct.unpack_from('<I',blob,offset(got))[0]==address
         assert any(kind==1 and flags&6==6 and addr<=address and address+4<=addr+size

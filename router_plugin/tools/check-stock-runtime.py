@@ -16,12 +16,12 @@ p.add_argument('rootfs',type=Path)
 p.add_argument('--readelf',default='readelf')
 p.add_argument('--baseline',default='ASUS vendor 3.0.0.4.386_52332-gfbf3b9c')
 p.add_argument('--report',type=Path)
-p.add_argument('--profile',choices=('ax56uv2','be86u'),default='ax56uv2')
+p.add_argument('--profile',choices=('ax56uv2','ax56uv2-koolshare','be86u','be86u-koolcenter'),default='ax56uv2')
 args=p.parse_args()
 module=Path(__file__).resolve().parents[1]
 binary=module/'bin/arm/cloudhelper-router-plugin'
 bridge=module/'bin/arm/httpd-bridge.so'
-out=args.report or module/'artifacts'/('stock-runtime-validation.json' if args.profile=='ax56uv2' else 'be86u-runtime-validation.json')
+out=args.report or module/'artifacts'/('stock-runtime-validation.json' if args.profile=='ax56uv2' else args.profile+'-runtime-validation.json')
 if out.exists():out.unlink()
 subprocess.check_call([sys.executable,str(module/'tools/check-elf-deps.py'),str(binary),str(args.rootfs),'--readelf',args.readelf])
 subprocess.check_call([sys.executable,str(module/'tools/check-elf-deps.py'),str(bridge),str(args.rootfs),'--readelf',args.readelf])
@@ -31,9 +31,11 @@ subprocess.check_call(prefix+[str(module/'bin/arm/test-core')])
 result=subprocess.check_output(prefix+['-E','LD_PRELOAD='+str(bridge),str(module/'bin/arm/httpd-fixture'),'--check-bridge'],universal_newlines=True)
 if result.strip()!='stock handler extension active':raise SystemExit('ARM httpd bridge failed')
 symbols=subprocess.check_output([args.readelf,'--dyn-syms','--wide',str(args.rootfs/'usr/sbin/httpd')],universal_newlines=True)
-if args.profile=='be86u':
+if args.profile.startswith('be86u'):
     verify_be86u(args.rootfs/'usr/sbin/httpd')
 else:
+    if args.profile=='ax56uv2-koolshare' and hashlib.sha256((args.rootfs/'usr/sbin/httpd').read_bytes()).hexdigest()!='764716012e664f64f1857ba1027a269d73899c09d4b10f5323bd4fc438997004':
+        raise SystemExit('Unrecognized AX56U V2 KoolShare HTTPD')
     for name in ('mime_handlers','do_ssl','ssl_stream_fd'):
         if not any(line.split()[-1:]==[name] and ' OBJECT ' in line for line in symbols.splitlines()):
             raise SystemExit('Stock httpd export absent: '+name)
@@ -49,7 +51,8 @@ for name in ('service','install.sh'):
     subprocess.check_call(prefix+[str(args.rootfs/'bin/busybox'),'sh','-n',str(module/'jffs'/name)])
 report={
     'result':'PASS','baseline':args.baseline,
-    'device_profile':args.profile,'hidden_httpd_layout_verified':args.profile=='be86u',
+    'device_profile':args.profile,'hidden_httpd_layout_verified':args.profile.startswith('be86u'),
+    'version':subprocess.check_output(prefix+[str(binary),'--version'],universal_newlines=True).split()[1],
     'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),
     'httpd_bridge_sha256':hashlib.sha256(bridge.read_bytes()).hexdigest(),
     'stock_httpd_sha256':hashlib.sha256((args.rootfs/'usr/sbin/httpd').read_bytes()).hexdigest(),

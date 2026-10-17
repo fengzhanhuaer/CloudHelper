@@ -1140,3 +1140,33 @@ TASK031完成门禁通过：REQ054→UNIT034/IF028→TEST093/094/095闭合，机
 用户先询问BE86U防降级，随后明确要求“帮我关闭防回滚”。参考梅林官方Changelog-3006.txt的3006.102.3说明，原厂3006.102_37000及以上首次刷梅林需在SSH执行nvram set DOWNGRADE_CHECK_PASS=1；这是软件刷写放行项，不证明存在或关闭了OTP/启动器硬件防回滚，也不保证任意旧镜像兼容。来源：https://github.com/RMerl/asuswrt-merlin.ng/blob/main/Changelog-3006.txt 。
 
 操作前实时确认homerouter为RT-BE86U、39436-g5c5fd36_1586-g1f414_BB0B、boot_id287dadf0-6564-473f-ac08-76f804020840（已不同于此前读数，使用本次实际值）。原DOWNGRADE_CHECK_PASS为空；在型号和boot_id再次匹配的条件下执行上述唯一NVRAM set，回读1且boot_id不变。未执行nvram commit、刷机、重启、改启动区/签名/启动器或启动插件；该放行用于当前刷写会话，跨重启保留未保证。私有操作报告D:/Code/RouterFirmware/router-backups/20261017-be86u-downgrade-pass/software-downgrade-pass.json。本次要求的软件设置已完成，未验证实际降级刷写；用户尚未指定目标版本，不能自行刷旧固件。
+
+### TASK032 BE86U官改39125后台与插件自启适配（2026-10-17，当前唯一活动任务）
+
+REQ-055：用户已自行升级BE86U固件并要求适配；实时homerouter为RT-BE86U、3.0.0.6.102_39125_koolcenter、Linux4.19.294/aarch64、boot_id51dd8965-8209-4923-a5af-a6a2feca5f00，jffs2_scripts=1。HTTPD803932字节SHA256 1b7148dabccb0954b13b8bf70f853afbcd133160cf9f4cb201789bccdb5143e8，旧39436白名单不适用。/jffs/scripts/services-start/stop分别调用/koolshare/bin/ks-services-start.sh和ks-services-stop.sh，实际遍历/koolshare/init.d/V*.sh和T*.sh；现有脚本及其他插件必须保留。当前适配仅JFFS插件，不再次刷固件/改变分区/配置身份，不引入库，保留原厂登录和管理端口、RAM日志上限与JFFS缓存限制。
+
+总体架构/UNIT-035/IF-029：为当前精确HTTPD增加独立哈希/六字段/SSL地址验证，保留旧官方39436与AX支持，未知固件继续拒绝。通过软件中心现存V/T启动入口注册本插件自有钩子，异步启动、可停止/卸载删除自有文件、保留用户其他脚本、支持持久禁用标记；不覆写services-start。回滚保留previous和安装前JFFS私有备份，新后台不兼容旧版时可撤销RAM挂接保留原后台。TRACE：REQ055→UNIT035/IF029→TASK032→TEST096（当前ABI/原厂认证布局与真实运行库、未知版本拒绝）/TEST097（独立启动钩子/升级/回滚/卸载/禁用/外来文件保留）/TEST098（实机安装、配置保持、菜单/认证/主控及启动入口执行）。准备门禁有条件通过：先完成私有备份和精确静态布局验证，再变更设备插件；重启实测与可逆入口调用分别报告，不借适配指令再次刷系统。工作区基线00a9bc24干净，当前唯一下一步：保存当次JFFS/配置/HTTPD并核对实际ELF与启动链。
+
+REQ-056/IF-030（并入TASK032）：用户追加“为插件写上版本号，上送主控也参照probe带上版本号”。移除固定0.1.0-dev，通过构建版本注入同一VR_VERSION，CLI/本地状态API/页面/主控report.version/发布manifest一致；默认源码构建v<仓库version>-dev，正式包使用对应GitHub发布版本，不手改version或tag。TEST099验证上报字段与运行版本一致、变更构建版本确实重编译、状态及页面版本显示，主控现有version消费契约保持。
+
+TASK032调查检查点：当次JFFS完整备份8043420字节SHA256 306409a34d19b8ce1b792f46e0481d2578c656a83c96474e6c37959a56a205a5，私有配置/NVRAM/HTTPD/实际库在D:/Code/RouterFirmware/router-backups/be86u-20261017-koolcenter-adaptation，不入Git。原生tar旧式czfh将参数误判，第一次runtime.tar.gz明确不作有效证据；改用-czh -f -，13个当前运行库/可执行文件3244745字节完整解包并核对HTTPD SHA，未改设备文件。当前ASP表0xdd0ec，六字段含原auth0x21780；TLS accept分支通过GOT0xdb9b8/0xdb978分别指向0xe40fc/0x12851c。SDK宿主符号链接目标为容器/workspace，直接宿主objdump失败不计校验；在既有隔离工具容器挂载原根后静态反汇编成功。备份/布局准备条件关闭，实施门禁通过。当前唯一下一步：完成C/脚本/三类固件运行库隔离回归后安装BE插件。
+
+TASK032实施检查点：原生C核心/状态API/认证桥接、两版BE六字段匹配、三种安装夹具（AX/BE官方/BE官改）的安装升级回滚卸载及V/T真实入口、禁用标记/外来文件和符号链接保留均通过；ARM构建及AX52332、BE39436、BE39125实际动态库/SSL初始化通过。Go主控全套test/vet及Probe全套test通过。构建版本从v0.4.68-test1变为test2、不清理的增量构建确实重编译且CLI更新。实际BE候选v0.4.68-dev安装/完整回读通过，config和boot_id保持；主控认证GET确认node26 HM_A_R online=true/version=v0.4.68-dev，LAN/WAN上报正常。菜单浏览器首次夹具未挂接菜单、型号模板缺998翻译导致两次失败，修正为设备实际挂接菜单及脱敏翻译后1366/1722/390、版本、导入、菜单异常不阻塞配置均PASS。此为实际原厂JS及模拟状态请求，不冒称本轮已登录实机后台。两HTTPD进程实际ASP input/output均落在bridge映射内、原auth0x21780保持；HTTP80/HTTPS8443匿名请求均拒绝（返回200登录内容，不等于API成功）。
+
+TEST098启动入口实机执行通过：仅T99停止恢复原版HTTPD SHA和菜单，仅V99异步启动10.8秒内ready/controller_connected恢复；重复V不换PID、配置/boot/其他插件和services脚本保持。随后未由本代理发送reboot的情况下设备boot_id变为4e76a280-147f-4111-a399-620109e788b8，uptime约3分钟、PID4752、boot-status=koolcenter enabled、插件/菜单/主控自行恢复，作为观察到真实重启后自启证据，不声称本代理控制了该次重启。公网由113.120.13.37变为113.120.8.158，曾有旧DNS/TCP超时，独立记录不归咎自启。
+
+REQ057/DEF030（并入用户连接反馈）：节点9 v0.4.58通过api.codex.mjy.002339.xyz:12042连接BE26，WebSocket101后38ms被关闭，BE入站TLS读取报SSL_ERROR_SSL。不是TX积压；改进无错误字符串时输出原始OpenSSL码后定位1408f10b/wrong version number，临时首记录peek观察0000000000，该采样代码最终删除。使用本次官改真实库的QEMU与当前Probe双角色互操作、ping/10秒上传下载均PASS（45.85秒），不能据此排除实际硬件路径。实机fc disable+flush后9连接并收发/RTT32ms恢复，约40秒后finally恢复fc enable；全局加速已恢复，不修改NVRAM。重新启动插件且全局加速开启时同错误重现；仅CHVR_IN最前加入监听12042的SKIPLOG后约18秒新连接恢复、RTT29～63ms及双向字节增长。后加的临时mangle CHVR_ACC_TEST发生在该恢复之后，已精确清除，无此规则仍有先前恢复证据。插件配置刷新清掉临时CHVR_IN规则后故障又复现，故将SKIPLOG检测/监听端口规则/健康检查加入正式生命周期。UNIT036/TEST100：只绕过入站承载的BLOG加速、保留原认证/过滤和其他流量加速；检查规则丢失自愈及停用清理。实际供应商GPL xt_SKIPLOG.c确认调用blog_skip且返回XT_CONTINUE。当前源码含正式修复，最终ARM/内核/实机回归待完成，未宣称最终稳定性已通过。
+
+REQ057另一路AWS24诊断：api.codex.mjq.002339.xyz正确解析44.252.172.173；BE curl直接IPv4:12040 TCP超时，conntrack SYN_SENT/UNREPLIED、无硬件加速。AX25 curl同目标HTTP200/v0.4.68；AWS实际probe_node PID3170监听*:12040，系统nft无对应INPUT拒绝，定时同步抓包未见BE探测SYN。故已定位TCP路径，尚不能确定运营商或Lightsail上游防火墙，不能报成已修复或TLS协议问题。AWS实例角色无ec2:DescribeSecurityGroups及lightsail:GetInstances权限，均只读查询失败；未改AWS防火墙、实例或生产Probe。SSH aws域名暂时解析失败后只针对已核实节点IP覆盖HostName，不修改SSH配置。
+
+TEST100检查点（23:30）：正式规则修复后的原生API/bridge、特权内核Fake IP TCP/UDP与网关SNAT/撤销/清理、三种安装夹具均PASS；ARM及三类真实固件库验证PASS，实际官改库与Probe双角色10秒上传下载互操作45.93秒PASS。最后候选已回读安装，节点9与25均connected、RTT25/38ms及双向收发。主动删除规则的第一轮观察窗不足、第二轮SSH读取超时，均不计通过；随后23:24只读确认规则已恢复、boot_id仍4e76a280-147f-4111-a399-620109e788b8、V99/T99和boot-status=koolcenter enabled。23:28后本机经Maple虚拟路由访问管理SSH持续超时，主控GET节点26 offline/last_seen=2026-10-17T15:28:55Z，不能以规则曾恢复代替最终链路持续恢复验收。当前等待确认设备是否正在重启/调整网络，未发布。用户追加“设置重启后还有效吗”：配置/JFFS钩子持久，规则由平台启动重建；已有TEST098真实重启自启证据，不能将本次故障注入恢复误称通过。
+
+REQ058/UNIT037/IF031（并入TASK032，用户追加AX56U也刷官改、恢复插件）：当前localrouter为RT-AX55/RT-AX56U_V2、386_49559_koolshare、ARMv7、boot_id=19e0e148-6b58-4de6-8cb8-a4880c0cebfb，JFFS原配置和两版插件仍在，但插件未启动。HTTPD 559852字节/SHA256 764716012e664f64f1857ba1027a269d73899c09d4b10f5323bd4fc438997004，不沿用旧白名单直接运行。实际V/T软件中心入口与BE同机制，jffs2_scripts=1。私有完整JFFS备份1348946字节/SHA256 ee515d593047571798f6782e4a02c2c267da5849a5ad3422468658a266f1be43；tar忽略运行socket，普通文件/符号链接保留，配置/HTTPD/13运行文件已保存D:/Code/RouterFirmware/router-backups/ax56uv2-20261017-koolshare-restore。准备门禁通过：只恢复JFFS插件、不写固件/启动状态、不重启，保留配置和原有软件中心脚本。TEST101验证精确HTTPD符号/原auth、实际库ABI、第四安装夹具、自启动入口及实机菜单/控制连接/配置保持。
+
+用户确认23:28断线为正在重启或调整网络，之后告知恢复；23:35主控只读确认BE26 online=true，WAN变为113.120.11.183，旧地址不再作为当前探测地址。BE最终恢复验证和发布保留，不将用户调整网络造成的断线归咎插件。
+
+TEST101实施/验收（23:48）：AX官改导出mime_handlers=0xa2efc、do_ssl=0xa8658、ssl_stream_fd=0xf08d0，实际ARM库/SSL初始化/core/bridge验证通过。第一次BusyBox语法验证因私有rootfs漏取固件已有libptcsrv.so失败，补取依赖后四种固件运行库全部PASS，插件没有新增库。新增AX官改第四安装夹具及原三种、特权内核Fake IP/网关SNAT/撤销清理回归PASS。实机恢复候选v0.4.68-dev，四载荷逐字节回读一致，配置、boot_id、services-start/stop及V01原字节不变；菜单挂回，实际HTTPD六字段只替换input/output且原auth保持，匿名API拒绝。主控初始短窗未连失败，不计通过；继续观察配置下发/重载后ready/controller_connected为true，节点9/14/26/24/1/17/18收发正常。实际只调用T99恢复原HTTPD及菜单，V99启动后122秒内ready/controller_connected恢复（含主控请求超时重试），重复V99不换PID、配置与boot_id保持；未主动重启设备，不冒称AX本轮真实重启验收。
+
+BE恢复补充：本机Probe9真实frame_link到26已连续连接约231秒、双向最近活动51/35ms、收发队列0；AX25到26同样connected。管理192.168.50.1:22/10022/80/8443超时不能等同承载失败：本机状态明确virtual_router_enabled=false、reason=虚拟路由未开启，但承载仍在；不擅自打开用户已关闭的本机开关。原规则删除试验已观察到SKIPLOG恢复，重启后控制与双节点承载重建；故正式修复的自有生命周期及新连接验证关闭，长期稳定性不作超出有界观察的保证。BE正式包安装仍需恢复管理路径。
+
+当前下一步唯一动作：扫描秘密后提交已验证适配源码，按自动版本发布流程构建四固件验证的正式JFFS附件，安装AX正式包；BE管理路径恢复后再安装同版。生产主控不升级，未手改version或创建tag。发布技能旧preflight仍只缺已退役Docker/router-arm64标记，沿已确认CON012/DEC043当前8标准附件+4JFFS附件契约执行。

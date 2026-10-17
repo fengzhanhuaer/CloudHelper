@@ -20,7 +20,10 @@ uint64_t vr_millis(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);ret
 
 void vr_tls_error(char *out,size_t cap,const char *operation,int error)
 {
-    const char *reason=ERR_reason_error_string(ERR_peek_last_error());
+    unsigned long code=ERR_peek_last_error();
+    const char *reason=ERR_reason_error_string(code);
+    char unknown[48];
+    if(!reason && code){snprintf(unknown,sizeof(unknown),"OpenSSL error %08lx",code);reason=unknown;}
     if(!reason&&error==SSL_ERROR_SYSCALL&&errno)reason=strerror(errno);
     snprintf(out,cap,"TLS %s failed (%d): %.64s",operation,error,reason?reason:"connection closed");
 }

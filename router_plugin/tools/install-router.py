@@ -65,7 +65,8 @@ try:
     assert code==200 and '虚拟路由'.encode() in page and b'mainMenu' in page
     assert not web.request('/user/cloudhelper-router/api.asp',b'{"action":"status"}',authenticated=False)[2].startswith(b'{"ok":true')
     # Report only public state; neither credential nor CSRF token is persisted.
-    report={'result':'PASS','release_id':release,'version':identity[3],
+    assert status['version']==manifest['version']
+    report={'result':'PASS','release_id':release,'version':status['version'],'firmware':identity[3],
         'package_bytes':len(data),'package_sha256':hashlib.sha256(data).hexdigest(),
         'installed_payload_bytes':sum(len(content['payload/'+s]) for s in ('cloudhelper-router-plugin','service','httpd-bridge.so','web/VirtualRouter.asp')),
         'payload_readback_verified':True,'stock_web_auth_verified':True,
@@ -74,9 +75,7 @@ try:
         'service':remote(base+'/service status').decode().strip(),
         'jffs_usage':remote('du -sk '+base+'; df -k /jffs').decode(),
         'menu_mounted':b'CHVR_JFFS_MENU' in remote('cat /www/require/modules/menuTree.js'),
-        'boot_persistence':'automatic via minimal firmware JFFS startup hook'
-            if remote('test -x /rom/etc/cloudhelper-jffs-start && echo yes || true').strip()==b'yes'
-            else 'manual SSH start after stock firmware reboot'}
+        'boot_persistence':remote(base+'/service boot-status').decode().strip()}
     print(json.dumps(report,indent=2))
     if args.report:
         args.report.parent.mkdir(parents=True,exist_ok=True)

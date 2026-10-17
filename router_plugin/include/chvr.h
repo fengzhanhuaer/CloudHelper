@@ -7,7 +7,9 @@
 #include <json-c/json.h>
 
 #define VR_KIND "asus_56uv2"
-#define VR_VERSION "0.1.0-dev"
+#ifndef VR_VERSION
+#define VR_VERSION "0.0.0-dev"
+#endif
 #define VR_CONTROL_MAX 8096u
 #define VR_DATA_MAX 65535u
 #define VR_FRAME_MAX (12u + VR_CONTROL_MAX + VR_DATA_MAX)

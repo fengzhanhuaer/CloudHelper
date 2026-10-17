@@ -4,7 +4,7 @@
 
 管理入口直接位于原厂后台的“网络工具”下方，名称为“虚拟路由”，使用同一管理端口和原厂登录。插件本身只提供 root 所有的 Unix socket，不开 TCP 管理端口，不要求额外管理口令。页面提供主控、Node ID/密钥、公网连接、DNS 上游设置，以及 Probe Link 状态、手动测速和内存日志。监听端口统一在主控设置。
 
-主控节点类型统一显示“路由器插件”，内部继续使用 `asus_56uv2` 以兼容已注册节点及安装 JSON。当前精确支持 RT-AX56U V2（内部 RT-AX55，52332）和 RT-BE86U（官方 3.0.0.6.102_39436，HTTPD SHA256 为 `8804d44c…150823e`）。两者使用同一 ARM32 C 程序、独立安装包；BE86U 的 aarch64 内核运行原厂 ARM32 用户态，不能根据内核名称改用普通 ARM64 Probe。
+主控节点类型统一显示“路由器插件”，内部继续使用 `asus_56uv2` 以兼容已注册节点及安装 JSON。当前精确支持 RT-AX56U V2（内部 RT-AX55，52332）和 RT-BE86U（官方 3.0.0.6.102_39436、官改 39125_koolcenter）。BE86U 两版 HTTPD 分别匹配 `8804d44c…150823e` 和 `1b7148da…5143e8`。两者使用同一 ARM32 C 程序、独立安装包；BE86U 的 aarch64 内核运行原厂 ARM32 用户态，不能根据内核名称改用普通 ARM64 Probe。
 
 原厂 Web 的接入采用一个约 9 KiB 的 httpd 扩展，保留原厂认证回调。严格匹配原厂 52332 的 httpd SHA256，或最小自启固件只读 ROM 声明的精确哈希（须同时存在专用启动入口）；未知版本拒绝接入。启动时在私有 RAM 目录复制原版 httpd，并通过可撤销的启动入口挂载加载扩展；原版可执行文件内容不变。停止时撤销挂载并重启原版 Web，Flash 系统分区不变。原厂 SSL 限制程序执行路径，故服务也从 RAM 的 `/usr/local/cloudhelper-router` 运行；JFFS 保存发布文件，RAM 中保留原来的 `share -> /tmp/share`，未知目录布局拒绝覆盖。
 
@@ -18,9 +18,12 @@ BE86U 的原厂 HTTPD 隐藏了旧版导出符号，服务与扩展独立校验�
 # 需要 opt-toolchains/、source/asuswrt/，以及 inspection/stock-52332 原厂解包内容。
 # 原厂源码、SDK、原厂镜像及生成文件均不提交 Git。
 bash router_plugin/tools/build-arm.sh
+# 正式发布包：CHVR_VERSION=v<实际发布版本> bash router_plugin/tools/build-arm.sh
+# 省略时使用 v<仓库version>-dev；CLI、状态页、主控上报及清单使用同一版本。
 python router_plugin/tools/package-jffs.py
 # BE86U：先用本机只读提取的原厂库验证，不把厂商二进制提交Git。
 python router_plugin/tools/check-stock-runtime.py <BE86U-rootfs> --profile be86u --baseline 'RT-BE86U official 3.0.0.6.102_39436'
+python router_plugin/tools/check-stock-runtime.py <BE86U-koolcenter-rootfs> --profile be86u-koolcenter --baseline 'RT-BE86U 39125_koolcenter'
 python router_plugin/tools/package-jffs.py --profile be86u
 # Windows 本机；settings 为私有原厂配置备份，仅在内存提取凭据做验收。
 python router_plugin/tools/install-router.py <生成的tar.gz> --settings <私有settings.cfg> --report router_plugin/artifacts/jffs/device-stock-web.json
@@ -42,7 +45,9 @@ python router_plugin/tools/install-router.py <生成的tar.gz> --settings <私�
 
 **开机自启**：未修改的原厂 52332 仍需 SSH/串口执行 `service start`，`cru` 仅看护当前启动周期。`firmware/asuswrt/build-autostart-firmware.sh` 制作的最小官方定制固件提供专用 JFFS 异步启动入口；需配合新版插件包，实机重启验证须单独完成。创建 `/jffs/cloudhelper-router/autostart.disabled` 禁用该入口，删除恢复。管理页接入会短暂重启 Web 进程，不重启路由器。
 
-BE86U 当前也按 SSH 手动启动交付，尚未验证官方开机 hook 或重启自启。设备上的旧 Koolshare 目录、`.asusrouter` 和 `services-start` 指向缺失组件，保留这些残留，不恢复它们、不写入无调用证据的 NVRAM 项。AX56U V2 的最小自启固件不能刷入 BE86U。本次 BE86U 安装默认关闭业务，主控地址和身份由用户填写；Web 密码不在可读 NVRAM 中时，由用户用原厂登录验收页面。
+BE86U 官改 39125_koolcenter 已接入软件中心实际调用的 `/koolshare/init.d/V99cloudhelper.sh` 和 `T99cloudhelper.sh`，安装后注册异步启动及停止入口；保留原有 services-start/stop 和其他插件脚本。要求 jffs2_scripts=1 且已有软件中心调用链完整；同名外来文件或符号链接拒绝覆盖。禁用标记同上，卸载仅移除本插件自有入口；`service boot-status` 查看状态。2026-10-17实机观察到新 boot_id 后插件自动恢复、主控在线；原厂39436仍须手动启动，不把旧残留视为有效入口。AX56U V2 的固件不能刷入 BE86U。新安装默认关闭业务；更新保留既有身份和配置。Web 密码不在可读 NVRAM 中时，由用户用原厂登录验收页面。
+
+AX56U V2 官改 `386_49559_koolshare` 同样使用上述软件中心 V/T 入口自启，精确验证该版 HTTPD 的导出认证接口和现有运行库；恢复安装保留 JFFS 节点身份、DNS、网关配置及原有软件中心脚本。未知固件仍须先做兼容验证。
 
 DNS 由原厂 dnsmasq 继续处理 LAN 名称，外部查询交给插件；原厂上游文件在 RAM 备份，SIGHUP 重新加载，停用恢复。公开的上游文件以0644供已降权为nobody的dnsmasq读取，私有备份和身份配置保持0600；自动修复旧插件留下的0600上游文件。代理规则的 fake IP 和映射由主控权威提供，直连返回真实 IP，拒绝明确响应。仅 fake IP/必要虚拟网段及获准的远端代理网段进入 TUN，普通上网仍走原厂路径。监听与对端连接端口由主控节点表统一配置（默认 12040），页面不再单独设置；旧本地port字段保留兼容但不决定实际监听。LAN 始终监听；开启公网连接才额外绑定 WAN 并放行，所有链路需要节点认证。
 
@@ -67,6 +72,8 @@ Probe状态上报ipv4包含去重的LAN/WAN地址，并以lan_ip/wan_ip区分来
 DNS 上游提供独立的 DoH、DoT、普通 DNS 开关，默认全部开启；仅按此顺序尝试开启的上游，最后保留系统 DNS 回退。开关写入本机 JSON，主控同步地址时保留本机开关选择；旧版仅有三个地址的配置继续兼容。关闭某项会跳过该传输，也不再用普通 DNS 的已关闭地址引导加密上游（系统 DNS 独立回退）。
 
 主控通知后获取到的有效配置会直接交给下一轮引擎并写入原有路由配置缓存，不重复下载或额外等待15秒。刷新失败保留当前配置和控制流，按5/10/20/30秒退避重试；常规巡检仍为60秒。保存本机身份后会清除旧身份的待应用配置。Probe Link使用节点名称及对端域名；入站对端域名未下发时显示「—」。
+
+固件提供 Broadcom `SKIPLOG` 目标时，仅对插件监听端口的入站承载跳过 BLOG 加速，避免 BE86U 上 TLS 握手后收到异常记录。规则位于自有 CHVR_IN 链最前，继续执行原认证和防火墙检查；健康检查会恢复丢失规则，停止随自有链清理。其他流量继续按固件设置加速，不更改全局加速或 NVRAM。固件不提供该目标时沿用原有规则。未知的 OpenSSL 错误保留数值码，避免误报为普通关闭。
 
 业务帧沿用Probe Node的VR二进制封装、校验和及WebSocket流；省略/空路径按已认证连接的入站路径处理，路径最多3跳，逐帧检查前一跳及拓扑授权。业务路径不合法时只丢弃该帧并记录有界内存日志，保留承载连接；封装/校验和损坏仍关闭连接。断开日志区分VR封装、WebSocket格式及对端关闭码，避免把所有错误统称为invalid carrier frame。该互操作范围不代表已实现Probe的全部管理调试消息或IPv6能力。
 

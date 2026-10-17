@@ -4,7 +4,10 @@ module_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 task_root="${CHVR_VENDOR_ROOT:-$HOME/cloudhelper-firmware-official-53297}"
 test -d "$task_root/opt-toolchains"
 test -d "$task_root/source/asuswrt/release/src/router"
+build_version="${CHVR_VERSION:-v$(tr -d '\r\n' < "$module_root/../version")-dev}"
+[[ "$build_version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.+-][a-zA-Z0-9.+-]+)?$ ]] || { echo 'Invalid plugin version' >&2;exit 1; }
 docker run --rm --user 0 --cpus 2 --memory 2g \
+    --env "CHVR_VERSION=$build_version" \
     --tmpfs /usr/local:rw,exec,nodev,nosuid,size=2m,mode=1777 \
     --mount "type=bind,src=$module_root,dst=/module" \
     --mount "type=bind,src=$task_root,dst=/workspace,readonly" \
@@ -15,7 +18,7 @@ sdk=/opt/toolchains/crosstools-arm-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1
 router=/workspace/source/asuswrt/release/src/router
 rootfs=/workspace/source/asuswrt/release/src-rt-5.02axhnd.675x/targets/947622GW/fs
 export LD_LIBRARY_PATH="$sdk/lib"
-make BUILD=bin/arm CC="$sdk/usr/bin/arm-buildroot-linux-gnueabi-gcc" \
+make BUILD=bin/arm VERSION="$CHVR_VERSION" CC="$sdk/usr/bin/arm-buildroot-linux-gnueabi-gcc" \
     CFLAGS="-Os -g -std=c99 -Wall -Wextra -Werror -Wformat=2 -fstack-protector-strong -march=armv7-a -mfloat-abi=soft" \
     DEP_CPPFLAGS="-I$router -I$router/openssl-1.1/include -I$router/curl/include" \
     DEP_LDFLAGS="-L$router/openssl-1.1 -L$router/json-c/.libs -L$router/curl/lib/.libs -Wl,-rpath-link,$rootfs/usr/lib:$rootfs/lib" \

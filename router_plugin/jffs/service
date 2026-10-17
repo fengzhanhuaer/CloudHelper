@@ -100,9 +100,13 @@ stock_hash=144f9083c6ae57632cf59b4012d5ad46aff6f4f64012ce3fed50e0f1b8ebf6d1
 httpd_supported() {
     actual=$(openssl dgst -sha256 "$httpd" | awk '{print $NF}')
     test "$actual" = "$stock_hash" && return 0
+    if test "$(nvram get productid):$(nvram get odmpid)" = RT-AX55:RT-AX56U_V2 &&
+       test "$actual" = 764716012e664f64f1857ba1027a269d73899c09d4b10f5323bd4fc438997004;then return 0;fi
     if test "$(nvram get productid)" = RT-BE86U;then
-        test "$actual" = 8804d44c2633046d7740d356e7bdcd5e46b1d2b3ac9b1e967dda01e99150823e
-        return
+        case "$actual" in
+         8804d44c2633046d7740d356e7bdcd5e46b1d2b3ac9b1e967dda01e99150823e|1b7148dabccb0954b13b8bf70f853afbcd133160cf9f4cb201789bccdb5143e8) return 0;;
+         *) return 1;;
+        esac
     fi
     # This declaration is part of the verified read-only minimal firmware.
     # Never accept a writable /tmp or JFFS whitelist for a different HTTPD.
@@ -171,7 +175,67 @@ prepare() {
     chmod 700 "$base" "$runtime"
     local_prepare
 }
+boot_available() {
+    case "$(nvram get productid):$(nvram get odmpid):$(nvram get extendno)" in
+     RT-BE86U::39125_koolcenter|RT-AX55:RT-AX56U_V2:49559_koolshare) ;;
+     *) return 1;;
+    esac
+    test "$(nvram get jffs2_scripts)" = 1 &&
+        test -d /koolshare/init.d &&
+        grep -q '^/koolshare/bin/ks-services-start.sh$' /jffs/scripts/services-start &&
+        grep -q '^/koolshare/bin/ks-services-stop.sh$' /jffs/scripts/services-stop &&
+        grep -q '/koolshare/init.d/.*V\*' /koolshare/bin/ks-services-start.sh &&
+        grep -q '/koolshare/init.d/.*T\*' /koolshare/bin/ks-services-stop.sh
+}
+boot_owned() {
+    test ! -L "$1" && test -f "$1" &&
+        grep -q '^# CHVR_KOOLCENTER_AUTOSTART$' "$1"
+}
+boot_remove() {
+    for hook in /koolshare/init.d/V99cloudhelper.sh /koolshare/init.d/T99cloudhelper.sh;do
+        if test -e "$hook" || test -L "$hook";then
+            boot_owned "$hook" || { echo 'Foreign startup hook retained' >&2;return 1; }
+        fi
+    done
+    for hook in /koolshare/init.d/V99cloudhelper.sh /koolshare/init.d/T99cloudhelper.sh;do
+        if boot_owned "$hook";then rm -f "$hook";fi
+    done
+}
+boot_install() {
+    boot_available || return 0
+    # Validate both names before creating anything. Do not replace user hooks,
+    # links, or another component's unfinished staging file.
+    for hook in /koolshare/init.d/V99cloudhelper.sh /koolshare/init.d/T99cloudhelper.sh;do
+        if test -e "$hook" || test -L "$hook";then
+            boot_owned "$hook" || { echo 'Foreign startup hook retained' >&2;return 1; }
+        fi
+        test ! -e "$hook.new" && test ! -L "$hook.new" || return 1
+    done
+    for phase in V T;do
+        hook=/koolshare/init.d/${phase}99cloudhelper.sh
+        {
+            printf '%s\n' '#!/bin/sh' '# CHVR_KOOLCENTER_AUTOSTART'
+            if test "$phase" = V;then
+                printf '%s\n' 'test ! -e /jffs/cloudhelper-router/autostart.disabled || exit 0' \
+                    'test -x /jffs/cloudhelper-router/service || exit 0' \
+                    '/jffs/cloudhelper-router/service start </dev/null >/dev/console 2>&1 &'
+            else
+                printf '%s\n' 'test -x /jffs/cloudhelper-router/service || exit 0' \
+                    '/jffs/cloudhelper-router/service stop </dev/null >/dev/console 2>&1'
+            fi
+        } > "$hook.new"
+        chmod 700 "$hook.new"
+        mv "$hook.new" "$hook"
+    done
+}
 case "${1:-}" in
+ boot-install) boot_install;;
+ boot-remove) boot_remove;;
+ boot-status)
+    if boot_available && boot_owned /koolshare/init.d/V99cloudhelper.sh && boot_owned /koolshare/init.d/T99cloudhelper.sh;then
+        if test -e "$base/autostart.disabled";then echo 'koolcenter disabled';else echo 'koolcenter enabled';fi
+    elif test -x /rom/etc/cloudhelper-jffs-start;then echo 'minimal firmware hook';else echo 'manual';fi
+    ;;
  start|ensure)
     if test "$1" = ensure && test -e "$runtime/stopped";then exit 0;fi
     if test "$1" = start;then
@@ -217,5 +281,5 @@ case "${1:-}" in
  menu) menu_add;;
  unmenu) menu_remove;;
  status) if owned_pid;then echo "running PID $pid";else echo stopped;exit 1;fi;;
- *) echo 'usage: service start|run|stop|ensure|status|menu|unmenu' >&2;exit 2;;
+ *) echo 'usage: service start|run|stop|ensure|status|menu|unmenu|boot-install|boot-remove|boot-status' >&2;exit 2;;
 esac

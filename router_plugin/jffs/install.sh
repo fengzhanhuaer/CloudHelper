@@ -13,16 +13,21 @@ case "$(cat "$bundle/device-profile"):$(nvram get productid):$(nvram get odmpid)
        grep -q CHVR_HTTPD_WRAPPER /usr/sbin/httpd;then
         stock_httpd=/usr/local/cloudhelper-router/httpd
     fi
-    test "$(openssl dgst -sha256 "$stock_httpd" | awk '{print $NF}')" = \
-        8804d44c2633046d7740d356e7bdcd5e46b1d2b3ac9b1e967dda01e99150823e || {
+    case "$(openssl dgst -sha256 "$stock_httpd" | awk '{print $NF}')" in
+     8804d44c2633046d7740d356e7bdcd5e46b1d2b3ac9b1e967dda01e99150823e|1b7148dabccb0954b13b8bf70f853afbcd133160cf9f4cb201789bccdb5143e8) ;;
+     *)
         echo 'Unsupported RT-BE86U firmware; original web server retained' >&2;exit 1;
-    };;
+        ;;
+    esac;;
  *) echo 'Unsupported router model or userland profile' >&2;exit 1;;
 esac
 awk -v fs="$filesystem" '$2=="/jffs" && $3==fs {ok=1} END {exit !ok}' /proc/mounts || exit 1
 case "${1:-}" in
  --uninstall)
-    if test -x "$base/service";then "$base/service" stop;fi
+    if test -x "$base/service";then
+        if "$base/service" boot-status >/dev/null 2>&1;then "$base/service" boot-remove;fi
+        "$base/service" stop
+    fi
     for path in "$base"/releases/*;do
         test -d "$path" && ! test -L "$path" || continue
         id=${path##*/}
@@ -73,7 +78,7 @@ chmod 700 "$base" "$base/releases"
 if test -f "$base/active";then
     active=$(cat "$base/active")
     case "$active" in ''|*[!a-f0-9]*) exit 1;; esac
-    if test "$active" = "$id";then "$base/service" start;exit;fi
+    if test "$active" = "$id";then "$base/service" start;"$base/service" boot-install;exit;fi
     "$base/service" stop
     printf '%s\n' "$active" > "$base/previous"
 fi
@@ -106,6 +111,7 @@ if ! "$base/service" start;then
     fi
     exit 1
 fi
+"$base/service" boot-install
 # Retain only the active and previous releases, removing only known payload files.
 previous=$(cat "$base/previous" 2>/dev/null || true)
 for path in "$base"/releases/*;do
@@ -118,7 +124,9 @@ for path in "$base"/releases/*;do
     rmdir "$path/web" "$path" 2>/dev/null || true
 done
 echo 'Installed. Sign in to the original ASUS web UI and open Virtual Router below Network Tools.'
-if test -x /rom/etc/cloudhelper-jffs-start;then
+if test "$("$base/service" boot-status)" = 'koolcenter enabled';then
+    echo 'KoolCenter startup hooks registered; plugin starts automatically after reboot.'
+elif test -x /rom/etc/cloudhelper-jffs-start;then
     echo 'Minimal firmware startup hook detected; plugin starts automatically after reboot.'
 else
     echo 'No verified stock boot hook: after reboot run /jffs/cloudhelper-router/service start via SSH.'

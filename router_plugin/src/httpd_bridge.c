@@ -43,24 +43,29 @@ static struct mime_handler *hidden_stock_handler(void)
         dlsym(RTLD_DEFAULT,"SHA256");
     if(!sha256)return NULL;
     FILE *file=fopen("/proc/self/exe","rb");if(!file)return NULL;
-    struct stat st;unsigned char *bytes=NULL,digest[32];char hex[65];int valid=0;
-    if(fstat(fileno(file),&st) || st.st_size!=CHVR_BE86U_HTTPD_BYTES)goto done;
-    bytes=malloc(CHVR_BE86U_HTTPD_BYTES);if(!bytes)goto done;
-    if(fread(bytes,1,CHVR_BE86U_HTTPD_BYTES,file)!=CHVR_BE86U_HTTPD_BYTES ||
-       memcmp(bytes,"\177ELF\1\1",6) || bytes[16]!=2 || bytes[18]!=40)goto done;
-    if(!sha256(bytes,CHVR_BE86U_HTTPD_BYTES,digest))goto done;
+    struct stat st;unsigned char *bytes=NULL,digest[32];char hex[65];
+    const chvr_httpd_profile *profile=NULL;
+    if(fstat(fileno(file),&st))goto done;
+    for(size_t i=0;i<sizeof(chvr_be86u_profiles)/sizeof(chvr_be86u_profiles[0]);i++)
+        if(st.st_size==(off_t)chvr_be86u_profiles[i].bytes){profile=&chvr_be86u_profiles[i];break;}
+    if(!profile)goto done;
+    size_t size=profile->bytes;
+    bytes=malloc(size);if(!bytes){profile=NULL;goto done;}
+    if(fread(bytes,1,size,file)!=size ||
+       memcmp(bytes,"\177ELF\1\1",6) || bytes[16]!=2 || bytes[18]!=40){profile=NULL;goto done;}
+    if(!sha256(bytes,size,digest)){profile=NULL;goto done;}
     for(unsigned i=0;i<32;i++)snprintf(hex+i*2,3,"%02x",digest[i]);
-    valid=!strcmp(hex,CHVR_BE86U_HTTPD_SHA256);
+    if(strcmp(hex,profile->sha256))profile=NULL;
 done:
-    free(bytes);fclose(file);if(!valid)return NULL;
-    struct mime_handler *asp=(struct mime_handler *)(uintptr_t)CHVR_BE86U_ASP;
-    const uintptr_t expected[6]=CHVR_BE86U_ASP_FIELDS;
-    if(sizeof(*asp)!=24 || !chvr_httpd_fields_match(asp,expected) ||
+    free(bytes);fclose(file);if(!profile)return NULL;
+    struct mime_handler *asp=(struct mime_handler *)profile->asp;
+    if(sizeof(*asp)!=24 || !chvr_httpd_fields_match(asp,profile->fields) ||
        strcmp(asp->pattern,"**.asp*"))return NULL;
-    ssl_enabled=(int *)(uintptr_t)CHVR_BE86U_SSL_ENABLED;
-    ssl_fd=(int *)(uintptr_t)CHVR_BE86U_SSL_FD;
+    ssl_enabled=(int *)profile->ssl_enabled;
+    ssl_fd=(int *)profile->ssl_fd;
     return asp;
 #else
+    (void)chvr_be86u_profiles;
     return NULL;
 #endif
 }

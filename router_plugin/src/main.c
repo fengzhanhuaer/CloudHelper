@@ -62,6 +62,7 @@ static json_object *error_reply(const char *message)
 static json_object *status_reply(vr_service *s)
 {
     json_object *o=json_object_new_object();
+    json_object_object_add(o,"version",json_object_new_string(VR_VERSION));
     pthread_mutex_lock(&s->mutex);
     json_object_object_add(o,"ok",json_object_new_boolean(1));json_object_object_add(o,"csrf",json_object_new_string(s->csrf));
     json_object_object_add(o,"config",vr_config_json(&s->config,0));

@@ -9,6 +9,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 
 if os.environ.get('CHVR_DISPOSABLE_TEST')!='1' or not Path('/.dockerenv').exists():
     raise SystemExit('Disposable privileged container only')
@@ -18,9 +19,12 @@ def run(*args):
         print(error.output);raise
 fixture=Path('/tmp/chvr-install-bin');fixture.mkdir()
 profile=sys.argv[1] if len(sys.argv)>1 else 'ax56uv2'
+koolcenter=profile in ('be86u-koolcenter','ax56uv2-koolshare')
+if koolcenter:profile='ax56uv2' if profile.startswith('ax56uv2') else 'be86u'
 assert profile in ('ax56uv2','be86u')
 model,odm,arch,fs,web_hash=('RT-AX55','RT-AX56U_V2','armv7l','jffs2','144f9083c6ae57632cf59b4012d5ad46aff6f4f64012ce3fed50e0f1b8ebf6d1') if profile=='ax56uv2' else ('RT-BE86U','','aarch64','ubifs','8804d44c2633046d7740d356e7bdcd5e46b1d2b3ac9b1e967dda01e99150823e')
-(fixture/'nvram').write_text('#!/bin/sh\ncase "$2" in productid) echo '+model+';; odmpid) echo '+odm+';; lan_ipaddr) echo 192.168.52.1;; lan_ifname) echo lo;; esac\n')
+if koolcenter:web_hash='764716012e664f64f1857ba1027a269d73899c09d4b10f5323bd4fc438997004' if profile=='ax56uv2' else '1b7148dabccb0954b13b8bf70f853afbcd133160cf9f4cb201789bccdb5143e8'
+(fixture/'nvram').write_text('#!/bin/sh\ncase "$2" in productid) echo '+model+';; odmpid) echo '+odm+';; lan_ipaddr) echo 192.168.52.1;; lan_ifname) echo lo;; extendno) echo '+(('49559_koolshare' if profile=='ax56uv2' else '39125_koolcenter') if koolcenter else '39436')+';; jffs2_scripts) echo 1;; esac\n')
 (fixture/'uname').write_text('#!/bin/sh\necho '+arch+'\n')
 (fixture/'service').write_text('#!/bin/sh\npkill -x httpd || true\n/usr/sbin/httpd </dev/null >/dev/console 2>&1 &\n')
 (fixture/'openssl').write_text('#!/bin/sh\ncase "$3" in /usr/sbin/httpd|/usr/local/cloudhelper-router/httpd) if test -f /tmp/chvr-bad-httpd;then echo "SHA256= unsupported";else echo "SHA256= '+web_hash+'";fi;; *) exec /usr/bin/openssl "$@";; esac\n')
@@ -35,6 +39,17 @@ shutil.copyfile('bin/native/httpd-fixture','/usr/sbin/httpd')
 Path('/usr/sbin/httpd').chmod(0o700)
 target.write_bytes(original)
 base=Path('/jffs/cloudhelper-router');base.parent.mkdir()
+if koolcenter:
+    Path('/koolshare/init.d').mkdir(parents=True)
+    Path('/koolshare/bin').mkdir()
+    Path('/jffs/scripts').mkdir()
+    for phase,name in [('V','start'),('T','stop')]:
+        hook=Path('/koolshare/bin/ks-services-'+name+'.sh')
+        hook.write_text('#!/bin/sh\nfor script in /koolshare/init.d/'+phase+'*.sh;do /bin/sh "$script";done\n')
+        hook.chmod(0o700)
+        Path('/jffs/scripts/services-'+name).write_text('#!/bin/sh\n/koolshare/bin/ks-services-'+name+'.sh\n')
+    other=Path('/koolshare/init.d/V01other.sh');other.write_text('#!/bin/sh\ntouch /tmp/chvr-other-started\n');other.chmod(0o700)
+    original_start=Path('/jffs/scripts/services-start').read_bytes()
 # Reproduce the real stock /usr/local layout in this disposable container.
 saved_local=Path(tempfile.mkdtemp(prefix='chvr-original-local-'))
 for child in Path('/usr/local').iterdir():shutil.move(str(child),str(saved_local/child.name))
@@ -94,6 +109,39 @@ with tempfile.TemporaryDirectory(prefix='chvr-install-') as directory:
         assert 'CHVR_JFFS_MENU' in target.read_text(encoding='utf-8')
         assert not (base/'admin.key').exists()
         assert b'CHVR_HTTPD_WRAPPER' in Path('/usr/sbin/httpd').read_bytes()
+        if koolcenter:
+            start_hook=Path('/koolshare/init.d/V99cloudhelper.sh')
+            stop_hook=Path('/koolshare/init.d/T99cloudhelper.sh')
+            assert run(str(base/'service'),'boot-status').strip()=='koolcenter enabled'
+            saved_hook=start_hook.read_bytes()
+            start_hook.write_text('foreign hook')
+            assert subprocess.call([str(base/'service'),'boot-install'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)!=0
+            assert start_hook.read_text()=='foreign hook' and stop_hook.exists()
+            start_hook.unlink();start_hook.symlink_to(other)
+            assert subprocess.call([str(base/'service'),'boot-install'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)!=0
+            assert start_hook.is_symlink() and other.exists()
+            start_hook.unlink()
+            start_hook.write_bytes(saved_hook)
+            start_hook.chmod(0o700)
+            run('/bin/sh','/jffs/scripts/services-stop')
+            (base/'autostart.disabled').touch()
+            run('/bin/sh','/jffs/scripts/services-start')
+            assert not Path('/var/run/cloudhelper-router/admin.sock').exists()
+            assert Path('/tmp/chvr-other-started').exists()
+            (base/'autostart.disabled').unlink()
+            run('/bin/sh','/jffs/scripts/services-start')
+            for attempt in range(100):
+                try:
+                    if status():break
+                except (OSError,ValueError):pass
+                time.sleep(.1)
+            else:raise AssertionError('Startup chain failed to restore service')
+            # Wait for asynchronous web/menu restoration as well as the socket.
+            for attempt in range(150):
+                if 'CHVR_JFFS_MENU' in target.read_text(encoding='utf-8'):break
+                time.sleep(.1)
+            else:raise AssertionError('Startup chain failed to restore menu')
+            assert Path('/jffs/scripts/services-start').read_bytes()==original_start
         key=b'legacy retained'
         (base/'admin.key').write_bytes(key)
         prepare('b'*16)
@@ -106,6 +154,9 @@ with tempfile.TemporaryDirectory(prefix='chvr-install-') as directory:
         assert not (base/'active').exists() and not (base/'service').exists()
         assert (base/'admin.key').read_bytes()==key and target.read_bytes()==original
         assert not list(base.glob('**/*.log'))
+        if koolcenter:
+            assert not start_hook.exists() and not stop_hook.exists() and other.exists()
+            assert Path('/jffs/scripts/services-start').read_bytes()==original_start
         assert Path('/usr/local/share').is_symlink()
         assert list(Path('/usr/local').iterdir())==[Path('/usr/local/share')]
     finally:

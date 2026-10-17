@@ -45,6 +45,7 @@ def main(binary):
         proc = start(binary, config, sock)
         try:
             response = request(sock, {"action": "status"})
+            assert response['version']==subprocess.check_output([binary,'--version'],universal_newlines=True).split()[1]
             assert response["ok"] and not response["config"]["enabled"]
             assert response["config"]["port"] == 12040
             assert not response["config"]["allow_wan"]

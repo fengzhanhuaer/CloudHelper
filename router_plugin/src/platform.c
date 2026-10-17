@@ -130,6 +130,15 @@ int vr_bind4(const char *ip,int port,int tcp)
     if(bind(fd,(struct sockaddr *)&sa,sizeof(sa))||(tcp&&listen(fd,8))){close(fd);return -1;}return fd;
 }
 
+static int carrier_skiplog_port;
+static int carrier_skiplog_available(void)
+{
+    FILE *f=fopen("/proc/net/ip_tables_targets","r");if(!f)return 0;
+    char name[64];int found=0;
+    while(fgets(name,sizeof(name),f))if(!strcmp(name,"SKIPLOG\n")){found=1;break;}
+    fclose(f);return found;
+}
+
 int vr_platform_start(const vr_config *c,const vr_addresses *a,const char *ip,const char *cidr)
 {
     int fd=open("/dev/net/tun",O_RDWR|O_CLOEXEC|O_NONBLOCK);
@@ -147,6 +156,14 @@ int vr_platform_start(const vr_config *c,const vr_addresses *a,const char *ip,co
        RUN("ip","rule","add","priority","18600","iif","chvr0","lookup","186"))goto fail;
     RUN("iptables","-N","CHVR_IN");RUN("iptables","-N","CHVR_FWD");RUN("iptables","-t","nat","-N","CHVR_NAT");
     if(RUN("iptables","-F","CHVR_IN") || RUN("iptables","-F","CHVR_FWD") || RUN("iptables","-t","nat","-F","CHVR_NAT"))goto fail;
+    carrier_skiplog_port=0;
+    /* Broadcom BLOG acceleration can corrupt a locally terminated TLS flow
+       after its handshake. Keep only this service's inbound carriers on the
+       kernel path; SKIPLOG continues normal authentication/firewall checks. */
+    if(carrier_skiplog_available()) {
+        if(RUN("iptables","-A","CHVR_IN","-p","tcp","--dport",port,"-j","SKIPLOG"))goto fail;
+        carrier_skiplog_port=c->port;
+    }
     /* vr_incoming authenticates the original node and checks the gateway CIDR
        before injecting traffic. The router's own LAN address uses INPUT,
        unlike other LAN hosts; place this before the carrier-port guard. */
@@ -247,10 +264,15 @@ void vr_platform_stop(const char *cidr)
     RUN("iptables","-D","INPUT","-j","CHVR_IN");RUN("iptables","-D","FORWARD","-j","CHVR_FWD");RUN("iptables","-t","nat","-D","POSTROUTING","-j","CHVR_NAT");
     RUN("iptables","-F","CHVR_IN");RUN("iptables","-X","CHVR_IN");RUN("iptables","-F","CHVR_FWD");RUN("iptables","-X","CHVR_FWD");
     RUN("iptables","-t","nat","-F","CHVR_NAT");RUN("iptables","-t","nat","-X","CHVR_NAT");
+    carrier_skiplog_port=0;
 }
 
 int vr_platform_healthy(void)
 {
+    if(carrier_skiplog_port) {
+        char port[8];snprintf(port,sizeof(port),"%d",carrier_skiplog_port);
+        if(RUN("iptables","-C","CHVR_IN","-p","tcp","--dport",port,"-j","SKIPLOG"))return 0;
+    }
     return !RUN("iptables","-C","INPUT","-j","CHVR_IN") &&
         !RUN("iptables","-C","FORWARD","-j","CHVR_FWD") &&
         !RUN("iptables","-t","nat","-C","POSTROUTING","-j","CHVR_NAT");

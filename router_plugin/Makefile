@@ -1,13 +1,21 @@
 CC ?= cc
+.DEFAULT_GOAL := all
 BUILD ?= bin/native
+VERSION ?= v$(or $(shell cat ../version 2>/dev/null | tr -d '\r\n'),0.0.0)-dev
 CPPFLAGS += -Iinclude $(DEP_CPPFLAGS)
+CPPFLAGS += -include $(BUILD)/build-version.h
 CFLAGS ?= -Os -g
 CFLAGS += -std=c99 -Wall -Wextra -Werror -Wformat=2 -fstack-protector-strong -ffunction-sections -fdata-sections
 LDLIBS += -lcurl -lssl -lcrypto -ljson-c -lpthread
 LDFLAGS += $(DEP_LDFLAGS) -Wl,--gc-sections -Wl,-z,relro,-z,now
 CORE = src/log.c src/cache.c src/gateway.c src/report.c src/common.c src/config.c src/wire.c src/dns.c src/dns_upstream.c src/policy.c src/auth.c src/controller.c src/websocket.c src/tls.c src/packet.c
 RUNTIME = src/main.c src/engine.c src/carrier.c src/dataplane.c src/mapping.c src/platform.c src/dns_service.c src/measure.c src/control.c
-.PHONY: all test clean
+.PHONY: all test clean FORCE
+FORCE:
+$(BUILD)/build-version.h: FORCE | $(BUILD)
+	@printf '#define VR_VERSION "%s"\n' '$(VERSION)' > $@.new
+	@cmp -s $@.new $@ && rm $@.new || mv $@.new $@
+$(BUILD)/cloudhelper-router-plugin $(BUILD)/httpd-bridge.so $(BUILD)/httpd-fixture $(BUILD)/test-core $(BUILD)/test-logs $(BUILD)/test-dataplane $(BUILD)/test-platform $(BUILD)/test-dns $(BUILD)/test-control $(BUILD)/test-certificate $(BUILD)/test-carrier $(BUILD)/test-measure $(BUILD)/test-gateway $(BUILD)/test-cache $(BUILD)/test-mapping $(BUILD)/dns-query-fixture $(BUILD)/test-dns-system $(BUILD)/test-httpd-profile: $(BUILD)/build-version.h
 all: $(BUILD)/cloudhelper-router-plugin $(BUILD)/httpd-bridge.so
 $(BUILD)/httpd-bridge.so: src/httpd_bridge.c include/httpd_profile.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC -shared $< $(LDFLAGS) -ldl -o $@
