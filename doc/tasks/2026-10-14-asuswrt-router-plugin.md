@@ -966,3 +966,17 @@ REQ-046/UNIT-027（用户指出电脑为千兆有线）：实测PC到192.168.52.
 实现：每链路只缓存一个已授权、control原文<=1024字节的路径，后续仅control长度及逐字节完全相同才复用；校验和仍逐帧执行，任意不同control重新验证，拒绝帧不缓存。缓存跟随不可变peer/引擎策略，断连清除；回调用独立路径副本，不能污染缓存。8链路总新增约12KiB，不增大队列/日志/线程或引入新库。C原生TLS出入站TCP都开启TCP_NODELAY，与Go默认小包行为对齐，减少控制包合并延迟。TEST075：已有非法/合法帧回归、相同control复用、伪造同长control仍拒绝、回调修改路径不污染缓存、断连清除，真实Go双角色认证/Ping/收发测速及两端TCP_NODELAY getsockopt核验；ARM/原厂库验证通过。
 
 实机0cd05e37282d40a6包73307字节，备份D:/Code/RouterFirmware/router-backups/20261017-125714-fake-ip-cache，原配置及boot_id保持。与优化前同一有线25↔9测速：上传118390784字节/9998ms/94.73Mbps（92.0%单核）；下载134217728字节/8872ms/121.03Mbps（92.4%单核），比原下载提高3.96倍，达到128MiB上限后按既定协议提前结束。此结果定位并改善软件瓶颈；当前TLS/逐帧处理仍近单核满载，不能宣称千兆吞吐或全部稳定性问题解决。23号链路此前仍出现TCP关闭重连，区别于已不复现的invalid carrier frame；主控偶发HTTPS超时边界保留。唯一下一步：完成最终回归与发布此次性能增量，不混入其他Probe/主控生产升级。
+
+TEST075最终真实Go双角色Carrier回归与TLS/WebSocket/yamux控制流回归通过；控制流测试首次遗漏隔离容器声明CHVR_DISPOSABLE_TEST被守卫拒绝，补齐后完整通过，未修改守卫。性能功能提交44a7d276d528a09eaa9c46e32e3771aceb29ad96已推送，Actions39007247154按该SHA发布验证中。
+
+23号低速追加证据：25→23上传2.173Mbps/10404ms、下载0.230Mbps/10352ms，进程分别只占9.7%/6.1%单核，与本机有线CPU满载瓶颈不同。节点9下载23为0.375Mbps，实际路径9→25→23，不能当作绕开华硕的独立公网对照。经已认证主控桥接确认远端确为23/HomeAlpine；其25号Carrier日志反复记录64项队列到硬上限，随后TCP写等待15000ms超时并断开，实际远端192.168.50.94:12041、来源123.232.8.66。可确认持续发送阻塞/队列堆积；尚未以抓包区分TCP丢包、窗口与华硕接收路径，不宣称已经证明运营商限速或通过扩大队列解决。用户转向homerouter兼容检查后未继续变更链路或其他节点。
+
+### 2026-10-17 homerouter只读兼容检查
+
+用户指定SSH别名homerouter（192.168.50.1，fengzhanhuaer）仅询问能否安装插件，未授权安装、改设置或刷机。首次主机键尚未登记，确认没有已有对应记录后按accept-new首次登记，未跳过或覆盖冲突主机键。真实设备RT-BE86U，3.0.0.6.102_39436-g5c5fd36_1586-g1f414_BB0B，Linux4.19.294/aarch64四核；RAM1017436KiB、Available约419460KiB，JFFS为UBIFS，总45528KiB、Available24204KiB。读取ELF头确认httpd/BusyBox/glibc/OpenSSL/json-c实际均为ELF32 ARM；glibc2.32、libssl1.1/libcurl4/libjson-c2存在，TUN已加载且设备存在，SNAT/MASQUERADE等iptables目标存在。
+
+硬件/容量具备JFFS插件基础，但当前AX56U V2包不能直接安装：install.sh锁定RT-AX55/RT-AX56U_V2/armv7l/jffs2，service锁定已验证HTTPD哈希；BE86U均不匹配。其HTTPD哈希8804d44c2633046d7740d356e7bdcd5e46b1d2b3ac9b1e967dda01e99150823e，原Web菜单桥接尚未适配。/jffs/.koolshare及启动脚本存在，但/koolshare和/rom/etc/koolshare不存在，services-start指向缺失文件；这是残留证据，不能据此确认软件中心或跨重启自启动有效。未上传/执行插件、未改NVRAM/防火墙/DNS或固件；后续如获实现授权，应单独适配安装前置条件、HTTPD/菜单及启动入口并在该型号验收，不能只删型号检查强装。
+
+用户明确确认homerouter当前为官方固件，Koolshare是以前刷机残留；后续设计按官方固件处理，不恢复或依赖这些残留。
+
+TASK025本轮REQ040—046交付门禁完成：性能提交44a7d276对应Actions39007247154全部success；v0.4.63自动版本9b5433c1，8项当前标准产物加0cd05e37282d40a6的2项JFFS附件共10项，后两项逐项SHA256/大小匹配，非草稿。设备已是该插件内容，未部署或重启生产Go服务。主控弱网、23号链路持续写阻塞及BE86U适配仍分别保留边界，不包含在本轮已验证修复声明中。
