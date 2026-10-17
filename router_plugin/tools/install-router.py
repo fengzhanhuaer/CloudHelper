@@ -18,11 +18,12 @@ p.add_argument('--report',type=Path)
 p.add_argument('--settings',type=Path,help='Private ASUS settings export for authenticated UI checks')
 args=p.parse_args()
 allowed={'install.sh','checksums','release-id','manifest.json','device-profile','payload/cloudhelper-router-plugin',
-         'payload/service','payload/httpd-bridge.so','payload/web/VirtualRouter.asp'}
+         'payload/service','payload/httpd-bridge.so','payload/web/VirtualRouter.asp',
+         '.valid','webs/Module_cloudhelper.asp','scripts/uninstall_cloudhelper.sh'}
 with tarfile.open(str(args.package),'r:gz') as archive:
     members=archive.getmembers()
     assert len(members)==len(allowed)
-    assert {m.name for m in members}=={'cloudhelper-router/'+s for s in allowed}
+    assert {m.name for m in members}=={'cloudhelper/'+s for s in allowed}
     assert all(m.isfile() and m.size<256*1024 for m in members)
     content={m.name.split('/',1)[1]:archive.extractfile(m).read() for m in members}
     manifest=json.loads(content['manifest.json'])
@@ -52,7 +53,7 @@ try:
     assert hashlib.sha256(remote('cat '+q(directory+'/bundle.tar.gz'))).digest()==hashlib.sha256(data).digest()
     remote('tar xzf '+q(directory+'/bundle.tar.gz')+' -C '+q(directory))
     # Some vendor PATHs contain a memory-debug utility also named "sh".
-    output=remote('/bin/sh '+q(directory+'/cloudhelper-router/install.sh'),timeout=60)
+    output=remote('/bin/sh '+q(directory+'/cloudhelper/install.sh'),timeout=90)
     print(output.decode(errors='replace'),end='')
     base='/jffs/cloudhelper-router'
     assert remote('cat '+base+'/active').decode().strip()==release
@@ -81,7 +82,7 @@ try:
         args.report.parent.mkdir(parents=True,exist_ok=True)
         args.report.write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
 finally:
-    paths=[directory+'/cloudhelper-router/'+s for s in sorted(allowed)]
+    paths=[directory+'/cloudhelper/'+s for s in sorted(allowed)]
     remote('rm -f '+' '.join(q(s) for s in paths+[directory+'/bundle.tar.gz'])+
-           ' && rmdir '+' '.join(q(directory+'/cloudhelper-router/'+s) for s in ('payload/web','payload',''))+
+           ' && rmdir '+' '.join(q(directory+'/cloudhelper/'+s) for s in ('payload/web','payload','webs','scripts',''))+
            ' '+q(directory))

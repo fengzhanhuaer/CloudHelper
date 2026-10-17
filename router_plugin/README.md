@@ -4,11 +4,24 @@
 
 管理入口直接位于原厂后台的“网络工具”下方，名称为“虚拟路由”，使用同一管理端口和原厂登录。插件本身只提供 root 所有的 Unix socket，不开 TCP 管理端口，不要求额外管理口令。页面提供主控、Node ID/密钥、公网连接、DNS 上游设置，以及 Probe Link 状态、手动测速和内存日志。监听端口统一在主控设置。
 
-主控节点类型统一显示“路由器插件”，内部继续使用 `asus_56uv2` 以兼容已注册节点及安装 JSON。当前精确支持 RT-AX56U V2（内部 RT-AX55，52332）和 RT-BE86U（官方 3.0.0.6.102_39436、官改 39125_koolcenter）。BE86U 两版 HTTPD 分别匹配 `8804d44c…150823e` 和 `1b7148da…5143e8`。两者使用同一 ARM32 C 程序、独立安装包；BE86U 的 aarch64 内核运行原厂 ARM32 用户态，不能根据内核名称改用普通 ARM64 Probe。
+主控节点类型统一显示“路由器插件”，内部继续使用 `asus_56uv2` 兼容已注册节点及安装 JSON。按机型分别发布 RT-AX56U V2（内部 RT-AX55）和 RT-BE86U 插件包；两者使用 ARM32 C 程序，BE86U 的 aarch64 内核运行 ARM32 用户态。
 
-原厂 Web 的接入采用一个约 9 KiB 的 httpd 扩展，保留原厂认证回调。严格匹配原厂 52332 的 httpd SHA256，或最小自启固件只读 ROM 声明的精确哈希（须同时存在专用启动入口）；未知版本拒绝接入。启动时在私有 RAM 目录复制原版 httpd，并通过可撤销的启动入口挂载加载扩展；原版可执行文件内容不变。停止时撤销挂载并重启原版 Web，Flash 系统分区不变。原厂 SSL 限制程序执行路径，故服务也从 RAM 的 `/usr/local/cloudhelper-router` 运行；JFFS 保存发布文件，RAM 中保留原来的 `share -> /tmp/share`，未知目录布局拒绝覆盖。
+插件不绑定固件版本号或 HTTPD 哈希。安装和启动检测实际运行能力：固件已有库能加载程序、原厂菜单结构可识别、唯一认证 ASP 处理表符合接口布局，软件中心自启动调用链存在。HTTPD 隐藏符号时按 ELF 段权限、字符串和回调结构动态定位，不使用固定地址；TLS 客户端通过公开 OpenSSL 接口识别。原厂登录认证回调及 LAN 来源校验保留。固件升级后重新检查接口；如果厂商改变了不兼容的 ABI，保留原厂后台并报告兼容性错误。CI 固定的四个固件镜像仅为回归样本，不是安装白名单。
 
-BE86U 的原厂 HTTPD 隐藏了旧版导出符号，服务与扩展独立校验整个可执行文件 SHA256 后，才使用已验证的 ASP/SSL 数据地址；扩展再次核对六个处理表字段，认证回调不变。型号、固件或表布局未知时拒绝挂接。其 BusyBox 限制挂载路径，因此 C 程序提供 root 专用 `--runtime-mount` 固定操作，只管理本插件 RAM、菜单与 HTTPD 的三个路径，拒绝未知操作、其他目录布局及外来挂载；不是远程管理 API。
+启动时在私有 RAM 目录复制原版 httpd，通过可撤销的启动入口加载扩展；原版可执行文件内容不变。停止撤销挂载并恢复原版 Web，Flash 系统分区不变。原厂 SSL 限制程序执行路径，故服务从 RAM 的 `/usr/local/cloudhelper-router` 运行，JFFS 保存发布文件。未知目录布局或外来挂载拒绝覆盖。BE86U 的 BusyBox 挂载限制由 root 专用 `--runtime-mount` 固定操作处理，不开放远程任意路径挂载接口。
+
+软件中心手动安装：选择与机型对应的 `cloudhelper-asus56uv2-jffs.tar.gz` 或 `cloudhelper-asusbe86u-jffs.tar.gz`，上传整个压缩包，无需自行解压。一级目录为 `cloudhelper`，包含 `install.sh`、`hnd` 平台标记、软件中心页面和卸载脚本。成功后“已安装”列表显示插件及版本，点击进入原厂后台虚拟路由页。卸载保留 JFFS 身份、DNS、网关配置和缓存。
+
+在线升级：首次安装支持升级的新版包后，可在插件页“运行状态”检查更新并升级，或从主控探针列表下发升级。旧插件没有能力上报时不显示升级按钮。默认经过主控认证代理下载，也支持主控选择直连 GitHub；后台下载支持 Range 续传，按机型、稳定版本、发布 SHA256 和清单校验后安装，失败保留当前版本或恢复 previous。仅更新插件，不刷系统、不重启路由器；下载/安装进度保存在 RAM，不写日志文件。
+
+GitHub Actions 随 Probe Node 同一版本自动编译两款插件，发布两个固定名称包及各自清单。`ci-inputs.lock.json` 固定公开 SDK 和回归镜像的大小与 SHA256；不依赖开发机目录，不上传厂商二进制到仓库。首次构建准备 SDK，之后复用缓存。可独立复现：
+
+```sh
+docker build -f router_plugin/Dockerfile.ci -t cloudhelper-router-ci router_plugin
+mkdir -p /tmp/chvr-sdk /tmp/chvr-inputs
+docker run --rm -v "$PWD/router_plugin:/module" -v /tmp/chvr-sdk:/sdk -v /tmp/chvr-inputs:/inputs cloudhelper-router-ci python3 tools/prepare-ci.py /sdk --cache /inputs
+docker run --rm -v "$PWD/router_plugin:/module" -v /tmp/chvr-sdk:/sdk -e CHVR_CI_SDK=/sdk -e CHVR_VERSION=v0.4.69-dev cloudhelper-router-ci bash tools/build-ci.sh
+```
 
 构建与安装：
 
@@ -47,7 +60,7 @@ python router_plugin/tools/install-router.py <生成的tar.gz> --settings <私�
 
 BE86U 官改 39125_koolcenter 已接入软件中心实际调用的 `/koolshare/init.d/V99cloudhelper.sh` 和 `T99cloudhelper.sh`，安装后注册异步启动及停止入口；保留原有 services-start/stop 和其他插件脚本。要求 jffs2_scripts=1 且已有软件中心调用链完整；同名外来文件或符号链接拒绝覆盖。禁用标记同上，卸载仅移除本插件自有入口；`service boot-status` 查看状态。2026-10-17实机观察到新 boot_id 后插件自动恢复、主控在线；原厂39436仍须手动启动，不把旧残留视为有效入口。AX56U V2 的固件不能刷入 BE86U。新安装默认关闭业务；更新保留既有身份和配置。Web 密码不在可读 NVRAM 中时，由用户用原厂登录验收页面。
 
-AX56U V2 官改 `386_49559_koolshare` 同样使用上述软件中心 V/T 入口自启，精确验证该版 HTTPD 的导出认证接口和现有运行库；恢复安装保留 JFFS 节点身份、DNS、网关配置及原有软件中心脚本。未知固件仍须先做兼容验证。
+AX56U V2 官改 `386_49559_koolshare` 同样使用上述软件中心 V/T 入口自启，精确验证该版 HTTPD 的导出认证接口和现有运行库；恢复安装保留 JFFS 节点身份、DNS、网关配置及原有软件中心脚本。固件升级后按实际接口重新检查兼容性。
 
 网关代理可以单独开启，无需勾选“启用虚拟路由”；共享同一节点身份、认证及承载连接。仅网关代理运行时不接管路由器 DNS，配置中的 DNS 选择保留供虚拟路由再次启用时使用。
 

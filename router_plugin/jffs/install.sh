@@ -13,15 +13,28 @@ case "$(cat "$bundle/device-profile"):$(nvram get productid):$(nvram get odmpid)
        grep -q CHVR_HTTPD_WRAPPER /usr/sbin/httpd;then
         stock_httpd=/usr/local/cloudhelper-router/httpd
     fi
-    case "$(openssl dgst -sha256 "$stock_httpd" | awk '{print $NF}')" in
-     8804d44c2633046d7740d356e7bdcd5e46b1d2b3ac9b1e967dda01e99150823e|1b7148dabccb0954b13b8bf70f853afbcd133160cf9f4cb201789bccdb5143e8) ;;
-     *)
-        echo 'Unsupported RT-BE86U firmware; original web server retained' >&2;exit 1;
-        ;;
-    esac;;
+    # The service checks the actual handler ABI, independent of firmware version.
+    ;;
  *) echo 'Unsupported router model or userland profile' >&2;exit 1;;
 esac
 awk -v fs="$filesystem" '$2=="/jffs" && $3==fs {ok=1} END {exit !ok}' /proc/mounts || exit 1
+dbus_bin=/usr/bin/dbus
+if ! test -x "$dbus_bin";then dbus_bin=/koolshare/bin/dbus;fi
+softcenter_register() {
+    test -d /koolshare/webs && test -d /koolshare/scripts && test -x "$dbus_bin" || return 0
+    cp "$bundle/webs/Module_cloudhelper.asp" /koolshare/webs/Module_cloudhelper.asp
+    cp "$bundle/scripts/uninstall_cloudhelper.sh" /koolshare/scripts/uninstall_cloudhelper.sh
+    chmod 700 /koolshare/scripts/uninstall_cloudhelper.sh
+    cp "$bundle/install.sh" "$base/installer.sh.new"
+    chmod 700 "$base/installer.sh.new"
+    mv "$base/installer.sh.new" "$base/installer.sh"
+    version=$("$base/releases/$(cat "$base/active")/cloudhelper-router-plugin" --version | awk '{print $2}')
+    "$dbus_bin" set softcenter_module_cloudhelper_name=cloudhelper
+    "$dbus_bin" set 'softcenter_module_cloudhelper_title=CloudHelper 路由器插件'
+    "$dbus_bin" set 'softcenter_module_cloudhelper_description=虚拟路由、DNS 和远程网关代理'
+    "$dbus_bin" set "softcenter_module_cloudhelper_version=$version"
+    "$dbus_bin" set softcenter_module_cloudhelper_install=1
+}
 case "${1:-}" in
  --uninstall)
     if test -x "$base/service";then
@@ -37,6 +50,12 @@ case "${1:-}" in
         rmdir "$path/web" "$path" 2>/dev/null || true
     done
     rm -f "$base/service" "$base/active" "$base/previous"
+    if test -f /koolshare/webs/Module_cloudhelper.asp && grep -q CHVR_SOFTCENTER_ENTRY /koolshare/webs/Module_cloudhelper.asp;then rm -f /koolshare/webs/Module_cloudhelper.asp;fi
+    if test -f /koolshare/scripts/uninstall_cloudhelper.sh && grep -q CHVR_SOFTCENTER_UNINSTALL /koolshare/scripts/uninstall_cloudhelper.sh;then rm -f /koolshare/scripts/uninstall_cloudhelper.sh;fi
+    if test -x "$dbus_bin";then
+        for key in name title description version install;do "$dbus_bin" remove "softcenter_module_cloudhelper_$key";done
+    fi
+    rm -f "$base/installer.sh"
     rmdir "$base/releases" 2>/dev/null || true
     echo 'Uninstalled. Configuration, management key and certificate retained in JFFS.'
     exit
@@ -75,10 +94,12 @@ free=$(df -k /jffs | awk 'END {print $4}')
 test "$free" -ge 2048 || { echo 'Keep at least 2 MiB free for install/rollback' >&2;exit 1; }
 mkdir -p "$base/releases"
 chmod 700 "$base" "$base/releases"
+cp "$bundle/device-profile" "$base/device-profile.new"
+mv "$base/device-profile.new" "$base/device-profile"
 if test -f "$base/active";then
     active=$(cat "$base/active")
     case "$active" in ''|*[!a-f0-9]*) exit 1;; esac
-    if test "$active" = "$id";then "$base/service" start;"$base/service" boot-install;exit;fi
+    if test "$active" = "$id";then "$base/service" start;"$base/service" boot-install;softcenter_register;exit;fi
     "$base/service" stop
     printf '%s\n' "$active" > "$base/previous"
 fi
@@ -112,6 +133,7 @@ if ! "$base/service" start;then
     exit 1
 fi
 "$base/service" boot-install
+softcenter_register
 # Retain only the active and previous releases, removing only known payload files.
 previous=$(cat "$base/previous" 2>/dev/null || true)
 for path in "$base"/releases/*;do

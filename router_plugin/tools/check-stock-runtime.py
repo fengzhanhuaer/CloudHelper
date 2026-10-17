@@ -27,6 +27,7 @@ subprocess.check_call([sys.executable,str(module/'tools/check-elf-deps.py'),str(
 subprocess.check_call([sys.executable,str(module/'tools/check-elf-deps.py'),str(bridge),str(args.rootfs),'--readelf',args.readelf])
 prefix=['qemu-arm','-L',str(args.rootfs),'-E','LD_LIBRARY_PATH=/usr/lib:/lib']
 subprocess.check_call(prefix+[str(binary),'--version'])
+subprocess.check_call(prefix+[str(binary),'--check-httpd',str(args.rootfs/'usr/sbin/httpd')])
 subprocess.check_call(prefix+[str(module/'bin/arm/test-core')])
 result=subprocess.check_output(prefix+['-E','LD_PRELOAD='+str(bridge),str(module/'bin/arm/httpd-fixture'),'--check-bridge'],universal_newlines=True)
 if result.strip()!='stock handler extension active':raise SystemExit('ARM httpd bridge failed')

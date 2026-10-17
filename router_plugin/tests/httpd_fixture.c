@@ -8,22 +8,37 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <openssl/ssl.h>
+#ifdef CHVR_HIDDEN
+#define HIDDEN __attribute__((visibility("hidden")))
+#else
+#define HIDDEN
+#endif
 struct mime_handler {
     char *pattern,*type,*headers;
     void (*input)(char *,FILE *,int,char *);
     void (*output)(char *,FILE *);
     void (*auth)(char *,char *,char *);
 };
-int do_ssl,ssl_stream_fd;
+HIDDEN int do_ssl,ssl_stream_fd;
 char *nvram_get(const char *key){return !strcmp(key,"lan_ifname")?"lo":NULL;}
 static void input(char *path,FILE *stream,int n,char *boundary)
 {(void)path;(void)boundary;while(n-->0 && fgetc(stream)!=EOF){}}
 static void output(char *path,FILE *stream){(void)path;fputs("stock page",stream);}
 static void auth(char *u,char *p,char *r){(void)u;(void)p;(void)r;}
-struct mime_handler mime_handlers[]={{"**.asp*","text/html","",input,output,auth},{0}};
+HIDDEN struct mime_handler mime_handlers[]={{"**.asp*","text/html","",input,output,auth},{0}};
+typedef struct {SSL *ssl;int fd;} tls_cookie;
+static ssize_t tls_read(void *p,char *b,size_t n){return SSL_read(((tls_cookie *)p)->ssl,b,(int)n);}
+static ssize_t tls_write(void *p,const char *b,size_t n){return SSL_write(((tls_cookie *)p)->ssl,b,(int)n);}
+static int tls_close(void *p){tls_cookie *c=p;SSL_free(c->ssl);close(c->fd);free(c);return 0;}
 int main(int argc,char **argv)
 {
     signal(SIGPIPE,SIG_IGN);
+    SSL_CTX *context=NULL;
+    if(argc==4&&!strcmp(argv[1],"--tls")){
+        context=SSL_CTX_new(TLS_server_method());
+        if(!context||SSL_CTX_use_certificate_file(context,argv[2],SSL_FILETYPE_PEM)!=1||SSL_CTX_use_PrivateKey_file(context,argv[3],SSL_FILETYPE_PEM)!=1)return 4;
+    }
     if(argc==2 && !strcmp(argv[1],"--check-bridge")){
         if(mime_handlers[0].auth!=auth || mime_handlers[0].input==input || mime_handlers[0].output==output)return 2;
         puts("stock handler extension active");return 0;
@@ -36,7 +51,15 @@ int main(int argc,char **argv)
     printf("%d\n",ntohs(address.sin_port));fflush(stdout);
     for(;;){
         int client=accept(server,NULL,NULL);if(client<0)continue;
-        FILE *stream=fdopen(client,"r+");char line[4096],method[16],path[512];int length=0,authenticated=0;
+        FILE *stream=NULL;char line[4096],method[16],path[512];int length=0,authenticated=0;
+        if(context){
+            SSL *ssl=SSL_new(context);if(!ssl){close(client);continue;}
+            SSL_set_fd(ssl,client);if(SSL_accept(ssl)!=1){SSL_free(ssl);close(client);continue;}
+            tls_cookie *cookie=calloc(1,sizeof(*cookie));if(!cookie){SSL_free(ssl);close(client);continue;}
+            cookie->ssl=ssl;cookie->fd=client;
+            cookie_io_functions_t io={tls_read,tls_write,NULL,tls_close};
+            stream=fopencookie(cookie,"r+",io);if(!stream)tls_close(cookie);
+        }else stream=fdopen(client,"r+");
         struct timeval timeout={3,0};setsockopt(client,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));
         if(!stream) {close(client);continue;}
         setvbuf(stream,NULL,_IONBF,0);

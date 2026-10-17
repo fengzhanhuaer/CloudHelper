@@ -13,7 +13,9 @@ typedef struct {
     unsigned generation;
     int stop;
     char config_path[512],csrf[49];
-    json_object *status,*measurement,*pending_policy;
+    json_object *status,*measurement,*pending_policy,*upgrade;
+    pthread_t upgrade_thread;
+    int upgrade_joinable;
     unsigned pending_generation;
     char measure_node[129],measure_kind[16];
     vr_log_entry logs[VR_LOG_MAX];size_t log_head,log_count;

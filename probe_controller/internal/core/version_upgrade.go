@@ -72,6 +72,7 @@ var controllerUpgradeTaskState = struct {
 }{}
 
 type githubReleaseAsset struct {
+	Digest             string `json:"digest,omitempty"`
 	Name               string `json:"name"`
 	Size               int64  `json:"size"`
 	BrowserDownloadURL string `json:"browser_download_url"`

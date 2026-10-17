@@ -52,6 +52,7 @@ type probeVirtualRouterBufferReport struct {
 }
 
 type probeRuntimeStatus struct {
+	RouterPluginUpgrade  bool                           `json:"router_plugin_upgrade,omitempty"`
 	GatewayProxy         *probeGatewayProxyConfig       `json:"gateway_proxy,omitempty"`
 	LANIP                string                         `json:"lan_ip,omitempty"`
 	WANIP                string                         `json:"wan_ip,omitempty"`
@@ -72,6 +73,14 @@ type probeRuntimeStatus struct {
 	MachineUptimeSeconds int64                          `json:"machine_uptime_seconds,omitempty"`
 	RelayStatus          []probeRelayStatusItem         `json:"relay_status,omitempty"`
 	VirtualRouterBuffers probeVirtualRouterBufferReport `json:"virtual_router_buffers,omitempty"`
+}
+
+func updateProbeRuntimeRouterPluginUpgrade(nodeID string, supported bool) {
+	probeRuntimeStore.mu.Lock()
+	current := probeRuntimeStore.data[nodeID]
+	current.RouterPluginUpgrade = supported && current.BuildKind == probeNodeKindAsus56UV2
+	probeRuntimeStore.data[nodeID] = current
+	probeRuntimeStore.mu.Unlock()
 }
 
 func updateProbeRuntimeProductStatus(nodeID string, buildKind string, status probeSpecialExitRuntimeReport, routerStatus probeLinuxRouterRuntimeReport) bool {

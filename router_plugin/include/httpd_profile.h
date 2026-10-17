@@ -2,9 +2,8 @@
 #define CHVR_HTTPD_PROFILE_H
 #include <stdint.h>
 #include <stddef.h>
-/* RT-BE86U 3.0.0.6.102_39436, ARM32 EXEC. The service and constructor
- * independently pin the entire vendor executable before using these values.
- * These are data/callback addresses, never instructions to patch. */
+/* Frozen CI regression fixtures only; not used for installation, startup or
+ * runtime handler discovery. RT-BE86U 3.0.0.6.102_39436, ARM32 EXEC. */
 #define CHVR_BE86U_HTTPD_SHA256 "8804d44c2633046d7740d356e7bdcd5e46b1d2b3ac9b1e967dda01e99150823e"
 #define CHVR_BE86U_HTTPD_BYTES 804160
 #define CHVR_BE86U_ASP 0xdd1c8

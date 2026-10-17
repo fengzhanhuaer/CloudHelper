@@ -20,6 +20,7 @@ type proxyLatestRequest struct {
 }
 
 type proxyAsset struct {
+	Digest      string `json:"digest,omitempty"`
 	Name        string `json:"name"`
 	Size        int64  `json:"size"`
 	DownloadURL string `json:"download_url"`
@@ -63,6 +64,7 @@ func AdminProxyGitHubLatestHandler(w http.ResponseWriter, r *http.Request) {
 	assets := make([]proxyAsset, 0, len(release.Assets))
 	for _, a := range release.Assets {
 		assets = append(assets, proxyAsset{
+			Digest:      a.Digest,
 			Name:        a.Name,
 			Size:        a.Size,
 			DownloadURL: a.BrowserDownloadURL,

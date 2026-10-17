@@ -370,6 +370,55 @@ jobs:
           name: cloudhelper-probe-node-android-arm64.apk
           path: probe_node_android/cloudhelper-probe-node-android-arm64.apk
 
+  build-asus-router-plugins:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout Tagged Source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          ref: v${{ needs.prepare-release.outputs.new_version }}
+
+      - name: Restore Pinned ASUS SDK and Firmware ABI Fixtures
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/cloudhelper-asus-sdk
+          key: asus-sdk-v1-${{ hashFiles('router_plugin/ci-inputs.lock.json', 'router_plugin/tools/prepare-ci.py') }}
+
+      - name: Build Public Plugin Build Environment
+        run: docker build -f router_plugin/Dockerfile.ci -t cloudhelper-router-ci router_plugin
+
+      - name: Prepare Public SDK and Four Exact Firmware Fixtures
+        env:
+          SDK_DIR: ${{ runner.temp }}/cloudhelper-asus-sdk
+          INPUT_DIR: ${{ runner.temp }}/cloudhelper-asus-inputs
+        run: |
+          mkdir -p "$SDK_DIR" "$INPUT_DIR"
+          docker run --rm -v "$PWD/router_plugin:/module" -v "$SDK_DIR:/sdk" -v "$INPUT_DIR:/inputs" \
+            cloudhelper-router-ci python3 tools/prepare-ci.py /sdk --cache /inputs
+          sudo chown -R "$(id -u):$(id -g)" "$SDK_DIR"
+
+      - name: Build and Verify AX56U V2 and BE86U Plugin Packages
+        env:
+          CHVR_VERSION: v${{ needs.prepare-release.outputs.new_version }}
+          SDK_DIR: ${{ runner.temp }}/cloudhelper-asus-sdk
+        run: |
+          docker run --rm -v "$PWD/router_plugin:/module" -v "$SDK_DIR:/sdk" \
+            -e CHVR_CI_SDK=/sdk -e CHVR_VERSION cloudhelper-router-ci bash tools/build-ci.sh
+
+      - name: Upload ASUS Router Plugin Artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: cloudhelper-asus-router-plugins
+          path: |
+            router_plugin/artifacts/jffs/cloudhelper-asus56uv2-jffs.tar.gz
+            router_plugin/artifacts/jffs/cloudhelper-asus56uv2-jffs.tar.gz.json
+            router_plugin/artifacts/jffs/cloudhelper-asusbe86u-jffs.tar.gz
+            router_plugin/artifacts/jffs/cloudhelper-asusbe86u-jffs.tar.gz.json
+          if-no-files-found: error
+
   create-release:
     needs:
       - prepare-release
@@ -377,6 +426,7 @@ jobs:
       - build-probe-node
       - build-probe-router
       - build-probe-node-android
+      - build-asus-router-plugins
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -421,6 +471,12 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: cloudhelper-probe-node-android-arm64.apk
+          path: release-assets
+
+      - name: Download ASUS Router Plugin Artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: cloudhelper-asus-router-plugins
           path: release-assets
 
       - name: Generate Linux Router Paired Upgrade Manifests
@@ -471,6 +527,10 @@ jobs:
             release-assets/cloudhelper-probe-router-linux-amd64-manifest.json
             release-assets/mihomo-LICENSE
             release-assets/cloudhelper-probe-node-android-arm64.apk
+            release-assets/cloudhelper-asus56uv2-jffs.tar.gz
+            release-assets/cloudhelper-asus56uv2-jffs.tar.gz.json
+            release-assets/cloudhelper-asusbe86u-jffs.tar.gz
+            release-assets/cloudhelper-asusbe86u-jffs.tar.gz.json
 
       - name: Keep Latest 10 Releases
         env:

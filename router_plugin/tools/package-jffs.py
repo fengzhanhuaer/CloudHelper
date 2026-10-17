@@ -17,8 +17,11 @@ files = {
     'payload/httpd-bridge.so': root / 'bin/arm/httpd-bridge.so',
     'payload/web/VirtualRouter.asp': root / 'web/VirtualRouter.asp',
     'install.sh': root / 'jffs/install.sh',
+    'webs/Module_cloudhelper.asp': root / 'jffs/Module_cloudhelper.asp',
+    'scripts/uninstall_cloudhelper.sh': root / 'jffs/uninstall_cloudhelper.sh',
 }
 data = {name: path.read_bytes() for name, path in files.items()}
+data['.valid']=b'hnd\n'
 data['device-profile']=(args.profile+'\n').encode()
 binary = data['payload/cloudhelper-router-plugin']
 if binary[:4] != b'\x7fELF' or binary[4:6] != b'\x01\x01' or int.from_bytes(binary[18:20], 'little') != 40:
@@ -73,12 +76,12 @@ report = {
 data['manifest.json'] = (json.dumps(report, indent=2) + '\n').encode()
 out = root / 'artifacts/jffs'
 out.mkdir(parents=True, exist_ok=True)
-target = out / ('cloudhelper-asus'+('56uv2' if args.profile=='ax56uv2' else 'be86u')+'-jffs-' + release + '.tar.gz')
+target = out / ('cloudhelper-asus'+('56uv2' if args.profile=='ax56uv2' else 'be86u')+'-jffs.tar.gz')
 with tarfile.open(str(target), 'w:gz') as archive:
     for name, body in sorted(data.items()):
-        info = tarfile.TarInfo('cloudhelper-router/' + name)
+        info = tarfile.TarInfo('cloudhelper/' + name)
         info.size, info.mtime = len(body), 0
-        info.mode = 0o700 if name in ('install.sh', 'payload/service', 'payload/cloudhelper-router-plugin') else 0o600
+        info.mode = 0o700 if name in ('install.sh', 'payload/service', 'payload/cloudhelper-router-plugin', 'scripts/uninstall_cloudhelper.sh') else 0o600
         archive.addfile(info, io.BytesIO(body))
 report['package_bytes'] = target.stat().st_size
 report['sha256'] = hashlib.sha256(target.read_bytes()).hexdigest()

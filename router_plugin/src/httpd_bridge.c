@@ -14,7 +14,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
-#include "../include/httpd_profile.h"
+#include "../include/httpd_layout.h"
 
 #ifndef CHVR_ADMIN_SOCKET
 #define CHVR_ADMIN_SOCKET "/var/run/cloudhelper-router/admin.sock"
@@ -34,40 +34,30 @@ static size_t body_size;
 static int *ssl_enabled, *ssl_fd;
 static char *(*nvram_value)(const char *);
 
+static __thread void *active_ssl;
+static __thread int active_ssl_fd=-1;
+/* Track the current TLS stream via the public OpenSSL ABI. */
+int SSL_read(void *ssl,void *buffer,int length)
+{
+    int (*read_ssl)(void *,void *,int)=dlsym(RTLD_NEXT,"SSL_read");
+    int (*get_fd)(const void *)=dlsym(RTLD_NEXT,"SSL_get_fd");
+    if(!read_ssl||!get_fd)return -1;
+    active_ssl=ssl;active_ssl_fd=get_fd(ssl);return read_ssl(ssl,buffer,length);
+}
+void SSL_free(void *ssl)
+{
+    void (*free_ssl)(void *)=dlsym(RTLD_NEXT,"SSL_free");
+    if(active_ssl==ssl){active_ssl=NULL;active_ssl_fd=-1;}
+    if(free_ssl)free_ssl(ssl);
+}
+
 static struct mime_handler *hidden_stock_handler(void)
 {
-#if defined(__arm__) && UINTPTR_MAX == UINT32_MAX
-    /* New stock builds hide the formerly exported handler/SSL globals. Do
-     * not guess offsets for another firmware or trust a writable whitelist. */
-    unsigned char *(*sha256)(const unsigned char *,size_t,unsigned char *)=
-        dlsym(RTLD_DEFAULT,"SHA256");
-    if(!sha256)return NULL;
-    FILE *file=fopen("/proc/self/exe","rb");if(!file)return NULL;
-    struct stat st;unsigned char *bytes=NULL,digest[32];char hex[65];
-    const chvr_httpd_profile *profile=NULL;
-    if(fstat(fileno(file),&st))goto done;
-    for(size_t i=0;i<sizeof(chvr_be86u_profiles)/sizeof(chvr_be86u_profiles[0]);i++)
-        if(st.st_size==(off_t)chvr_be86u_profiles[i].bytes){profile=&chvr_be86u_profiles[i];break;}
-    if(!profile)goto done;
-    size_t size=profile->bytes;
-    bytes=malloc(size);if(!bytes){profile=NULL;goto done;}
-    if(fread(bytes,1,size,file)!=size ||
-       memcmp(bytes,"\177ELF\1\1",6) || bytes[16]!=2 || bytes[18]!=40){profile=NULL;goto done;}
-    if(!sha256(bytes,size,digest)){profile=NULL;goto done;}
-    for(unsigned i=0;i<32;i++)snprintf(hex+i*2,3,"%02x",digest[i]);
-    if(strcmp(hex,profile->sha256))profile=NULL;
-done:
-    free(bytes);fclose(file);if(!profile)return NULL;
-    struct mime_handler *asp=(struct mime_handler *)profile->asp;
-    if(sizeof(*asp)!=24 || !chvr_httpd_fields_match(asp,profile->fields) ||
+    chvr_httpd_layout layout;if(chvr_httpd_file("/proc/self/exe",&layout))return NULL;
+    struct mime_handler *asp=(struct mime_handler *)layout.asp;
+    if(sizeof(*asp)!=6*sizeof(uintptr_t) || !chvr_handler_matches(asp,layout.fields) ||
        strcmp(asp->pattern,"**.asp*"))return NULL;
-    ssl_enabled=(int *)profile->ssl_enabled;
-    ssl_fd=(int *)profile->ssl_fd;
     return asp;
-#else
-    (void)chvr_be86u_profiles;
-    return NULL;
-#endif
 }
 
 static int api_path(const char *path) { return !strcmp(path, API); }
@@ -79,7 +69,9 @@ static void clear_body(void)
 }
 static int lan_client(FILE *stream)
 {
-    int fd=ssl_enabled && *ssl_enabled ? (ssl_fd ? *ssl_fd : -1) : fileno(stream);
+    int fd=fileno(stream);
+    if(ssl_enabled&&*ssl_enabled)fd=ssl_fd?*ssl_fd:-1;
+    else if(fd<0)fd=active_ssl_fd;
     struct sockaddr_in peer,local;socklen_t n=sizeof(peer);
     if(fd<0 || getpeername(fd,(struct sockaddr *)&peer,&n) || peer.sin_family!=AF_INET)return 0;
     n=sizeof(local);

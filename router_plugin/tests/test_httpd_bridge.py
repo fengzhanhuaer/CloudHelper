@@ -7,10 +7,11 @@ import socket
 import subprocess
 import tempfile
 import time
+import ssl
 
 root=Path(__file__).resolve().parents[1]
-def call(port,path,body,authenticated=True):
-    connection=http.client.HTTPConnection('127.0.0.1',port,timeout=5)
+def call(port,path,body,authenticated=True,tls=False):
+    connection=(http.client.HTTPSConnection('127.0.0.1',port,timeout=5,context=ssl._create_unverified_context()) if tls else http.client.HTTPConnection('127.0.0.1',port,timeout=5))
     try:
         headers={'Cookie':'stock_session=fixture'} if authenticated else {}
         connection.request('POST','/'+path,body=body,headers=headers)
@@ -22,7 +23,8 @@ with tempfile.TemporaryDirectory(prefix='chvr-httpd-') as directory:
     runtime=Path(directory);sock=runtime/'admin.sock'
     subprocess.check_call(['cc','-Os','-std=c99','-Wall','-Wextra','-Werror','-fPIC','-shared',
         '-DCHVR_ADMIN_SOCKET="'+str(sock)+'"',str(root/'src/httpd_bridge.c'),'-ldl','-o',str(runtime/'bridge.so')])
-    subprocess.check_call(['cc','-Os','-std=c99','-Wall','-Wextra','-Werror','-rdynamic',str(root/'tests/httpd_fixture.c'),'-o',str(runtime/'httpd')])
+    for hidden in [False,True]:
+        subprocess.check_call(['cc','-Os','-std=c99','-Wall','-Wextra','-Werror','-no-pie','-rdynamic']+(['-DCHVR_HIDDEN'] if hidden else [])+[str(root/'tests/httpd_fixture.c'),'-lssl','-lcrypto','-o',str(runtime/('hidden-httpd' if hidden else 'httpd'))])
     daemon=subprocess.Popen([str(root/'bin/native/cloudhelper-router-plugin'),'--config',str(runtime/'config.json'),'--socket',str(sock)])
     web=None
     try:
@@ -47,6 +49,16 @@ with tempfile.TemporaryDirectory(prefix='chvr-httpd-') as directory:
         # The service remains live after malformed requests; no port is opened
         # by the daemon or the extension (only fixture's stock-port listener).
         assert json.loads(call(port,api,b'{"action":"status"}')[1])['ok']
+        web.terminate();web.wait(timeout=5);web=None
+        subprocess.check_call(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1','-keyout',str(runtime/'key.pem'),'-out',str(runtime/'cert.pem'),'-subj','/CN=localhost'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        for tls in [False,True]:
+            arguments=[str(runtime/'hidden-httpd')]+(['--tls',str(runtime/'cert.pem'),str(runtime/'key.pem')] if tls else [])
+            web=subprocess.Popen(arguments,env={**os.environ,'LD_PRELOAD':str(runtime/'bridge.so')},stdout=subprocess.PIPE,universal_newlines=True)
+            port=int(web.stdout.readline())
+            assert call(port,api,b'{"action":"status"}',False,tls)[0]==401
+            assert json.loads(call(port,api,b'{"action":"status"}',tls=tls)[1])['ok']
+            assert call(port,'Main_Netstat.asp',b'',tls=tls)[1]==b'stock page'
+            web.terminate();web.wait(timeout=5);web=None
     finally:
         if web:web.terminate();web.wait(timeout=5)
         daemon.terminate();daemon.wait(timeout=10)

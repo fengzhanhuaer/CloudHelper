@@ -96,25 +96,8 @@ menu_add() {
 }
 web_root=/tmp/var/wwwext/cloudhelper-router
 httpd=/usr/sbin/httpd
-stock_hash=144f9083c6ae57632cf59b4012d5ad46aff6f4f64012ce3fed50e0f1b8ebf6d1
 httpd_supported() {
-    actual=$(openssl dgst -sha256 "$httpd" | awk '{print $NF}')
-    test "$actual" = "$stock_hash" && return 0
-    if test "$(nvram get productid):$(nvram get odmpid)" = RT-AX55:RT-AX56U_V2 &&
-       test "$actual" = 764716012e664f64f1857ba1027a269d73899c09d4b10f5323bd4fc438997004;then return 0;fi
-    if test "$(nvram get productid)" = RT-BE86U;then
-        case "$actual" in
-         8804d44c2633046d7740d356e7bdcd5e46b1d2b3ac9b1e967dda01e99150823e|1b7148dabccb0954b13b8bf70f853afbcd133160cf9f4cb201789bccdb5143e8) return 0;;
-         *) return 1;;
-        esac
-    fi
-    # This declaration is part of the verified read-only minimal firmware.
-    # Never accept a writable /tmp or JFFS whitelist for a different HTTPD.
-    declaration=/rom/etc/cloudhelper-httpd.sha256
-    test -x /rom/etc/cloudhelper-jffs-start && test -f "$declaration" || return 1
-    expected=$(cat "$declaration")
-    case "$expected" in ''|*[!a-f0-9]*) return 1;; esac
-    test "${#expected}" -eq 64 && test "$actual" = "$expected"
+    "$binary" --check-httpd "$httpd"
 }
 httpd_owned() {
     awk '$2=="/usr/sbin/httpd" {ok=1} END {exit !ok}' /proc/mounts &&
@@ -176,8 +159,8 @@ prepare() {
     local_prepare
 }
 boot_available() {
-    case "$(nvram get productid):$(nvram get odmpid):$(nvram get extendno)" in
-     RT-BE86U::39125_koolcenter|RT-AX55:RT-AX56U_V2:49559_koolshare) ;;
+    case "$(nvram get productid):$(nvram get odmpid)" in
+     RT-BE86U:|RT-AX55:RT-AX56U_V2) ;;
      *) return 1;;
     esac
     test "$(nvram get jffs2_scripts)" = 1 &&

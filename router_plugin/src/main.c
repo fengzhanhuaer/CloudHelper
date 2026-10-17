@@ -2,6 +2,8 @@
 #include "service.h"
 #include "platform.h"
 #include "transport.h"
+#include "upgrade.h"
+#include "httpd_layout.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -63,6 +65,7 @@ static json_object *status_reply(vr_service *s)
 {
     json_object *o=json_object_new_object();
     json_object_object_add(o,"version",json_object_new_string(VR_VERSION));
+    json_object_object_add(o,"upgrade",vr_upgrade_status(s));
     pthread_mutex_lock(&s->mutex);
     json_object_object_add(o,"ok",json_object_new_boolean(1));json_object_object_add(o,"csrf",json_object_new_string(s->csrf));
     json_object_object_add(o,"config",vr_config_json(&s->config,0));
@@ -84,6 +87,11 @@ json_object *vr_service_dispatch(vr_service *s,json_object *request)
     if(!strcmp(action,"logs"))return vr_service_logs(s);
     const char *token=vr_string(request,"csrf");
     if(strlen(token)!=48 || CRYPTO_memcmp(token,s->csrf,48))return error_reply("invalid CSRF token");
+    if(!strcmp(action,"upgrade")) {
+        char err[256]="cannot start upgrade";
+        if(vr_upgrade_start(s,request,err,sizeof(err)))return error_reply(err);
+        return status_reply(s);
+    }
     if(!strcmp(action,"configure")) {
         vr_config c;char err[256];
         pthread_mutex_lock(&s->mutex);
@@ -188,14 +196,17 @@ int vr_service_run(const char *config_path,const char *socket_path,int cleanup)
 done:
     pthread_mutex_lock(&s.mutex);s.stop=1;pthread_cond_broadcast(&s.changed);pthread_mutex_unlock(&s.mutex);
     if(started)pthread_join(thread,NULL);
+    vr_upgrade_join(&s);
     if(fd>=0)close(fd);
     if(bound){unlink(socket_path);unlink(pid_path);}if(lock>=0)close(lock);
-    json_object_put(s.status);json_object_put(s.measurement);json_object_put(s.pending_policy);pthread_cond_destroy(&s.changed);pthread_mutex_destroy(&s.mutex);
+    json_object_put(s.status);json_object_put(s.measurement);json_object_put(s.pending_policy);json_object_put(s.upgrade);pthread_cond_destroy(&s.changed);pthread_mutex_destroy(&s.mutex);
     OPENSSL_cleanse(&s.config,sizeof(s.config));return rc;
 }
 
 int main(int argc,char **argv)
 {
+    if(argc==3&&!strcmp(argv[1],"--check-httpd")){chvr_httpd_layout layout;return chvr_httpd_file(argv[2],&layout)?1:0;}
+    if(argc==3&&!strcmp(argv[1],"--apply-upgrade"))return vr_upgrade_apply(argv[2]);
     if(argc==3 && !strcmp(argv[1],"--runtime-mount")) {
         if(vr_runtime_mount(argv[2])){perror("plugin runtime mount");return 1;}
         return 0;

@@ -114,7 +114,7 @@ func TestReleaseWorkflowDefinesLinuxRouterArtifacts(t *testing.T) {
 	if err := document.Decode(&workflow); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"prepare-release", "build-probe-controller", "build-probe-node", "build-probe-router", "build-probe-node-android", "create-release"} {
+	for _, name := range []string{"prepare-release", "build-probe-controller", "build-probe-node", "build-probe-router", "build-probe-node-android", "build-asus-router-plugins", "create-release"} {
 		if _, ok := workflow.Jobs[name]; !ok {
 			t.Fatalf("release workflow missing required job %q", name)
 		}
@@ -150,6 +150,10 @@ func TestReleaseWorkflowDefinesLinuxRouterArtifacts(t *testing.T) {
 		"cloudhelper-probe-router-linux-amd64-manifest.json",
 		"mihomo-LICENSE",
 		"cloudhelper-probe-node-android-arm64.apk",
+		"cloudhelper-asus56uv2-jffs.tar.gz",
+		"cloudhelper-asus56uv2-jffs.tar.gz.json",
+		"cloudhelper-asusbe86u-jffs.tar.gz",
+		"cloudhelper-asusbe86u-jffs.tar.gz.json",
 	}
 	if len(files) != len(expected) {
 		t.Fatalf("release assets=%v, want %d assets", files, len(expected))

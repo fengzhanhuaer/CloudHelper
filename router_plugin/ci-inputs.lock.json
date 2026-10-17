@@ -1,0 +1,33 @@
+{
+  "sdk": {
+    "url": "https://dlcdnets.asus.com/pub/ASUS/wireless/RT-AX55/GPL_RT_AX55_300438653297.zip",
+    "bytes": 1223570375,
+    "sha256": "54769b983b0d33f631408cfdae6ecda6441221bb9d580b5252266342bff03e98"
+  },
+  "firmware": {
+    "be86u": {
+      "url": "https://dlcdnets.asus.com/pub/ASUS/wireless/RT-BE86U/FW_RT-BE86U_300610239436.zip",
+      "sha256": "d65c08cb308e2d41341e1496a403d5b0cc57ef1d557ca0803a8c5d715894afd6",
+      "bytes": 68901180,
+      "httpd_sha256": "8804d44c2633046d7740d356e7bdcd5e46b1d2b3ac9b1e967dda01e99150823e"
+    },
+    "be86u-koolcenter": {
+      "url": "https://fw.koolcenter.com/KoolCenter_ASUS_Official_Mod/RT-BE86U/RT-BE86U_3.0.0.6_102_39125_koolcenter_nand_squashfs-15df6c9.pkgtb",
+      "sha256": "5f15012538de3c17c51d2acf038dd198fd9791ffd673f01e819ac24f4b192176",
+      "bytes": 74733212,
+      "httpd_sha256": "1b7148dabccb0954b13b8bf70f853afbcd133160cf9f4cb201789bccdb5143e8"
+    },
+    "ax56uv2-koolshare": {
+      "url": "https://fw.koolcenter.com/KoolCenter_ASUS_Official_Mod/RT-AX56U_V2/RT-AX56U_V2_386_49559_koolshare_cferom_puresqubi_20230410.w",
+      "sha256": "e7c5a7a36459c07e4c3ed5b91539bb0b119eea10e85382c38067a95860c00574",
+      "bytes": 34078740,
+      "httpd_sha256": "764716012e664f64f1857ba1027a269d73899c09d4b10f5323bd4fc438997004"
+    },
+    "ax56uv2": {
+      "url": "https://dlcdnets.asus.com/pub/ASUS/wireless/RT-AX55/FW_RT_AX55_300438652332.zip",
+      "bytes": 68991320,
+      "sha256": "abbccacf4f5957c1d400a2bd231f6bbdeebd5027ad26f94fb37e05c3a71bea8f",
+      "httpd_sha256": "144f9083c6ae57632cf59b4012d5ad46aff6f4f64012ce3fed50e0f1b8ebf6d1"
+    }
+  }
+}

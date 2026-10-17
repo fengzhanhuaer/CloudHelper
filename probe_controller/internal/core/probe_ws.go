@@ -11,6 +11,7 @@ import (
 )
 
 type probeReportMessage struct {
+	RouterPluginUpgrade  bool                           `json:"router_plugin_upgrade,omitempty"`
 	GatewayProxy         *probeGatewayProxyConfig       `json:"gateway_proxy,omitempty"`
 	LANIP                string                         `json:"lan_ip,omitempty"`
 	WANIP                string                         `json:"wan_ip,omitempty"`
@@ -126,6 +127,7 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 			if updateProbeRuntimeProductStatus(nodeID, msg.BuildKind, msg.SpecialExit, msg.LinuxRouter) || gatewayChanged {
 				scheduleProbeRouteConfigSyncToKnownNodes()
 			}
+			updateProbeRuntimeRouterPluginUpgrade(nodeID, msg.RouterPluginUpgrade)
 
 			_ = probeSession.writeJSON(probeAckMessage{
 				Type:      "ack",

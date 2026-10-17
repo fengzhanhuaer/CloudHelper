@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "engine.h"
+#include "upgrade.h"
 #include <errno.h>
 #include <poll.h>
 #include <stdio.h>
@@ -53,6 +54,10 @@ static int message(control *c)
     if(!strcmp(type,"ack")){c->ack_at=vr_millis();pthread_mutex_lock(&c->engine->mutex);c->engine->controller_connected=1;pthread_mutex_unlock(&c->engine->mutex);}
     else if(!strcmp(type,"route_config_sync"))c->refresh=1;
     else if(!strcmp(type,"report_once"))c->report=1;
+    else if(!strcmp(type,"upgrade")&&!strcmp(vr_string(m,"build_kind"),"asus_jffs")) {
+        char err[256]="cannot start upgrade";
+        if(vr_upgrade_start(c->engine->service,m,err,sizeof(err)))vr_service_log(c->engine->service,"upgrade",err);
+    }
     json_object_put(m);return 0;
 }
 

@@ -45,6 +45,7 @@ type probeUpgradeDispatchResult struct {
 }
 
 type probeUpgradeCommand struct {
+	BuildKind         string `json:"build_kind,omitempty"`
 	Type              string `json:"type"`
 	Mode              string `json:"mode"`
 	ReleaseRepo       string `json:"release_repo"`
@@ -655,7 +656,7 @@ func ProbeProxyGitHubLatestHandler(w http.ResponseWriter, r *http.Request) {
 
 	assets := make([]proxyAsset, 0, len(release.Assets))
 	for _, a := range release.Assets {
-		assets = append(assets, proxyAsset{Name: a.Name, Size: a.Size, DownloadURL: a.BrowserDownloadURL})
+		assets = append(assets, proxyAsset{Name: a.Name, Size: a.Size, DownloadURL: a.BrowserDownloadURL, Digest: a.Digest})
 	}
 	writeJSON(w, http.StatusOK, proxyLatestResponse{
 		Repo:        repo,
@@ -839,10 +840,16 @@ func ProbeProxyRouterInstallScriptHandler(w http.ResponseWriter, r *http.Request
 }
 
 func dispatchUpgradeToProbe(node probeNodeRecord, controllerBaseURL string) (probeUpgradeDispatchResult, error) {
-	if normalizeProbeNodeKind(node.NodeKind) == probeNodeKindAsus56UV2 {
-		return probeUpgradeDispatchResult{}, fmt.Errorf("路由器插件使用专用JFFS插件升级，不支持普通Probe二进制更新")
-	}
 	nodeID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
+	asus := normalizeProbeNodeKind(node.NodeKind) == probeNodeKindAsus56UV2
+	if asus {
+		probeRuntimeStore.mu.RLock()
+		supported := probeRuntimeStore.data[nodeID].RouterPluginUpgrade
+		probeRuntimeStore.mu.RUnlock()
+		if !supported {
+			return probeUpgradeDispatchResult{}, fmt.Errorf("当前JFFS插件不支持在线升级，请先安装支持在线升级的新版插件包")
+		}
+	}
 	session, ok := getProbeSession(nodeID)
 	if !ok {
 		return probeUpgradeDispatchResult{}, fmt.Errorf("probe is offline")
@@ -860,6 +867,9 @@ func dispatchUpgradeToProbe(node probeNodeRecord, controllerBaseURL string) (pro
 		ReleaseRepo:       repo,
 		ControllerBaseURL: controllerBaseURL,
 		Timestamp:         timestamp,
+	}
+	if asus {
+		cmd.BuildKind = "asus_jffs"
 	}
 	if err := session.writeJSON(cmd); err != nil {
 		unregisterProbeSession(nodeID, session)

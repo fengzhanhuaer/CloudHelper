@@ -507,6 +507,7 @@
       const registeredNode = state.nodes.find((entry) => Number(entry.node_no) === Number(node.node_no));
       const buildKind = String((node.runtime || {}).build_kind || '').trim().toLowerCase();
       if (normalizeNodeKind(node) === 'asus_56uv2' || normalizeNodeKind(registeredNode) === 'asus_56uv2' || buildKind === 'asus_56uv2') {
+        if ((node.runtime || {}).router_plugin_upgrade === true) return renderProbeVersion(version, online);
         return `<div class="version-cell"><span class="mono">${escapeHTML(String(version || '').trim() || '-')}</span></div>`;
       }
       return renderProbeVersion(version, online);
@@ -811,7 +812,7 @@
             ? 'Alpine Linux x64/ARM64'
             : escapeHTML(item.target_system || '-');
           const installButton = `<button class="btn" type="button" data-action="node-install-command" data-node-no="${item.node_no}">安装</button>`;
-          const upgradeButton = nodeKind === 'asus_56uv2' ? '' : `<button class="btn" type="button" data-action="node-upgrade" data-node-no="${item.node_no}">升级</button>`;
+          const upgradeButton = nodeKind === 'asus_56uv2' && runtime.router_plugin_upgrade !== true && fallbackRuntime.router_plugin_upgrade !== true ? '' : `<button class="btn" type="button" data-action="node-upgrade" data-node-no="${item.node_no}">升级</button>`;
           return `<tr>
             <td>${escapeHTML(item.node_no)}</td>
             <td>${escapeHTML(item.node_name || '-')}${kindLabel}</td>
