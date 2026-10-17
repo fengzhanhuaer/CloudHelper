@@ -117,7 +117,7 @@ func main() {
 			http.Error(w, "temporary configuration outage", 503)
 			return
 		}
-		io.WriteString(w, `{"revision":2}`)
+		io.WriteString(w, `{"node_id":"7","expected_node_kind":"asus_56uv2","revision":2,"virtual_router":{"fake_ip_cidr":"198.18.0.0/15","probe_ips":[{"node_id":"7","ip":"198.18.0.7"}],"topology_rules":[],"route_rules":[]}}`)
 	})
 	mux.HandleFunc("/api/probe", func(w http.ResponseWriter, r *http.Request) {
 		if !auth(r) {
@@ -177,7 +177,6 @@ func main() {
 		}
 		reports.Add(1)
 		encoder.Encode(map[string]string{"type": "ack"})
-		encoder.Encode(map[string]string{"type": "route_config_sync"})
 		var b [1]byte
 		stream.Read(b[:])
 	})

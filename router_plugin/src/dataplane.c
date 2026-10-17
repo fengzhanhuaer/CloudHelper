@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include "engine.h"
 #include <arpa/inet.h>
 #include <stdio.h>
@@ -28,41 +29,6 @@ static int fake_ip(vr_engine *e,const char *ip)
     struct in_addr a,b;if(bits>32||inet_pton(AF_INET,ip,&a)!=1||inet_pton(AF_INET,base,&b)!=1)return 0;
     uint32_t mask=bits?0xffffffffu<<(32-bits):0;char id[129];
     return (ntohl(a.s_addr)&mask)==(ntohl(b.s_addr)&mask) && node_for_ip(e,a.s_addr,id)!=0;
-}
-
-int vr_mapping_get(vr_engine *e,const char *domain,const char *ip,vr_decision decision,vr_mapping *out)
-{
-    time_t now=time(NULL);uint64_t tick=vr_millis();
-    pthread_mutex_lock(&e->mutex);
-    for(size_t i=0;i<VR_MAPPING_MAX;i++) {
-        vr_mapping *m=&e->mappings[i];
-        if(m->expires>now && ((domain&&*domain&&!strcmp(m->domain,domain)&&!strcmp(m->rule,decision.rule)&&!strcmp(m->exit,decision.exit_node)) ||
-            (ip&&*ip&&!strcmp(m->ip,ip)))){m->used=tick;*out=*m;pthread_mutex_unlock(&e->mutex);return 0;}
-    }
-    pthread_mutex_unlock(&e->mutex);
-    json_object *body=json_object_new_object();
-    if(domain&&*domain) {
-        json_object_object_add(body,"domain",json_object_new_string(domain));json_object_object_add(body,"rule_id",json_object_new_string(decision.rule));
-        json_object_object_add(body,"action",json_object_new_string("probe_exit"));json_object_object_add(body,"exit_node_id",json_object_new_string(decision.exit_node));
-    } else json_object_object_add(body,"fake_ip",json_object_new_string(ip?ip:""));
-    char error[256];json_object *response=vr_controller_call(&e->config,e->addresses.wan_if,"POST","/api/probe/route/fake_ip/resolve",body,error,sizeof(error));json_object_put(body);
-    json_object *item=vr_member(response,"item");vr_mapping m={0};int rc=-1;
-    if(!item || strcmp(vr_string(item,"action"),"probe_exit") || !fake_ip(e,vr_string(item,"fake_ip")) ||
-       vr_copy(m.domain,sizeof(m.domain),vr_string(item,"domain")) || !*m.domain ||
-       vr_copy(m.ip,sizeof(m.ip),vr_string(item,"fake_ip")) || vr_copy(m.rule,sizeof(m.rule),vr_string(item,"rule_id")) ||
-       vr_copy(m.exit,sizeof(m.exit),vr_string(item,"exit_node_id")) || !*m.exit ||
-       (domain&&*domain && (strcmp(domain,m.domain)||strcmp(decision.rule,m.rule)||strcmp(decision.exit_node,m.exit))) ||
-       (ip&&*ip&&strcmp(ip,m.ip)))goto done;
-    /* Refresh frequently; authoritative allocation remains on the controller. */
-    if(vr_timestamp(vr_string(item,"expires_at"),&m.expires)||m.expires<=time(NULL))goto done;
-    if(m.expires>now+30)m.expires=now+30;
-    m.used=tick;
-    pthread_mutex_lock(&e->mutex);size_t slot=0;
-    for(size_t i=0;i<VR_MAPPING_MAX;i++){if(e->mappings[i].expires<=now){slot=i;break;}if(e->mappings[i].used<e->mappings[slot].used)slot=i;}
-    e->mappings[slot]=m;pthread_mutex_unlock(&e->mutex);*out=m;rc=0;
-done:
-    if(rc&&e->service){char event[240];snprintf(event,sizeof(event),"Fake IP lookup failed: %.160s",*error?error:"invalid authoritative mapping");vr_service_log(e->service,"dns",event);}
-    json_object_put(response);return rc;
 }
 
 static int same(const vr_packet *a,const vr_packet *b)
@@ -148,11 +114,14 @@ static void *resolver(void *arg)
 {
     vr_engine *e=arg;
     for(;;){
+        vr_mapping_flush(e,0);
         pthread_mutex_lock(&e->mutex);size_t slot;
         for(;;){for(slot=0;slot<16;slot++)if(e->resolves[slot].state==1)break;
             if(e->resolve_stop||slot<16)break;
-            pthread_cond_wait(&e->resolve_changed,&e->mutex);}
+            struct timespec wake;clock_gettime(CLOCK_REALTIME,&wake);wake.tv_sec++;
+            if(pthread_cond_timedwait(&e->resolve_changed,&e->mutex,&wake))break;}
         if(e->resolve_stop){pthread_mutex_unlock(&e->mutex);break;}
+        if(slot==16){pthread_mutex_unlock(&e->mutex);continue;}
         vr_resolve_job *j=&e->resolves[slot];j->state=2;char ip[16];strcpy(ip,j->ip);pthread_mutex_unlock(&e->mutex);
         vr_mapping m;vr_decision none={0};int ok=!vr_mapping_get(e,NULL,ip,none,&m);uint32_t real=0;
         if(ok&&!strcmp(m.exit,e->config.node_id))ok=!mapping_destination(e,&m,&real);
@@ -187,6 +156,7 @@ void vr_dataplane_stop(vr_engine *e)
     if(!e->resolve_started)return;
     pthread_mutex_lock(&e->mutex);e->resolve_stop=1;pthread_cond_signal(&e->resolve_changed);pthread_mutex_unlock(&e->mutex);
     pthread_join(e->resolve_thread,NULL);pthread_cond_destroy(&e->resolve_changed);e->resolve_started=0;
+    vr_mapping_flush(e,1);
 }
 
 void vr_outgoing(vr_engine *e,uint8_t *b,size_t n)

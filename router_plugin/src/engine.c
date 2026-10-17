@@ -26,6 +26,8 @@ static void status(vr_engine *e,int ready)
         vr_link *l=&e->links[i];json_object *v=json_object_new_object();
         json_object_object_add(v,"route",json_object_new_string(l->route));json_object_object_add(v,"peer",json_object_new_string(l->peer));
         json_object_object_add(v,"state",json_object_new_string(l->ssl?"connected":"disconnected"));
+        const char *domain=vr_string(l->rule,!strcmp(l->peer,vr_string(l->rule,"from_node_id"))?"from_service_domain":"to_service_domain");
+        json_object_object_add(v,"domain",json_object_new_string(domain));
         json_object_object_add(v,"transport",json_object_new_string("TLS/WebSocket"));json_object_object_add(v,"error",json_object_new_string(l->error));
         json_object_object_add(v,"rtt_ms",json_object_new_int64((int64_t)l->rtt));
         json_object_object_add(v,"tx_bytes",json_object_new_int64((int64_t)l->tx));json_object_object_add(v,"rx_bytes",json_object_new_int64((int64_t)l->rx));json_object_array_add(links,v);
@@ -77,7 +79,11 @@ static int prepare(vr_engine *e)
     if(!strcmp(upstream,e->addresses.lan)||!strcmp(upstream,e->addresses.wan)){strcpy(e->error,"DNS upstream cannot be this router");return -1;}
     char policy_cache[512],cert_cache[512];
     if(cache_path(e,"route-cache.json",policy_cache)||cache_path(e,"node-certificate.json",cert_cache))return -1;
-    e->snapshot=vr_policy_fetch_cached(&e->config,e->addresses.wan_if,policy_cache,e->error,sizeof(e->error));
+    vr_service *owner=e->service;
+    pthread_mutex_lock(&owner->mutex);
+    if(owner->pending_generation==e->generation){e->snapshot=owner->pending_policy;owner->pending_policy=NULL;}
+    pthread_mutex_unlock(&owner->mutex);
+    e->snapshot=vr_policy_fetch_pending(&e->config,e->addresses.wan_if,policy_cache,e->snapshot,e->error,sizeof(e->error));
     if(!e->snapshot)return -1;
     *e->error=0;
     json_object *dns=vr_member(e->snapshot,"dns_upstreams");
@@ -102,6 +108,8 @@ static int prepare(vr_engine *e)
     char event[240];snprintf(event,sizeof(event),"Listening port from controller: %d",e->config.port);vr_service_log(e->service,"service",event);
     if(!json_object_get_boolean(vr_member(e->policy,"enabled"))){strcpy(e->error,"virtual routing is disabled on controller");return -1;}
     if(vr_copy(e->cidr,sizeof(e->cidr),vr_string(e->policy,"fake_ip_cidr")))return -1;
+    if(cache_path(e,"fake-ip-cache.json",e->mapping_path))return -1;
+    vr_mapping_load(e);
     json_object *nodes=vr_member(e->policy,"probe_ips");
     for(size_t i=0;i<(size_t)json_object_array_length(nodes);i++) {
         json_object *node=json_object_array_get_idx(nodes,i);

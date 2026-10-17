@@ -27,6 +27,8 @@ int main(int argc,char **argv)
     assert(!vr_control_start(e));int changed=0;uint64_t deadline=vr_millis()+15000;
     while(vr_millis()<deadline){pthread_mutex_lock(&e->mutex);changed=e->refresh;pthread_mutex_unlock(&e->mutex);if(changed)break;poll(NULL,0,20);}
     vr_control_stop(e);assert(changed);
+    assert(s.pending_policy&&s.pending_generation==e->generation&&json_object_get_int(vr_member(s.pending_policy,"revision"))==2);
+    json_object_put(s.pending_policy);pthread_mutex_destroy(&s.mutex);
     json_object_put(e->snapshot);pthread_mutex_destroy(&e->mutex);free(e);curl_global_cleanup();
     puts("PASS: real TLS/WebSocket/yamux controller authentication, report, command and refresh");return 0;
 }

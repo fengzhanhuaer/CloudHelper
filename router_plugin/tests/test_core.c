@@ -80,6 +80,21 @@ static void test_config(void)
     char err[256];vr_config c,updated;vr_config_default(&c);
     assert(!c.enabled && c.port==12040 && !c.allow_wan);
     assert(!strcmp(c.dns_doh,"https://dns.alidns.com/dns-query")&&!strcmp(c.dns_dot,"dns.alidns.com:853")&&!strcmp(c.dns_upstream,"223.5.5.5:53"));
+    assert(c.doh_enabled&&c.dot_enabled&&c.plain_dns_enabled);
+    for(unsigned mask=0;mask<8;mask++) {
+        c.doh_enabled=!!(mask&1);c.dot_enabled=!!(mask&2);c.plain_dns_enabled=!!(mask&4);
+        json_object *saved=vr_config_json(&c,1);
+        assert(!vr_config_parse(&updated,saved,NULL,err,sizeof(err)));json_object_put(saved);
+        assert(updated.doh_enabled==c.doh_enabled&&updated.dot_enabled==c.dot_enabled&&updated.plain_dns_enabled==c.plain_dns_enabled);
+    }
+    c.doh_enabled=c.dot_enabled=c.plain_dns_enabled=0;
+    json_object *master=parse("{\"dns_upstreams\":{\"doh\":\"https://dns.alidns.com/dns-query\",\"dot\":\"dns.alidns.com:853\",\"dns\":\"223.5.5.5:53\"}}");
+    assert(!vr_config_parse(&updated,master,&c,err,sizeof(err))&&!updated.doh_enabled&&!updated.dot_enabled&&!updated.plain_dns_enabled);
+    assert(!vr_config_parse(&updated,master,NULL,err,sizeof(err))&&updated.doh_enabled&&updated.dot_enabled&&updated.plain_dns_enabled);
+    json_object *up=vr_member(master,"dns_upstreams");
+    json_object_object_add(up,"doh_enabled",json_object_new_string("false"));assert(vr_config_parse(&updated,master,&c,err,sizeof(err))<0);
+    json_object_object_del(up,"doh_enabled");json_object_object_add(up,"unknown",json_object_new_boolean(1));assert(vr_config_parse(&updated,master,&c,err,sizeof(err))<0);
+    json_object_put(master);vr_config_default(&c);
     json_object *o=parse("{\"enabled\":true,\"controller\":\"https://controller.test:443/\",\"node_id\":\"7\",\"node_key\":\"test-key\"}");
     assert(!vr_config_parse(&c,o,NULL,err,sizeof(err)));json_object_put(o);
     assert(!strcmp(c.controller,"https://controller.test:443"));

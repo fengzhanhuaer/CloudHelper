@@ -44,7 +44,7 @@ static void *worker(void *arg)
         vr_engine_run(s,&c,generation);
         OPENSSL_cleanse(&c,sizeof(c));
         pthread_mutex_lock(&s->mutex);
-        if(!s->stop && s->generation==generation) {
+        if(!s->stop && s->generation==generation && !(s->pending_policy&&s->pending_generation==generation)) {
             struct timespec until;clock_gettime(CLOCK_REALTIME,&until);until.tv_sec+=15;
             pthread_cond_timedwait(&s->changed,&s->mutex,&until);
         }
@@ -89,6 +89,7 @@ json_object *vr_service_dispatch(vr_service *s,json_object *request)
         if(vr_config_parse(&c,vr_member(request,"config"),&s->config,err,sizeof(err))) {pthread_mutex_unlock(&s->mutex);return error_reply(err);}
         if(vr_config_save(&c,s->config_path)){pthread_mutex_unlock(&s->mutex);OPENSSL_cleanse(&c,sizeof(c));return error_reply("cannot persist configuration");}
         s->config=c;s->generation++;
+        json_object_put(s->pending_policy);s->pending_policy=NULL;
         json_object *status=json_object_new_object();json_object_object_add(status,"enabled",json_object_new_boolean(c.enabled));
         json_object_object_add(status,"ready",json_object_new_boolean(0));json_object_put(s->status);s->status=status;
         pthread_cond_broadcast(&s->changed);pthread_mutex_unlock(&s->mutex);OPENSSL_cleanse(&c,sizeof(c));
@@ -186,7 +187,7 @@ done:
     if(started)pthread_join(thread,NULL);
     if(fd>=0)close(fd);
     if(bound){unlink(socket_path);unlink(pid_path);}if(lock>=0)close(lock);
-    json_object_put(s.status);json_object_put(s.measurement);pthread_cond_destroy(&s.changed);pthread_mutex_destroy(&s.mutex);
+    json_object_put(s.status);json_object_put(s.measurement);json_object_put(s.pending_policy);pthread_cond_destroy(&s.changed);pthread_mutex_destroy(&s.mutex);
     OPENSSL_cleanse(&s.config,sizeof(s.config));return rc;
 }
 

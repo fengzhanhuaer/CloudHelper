@@ -46,6 +46,7 @@ int vr_path(vr_engine *e,const char *target,char path[VR_PATH_MAX][129],size_t *
     int reverse[VR_PATH_MAX];size_t used=0;
     for(int at=goal;at>=0;at=parent[at]) {if(used>=VR_PATH_MAX)return -1;reverse[used++]=at;}
     for(size_t i=0;i<used;i++)if(vr_copy(path[i],129,vr_string(json_object_array_get_idx(nodes,(size_t)reverse[used-i-1]),"node_id")))return -1;
+    if(used>VR_PATH_HOPS+1)return -1;
     *n=used;return 0;
 }
 
@@ -91,23 +92,41 @@ int vr_send(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],
 int vr_send_json(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],size_t n,json_object *m)
 {const char *s=json_object_to_json_string_ext(m,JSON_C_TO_STRING_PLAIN);return vr_send(e,main,sub,path,n,s,strlen(s));}
 
-static int received(const vr_frame *f,void *arg)
+int vr_link_receive(const vr_frame *f,void *arg)
 {
     vr_link *l=arg;vr_engine *e=l->engine;char path[VR_PATH_MAX][129];size_t count,at;
-    if(vr_frame_path(f,path,&count))return -1;
+    const char *rejected=NULL;
+    /* Probe Node permits an omitted/empty path and uses this carrier's ingress
+       path. Malformed JSON and explicit invalid paths still fail closed. */
+    json_object *control=f->control_len?vr_json_parse(f->control,f->control_len):NULL;
+    json_object *a=vr_member(control,"path");
+    int fallback=(!f->control_len || (control && json_object_is_type(control,json_type_object) &&
+        (!a || json_object_is_type(a,json_type_null) || (json_object_is_type(a,json_type_array)&&!json_object_array_length(a)))));
+    json_object_put(control);
+    if(fallback){memset(path,0,sizeof(path));strcpy(path[0],l->peer);strcpy(path[1],e->config.node_id);count=2;}
+    else if(vr_frame_path(f,path,&count)){rejected="invalid business path";goto drop;}
+    if(count>VR_PATH_HOPS+1){rejected="path exceeds maximum hops";goto drop;}
     for(at=0;at<count;at++)if(!strcmp(path[at],e->config.node_id))break;
-    if(!at || at>=count || strcmp(path[at-1],l->peer))return -1;
-    for(size_t i=1;i<count;i++)if(!adjacent(e,path[i-1],path[i]))return -1;
+    if(!at || at>=count || strcmp(path[at-1],l->peer)){rejected="ingress peer mismatch";goto drop;}
+    for(size_t i=1;i<count;i++)if(!adjacent(e,path[i-1],path[i])){rejected="unauthorized path edge";goto drop;}
     if(at+1<count){send_frame(e,f,path,count);return 0;}
     vr_link_frame(l,f,path,count);return 0;
+drop:;
+    /* Match Probe Node: reject the business frame, not its healthy carrier. */
+    char event[240];snprintf(event,sizeof(event),"Peer %.32s dropped frame %u/%u: %s",l->peer,f->main,f->sub,rejected);
+    vr_service_log(e->service,"link",event);return 0;
 }
 
 static int ws_received(int opcode,const uint8_t *bytes,size_t n,void *arg)
 {
     vr_link *l=arg;
-    if(opcode==2)return vr_decoder_feed(&l->decoder,bytes,n,received,l);
+    if(opcode==2){int rc=vr_decoder_feed(&l->decoder,bytes,n,vr_link_receive,l);
+        if(rc)snprintf(l->error,sizeof(l->error),"VR envelope invalid (code %d, buffered %zu/%zu)",rc,l->decoder.used,l->decoder.needed);
+        return rc;}
     if(opcode==9)return vr_link_queue(l,10,bytes,n);
-    return opcode==8?-1:0;
+    if(opcode==8){unsigned code=n>=2?((unsigned)bytes[0]<<8)|bytes[1]:1005;
+        snprintf(l->error,sizeof(l->error),"peer WebSocket close (%u)",code);return -1;}
+    return 0;
 }
 
 void vr_link_poll(vr_link *l,short events)
@@ -119,7 +138,12 @@ void vr_link_poll(vr_link *l,short events)
         for(unsigned batch=0;batch<16;batch++) {
             ERR_clear_error();errno=0;
             uint8_t bytes[16384];int n=SSL_read(l->ssl,bytes,sizeof(bytes));
-            if(n>0){l->rx+=(unsigned)n;l->last_rx=vr_millis();if(vr_ws_feed(&l->ws,bytes,(size_t)n,ws_received,l)){vr_link_close(l,"invalid carrier frame");return;}}
+            if(n>0){l->rx+=(unsigned)n;l->last_rx=vr_millis();*l->error=0;
+                if(vr_ws_feed(&l->ws,bytes,(size_t)n,ws_received,l)){
+                    char detail[sizeof(l->error)];
+                    if(*l->error)snprintf(detail,sizeof(detail),"%s",l->error);
+                    else snprintf(detail,sizeof(detail),"WebSocket invalid (opcode %d, mask %d, header %02x/%02x)",l->ws.opcode,l->ws.expect_mask,l->ws.header[0],l->ws.header[1]);
+                    vr_link_close(l,detail);return;}}
             else {int error=SSL_get_error(l->ssl,n);if(error!=SSL_ERROR_WANT_READ&&error!=SSL_ERROR_WANT_WRITE){char detail[96];vr_tls_error(detail,sizeof(detail),"receive",error);vr_link_close(l,detail);return;}break;}
         }
     }

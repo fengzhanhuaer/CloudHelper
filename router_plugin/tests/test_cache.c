@@ -7,9 +7,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-static json_object *response;
+static json_object *response;static unsigned calls;
 json_object *__wrap_vr_controller_call(const vr_config *c,const char *iface,const char *method,const char *path,json_object *body,char *err,size_t n)
-{(void)c;(void)iface;(void)method;(void)path;(void)body;if(n)*err=0;return json_object_get(response);}
+{calls++;(void)c;(void)iface;(void)method;(void)path;(void)body;if(n)*err=0;return json_object_get(response);}
 
 int main(void)
 {
@@ -20,6 +20,14 @@ int main(void)
     struct stat before,after;assert(!stat(path,&before));assert((before.st_mode&0777)==0600);
     o=vr_policy_fetch_cached(&c,"",path,err,sizeof(err));assert(o);json_object_put(o);assert(!stat(path,&after)&&before.st_ino==after.st_ino);
     json_object *online=response;response=NULL;
+    unsigned fetched=calls;
+    o=vr_policy_fetch_pending(&c,"",path,json_object_get(online),err,sizeof(err));assert(o&&calls==fetched);json_object_put(o);
+    json_object *rule=vr_json_parse("{\"id\":\"r\",\"enabled\":true,\"from_node_id\":\"7\",\"to_node_id\":\"8\",\"secret\":\"test-only\",\"auth_ticket\":\"fixture\",\"user_public_key\":\"fixture\",\"route_layer\":\"websocket\"}",strlen("{\"id\":\"r\",\"enabled\":true,\"from_node_id\":\"7\",\"to_node_id\":\"8\",\"secret\":\"test-only\",\"auth_ticket\":\"fixture\",\"user_public_key\":\"fixture\",\"route_layer\":\"websocket\"}"));
+    assert(rule);json_object_array_add(vr_member(vr_member(online,"virtual_router"),"topology_rules"),rule);
+    assert(!vr_policy_validate(online,"7",err,sizeof(err)));
+    json_object_object_add(rule,"route_layer",json_object_new_string("quic"));assert(vr_policy_validate(online,"7",err,sizeof(err))<0);
+    json_object_object_add(rule,"route_layer",json_object_new_string("http2"));assert(!vr_policy_validate(online,"7",err,sizeof(err)));
+
     o=vr_policy_fetch_cached(&c,"",path,err,sizeof(err));assert(o&&json_object_array_length(vr_member(vr_member(o,"virtual_router"),"route_rules"))==1);json_object_put(o);
     strcpy(c.node_id,"8");assert(!vr_policy_fetch_cached(&c,"",path,err,sizeof(err)));strcpy(c.node_id,"7");
     response=json_object_new_object();assert(!vr_policy_fetch_cached(&c,"",path,err,sizeof(err)));json_object_put(response);

@@ -59,7 +59,7 @@ static int put_question(uint8_t *b,size_t cap,const char *host,uint16_t type,siz
     b[off++]=0;p16(b+off,type);p16(b+off+2,1);*n=off+4;return 0;
 }
 
-int vr_dns_reply(const uint8_t *query,size_t qn,uint8_t *out,size_t cap,int rcode,const char *ip,size_t *n)
+int vr_dns_reply_ttl(const uint8_t *query,size_t qn,uint8_t *out,size_t cap,int rcode,const char *ip,uint32_t ttl,size_t *n)
 {
     vr_question q;struct in_addr addr;
     if(vr_dns_question(query,qn,&q) || cap<12 || (query[2]&0x80) || rcode<0 || rcode>15)return -1;
@@ -69,9 +69,12 @@ int vr_dns_reply(const uint8_t *query,size_t qn,uint8_t *out,size_t cap,int rcod
     if(!ip || rcode)return 0;
     if(*n+16>cap)return -1;
     uint8_t *p=out+*n;
-    p16(p,0xc00c);p16(p+2,1);p16(p+4,1);memset(p+6,0,4);p[9]=30;p16(p+10,4);memcpy(p+12,&addr,4);
+    p16(p,0xc00c);p16(p+2,1);p16(p+4,1);p16(p+6,(uint16_t)(ttl>>16));p16(p+8,(uint16_t)ttl);p16(p+10,4);memcpy(p+12,&addr,4);
     *n+=16;p16(out+6,1);return 0;
 }
+
+int vr_dns_reply(const uint8_t *query,size_t qn,uint8_t *out,size_t cap,int rcode,const char *ip,size_t *n)
+{return vr_dns_reply_ttl(query,qn,out,cap,rcode,ip,30,n);}
 
 static int transfer(int fd,void *buf,size_t n,int sending)
 {

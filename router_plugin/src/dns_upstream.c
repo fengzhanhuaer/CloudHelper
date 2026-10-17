@@ -72,9 +72,9 @@ static int bootstrap(const char *host,const vr_config *c,const char *iface,char 
 {
     struct in_addr addr;if(inet_pton(AF_INET,host,&addr)==1)return vr_copy(ip,16,host);
     if(!strcmp(host,"dns.alidns.com"))return vr_copy(ip,16,"223.5.5.5");
-    if(!vr_resolve4(host,c->dns_upstream,iface,ip))return 0;
+    if(c->plain_dns_enabled&&!vr_resolve4(host,c->dns_upstream,iface,ip))return 0;
     char servers[4][64];int n=system_servers(servers);
-    for(int i=0;i<n;i++)if(strcmp(servers[i],c->dns_upstream)&&!vr_resolve4(host,servers[i],iface,ip))return 0;
+    for(int i=0;i<n;i++)if((!c->plain_dns_enabled||strcmp(servers[i],c->dns_upstream))&&!vr_resolve4(host,servers[i],iface,ip))return 0;
     return -1;
 }
 
@@ -135,11 +135,11 @@ done:SSL_free(ssl);close(fd);return rc;
 int vr_dns_chain(const vr_config *c,const char *iface,const void *query,size_t qn,void *reply,size_t cap,size_t *n)
 {
     if(qn<12||qn>4096)return -1;
-    if(*c->dns_doh&&!doh(c,iface,query,qn,reply,cap,n))return 0;
-    if(*c->dns_dot&&!dot(c,iface,query,qn,reply,cap,n))return 0;
-    if(!vr_dns_exchange(c->dns_upstream,iface,query,qn,reply,cap,n,0))return 0;
+    if(c->doh_enabled&&*c->dns_doh&&!doh(c,iface,query,qn,reply,cap,n))return 0;
+    if(c->dot_enabled&&*c->dns_dot&&!dot(c,iface,query,qn,reply,cap,n))return 0;
+    if(c->plain_dns_enabled&&!vr_dns_exchange(c->dns_upstream,iface,query,qn,reply,cap,n,0))return 0;
     char servers[4][64];int count=system_servers(servers);
-    for(int i=0;i<count;i++)if(strcmp(servers[i],c->dns_upstream)&&!vr_dns_exchange(servers[i],iface,query,qn,reply,cap,n,0))return 0;
+    for(int i=0;i<count;i++)if((!c->plain_dns_enabled||strcmp(servers[i],c->dns_upstream))&&!vr_dns_exchange(servers[i],iface,query,qn,reply,cap,n,0))return 0;
     return -1;
 }
 

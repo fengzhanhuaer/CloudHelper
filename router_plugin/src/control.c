@@ -135,8 +135,16 @@ static int refresh(control *c,const char *original)
     vr_engine *e=c->engine;char error[256];
     json_object *next=vr_controller_call(&e->config,e->addresses.wan_if,"GET","/api/probe/route/config",NULL,error,sizeof(error));
     if(!next){vr_service_log(e->service,"controller","Configuration refresh failed; retaining current policy and control stream");return -1;}
+    if(vr_policy_validate(next,e->config.node_id,error,sizeof(error))){vr_service_log(e->service,"controller",error);json_object_put(next);return -1;}
     int changed=strcmp(original,json_object_to_json_string_ext(next,JSON_C_TO_STRING_PLAIN))!=0;
-    if(changed){pthread_mutex_lock(&e->mutex);e->refresh=1;pthread_mutex_unlock(&e->mutex);}
+    if(changed) {
+        vr_service *s=e->service;pthread_mutex_lock(&s->mutex);
+        if(s->stop||s->generation!=e->generation){pthread_mutex_unlock(&s->mutex);json_object_put(next);return -1;}
+        json_object_put(s->pending_policy);s->pending_policy=json_object_get(next);s->pending_generation=e->generation;
+        pthread_mutex_unlock(&s->mutex);
+        pthread_mutex_lock(&e->mutex);e->refresh=1;pthread_mutex_unlock(&e->mutex);
+        vr_service_log(s,"controller","Validated configuration received; applying without another download");
+    }
     json_object_put(next);return changed?1:0;
 }
 
@@ -146,12 +154,14 @@ static void *control_worker(void *arg)
     while(!stopped(e)) {
         control *c=calloc(1,sizeof(*c));if(!c)break;c->engine=e;c->fd=-1;
         if(!connect_controller(c)) {
-            vr_service_log(e->service,"controller","Control stream established");uint64_t sent=0,checked=vr_millis();
+            vr_service_log(e->service,"controller","Control stream established");uint64_t sent=0,next_check=vr_millis()+60000;unsigned failures=0;
             while(!stopped(e)) {
                 uint64_t now=vr_millis();
                 if(now-c->ack_at>65000)break;
                 if(c->report||now-sent>=20000){if(report(c))break;sent=now;c->report=0;}
-                if(c->refresh||now-checked>=60000){int rc=refresh(c,original);checked=vr_millis();c->refresh=0;if(rc>0)break;}
+                if(c->refresh||now>=next_check){int rc=refresh(c,original);c->refresh=0;if(rc>0)break;
+                    if(rc<0){if(failures<4)failures++;unsigned delay=failures==4?30u:5u<<(failures-1);next_check=vr_millis()+delay*1000;}
+                    else{failures=0;next_check=vr_millis()+60000;}}
                 struct pollfd fd={c->fd,POLLIN,0};int rc=poll(&fd,1,100);
                 if(rc<0&&errno==EINTR)continue;
                 if(rc<0||(fd.revents&(POLLERR|POLLHUP|POLLNVAL)))break;

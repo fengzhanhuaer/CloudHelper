@@ -15,9 +15,9 @@ int vr_cache_save(const char *path,json_object *o)
     int same=!vr_read_file(path,old,VR_JSON_MAX,&oldn)&&n==oldn&&!memcmp(old,text,n);free(old);
     return same?0:vr_atomic_write(path,text,n);
 }
-json_object *vr_policy_fetch_cached(const vr_config *c,const char *iface,const char *path,char *err,size_t n)
+json_object *vr_policy_fetch_pending(const vr_config *c,const char *iface,const char *path,json_object *pending,char *err,size_t n)
 {
-    json_object *o=vr_controller_call(c,iface,"GET","/api/probe/route/config",NULL,err,n);
+    json_object *o=pending?pending:vr_controller_call(c,iface,"GET","/api/probe/route/config",NULL,err,n);
     int online=o!=NULL;
     if(!online)o=vr_cache_load(path);
     if(!o||vr_policy_validate(o,c->node_id,err,n)){json_object_put(o);return NULL;}
@@ -25,3 +25,6 @@ json_object *vr_policy_fetch_cached(const vr_config *c,const char *iface,const c
     if(n)*err=0;
     return o;
 }
+
+json_object *vr_policy_fetch_cached(const vr_config *c,const char *iface,const char *path,char *err,size_t n)
+{return vr_policy_fetch_pending(c,iface,path,NULL,err,n);}

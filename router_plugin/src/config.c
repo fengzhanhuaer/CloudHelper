@@ -10,6 +10,7 @@
 void vr_config_default(vr_config *c)
 {
     memset(c,0,sizeof(*c)); c->port=12040; c->dns_enabled=1;
+    c->doh_enabled=c->dot_enabled=c->plain_dns_enabled=1;
     strcpy(c->dns_upstream,"223.5.5.5:53");
     strcpy(c->dns_doh,"https://dns.alidns.com/dns-query");strcpy(c->dns_dot,"dns.alidns.com:853");
 }
@@ -68,11 +69,19 @@ int vr_config_parse(vr_config *out, json_object *o, const vr_config *previous, c
     }
     json_object *upstreams=vr_member(o,"dns_upstreams");
     if(upstreams) {
-        if(!json_object_is_type(upstreams,json_type_object) || json_object_object_length(upstreams)!=3 ||
+        if(!json_object_is_type(upstreams,json_type_object) ||
            !vr_member(upstreams,"doh") || !vr_member(upstreams,"dot") || !vr_member(upstreams,"dns") ||
            string_field(upstreams,"doh",c.dns_doh,sizeof(c.dns_doh)) ||
            string_field(upstreams,"dot",c.dns_dot,sizeof(c.dns_dot)) ||
-           string_field(upstreams,"dns",c.dns_upstream,sizeof(c.dns_upstream)))goto fail;
+           string_field(upstreams,"dns",c.dns_upstream,sizeof(c.dns_upstream)) ||
+           boolean_field(upstreams,"doh_enabled",&c.doh_enabled) ||
+           boolean_field(upstreams,"dot_enabled",&c.dot_enabled) ||
+           boolean_field(upstreams,"dns_enabled",&c.plain_dns_enabled))goto fail;
+        json_object_object_foreach(upstreams,key,value) {
+            (void)value;
+            if(strcmp(key,"doh")&&strcmp(key,"dot")&&strcmp(key,"dns")&&strcmp(key,"doh_enabled")&&
+               strcmp(key,"dot_enabled")&&strcmp(key,"dns_enabled"))goto fail;
+        }
     }
     json_object *gateway=vr_member(o,"gateway_proxy");
     if(gateway && vr_gateway_parse(&c.gateway,gateway)){why="invalid gateway config: private CIDRs and allowed nodes required (max 32/64)";goto fail;}
@@ -99,6 +108,9 @@ json_object *vr_config_json(const vr_config *c, int secrets)
     json_object_object_add(upstreams,"doh",json_object_new_string(c->dns_doh));
     json_object_object_add(upstreams,"dot",json_object_new_string(c->dns_dot));
     json_object_object_add(upstreams,"dns",json_object_new_string(c->dns_upstream));
+    json_object_object_add(upstreams,"doh_enabled",json_object_new_boolean(c->doh_enabled));
+    json_object_object_add(upstreams,"dot_enabled",json_object_new_boolean(c->dot_enabled));
+    json_object_object_add(upstreams,"dns_enabled",json_object_new_boolean(c->plain_dns_enabled));
     json_object_object_add(o,"dns_upstreams",upstreams);
     if(secrets) json_object_object_add(o,"node_key",json_object_new_string(c->node_key));
     return o;

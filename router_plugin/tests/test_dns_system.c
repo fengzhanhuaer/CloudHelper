@@ -22,6 +22,12 @@ int main(void)
     /* A newer vendor upstream takes precedence over the interception backup. */
     const char *latest="server=192.0.2.55\n";assert(!vr_atomic_write("/tmp/resolv.dnsmasq",latest,strlen(latest)));
     assert(!vr_resolve_config4("example.com",&c,"",ip)&&calls==4);
+    /* All three independent switches off still permits original system DNS. */
+    c.doh_enabled=c.dot_enabled=c.plain_dns_enabled=0;
+    assert(!vr_resolve_config4("example.com",&c,"",ip)&&calls==5);
+    /* A disabled ordinary endpoint must not also suppress the same system DNS. */
+    strcpy(c.dns_upstream,"192.0.2.55:53");
+    assert(!vr_resolve_config4("example.com",&c,"",ip)&&calls==6);
     unlink("/tmp/resolv.dnsmasq");unlink("/tmp/cloudhelper-dns.original");
     puts("PASS: ordinary failure -> original system DNS; own interception filtered; vendor update wins");return 0;
 }

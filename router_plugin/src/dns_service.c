@@ -13,6 +13,23 @@ static int read_all(int fd,void *buffer,size_t n)
     while(off<n){ssize_t k=recv(fd,(char *)buffer+off,n-off,0);if(k<0&&errno==EINTR)continue;if(k<=0)return -1;off+=(size_t)k;}return 0;
 }
 
+static int mapping_reply(const uint8_t *query,size_t qn,uint8_t *reply,size_t cap,size_t *rn,const vr_mapping *mapping)
+{
+    time_t remaining=mapping->expires-time(NULL);
+    if(remaining<=0)return vr_dns_reply(query,qn,reply,cap,2,NULL,rn);
+    return vr_dns_reply_ttl(query,qn,reply,cap,0,mapping->ip,(uint32_t)(remaining>600?600:remaining),rn);
+}
+
+/* Never put an already cached UDP answer behind blocking upstream lookups. */
+static int cached_answer(vr_engine *e,const uint8_t *query,size_t qn,uint8_t *reply,size_t cap,size_t *rn)
+{
+    vr_question q;
+    if(vr_dns_question(query,qn,&q)||(query[2]&0x80)||q.type!=1||vr_policy_needs_ip(e->policy,q.name))return -1;
+    vr_decision d=vr_policy_match(e->policy,q.name,NULL);vr_mapping m;
+    if(d.action!=VR_PROXY||vr_mapping_lookup(e,q.name,NULL,d,&m))return -1;
+    return mapping_reply(query,qn,reply,cap,rn,&m);
+}
+
 static int dns_answer(vr_engine *e,const uint8_t *query,size_t qn,uint8_t *reply,size_t cap,size_t *rn)
 {
     vr_question q;if(vr_dns_question(query,qn,&q) || (query[2]&0x80))return -1;
@@ -34,7 +51,7 @@ static int dns_answer(vr_engine *e,const uint8_t *query,size_t qn,uint8_t *reply
         if(q.type==1) {
             vr_mapping mapping;
             if(vr_mapping_get(e,q.name,NULL,decision,&mapping))return vr_dns_reply(query,qn,reply,cap,2,NULL,rn);
-            return vr_dns_reply(query,qn,reply,cap,0,mapping.ip,rn);
+            return mapping_reply(query,qn,reply,cap,rn,&mapping);
         }
     }
     if(!upstream_done && vr_dns_chain(&e->config,e->addresses.wan_if,query,qn,reply,cap,rn))return vr_dns_reply(query,qn,reply,cap,2,NULL,rn);
@@ -84,7 +101,13 @@ void vr_dns_accept(vr_engine *e,int tcp)
 {
     vr_dns_job job={0};job.tcp=-1;job.source_len=sizeof(job.source);
     if(tcp){job.tcp=accept4(e->dns_tcp,NULL,NULL,SOCK_CLOEXEC);if(job.tcp<0)return;}
-    else {ssize_t n=recvfrom(e->dns_udp,job.query,sizeof(job.query),MSG_TRUNC,(struct sockaddr *)&job.source,&job.source_len);if(n<=0||(size_t)n>sizeof(job.query))return;job.n=(size_t)n;}
+    else {
+        ssize_t n=recvfrom(e->dns_udp,job.query,sizeof(job.query),MSG_TRUNC,(struct sockaddr *)&job.source,&job.source_len);if(n<=0||(size_t)n>sizeof(job.query))return;job.n=(size_t)n;
+        uint8_t reply[4096];size_t rn;
+        if(!cached_answer(e,job.query,job.n,reply,sizeof(reply),&rn)) {
+            sendto(e->dns_udp,reply,rn,MSG_NOSIGNAL,(struct sockaddr *)&job.source,job.source_len);return;
+        }
+    }
     pthread_mutex_lock(&e->mutex);
     if(e->job_count==16 || e->dns_stop){pthread_mutex_unlock(&e->mutex);if(job.tcp>=0)close(job.tcp);return;}
     e->jobs[(e->job_head+e->job_count)%16]=job;e->job_count++;pthread_cond_signal(&e->jobs_changed);pthread_mutex_unlock(&e->mutex);

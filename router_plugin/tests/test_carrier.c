@@ -10,8 +10,27 @@
 #include <unistd.h>
 #include <openssl/err.h>
 
+static unsigned delivered;
 void vr_link_frame(vr_link *l,const vr_frame *f,char path[VR_PATH_MAX][129],size_t count)
-{vr_measure_frame(l->engine,l,f,path,count);}
+{delivered++;vr_measure_frame(l->engine,l,f,path,count);}
+
+static void test_ingress(vr_engine *e,vr_link *l)
+{
+    const char *controls[]={"{", "{\"path\":[\"9\",\"7\"]}",
+        "{\"path\":[\"9\",\"8\",\"7\"]}", "{\"path\":[\"8\",\"7\",\"8\"]}",
+        "{\"path\":[\"1\",\"2\",\"3\",\"8\",\"7\"]}",
+        "{\"path\":[\"8\",\"7\"]}", "{}", "{\"path\":[]}", "{\"path\":null}", ""};
+    unsigned before=delivered;uint8_t bytes[256];size_t n;vr_decoder decoder={0};
+    for(size_t i=0;i<sizeof(controls)/sizeof(*controls);i++) {
+        vr_frame frame={99,0,(const uint8_t *)controls[i],(const uint8_t *)"{}",strlen(controls[i]),2};
+        assert(!vr_frame_encode(&frame,bytes,sizeof(bytes),&n));
+        /* Bad business frames must not poison subsequent frames on the same
+           decoder/carrier; authorization is still enforced for every frame. */
+        assert(!vr_decoder_feed(&decoder,bytes,n,vr_link_receive,l));
+        assert(delivered==before+(i<5?0:(unsigned)i-4));
+    }
+    assert(!e->links[0].ssl);fputs("PASS: Probe ingress fallback, authorization and frame-local rejection\n",stderr);
+}
 
 static void tick(vr_engine *e)
 {
@@ -33,6 +52,7 @@ int main(int argc,char **argv)
     char buffer[32768];size_t len;assert(!vr_read_file(argv[1],buffer,sizeof(buffer),&len));e->policy=vr_json_parse(buffer,len);assert(e->policy);
     e->link_count=1;vr_link *l=&e->links[0];l->engine=e;l->fd=-1;l->rule=json_object_array_get_idx(vr_member(e->policy,"topology_rules"),0);
     assert(!vr_route_id(vr_string(l->rule,"id"),l->route));strcpy(l->peer,"8");
+    test_ingress(e,l);
     if(json_object_get_boolean(vr_member(e->policy,"test_server"))) {
         e->tls=vr_tls_server_context(vr_string(e->policy,"test_cert"),vr_string(e->policy,"test_key"));assert(e->tls);
         e->nonces=json_object_new_object();assert(!vr_copy(e->replay_path,sizeof(e->replay_path),argv[1]));

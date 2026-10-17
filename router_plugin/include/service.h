@@ -4,6 +4,7 @@
 #include <pthread.h>
 #define VR_LOG_MAX 64
 typedef struct {time_t at;unsigned repeats;char component[16],message[240];} vr_log_entry;
+typedef char vr_log_budget_check[(sizeof(vr_log_entry)*VR_LOG_MAX<256u*1024u)?1:-1];
 
 typedef struct {
     pthread_mutex_t mutex;
@@ -12,7 +13,8 @@ typedef struct {
     unsigned generation;
     int stop;
     char config_path[512],csrf[49];
-    json_object *status,*measurement;
+    json_object *status,*measurement,*pending_policy;
+    unsigned pending_generation;
     char measure_node[129],measure_kind[16];
     vr_log_entry logs[VR_LOG_MAX];size_t log_head,log_count;
 } vr_service;

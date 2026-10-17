@@ -16,6 +16,7 @@
 #define VR_ROUTE_MAX 2048
 #define VR_MAPPING_MAX 1024
 #define VR_PATH_MAX 16
+#define VR_PATH_HOPS 3
 #define VR_RELAY_PATH "/api/node/route/relay"
 #define VR_GATEWAY_CIDRS 32
 #define VR_GATEWAY_NODES 64
@@ -28,6 +29,7 @@ typedef struct {
 
 typedef struct {
     int enabled, allow_wan, dns_enabled, port;
+    int doh_enabled,dot_enabled,plain_dns_enabled;
     char controller[1024], node_id[129], node_key[1025], dns_upstream[64], dns_doh[1024], dns_dot[260];
     vr_gateway gateway;
 } vr_config;
@@ -86,6 +88,8 @@ int vr_frame_path(const vr_frame *frame, char path[VR_PATH_MAX][129], size_t *n)
 int vr_dns_question(const uint8_t *wire, size_t n, vr_question *q);
 int vr_dns_reply(const uint8_t *query, size_t qn, uint8_t *out, size_t cap,
                  int rcode, const char *ipv4, size_t *n);
+int vr_dns_reply_ttl(const uint8_t *query,size_t qn,uint8_t *out,size_t cap,
+                     int rcode,const char *ipv4,uint32_t ttl,size_t *n);
 int vr_dns_exchange(const char *upstream, const char *iface, const void *query, size_t qn,
                     void *reply, size_t cap, size_t *n, int tcp);
 int vr_dns_endpoint(const char *text, char host[254], int *port, int literal);
@@ -99,6 +103,7 @@ int vr_policy_validate(json_object *snapshot, const char *node_id, char *err, si
 int vr_policy_service_port(json_object *policy,const char *node_id,int fallback);
 json_object *vr_cache_load(const char *path);
 int vr_cache_save(const char *path,json_object *o);
+json_object *vr_policy_fetch_pending(const vr_config *c,const char *iface,const char *path,json_object *owned_pending,char *err,size_t n);
 json_object *vr_policy_fetch_cached(const vr_config *c,const char *iface,const char *path,char *err,size_t n);
 
 int vr_random_hex(char *dst, size_t bytes);

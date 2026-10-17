@@ -6,6 +6,7 @@
 int main(void)
 {
     vr_service s={0};pthread_mutex_init(&s.mutex,NULL);
+    assert(sizeof(s.logs)<256u*1024u);
     vr_service_log(&s,"link","connection failed");vr_service_log(&s,"link","connection failed");
     json_object *o=vr_service_logs(&s),*items=vr_member(o,"items");
     assert(json_object_array_length(items)==1);

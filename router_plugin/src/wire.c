@@ -30,16 +30,17 @@ int vr_decoder_feed(vr_decoder *d, const void *bytes, size_t n, vr_frame_handler
     const uint8_t *p=bytes;
     while(n) {
         if(!d->needed)d->needed=12;
-        if(d->needed>sizeof(d->bytes) || d->used>d->needed)return -1;
+        if(d->needed>sizeof(d->bytes) || d->used>d->needed)return -2;
         size_t k=d->needed-d->used;if(k>n)k=n;
         memcpy(d->bytes+d->used,p,k);d->used+=k;p+=k;n-=k;
         if(d->used<d->needed)continue;
         if(d->needed==12) {
-            if(get16(d->bytes)!=0x5652 || get16(d->bytes+6)>VR_CONTROL_MAX)return -1;
+            if(get16(d->bytes)!=0x5652)return -3;
+            if(get16(d->bytes+6)>VR_CONTROL_MAX)return -4;
             d->needed=12u+get16(d->bytes+6)+get16(d->bytes+8);
             if(d->used<d->needed)continue;
         }
-        if(vr_checksum(d->bytes,d->needed)!=0)return -1;
+        if(vr_checksum(d->bytes,d->needed)!=0)return -5;
         vr_frame f={get16(d->bytes+2),get16(d->bytes+4),d->bytes+12,
             d->bytes+12+get16(d->bytes+6),get16(d->bytes+6),get16(d->bytes+8)};
         int rc=fn(&f,arg);d->used=0;d->needed=12;

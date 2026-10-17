@@ -121,7 +121,7 @@ int vr_policy_validate(json_object *s,const char *node_id,char *err,size_t n)
         if(strcmp(vr_string(r,"from_node_id"),node_id) && strcmp(vr_string(r,"to_node_id"),node_id))continue;
         if(++adjacent>VR_LINK_MAX){why="router supports at most 8 adjacent links";goto fail;}
         const char *layer=vr_string(r,"route_layer");
-        if(*layer && strcmp(layer,"auto") && strcmp(layer,"http2")) {why="unsupported transport; select TLS/WebSocket";goto fail;}
+        if(*layer && strcmp(layer,"auto") && strcmp(layer,"http2") && strcmp(layer,"websocket")) {why="unsupported transport; select TLS/WebSocket";goto fail;}
         if(!text_field(r,"secret",1,1024,0)||!text_field(r,"auth_ticket",1,8192,0)||!text_field(r,"user_public_key",1,4096,1)||
            !text_field(r,"to_service_domain",0,253,0)||!text_field(r,"to_tls_spki_sha256",0,64,0))goto fail;
         int port=json_object_get_int(vr_member(r,"to_service_port"));if(port<0||port>65535)goto fail;

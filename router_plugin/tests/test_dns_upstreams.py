@@ -73,5 +73,14 @@ with tempfile.TemporaryDirectory() as tmp:
     counts.update({k:0 for k in counts});mode.update(stage='doh',truncate=False)
     result=subprocess.run([binary,str(path)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,universal_newlines=True,timeout=15)
     assert result.returncode==0 and counts['dns']==1 and counts['doh']==0 and counts['dot']==0,counts
+    # Every nonempty combination tries only its first enabled, healthy transport.
+    for mask in range(1,8):
+        flags={'doh_enabled':bool(mask&1),'dot_enabled':bool(mask&2),'dns_enabled':bool(mask&4)}
+        config['dns_upstreams'].update(flags);path.write_text(json.dumps(config))
+        stage='doh' if mask&1 else 'dot' if mask&2 else 'dns'
+        counts.update({k:0 for k in counts});mode.update(stage=stage,truncate=False)
+        result=subprocess.run([binary,str(path)],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,universal_newlines=True,timeout=15)
+        assert result.returncode==0,(mask,result.returncode,result.stderr)
+        want={k:int(k==stage) for k in counts};assert counts==want,(mask,counts,want)
     httpd.shutdown()
 print('PASS: C DoH -> DoT -> ordinary DNS fallback, TLS trust, DNS framing and UDP truncation -> TCP')

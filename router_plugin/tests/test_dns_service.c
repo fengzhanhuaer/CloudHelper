@@ -10,6 +10,8 @@
 /* Include the module to exercise its internal rule pipeline as well as sockets. */
 #include "../src/dns_service.c"
 static int upstream_requests,mapping_requests;
+static time_t mapping_ttl=3600;
+static int cache_ready;
 int vr_platform_dns(int enabled){(void)enabled;return 0;}
 int vr_bind4(const char *ip,int port,int tcp)
 {
@@ -18,7 +20,13 @@ int vr_bind4(const char *ip,int port,int tcp)
 }
 int vr_mapping_get(vr_engine *e,const char *domain,const char *ip,vr_decision d,vr_mapping *out)
 {
-    (void)e;(void)ip;assert(domain&&d.action==VR_PROXY&&!strcmp(d.exit_node,"8"));__sync_fetch_and_add(&mapping_requests,1);memset(out,0,sizeof(*out));strcpy(out->ip,"198.18.0.20");return 0;
+    (void)e;(void)ip;assert(domain&&d.action==VR_PROXY&&!strcmp(d.exit_node,"8"));__sync_fetch_and_add(&mapping_requests,1);memset(out,0,sizeof(*out));strcpy(out->ip,"198.18.0.20");out->expires=time(NULL)+mapping_ttl;return 0;
+}
+int vr_mapping_lookup(vr_engine *e,const char *domain,const char *ip,vr_decision d,vr_mapping *out)
+{
+    (void)e;(void)domain;(void)ip;(void)d;
+    if(!cache_ready)return -1;
+    memset(out,0,sizeof(*out));strcpy(out->ip,"198.18.0.20");out->expires=time(NULL)+3600;return 0;
 }
 static void *upstream(void *arg)
 {
@@ -36,13 +44,24 @@ int main(void)
 {
     int fd=vr_bind4("127.0.0.1",53,0);pthread_t thread;assert(!pthread_create(&thread,NULL,upstream,&fd));
     vr_engine *e=calloc(1,sizeof(*e));assert(e);pthread_mutex_init(&e->mutex,NULL);pthread_cond_init(&e->jobs_changed,NULL);e->dns_udp=e->dns_tcp=-1;
-    strcpy(e->config.dns_upstream,"127.0.0.1:53");uint8_t q[512],reply[512];size_t n=query(q,1),rn;char ip[16];
+    e->config.plain_dns_enabled=1;strcpy(e->config.dns_upstream,"127.0.0.1:53");uint8_t q[512],reply[512];size_t n=query(q,1),rn;char ip[16];
     policy(e,"{\"route_rules\":[]}");assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&!vr_dns_address4(reply,rn,ip)&&!strcmp(ip,"203.0.113.5"));assert(upstream_requests==1&&!mapping_requests);
     policy(e,"{\"route_rules\":[{\"id\":\"block\",\"action\":\"reject\",\"entries\":[\"domain_suffix:example.com\"]}]}");
     assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&(reply[3]&15)==5&&upstream_requests==1);
     policy(e,"{\"route_rules\":[{\"id\":\"proxy\",\"action\":\"probe_exit\",\"exit_node_id\":\"8\",\"entries\":[\"domain_suffix:example.com\"]}]}");
     assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&!vr_dns_address4(reply,rn,ip)&&!strcmp(ip,"198.18.0.20")&&mapping_requests==1);
+    assert(reply[rn-10]==0&&reply[rn-9]==0&&reply[rn-8]==2&&reply[rn-7]==88); /* 600s DNS TTL */
+    mapping_ttl=17;assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn));
+    assert(!reply[rn-10]&&!reply[rn-9]&&!reply[rn-8]&&reply[rn-7]>0&&reply[rn-7]<=17);
+    mapping_ttl=-1;assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&(reply[3]&15)==2);mapping_ttl=3600;
     for(unsigned i=0;i<3;i++){int types[]={28,64,65};n=query(q,types[i]);assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&!(reply[3]&15)&&!reply[7]&&upstream_requests==1);}
+    /* Cache hits bypass a full queue even when no upstream worker is free. */
+    e->dns_udp=vr_bind4("127.0.0.1",1053,0);e->job_count=16;cache_ready=1;
+    int fast=socket(AF_INET,SOCK_DGRAM,0);assert(fast>=0);struct sockaddr_in target={0};target.sin_family=AF_INET;target.sin_port=htons(1053);inet_pton(AF_INET,"127.0.0.1",&target.sin_addr);
+    struct timeval fast_timeout={1,0};setsockopt(fast,SOL_SOCKET,SO_RCVTIMEO,&fast_timeout,sizeof(fast_timeout));n=query(q,1);
+    assert(sendto(fast,q,n,0,(struct sockaddr *)&target,sizeof(target))==(ssize_t)n);vr_dns_accept(e,0);
+    ssize_t fast_n=recv(fast,reply,sizeof(reply),0);assert(fast_n>0&&!vr_dns_address4(reply,(size_t)fast_n,ip)&&!strcmp(ip,"198.18.0.20")&&e->job_count==16);
+    close(fast);close(e->dns_udp);e->dns_udp=-1;e->job_count=0;cache_ready=0;
     policy(e,"{\"route_rules\":[{\"id\":\"ip\",\"action\":\"reject\",\"entries\":[\"cidr:203.0.113.0/24\"]},{\"id\":\"direct\",\"action\":\"direct\",\"entries\":[\"domain_suffix:example.com\"]}]}");
     n=query(q,28);assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&(reply[3]&15)==5&&upstream_requests==2);
     n=query(q,1);assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&(reply[3]&15)==5&&upstream_requests==3);
