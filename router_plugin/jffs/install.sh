@@ -4,10 +4,22 @@ umask 077
 base=/jffs/cloudhelper-router
 bundle=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 test "$(awk '$1=="Uid:" {print $2}' /proc/self/status)" = 0 || { echo 'Root is required' >&2;exit 1; }
-test "$(nvram get productid)" = RT-AX55 || exit 1
-test "$(nvram get odmpid)" = RT-AX56U_V2 || exit 1
-test "$(uname -m)" = armv7l || exit 1
-awk '$2=="/jffs" && $3=="jffs2" {ok=1} END {exit !ok}' /proc/mounts || exit 1
+case "$(cat "$bundle/device-profile"):$(nvram get productid):$(nvram get odmpid):$(uname -m)" in
+ ax56uv2:RT-AX55:RT-AX56U_V2:armv7l) filesystem=jffs2;;
+ be86u:RT-BE86U::aarch64)
+    filesystem=ubifs
+    stock_httpd=/usr/sbin/httpd
+    if awk '$2=="/usr/sbin/httpd" {ok=1} END {exit !ok}' /proc/mounts &&
+       grep -q CHVR_HTTPD_WRAPPER /usr/sbin/httpd;then
+        stock_httpd=/usr/local/cloudhelper-router/httpd
+    fi
+    test "$(openssl dgst -sha256 "$stock_httpd" | awk '{print $NF}')" = \
+        8804d44c2633046d7740d356e7bdcd5e46b1d2b3ac9b1e967dda01e99150823e || {
+        echo 'Unsupported RT-BE86U firmware; original web server retained' >&2;exit 1;
+    };;
+ *) echo 'Unsupported router model or userland profile' >&2;exit 1;;
+esac
+awk -v fs="$filesystem" '$2=="/jffs" && $3==fs {ok=1} END {exit !ok}' /proc/mounts || exit 1
 case "${1:-}" in
  --uninstall)
     if test -x "$base/service";then "$base/service" stop;fi
@@ -109,5 +121,5 @@ echo 'Installed. Sign in to the original ASUS web UI and open Virtual Router bel
 if test -x /rom/etc/cloudhelper-jffs-start;then
     echo 'Minimal firmware startup hook detected; plugin starts automatically after reboot.'
 else
-    echo 'Stock boot persistence is unavailable: after reboot run /jffs/cloudhelper-router/service start via SSH.'
+    echo 'No verified stock boot hook: after reboot run /jffs/cloudhelper-router/service start via SSH.'
 fi

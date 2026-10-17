@@ -9,10 +9,12 @@ CORE = src/log.c src/cache.c src/gateway.c src/report.c src/common.c src/config.
 RUNTIME = src/main.c src/engine.c src/carrier.c src/dataplane.c src/mapping.c src/platform.c src/dns_service.c src/measure.c src/control.c
 .PHONY: all test clean
 all: $(BUILD)/cloudhelper-router-plugin $(BUILD)/httpd-bridge.so
-$(BUILD)/httpd-bridge.so: src/httpd_bridge.c | $(BUILD)
+$(BUILD)/httpd-bridge.so: src/httpd_bridge.c include/httpd_profile.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC -shared $< $(LDFLAGS) -ldl -o $@
 $(BUILD)/httpd-fixture: tests/httpd_fixture.c | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -rdynamic $< $(LDFLAGS) -o $@
+$(BUILD)/test-httpd-profile: tests/test_httpd_profile.c include/httpd_profile.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LDFLAGS) -o $@
 $(BUILD):
 	mkdir -p $@
 $(BUILD)/cloudhelper-router-plugin: $(CORE) $(RUNTIME) $(wildcard include/*.h) | $(BUILD)

@@ -1,10 +1,14 @@
-# 华硕 RT-AX56U V2 虚拟路由插件
+# 华硕路由器 JFFS 虚拟路由插件
 
 独立 C 程序，安装在原厂固件的 `/jffs/cloudhelper-router`。不编译、刷写系统，不包含 Go 或 QUIC；只使用固件已有的 OpenSSL、libcurl、json-c、libdl 和系统库。主控和其他 Probe 按现有 TLS/WebSocket 协议互通。主控HTTP和TLS连接在原有超时预算内尝试最多4个DNS返回地址，证书/主机名或SPKI校验不变；已完成TLS的POST不自动重放。配置拉取暂时失败保留当前策略和控制连接，周期重试。
 
 管理入口直接位于原厂后台的“网络工具”下方，名称为“虚拟路由”，使用同一管理端口和原厂登录。插件本身只提供 root 所有的 Unix socket，不开 TCP 管理端口，不要求额外管理口令。页面提供主控、Node ID/密钥、公网连接、DNS 上游设置，以及 Probe Link 状态、手动测速和内存日志。监听端口统一在主控设置。
 
+主控节点类型统一显示“路由器插件”，内部继续使用 `asus_56uv2` 以兼容已注册节点及安装 JSON。当前精确支持 RT-AX56U V2（内部 RT-AX55，52332）和 RT-BE86U（官方 3.0.0.6.102_39436，HTTPD SHA256 为 `8804d44c…150823e`）。两者使用同一 ARM32 C 程序、独立安装包；BE86U 的 aarch64 内核运行原厂 ARM32 用户态，不能根据内核名称改用普通 ARM64 Probe。
+
 原厂 Web 的接入采用一个约 9 KiB 的 httpd 扩展，保留原厂认证回调。严格匹配原厂 52332 的 httpd SHA256，或最小自启固件只读 ROM 声明的精确哈希（须同时存在专用启动入口）；未知版本拒绝接入。启动时在私有 RAM 目录复制原版 httpd，并通过可撤销的启动入口挂载加载扩展；原版可执行文件内容不变。停止时撤销挂载并重启原版 Web，Flash 系统分区不变。原厂 SSL 限制程序执行路径，故服务也从 RAM 的 `/usr/local/cloudhelper-router` 运行；JFFS 保存发布文件，RAM 中保留原来的 `share -> /tmp/share`，未知目录布局拒绝覆盖。
+
+BE86U 的原厂 HTTPD 隐藏了旧版导出符号，服务与扩展独立校验整个可执行文件 SHA256 后，才使用已验证的 ASP/SSL 数据地址；扩展再次核对六个处理表字段，认证回调不变。型号、固件或表布局未知时拒绝挂接。其 BusyBox 限制挂载路径，因此 C 程序提供 root 专用 `--runtime-mount` 固定操作，只管理本插件 RAM、菜单与 HTTPD 的三个路径，拒绝未知操作、其他目录布局及外来挂载；不是远程管理 API。
 
 构建与安装：
 
@@ -15,6 +19,9 @@
 # 原厂源码、SDK、原厂镜像及生成文件均不提交 Git。
 bash router_plugin/tools/build-arm.sh
 python router_plugin/tools/package-jffs.py
+# BE86U：先用本机只读提取的原厂库验证，不把厂商二进制提交Git。
+python router_plugin/tools/check-stock-runtime.py <BE86U-rootfs> --profile be86u --baseline 'RT-BE86U official 3.0.0.6.102_39436'
+python router_plugin/tools/package-jffs.py --profile be86u
 # Windows 本机；settings 为私有原厂配置备份，仅在内存提取凭据做验收。
 python router_plugin/tools/install-router.py <生成的tar.gz> --settings <私有settings.cfg> --report router_plugin/artifacts/jffs/device-stock-web.json
 ```
@@ -34,6 +41,8 @@ python router_plugin/tools/install-router.py <生成的tar.gz> --settings <私�
 `stop` 恢复原厂菜单、Web 启动入口和受管 DNS/防火墙。安装保留活动与上一个版本；回滚不允许恢复旧的独立端口管理方案。卸载保留用户配置及历史版本遗留的私有密钥/证书，但当前方案不生成或使用独立管理凭据。
 
 **开机自启**：未修改的原厂 52332 仍需 SSH/串口执行 `service start`，`cru` 仅看护当前启动周期。`firmware/asuswrt/build-autostart-firmware.sh` 制作的最小官方定制固件提供专用 JFFS 异步启动入口；需配合新版插件包，实机重启验证须单独完成。创建 `/jffs/cloudhelper-router/autostart.disabled` 禁用该入口，删除恢复。管理页接入会短暂重启 Web 进程，不重启路由器。
+
+BE86U 当前也按 SSH 手动启动交付，尚未验证官方开机 hook 或重启自启。设备上的旧 Koolshare 目录、`.asusrouter` 和 `services-start` 指向缺失组件，保留这些残留，不恢复它们、不写入无调用证据的 NVRAM 项。AX56U V2 的最小自启固件不能刷入 BE86U。本次 BE86U 安装默认关闭业务，主控地址和身份由用户填写；Web 密码不在可读 NVRAM 中时，由用户用原厂登录验收页面。
 
 DNS 由原厂 dnsmasq 继续处理 LAN 名称，外部查询交给插件；原厂上游文件在 RAM 备份，SIGHUP 重新加载，停用恢复。公开的上游文件以0644供已降权为nobody的dnsmasq读取，私有备份和身份配置保持0600；自动修复旧插件留下的0600上游文件。代理规则的 fake IP 和映射由主控权威提供，直连返回真实 IP，拒绝明确响应。仅 fake IP/必要虚拟网段及获准的远端代理网段进入 TUN，普通上网仍走原厂路径。监听与对端连接端口由主控节点表统一配置（默认 12040），页面不再单独设置；旧本地port字段保留兼容但不决定实际监听。LAN 始终监听；开启公网连接才额外绑定 WAN 并放行，所有链路需要节点认证。
 

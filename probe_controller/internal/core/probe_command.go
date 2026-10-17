@@ -788,7 +788,7 @@ func ProbeProxyInstallScriptHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if node, found := getProbeNodeByID(nodeID); found && normalizeProbeNodeKind(node.NodeKind) == probeNodeKindAsus56UV2 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "华硕56UV2需要原厂系统JFFS插件，不能安装普通Probe程序"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "路由器插件类型使用原厂系统JFFS插件，不能安装普通Probe程序"})
 		return
 	}
 	target := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("target")))
@@ -840,7 +840,7 @@ func ProbeProxyRouterInstallScriptHandler(w http.ResponseWriter, r *http.Request
 
 func dispatchUpgradeToProbe(node probeNodeRecord, controllerBaseURL string) (probeUpgradeDispatchResult, error) {
 	if normalizeProbeNodeKind(node.NodeKind) == probeNodeKindAsus56UV2 {
-		return probeUpgradeDispatchResult{}, fmt.Errorf("华硕56UV2使用专用JFFS插件升级，不支持普通Probe二进制更新")
+		return probeUpgradeDispatchResult{}, fmt.Errorf("路由器插件使用专用JFFS插件升级，不支持普通Probe二进制更新")
 	}
 	nodeID := normalizeProbeNodeID(strconv.Itoa(node.NodeNo))
 	session, ok := getProbeSession(nodeID)

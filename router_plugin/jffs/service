@@ -19,6 +19,21 @@ owned_pid() {
     exe=$(readlink "/proc/$pid/exe") || return 1
     test "$exe" = "$binary"
 }
+runtime_mount() {
+    if test "$(nvram get productid)" = RT-BE86U;then
+        "$stored_binary" --runtime-mount "$1"
+    else
+        case "$1" in
+         local) mount -t tmpfs -o size=2m,mode=755,exec,nodev,nosuid chvr-local "$local_root";;
+         unlocal) umount "$local_root";;
+         menu) mount -o bind "$menu" "$target";;
+         unmenu) umount "$target";;
+         web) mount -o bind "$local_root/cloudhelper-router/httpd-launch" "$httpd";;
+         unweb) umount "$httpd";;
+         *) return 1;;
+        esac
+    fi
+}
 local_owned() {
     awk '$1=="chvr-local" && $2=="/usr/local" && $3=="tmpfs" {ok=1} END {exit !ok}' /proc/mounts &&
         test -f "$local_root/cloudhelper-router/.owned"
@@ -31,7 +46,7 @@ local_prepare() {
         if awk '$2=="/usr/local" {ok=1} END {exit !ok}' /proc/mounts;then return 1;fi
         test "$(readlink "$local_root/share")" = /tmp/share || return 1
         test "$(ls -A "$local_root")" = share || return 1
-        mount -t tmpfs -o size=2m,mode=755,exec,nodev,nosuid chvr-local "$local_root"
+        runtime_mount local
         ln -s /tmp/share "$local_root/share"
         mkdir "$local_root/cloudhelper-router"
         chmod 700 "$local_root/cloudhelper-router"
@@ -42,13 +57,16 @@ local_prepare() {
     cp "$stored_binary" "$binary.new"
     chmod 700 "$binary.new"
     mv "$binary.new" "$binary"
+    test "$("$binary" --config "$runtime/initialization-check.absent" --check-config)" = 'configuration valid' || {
+        echo 'Stock runtime initialization failed' >&2;return 1;
+    }
 }
 local_remove() {
-    if local_owned;then umount "$local_root";fi
+    if local_owned;then runtime_mount unlocal;fi
 }
 menu_remove() {
     if grep -q 'CHVR_JFFS_MENU' "$target"; then
-        umount "$target" || return 1
+        runtime_mount unmenu || return 1
     fi
     rm -f "$menu"
 }
@@ -74,7 +92,7 @@ menu_add() {
       }
       {print}
     ' "$target" > "$menu"
-    mount -o bind "$menu" "$target"
+    runtime_mount menu
 }
 web_root=/tmp/var/wwwext/cloudhelper-router
 httpd=/usr/sbin/httpd
@@ -82,6 +100,10 @@ stock_hash=144f9083c6ae57632cf59b4012d5ad46aff6f4f64012ce3fed50e0f1b8ebf6d1
 httpd_supported() {
     actual=$(openssl dgst -sha256 "$httpd" | awk '{print $NF}')
     test "$actual" = "$stock_hash" && return 0
+    if test "$(nvram get productid)" = RT-BE86U;then
+        test "$actual" = 8804d44c2633046d7740d356e7bdcd5e46b1d2b3ac9b1e967dda01e99150823e
+        return
+    fi
     # This declaration is part of the verified read-only minimal firmware.
     # Never accept a writable /tmp or JFFS whitelist for a different HTTPD.
     declaration=/rom/etc/cloudhelper-httpd.sha256
@@ -102,7 +124,7 @@ httpd_extended() {
 }
 web_remove() {
     if httpd_owned;then
-        umount "$httpd"
+        runtime_mount unweb
         service restart_httpd
         count=0
         while httpd_extended && test "$count" -lt 12;do sleep 1;count=$((count+1));done
@@ -137,7 +159,7 @@ HTTPD
         : > "$web_root/.owned"
         cp "$release/web/VirtualRouter.asp" "$web_root/VirtualRouter.asp"
         : > "$web_root/api.asp"
-        mount -o bind "$local_root/cloudhelper-router/httpd-launch" "$httpd"
+        runtime_mount web
         service restart_httpd
         count=0
         while ! httpd_extended && test "$count" -lt 12;do sleep 1;count=$((count+1));done

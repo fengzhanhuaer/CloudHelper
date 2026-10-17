@@ -7,11 +7,14 @@
 #include <errno.h>
 #include <net/if.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include "../include/httpd_profile.h"
 
 #ifndef CHVR_ADMIN_SOCKET
 #define CHVR_ADMIN_SOCKET "/var/run/cloudhelper-router/admin.sock"
@@ -30,6 +33,37 @@ static char body[16384];
 static size_t body_size;
 static int *ssl_enabled, *ssl_fd;
 static char *(*nvram_value)(const char *);
+
+static struct mime_handler *hidden_stock_handler(void)
+{
+#if defined(__arm__) && UINTPTR_MAX == UINT32_MAX
+    /* New stock builds hide the formerly exported handler/SSL globals. Do
+     * not guess offsets for another firmware or trust a writable whitelist. */
+    unsigned char *(*sha256)(const unsigned char *,size_t,unsigned char *)=
+        dlsym(RTLD_DEFAULT,"SHA256");
+    if(!sha256)return NULL;
+    FILE *file=fopen("/proc/self/exe","rb");if(!file)return NULL;
+    struct stat st;unsigned char *bytes=NULL,digest[32];char hex[65];int valid=0;
+    if(fstat(fileno(file),&st) || st.st_size!=CHVR_BE86U_HTTPD_BYTES)goto done;
+    bytes=malloc(CHVR_BE86U_HTTPD_BYTES);if(!bytes)goto done;
+    if(fread(bytes,1,CHVR_BE86U_HTTPD_BYTES,file)!=CHVR_BE86U_HTTPD_BYTES ||
+       memcmp(bytes,"\177ELF\1\1",6) || bytes[16]!=2 || bytes[18]!=40)goto done;
+    if(!sha256(bytes,CHVR_BE86U_HTTPD_BYTES,digest))goto done;
+    for(unsigned i=0;i<32;i++)snprintf(hex+i*2,3,"%02x",digest[i]);
+    valid=!strcmp(hex,CHVR_BE86U_HTTPD_SHA256);
+done:
+    free(bytes);fclose(file);if(!valid)return NULL;
+    struct mime_handler *asp=(struct mime_handler *)(uintptr_t)CHVR_BE86U_ASP;
+    const uintptr_t expected[6]=CHVR_BE86U_ASP_FIELDS;
+    if(sizeof(*asp)!=24 || !chvr_httpd_fields_match(asp,expected) ||
+       strcmp(asp->pattern,"**.asp*"))return NULL;
+    ssl_enabled=(int *)(uintptr_t)CHVR_BE86U_SSL_ENABLED;
+    ssl_fd=(int *)(uintptr_t)CHVR_BE86U_SSL_FD;
+    return asp;
+#else
+    return NULL;
+#endif
+}
 
 static int api_path(const char *path) { return !strcmp(path, API); }
 static void clear_body(void)
@@ -126,7 +160,13 @@ __attribute__((constructor)) static void attach(void)
     struct mime_handler *table=dlsym(RTLD_DEFAULT,"mime_handlers");
     ssl_enabled=dlsym(RTLD_DEFAULT,"do_ssl");ssl_fd=dlsym(RTLD_DEFAULT,"ssl_stream_fd");
     nvram_value=dlsym(RTLD_DEFAULT,"nvram_get");
-    if(!table || !nvram_value)return;
+    if(!nvram_value)return;
+    if(!table) {
+        struct mime_handler *asp=hidden_stock_handler();
+        if(!asp)return;
+        handler=asp;original_input=asp->input;original_output=asp->output;
+        asp->input=bridge_input;asp->output=bridge_output;return;
+    }
     for(unsigned i=0;i<256 && table[i].pattern;i++) {
         if(strcmp(table[i].pattern,"**.asp*"))continue;
         if(!table[i].auth || !table[i].input || !table[i].output)return;

@@ -17,12 +17,15 @@ def run(*args):
     except subprocess.CalledProcessError as error:
         print(error.output);raise
 fixture=Path('/tmp/chvr-install-bin');fixture.mkdir()
-(fixture/'nvram').write_text('#!/bin/sh\ncase "$2" in productid) echo RT-AX55;; odmpid) echo RT-AX56U_V2;; lan_ipaddr) echo 192.168.52.1;; lan_ifname) echo lo;; esac\n')
-(fixture/'uname').write_text('#!/bin/sh\necho armv7l\n')
+profile=sys.argv[1] if len(sys.argv)>1 else 'ax56uv2'
+assert profile in ('ax56uv2','be86u')
+model,odm,arch,fs,web_hash=('RT-AX55','RT-AX56U_V2','armv7l','jffs2','144f9083c6ae57632cf59b4012d5ad46aff6f4f64012ce3fed50e0f1b8ebf6d1') if profile=='ax56uv2' else ('RT-BE86U','','aarch64','ubifs','8804d44c2633046d7740d356e7bdcd5e46b1d2b3ac9b1e967dda01e99150823e')
+(fixture/'nvram').write_text('#!/bin/sh\ncase "$2" in productid) echo '+model+';; odmpid) echo '+odm+';; lan_ipaddr) echo 192.168.52.1;; lan_ifname) echo lo;; esac\n')
+(fixture/'uname').write_text('#!/bin/sh\necho '+arch+'\n')
 (fixture/'service').write_text('#!/bin/sh\npkill -x httpd || true\n/usr/sbin/httpd </dev/null >/dev/console 2>&1 &\n')
-(fixture/'openssl').write_text('#!/bin/sh\nif test "$3" = /usr/sbin/httpd;then echo "SHA256= 144f9083c6ae57632cf59b4012d5ad46aff6f4f64012ce3fed50e0f1b8ebf6d1";else exec /usr/bin/openssl "$@";fi\n')
+(fixture/'openssl').write_text('#!/bin/sh\ncase "$3" in /usr/sbin/httpd|/usr/local/cloudhelper-router/httpd) if test -f /tmp/chvr-bad-httpd;then echo "SHA256= unsupported";else echo "SHA256= '+web_hash+'";fi;; *) exec /usr/bin/openssl "$@";; esac\n')
 (fixture/'cru').write_text('#!/bin/sh\nexit 0\n')
-(fixture/'awk').write_text('#!/bin/sh\ncase "$1" in *jffs2*) exit 0;; esac\nexec /usr/bin/awk "$@"\n')
+(fixture/'awk').write_text('#!/bin/sh\nif test "$1" = -v && test "$2" = fs='+fs+';then exit 0;fi\nexec /usr/bin/awk "$@"\n')
 for file in fixture.iterdir():file.chmod(0o700)
 os.environ['PATH']=str(fixture)+':'+os.environ['PATH']
 run('ip','addr','add','192.168.52.1/32','dev','lo')
@@ -50,6 +53,7 @@ def status():
 with tempfile.TemporaryDirectory(prefix='chvr-install-') as directory:
     root=Path(directory)
     shutil.copyfile('jffs/install.sh',str(root/'install.sh'))
+    (root/'device-profile').write_text(profile+'\n')
     (root/'payload/web').mkdir(parents=True)
     for source,name in [('bin/native/cloudhelper-router-plugin','cloudhelper-router-plugin'),('jffs/service','service'),('web/VirtualRouter.asp','web/VirtualRouter.asp'),('bin/native/httpd-bridge.so','httpd-bridge.so')]:
         shutil.copyfile(source,str(root/'payload'/name))
@@ -64,6 +68,27 @@ with tempfile.TemporaryDirectory(prefix='chvr-install-') as directory:
         (root/'checksums').write_text(''.join(lines))
     try:
         prepare('a'*16)
+        (root/'device-profile').write_text(('be86u' if profile=='ax56uv2' else 'ax56uv2')+'\n')
+        assert subprocess.call(['sh',str(root/'install.sh')],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)!=0
+        assert not base.exists()
+        (root/'device-profile').write_text(profile+'\n')
+        if profile=='be86u':
+            plugin=str(root/'payload/cloudhelper-router-plugin')
+            foreign=Path('/usr/local/foreign');foreign.write_text('retain')
+            assert subprocess.call([plugin,'--runtime-mount','local'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)!=0
+            assert foreign.read_text()=='retain'
+            foreign.unlink()
+            for op in ('arbitrary-path','unlocal','unmenu','unweb'):
+                assert subprocess.call([plugin,'--runtime-mount',op],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)!=0
+            foreign=root/'foreign-menu';foreign.write_text('third party menu')
+            run('mount','--bind',str(foreign),str(target))
+            assert subprocess.call([plugin,'--runtime-mount','unmenu'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)!=0
+            assert target.read_text()=='third party menu'
+            run('umount',str(target))
+            Path('/tmp/chvr-bad-httpd').touch()
+            assert subprocess.call(['sh',str(root/'install.sh')],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)!=0
+            assert not base.exists() and target.read_bytes()==original
+            Path('/tmp/chvr-bad-httpd').unlink()
         run('sh',str(root/'install.sh'))
         assert status()
         assert 'CHVR_JFFS_MENU' in target.read_text(encoding='utf-8')

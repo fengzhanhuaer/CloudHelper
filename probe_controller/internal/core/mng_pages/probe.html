@@ -121,7 +121,7 @@
           <select id="create-node-kind" aria-label="探针类型">
             <option value="normal">普通探针</option>
             <option value="linux_router">Linux 旁路由探针</option>
-            <option value="asus_56uv2">华硕56UV2</option>
+            <option value="asus_56uv2">路由器插件</option>
           </select>
           <button id="btn-create-node" class="btn primary" type="button">创建</button>
           <button id="btn-refresh-nodes" class="btn" type="button">刷新列表</button>
@@ -297,7 +297,7 @@
           <select id="edit-node-kind">
             <option value="normal">普通探针</option>
             <option value="linux_router">Linux 旁路由探针</option>
-            <option value="asus_56uv2">华硕56UV2</option>
+            <option value="asus_56uv2">路由器插件</option>
           </select>
         </div>
         <div class="form-field">
@@ -806,8 +806,8 @@
           const ddns = escapeHTML(item.ddns || '-');
           const vendor = formatVendorLink(item.vendor_name, item.vendor_url);
           const nodeKind = normalizeNodeKind(item);
-          const kindLabel = nodeKind === 'asus_56uv2' ? '<span class="pill online">华硕56UV2</span>' : nodeKind === 'linux_router' ? '<span class="pill online">Linux 旁路由</span>' : '';
-          const systemLabel = nodeKind === 'asus_56uv2' ? 'ASUS ARMv7 插件' : nodeKind === 'linux_router'
+          const kindLabel = nodeKind === 'asus_56uv2' ? '<span class="pill online">路由器插件</span>' : nodeKind === 'linux_router' ? '<span class="pill online">Linux 旁路由</span>' : '';
+          const systemLabel = nodeKind === 'asus_56uv2' ? 'ASUS JFFS 插件' : nodeKind === 'linux_router'
             ? 'Alpine Linux x64/ARM64'
             : escapeHTML(item.target_system || '-');
           const installButton = `<button class="btn" type="button" data-action="node-install-command" data-node-no="${item.node_no}">安装</button>`;
@@ -1461,7 +1461,7 @@
       const nodeName = String((node && node.node_name) || '').trim();
       state.installCommandText = String(command || '');
       const nodeKind = normalizeNodeKind(node);
-      const kindLabel = nodeKind === 'asus_56uv2' ? '华硕56UV2' : nodeKind === 'linux_router' ? 'Linux 旁路由探针' : '普通探针';
+      const kindLabel = nodeKind === 'asus_56uv2' ? '路由器插件' : nodeKind === 'linux_router' ? 'Linux 旁路由探针' : '普通探针';
       document.getElementById('install-modal-title').textContent = `${kindLabel}安装信息：#${nodeNo}${nodeName ? ' ' + nodeName : ''}`;
       const help = document.getElementById('install-modal-help');
       help.hidden = nodeKind !== 'asus_56uv2';
@@ -1507,7 +1507,7 @@
       });
       document.getElementById('create-node-name').value = '';
       await refreshNodes(true);
-      const kindLabel = nodeKind === 'asus_56uv2' ? '华硕56UV2' : nodeKind === 'linux_router' ? 'Linux 旁路由探针' : '普通探针';
+      const kindLabel = nodeKind === 'asus_56uv2' ? '路由器插件' : nodeKind === 'linux_router' ? 'Linux 旁路由探针' : '普通探针';
       setStatus(`${kindLabel}创建成功：${payload.node && payload.node.node_name ? payload.node.node_name : nodeName}`, 'ok');
     }
 

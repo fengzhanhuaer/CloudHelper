@@ -17,7 +17,7 @@ p.add_argument('--ssh',default='localrouter')
 p.add_argument('--report',type=Path)
 p.add_argument('--settings',type=Path,help='Private ASUS settings export for authenticated UI checks')
 args=p.parse_args()
-allowed={'install.sh','checksums','release-id','manifest.json','payload/cloudhelper-router-plugin',
+allowed={'install.sh','checksums','release-id','manifest.json','device-profile','payload/cloudhelper-router-plugin',
          'payload/service','payload/httpd-bridge.so','payload/web/VirtualRouter.asp'}
 with tarfile.open(str(args.package),'r:gz') as archive:
     members=archive.getmembers()
@@ -40,7 +40,9 @@ def remote(command,data=None,timeout=30):
     return result.stdout
 
 identity=remote("nvram get productid; nvram get odmpid; uname -m; nvram get extendno; awk '$1==\"Uid:\" {print $2}' /proc/self/status").decode().splitlines()
-assert identity[:3]==['RT-AX55','RT-AX56U_V2','armv7l'] and identity[4]=='0'
+profile=content['device-profile'].decode().strip()
+expected={'ax56uv2':['RT-AX55','RT-AX56U_V2','armv7l'],'be86u':['RT-BE86U','','aarch64']}
+assert profile in expected and identity[:3]==expected[profile] and identity[4]=='0'
 directory='/tmp/chvr-jffs-install.'+secrets.token_hex(8)
 q=shlex.quote
 remote('umask 077 && mkdir '+q(directory))

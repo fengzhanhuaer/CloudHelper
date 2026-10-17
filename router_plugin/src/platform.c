@@ -3,6 +3,7 @@
 #include "transport.h"
 #include <arpa/inet.h>
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <ifaddrs.h>
 #include <linux/if_tun.h>
@@ -13,10 +14,71 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/mount.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+/* BE86U's BusyBox mount applet rejects /usr and /www targets. These fixed,
+ * root-only operations use the same kernel API, with no arbitrary mount path
+ * or remote API. Never remove another component's mount. */
+static int runtime_mounted(const char *target,const char *source)
+{
+    FILE *f=fopen("/proc/self/mounts","r");if(!f)return -1;
+    char line[2048],src[512],dst[512];int found=0;
+    while(fgets(line,sizeof(line),f))if(sscanf(line,"%511s %511s",src,dst)==2 && !strcmp(dst,target)) {
+        found=source&&strcmp(src,source)?-1:1;break;
+    }
+    fclose(f);return found;
+}
+static int runtime_marker(const char *path,const char *marker)
+{
+    struct stat st;if(lstat(path,&st) || !S_ISREG(st.st_mode) || st.st_uid!=0 || st.st_mode&0022)return 0;
+    FILE *f=fopen(path,"r");if(!f)return 0;
+    char line[1024];int found=0;size_t used=0;
+    while(used<65536 && fgets(line,sizeof(line),f)) {
+        used+=strlen(line);if(strstr(line,marker)){found=1;break;}
+    }
+    fclose(f);return found;
+}
+int vr_runtime_mount(const char *op)
+{
+    const char *local="/usr/local",*menu="/www/require/modules/menuTree.js",*web="/usr/sbin/httpd";
+    const char *menu_source="/tmp/cloudhelper-router.menu.js",*web_source="/usr/local/cloudhelper-router/httpd-launch";
+    if(geteuid()!=0)return -1;
+    if(!strcmp(op,"local")) {
+        if(runtime_mounted(local,NULL)!=0)return -1;
+        char link[64];ssize_t n=readlink("/usr/local/share",link,sizeof(link));
+        if(n!=10 || memcmp(link,"/tmp/share",10))return -1;
+        DIR *dir=opendir(local);if(!dir)return -1;
+        struct dirent *entry;int valid=1,shares=0;
+        while((entry=readdir(dir))) {
+            if(!strcmp(entry->d_name,".") || !strcmp(entry->d_name,".."))continue;
+            if(strcmp(entry->d_name,"share"))valid=0;else shares++;
+        }
+        closedir(dir);if(!valid || shares!=1)return -1;
+        return mount("chvr-local",local,"tmpfs",MS_NODEV|MS_NOSUID,"size=2m,mode=755");
+    }
+    if(!strcmp(op,"unlocal")) {
+        struct stat st;
+        if(runtime_mounted(local,"chvr-local")!=1 || lstat("/usr/local/cloudhelper-router/.owned",&st) || !S_ISREG(st.st_mode) || st.st_uid)return -1;
+        return umount(local);
+    }
+    const char *target=NULL,*source=NULL,*marker=NULL;int remove=0;
+    if(!strcmp(op,"menu") || !strcmp(op,"unmenu")) {
+        target=menu;source=menu_source;marker="CHVR_JFFS_MENU";remove=!strcmp(op,"unmenu");
+    } else if(!strcmp(op,"web") || !strcmp(op,"unweb")) {
+        target=web;source=web_source;marker="CHVR_HTTPD_WRAPPER";remove=!strcmp(op,"unweb");
+    } else return -1;
+    if(remove) {
+        if(runtime_mounted(target,NULL)!=1 || !runtime_marker(target,marker))return -1;
+        return umount(target);
+    }
+    if(runtime_mounted(target,NULL)!=0 || !runtime_marker(source,marker))return -1;
+    struct stat st;if(lstat(target,&st) || !S_ISREG(st.st_mode))return -1;
+    return mount(source,target,NULL,MS_BIND,NULL);
+}
 
 static int command(const char *const *args,char *out,size_t capacity)
 {

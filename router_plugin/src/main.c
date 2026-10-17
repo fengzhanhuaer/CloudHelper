@@ -193,6 +193,10 @@ done:
 
 int main(int argc,char **argv)
 {
+    if(argc==3 && !strcmp(argv[1],"--runtime-mount")) {
+        if(vr_runtime_mount(argv[2])){perror("plugin runtime mount");return 1;}
+        return 0;
+    }
     const char *config="/jffs/cloudhelper-router/config.json",*socket="/var/run/cloudhelper-router/admin.sock";int check=0,cleanup=0;
     for(int i=1;i<argc;i++) {
         if(!strcmp(argv[i],"--version")){printf("cloudhelper-router %s %s C TLS-WebSocket\n",VR_VERSION,VR_KIND);return 0;}

@@ -10,4 +10,5 @@ int vr_platform_dns(int enabled);
 int vr_platform_routes(json_object *policy);
 int vr_platform_healthy(void);
 int vr_bind4(const char *ip,int port,int tcp);
+int vr_runtime_mount(const char *operation);
 #endif
