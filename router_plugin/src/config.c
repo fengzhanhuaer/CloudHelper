@@ -88,7 +88,7 @@ int vr_config_parse(vr_config *out, json_object *o, const vr_config *previous, c
     char host[254];int dns_port;
     if(vr_dns_doh_endpoint(c.dns_doh,host,&dns_port) || vr_dns_endpoint(c.dns_dot,host,&dns_port,0) ||
        vr_dns_endpoint(c.dns_upstream,host,&dns_port,1)) {why="invalid DNS upstreams: require HTTPS DoH, DoT host:port and ordinary IPv4:port";goto fail;}
-    if (c.enabled && (!*c.controller || !*c.node_id || !*c.node_key)) {why="controller, node ID and key are required";goto fail;}
+    if ((c.enabled || c.gateway.enabled) && (!*c.controller || !*c.node_id || !*c.node_key)) {why="controller, node ID and key are required";goto fail;}
     *out=c; if(n)*err=0; return 0;
 fail:
     snprintf(err,n,"%s",why); return -1;

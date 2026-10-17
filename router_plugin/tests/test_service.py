@@ -63,6 +63,14 @@ def main(binary):
             response=request(sock,{"action":"configure","csrf":response["csrf"],"config":{"gateway_proxy":gateway}})
             assert response["ok"] and response["config"]["gateway_proxy"]["proxy_cidrs"]==["192.168.50.0/24","10.20.0.0/16"]
             saved=response["config"]["gateway_proxy"]
+            assert not response['config']['enabled']
+            # Gateway-only mode must launch its worker with the router switch
+            # off. This host has no vendor NVRAM, so discovery fails safely.
+            for _ in range(100):
+                observed=request(sock,{'action':'status'})
+                if observed['status'].get('error'):break
+                time.sleep(.02)
+            assert observed['status'].get('gateway_enabled') and observed['status'].get('error'), 'Gateway-only worker never started'
             invalid=dict(gateway,proxy_cidrs=["172.16.0.0/8"])
             assert not request(sock,{"action":"configure","csrf":response["csrf"],"config":{"gateway_proxy":invalid}})["ok"]
             assert request(sock,{"action":"status"})["config"]["gateway_proxy"]==saved

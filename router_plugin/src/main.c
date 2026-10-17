@@ -38,7 +38,7 @@ static void *worker(void *arg)
     vr_service *s=arg;
     while(1) {
         pthread_mutex_lock(&s->mutex);
-        while(!s->stop && !s->config.enabled)pthread_cond_wait(&s->changed,&s->mutex);
+        while(!s->stop && !s->config.enabled && !s->config.gateway.enabled)pthread_cond_wait(&s->changed,&s->mutex);
         if(s->stop){pthread_mutex_unlock(&s->mutex);break;}
         vr_config c=s->config;unsigned generation=s->generation;pthread_mutex_unlock(&s->mutex);
         vr_engine_run(s,&c,generation);
@@ -92,6 +92,7 @@ json_object *vr_service_dispatch(vr_service *s,json_object *request)
         s->config=c;s->generation++;
         json_object_put(s->pending_policy);s->pending_policy=NULL;
         json_object *status=json_object_new_object();json_object_object_add(status,"enabled",json_object_new_boolean(c.enabled));
+        json_object_object_add(status,"gateway_enabled",json_object_new_boolean(c.gateway.enabled));
         json_object_object_add(status,"ready",json_object_new_boolean(0));json_object_put(s->status);s->status=status;
         pthread_cond_broadcast(&s->changed);pthread_mutex_unlock(&s->mutex);OPENSSL_cleanse(&c,sizeof(c));
         return status_reply(s);
@@ -175,6 +176,7 @@ int vr_service_run(const char *config_path,const char *socket_path,int cleanup)
     char pid_text[32];int pid_size=snprintf(pid_text,sizeof(pid_text),"%ld\n",(long)getpid());
     if(vr_atomic_write(pid_path,pid_text,(size_t)pid_size))goto done;
     s.status=json_object_new_object();json_object_object_add(s.status,"enabled",json_object_new_boolean(s.config.enabled));
+    json_object_object_add(s.status,"gateway_enabled",json_object_new_boolean(s.config.gateway.enabled));
     pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,512*1024);
     int create=pthread_create(&thread,&attr,worker,&s);pthread_attr_destroy(&attr);if(create)goto done;started=1;
     fprintf(stdout,"cloudhelper-router %s (%s) management ready\n",VR_VERSION,VR_KIND);fflush(stdout);

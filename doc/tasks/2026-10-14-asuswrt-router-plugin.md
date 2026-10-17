@@ -1167,6 +1167,12 @@ REQ058/UNIT037/IF031（并入TASK032，用户追加AX56U也刷官改、恢复插
 
 TEST101实施/验收（23:48）：AX官改导出mime_handlers=0xa2efc、do_ssl=0xa8658、ssl_stream_fd=0xf08d0，实际ARM库/SSL初始化/core/bridge验证通过。第一次BusyBox语法验证因私有rootfs漏取固件已有libptcsrv.so失败，补取依赖后四种固件运行库全部PASS，插件没有新增库。新增AX官改第四安装夹具及原三种、特权内核Fake IP/网关SNAT/撤销清理回归PASS。实机恢复候选v0.4.68-dev，四载荷逐字节回读一致，配置、boot_id、services-start/stop及V01原字节不变；菜单挂回，实际HTTPD六字段只替换input/output且原auth保持，匿名API拒绝。主控初始短窗未连失败，不计通过；继续观察配置下发/重载后ready/controller_connected为true，节点9/14/26/24/1/17/18收发正常。实际只调用T99恢复原HTTPD及菜单，V99启动后122秒内ready/controller_connected恢复（含主控请求超时重试），重复V99不换PID、配置与boot_id保持；未主动重启设备，不冒称AX本轮真实重启验收。
 
-BE恢复补充：本机Probe9真实frame_link到26已连续连接约231秒、双向最近活动51/35ms、收发队列0；AX25到26同样connected。管理192.168.50.1:22/10022/80/8443超时不能等同承载失败：本机状态明确virtual_router_enabled=false、reason=虚拟路由未开启，但承载仍在；不擅自打开用户已关闭的本机开关。原规则删除试验已观察到SKIPLOG恢复，重启后控制与双节点承载重建；故正式修复的自有生命周期及新连接验证关闭，长期稳定性不作超出有界观察的保证。BE正式包安装仍需恢复管理路径。
+BE恢复补充：本机Probe9真实frame_link到26已连续连接约231秒、双向最近活动51/35ms、收发队列0；AX25到26同样connected。管理192.168.50.1:22/10022/80/8443超时不能等同承载失败。本机virtual_router_enabled=false，但普通Probe已有独立网关代理路径，因此不能将这个开关当作管理超时的原因；早先口头归因撤回，不擅自打开用户开关。原规则删除试验已观察到SKIPLOG恢复，重启后控制与双节点承载重建；有界新连接验证通过，较长故障注入观察窗未完整通过，长期稳定性不作超出观察的保证。BE正式包安装仍需恢复管理路径。
 
 当前下一步唯一动作：扫描秘密后提交已验证适配源码，按自动版本发布流程构建四固件验证的正式JFFS附件，安装AX正式包；BE管理路径恢复后再安装同版。生产主控不升级，未手改version或创建tag。发布技能旧preflight仍只缺已退役Docker/router-arm64标记，沿已确认CON012/DEC043当前8标准附件+4JFFS附件契约执行。
+
+REQ059/DEF031/UNIT038（用户纠正：网关代理无需开启虚拟路由）：C插件worker原来只在config.enabled为真时启动，与普通Probe的独立网关能力不一致。改为虚拟路由或gateway.enabled任一开启即可启动共享认证/控制/承载与TUN平台；仅网关代理时不启动DNS监听、不接管或周期覆盖dnsmasq，保留用户DNS偏好。仅网关开启也校验节点身份；状态增加gateway_enabled，页面正确显示独立网关的连接中状态。TRACE：REQ059→UNIT038→TASK032→TEST102（API工作线程、配置保存、实际内核ACL/SNAT及实机独立模式）。准备/实施门禁通过，不修改用户最终开关状态。
+
+TEST102通过（2026-10-18）：原生API实测enabled=false/gateway.enabled=true仍运行worker；C核心、配置/网关持久化、原厂认证桥接、独立特权内核Fake IP与网关TCP/UDP SNAT、自身LAN INPUT、撤销/清理及三类安装夹具通过。四固件原厂库运行验证通过，AX安装新候选并逐字节回读。实机暂时关闭AX25虚拟路由，网关开关保持：ready/gateway_enabled=true、dnsmasq无CloudHelper接管、LAN MASQUERADE保留。已获授权的Probe16 HM-Desktop执行真实curl到192.168.52.1，HTTP=200/退出码0/7466ms；这是TCP/HTTP实包验证。先前route_test诊断帧超时不计通过，替换为真实网络请求后通过。finally恢复原enabled=true；配置未更改授权名单或代理网段。无需开启普通Probe的虚拟路由总开关。
+
+AWS连接补充：BE新WAN 113.120.11.183到AWS12040仍TCP超时、AWS抓包未见SYN；反向AWS到BE12042实测TCP/TLS成功。通过既有主控拓扑接口仅将vr-13改为24→26，交换节点/域名/公钥字段并保留原规则ID；原项私有备份，其他拓扑稳定字段逐项保持。AWS真实probe_node进程建立ESTAB到BE12042；认证远程控制台确认peer26单承载、connected_ms=360031、rx_idle=52ms/tx_idle=35ms、收发队列0。连接问题通过已有协议反向建链恢复，不冒称已查明或修复原出站TCP网络原因。候选适配源码已提交7c2defc6尚未推送，当前独立网关修正验证后与其一并发布。

@@ -12,6 +12,7 @@ static void status(vr_engine *e,int ready)
 {
     json_object *o=json_object_new_object(),*links=json_object_new_array(),*nodes=json_object_new_array();
     json_object_object_add(o,"enabled",json_object_new_boolean(e->config.enabled));
+    json_object_object_add(o,"gateway_enabled",json_object_new_boolean(e->config.gateway.enabled));
     json_object_object_add(o,"ready",json_object_new_boolean(ready));
     pthread_mutex_lock(&e->mutex);int connected=e->controller_connected;pthread_mutex_unlock(&e->mutex);
     json_object_object_add(o,"controller_connected",json_object_new_boolean(connected));
@@ -159,7 +160,7 @@ static int prepare(vr_engine *e)
     if(e->tun<0){strcpy(e->error,"TUN/routing/firewall initialization failed");return -1;}e->platform_started=1;
     if(vr_platform_routes(e->policy)){strcpy(e->error,"published route initialization failed");return -1;}
     if(vr_dataplane_start(e)){strcpy(e->error,"mapping resolver initialization failed");return -1;}
-    if(e->config.dns_enabled&&vr_dns_start(e)){strcpy(e->error,"DNS initialization failed");return -1;}
+    if(e->config.enabled&&e->config.dns_enabled&&vr_dns_start(e)){strcpy(e->error,"DNS initialization failed");return -1;}
     if(vr_control_start(e)){strcpy(e->error,"controller worker initialization failed");return -1;}
     return 0;
 }
@@ -199,7 +200,7 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
             vr_addresses next;
             if(vr_addresses_get(&next)||memcmp(&next,&e->addresses,sizeof(next))){strcpy(e->error,"LAN/WAN changed; rebinding");break;}
             if(!vr_platform_healthy()){strcpy(e->error,"firewall changed; restoring owned rules");break;}
-            if(e->config.dns_enabled&&vr_platform_dns(1)){strcpy(e->error,"DNS upstream reconciliation failed");break;}
+            if(e->config.enabled&&e->config.dns_enabled&&vr_platform_dns(1)){strcpy(e->error,"DNS upstream reconciliation failed");break;}
             addresses_checked=now;
         }
     }

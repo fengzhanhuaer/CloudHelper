@@ -15,7 +15,8 @@ int main(void)
     const char *raw="{\"enabled\":true,\"proxy_cidrs\":[\"192.168.50.7/24\",\"10.20.0.0/16\"],\"allowed_node_ids\":[\"7\",\"14\"]}";
     json_object *o=vr_json_parse(raw,strlen(raw));vr_config c;vr_config_default(&c);assert(!vr_gateway_parse(&c.gateway,o));json_object_put(o);
     assert(vr_gateway_allowed(&c.gateway,"7")&&!vr_gateway_allowed(&c.gateway,"9")&&vr_gateway_contains(&c.gateway,"10.20.1.1")&&!vr_gateway_contains(&c.gateway,"10.21.1.1"));
-    char root[]="/tmp/chvr-gateway-XXXXXX";assert(mkdtemp(root));char path[512];snprintf(path,sizeof(path),"%s/config.json",root);assert(!vr_config_save(&c,path));
+    char root[]="/tmp/chvr-gateway-XXXXXX";assert(mkdtemp(root));char path[512];snprintf(path,sizeof(path),"%s/config.json",root);
+    strcpy(c.controller,"https://controller.test");strcpy(c.node_id,"8");strcpy(c.node_key,"test-only-gateway-key");assert(!vr_config_save(&c,path));
     vr_config restored;char error[256];assert(!vr_config_load(&restored,path,error,sizeof(error)));assert(restored.gateway.enabled&&restored.gateway.cidr_count==2&&restored.gateway.node_count==2);
     struct stat before,after;assert(!stat(path,&before));assert(!vr_config_save(&restored,path));assert(!stat(path,&after)&&before.st_ino==after.st_ino);
     unlink(path);
