@@ -23,7 +23,7 @@ int main(int argc,char **argv)
     pthread_mutex_init(&e->mutex,NULL);pthread_mutex_init(&s.mutex,NULL);vr_config_default(&e->config);
     assert(!vr_copy(e->config.controller,sizeof(e->config.controller),argv[1]));
     strcpy(e->config.node_id,"7");strcpy(e->config.node_key,"fixture-only-key");strcpy(e->addresses.lan,"127.0.0.2");
-    const char *snapshot="{\"revision\":1}";e->snapshot=vr_json_parse(snapshot,strlen(snapshot));assert(e->snapshot);
+    const char *snapshot="{\"node_id\":\"7\",\"expected_node_kind\":\"asus_56uv2\",\"revision\":1,\"virtual_router\":{\"fake_ip_cidr\":\"198.18.0.0/15\",\"probe_ips\":[{\"node_id\":\"7\",\"ip\":\"198.18.0.7\"}],\"topology_rules\":[],\"route_rules\":[],\"updated_at\":\"old\"}}";e->snapshot=vr_json_parse(snapshot,strlen(snapshot));assert(e->snapshot);
     /* Allow a cold host's initial 20s report interval plus refresh retry. */
     assert(!vr_control_start(e));int changed=0;uint64_t deadline=vr_millis()+40000;
     while(vr_millis()<deadline){pthread_mutex_lock(&e->mutex);changed=e->refresh;pthread_mutex_unlock(&e->mutex);if(changed)break;poll(NULL,0,20);}

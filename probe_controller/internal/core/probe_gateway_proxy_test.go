@@ -89,8 +89,37 @@ func TestGatewayProxyRoutesScopedToAuthorizedSources(t *testing.T) {
 	}
 	nodes[0].GatewayProxy = &probeGatewayProxyConfig{}
 	nodes[1].Online = false
+	if got := appendProbeGatewayPublishedRules(routes, nodes, "9"); len(got) != 2 {
+		t.Fatal("control disconnect withdrew an authenticated grant", got)
+	}
+	nodes[1].GatewayProxy = &probeGatewayProxyConfig{true, c.ProxyCIDRs, []string{"14"}}
 	if got := appendProbeGatewayPublishedRules(routes, nodes, "9"); len(got) != 0 {
-		t.Fatal("revocation/offline retained derived route", got)
+		t.Fatal("explicit revocation retained derived route", got)
+	}
+	nodes[1].GatewayProxy = &probeGatewayProxyConfig{}
+	if got := appendProbeGatewayPublishedRules(routes, nodes, "14"); len(got) != 0 {
+		t.Fatal("explicit disable retained derived route", got)
+	}
+}
+
+func TestGatewayProxyDerivedRuleHasNoSyntheticEditTime(t *testing.T) {
+	nodes := []probeRuntimeStatus{{NodeID: "25", Online: true, GatewayProxy: &probeGatewayProxyConfig{true, []string{"192.168.52.0/24"}, []string{"26"}}}}
+	ordinary := probeVirtualRouterRouteRule{ID: "normal", Name: "normal", Action: probeVirtualRouterRouteRuleActionDirect, Entries: []string{"domain_suffix:example.test"}, UpdatedAt: "2026-10-17T00:00:00Z"}
+	first := appendProbeGatewayPublishedRules([]probeVirtualRouterRouteRule{ordinary}, nodes, "26")
+	nodes[0].Online = false
+	second := appendProbeGatewayPublishedRules(first, nodes, "26")
+	a, _ := json.Marshal(first)
+	b, _ := json.Marshal(second)
+	if string(a) != string(b) || len(second) != 2 {
+		t.Fatal("online transition changed published authorization")
+	}
+	for _, r := range second {
+		if r.ID == "normal" && r.UpdatedAt != ordinary.UpdatedAt {
+			t.Fatal("ordinary edit time changed")
+		}
+		if r.ExitNodeID == "25" && r.UpdatedAt != "" {
+			t.Fatal("derived rule received an unstable timestamp")
+		}
 	}
 }
 

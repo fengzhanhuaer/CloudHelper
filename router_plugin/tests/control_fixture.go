@@ -95,6 +95,7 @@ func main() {
 	must(e)
 	defer ln.Close()
 	var reports, authenticated, refreshed atomic.Int32
+	metadata := make(chan struct{})
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/probe/auth/challenge", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("node_id") != "7" {
@@ -113,8 +114,14 @@ func main() {
 			http.Error(w, "auth", 403)
 			return
 		}
-		if refreshed.Add(1) == 1 {
+		attempt := refreshed.Add(1)
+		if attempt == 1 {
 			http.Error(w, "temporary configuration outage", 503)
+			return
+		}
+		if attempt == 2 {
+			io.WriteString(w, `{"node_id":"7","expected_node_kind":"asus_56uv2","revision":1,"virtual_router":{"fake_ip_cidr":"198.18.0.0/15","probe_ips":[{"node_id":"7","ip":"198.18.0.7"}],"topology_rules":[],"route_rules":[],"updated_at":"new"}}`)
+			close(metadata)
 			return
 		}
 		io.WriteString(w, `{"node_id":"7","expected_node_kind":"asus_56uv2","revision":2,"virtual_router":{"fake_ip_cidr":"198.18.0.0/15","probe_ips":[{"node_id":"7","ip":"198.18.0.7"}],"topology_rules":[],"route_rules":[]}}`)
@@ -179,6 +186,20 @@ func main() {
 		}
 		reports.Add(1)
 		encoder.Encode(map[string]string{"type": "ack"})
+		select {
+		case <-metadata:
+		case <-time.After(10 * time.Second):
+			return
+		}
+		// A timestamp-only refresh must keep the original authenticated stream
+		// alive and reporting. An actual revision change must still reload.
+		encoder.Encode(map[string]string{"type": "report_once"})
+		if decoder.Decode(&report) != nil {
+			return
+		}
+		reports.Add(1)
+		encoder.Encode(map[string]string{"type": "ack"})
+		encoder.Encode(map[string]string{"type": "route_config_sync"})
 		var b [1]byte
 		stream.Read(b[:])
 	})
@@ -190,7 +211,7 @@ func main() {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	must(cmd.Run())
-	if authenticated.Load() != 1 || reports.Load() != 3 || refreshed.Load() != 2 {
+	if authenticated.Load() != 1 || reports.Load() != 4 || refreshed.Load() != 3 {
 		log.Fatalf("bad protocol result auth=%d reports=%d refresh=%d", authenticated.Load(), reports.Load(), refreshed.Load())
 	}
 	fmt.Println("PASS: existing Go WebSocket/yamux accepted C peer and keepalive")

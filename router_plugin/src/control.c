@@ -130,13 +130,13 @@ static int report(control *c)
     json_object_put(o);return rc;
 }
 
-static int refresh(control *c,const char *original)
+static int refresh(control *c)
 {
     vr_engine *e=c->engine;char error[256];
     json_object *next=vr_controller_call(&e->config,e->addresses.wan_if,"GET","/api/probe/route/config",NULL,error,sizeof(error));
     if(!next){vr_service_log(e->service,"controller","Configuration refresh failed; retaining current policy and control stream");return -1;}
     if(vr_policy_validate(next,e->config.node_id,error,sizeof(error))){vr_service_log(e->service,"controller",error);json_object_put(next);return -1;}
-    int changed=strcmp(original,json_object_to_json_string_ext(next,JSON_C_TO_STRING_PLAIN))!=0;
+    int changed=!vr_policy_equal(c->engine->snapshot,next);
     if(changed) {
         vr_service *s=e->service;pthread_mutex_lock(&s->mutex);
         if(s->stop||s->generation!=e->generation){pthread_mutex_unlock(&s->mutex);json_object_put(next);return -1;}
@@ -150,7 +150,7 @@ static int refresh(control *c,const char *original)
 
 static void *control_worker(void *arg)
 {
-    vr_engine *e=arg;char *original=strdup(json_object_to_json_string_ext(e->snapshot,JSON_C_TO_STRING_PLAIN));if(!original)return NULL;
+    vr_engine *e=arg;
     while(!stopped(e)) {
         control *c=calloc(1,sizeof(*c));if(!c)break;c->engine=e;c->fd=-1;
         if(!connect_controller(c)) {
@@ -159,7 +159,7 @@ static void *control_worker(void *arg)
                 uint64_t now=vr_millis();
                 if(now-c->ack_at>65000)break;
                 if(c->report||now-sent>=20000){if(report(c))break;sent=now;c->report=0;}
-                if(c->refresh||now>=next_check){int rc=refresh(c,original);c->refresh=0;if(rc>0)break;
+                if(c->refresh||now>=next_check){int rc=refresh(c);c->refresh=0;if(rc>0)break;
                     if(rc<0){if(failures<4)failures++;unsigned delay=failures==4?30u:5u<<(failures-1);next_check=vr_millis()+delay*1000;}
                     else{failures=0;next_check=vr_millis()+60000;}}
                 struct pollfd fd={c->fd,POLLIN,0};int rc=poll(&fd,1,100);
@@ -178,7 +178,7 @@ static void *control_worker(void *arg)
         pthread_mutex_lock(&e->mutex);e->controller_connected=0;int changed=e->refresh;pthread_mutex_unlock(&e->mutex);if(changed)break;
         for(int i=0;i<50&&!stopped(e);i++)poll(NULL,0,100);
     }
-    free(original);return NULL;
+    return NULL;
 }
 
 int vr_control_start(vr_engine *e)

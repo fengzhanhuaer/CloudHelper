@@ -101,6 +101,7 @@ int vr_resolve4(const char *host, const char *upstream, const char *iface, char 
 vr_decision vr_policy_match(json_object *policy, const char *domain, const char *ip);
 int vr_policy_validate(json_object *snapshot, const char *node_id, char *err, size_t n);
 int vr_policy_service_port(json_object *policy,const char *node_id,int fallback);
+int vr_policy_equal(json_object *a,json_object *b);
 json_object *vr_cache_load(const char *path);
 int vr_cache_save(const char *path,json_object *o);
 json_object *vr_policy_fetch_pending(const vr_config *c,const char *iface,const char *path,json_object *owned_pending,char *err,size_t n);

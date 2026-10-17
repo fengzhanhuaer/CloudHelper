@@ -82,7 +82,10 @@ func appendProbeGatewayPublishedRules(rules []probeVirtualRouterRouteRule, runti
 		}
 	}
 	for _, r := range runtimes {
-		if r.GatewayProxy == nil || !r.Online || r.NodeID == nodeID {
+		// A control-stream outage does not revoke the last authenticated LAN
+		// grant. The packet carrier may remain usable, and consumers must keep
+		// routing the subnet into the overlay rather than their WAN default.
+		if r.GatewayProxy == nil || r.NodeID == nodeID {
 			continue
 		}
 		c, err := normalizeProbeGatewayConfig(*r.GatewayProxy)
@@ -96,7 +99,15 @@ func appendProbeGatewayPublishedRules(rules []probeVirtualRouterRouteRule, runti
 			})
 		}
 	}
-	return normalizeProbeVirtualRouterRouteRules(out)
+	out = normalizeProbeVirtualRouterRouteRules(out)
+	for i := range out {
+		if strings.HasPrefix(out[i].ID, "gateway-proxy-") {
+			// Derived rules have no independent edit time. Normalization fills
+			// missing timestamps with now; never send that artificial churn.
+			out[i].UpdatedAt = ""
+		}
+	}
+	return out
 }
 
 func updateProbeRuntimePhysicalInterfaces(nodeID, lan, wan string) {

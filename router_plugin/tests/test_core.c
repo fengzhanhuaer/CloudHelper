@@ -114,6 +114,17 @@ static void test_config(void)
 
 static void test_policy(void)
 {
+    json_object *before=parse("{\"virtual_router\":{\"route_rules\":[{\"id\":\"gateway\",\"entries\":[\"cidr:192.168.52.0/24\"],\"updated_at\":\"old\",\"expires_at\":\"future\"}]},\"updated_at\":\"old\",\"optional\":null}");
+    json_object *after=parse("{\"optional\":null,\"updated_at\":\"new\",\"virtual_router\":{\"route_rules\":[{\"expires_at\":\"future\",\"updated_at\":\"new\",\"entries\":[\"cidr:192.168.52.0/24\"],\"id\":\"gateway\"}]}}");
+    assert(vr_policy_equal(before,after)&&vr_policy_equal(after,before));
+    json_object *rule=json_object_array_get_idx(vr_member(vr_member(after,"virtual_router"),"route_rules"),0);
+    json_object_object_del(rule,"updated_at");assert(vr_policy_equal(before,after));
+    json_object_object_add(rule,"expires_at",json_object_new_string("expired"));assert(!vr_policy_equal(before,after));
+    json_object_object_add(rule,"expires_at",json_object_new_string("future"));
+    json_object_object_add(rule,"auth_ticket",json_object_new_string("fixture-only-ticket"));assert(!vr_policy_equal(before,after));
+    json_object_object_del(rule,"auth_ticket");json_object_object_add(rule,"entries",parse("[\"cidr:192.168.53.0/24\"]"));assert(!vr_policy_equal(before,after));
+    json_object_object_add(vr_member(after,"virtual_router"),"route_rules",parse("[]"));assert(!vr_policy_equal(before,after));
+    json_object_put(before);json_object_put(after);
     json_object *ports=parse("{\"probe_ips\":[{\"node_id\":\"23\",\"service_port\":12041},{\"node_id\":\"25\"}]}");
     assert(vr_policy_service_port(ports,"23",0)==12041);
     assert(vr_policy_service_port(ports,"23",443)==12041);

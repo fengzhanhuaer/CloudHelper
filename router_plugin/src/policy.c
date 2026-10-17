@@ -5,6 +5,33 @@
 #include <string.h>
 #include <strings.h>
 
+/* Controller-generated rules may get a fresh updated_at on every fetch.
+   Compare all operational fields without mutating either published snapshot.
+   In particular, credentials, expiry, rule removal and array order still count. */
+int vr_policy_equal(json_object *a,json_object *b)
+{
+    if(a==b)return 1;
+    if(!a||!b||json_object_get_type(a)!=json_object_get_type(b))return 0;
+    if(json_object_is_type(a,json_type_object)) {
+        json_object_object_foreach(a,key,value) {
+            json_object *other=NULL;
+            if(!strcmp(key,"updated_at"))continue;
+            if(!json_object_object_get_ex(b,key,&other)||!vr_policy_equal(value,other))return 0;
+        }
+        json_object_object_foreach(b,key2,value2) {
+            (void)value2;json_object *other=NULL;
+            if(strcmp(key2,"updated_at")&&!json_object_object_get_ex(a,key2,&other))return 0;
+        }
+        return 1;
+    }
+    if(json_object_is_type(a,json_type_array)) {
+        size_t n=json_object_array_length(a);if(n!=(size_t)json_object_array_length(b))return 0;
+        for(size_t i=0;i<n;i++)if(!vr_policy_equal(json_object_array_get_idx(a,i),json_object_array_get_idx(b,i)))return 0;
+        return 1;
+    }
+    return !strcmp(json_object_to_json_string_ext(a,JSON_C_TO_STRING_PLAIN),json_object_to_json_string_ext(b,JSON_C_TO_STRING_PLAIN));
+}
+
 static int ip_match(const char *text,const char *ip)
 {
     struct in_addr a,b;char s[64];
