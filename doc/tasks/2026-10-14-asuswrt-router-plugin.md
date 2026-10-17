@@ -1067,3 +1067,5 @@ REQ-051/UNIT-031/IF-025：用户要求截图中状态/域名分成两行。ASP�
 
 TEST085：两型号标准包安装后四载荷逐字节回读，原config及本次启动boot_id不变，临时文件精确清理；BE86U PID8692，AX56U V2 PID2771。标准安装器保留previous供回退。BE86U原厂输出仍为手动SSH启动，旧AX设备检测到既有最小固件自启钩子。实际登录Web视觉由用户刷新确认，不伪称已自动登录验收。
 BE86U包f48ae60f3cf4aa53（76016字节，SHA256 712bce6d56db74960c5999f59462f5071db0524ff3b17e549f96d860962ff47f）；AX56U V2包a1eac2d723feabed（76104字节，SHA256 3a871ba7db0b0eb4fefbcfb0913b8ca7238eae487725111d48e7ad1ef368e5d6）。本轮仅改ASP及账本，C二进制复用上轮已通过两型号原厂库验证的同一内容；纯前端不重复全Go测试。准备/实现与组件验证通过，下一步唯一动作：扫描两个明确源码路径，提交推送，核对Actions及两型号发布附件。BE86U持久自启保持未实现边界，不计入本轮完成声明。
+
+2026-10-17 TASK028交付核对：功能提交96bf50831f06ede1d040fcd23b751cf07d026f27已推送；Actions39019469118全部success。工作流自动版本b17f0ea2及v0.4.66的父提交恰为此SHA，未手工改版本/tag。Release https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.66 标准8项及两型号JFFS包/JSON4项齐全，4项digest/大小与本地完全一致。两台节点25/26更新后ready=true、controller_connected=true、error为空。源码秘密扫描通过，仅ASP/账本入Git；UI修改及当前BE86U服务恢复完成，持久自启仍未实现，已向用户明确说明。后续无本轮待自动执行动作。
