@@ -1114,3 +1114,29 @@ TASK030发布已核对：功能3f79ba900e5b9f3d0fb04c3d83585cda0a27685b，Action
 TEST091最终通过（有界实测）：21:00:08～21:01:37 MYT从homerouter/BE86U节点26实际ping 192.168.52.1，90发90收，0%丢包，min/avg/max=22.683/72.762/504.889ms。21:01:11～21:02:09十次双端采样，节点25/26均ready=true、error为空，互联载波connected；BE到52.1十次均经chvr0。21:01:37及21:01:44节点25 controller_connected=false，但互联载波与BE网关路由保留，随后控制连接自行恢复；90包末段仍有回包。BE进程仍PID23103、boot_id仍76856537-cb67-46be-b2bf-140e96337c86，RAM日志最后全量重载在20:59:22，早于本轮ping。首版采样脚本因末尾pidof名称截断导致SSH返回1，check_output误拒绝了可用状态；修正为解析实际stdout后上述十次采样通过，该工具错误不计为设备失败。HTTP补充探测未取得可判定状态码，不宣称本轮额外HTTP验收通过；本轮目标和完成证据为实际ICMP及路由/载波保持。
 
 TASK030状态已完成，REQ053→UNIT033/IF027→TEST089/090/091/092闭合。本轮时间戳触发重载及控制流掉线撤回网关路由两项修复已发布并在生产生效；测试覆盖一次自然控制流中断，不能据90包宣称长期绝无丢包。偶发延迟尖峰、主控弱网连接波动及BE86U持久自启仍为独立边界，未声称解决。下一步唯一动作：提交本次验收记录、清理本轮诊断隧道；无待执行业务变更。
+
+### TASK031 AX56U V2将A更新为已验证B的同源镜像（2026-10-17，当前唯一活动任务）
+
+REQ-054：用户明确要求“AX56U V2 将A区也升级为我们自己编译的B区的镜像”。本轮仅localrouter/RT-AX55/RT-AX56U_V2；BE86U不在范围内。以原B交付无CFE镜像dcb1a7f5486bc373fe6ce4ff8b7f65aa70ba94508164255bef17feab3cf3d5dd（35258388字节）更新物理A，保留启动ROM、B逻辑载荷、JFFS和业务身份。新指令明确替代本轮“永远保留机内原厂A”的旧约束，原厂A仍保留独立磁盘备份；不据旧规则重复索要同一操作授权。
+
+总体架构/UNIT-034/IF-028：实际当前及下次Second/B、53297-gee411da、boot_id939d339b-ea1f-462b-a7b7-0a7d69884ad0，物理mtd4=First/inactive、mtd5=Second/active。使用本机原生firmware_check/hnd-write自动写inactive物理A，不用dd/mtd erase写Flash，不重划分区、不写CFE、不重编译不同镜像。写后先核对A全部逻辑系统载荷、B保留与CFE原始哈希，再选择First普通启动并在UART捕获下重启验证；已知ONCE异常不宣称修复。回滚为选择保留的健康B，配置/JFFS原样保留；磁盘原厂A备份不覆盖。
+
+追踪REQ054→UNIT034/IF028→TASK031→TEST093（当次完整A/B/ROM/JFFS/配置备份、镜像WFI/CRC/目标/容量、B系统逻辑载荷匹配、原生校验）/TEST094（原生inactive-A写入、A镜像逻辑核验、B/CFE保留）/TEST095（A实际启动、PID1/自启/Web/SSH/配置及DNS/网关业务）。准备门禁有条件通过：写入前须完成当次备份、原生校验及B镜像同源验证；超时或结果不明不重发写入。当前TASK031进行中，下一步唯一动作：备份并核验同源无CFE镜像后准备只写A的受控脚本。
+
+TEST093通过：当次备份D:/Code/RouterFirmware/router-backups/20261017-ax56u-first-autostart，A/B各53477376字节、ROM1048576字节，JFFS837033字节可读且有config；配置导出66568字节、NVRAM及SSH密钥私有保存，不入Git。A raw bf9699a332e90fa00a6dfbf1123a95ec1aecb8d9fe193d5892a8bbbf9327c0ed、269逻辑块与原厂备份一致；B raw741b878167a61d42e9d22053f2f17d8bcec9acae2e72fe4443cc438708a75770、269逻辑块与20261016已启动验收B完全一致；ROM d3be3cb5ba9251eb5eaa1f4d8aacd9a4b3dfa2bcd500121e0d9ec130b2eba91f仍原始值。目标镜像WFI/CRC/芯片/无CFE/容量与全部UBI头验证通过；上传完整回读SHA一致、firmware_check=1、restore_defaults=0。当前管理路径为192.168.52.172/24、ifindex19直连52.1，不改全局路由。COM4可打开但AX ttyAMA0写入测试标记后RX仍0字节，串口当前不能作为有效早期启动证据；保留捕获，不凭端口存在宣称可用。先执行带boot_id/实际Second约束、原子一次锁的原生inactive-A写入，写后保持B运行并核验；是否启动A另以实际写后状态及可用管理证据决定，不盲重启。
+
+TEST094通过：首次启动器使用PATH中的sh，被解析为/usr/sbin/sh→/bin/memaccess，未运行脚本、无一次锁/写标记、无Flash操作；保存原错误后改为显式/bin/sh，真实语法校验通过，才启动受控脚本。原生hnd-write仅执行一次，退出99/hndwr99并标记WRITE_FINISHED_NO_REBOOT，实际仍Second/B、下次First/A、A序号18/commit1、B17/commit1。A完整回读53477376字节SHA256 2c71b0db2b0dd2b7f511de582854548c55662386f9916cd56060b3c9838e3a02；269逻辑块严格验证，仅两份metadata由committed0→1、998→018及对应记录CRC变化，其他267块逐字节相同。B原始SHA仍741b878167a61d42e9d22053f2f17d8bcec9acae2e72fe4443cc438708a75770、269逻辑块保持；ROM原始SHA不变，业务config逐字节不变。写入门禁通过；同源镜像、两套完整回读、B可回退及直连SSH管理均具备，用户本轮升级授权内继续一次普通A启动验收。COM4无有效RX，使用SSH新boot_id/BootedFirst/PID1/启动标记和实际网络验收，不宣称已获取早期UART或ONCE证据。下一步唯一动作：在被动串口捕获开启后重启一次，核实实际A及自动插件/网络。
+
+TEST095通过（明确边界）：受控普通重启一次后实际First/A、下次First/A、53297-gee411da，新boot_id c06fb4fa-e83a-4133-aff4-b5e6da950207，A序号18/commit1、B17/commit1。等待脚本误查旧TCP22，实际配置SSH10022，因此产生180秒超时假阴性；LAN和Web当时已正常，认证API在任何手动插件恢复前确认node25 ready=true/controller_connected=true。曾通过原厂认证接口请求restart_sshd，但没有证据表明10022此前不工作，不将该工具错误认定为固件SSH自启缺陷；正确SSH别名随后直接通过。保留原失败报告及corrected-recovery-verification.json，未为修正监控重复重启。UART捕获仍0RX，不声称早期启动日志或ONCE/失败自动回退通过。
+
+启动后完整A回读SHA256 7704e30146472de950dc386021cd0f92b7867d3bc61d954affdf053f64df31bb；269逻辑块和全部EC/VID/metadata CRC通过严格核验，仅原生序号/提交记录及rootfs_ubifs保留PEB239→368、autoresize标志1→0与对应CRC变化，其他字节匹配原交付镜像。B raw仍741b878167a61d42e9d22053f2f17d8bcec9acae2e72fe4443cc438708a75770且逻辑载荷保持，ROM原始SHA仍d3be3cb5ba9251eb5eaa1f4d8aacd9a4b3dfa2bcd500121e0d9ec130b2eba91f。PID1 SHA b1c81f968330dcd498ce4c7a6c3c47dad255441503a91ab679e70333e342b724、ROM启动钩子SHA 4b92a30ccdd55d4a2414f5dc8a656220565ace2aedd08243986d3cf72b795546均与构建产物相同；JFFS自动挂载、启动标记及插件自动启动通过，未手动service start。20项LAN/WAN/DHCP/双频Wi-Fi/SSH/后台凭据配置、三把SSH主机密钥和插件config均保持；机密只比对布尔值，不入Git。
+
+网络/Web验收：两路无线UP/AP、WAN网关及1.1.1.1各3包无丢失；Windows通过192.168.52.1的UDP/TCP DNS均解析example.com成功。HTTPS socket明确绑定192.168.52.172及ifindex19，经AX出站，TLS证书校验和HTTP200通过。认证插件ASP、原厂menuTree挂接、已启用node25状态API正常，匿名API拒绝。上述证据及完整SHA256清单在私有备份目录first-runtime-health.json、after-boot-verification.json、final-network-web-verification.json、final-SHA256-manifest.json。BE86U用户独立重启后无chvr0网关路由，52.1走ppp0，其ping不能作为本轮AX转发验收；没有为测试改动BE插件，未冒称再次通过26→25网关长测，相关产品修复沿用TASK030有效证据。
+
+TASK031完成门禁通过：REQ054→UNIT034/IF028→TEST093/094/095闭合，机内A/B均为同源自编译最小JFFS自启固件，当前A；B与启动ROM保留，原厂A完整镜像仍在磁盘备份。未修改产品源码/版本或重编译不同镜像，未清空配置、重划分区或写CFE；本轮仅提交验收文档，不触发新发布。普通启动成功不证明故障自动回退；BE自启仍独立。下一步唯一动作：提交推送本轮验收记录。
+
+### BE86U软件降级放行（2026-10-17，用户追加操作）
+
+用户先询问BE86U防降级，随后明确要求“帮我关闭防回滚”。参考梅林官方Changelog-3006.txt的3006.102.3说明，原厂3006.102_37000及以上首次刷梅林需在SSH执行nvram set DOWNGRADE_CHECK_PASS=1；这是软件刷写放行项，不证明存在或关闭了OTP/启动器硬件防回滚，也不保证任意旧镜像兼容。来源：https://github.com/RMerl/asuswrt-merlin.ng/blob/main/Changelog-3006.txt 。
+
+操作前实时确认homerouter为RT-BE86U、39436-g5c5fd36_1586-g1f414_BB0B、boot_id287dadf0-6564-473f-ac08-76f804020840（已不同于此前读数，使用本次实际值）。原DOWNGRADE_CHECK_PASS为空；在型号和boot_id再次匹配的条件下执行上述唯一NVRAM set，回读1且boot_id不变。未执行nvram commit、刷机、重启、改启动区/签名/启动器或启动插件；该放行用于当前刷写会话，跨重启保留未保证。私有操作报告D:/Code/RouterFirmware/router-backups/20261017-be86u-downgrade-pass/software-downgrade-pass.json。本次要求的软件设置已完成，未验证实际降级刷写；用户尚未指定目标版本，不能自行刷旧固件。
