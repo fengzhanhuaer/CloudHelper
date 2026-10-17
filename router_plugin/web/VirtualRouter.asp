@@ -26,7 +26,7 @@
 <button id="save" onclick="saveVR()">保存并应用</button></section>
 <section><h3>运行状态</h3><div id="status" class="status">正在读取…</div></section>
 <section><h3>Probe Link</h3><div class="scroll"><table><thead><tr><th>对端</th><th>状态／域名</th><th>延迟</th><th>发送／接收速率</th><th>累计发送／接收</th></tr></thead><tbody id="links"></tbody></table></div></section>
-<section><h3>节点测速</h3><label><span>目标 Probe Node</span><select id="target"></select></label><div class="actions"><button class="measure" onclick="measureVR('ping')">测延迟</button><button class="measure" onclick="measureVR('upload')">测上传</button><button class="measure" onclick="measureVR('download')">测下载</button></div><p class="hint">手动测速，一次一个任务。每方向最多 3 秒、16 MiB；仅显示本次结果。</p><div id="measurement" class="status"></div></section>
+<section><h3>节点测速</h3><label><span>目标 Probe Node</span><select id="target"></select></label><div class="actions"><button class="measure" onclick="measureVR('ping')">测延迟</button><button class="measure" onclick="measureVR('upload')">测上传</button><button class="measure" onclick="measureVR('download')">测下载</button></div><p class="hint">手动测速，一次一个任务。与 Probe Node 一致，每方向最多 10 秒或 128 MiB，以先达到为准；仅显示本次结果。</p><div id="measurement" class="status"></div></section>
 </div><div id="gateway_panel" style="display:none"><section><h3>网关代理</h3>
 <label><span>允许远程访问 LAN</span><input id="gateway_enabled" type="checkbox"></label>
 <label for="gateway_cidrs"><span>代理网段</span></label><textarea id="gateway_cidrs" placeholder="192.168.52.0/24&#10;192.168.60.0/24" spellcheck="false"></textarea>

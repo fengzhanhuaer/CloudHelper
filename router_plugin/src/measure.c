@@ -38,8 +38,8 @@ static int send_start(vr_engine *e,json_object *m,char path[VR_PATH_MAX][129],si
 {
     if(e->speed_send)return -1;
     int64_t bytes=json_object_get_int64(vr_member(m,"max_bytes")),duration=json_object_get_int64(vr_member(m,"max_duration_ms"));
-    if(bytes<=0||bytes>16*1024*1024)bytes=16*1024*1024;
-    if(duration<=0||duration>3000)duration=3000;
+    if(bytes<=0||bytes>VR_SPEED_BYTES)bytes=VR_SPEED_BYTES;
+    if(duration<=0||duration>VR_SPEED_DURATION_MS)duration=VR_SPEED_DURATION_MS;
     e->speed_limit=(uint64_t)bytes;e->speed_duration=(uint64_t)duration;
     json_object_object_add(m,"max_bytes",json_object_new_int64(bytes));json_object_object_add(m,"max_duration_ms",json_object_new_int64(duration));message_path(m,path,n);
     if(vr_send_json(e,4,1,path,n,m))return -1;
@@ -56,7 +56,7 @@ void vr_measure_frame(vr_engine *e,vr_link *l,const vr_frame *f,char path[VR_PAT
             if(!r->message || strlen(r->id)!=len || memcmp(r->id,f->data+6,len) || r->count!=n || memcmp(r->path,path,n*129))continue;
             if(f->data_len>r->limit-r->bytes || vr_millis()>r->deadline)return;
             if(!r->frames){r->first=vr_millis();int64_t duration=json_object_get_int64(vr_member(r->message,"max_duration_ms"));
-                if(duration<=0||duration>3000)duration=3000;
+                if(duration<=0||duration>VR_SPEED_DURATION_MS)duration=VR_SPEED_DURATION_MS;
                 r->deadline=r->first+(uint64_t)duration+500;}
             r->last=vr_millis();r->bytes+=f->data_len;r->frames++;return;
         }
@@ -75,8 +75,8 @@ void vr_measure_frame(vr_engine *e,vr_link *l,const vr_frame *f,char path[VR_PAT
             for(size_t i=0;i<4;i++) {
                 vr_speed_rx *r=&e->receives[i];if(r->message && vr_millis()-r->last>10000){json_object_put(r->message);memset(r,0,sizeof(*r));}
                 if(!r->message){r->message=json_object_get(m);strcpy(r->id,id);memcpy(r->path,path,n*129);r->count=n;r->last=vr_millis();
-                    int64_t limit=json_object_get_int64(vr_member(m,"max_bytes"));r->limit=limit>0&&limit<16*1024*1024?(uint64_t)limit:16*1024*1024;
-                    r->deadline=r->last+5000;break;}
+                    int64_t limit=json_object_get_int64(vr_member(m,"max_bytes"));r->limit=limit>0&&limit<VR_SPEED_BYTES?(uint64_t)limit:VR_SPEED_BYTES;
+                    r->deadline=r->last+VR_SPEED_DURATION_MS+10000;break;}
             }
         } else if(f->sub==3) {
             for(size_t i=0;i<4;i++) {
@@ -112,11 +112,11 @@ void vr_measure_tick(vr_engine *e)
         char path[VR_PATH_MAX][129]={{0}};size_t n;
         if(vr_path(e,node,path,&n)||e->speed_send||vr_random_hex(e->measure_id,24)){complete(e,NULL,"target has no available path or measurement busy");}
         else {
-            e->measure_started=now;json_object *m=json_object_new_object();
+            e->measure_started=now;e->measure_timeout=!strcmp(kind,"ping")?12000u:VR_SPEED_TIMEOUT_MS;json_object *m=json_object_new_object();
             json_object_object_add(m,"request_id",json_object_new_string(e->measure_id));json_object_object_add(m,"direction",json_object_new_string(kind));
             json_object_object_add(m,"source_node_id",json_object_new_string(e->config.node_id));json_object_object_add(m,"target_node_id",json_object_new_string(node));
             json_object_object_add(m,"result_node_id",json_object_new_string(e->config.node_id));message_path(m,path,n);
-            json_object_object_add(m,"max_bytes",json_object_new_int(16*1024*1024));json_object_object_add(m,"max_duration_ms",json_object_new_int(3000));
+            json_object_object_add(m,"max_bytes",json_object_new_int(VR_SPEED_BYTES));json_object_object_add(m,"max_duration_ms",json_object_new_int(VR_SPEED_DURATION_MS));
             int rc=!strcmp(kind,"ping")?vr_send_json(e,3,1,path,n,m):!strcmp(kind,"download")?vr_send_json(e,4,5,path,n,m):send_start(e,m,path,n);
             if(rc)complete(e,NULL,"measurement could not start");
             json_object_put(m);
@@ -128,7 +128,7 @@ void vr_measure_tick(vr_engine *e)
     if(e->speed_send) {
         if(now-e->speed_started>=e->speed_duration || e->speed_bytes>=e->speed_limit) {
             if(!vr_send_json(e,4,3,e->speed_path,e->speed_count,e->speed_send)){json_object_put(e->speed_send);e->speed_send=NULL;}
-            else if(now-e->speed_started>5000){int local=!strcmp(vr_string(e->speed_send,"request_id"),e->measure_id);json_object_put(e->speed_send);e->speed_send=NULL;if(local)complete(e,NULL,"measurement link stalled");}
+            else if(now-e->speed_started>e->speed_duration+5000){int local=!strcmp(vr_string(e->speed_send,"request_id"),e->measure_id);json_object_put(e->speed_send);e->speed_send=NULL;if(local)complete(e,NULL,"measurement link stalled");}
         } else {
             uint8_t chunk[8192]={0};const char *id=vr_string(e->speed_send,"request_id");size_t len=strlen(id);
             memcpy(chunk,"VRS1",4);chunk[4]=(uint8_t)(len>>8);chunk[5]=(uint8_t)len;memcpy(chunk+6,id,len);
@@ -139,7 +139,7 @@ void vr_measure_tick(vr_engine *e)
                 e->speed_bytes+=size;}
         }
     }
-    if(*e->measure_id && now-e->measure_started>12000)complete(e,NULL,"measurement timed out");
+    if(*e->measure_id && now-e->measure_started>(e->measure_timeout?e->measure_timeout:VR_SPEED_TIMEOUT_MS))complete(e,NULL,"measurement timed out");
 }
 
 void vr_measure_stop(vr_engine *e)

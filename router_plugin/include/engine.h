@@ -8,6 +8,9 @@
 
 #define VR_TX_CAP (256u*1024u)
 #define VR_NAT_MAX 2048
+#define VR_SPEED_BYTES (128u*1024u*1024u)
+#define VR_SPEED_DURATION_MS 10000u
+#define VR_SPEED_TIMEOUT_MS (VR_SPEED_DURATION_MS+20000u)
 typedef struct vr_engine vr_engine;
 typedef struct {
     vr_engine *engine;
@@ -54,7 +57,7 @@ struct vr_engine {
     vr_speed_rx receives[4];
     json_object *speed_send;
     char speed_path[VR_PATH_MAX][129],measure_id[49];size_t speed_count;
-    uint64_t speed_started,speed_bytes,speed_limit,speed_duration,measure_started;
+    uint64_t speed_started,speed_bytes,speed_limit,speed_duration,measure_started,measure_timeout;
 };
 
 int vr_path(vr_engine *e,const char *target,char path[VR_PATH_MAX][129],size_t *n);

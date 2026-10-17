@@ -69,14 +69,14 @@ int main(int argc,char **argv)
     for(unsigned i=0;i<3;i++) {
         strcpy(s.measure_node,"8");strcpy(s.measure_kind,kinds[i]);json_object_put(s.measurement);s.measurement=json_object_new_object();
         json_object_object_add(s.measurement,"running",json_object_new_boolean(1));json_object_object_add(s.measurement,"kind",json_object_new_string(kinds[i]));
-        deadline=vr_millis()+15000;
+        deadline=vr_millis()+VR_SPEED_TIMEOUT_MS+5000;
         while(json_object_get_boolean(vr_member(s.measurement,"running"))&&vr_millis()<deadline)tick(e);
         json_object *result=vr_member(s.measurement,"result");
         if(!result||!json_object_get_boolean(vr_member(result,"ok")))fprintf(stderr,"measurement: %s\n",json_object_to_json_string(s.measurement));
         assert(result&&json_object_get_boolean(vr_member(result,"ok")));
         if(i){int64_t bytes=json_object_get_int64(vr_member(result,"bytes"));
-            if(bytes<=0||bytes>16*1024*1024)fprintf(stderr,"measurement bounds: %s\n",json_object_to_json_string(result));
-            assert(bytes>0&&bytes<=16*1024*1024);}
+            if(bytes<=0||bytes>VR_SPEED_BYTES)fprintf(stderr,"measurement bounds: %s\n",json_object_to_json_string(result));
+            assert(bytes>0&&bytes<=VR_SPEED_BYTES);}
         printf("PASS: C to existing Probe %s\n",kinds[i]);fflush(stdout);
     }
     vr_handshakes_poll(e,1);vr_link_close(l,"");json_object_put(e->policy);json_object_put(s.measurement);
