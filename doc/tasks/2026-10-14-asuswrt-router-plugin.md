@@ -1054,3 +1054,7 @@ TEST082通过：独立TLS/HMAC服务器12秒证书返回成功、缓存刷新和
 TEST083通过：BE86U已更新8af0925262e021a5（75992字节，SHA256 af0418eed71a905b3c931e307ca9f468e664b9c3c5d9b04d22921faa2c7bc070），四载荷逐字节回读，原config与boot_id不变；PID7998，node26 ready=true/controller_connected=true/error为空，节点证书5402字节权限0600，links为空，未冒称无拓扑的真实转发/DNS出口已验收。AX56U V2配套包1547a9e10493071a（76080字节，SHA256 91c2535716a977cf20fdc03e0e77b20bc78df44e9f5a6768004e662c46c84738）仅构建。更新前私有备份D:/Code/RouterFirmware/router-backups/be86u-20261017-certificate-timeout/jffs-cloudhelper-before.tar.gz（150669字节，SHA256 c92769100403de88c5cfe5f236d60d15ee1b23ac97c328a65d1c434ae80602bb），不入Git。尚未更改固件/重启/生产主控Go程序。
 
 本轮9个明确源文件准备提交fix: allow ASUS initial certificate issuance to finish；旧发布预检继续遵循CON012/DEC043当前契约，功能测试无未解决失败。下一步唯一动作：源码秘密扫描、提交推送并核对该功能SHA的Actions与两型号JFFS附件。
+
+2026-10-17 TASK027交付完成：9个源码/测试/账本文件提交9a7432ec0ae9345ccf11189a998d4c990d0bbaaa并推送origin/mapledev；设备实际node_key和私钥材料扫描通过，无凭据/备份/厂商库入Git。Actions39017652632（https://github.com/fengzhanhuaer/CloudHelper/actions/runs/39017652632）全部success。工作流生成255c7473及v0.4.65，其父提交恰为本轮功能SHA，未手工改version/tag；Release https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.65 共12附件，标准8项与两型号JFFS包/JSON4项齐全，四项GitHub digest及字节数与本地逐一相同。
+
+TASK027完成门禁通过：初次证书预算修复、真实延迟/取消/普通请求、控制流冷/热启动对照、ARM/原厂库、实机ready/主控连接与证书0600缓存及发布核对完成。临时上传目录按精确文件名及空目录清理，JFFS活动/配置/previous保留，boot_id未变。无新增文件日志，未刷固件/重启/升级生产Go程序。节点26无拓扑链路，后续真实数据转发/DNS出口与BE86U自启保持独立验收范围；当前子目标无待自动执行动作。
