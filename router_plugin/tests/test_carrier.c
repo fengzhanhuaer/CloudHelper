@@ -2,6 +2,7 @@
 #include "engine.h"
 #include <assert.h>
 #include <poll.h>
+#include <netinet/tcp.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,7 +13,7 @@
 
 static unsigned delivered;
 void vr_link_frame(vr_link *l,const vr_frame *f,char path[VR_PATH_MAX][129],size_t count)
-{delivered++;vr_measure_frame(l->engine,l,f,path,count);}
+{delivered++;if(f->main==99){strcpy(path[0],"dispatch-mutated-path");return;}vr_measure_frame(l->engine,l,f,path,count);}
 
 static void test_ingress(vr_engine *e,vr_link *l)
 {
@@ -29,6 +30,16 @@ static void test_ingress(vr_engine *e,vr_link *l)
         assert(!vr_decoder_feed(&decoder,bytes,n,vr_link_receive,l));
         assert(delivered==before+(i<5?0:(unsigned)i-4));
     }
+    /* A cached path cannot authorize a different frame; equality includes all
+       control bytes. Dispatch may mutate its path (ping reverses it). */
+    const char *valid="{\"path\":[\"8\",\"7\"]}";
+    vr_frame frame={99,0,(const uint8_t *)valid,(const uint8_t *)"{}",strlen(valid),2};
+    assert(!vr_link_receive(&frame,l));unsigned cached=delivered;
+    assert(l->ingress_count==2&&!strcmp(l->ingress_path[0],"8"));
+    assert(!vr_link_receive(&frame,l));assert(delivered==cached+1&&!strcmp(l->ingress_path[0],"8"));
+    const char *forged="{\"path\":[\"9\",\"7\"]}";frame.control=(const uint8_t *)forged;
+    assert(!vr_link_receive(&frame,l));assert(delivered==cached+1);
+    vr_link_close(l,"");assert(!l->ingress_count);
     assert(!e->links[0].ssl);fputs("PASS: Probe ingress fallback, authorization and frame-local rejection\n",stderr);
 }
 
@@ -64,6 +75,8 @@ int main(int argc,char **argv)
     while(!l->ssl&&vr_millis()<deadline)tick(e);
     if(!l->ssl)fprintf(stderr,"carrier: %s\n",l->error);
     assert(l->ssl);
+    int no_delay=0;socklen_t no_delay_length=sizeof(no_delay);
+    assert(!getsockopt(l->fd,IPPROTO_TCP,TCP_NODELAY,&no_delay,&no_delay_length)&&no_delay==1);
     int small_buffer=4096;assert(!setsockopt(l->fd,SOL_SOCKET,SO_SNDBUF,&small_buffer,sizeof(small_buffer)));
     const char *kinds[]={"ping","upload","download"};
     for(unsigned i=0;i<3;i++) {

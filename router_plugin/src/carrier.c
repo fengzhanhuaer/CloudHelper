@@ -56,6 +56,7 @@ void vr_link_close(vr_link *l,const char *error)
     SSL_free(l->ssl);l->ssl=NULL;if(l->fd>=0)close(l->fd);l->fd=-1;l->used=0;l->head=0;l->write_pending=0;
     l->retry=vr_millis()+5000;snprintf(l->error,sizeof(l->error),"%s",error);
     memset(&l->decoder,0,sizeof(l->decoder));memset(&l->ws,0,sizeof(l->ws));
+    l->ingress_count=0;
 }
 
 int vr_link_queue(vr_link *l,int opcode,const void *bytes,size_t n)
@@ -96,6 +97,10 @@ int vr_link_receive(const vr_frame *f,void *arg)
 {
     vr_link *l=arg;vr_engine *e=l->engine;char path[VR_PATH_MAX][129];size_t count,at;
     const char *rejected=NULL;
+    if(l->ingress_count && f->control_len==l->ingress_length &&
+       (!f->control_len || !memcmp(f->control,l->ingress_control,f->control_len))) {
+        count=l->ingress_count;at=l->ingress_at;memcpy(path,l->ingress_path,count*129);goto accepted;
+    }
     /* Probe Node permits an omitted/empty path and uses this carrier's ingress
        path. Malformed JSON and explicit invalid paths still fail closed. */
     json_object *control=f->control_len?vr_json_parse(f->control,f->control_len):NULL;
@@ -109,6 +114,11 @@ int vr_link_receive(const vr_frame *f,void *arg)
     for(at=0;at<count;at++)if(!strcmp(path[at],e->config.node_id))break;
     if(!at || at>=count || strcmp(path[at-1],l->peer)){rejected="ingress peer mismatch";goto drop;}
     for(size_t i=1;i<count;i++)if(!adjacent(e,path[i-1],path[i])){rejected="unauthorized path edge";goto drop;}
+    if(f->control_len<=sizeof(l->ingress_control)) {
+        if(f->control_len)memcpy(l->ingress_control,f->control,f->control_len);
+        l->ingress_length=f->control_len;l->ingress_count=count;l->ingress_at=at;memcpy(l->ingress_path,path,count*129);
+    }
+accepted:
     if(at+1<count){send_frame(e,f,path,count);return 0;}
     vr_link_frame(l,f,path,count);return 0;
 drop:;

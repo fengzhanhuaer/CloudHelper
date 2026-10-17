@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <netinet/tcp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -71,6 +72,7 @@ SSL_CTX *vr_tls_server_context(const char *cert,const char *key)
 SSL *vr_tls_accept(SSL_CTX *ctx,int fd,uint64_t deadline)
 {
     if(fcntl(fd,F_SETFL,O_NONBLOCK))return NULL;
+    int yes=1;if(setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,&yes,sizeof(yes)))return NULL;
     SSL *ssl=SSL_new(ctx);if(!ssl)return NULL;
     SSL_set_fd(ssl,fd);
     if(handshake(ssl,0,deadline)){SSL_free(ssl);return NULL;}return ssl;
@@ -91,6 +93,7 @@ SSL *vr_tls_connect_at(const char *host,const char *ip,int port,const char *pin,
     *fd=-1;if(port<1||port>65535)return NULL;
     int sock=socket(AF_INET,SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK,0);if(sock<0)return NULL;
     SSL_CTX *ctx=NULL;SSL *ssl=NULL;
+    int yes=1;if(setsockopt(sock,IPPROTO_TCP,TCP_NODELAY,&yes,sizeof(yes)))goto fail;
     if(iface&&*iface&&setsockopt(sock,SOL_SOCKET,SO_BINDTODEVICE,iface,strlen(iface)+1))goto fail;
     struct sockaddr_in sa={0};sa.sin_family=AF_INET;sa.sin_port=htons((uint16_t)port);inet_pton(AF_INET,ip,&sa.sin_addr);
     if(connect(sock,(struct sockaddr *)&sa,sizeof(sa)) && errno!=EINPROGRESS)goto fail;

@@ -22,6 +22,10 @@ typedef struct {
     time_t auth_expires;
     vr_decoder decoder;
     vr_ws_decoder ws;
+    /* Cache only byte-identical, already authorized controls; policy and peer
+       are immutable for this engine. Large/trace controls use normal parsing. */
+    uint8_t ingress_control[1024];char ingress_path[VR_PATH_HOPS+1][129];
+    size_t ingress_length,ingress_count,ingress_at;
     uint8_t queue[VR_TX_CAP];size_t head,used,write_pending;
 } vr_link;
 typedef struct {vr_engine *engine;pthread_t thread;int started,done,fd,index;vr_link *result;} vr_handshake;
