@@ -24,7 +24,8 @@ int main(int argc,char **argv)
     assert(!vr_copy(e->config.controller,sizeof(e->config.controller),argv[1]));
     strcpy(e->config.node_id,"7");strcpy(e->config.node_key,"fixture-only-key");strcpy(e->addresses.lan,"127.0.0.2");
     const char *snapshot="{\"revision\":1}";e->snapshot=vr_json_parse(snapshot,strlen(snapshot));assert(e->snapshot);
-    assert(!vr_control_start(e));int changed=0;uint64_t deadline=vr_millis()+15000;
+    /* Allow a cold host's initial 20s report interval plus refresh retry. */
+    assert(!vr_control_start(e));int changed=0;uint64_t deadline=vr_millis()+40000;
     while(vr_millis()<deadline){pthread_mutex_lock(&e->mutex);changed=e->refresh;pthread_mutex_unlock(&e->mutex);if(changed)break;poll(NULL,0,20);}
     vr_control_stop(e);assert(changed);
     assert(s.pending_policy&&s.pending_generation==e->generation&&json_object_get_int(vr_member(s.pending_policy,"revision"))==2);

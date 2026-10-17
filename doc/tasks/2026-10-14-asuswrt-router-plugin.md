@@ -1034,3 +1034,23 @@ DEF-026：BE86U BusyBox mount applet报 Invalid mount path(/usr/local)，安装�
 REQ-049/DEF-027/UNIT-029（并入TASK026）：用户实际登录发现BE86U左侧菜单为空，导入始终“正在读取路由器配置”。用实际BE86U state.js/jquery/httpApi/client/menu与脱敏NVRAM隔离浏览器复现：state.js在bandName初始化调用$.inArray时jQuery尚未加载，抛$未定义，随后show_menu抛bandName未初始化，阻断refreshVR。将原厂jQuery及httpApi在state.js前加载（两台原厂都有现存httpApi.js，不引入库）；菜单异常只记录控制台，后续配置读取仍执行。TEST081：实际脚本1366/1722/390菜单/标题/表单对齐、配置读取、虚拟路由选中、导入JSON通过，注入菜单异常后仍读取配置；零脚本错误，状态通知/策略网络接口为隔离桩，不冒称自动登录实机视觉通过。初次几何断言误用严格大于，实际表单恰接菜单右边缘，修正为不重叠后通过。
 
 最终BE86U包78b898cb897fbc62（75476字节）已安装，四载荷逐字节回读，PID28210；原config及boot_id仍逐字节不变，HTTPD28288/28289，JFFS插件含previous约320KiB。对应AX56U V2包3aaf9e8182a50fad（75577字节）仅构建未更新旧设备。用户已告知Ctrl+F5刷新后复查菜单与导入。主控名称源码已更改但尚未发布，用户更新上一版仍显示旧名是交付阶段差异；本轮不私自升级生产主控。当前唯一动作为明确源码秘密扫描、提交发布核对；旧阶段“唯一进行中”为历史快照，当前仅TASK026活动。
+
+2026-10-17 TASK026交付完成：用户明确回复“菜单和解析都正常”，已登录BE86U实机页面验收通过，DEF027关闭。19个本任务源码/测试/文档秘密模式检查、git diff --check通过，未提交任何凭据、设备备份或厂商二进制；临时上传和检查目录精确清理，JFFS配置及previous保留。旧发布技能预检仍只因已退役Docker/router-arm64标记失败，按已有CON012/DEC043核实当前8产物契约，不恢复旧任务。
+
+功能提交fed2c0208e9a041320c07f4548641588055ce210已推送origin/mapledev，Actions39014724940全部success（https://github.com/fengzhanhuaer/CloudHelper/actions/runs/39014724940）；自动版本提交23ba18fd和v0.4.64的父提交恰为此功能SHA，无手工改version/tag。Release https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.64 标准8附件及两型号JFFS压缩包/JSON共12附件齐全，4个JFFS附件GitHub digest与本地SHA256/字节数逐项一致。BE86U包SHA256 6b67f4aa0f5acff23914ef4cd5f94a61a20375cf9a3827f633d4894429523f12，AX56U V2包d0835aa2493b573915c2abb1fd6735d5af961edadf489d18a5180847c67a2b32。
+
+TASK026完成门禁：本轮适配/菜单导入修复、组件测试、可逆设备验证及源码发布通过。主控只读loopback核实当前v0.4.63；名称已随v0.4.64发布，需产品在线升级后在生产显示，本轮未升级/替换生产主控或其他Go Probe。BE86U未提供重启自启，仍需SSH手动start；本轮不刷机/不重启，未填入或启用用户业务身份，因此DNS/链路/网关真实业务与重启自启不在本次完成声明内。当前子目标无待自动执行动作，等待用户后续业务配置或升级指令。
+
+### TASK027 首次节点证书获取（2026-10-17，当前唯一活动任务）
+
+REQ-050/DEF-028：用户配置BE86U节点26后提示node TLS certificate unavailable。只读Unix状态确认身份已填、主控路由配置已下发、ready=false、无本地node-certificate.json；主控存储同样无26证书而25已有。插件每个HTTP统一10秒，主控首次ACME DNS等待默认20秒，Go Probe证书获取上限8分钟；插件在首次签发前取消请求，且engine用笼统文字覆盖HTTP错误。独立WAN IPv4挑战端点两CF地址分别约0.8秒HTTP200，证书15秒仍超时；实际WAN为ppp0，诊断命令误用eth0/IPv6已纠正，不能当作WAN故障。
+
+UNIT-030/IF-024：证书请求采用与Go一致8分钟有界预算，普通API仍10秒；耗时请求支持服务停止/代际变化取消，缓存已存在时保持短失败回退；保留具体传输/证书解析/持久化错误，不输出PEM/密钥。业务仍由后台线程执行，Web不等待证书完成。TASK027：实现并回归真实延迟响应/取消/正常HTTP预算，ARM及两型号原厂库验证，更新BE86U并确认ready/证书缓存/节点往返；按既有流程提交发布。不关闭TLS校验、不复制25证书、不刷机。TEST082覆盖延迟证书获取与取消、普通请求预算及错误保留；TEST083实机首次签发/缓存和配置boot_id不变。准备门禁通过，完成门禁待实施。
+
+2026-10-17 TASK027验证检查点：独立认证证书请求在25.92秒后HTTP200，确认10秒客户端预算为首次签发阻断原因；节点26自动获取本节点证书后恢复，未复制其他节点凭据。实现首次签发8分钟预算、已有有效缓存时10秒短刷新、停止/代际变化取消，以及真实HTTP/证书/持久化错误保留。缓存校验节点ID、私钥匹配及叶证书有效期（至少剩余5分钟），不增加库或文件日志。
+
+TEST082通过：独立TLS/HMAC服务器12秒证书返回成功、缓存刷新和普通HTTP仍10秒超时、请求中/请求前取消、HTTP503原错误及无多余重放；Python3.6测试容器缺少ThreadingHTTPServer已改用现有ThreadingMixIn，未引入依赖。C核心/原生服务API测试、ARM编译、两型号原厂动态库QEMU核心及SSL初始化通过；主控全包test/vet及Probe发布契约测试通过。控制流回归初次10秒首报窗口失败，热启动旧版与新版均通过；原因是冷启动单调时间不足20秒时周期首报尚未发送，测试等待窗口短于合法首报周期。仅将测试端流/总等待改为35/40秒，保留单次鉴权、3次报告、失败保持会话与后续刷新2次的全部断言；修正后正常时钟及统一归零的冷启动时钟独立对照均通过。最初用链接包装仅覆盖跨编译单元时钟导致对照时基不一致，已弃用该无效测试工具，最终统一替换隔离测试时钟实现验证，产品控制流代码未变。
+
+TEST083通过：BE86U已更新8af0925262e021a5（75992字节，SHA256 af0418eed71a905b3c931e307ca9f468e664b9c3c5d9b04d22921faa2c7bc070），四载荷逐字节回读，原config与boot_id不变；PID7998，node26 ready=true/controller_connected=true/error为空，节点证书5402字节权限0600，links为空，未冒称无拓扑的真实转发/DNS出口已验收。AX56U V2配套包1547a9e10493071a（76080字节，SHA256 91c2535716a977cf20fdc03e0e77b20bc78df44e9f5a6768004e662c46c84738）仅构建。更新前私有备份D:/Code/RouterFirmware/router-backups/be86u-20261017-certificate-timeout/jffs-cloudhelper-before.tar.gz（150669字节，SHA256 c92769100403de88c5cfe5f236d60d15ee1b23ac97c328a65d1c434ae80602bb），不入Git。尚未更改固件/重启/生产主控Go程序。
+
+本轮9个明确源文件准备提交fix: allow ASUS initial certificate issuance to finish；旧发布预检继续遵循CON012/DEC043当前契约，功能测试无未解决失败。下一步唯一动作：源码秘密扫描、提交推送并核对该功能SHA的Actions与两型号JFFS附件。

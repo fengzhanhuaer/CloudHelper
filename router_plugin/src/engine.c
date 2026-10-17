@@ -72,6 +72,19 @@ static int cache_path(vr_engine *e,const char *name,char out[512])
     char *slash=strrchr(out,'/');if(!slash||strlen(name)+(size_t)(slash-out)+2>512)return -1;
     strcpy(slash+1,name);return 0;
 }
+static SSL_CTX *certificate_context(json_object *cert,const char *node_id)
+{
+    if(!cert||strcmp(vr_string(cert,"node_id"),node_id))return NULL;
+    SSL_CTX *ctx=vr_tls_server_context(vr_string(cert,"cert_pem"),vr_string(cert,"key_pem"));
+    if(!ctx)return NULL;
+    X509 *leaf=SSL_CTX_get0_certificate(ctx);time_t now=time(NULL),minimum=now+300;
+    if(!leaf||X509_cmp_time(X509_get0_notBefore(leaf),&now)>=0||X509_cmp_time(X509_get0_notAfter(leaf),&minimum)<=0) {
+        SSL_CTX_free(ctx);return NULL;
+    }
+    return ctx;
+}
+static int certificate_cancelled(void *arg)
+{vr_engine *e=arg;return vr_service_stopped(e->service,e->generation);}
 static int prepare(vr_engine *e)
 {
     if(vr_addresses_get(&e->addresses)){strcpy(e->error,"LAN/WAN discovery failed");return -1;}
@@ -116,11 +129,19 @@ static int prepare(vr_engine *e)
         if(!strcmp(vr_string(node,"node_id"),e->config.node_id))vr_copy(e->own_ip,sizeof(e->own_ip),vr_string(node,"ip"));
     }
     if(replay_load(e)){strcpy(e->error,"authentication replay state invalid");return -1;}
-    json_object *cert=vr_controller_call(&e->config,e->addresses.wan_if,"GET","/api/probe/certificate",NULL,e->error,sizeof(e->error));
-    int fresh_cert=cert!=NULL;if(!cert)cert=vr_cache_load(cert_cache);
-    if(cert&&!strcmp(vr_string(cert,"node_id"),e->config.node_id))e->tls=vr_tls_server_context(vr_string(cert,"cert_pem"),vr_string(cert,"key_pem"));
-    if(e->tls && fresh_cert && vr_cache_save(cert_cache,cert)){SSL_CTX_free(e->tls);e->tls=NULL;}
-    json_object_put(cert);if(!e->tls){strcpy(e->error,"node TLS certificate unavailable");return -1;}
+    json_object *cached=vr_cache_load(cert_cache);SSL_CTX *fallback=certificate_context(cached,e->config.node_id);json_object_put(cached);
+    strcpy(e->error,"Requesting node TLS certificate from controller");status(e,0);
+    vr_service_log(e->service,"service",e->error);
+    json_object *cert=vr_controller_certificate(&e->config,e->addresses.wan_if,fallback!=NULL,certificate_cancelled,e,e->error,sizeof(e->error));
+    if(cert) {
+        e->tls=certificate_context(cert,e->config.node_id);
+        if(!e->tls)strcpy(e->error,"controller node TLS certificate invalid or expires within 5 minutes");
+        else if(vr_cache_save(cert_cache,cert)) {
+            SSL_CTX_free(e->tls);e->tls=NULL;strcpy(e->error,"cannot persist node TLS certificate");
+        }
+    } else {e->tls=fallback;fallback=NULL;}
+    SSL_CTX_free(fallback);json_object_put(cert);
+    if(!e->tls){if(!*e->error)strcpy(e->error,"node TLS certificate unavailable");return -1;}
     *e->error=0; /* A valid cached certificate recovered a transient HTTP error. */
     json_object *links=vr_member(e->policy,"topology_rules");
     for(size_t i=0;i<(size_t)json_object_array_length(links);i++) {

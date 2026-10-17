@@ -143,7 +143,9 @@ func main() {
 			return
 		}
 		defer stream.Close()
-		stream.SetDeadline(time.Now().Add(10 * time.Second))
+		// A freshly booted peer may wait for its first 20-second periodic
+		// report. Include that interval plus the 5-second config retry.
+		stream.SetDeadline(time.Now().Add(35 * time.Second))
 		decoder, encoder := json.NewDecoder(stream), json.NewEncoder(stream)
 		for i := 0; i < 2; i++ {
 			var report map[string]interface{}

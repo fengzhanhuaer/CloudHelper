@@ -33,6 +33,8 @@ $(BUILD)/test-dns: $(CORE) src/dns_service.c tests/test_dns_service.c $(wildcard
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_dns_service.c $(LDFLAGS) $(LDLIBS) -o $@
 $(BUILD)/test-control: $(CORE) src/control.c tests/test_control.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/control.c tests/test_control.c $(LDFLAGS) -Wl,--wrap=vr_resolve_config4_all $(LDLIBS) -o $@
+$(BUILD)/test-certificate: $(CORE) tests/test_certificate.c $(wildcard include/*.h) | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_certificate.c $(LDFLAGS) -Wl,--wrap=vr_resolve_config4_all $(LDLIBS) -o $@
 $(BUILD)/test-carrier: $(CORE) src/carrier.c src/measure.c src/platform.c tests/test_carrier.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/carrier.c src/measure.c src/platform.c tests/test_carrier.c $(LDFLAGS) $(LDLIBS) -o $@
 $(BUILD)/test-measure: $(CORE) src/measure.c tests/test_measure.c $(wildcard include/*.h) | $(BUILD)

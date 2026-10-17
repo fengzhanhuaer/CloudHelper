@@ -116,5 +116,9 @@ int vr_ticket_verify(const char *ticket, const char *pubkey, const char *route,
 json_object *vr_controller_call(const vr_config *c, const char *iface,
                                const char *method, const char *path,
                                json_object *body, char *err, size_t n);
+/* First issuance follows Probe's eight-minute budget; a usable cached identity
+   keeps the ordinary short refresh budget. Cancellation never enters the UI. */
+json_object *vr_controller_certificate(const vr_config *c,const char *iface,int cached,
+                                     int (*cancelled)(void *),void *arg,char *err,size_t n);
 
 #endif
