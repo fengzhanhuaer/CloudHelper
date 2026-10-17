@@ -1106,3 +1106,5 @@ TASK030检查点：TEST089通过，C语义比较及真实Go TLS/yamux夹具保�
 TEST091仍未通过：安装后45发2收95%丢包，确认不能仅修时间戳便称恢复。主控appendProbeGatewayPublishedRules使用!Online撤回已确认授权，而25数据载波仍可连接；规则长度变化引起BE全量重载/路由撤回。REQ053/UNIT033/IF027扩展包含主控派生授权规则：控制连接断开不撤销最近认证的网关配置，明确disable/允许列表/网段变更仍立即按现有同步机制撤销。派生规则清除normalize填入的虚假updated_at，普通规则时间不改；不改认证、节点本地逐包校验和在线显示。TEST092覆盖offline保留、明确撤销/停用与派生时间稳定，主控全套test/vet与在线升级后实测待完成。发布/部署前会完成测试及可审查版本；生产主控升级沿用产品在线接口，不SSH替换。当前唯一动作：主控全套验证并准备对应发布。
 
 TEST092及主控全套test/vet通过，普通规则时间保留、派生时间无虚假变化，offline授权保留、明确撤销/关闭仍移除。C及控制流、两型号原厂库已通过，设备插件已更新；主控侧修复待发布及产品在线升级，最终ping验收尚未通过，不得标记整体完成。9个任务路径实机node_key/拓扑secret及auth_ticket/私钥token模式扫描通过。下一步唯一动作：提交9个任务路径，发布核对后取得主控在线升级所需明确授权并做最终长测。
+
+TASK030发布已核对：功能3f79ba900e5b9f3d0fb04c3d83585cda0a27685b，Actions39034172120全部success；自动版本d3380d72及v0.4.68父提交精确匹配该功能。Release https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.68 共12附件，4个JFFS tar/JSON的GitHub digest/大小与本地完全一致；原主控v0.4.66，产品版本接口latest=v0.4.68/upgrade_available=true，就绪预检未发起升级。遵循cloudhelper-controller-admin的明确变更授权要求，已用异步问题请求生产主控在线升级确认，等待回复，未调用POST升级接口。整体仍进行中，最终丢包验收待升级；下一步唯一动作：收到确认后调用产品在线升级，再26→25连续ping/路由保持与状态复查。
