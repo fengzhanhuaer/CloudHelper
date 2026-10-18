@@ -2,6 +2,7 @@
 #define CHVR_TRANSPORT_H
 #include "chvr.h"
 #include <openssl/ssl.h>
+#include <curl/curl.h>
 
 typedef struct {
     uint8_t header[14], mask[4], control[125];
@@ -22,4 +23,13 @@ int vr_http_header(SSL *ssl,char *header,size_t cap,uint64_t deadline);
 const char *vr_http_field(const char *header,const char *name,char *out,size_t cap);
 int vr_http_token(const char *header,const char *name,const char *token);
 int vr_ws_accept_key(const char *key,char out[29]);
+int vr_tls_pinned(X509 *cert,const char *pin);
+void vr_curl_pin(CURL *curl,const char *pin);
+void vr_controller_link_init(const vr_config *c,const char *config_path);
+int vr_controller_link_target(const vr_config *c,char origin[1024],char pin[65]);
+void vr_controller_link_feedback(const vr_config *c,int direct,int ok,uint64_t elapsed);
+int vr_controller_link_refresh_due(const vr_config *c);
+int vr_controller_link_store(const vr_config *c,json_object *data);
+void vr_controller_link_refresh_done(void);
+void vr_controller_link_refresh(const vr_config *c,const char *iface);
 #endif

@@ -8,7 +8,7 @@ CFLAGS ?= -Os -g
 CFLAGS += -std=c99 -Wall -Wextra -Werror -Wformat=2 -fstack-protector-strong -ffunction-sections -fdata-sections
 LDLIBS += -lcurl -lssl -lcrypto -ljson-c -lpthread
 LDFLAGS += $(DEP_LDFLAGS) -Wl,--gc-sections -Wl,-z,relro,-z,now
-CORE = src/log.c src/cache.c src/gateway.c src/report.c src/common.c src/config.c src/wire.c src/dns.c src/dns_upstream.c src/policy.c src/auth.c src/controller.c src/websocket.c src/tls.c src/packet.c
+CORE = src/log.c src/cache.c src/gateway.c src/report.c src/common.c src/config.c src/wire.c src/dns.c src/dns_upstream.c src/policy.c src/auth.c src/controller.c src/controller_link.c src/websocket.c src/tls.c src/packet.c
 RUNTIME = src/main.c src/upgrade.c src/engine.c src/carrier.c src/dataplane.c src/mapping.c src/platform.c src/dns_service.c src/measure.c src/control.c
 .PHONY: all test clean FORCE
 FORCE:
@@ -17,6 +17,8 @@ $(BUILD)/build-version.h: FORCE | $(BUILD)
 	@cmp -s $@.new $@ && rm $@.new || mv $@.new $@
 $(BUILD)/cloudhelper-router-plugin $(BUILD)/httpd-bridge.so $(BUILD)/httpd-fixture $(BUILD)/test-core $(BUILD)/test-logs $(BUILD)/test-dataplane $(BUILD)/test-platform $(BUILD)/test-dns $(BUILD)/test-control $(BUILD)/test-certificate $(BUILD)/test-carrier $(BUILD)/test-measure $(BUILD)/test-gateway $(BUILD)/test-cache $(BUILD)/test-mapping $(BUILD)/dns-query-fixture $(BUILD)/test-dns-system $(BUILD)/test-httpd-profile: $(BUILD)/build-version.h
 all: $(BUILD)/cloudhelper-router-plugin $(BUILD)/httpd-bridge.so
+$(BUILD)/test-controller-link: $(CORE) tests/test_controller_link.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_controller_link.c $(LDFLAGS) -Wl,--wrap=vr_resolve_config4_all $(LDLIBS) -o $@
 $(BUILD)/httpd-bridge.so: src/httpd_bridge.c include/httpd_layout.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC -shared $< $(LDFLAGS) -ldl -o $@
 $(BUILD)/httpd-fixture: tests/httpd_fixture.c | $(BUILD)

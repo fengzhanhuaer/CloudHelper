@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "upgrade.h"
+#include "transport.h"
 #include <curl/curl.h>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -147,7 +148,7 @@ json_object *vr_upgrade_status(vr_service *s)
  if(!o){char b[4096];size_t n;if(!vr_read_file(UPGRADE_STATE,b,sizeof(b),&n))o=vr_json_parse(b,n);}
  return o?o:json_object_new_object();
 }
-typedef struct {upgrade_job *job;int fd;int64_t offset,size,received;long status;int range_valid;char *memory;size_t used;} transfer;
+typedef struct {upgrade_job *job;int fd;int64_t offset,size,received,end;long status;int range_valid,preparing;char *memory;size_t used;} transfer;
 static int cancelled(void *arg,curl_off_t a,curl_off_t b,curl_off_t c,curl_off_t d)
 {
  (void)a;(void)b;(void)c;(void)d;transfer *t=arg;return t->job->service&&vr_service_stopped(t->job->service,t->job->generation);
@@ -155,8 +156,9 @@ static int cancelled(void *arg,curl_off_t a,curl_off_t b,curl_off_t c,curl_off_t
 static size_t header(void *p,size_t size,size_t count,void *arg)
 {
  transfer *t=arg;size_t n=size*count;char b[512];if(n>=sizeof(b))return n;memcpy(b,p,n);b[n]=0;
+ if(!strncasecmp(b,"X-CloudHelper-Cache: preparing",29))t->preparing=1;
  if(!strncmp(b,"HTTP/",5)){char *space=strchr(b,' ');t->status=space?strtol(space+1,NULL,10):0;t->range_valid=0;if(t->fd<0)t->used=0;}
- if(!strncasecmp(b,"Content-Range:",14)){long long first,last,total;if(sscanf(b+14," bytes %lld-%lld/%lld",&first,&last,&total)==3&&first==t->offset&&last>=first&&last<t->size&&total==t->size)t->range_valid=1;}
+ if(!strncasecmp(b,"Content-Range:",14)){long long first,last,total;if(sscanf(b+14," bytes %lld-%lld/%lld",&first,&last,&total)==3&&first==t->offset&&last>=first&&last<t->size&&total==t->size&&(!t->end||last==t->end))t->range_valid=1;}
  return n;
 }
 static size_t receive(void *p,size_t size,size_t count,void *arg)
@@ -165,24 +167,28 @@ static size_t receive(void *p,size_t size,size_t count,void *arg)
  if(t->job->direct&&t->status>=300&&t->status<400)return n;
  if(t->fd<0){if(t->used+n>512u*1024u)return 0;char *b=realloc(t->memory,t->used+n+1);if(!b)return 0;t->memory=b;memcpy(b+t->used,p,n);t->used+=n;b[t->used]=0;return n;}
  if(t->status!=200&&t->status!=206)return 0;
+ if(t->end&&t->status!=206)return 0;
  if(t->status==206&&!t->range_valid)return 0;
  if(t->offset&&t->status==200){if(ftruncate(t->fd,0)||lseek(t->fd,0,SEEK_SET)<0)return 0;t->offset=0;t->received=0;}
  if(t->offset+t->received+(int64_t)n>t->size)return 0;
+ if(t->end&&t->offset+t->received+(int64_t)n>t->end+1)return 0;
  if(write(t->fd,p,n)!=(ssize_t)n)return 0;
  t->received+=(int64_t)n;return n;
 }
 static CURLcode fetch(upgrade_job *job,const char *remote,transfer *t)
 {
- char url[2048],path[128]="/api/probe/proxy/download",challenge[513],signature[65],line[2200],err[256];
+ char url[2048],path[128]="/api/probe/proxy/download",challenge[513],signature[65],line[2200],err[256],selected[1024],pin[65]="";int origin_direct=0;
  struct curl_slist *headers=NULL,*addresses=NULL;CURL *curl=curl_easy_init();if(!curl)return CURLE_FAILED_INIT;
  if(job->direct)snprintf(url,sizeof(url),"%s",remote);
  else {
   if(vr_controller_auth(&job->config,job->iface,"GET",path,challenge,signature,err,sizeof(err))){curl_easy_cleanup(curl);return CURLE_LOGIN_DENIED;}
-  snprintf(url,sizeof(url),"%s%s",job->config.controller,path);
+  origin_direct=vr_controller_link_target(&job->config,selected,pin);
+  snprintf(url,sizeof(url),"%s%s",selected,path);
   snprintf(line,sizeof(line),"X-Probe-Node-Id: %s",job->config.node_id);headers=curl_slist_append(headers,line);
   snprintf(line,sizeof(line),"X-Probe-Rand: %s",challenge);headers=curl_slist_append(headers,line);
   snprintf(line,sizeof(line),"X-Probe-Signature: %s",signature);headers=curl_slist_append(headers,line);
   snprintf(line,sizeof(line),"X-CloudHelper-Download-URL: %s",remote);headers=curl_slist_append(headers,line);
+  headers=curl_slist_append(headers,"X-CloudHelper-Download-Cache: 1");
  }
  char origin[1024],host[254],ips[4][16],entry[320];int port,tls;
  /* Resolve the initial TLS origin through the same independent DNS path as
@@ -203,9 +209,49 @@ static CURLcode fetch(upgrade_job *job,const char *remote,transfer *t)
  curl_easy_setopt(curl,CURLOPT_NOPROGRESS,0L);curl_easy_setopt(curl,CURLOPT_XFERINFOFUNCTION,cancelled);curl_easy_setopt(curl,CURLOPT_XFERINFODATA,t);
  curl_easy_setopt(curl,CURLOPT_HEADERFUNCTION,header);curl_easy_setopt(curl,CURLOPT_HEADERDATA,t);
  curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,receive);curl_easy_setopt(curl,CURLOPT_WRITEDATA,t);
- char range[48];if(t->offset){snprintf(range,sizeof(range),"%lld-",(long long)t->offset);curl_easy_setopt(curl,CURLOPT_RANGE,range);}
- CURLcode rc=curl_easy_perform(curl);curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&t->status);
+ char range[64];if(t->end){snprintf(range,sizeof(range),"%lld-%lld",(long long)t->offset,(long long)t->end);curl_easy_setopt(curl,CURLOPT_RANGE,range);}
+ else if(t->offset){snprintf(range,sizeof(range),"%lld-",(long long)t->offset);curl_easy_setopt(curl,CURLOPT_RANGE,range);}
+ vr_curl_pin(curl,pin);
+ uint64_t started=vr_millis();CURLcode rc=curl_easy_perform(curl);curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&t->status);
+ double headers_at=0;curl_easy_getinfo(curl,CURLINFO_STARTTRANSFER_TIME,&headers_at);
+ if(!job->direct&&!t->preparing&&rc!=CURLE_ABORTED_BY_CALLBACK)vr_controller_link_feedback(&job->config,origin_direct,rc==CURLE_OK&&t->status<500,headers_at>0?(uint64_t)(headers_at*1000):vr_millis()-started);
  curl_easy_cleanup(curl);curl_slist_free_all(headers);curl_slist_free_all(addresses);return rc;
+}
+
+typedef struct {upgrade_job *job;const char *url;FILE *file;int64_t first,last,total;int ok;} parallel_chunk;
+static void *fetch_chunk(void *arg)
+{
+ parallel_chunk *c=arg;
+ for(int attempt=0;attempt<3;attempt++) {
+  off_t size=lseek(fileno(c->file),0,SEEK_END);if(size<0)return NULL;
+  if(size==c->last-c->first+1){c->ok=1;return NULL;}
+  transfer t={.job=c->job,.fd=fileno(c->file),.offset=c->first+size,.size=c->total,.end=c->last};
+  CURLcode rc=fetch(c->job,c->url,&t);
+  if(rc==CURLE_OK&&t.status==206&&lseek(t.fd,0,SEEK_END)==c->last-c->first+1){c->ok=1;return NULL;}
+  if(t.preparing||cancelled(&t,0,0,0,0))return NULL;
+ }
+ return NULL;
+}
+static int fetch_parallel(upgrade_job *job,const char *url,int fd,int64_t bytes)
+{
+ if(bytes<256*1024)return -1;
+ parallel_chunk chunks[2]={{.job=job,.url=url,.first=0,.last=bytes/2-1,.total=bytes},{.job=job,.url=url,.first=bytes/2,.last=bytes-1,.total=bytes}};
+ pthread_t threads[2];int started=0,ok=0;pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,256*1024);
+ for(int i=0;i<2;i++) {chunks[i].file=tmpfile();if(!chunks[i].file)goto done;}
+ for(int i=0;i<2;i++) {if(pthread_create(&threads[i],&attr,fetch_chunk,&chunks[i]))break;started++;}
+ for(int i=0;i<started;i++)pthread_join(threads[i],NULL);
+ if(started!=2||!chunks[0].ok||!chunks[1].ok)goto done;
+ for(int i=0;i<2;i++) {
+  if(lseek(fileno(chunks[i].file),0,SEEK_SET)<0)goto done;
+  char buffer[16384];ssize_t n;
+  while((n=read(fileno(chunks[i].file),buffer,sizeof(buffer)))>0)if(write(fd,buffer,(size_t)n)!=n)goto done;
+  if(n<0)goto done;
+ }
+ ok=1;
+done:
+ pthread_attr_destroy(&attr);
+ for(int i=0;i<2;i++)if(chunks[i].file)fclose(chunks[i].file);
+ if(!ok){if(ftruncate(fd,0)||lseek(fd,0,SEEK_SET)<0)return -1;}return ok?0:-1;
 }
 static void cleanup(const char *dir)
 {
@@ -229,12 +275,14 @@ static void *run(void *arg)
  snprintf(path,sizeof(path),"%s/package.tar.gz",job->directory);int fd=open(path,O_RDWR|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW,0600);
  if(fd<0)goto failed;
  int64_t bytes=json_object_get_int64(vr_member(asset,"bytes"));int complete=0;
- for(int attempt=0;attempt<6;attempt++) {
+ if(!fetch_parallel(job,vr_string(asset,"url"),fd,bytes))complete=1;
+ for(int attempt=0,preparing=0;!complete&&attempt<6;attempt++) {
   off_t offset=lseek(fd,0,SEEK_END);if(offset<0)break;
   state(job,"downloading",attempt?"正在续传升级包":"正在下载升级包",1,1,offset,bytes);
   transfer t={.job=job,.fd=fd,.offset=offset,.size=bytes};CURLcode rc=fetch(job,vr_string(asset,"url"),&t);
   off_t got=lseek(fd,0,SEEK_END);if(rc==CURLE_OK&&(t.status==200||t.status==206)&&got==bytes){complete=1;break;}
   if(cancelled(&t,0,0,0,0))break;
+  if(t.status==503&&t.preparing&&preparing++<900){attempt--;for(int i=0;i<20&&!cancelled(&t,0,0,0,0);i++)poll(NULL,0,100);continue;}
   for(int i=0;i<(1<<attempt)*10;i++){if(cancelled(&t,0,0,0,0))break;poll(NULL,0,100);}
  }
  close(fd);if(!complete){snprintf(err,sizeof(err),"下载未完成，当前版本保持运行；请重试");goto failed;}

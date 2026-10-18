@@ -98,6 +98,7 @@ json_object *vr_service_dispatch(vr_service *s,json_object *request)
         if(vr_config_parse(&c,vr_member(request,"config"),&s->config,err,sizeof(err))) {pthread_mutex_unlock(&s->mutex);return error_reply(err);}
         if(vr_config_save(&c,s->config_path)){pthread_mutex_unlock(&s->mutex);OPENSSL_cleanse(&c,sizeof(c));return error_reply("cannot persist configuration");}
         s->config=c;s->generation++;
+        vr_controller_link_init(&c,s->config_path);
         json_object_put(s->pending_policy);s->pending_policy=NULL;
         json_object *status=json_object_new_object();json_object_object_add(status,"enabled",json_object_new_boolean(c.enabled));
         json_object_object_add(status,"gateway_enabled",json_object_new_boolean(c.gateway.enabled));
@@ -166,6 +167,7 @@ int vr_service_run(const char *config_path,const char *socket_path,int cleanup)
     vr_service s={0};char error[256],lock_path[128],pid_path[128];int lock=-1,fd=-1,rc=1;pthread_t thread;int started=0,bound=0;
     if(strlen(socket_path)>=sizeof(((struct sockaddr_un *)0)->sun_path) || vr_copy(s.config_path,sizeof(s.config_path),config_path))return 1;
     int invalid_config=vr_config_load(&s.config,config_path,error,sizeof(error));
+    if(!invalid_config)vr_controller_link_init(&s.config,config_path);
     pthread_mutex_init(&s.mutex,NULL);pthread_cond_init(&s.changed,NULL);
     snprintf(lock_path,sizeof(lock_path),"%s.lock",socket_path);lock=open(lock_path,O_CREAT|O_RDWR|O_CLOEXEC|O_NOFOLLOW,0600);
     if(lock<0 || flock(lock,LOCK_EX|LOCK_NB))goto done;

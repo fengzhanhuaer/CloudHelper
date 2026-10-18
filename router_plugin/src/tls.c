@@ -81,7 +81,7 @@ SSL *vr_tls_accept(SSL_CTX *ctx,int fd,uint64_t deadline)
     if(handshake(ssl,0,deadline)){SSL_free(ssl);return NULL;}return ssl;
 }
 
-static int pinned(X509 *cert,const char *pin)
+int vr_tls_pinned(X509 *cert,const char *pin)
 {
     if(!cert || strlen(pin)!=64 || X509_cmp_current_time(X509_get0_notBefore(cert))>=0 || X509_cmp_current_time(X509_get0_notAfter(cert))<=0)return -1;
     unsigned char *der=NULL,digest[32];int len=i2d_X509_PUBKEY(X509_get_X509_PUBKEY(cert),&der);
@@ -121,7 +121,7 @@ SSL *vr_tls_connect_at(const char *host,const char *ip,int port,const char *pin,
         else if(SSL_set1_host(ssl,host)!=1)goto fail;
     }
     if(handshake(ssl,1,deadline))goto fail;
-    if(*pin){X509 *cert=SSL_get_peer_certificate(ssl);int rc=pinned(cert,pin);X509_free(cert);if(rc)goto fail;}
+    if(*pin){X509 *cert=SSL_get_peer_certificate(ssl);int rc=vr_tls_pinned(cert,pin);X509_free(cert);if(rc)goto fail;}
     *fd=sock;return ssl;
 fail:SSL_free(ssl);SSL_CTX_free(ctx);close(sock);return NULL;
 }

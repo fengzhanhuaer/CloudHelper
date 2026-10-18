@@ -42,3 +42,4 @@ probe_node_android/build/
 probe_node_android/app/build/
 .claude/
 probe_controller/tests/
+/temp/

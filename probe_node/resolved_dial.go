@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/cloudhelper/probe_node/internal/controllerlink"
 	"net"
 	"net/http"
 	"net/url"
@@ -171,6 +172,9 @@ func newProbeResolvedConnectionDialContext(target probeResolvedURLDialTarget, ti
 }
 
 func newProbeResolvedHTTPClientForURL(rawURL string, timeout time.Duration) (*http.Client, func(), error) {
+	if controllerlink.IsProbeURL(rawURL) {
+		return newProbeControllerHTTPClient(rawURL, timeout)
+	}
 	target, err := resolveProbeLocalURLDialTarget(rawURL)
 	if err != nil {
 		return nil, nil, err

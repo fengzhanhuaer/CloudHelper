@@ -49,6 +49,7 @@ object AndroidUpgrade {
         thread(name = "cloudhelper-android-upgrade") {
             try {
                 AndroidLogStore.add("upgrade", "upgrade flow started: mode=$upgradeMode")
+                MobileCoreBridge.configureControllerCache(activity, config)
                 updateStatus(state = "running", phase = "prepare", percent = 2, message = "准备 ${upgradeMode} 升级", mode = upgradeMode)
                 if (upgradeMode == "controller" && !config.isReady) {
                     error("controller URL, node ID, and node secret are required for controller upgrade")
@@ -199,8 +200,14 @@ object AndroidUpgrade {
         } else {
             DEFAULT_RELEASE_API
         }
-        val conn = openGet(requestUrl, mode, config, "application/vnd.github+json")
-        val body = readResponseText(conn, "release api")
+        val body = if (mode == "controller") {
+            val result = JSONObject(MobileCoreBridge.controllerUpgradeRequest(config, requestUrl))
+            if (result.has("error")) error(result.getString("error"))
+            result.getString("body")
+        } else {
+            val conn = openGet(requestUrl, mode, config, "application/vnd.github+json")
+            try { readResponseText(conn, "release api") } finally { conn.disconnect() }
+        }
         val json = JSONObject(body)
         val tagName = json.optString("tag_name", json.optString("tagName", ""))
         val assets = json.optJSONArray("assets") ?: return ReleaseInfo(tagName, null)
@@ -236,6 +243,30 @@ object AndroidUpgrade {
         }
 
         var lastError: Exception? = null
+        if (mode == "controller") {
+            val deadline = System.nanoTime() + 30L * 60 * 1_000_000_000
+            var failures = 0
+            val startedAt = System.nanoTime()
+            while (System.nanoTime() < deadline) {
+                val result = JSONObject(MobileCoreBridge.controllerUpgradeRequest(config, requestUrl, part.absolutePath))
+                if (result.optBoolean("preparing")) { Thread.sleep(2000); continue }
+                if (result.has("error")) {
+                    if (++failures >= MAX_DOWNLOAD_ATTEMPTS) error(result.getString("error"))
+                    Thread.sleep(2000); continue
+                }
+                failures = 0
+                val received = result.optLong("downloaded")
+                val total = result.optLong("total", -1)
+                onProgress(received, total, (received / ((System.nanoTime() - startedAt) / 1_000_000_000.0)).toLong())
+                if (result.optBoolean("complete")) {
+                    if (apk.exists() && !apk.delete()) error("failed to replace old apk")
+                    if (!part.renameTo(apk)) error("failed to stage apk")
+                    File(part.path + ".json").delete()
+                    return apk
+                }
+            }
+            error("controller download cache wait timed out")
+        }
         for (attempt in 1..MAX_DOWNLOAD_ATTEMPTS) {
             try {
                 val offset = if (part.exists()) part.length() else 0L
@@ -295,7 +326,7 @@ object AndroidUpgrade {
 
     private fun cleanupUpgradeCache(dir: File) {
         dir.listFiles()?.forEach { file ->
-            if (file.name != ASSET_NAME && file.name != "$ASSET_NAME.part") {
+            if (file.name != ASSET_NAME && file.name != "$ASSET_NAME.part" && file.name != "$ASSET_NAME.part.json") {
                 file.delete()
             }
         }

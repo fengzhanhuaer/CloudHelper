@@ -11,6 +11,8 @@ bin/native/test-measure
 bin/native/test-httpd-profile
 bin/native/cloudhelper-router-plugin --check-httpd bin/native/httpd-fixture
 python3 tests/test_upgrade.py
+make VERSION="$build_version" bin/native/test-controller-link
+python3 tests/test_controller_link.py
 python3 tests/test_service.py bin/native/cloudhelper-router-plugin
 python3 tests/test_httpd_bridge.py
 export LD_LIBRARY_PATH="$sdk/lib"

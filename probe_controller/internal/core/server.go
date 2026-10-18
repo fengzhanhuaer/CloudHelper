@@ -37,6 +37,9 @@ func Run() {
 
 	mux := NewMux()
 	handler := enforceSensitiveTransportMiddleware(enforceProbeScopeMiddleware(mux))
+	if err := startControllerDirectListeners(handler); err != nil {
+		logControllerErrorf("probe direct TLS unavailable: %v", err)
+	}
 
 	logControllerInfof("CloudHelper Probe Controller is running at http://%s", listenAddr)
 	if err := http.ListenAndServe(listenAddr, handler); err != nil {
@@ -55,6 +58,7 @@ func NewMux() *http.ServeMux {
 	mux.HandleFunc("/api/probe/proxy/probe-node/install-script", ProbeProxyInstallScriptHandler)
 	mux.HandleFunc("/api/probe/proxy/probe-router/install-script", ProbeProxyRouterInstallScriptHandler)
 	mux.HandleFunc("/api/probe/auth/challenge", ProbeAuthChallengeHandler)
+	mux.HandleFunc("/api/probe/controller/endpoints", ProbeControllerEndpointsHandler)
 	mux.HandleFunc("/api/probe/route/config", ProbeRouteConfigHandler)
 	mux.HandleFunc("/api/probe/route/settings", ProbeRouteSettingsHandler)
 	mux.HandleFunc("/api/probe/route/fake_ip/resolve", ProbeRouteFakeIPResolveHandler)

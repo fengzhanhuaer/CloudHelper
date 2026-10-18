@@ -691,6 +691,10 @@ func ProbeProxyDownloadHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid download url"})
 		return
 	}
+	if r.Header.Get("X-CloudHelper-Download-Cache") == "1" {
+		probeAssetCache.serve(w, r, targetURL.String())
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
 	defer cancel()
@@ -1435,6 +1439,9 @@ func controllerBaseURLFromRequest(r *http.Request) string {
 }
 
 func authenticateProbeRequest(r *http.Request) (string, error) {
+	if id, ok := r.Context().Value(authenticatedDirectProbeKey{}).(string); ok && id != "" {
+		return id, nil
+	}
 	nodeID := normalizeProbeNodeID(r.Header.Get("X-Probe-Node-Id"))
 	challenge := strings.TrimSpace(r.Header.Get("X-Probe-Rand"))
 	signature := strings.TrimSpace(r.Header.Get("X-Probe-Signature"))
@@ -1460,6 +1467,9 @@ func authenticateProbeRequest(r *http.Request) (string, error) {
 }
 
 func authenticateProbeProxyRequest(r *http.Request) (string, error) {
+	if id, ok := r.Context().Value(authenticatedDirectProbeKey{}).(string); ok && id != "" {
+		return id, nil
+	}
 	queryNodeID := normalizeProbeNodeID(r.URL.Query().Get("node_id"))
 	querySecret := strings.TrimSpace(r.URL.Query().Get("secret"))
 	if queryNodeID != "" || querySecret != "" {

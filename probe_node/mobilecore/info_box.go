@@ -99,7 +99,7 @@ func requestMobileInfoBox(ctx context.Context, controllerURL string, nodeID stri
 	if err := applyAuthHeaders(req, cleanNodeID, cleanSecret); err != nil {
 		return mobileInfoBoxPayload{}, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := mobileControllerDo(req)
 	if err != nil {
 		return mobileInfoBoxPayload{}, err
 	}

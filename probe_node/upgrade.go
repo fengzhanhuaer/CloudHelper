@@ -6,7 +6,6 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -531,8 +530,9 @@ type probeUpgradePartialState struct {
 }
 
 type probeUpgradeHTTPError struct {
-	Status int
-	Detail string
+	Status    int
+	Detail    string
+	Preparing bool
 }
 
 func (e *probeUpgradeHTTPError) Error() string {
@@ -580,6 +580,7 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 		knownTotal = state.Total
 	}
 	retries := 0
+	preparingUntil := time.Now().Add(30 * time.Minute)
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -600,6 +601,13 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 			}
 		})
 		if err != nil {
+			var status *probeUpgradeHTTPError
+			if errors.As(err, &status) && status.Preparing && time.Now().Before(preparingUntil) {
+				if e := waitProbeUpgradeRetry(ctx, 2*time.Second); e != nil {
+					return e
+				}
+				continue
+			}
 			if retries >= probeUpgradeDownloadMaxRetries || !isProbeTransientHTTPError(err) || ctx.Err() != nil {
 				return err
 			}
@@ -617,6 +625,12 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 			return errors.New("downloaded asset is empty")
 		}
 		if knownTotal >= 0 && next < knownTotal {
+			if mode == "proxy" && knownTotal-next >= 2*probeUpgradeProxyChunkSize && validator != "" {
+				if e := downloadProbeParallelRemainder(ctx, mode, assetURL, controllerBase, identity, partPath, next, knownTotal, validator, onProgress); e != nil {
+					return e
+				}
+				continue
+			}
 			retries = 0
 			continue
 		}
@@ -635,7 +649,7 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 		return nil
 	}
 }
-func downloadProbeAssetChunk(ctx context.Context, mode, assetURL, controllerBase string, identity nodeIdentity, partPath string, offset int64, validator *string, knownTotal int64, progress func(int64, int64)) (int64, int64, error) {
+func downloadProbeAssetChunk(ctx context.Context, mode, assetURL, controllerBase string, identity nodeIdentity, partPath string, offset int64, validator *string, knownTotal int64, progress func(int64, int64), rangeEnd ...int64) (int64, int64, error) {
 	reqCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	requestURL := assetURL
@@ -657,7 +671,11 @@ func downloadProbeAssetChunk(ctx context.Context, mode, assetURL, controllerBase
 		if err := applyProbeAuthHeaders(req, identity); err != nil {
 			return 0, 0, err
 		}
+		req.Header.Set("X-CloudHelper-Download-Cache", "1")
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, offset+probeUpgradeProxyChunkSize-1))
+		if len(rangeEnd) > 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, rangeEnd[0]))
+		}
 	} else if offset > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}
@@ -690,7 +708,10 @@ func downloadProbeAssetChunk(ctx context.Context, mode, assetURL, controllerBase
 	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return 0, 0, &probeUpgradeHTTPError{resp.StatusCode, strings.TrimSpace(string(body))}
+		return 0, 0, &probeUpgradeHTTPError{Status: resp.StatusCode, Detail: strings.TrimSpace(string(body)), Preparing: resp.StatusCode == 503 && resp.Header.Get("X-CloudHelper-Cache") == "preparing"}
+	}
+	if len(rangeEnd) > 0 && resp.StatusCode != http.StatusPartialContent {
+		return 0, 0, errors.New("parallel download requires byte ranges")
 	}
 	total := resp.ContentLength
 	expectedChunk := resp.ContentLength
@@ -700,6 +721,9 @@ func downloadProbeAssetChunk(ctx context.Context, mode, assetURL, controllerBase
 			return 0, 0, errors.New("download Content-Range does not match requested offset or size")
 		}
 		total = size
+		if len(rangeEnd) > 0 && end != rangeEnd[0] {
+			return 0, 0, errors.New("parallel download range mismatch")
+		}
 		expectedChunk = end - start + 1
 	} else {
 		offset = 0
@@ -782,25 +806,7 @@ func newProbeUpgradeDirectDownloadHTTPClient() (*http.Client, func()) {
 }
 
 func newProbeUpgradeResolvedDownloadHTTPClientForURL(rawURL string) (*http.Client, func(), error) {
-	target, err := resolveProbeLocalURLDialTarget(rawURL)
-	if err != nil {
-		return nil, nil, err
-	}
-	transport := &http.Transport{
-		Proxy:                 nil,
-		DialContext:           newProbeResolvedDialContext(target, probeUpgradeDownloadIdleTimeout),
-		TLSHandshakeTimeout:   probeUpgradeDownloadIdleTimeout,
-		ResponseHeaderTimeout: probeUpgradeDownloadIdleTimeout,
-	}
-	if target.TLSEnabled {
-		transport.TLSClientConfig = &tls.Config{
-			MinVersion: tls.VersionTLS12,
-			ServerName: strings.TrimSpace(target.ServerName),
-		}
-		transport.DialTLSContext = newProbeResolvedConnectionDialContext(target, probeUpgradeDownloadIdleTimeout, transport.TLSClientConfig)
-	}
-	client := &http.Client{Transport: transport}
-	return client, func() { transport.CloseIdleConnections() }, nil
+	return newProbeControllerHTTPClient(rawURL, 0)
 }
 
 func probeUpgradeDownloadRetryDelay(attempt int) time.Duration {

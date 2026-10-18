@@ -101,7 +101,7 @@ func requestMobileVRouteSettings(controllerURL string, nodeID string, nodeSecret
 	if err := applyAuthHeaders(req, nodeID, nodeSecret); err != nil {
 		return mobileVRouteSettingsResponse{}, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := mobileControllerDo(req)
 	if err != nil {
 		return mobileVRouteSettingsResponse{}, err
 	}

@@ -18,7 +18,7 @@ typedef struct {
     vr_ws_decoder ws;
     uint8_t header[12];size_t header_used,payload_left;
     uint32_t send_window;size_t message_used;
-    char message[16384];uint64_t ack_at;
+    char message[16384];uint64_t ack_at,started;int direct;
 } control;
 
 static uint32_t u32(const uint8_t *b){return ((uint32_t)b[0]<<24)|((uint32_t)b[1]<<16)|((uint32_t)b[2]<<8)|b[3];}
@@ -107,7 +107,7 @@ static int received(int opcode,const uint8_t *data,size_t n,void *arg)
 
 static int connect_controller(control *c)
 {
-    vr_engine *e=c->engine;char challenge[513],signature[65],host[254],key[25],accept[29],actual[64];int port,tls;
+    vr_engine *e=c->engine;char challenge[513],signature[65],host[254],key[25],accept[29],actual[64],origin[1024],pin[65];int port,tls;
     char error[128]="invalid controller URL";
     if(vr_origin(e->config.controller,host,&port,&tls)||!tls||
        vr_controller_auth(&e->config,e->addresses.wan_if,"GET","/api/probe",challenge,signature,error,sizeof(error))||stopped(e)){
@@ -115,7 +115,9 @@ static int connect_controller(control *c)
         return -1;
     }
     uint64_t deadline=vr_millis()+5000;
-    c->ssl=vr_tls_connect(host,port,"",&e->config,e->addresses.wan_if,&c->fd,deadline);if(!c->ssl){vr_service_log(e->service,"controller","Control stream DNS/TCP/TLS connection failed");return -1;}
+    c->direct=vr_controller_link_target(&e->config,origin,pin);c->started=vr_millis();
+    if(vr_origin(origin,host,&port,&tls)||!tls)return -1;
+    c->ssl=vr_tls_connect(host,port,pin,&e->config,e->addresses.wan_if,&c->fd,deadline);if(!c->ssl){vr_controller_link_feedback(&e->config,c->direct,0,vr_millis()-c->started);vr_service_log(e->service,"controller","Control stream DNS/TCP/TLS connection failed");return -1;}
     uint8_t random[16];if(RAND_bytes(random,16)!=1)return -1;EVP_EncodeBlock((unsigned char *)key,random,16);
     if(vr_ws_accept_key(key,accept))return -1;
     char header[4096];int len=snprintf(header,sizeof(header),"GET /api/probe HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: %s\r\nX-Probe-Node-Id: %s\r\nX-Probe-Rand: %s\r\nX-Probe-Signature: %s\r\n\r\n",host,port,key,e->config.node_id,challenge,signature);
@@ -159,7 +161,7 @@ static void *control_worker(void *arg)
     while(!stopped(e)) {
         control *c=calloc(1,sizeof(*c));if(!c)break;c->engine=e;c->fd=-1;
         if(!connect_controller(c)) {
-            vr_service_log(e->service,"controller","Control stream established");uint64_t sent=0,next_check=vr_millis()+60000;unsigned failures=0;
+            vr_service_log(e->service,"controller",c->direct?"Control stream established via pinned origin IP":"Control stream established via primary domain");uint64_t sent=0,next_check=vr_millis()+60000;unsigned failures=0;
             while(!stopped(e)) {
                 uint64_t now=vr_millis();
                 if(now-c->ack_at>65000)break;
@@ -179,7 +181,9 @@ static void *control_worker(void *arg)
             }
         }
         if(c->ssl&&!stopped(e))vr_service_log(e->service,"controller","Control stream disconnected or handshake failed; retrying");
-        SSL_free(c->ssl);if(c->fd>=0)close(c->fd);free(c);
+          pthread_mutex_lock(&e->mutex);int intentional=e->refresh;pthread_mutex_unlock(&e->mutex);
+          if(c->started&&!stopped(e)&&!intentional)vr_controller_link_feedback(&e->config,c->direct,vr_millis()-c->started>=90000,vr_millis()-c->started>=90000?1000:3000);
+          SSL_free(c->ssl);if(c->fd>=0)close(c->fd);free(c);
         pthread_mutex_lock(&e->mutex);e->controller_connected=0;int changed=e->refresh;pthread_mutex_unlock(&e->mutex);if(changed)break;
         for(int i=0;i<50&&!stopped(e);i++)poll(NULL,0,100);
     }

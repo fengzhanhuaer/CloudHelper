@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"github.com/cloudhelper/probe_node/internal/controllerlink"
 	"io"
 	"net"
 	"net/http"
@@ -80,7 +81,12 @@ func TestNewProbeResolvedHTTPClientForURLDisablesProxy(t *testing.T) {
 	}
 	defer closeClient()
 
-	transport, ok := client.Transport.(*http.Transport)
+	wrapped, ok := client.Transport.(*controllerlink.Transport)
+	if !ok {
+		t.Fatalf("expected adaptive controller transport: %T", client.Transport)
+	}
+	transport := wrapped.Primary
+	ok = transport != nil
 	if !ok || transport == nil {
 		t.Fatalf("transport type=%T", client.Transport)
 	}

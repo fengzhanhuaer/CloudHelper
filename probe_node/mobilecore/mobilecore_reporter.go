@@ -5,6 +5,7 @@ package mobilecore
 // It does not participate in the vRoute data plane or frame protocol.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -15,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cloudhelper/probe_node/internal/controllerlink"
 	"github.com/gorilla/websocket"
 	"github.com/hashicorp/yamux"
 )
@@ -103,11 +105,29 @@ func runSession(cancel <-chan struct{}, wsURL string, nodeID string, nodeSecret 
 	if err != nil {
 		return err
 	}
-	wsConn, _, err := dialer.Dial(wsURL, headers)
+	ctx, cancelDial := context.WithCancel(context.Background())
+	defer cancelDial()
+	go func() {
+		select {
+		case <-cancel:
+			cancelDial()
+		case <-ctx.Done():
+		}
+	}()
+	wsConn, _, direct, err := controllerlink.Default.DialWebSocket(ctx, wsURL, headers, &dialer, nil)
 	if err != nil {
 		return err
 	}
 	defer wsConn.Close()
+	started := time.Now()
+	defer func() {
+		select {
+		case <-cancel:
+			return
+		default:
+			controllerlink.Default.SessionEnded(wsURL, direct, time.Since(started))
+		}
+	}()
 
 	session, err := yamux.Client(newWebSocketNetConn(wsConn), yamux.DefaultConfig())
 	if err != nil {

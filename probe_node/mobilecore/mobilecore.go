@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cloudhelper/probe_node/internal/controllerlink"
 	"github.com/gorilla/websocket"
 )
 
@@ -141,6 +142,7 @@ func StartWithConfigDir(controllerURL string, nodeID string, nodeSecret string, 
 	nodeID = strings.TrimSpace(nodeID)
 	nodeSecret = strings.TrimSpace(nodeSecret)
 	configDir = normalizeMobileConfigDir(configDir)
+	controllerlink.Default.Configure(controllerURL, configDir)
 	if controllerURL == "" || nodeID == "" || nodeSecret == "" {
 		return "controller URL, node ID, and node secret are required"
 	}
@@ -169,6 +171,7 @@ func StartWithConfigDir(controllerURL string, nodeID string, nodeSecret string, 
 }
 
 func RefreshConfig(controllerURL string, nodeID string, nodeSecret string, configDir string) string {
+	controllerlink.Default.Configure(controllerURL, configDir)
 	setControllerDirectTarget(controllerURL)
 	setMobileVRouteControllerIdentity(controllerURL, nodeID, nodeSecret)
 	summary, err := refreshConfigFiles(controllerURL, nodeID, nodeSecret, configDir)
@@ -242,6 +245,7 @@ func currentVersionLocked() string {
 }
 
 func refreshConfigFiles(controllerURL string, nodeID string, nodeSecret string, configDir string) (configRefreshSummary, error) {
+	controllerlink.Default.Configure(controllerURL, normalizeMobileConfigDir(configDir))
 	mobileConfigRefreshMu.Lock()
 	defer mobileConfigRefreshMu.Unlock()
 
@@ -761,6 +765,7 @@ func resolveWebSocketURL(controllerURL string) (string, error) {
 }
 
 func buildAuthHeaders(targetURL string, nodeID string, secret string, method string) (http.Header, error) {
+	controllerlink.Default.Remember(targetURL, nodeID, secret)
 	challenge, requestPath, err := fetchProbeAuthChallenge(targetURL, nodeID)
 	if err != nil {
 		return nil, err
@@ -837,7 +842,7 @@ func fetchProbeAuthChallenge(targetURL string, nodeID string) (string, string, e
 	if err != nil {
 		return "", "", err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := mobileControllerDo(req)
 	if err != nil {
 		return "", "", err
 	}

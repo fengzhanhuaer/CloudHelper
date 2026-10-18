@@ -7,6 +7,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -28,6 +29,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cloudhelper/probe_node/internal/controllerlink"
 	"github.com/gorilla/websocket"
 	"github.com/hashicorp/yamux"
 )
@@ -748,10 +750,14 @@ func startProbeReporter(wsURL string, identity nodeIdentity) {
 }
 
 func runProbeReporterSession(wsURL string, identity nodeIdentity, sampler *cpuSampler) error {
-	dialer, err := newProbeResolvedWebSocketDialerForURL(wsURL, 10*time.Second)
-	if err != nil {
-		return err
-	}
+	// DNS resolution is deferred so a cached origin IP still works during DNS failure.
+	dialer := &websocket.Dialer{HandshakeTimeout: 10 * time.Second, NetDialTLSContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+		target, e := resolveProbeLocalURLDialTarget(wsURL)
+		if e != nil {
+			return nil, e
+		}
+		return newProbeResolvedConnectionDialContext(target, 5*time.Second, &tls.Config{MinVersion: tls.VersionTLS12, ServerName: target.ServerName})(ctx, network, address)
+	}}
 	authHeaders, err := buildProbeAuthHeaders(identity, wsURL, http.MethodGet)
 	if err != nil {
 		return err
@@ -760,11 +766,13 @@ func runProbeReporterSession(wsURL string, identity nodeIdentity, sampler *cpuSa
 	for key, value := range authHeaders {
 		headers.Set(key, value)
 	}
-	wsConn, _, err := dialer.Dial(wsURL, headers)
+	wsConn, _, direct, err := controllerlink.Default.DialWebSocket(context.Background(), wsURL, headers, dialer, probeControllerDirectDial)
 	if err != nil {
 		return err
 	}
 	defer wsConn.Close()
+	started := time.Now()
+	defer func() { controllerlink.Default.SessionEnded(wsURL, direct, time.Since(started)) }()
 
 	session, err := yamux.Client(newWebSocketNetConn(wsConn), yamux.DefaultConfig())
 	if err != nil {
@@ -971,6 +979,7 @@ func signProbeConnect(secret, nodeID, challenge, method, requestPath string) str
 }
 
 func buildProbeAuthHeaders(identity nodeIdentity, targetURL string, method string) (map[string]string, error) {
+	controllerlink.Default.Remember(targetURL, identity.NodeID, identity.Secret)
 	challenge, requestPath, err := fetchProbeAuthChallenge(targetURL, identity.NodeID)
 	if err != nil {
 		return nil, err

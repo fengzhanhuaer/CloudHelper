@@ -95,7 +95,7 @@ func requestMobileVRouteControllerFakeIP(domain string, route androidRouteDecisi
 	if err := applyAuthHeaders(req, nodeID, nodeSecret); err != nil {
 		return "", true, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := mobileControllerDo(req)
 	if err != nil {
 		return "", true, err
 	}
@@ -229,7 +229,7 @@ func fetchMobileVRouteConfig(ctx context.Context, controllerURL string, nodeID s
 	if err := applyAuthHeaders(req, nodeID, nodeSecret); err != nil {
 		return mobileVRouteConfig{}, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := mobileControllerDo(req)
 	if err != nil {
 		return mobileVRouteConfig{}, err
 	}

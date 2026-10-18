@@ -12,6 +12,13 @@ import java.net.Inet6Address
 import java.net.NetworkInterface
 
 object MobileCoreBridge {
+    fun configureControllerCache(context: Context, config: ProbeNodeConfig): String {
+        return callString("configureControllerCache", Array(2) { String::class.java }, arrayOf(config.controllerUrl, ProbeNodeConfig.configDir(context)))
+    }
+    fun controllerUpgradeRequest(config: ProbeNodeConfig, target: String, output: String = ""): String {
+        return callString("controllerUpgradeRequest", Array(5) { String::class.java },
+            arrayOf(config.controllerUrl, config.nodeId, config.nodeSecret, target, output))
+    }
     fun start(context: Context, config: ProbeNodeConfig): String {
         if (!config.isReady) {
             return "controller URL, node ID, and node secret are required"
@@ -32,6 +39,7 @@ object MobileCoreBridge {
             return "controller URL, node ID, and node secret are required"
         }
         setControllerURL(config.controllerUrl)
+        configureControllerCache(context, config)
         setVersion(currentLocalVersion(context))
         setNativeIPs(context)
         return "mobilecore runtime prepared"

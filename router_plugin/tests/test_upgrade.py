@@ -78,10 +78,17 @@ with tempfile.TemporaryDirectory(prefix='chvr-upgrade-test-') as work:
     trust=Path('/usr/local/share/ca-certificates/chvr-test.crt');trust.write_bytes(cert.read_bytes())
     subprocess.check_call(['update-ca-certificates'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     body=bytes(range(256))*64
+    parallel_body=body*32
+    parallel_barrier=threading.Barrier(2)
     class Handler(BaseHTTPRequestHandler):
         attempts={}
         def log_message(self, *_): pass
         def do_GET(self):
+            if self.path=='/parallel':
+                first,last=map(int,self.headers['Range'].split('=')[1].split('-'))
+                parallel_barrier.wait(timeout=10)
+                data=parallel_body[first:last+1]
+                self.send_response(206);self.send_header('Content-Range','bytes %d-%d/%d'%(first,last,len(parallel_body)));self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
             attempt=self.attempts.get(self.path,0);self.attempts[self.path]=attempt+1
             offset=int(self.headers.get('Range','bytes=0-').split('=')[1].split('-')[0])
             if attempt == 0:
@@ -99,6 +106,9 @@ with tempfile.TemporaryDirectory(prefix='chvr-upgrade-test-') as work:
     server.socket=context.wrap_socket(server.socket,server_side=True)
     threading.Thread(target=server.serve_forever,daemon=True).start()
     try:
+        parallel_target=root/'parallel.bin'
+        subprocess.check_call([binary,'parallel','https://127.0.0.1:%d/parallel'%server.server_port,str(parallel_target),str(len(parallel_body))])
+        assert parallel_target.read_bytes()==parallel_body
         for mode in ['resume','restart','bad-range']:
             target=root/(mode+'.bin')
             rc=subprocess.call([binary,'download','https://127.0.0.1:%d/%s'%(server.server_port,mode),str(target),str(len(body))])

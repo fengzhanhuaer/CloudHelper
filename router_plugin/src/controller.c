@@ -27,11 +27,11 @@ static size_t receive(void *data,size_t size,size_t count,void *arg)
     memcpy(r->bytes+r->used,data,n);r->used+=n;r->bytes[r->used]=0;return n;
 }
 
-static json_object *request(const vr_config *c,const char *iface,const char *method,const char *path,json_object *body,struct curl_slist *headers,long budget,cancellation *cancel,char *err,size_t n)
+static json_object *request_at(const vr_config *c,const char *origin,const char *pin,const char *iface,const char *method,const char *path,json_object *body,struct curl_slist *headers,long budget,cancellation *cancel,char *err,size_t n)
 {
     if(cancel&&cancel->check&&cancel->check(cancel->arg)){snprintf(err,n,"controller request cancelled");return NULL;}
     char url[2048],host[254],ips[4][16],resolve[320];int port,tls;
-    if(vr_origin(c->controller,host,&port,&tls) || snprintf(url,sizeof(url),"%s%s",c->controller,path)>=(int)sizeof(url)) {snprintf(err,n,"invalid controller URL");return NULL;}
+    if(vr_origin(origin,host,&port,&tls) || snprintf(url,sizeof(url),"%s%s",origin,path)>=(int)sizeof(url)) {snprintf(err,n,"invalid controller URL");return NULL;}
     /* Resolve outside dnsmasq to prevent recursion when DNS routing is enabled. */
     int count=vr_resolve_config4_all(host,c,iface,ips);if(count<1){snprintf(err,n,"controller DNS failed");return NULL;}
     struct curl_slist *addresses=NULL;
@@ -49,6 +49,7 @@ static json_object *request(const vr_config *c,const char *iface,const char *met
     }
     curl_easy_setopt(curl,CURLOPT_SSL_VERIFYPEER,1L);curl_easy_setopt(curl,CURLOPT_SSL_VERIFYHOST,2L);
     curl_easy_setopt(curl,CURLOPT_SSLVERSION,(long)CURL_SSLVERSION_TLSv1_2);
+    vr_curl_pin(curl,pin);
     curl_easy_setopt(curl,CURLOPT_HTTPHEADER,headers);
     if(iface && *iface)curl_easy_setopt(curl,CURLOPT_INTERFACE,iface);
     curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,receive);curl_easy_setopt(curl,CURLOPT_WRITEDATA,&r);
@@ -85,6 +86,19 @@ done:
     curl_slist_free_all(addresses);return result;
 }
 
+static json_object *request(const vr_config *c,const char *iface,const char *method,const char *path,json_object *body,struct curl_slist *headers,long budget,cancellation *cancel,char *err,size_t n)
+{
+    char origin[1024],pin[65];int direct=vr_controller_link_target(c,origin,pin);
+    uint64_t start=vr_millis();
+    json_object *o=request_at(c,origin,pin,iface,method,path,body,headers,(!direct&&budget==10000)?3000:budget,cancel,err,n);
+    if(!(cancel&&cancel->check&&cancel->check(cancel->arg)))vr_controller_link_feedback(c,direct,o!=NULL,vr_millis()-start);
+    /* Only challenge issuance is safe without new credentials. Signed business
+       requests are retried by call(), with a fresh one-time challenge. */
+    if(!o&&!headers&&!strcmp(method,"GET")&&vr_controller_link_target(c,origin,pin)!=direct)
+        o=request_at(c,origin,pin,iface,method,path,body,headers,budget,cancel,err,n);
+    return o;
+}
+
 static int authenticate(const vr_config *c,const char *iface,const char *method,const char *path,char challenge[513],char signature[65],cancellation *cancel,char *err,size_t n)
 {
     char challenge_path[320],text[2048];
@@ -103,7 +117,7 @@ static int authenticate(const vr_config *c,const char *iface,const char *method,
 int vr_controller_auth(const vr_config *c,const char *iface,const char *method,const char *path,char challenge[513],char signature[65],char *err,size_t n)
 {return authenticate(c,iface,method,path,challenge,signature,NULL,err,n);}
 
-static json_object *call(const vr_config *c,const char *iface,const char *method,const char *path,json_object *body,long budget,cancellation *cancel,char *err,size_t n)
+static json_object *call_once(const vr_config *c,const char *iface,const char *method,const char *path,json_object *body,long budget,cancellation *cancel,char *err,size_t n)
 {
     char challenge[513]={0},signature[65],header[768];
     if(authenticate(c,iface,method,path,challenge,signature,cancel,err,n))return NULL;
@@ -116,6 +130,39 @@ static json_object *call(const vr_config *c,const char *iface,const char *method
     }
     json_object *result=request(c,iface,method,path,body,headers,budget,cancel,err,n);
     curl_slist_free_all(headers);return result;
+}
+
+void vr_controller_link_refresh(const vr_config *c,const char *iface)
+{
+    if(strncmp(c->controller,"https://",8)||!vr_controller_link_refresh_due(c))return;
+    char path[320],err[128],challenge[513],text[2048],signature[65],line[768];
+    snprintf(path,sizeof(path),"/api/probe/auth/challenge?node_id=%s",c->node_id);
+    json_object *o=request_at(c,c->controller,"",iface,"GET",path,NULL,NULL,3000,NULL,err,sizeof(err));
+    struct curl_slist *headers=NULL;
+    if(!o)goto done;
+    if(vr_copy(challenge,sizeof(challenge),vr_string(o,"challenge"))||!*challenge)goto done;
+    json_object_put(o);o=NULL;
+    const char *endpoint="/api/probe/controller/endpoints";
+    snprintf(text,sizeof(text),"%s\n%s\nGET\n%s",c->node_id,challenge,endpoint);
+    if(vr_hmac(c->node_key,text,signature))goto done;
+    const char *names[]={"X-Probe-Node-Id","X-Probe-Rand","X-Probe-Signature"};
+    const char *values[]={c->node_id,challenge,signature};
+    for(int i=0;i<3;i++) {snprintf(line,sizeof(line),"%s: %s",names[i],values[i]);struct curl_slist *next=curl_slist_append(headers,line);if(!next)goto done;headers=next;}
+    o=request_at(c,c->controller,"",iface,"GET",endpoint,NULL,headers,3000,NULL,err,sizeof(err));
+    if(o)vr_controller_link_store(c,o);
+done:
+    json_object_put(o);curl_slist_free_all(headers);vr_controller_link_refresh_done();
+}
+
+static json_object *call(const vr_config *c,const char *iface,const char *method,const char *path,json_object *body,long budget,cancellation *cancel,char *err,size_t n)
+{
+    vr_controller_link_refresh(c,iface);
+    char before[1024],pin[65],after[1024];vr_controller_link_target(c,before,pin);
+    json_object *o=call_once(c,iface,method,path,body,budget,cancel,err,n);
+    vr_controller_link_target(c,after,pin);
+    if(!o&&!strcmp(method,"GET")&&strcmp(before,after)&&!(cancel&&cancel->check&&cancel->check(cancel->arg)))
+        o=call_once(c,iface,method,path,body,budget,cancel,err,n);
+    return o;
 }
 
 json_object *vr_controller_call(const vr_config *c,const char *iface,const char *method,const char *path,json_object *body,char *err,size_t n)

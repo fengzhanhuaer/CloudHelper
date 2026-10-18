@@ -9,6 +9,10 @@ int main(int argc,char **argv)
 {
  assert(!curl_global_init(CURL_GLOBAL_DEFAULT));
  char err[256];
+ if(argc==5&&!strcmp(argv[1],"parallel")) {
+  upgrade_job job={.direct=1};vr_config_default(&job.config);int fd=open(argv[3],O_RDWR|O_CREAT|O_TRUNC,0600);assert(fd>=0);
+  int rc=fetch_parallel(&job,argv[2],fd,strtoll(argv[4],NULL,10));close(fd);return rc?1:0;
+ }
  if(argc==5&&!strcmp(argv[1],"unpack"))return vr_upgrade_unpack(argv[2],argv[3],argv[4],err,sizeof(err))?1:0;
  if(argc==5&&!strcmp(argv[1],"download")){
   upgrade_job job={.direct=1};vr_config_default(&job.config);
