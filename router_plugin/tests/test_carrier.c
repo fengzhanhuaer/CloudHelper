@@ -52,7 +52,7 @@ static void tick(vr_engine *e)
     struct pollfd fds[VR_CARRIER_MAX+129];
     for(size_t i=0;i<e->link_count;i++) {
         vr_link *l=&e->links[i];if(!l->ssl)vr_link_dial(l);
-        fds[i]=(struct pollfd){l->fd,(short)(POLLIN|(l->used?POLLOUT:0)),0};
+        fds[i]=(struct pollfd){l->fd,(short)(POLLIN|(l->used?(l->write_events?l->write_events:POLLOUT):0)),0};
     }
     size_t count=vr_tcp_pollfds(e,fds+e->link_count);
     assert(poll(fds,e->link_count+count,10)>=0);
@@ -134,8 +134,9 @@ static void test_pool(vr_engine *e)
     other->ssl=SSL_new(ctx);other->session=++e->carrier_session;assert(other->session!=other_session);
     assert(vr_carrier_select(e,"8",&f)==selected); /* recovered slots don't steal flows */
     char path[VR_PATH_MAX][129]={{"7"},{"8"}};
-    selected->used=VR_TX_CAP;assert(vr_send(e,1,1,path,2,packet,sizeof(packet))<0);
-    assert(vr_carrier_select(e,"8",&f)==selected);selected->used=0; /* full queues cannot reorder onto another slot */
+    size_t queued=0;while(!vr_send(e,1,1,path,2,packet,sizeof(packet)))queued++;
+    assert(queued&&selected->used<VR_TX_CAP&&selected->tx_memory<=VR_TX_CAP);
+    assert(vr_carrier_select(e,"8",&f)==selected); /* full queues cannot reorder onto another slot */
     vr_link_close(selected,"");vr_link *fallback=vr_carrier_select(e,"8",&f);assert(fallback&&fallback!=selected);
     selected->ssl=SSL_new(ctx);selected->session=++e->carrier_session;
     assert(vr_carrier_select(e,"8",&f)==fallback);
@@ -193,6 +194,10 @@ int main(int argc,char **argv)
     }
     int no_delay=0;socklen_t no_delay_length=sizeof(no_delay);
     assert(!getsockopt(l->fd,IPPROTO_TCP,TCP_NODELAY,&no_delay,&no_delay_length)&&no_delay==1);
+    /* All native and vendor ABI fixtures run on a Linux kernel supporting
+       NOTSENT_LOWAT. Both incoming and outgoing carrier paths must apply it. */
+    unsigned low=0;socklen_t low_length=sizeof(low);
+    assert(!getsockopt(l->fd,IPPROTO_TCP,25,&low,&low_length)&&low==VR_TX_WRITE_MAX);
     int small_buffer=4096;assert(!setsockopt(l->fd,SOL_SOCKET,SO_SNDBUF,&small_buffer,sizeof(small_buffer)));
     const char *kinds[]={"ping","upload","download"};
     for(unsigned i=0;i<3;i++) {

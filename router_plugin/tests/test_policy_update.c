@@ -55,11 +55,11 @@ int main(void)
     const char *text="{\"node_id\":\"7\",\"expected_node_kind\":\"asus_56uv2\",\"virtual_router\":{\"enabled\":true,\"fake_ip_cidr\":\"198.18.0.0/15\",\"probe_ips\":[{\"node_id\":\"7\",\"ip\":\"198.18.0.7\"},{\"node_id\":\"8\",\"ip\":\"198.18.0.8\"},{\"node_id\":\"9\",\"ip\":\"198.18.0.9\"}],\"topology_rules\":[{\"id\":\"one\",\"from_node_id\":\"7\",\"to_node_id\":\"8\",\"secret\":\"fixture\",\"user_public_key\":\"fixture\",\"auth_ticket\":\"fixture\",\"enabled\":true},{\"id\":\"two\",\"from_node_id\":\"9\",\"to_node_id\":\"7\",\"secret\":\"fixture\",\"user_public_key\":\"fixture\",\"auth_ticket\":\"fixture\",\"enabled\":true},{\"id\":\"remote\",\"from_node_id\":\"8\",\"to_node_id\":\"9\",\"enabled\":true}],\"route_rules\":[{\"id\":\"proxy\",\"action\":\"probe_exit\",\"exit_node_id\":\"8\",\"entries\":[\"domain_suffix:example\"]}]}}";
     e->snapshot=vr_json_parse(text,strlen(text));assert(e->snapshot);e->policy=vr_member(e->snapshot,"virtual_router");
     assert(!vr_links_add(e,link_rule(e->snapshot,0))&&!vr_links_add(e,link_rule(e->snapshot,1)));
-    SSL_CTX *tls=SSL_CTX_new(TLS_method());assert(tls);int others[8];SSL *connections[8];uint64_t sessions[8];
+    SSL_CTX *tls=SSL_CTX_new(TLS_method());assert(tls);int others[8];SSL *connections[8];uint64_t sessions[8];vr_tx_frame *queued[8];
     for(int i=0;i<8;i++) {
         int pair[2];assert(!socketpair(AF_UNIX,SOCK_STREAM,0,pair));e->links[i].fd=pair[0];others[i]=pair[1];
         connections[i]=e->links[i].ssl=SSL_new(tls);sessions[i]=e->links[i].session=++e->carrier_session;
-        e->links[i].used=3;memcpy(e->links[i].queue,"abc",3);e->links[i].auth_expires=time(NULL)+123;
+        assert(!vr_link_queue(&e->links[i],2,"abc",3));queued[i]=e->links[i].tx_head[1];e->links[i].auth_expires=time(NULL)+123;
         e->links[i].tx=345;e->links[i].rx=678;
     }
     e->flows[0].used=123;e->bindings[0].used=456;e->bindings[0].link=3;e->bindings[0].session=sessions[3];
@@ -71,7 +71,7 @@ int main(void)
     assert(vr_policy_apply_pending(e)==1&&!e->next_policy&&!e->refresh);
     assert(m->expires==expires&&!strcmp(m->exit,"9")&&e->flows[0].used==123&&e->bindings[0].used==456);
     for(int i=0;i<8;i++) {
-        vr_link *l=&e->links[i];assert(l->ssl==connections[i]&&l->session==sessions[i]&&l->tx==345&&l->rx==678&&l->used==3&&!memcmp(l->queue,"abc",3));
+        vr_link *l=&e->links[i];assert(l->ssl==connections[i]&&l->session==sessions[i]&&l->tx==345&&l->rx==678&&l->used==5&&l->tx_head[1]==queued[i]&&l->tx_bytes[1]==5);
         assert(write(l->fd,"x",1)==1);char b;assert(read(others[i],&b,1)==1&&b=='x');
     }
     next=pending(e);json_object_object_add(link_rule(next,0),"auth_ticket",json_object_new_string("fresh-ticket"));

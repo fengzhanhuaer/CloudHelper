@@ -8,11 +8,16 @@
 #include <poll.h>
 
 #define VR_TX_CAP (256u*1024u)
+#define VR_TX_CONTROL_RESERVE (32u*1024u)
+#define VR_TX_CONTROL_CAP (96u*1024u)
+#define VR_TX_BULK_CAP (96u*1024u)
+#define VR_TX_WRITE_MAX (16u*1024u)
 #define VR_NAT_MAX 2048
 #define VR_SPEED_BYTES (128u*1024u*1024u)
 #define VR_SPEED_DURATION_MS 10000u
 #define VR_SPEED_TIMEOUT_MS (VR_SPEED_DURATION_MS+20000u)
 typedef struct vr_engine vr_engine;
+typedef struct vr_tx_frame vr_tx_frame;
 typedef struct {
     vr_engine *engine;
     json_object *rule;
@@ -26,7 +31,11 @@ typedef struct {
     /* Invalidated on every policy publication, including removed path edges. */
     uint8_t ingress_control[1024];char ingress_path[VR_PATH_HOPS+1][129];
     size_t ingress_length,ingress_count,ingress_at;
-    uint8_t queue[VR_TX_CAP];size_t head,used,write_pending;
+    /* Immutable frames, including SSL_write WANT retries; memory is bounded. */
+    vr_tx_frame *tx_head[3],*tx_tail[3],*writing;
+    size_t used,tx_memory,tx_memory_class[3],tx_bytes[3],write_offset,write_pending;
+    unsigned business_since_bulk;
+    short write_events;
 } vr_link;
 typedef struct {vr_engine *engine;pthread_t thread;int started,done,fd,index;vr_link *result;} vr_handshake;
 typedef struct {uint32_t hash;int link;uint64_t session,used;} vr_flow_binding;

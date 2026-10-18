@@ -47,6 +47,8 @@ $(BUILD)/test-certificate: $(CORE) tests/test_certificate.c $(wildcard include/*
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_certificate.c $(LDFLAGS) -Wl,--wrap=vr_resolve_config4_all $(LDLIBS) -o $@
 $(BUILD)/test-carrier: $(CORE) src/carrier.c src/measure.c src/platform.c src/policy_update.c src/mapping.c src/tcp_proxy.c tests/test_carrier.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/carrier.c src/measure.c src/platform.c src/policy_update.c src/mapping.c src/tcp_proxy.c tests/test_carrier.c $(LDFLAGS) $(LDLIBS) -o $@
+$(BUILD)/test-tx: $(CORE) src/carrier.c tests/test_tx.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/carrier.c tests/test_tx.c $(LDFLAGS) -Wl,--wrap=SSL_write -Wl,--wrap=SSL_get_error $(LDLIBS) -o $@
 $(BUILD)/test-measure: $(CORE) src/measure.c tests/test_measure.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/measure.c tests/test_measure.c $(LDFLAGS) -Wl,--wrap=vr_millis $(LDLIBS) -o $@
 $(BUILD)/test-policy-update: $(CORE) src/policy_update.c src/carrier.c src/mapping.c src/platform.c tests/test_policy_update.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)

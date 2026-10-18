@@ -186,7 +186,7 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
         }
         struct pollfd fds[5+VR_CARRIER_MAX+129];fds[0]=(struct pollfd){e->tun,POLLIN,0};fds[1]=(struct pollfd){e->lan,POLLIN,0};
         fds[2]=(struct pollfd){e->wan,POLLIN,0};fds[3]=(struct pollfd){e->dns_udp,POLLIN,0};fds[4]=(struct pollfd){e->dns_tcp,POLLIN,0};
-        for(size_t i=0;i<e->link_count;i++)fds[5+i]=(struct pollfd){e->links[i].fd,(short)(POLLIN|(e->links[i].used?POLLOUT:0)),0};
+        for(size_t i=0;i<e->link_count;i++)fds[5+i]=(struct pollfd){e->links[i].fd,(short)(POLLIN|(e->links[i].used?(e->links[i].write_events?e->links[i].write_events:POLLOUT):0)),0};
         int pending=0;for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl&&SSL_pending(e->links[i].ssl))pending=1;
         size_t tcp_count=vr_tcp_pollfds(e,fds+5+e->link_count);
         int result=poll(fds,5+e->link_count+tcp_count,pending?0:50);if(result<0&&errno==EINTR)continue;if(result<0){strcpy(e->error,"network poll failed");break;}

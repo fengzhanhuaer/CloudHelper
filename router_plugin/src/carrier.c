@@ -2,6 +2,8 @@
 #include "engine.h"
 #include <errno.h>
 #include <poll.h>
+#include <netinet/tcp.h>
+#include <sys/ioctl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,6 +13,67 @@
 #include <openssl/sha.h>
 #include <openssl/rand.h>
 #include <openssl/err.h>
+
+enum { TX_CONTROL,TX_BUSINESS,TX_BULK };
+struct vr_tx_frame {
+    vr_tx_frame *next;
+    size_t length;
+    uint64_t enqueued;
+    unsigned lane;
+    uint8_t bytes[];
+};
+
+/* Since Linux 3.12; vendor headers can predate the running router kernel. */
+#ifndef TCP_NOTSENT_LOWAT
+#define TCP_NOTSENT_LOWAT 25
+#endif
+#ifndef SIOCOUTQNSD
+#define SIOCOUTQNSD 0x894b
+#endif
+
+static void carrier_socket(int fd)
+{
+    /* Do not shrink SO_SNDBUF: in-flight bytes still need a full BDP window.
+       Unsupported kernels retain their existing behavior. */
+    unsigned low=VR_TX_WRITE_MAX;
+    (void)setsockopt(fd,IPPROTO_TCP,TCP_NOTSENT_LOWAT,&low,sizeof(low));
+}
+
+static int queue_class(int opcode,const void *bytes,size_t n)
+{
+    if(opcode==9||opcode==10)return TX_CONTROL;
+    const uint8_t *p=bytes;
+    if(n<12||p[0]!=0x56||p[1]!=0x52)return TX_BUSINESS;
+    unsigned type=((unsigned)p[2]<<8)|p[3],sub=((unsigned)p[4]<<8)|p[5];
+    if(type==2||type==3||type==5||type==6||(type==7&&sub==1))return TX_CONTROL;
+    if(type==4||type==7)return TX_BULK;
+    /* Keep main=8 lifecycle messages with data: close/result must not overtake
+       data/open in this implementation's wire FIFO. */
+    return TX_BUSINESS;
+}
+
+static vr_tx_frame *next_write(vr_link *l)
+{
+    if(l->writing)return l->writing;
+    unsigned lane=TX_CONTROL;
+    if(!l->tx_head[lane]) {
+        if(l->tx_head[TX_BULK]&&l->business_since_bulk>=8)lane=TX_BULK;
+        else lane=l->tx_head[TX_BUSINESS]?TX_BUSINESS:TX_BULK;
+    }
+    vr_tx_frame *f=l->tx_head[lane];if(!f)return NULL;
+    l->tx_head[lane]=f->next;if(!l->tx_head[lane])l->tx_tail[lane]=NULL;
+    f->next=NULL;l->writing=f;
+    if(lane==TX_BUSINESS&&l->business_since_bulk<8)l->business_since_bulk++;
+    if(lane==TX_BULK)l->business_since_bulk=0;
+    return f;
+}
+
+static void write_done(vr_link *l)
+{
+    vr_tx_frame *f=l->writing;size_t memory=sizeof(*f)+f->length;
+    l->tx_memory-=memory;l->tx_memory_class[f->lane]-=memory;
+    free(f);l->writing=NULL;l->write_offset=0;
+}
 
 static int connected(vr_engine *e,const char *peer)
 {for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl&&!strcmp(e->links[i].peer,peer))return 1;return 0;}
@@ -115,6 +178,17 @@ json_object *vr_links_status(vr_engine *e)
             json_object_object_add(v,"tx_bytes",json_object_new_int64((int64_t)l->tx));
             json_object_object_add(v,"rx_bytes",json_object_new_int64((int64_t)l->rx));
             json_object_object_add(v,"queue_bytes",json_object_new_int64((int64_t)l->used));
+            const char *names[]={"queue_control_bytes","queue_business_bytes","queue_bulk_bytes"};
+            uint64_t oldest=l->writing?l->writing->enqueued:0,now=vr_millis();
+            for(unsigned lane=0;lane<3;lane++) {
+                json_object_object_add(v,names[lane],json_object_new_int64((int64_t)l->tx_bytes[lane]));
+                if(l->tx_head[lane]&&(!oldest||l->tx_head[lane]->enqueued<oldest))oldest=l->tx_head[lane]->enqueued;
+            }
+            int pending=-1,unsent=-1;
+            if(l->ssl&&l->fd>=0){(void)ioctl(l->fd,TIOCOUTQ,&pending);(void)ioctl(l->fd,SIOCOUTQNSD,&unsent);}
+            json_object_object_add(v,"tcp_send_bytes",json_object_new_int(pending));
+            json_object_object_add(v,"tcp_unsent_bytes",json_object_new_int(unsent));
+            json_object_object_add(v,"queue_oldest_ms",json_object_new_int64((int64_t)(oldest?now-oldest:0)));
             json_object_object_add(v,"error",json_object_new_string(l->error));json_object_array_add(carriers,v);
         }
         json_object_object_add(row,"route",json_object_new_string(base->route));
@@ -234,7 +308,13 @@ int vr_path(vr_engine *e,const char *target,char path[VR_PATH_MAX][129],size_t *
 void vr_link_close(vr_link *l,const char *error)
 {
     if(l->ssl&&*error){char event[240];snprintf(event,sizeof(event),"Peer %.32s slot %d disconnected: %.96s",l->peer,l->slot,error);vr_service_log(l->engine->service,"link",event);}
-    SSL_free(l->ssl);l->ssl=NULL;if(l->fd>=0)close(l->fd);l->fd=-1;l->used=0;l->head=0;l->write_pending=0;
+    SSL_free(l->ssl);l->ssl=NULL;if(l->fd>=0)close(l->fd);l->fd=-1;
+    if(l->writing)write_done(l);
+    for(unsigned lane=0;lane<3;lane++) {
+        vr_tx_frame *f=l->tx_head[lane];while(f){vr_tx_frame *next=f->next;free(f);f=next;}
+        l->tx_head[lane]=l->tx_tail[lane]=NULL;l->tx_bytes[lane]=l->tx_memory_class[lane]=0;
+    }
+    l->used=l->tx_memory=l->write_offset=l->write_pending=0;l->write_events=0;l->business_since_bulk=0;
     l->retry=vr_millis()+5000;snprintf(l->error,sizeof(l->error),"%s",error);
     memset(&l->decoder,0,sizeof(l->decoder));memset(&l->ws,0,sizeof(l->ws));
     l->ingress_count=0;
@@ -242,11 +322,24 @@ void vr_link_close(vr_link *l,const char *error)
 
 int vr_link_queue(vr_link *l,int opcode,const void *bytes,size_t n)
 {
-    if(!l->ssl || n+14>VR_TX_CAP-l->used)return -1;
-    uint8_t *encoded=malloc(n+14);if(!encoded)return -1;size_t length;
-    if(vr_ws_encode(opcode,l->client,bytes,n,encoded,n+14,&length)){free(encoded);return -1;}
-    size_t at=(l->head+l->used)%VR_TX_CAP,first=VR_TX_CAP-at;if(first>length)first=length;
-    memcpy(l->queue+at,encoded,first);memcpy(l->queue,encoded+first,length-first);l->used+=length;free(encoded);return 0;
+    if(!l->ssl||n>VR_TX_CAP-sizeof(vr_tx_frame)-14)return -1;
+    unsigned lane=(unsigned)queue_class(opcode,bytes,n);
+    size_t header=(n<126?2:n<=65535?4:10)+(l->client?4:0);
+    size_t length=n+header,memory=sizeof(vr_tx_frame)+length;
+    if(memory>VR_TX_CAP-l->tx_memory)return -1;
+    if(lane==TX_CONTROL) {
+        if(memory>VR_TX_CONTROL_CAP-l->tx_memory_class[lane])return -1;
+    } else {
+        size_t business=l->tx_memory_class[TX_BUSINESS]+l->tx_memory_class[TX_BULK];
+        if(memory>VR_TX_CAP-VR_TX_CONTROL_RESERVE-business)return -1;
+        if(lane==TX_BULK&&memory>VR_TX_BULK_CAP-l->tx_memory_class[lane])return -1;
+    }
+    vr_tx_frame *f=malloc(memory);if(!f)return -1;
+    if(vr_ws_encode(opcode,l->client,bytes,n,f->bytes,length,&length)){free(f);return -1;}
+    f->next=NULL;f->length=length;f->lane=lane;f->enqueued=vr_millis();
+    if(l->tx_tail[lane])l->tx_tail[lane]->next=f;else l->tx_head[lane]=f;
+    l->tx_tail[lane]=f;l->used+=length;l->tx_bytes[lane]+=length;
+    l->tx_memory+=memory;l->tx_memory_class[lane]+=memory;return 0;
 }
 
 static int send_frame(vr_engine *e,const vr_frame *f,char path[VR_PATH_MAX][129],size_t n)
@@ -323,7 +416,9 @@ static int ws_received(int opcode,const uint8_t *bytes,size_t n,void *arg)
 void vr_link_poll(vr_link *l,short events)
 {
     if(events&(POLLERR|POLLHUP|POLLNVAL)){vr_link_close(l,"connection closed");return;}
-    if((events&POLLIN)||SSL_pending(l->ssl)) {
+    /* WANT_READ from SSL_write must consume its own TLS handshake input first.
+       Keep reading on WANT_WRITE: two saturated peers must still drain RX. */
+    if(l->write_events!=POLLIN&&((events&POLLIN)||SSL_pending(l->ssl))) {
         /* Drain a bounded batch. Reading one record per 50 ms poll can leave
            decrypted records stranded in OpenSSL and stall a remote download. */
         for(unsigned batch=0;batch<16;batch++) {
@@ -338,12 +433,27 @@ void vr_link_poll(vr_link *l,short events)
             else {int error=SSL_get_error(l->ssl,n);if(error!=SSL_ERROR_WANT_READ&&error!=SSL_ERROR_WANT_WRITE){char detail[96];vr_tls_error(detail,sizeof(detail),"receive",error);vr_link_close(l,detail);return;}break;}
         }
     }
-    if(l->used && (events&POLLOUT)) {
-        size_t n=l->write_pending;
-        if(!n){n=VR_TX_CAP-l->head;if(n>l->used)n=l->used;l->write_pending=n;}
-        ERR_clear_error();errno=0;int sent=SSL_write(l->ssl,l->queue+l->head,(int)n);
-        if(sent>0){l->head=(l->head+(size_t)sent)%VR_TX_CAP;l->used-=(size_t)sent;l->write_pending=0;l->tx+=(unsigned)sent;}
-        else {int error=SSL_get_error(l->ssl,sent);if(error!=SSL_ERROR_WANT_READ&&error!=SSL_ERROR_WANT_WRITE){char detail[96];vr_tls_error(detail,sizeof(detail),"send",error);vr_link_close(l,detail);}}
+    if(l->used && (events&(l->write_events?l->write_events:POLLOUT))) {
+        /* Bound work across peers; only preempt between whole WS frames. */
+        size_t budget=4*VR_TX_WRITE_MAX;
+        for(unsigned batch=0;batch<32&&budget&&l->used;batch++) {
+            vr_tx_frame *f=next_write(l);if(!f)break;
+            size_t n=l->write_pending;
+            if(!n){n=f->length-l->write_offset;if(n>VR_TX_WRITE_MAX)n=VR_TX_WRITE_MAX;l->write_pending=n;}
+            ERR_clear_error();errno=0;int sent=SSL_write(l->ssl,f->bytes+l->write_offset,(int)n);
+            if(sent>0) {
+                l->used-=(size_t)sent;l->tx_bytes[f->lane]-=(size_t)sent;
+                l->write_offset+=(size_t)sent;l->write_pending=0;l->write_events=0;l->tx+=(unsigned)sent;
+                budget=(size_t)sent<budget?budget-(size_t)sent:0;
+                if(l->write_offset==f->length)write_done(l);
+            } else {
+                int error=SSL_get_error(l->ssl,sent);
+                if(error==SSL_ERROR_WANT_READ)l->write_events=POLLIN;
+                else if(error==SSL_ERROR_WANT_WRITE)l->write_events=POLLOUT;
+                else {char detail[96];vr_tls_error(detail,sizeof(detail),"send",error);vr_link_close(l,detail);}
+                break;
+            }
+        }
     }
 }
 
@@ -502,6 +612,7 @@ void vr_handshakes_poll(vr_engine *e,int finish)
             vr_link *l=&e->links[j];if(strcmp(l->route,result->route)||l->slot!=result->slot)continue;
             if(result->ssl) {
                 vr_link_close(l,"");l->ssl=result->ssl;l->fd=result->fd;l->client=result->client;
+                carrier_socket(l->fd);
                 l->ws.expect_mask=result->ws.expect_mask;l->last_rx=result->last_rx;l->auth_expires=result->auth_expires;
                 l->multi_carrier=result->multi_carrier;l->keepalive_at=vr_millis();l->session=++e->carrier_session;*l->error=0;
                 if(!l->slot&&!l->multi_carrier)for(size_t k=0;k<e->link_count;k++)
