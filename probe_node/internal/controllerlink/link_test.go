@@ -144,6 +144,7 @@ func TestDiscoveryVerifiedPrimaryAndOfflineCache(t *testing.T) {
 	var discovery Discovery
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "challenge") {
+			time.Sleep(4 * time.Second)
 			io.WriteString(w, `{"challenge":"once"}`)
 			return
 		}
@@ -156,7 +157,21 @@ func TestDiscoveryVerifiedPrimaryAndOfflineCache(t *testing.T) {
 	m := &Manager{entries: map[string]*state{}}
 	m.Configure(server.URL, dir)
 	m.Remember(server.URL, "7", "secret")
+	start := time.Now()
 	m.prepare(t.Context(), server.URL, server.Client().Transport)
+	if time.Since(start) > 100*time.Millisecond {
+		t.Fatal("initial weak-network discovery blocked the caller")
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		m.mu.Lock()
+		refreshing := m.entry(server.URL).refreshing
+		m.mu.Unlock()
+		if !refreshing || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	loaded := &Manager{entries: map[string]*state{}}
 	loaded.Configure(server.URL, dir)
 	d, _ := loaded.snapshot(server.URL)

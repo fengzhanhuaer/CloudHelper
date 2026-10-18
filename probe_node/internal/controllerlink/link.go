@@ -227,7 +227,10 @@ func Sign(req *http.Request, node, secret, challenge string) {
 	req.Header.Set("X-Probe-Signature", hex.EncodeToString(mac.Sum(nil)))
 }
 func challenge(ctx context.Context, origin, node string, rt http.RoundTripper) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	return challengeWithin(ctx, origin, node, rt, 3*time.Second)
+}
+func challengeWithin(ctx context.Context, origin, node string, rt http.RoundTripper, timeout time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", origin+"/api/probe/auth/challenge?node_id="+url.QueryEscape(node), nil)
 	resp, e := rt.RoundTrip(req)
@@ -262,13 +265,12 @@ func (m *Manager) prepare(ctx context.Context, raw string, primary http.RoundTri
 	s.refreshing = true
 	s.lastDiscovery = time.Now()
 	node, secret := s.node, s.secret
-	hasCache := valid(s.data)
 	m.mu.Unlock()
 	refresh := func() {
 		defer func() { m.mu.Lock(); m.entry(origin).refreshing = false; m.mu.Unlock() }()
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		nonce, e := challenge(ctx, origin, node, primary)
+		nonce, e := challengeWithin(ctx, origin, node, primary, 30*time.Second)
 		if e != nil {
 			return
 		}
@@ -305,11 +307,9 @@ func (m *Manager) prepare(ctx context.Context, raw string, primary http.RoundTri
 			}
 		}
 	}
-	if hasCache {
-		go refresh()
-	} else {
-		refresh()
-	}
+	// Initial discovery must not delay the caller. Weak primary paths get a
+	// separate budget; normal probe requests retain their short failover limits.
+	go refresh()
 }
 
 type Transport struct {

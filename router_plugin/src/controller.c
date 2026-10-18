@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 
 typedef struct {char *bytes;size_t used,cap;} response;
 typedef struct {int (*check)(void *);void *arg;} cancellation;
@@ -132,12 +133,13 @@ static json_object *call_once(const vr_config *c,const char *iface,const char *m
     curl_slist_free_all(headers);return result;
 }
 
-void vr_controller_link_refresh(const vr_config *c,const char *iface)
+typedef struct {vr_config config;char iface[64];} discovery_job;
+static void *discover_controller(void *arg)
 {
-    if(strncmp(c->controller,"https://",8)||!vr_controller_link_refresh_due(c))return;
+    discovery_job *job=arg;const vr_config *c=&job->config;const char *iface=job->iface;
     char path[320],err[128],challenge[513],text[2048],signature[65],line[768];
     snprintf(path,sizeof(path),"/api/probe/auth/challenge?node_id=%s",c->node_id);
-    json_object *o=request_at(c,c->controller,"",iface,"GET",path,NULL,NULL,3000,NULL,err,sizeof(err));
+    json_object *o=request_at(c,c->controller,"",iface,"GET",path,NULL,NULL,30000,NULL,err,sizeof(err));
     struct curl_slist *headers=NULL;
     if(!o)goto done;
     if(vr_copy(challenge,sizeof(challenge),vr_string(o,"challenge"))||!*challenge)goto done;
@@ -148,10 +150,19 @@ void vr_controller_link_refresh(const vr_config *c,const char *iface)
     const char *names[]={"X-Probe-Node-Id","X-Probe-Rand","X-Probe-Signature"};
     const char *values[]={c->node_id,challenge,signature};
     for(int i=0;i<3;i++) {snprintf(line,sizeof(line),"%s: %s",names[i],values[i]);struct curl_slist *next=curl_slist_append(headers,line);if(!next)goto done;headers=next;}
-    o=request_at(c,c->controller,"",iface,"GET",endpoint,NULL,headers,3000,NULL,err,sizeof(err));
+    o=request_at(c,c->controller,"",iface,"GET",endpoint,NULL,headers,30000,NULL,err,sizeof(err));
     if(o)vr_controller_link_store(c,o);
 done:
-    json_object_put(o);curl_slist_free_all(headers);vr_controller_link_refresh_done();
+    json_object_put(o);curl_slist_free_all(headers);vr_controller_link_refresh_done();free(job);return NULL;
+}
+void vr_controller_link_refresh(const vr_config *c,const char *iface)
+{
+    if(strncmp(c->controller,"https://",8)||!vr_controller_link_refresh_due(c))return;
+    discovery_job *job=calloc(1,sizeof(*job));if(!job){vr_controller_link_refresh_done();return;}
+    job->config=*c;snprintf(job->iface,sizeof(job->iface),"%s",iface?iface:"");
+    pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,256*1024);pthread_attr_setdetachstate(&attr,PTHREAD_CREATE_DETACHED);
+    pthread_t thread;int rc=pthread_create(&thread,&attr,discover_controller,job);pthread_attr_destroy(&attr);
+    if(rc){free(job);vr_controller_link_refresh_done();}
 }
 
 static json_object *call(const vr_config *c,const char *iface,const char *method,const char *path,json_object *body,long budget,cancellation *cancel,char *err,size_t n)

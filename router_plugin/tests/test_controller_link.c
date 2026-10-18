@@ -14,7 +14,9 @@ int main(int argc,char **argv)
  assert(argc==2);curl_global_init(CURL_GLOBAL_DEFAULT);vr_config c;vr_config_default(&c);
  snprintf(c.controller,sizeof(c.controller),"https://controller.fixture:%s",argv[1]);strcpy(c.node_id,"7");strcpy(c.node_key,"private-fixture-key");
  char dir[]="/tmp/chvr-link.XXXXXX";assert(mkdtemp(dir));char config[256],cache[256];snprintf(config,sizeof(config),"%s/config.json",dir);snprintf(cache,sizeof(cache),"%s/controller-direct.json",dir);
- vr_controller_link_init(&c,config);vr_controller_link_refresh(&c,"");char origin[1024],pin[65],err[256];
+ vr_controller_link_init(&c,config);uint64_t started=vr_millis();vr_controller_link_refresh(&c,"");assert(vr_millis()-started<200);char origin[1024],pin[65],err[256];
+ for(int i=0;i<150&&access(cache,F_OK);i++)usleep(100000);
+ assert(!access(cache,F_OK));
  vr_controller_link_feedback(&c,0,0,3000);assert(vr_controller_link_target(&c,origin,pin)==1);assert(!strcmp(origin,"https://192.0.2.1:15030")&&strlen(pin)==64);
  json_object *o=vr_controller_call(&c,"","GET","/api/probe/route/config",NULL,err,sizeof(err));if(!o)fprintf(stderr,"%s\n",err);assert(o&&json_object_get_boolean(vr_member(o,"ok")));json_object_put(o);
  vr_controller_link_init(&c,config);vr_controller_link_feedback(&c,0,0,3000);assert(vr_controller_link_target(&c,origin,pin)==1);

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import hashlib,hmac,json,ssl,subprocess,tempfile,threading
+import hashlib,hmac,json,ssl,subprocess,tempfile,threading,time
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler,HTTPServer
 from socketserver import ThreadingMixIn
@@ -22,6 +22,7 @@ with tempfile.TemporaryDirectory(prefix='chvr-controller-link-') as directory:
             global sequence
             if self.path.startswith('/api/probe/auth/challenge'):
                 with lock:sequence+=1;nonce='nonce-'+str(sequence)
+                if self.server.server_port!=15030:time.sleep(4)
                 body={'challenge':nonce}
             else:
                 nonce=self.headers.get('X-Probe-Rand','');text='7\n'+nonce+'\nGET\n'+self.path
@@ -31,7 +32,6 @@ with tempfile.TemporaryDirectory(prefix='chvr-controller-link-') as directory:
                     used.add(nonce)
                 if not valid:self.send_error(401);return
                 if self.path=='/api/probe/controller/endpoints':
-                    import time
                     body={'version':1,'expires_at':int(time.time())+3600,'endpoints':[{'ip':'2001:db8::1','port':15030,'tls_spki_sha256':pin},{'ip':'192.0.2.1','port':15030,'tls_spki_sha256':pin}]}
                 elif self.server.server_port==15030:body={'ok':True}
                 else:self.send_error(503);return
