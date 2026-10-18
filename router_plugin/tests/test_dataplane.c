@@ -9,6 +9,12 @@
 #include <unistd.h>
 
 static uint8_t carried[1500];static size_t carried_len;
+static void tcp_checksums(uint8_t b[40])
+{
+    b[10]=b[11]=b[36]=b[37]=0;uint16_t c=vr_checksum(b,20);b[10]=(uint8_t)(c>>8);b[11]=(uint8_t)c;
+    uint8_t pseudo[32];memcpy(pseudo,b+12,8);pseudo[8]=0;pseudo[9]=6;pseudo[10]=0;pseudo[11]=20;memcpy(pseudo+12,b+20,20);
+    c=vr_checksum(pseudo,sizeof(pseudo));b[36]=(uint8_t)(c>>8);b[37]=(uint8_t)c;
+}
 json_object *__wrap_vr_controller_call(const vr_config *c,const char *iface,const char *method,const char *path,json_object *body,char *error,size_t capacity)
 {
     (void)c;(void)iface;(void)method;(void)body;(void)error;(void)capacity;
@@ -75,6 +81,51 @@ int main(void)
     pthread_mutex_lock(&entry->mutex);size_t queued=0;for(size_t i=0;i<16;i++)if(entry->resolves[i].state)queued++;pthread_mutex_unlock(&entry->mutex);assert(queued==16);
     while(!carried_len&&vr_millis()-started<3000){usleep(10000);vr_dataplane_tick(entry);}
     assert(carried_len==len);vr_dataplane_stop(entry);
+    /* Ordinary CIDRs (not published gateway rules) select public exits. */
+    const char *cidr_rule="[{\"id\":\"ordinary-cidr\",\"action\":\"probe_exit\",\"exit_node_id\":\"8\",\"entries\":[\"cidr:203.0.113.0/24\"]}]";
+    json_object_object_add(entry->policy,"route_rules",vr_json_parse(cidr_rule,strlen(cidr_rule)));
+    json_object_object_add(exit->policy,"route_rules",vr_json_parse(cidr_rule,strlen(cidr_rule)));
+    assert(!vr_packet_rewrite(packet,len,inet_addr("192.168.52.100"),inet_addr("203.0.113.5"),46000,53));
+    carried_len=0;vr_outgoing(entry,packet,len);assert(carried_len==len);
+    frame.data=carried;frame.data_len=len;strcpy(path[0],"7");strcpy(path[1],"8");
+    vr_incoming(exit,&frame,path,2);assert(read(exit_pipe[0],packet,sizeof(packet))==(ssize_t)len);
+    assert(!vr_packet_parse(packet,len,&request)&&request.dst==inet_addr("203.0.113.5"));
+    assert(!vr_packet_rewrite(packet,len,request.dst,request.src,request.dport,request.sport));
+    vr_outgoing(exit,packet,len);strcpy(path[0],"8");strcpy(path[1],"7");vr_incoming(entry,&frame,path,2);
+    assert(read(entry_pipe[0],packet,sizeof(packet))==(ssize_t)len);
+    /* An exit assigned to self reinjects once for physical WAN NAT. */
+    assert(!vr_packet_rewrite(packet,len,inet_addr("192.168.52.100"),inet_addr("203.0.113.5"),47000,53));
+    carried_len=0;vr_outgoing(exit,packet,len);assert(!carried_len&&read(exit_pipe[0],packet,sizeof(packet))==(ssize_t)len);
+    const char *reject="[{\"id\":\"reject\",\"action\":\"reject\",\"entries\":[\"cidr:203.0.113.0/24\"]}]";
+    json_object_object_add(entry->policy,"route_rules",vr_json_parse(reject,strlen(reject)));
+    assert(!vr_packet_rewrite(packet,len,inet_addr("192.168.52.100"),inet_addr("203.0.113.5"),48000,53));
+    carried_len=0;vr_outgoing(entry,packet,len);assert(!carried_len&&read(entry_pipe[0],packet,sizeof(packet))<0);
+    /* A rule update must not move an established TCP stream to another exit. */
+    json_object_object_add(entry->policy,"route_rules",vr_json_parse(cidr_rule,strlen(cidr_rule)));
+    json_object_object_add(exit->policy,"route_rules",vr_json_parse(cidr_rule,strlen(cidr_rule)));
+    uint8_t tcp[40]={0x45,0,0,40,0,0,0x40,0,64,6};tcp[32]=0x50;tcp[33]=2;tcp[27]=10;
+    tcp_checksums(tcp);
+    assert(!vr_packet_rewrite(tcp,sizeof(tcp),inet_addr("192.168.52.100"),inet_addr("203.0.113.5"),49000,443));
+    vr_outgoing(entry,tcp,sizeof(tcp));assert(carried_len==sizeof(tcp));
+    frame.data=carried;frame.data_len=carried_len;strcpy(path[0],"7");strcpy(path[1],"8");
+    vr_incoming(exit,&frame,path,2);uint8_t wire[40];assert(read(exit_pipe[0],wire,sizeof(wire))==40);
+    json_object_object_add(entry->policy,"route_rules",vr_json_parse(reject,strlen(reject)));
+    json_object_object_add(exit->policy,"route_rules",vr_json_parse(reject,strlen(reject)));
+    tcp[33]=0x10;tcp[27]=11;tcp_checksums(tcp);assert(!vr_packet_rewrite(tcp,sizeof(tcp),inet_addr("192.168.52.100"),inet_addr("203.0.113.5"),49000,443));
+    carried_len=0;vr_outgoing(entry,tcp,sizeof(tcp));assert(carried_len==40);frame.data_len=40;
+    vr_incoming(exit,&frame,path,2);assert(read(exit_pipe[0],wire,sizeof(wire))==40);
+    vr_packet tcp_request;assert(!vr_packet_parse(wire,40,&tcp_request));
+    assert(!vr_packet_rewrite(wire,40,tcp_request.dst,tcp_request.src,tcp_request.dport,tcp_request.sport));
+    vr_outgoing(exit,wire,40);strcpy(path[0],"9");strcpy(path[1],"7");
+    const char *moved="[{\"action\":\"probe_exit\",\"exit_node_id\":\"9\",\"entries\":[\"cidr:203.0.113.0/24\"]}]";
+    json_object_object_add(entry->policy,"route_rules",vr_json_parse(moved,strlen(moved)));
+    vr_incoming(entry,&frame,path,2);assert(read(entry_pipe[0],wire,sizeof(wire))<0);
+    json_object_object_add(entry->policy,"route_rules",vr_json_parse(reject,strlen(reject)));
+    strcpy(path[0],"8");vr_incoming(entry,&frame,path,2);
+    assert(read(entry_pipe[0],wire,sizeof(wire))==40);
+    /* A new SYN incarnation on the reused tuple observes the new reject rule. */
+    tcp[33]=2;tcp[27]=99;tcp_checksums(tcp);assert(!vr_packet_rewrite(tcp,40,inet_addr("192.168.52.100"),inet_addr("203.0.113.5"),49000,443));
+    carried_len=0;vr_outgoing(entry,tcp,40);assert(!carried_len);
     close(entry_pipe[0]);close(entry_pipe[1]);close(exit_pipe[0]);close(exit_pipe[1]);
     json_object_put(entry->policy);json_object_put(exit->policy);pthread_mutex_destroy(&entry->mutex);pthread_mutex_destroy(&exit->mutex);free(entry);free(exit);
     puts("PASS: LAN fake-IP NAT round trip, spoof rejection, bounded asynchronous mapping resolution");return 0;

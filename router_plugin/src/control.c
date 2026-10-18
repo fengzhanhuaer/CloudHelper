@@ -143,16 +143,24 @@ static int refresh(control *c)
     json_object *next=vr_controller_call(&e->config,e->addresses.wan_if,"GET","/api/probe/route/config",NULL,error,sizeof(error));
     if(!next){vr_service_log(e->service,"controller","Configuration refresh failed; retaining current policy and control stream");return -1;}
     if(vr_policy_validate(next,e->config.node_id,error,sizeof(error))){vr_service_log(e->service,"controller",error);json_object_put(next);return -1;}
-    int changed=!vr_policy_equal(c->engine->snapshot,next);
+    char path[512];
+    if(vr_copy(path,sizeof(path),e->service->config_path)){json_object_put(next);return -1;}
+    char *slash=strrchr(path,'/');
+    if(!slash || (size_t)(slash-path)+sizeof("/route-cache.json")>sizeof(path)){json_object_put(next);return -1;}
+    strcpy(slash,"/route-cache.json");
+    pthread_mutex_lock(&e->mutex);
+    int changed=!vr_policy_equal(e->next_policy?e->next_policy:e->snapshot,next);
+    pthread_mutex_unlock(&e->mutex);
     if(changed) {
-        vr_service *s=e->service;pthread_mutex_lock(&s->mutex);
-        if(s->stop||s->generation!=e->generation){pthread_mutex_unlock(&s->mutex);json_object_put(next);return -1;}
-        json_object_put(s->pending_policy);s->pending_policy=json_object_get(next);s->pending_generation=e->generation;
-        pthread_mutex_unlock(&s->mutex);
-        pthread_mutex_lock(&e->mutex);e->refresh=1;pthread_mutex_unlock(&e->mutex);
-        vr_service_log(s,"controller","Validated configuration received; applying without another download");
+        if(vr_service_stopped(e->service,e->generation)||vr_cache_save(path,next)) {
+            vr_service_log(e->service,"controller","Cannot persist route configuration; retaining current policy and links");
+            json_object_put(next);return -1;
+        }
+        pthread_mutex_lock(&e->mutex);
+        json_object_put(e->next_policy);e->next_policy=next;e->policy_retry=0;next=NULL;
+        pthread_mutex_unlock(&e->mutex);
     }
-    json_object_put(next);return changed?1:0;
+    json_object_put(next);return 0;
 }
 
 static void *control_worker(void *arg)
@@ -166,7 +174,7 @@ static void *control_worker(void *arg)
                 uint64_t now=vr_millis();
                 if(now-c->ack_at>65000)break;
                 if(c->report||now-sent>=20000){if(report(c))break;sent=now;c->report=0;}
-                if(c->refresh||now>=next_check){int rc=refresh(c);c->refresh=0;if(rc>0)break;
+                if(c->refresh||now>=next_check){int rc=refresh(c);c->refresh=0;
                     if(rc<0){if(failures<4)failures++;unsigned delay=failures==4?30u:5u<<(failures-1);next_check=vr_millis()+delay*1000;}
                     else{failures=0;next_check=vr_millis()+60000;}}
                 struct pollfd fd={c->fd,POLLIN,0};int rc=poll(&fd,1,100);

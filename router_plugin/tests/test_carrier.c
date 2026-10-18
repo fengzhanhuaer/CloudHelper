@@ -15,7 +15,7 @@ static unsigned delivered,received_slots;
 void vr_link_frame(vr_link *l,const vr_frame *f,char path[VR_PATH_MAX][129],size_t count)
 {delivered++;if(f->main==99){strcpy(path[0],"dispatch-mutated-path");return;}
  if(f->main==2&&f->sub==1)received_slots|=1u<<l->slot;
- vr_measure_frame(l->engine,l,f,path,count);}
+ if(f->main==8)vr_tcp_frame(l->engine,f,path,count);else vr_measure_frame(l->engine,l,f,path,count);}
 
 static void test_ingress(vr_engine *e,vr_link *l)
 {
@@ -49,21 +49,58 @@ static void tick(vr_engine *e)
 {
     vr_handshakes_poll(e,0);
     if(e->lan>=0){int fd=accept4(e->lan,NULL,NULL,SOCK_CLOEXEC);if(fd>=0)vr_link_accept(e,fd);}
-    struct pollfd fds[VR_CARRIER_MAX];
+    struct pollfd fds[VR_CARRIER_MAX+129];
     for(size_t i=0;i<e->link_count;i++) {
         vr_link *l=&e->links[i];if(!l->ssl)vr_link_dial(l);
         fds[i]=(struct pollfd){l->fd,(short)(POLLIN|(l->used?POLLOUT:0)),0};
     }
-    assert(poll(fds,e->link_count,10)>=0);
+    size_t count=vr_tcp_pollfds(e,fds+e->link_count);
+    assert(poll(fds,e->link_count+count,10)>=0);
     /* Certificate parsing/curl can leave a thread-local OpenSSL error. A
        nonblocking WANT_READ/WANT_WRITE must not misclassify that old error. */
     ERR_put_error(ERR_LIB_PEM,0,PEM_R_NO_START_LINE,__FILE__,__LINE__);
     for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl)vr_link_poll(&e->links[i],fds[i].revents);
+    if(count)vr_tcp_poll(e,fds+e->link_count);
     vr_measure_tick(e);
 }
 
 static int active(vr_engine *e)
 {int count=0;for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl)count++;return count;}
+
+static void test_tcp_proxy(vr_engine *e)
+{
+    const char *text="[{\"id\":\"interop-tcp\",\"action\":\"probe_exit\",\"exit_node_id\":\"8\",\"entries\":[\"cidr:203.0.113.0/24\"]}]";
+    /* This helper has real carriers but intentionally no kernel TUN. */
+    json_object_object_add(e->policy,"route_rules",vr_json_parse(text,strlen(text)));
+    int pair[2];assert(!socketpair(AF_UNIX,SOCK_STREAM|SOCK_NONBLOCK,0,pair));
+    assert(!vr_tcp_attach(e,pair[1],"203.0.113.5",443));
+    const char *payload="existing-probe-tcp-protocol";size_t n=strlen(payload),got=0;char reply[64];
+    assert(write(pair[0],payload,n)==(ssize_t)n);uint64_t deadline=vr_millis()+10000;
+    while(got<n&&vr_millis()<deadline){tick(e);ssize_t k=read(pair[0],reply+got,n-got);if(k>0)got+=(size_t)k;}
+    assert(got==n&&!memcmp(payload,reply,n));close(pair[0]);
+    deadline=vr_millis()+100;while(vr_millis()<deadline)tick(e);vr_tcp_stop(e);
+    puts("PASS: C transparent TCP to existing Go Probe main=8 over real TLS carriers");fflush(stdout);
+}
+
+static void test_hot_update(vr_engine *e,int expected)
+{
+    SSL *ssl[4];int fd[4];uint64_t session[4];
+    for(int i=0;i<expected;i++){ssl[i]=e->links[i].ssl;fd[i]=e->links[i].fd;session[i]=e->links[i].session;}
+    for(int revision=0;revision<8;revision++) {
+        const char *text=json_object_to_json_string_ext(e->snapshot,JSON_C_TO_STRING_PLAIN);
+        e->next_policy=vr_json_parse(text,strlen(text));assert(e->next_policy);
+        json_object *policy=vr_member(e->next_policy,"virtual_router"),*rules=json_object_new_array(),*rule=json_object_new_object();
+        json_object_object_add(rule,"id",json_object_new_string("hot-update-fixture"));
+        json_object_object_add(rule,"action",json_object_new_string(revision%2?"reject":"direct"));
+        json_object *entries=json_object_new_array();json_object_array_add(entries,json_object_new_string("domain:fixture.example"));
+        json_object_object_add(rule,"entries",entries);json_object_array_add(rules,rule);json_object_object_add(policy,"route_rules",rules);
+        assert(vr_policy_apply_pending(e)==1&&!e->refresh);
+        assert(vr_policy_match(e->policy,"fixture.example",NULL).action==(revision%2?VR_REJECT:VR_DIRECT));
+        uint64_t until=vr_millis()+50;while(vr_millis()<until)tick(e);
+        for(int i=0;i<expected;i++)assert(e->links[i].ssl==ssl[i]&&e->links[i].fd==fd[i]&&e->links[i].session==session[i]);
+    }
+    puts("PASS: eight real policy updates retained every authenticated TLS carrier");fflush(stdout);
+}
 
 static void test_pool(vr_engine *e)
 {
@@ -120,6 +157,8 @@ int main(int argc,char **argv)
     vr_engine *e=calloc(1,sizeof(*e));assert(e);vr_service s={0};e->service=&s;e->lan=-1;
     pthread_mutex_init(&e->mutex,NULL);pthread_mutex_init(&s.mutex,NULL);vr_config_default(&e->config);strcpy(e->config.node_id,"7");
     char buffer[32768];size_t len;assert(!vr_read_file(argv[1],buffer,sizeof(buffer),&len));e->policy=vr_json_parse(buffer,len);assert(e->policy);
+    e->snapshot=json_object_new_object();json_object_object_add(e->snapshot,"virtual_router",e->policy);
+    strcpy(e->cidr,vr_string(e->policy,"fake_ip_cidr"));strcpy(e->own_ip,"198.18.0.7");
     assert(!vr_links_add(e,json_object_array_get_idx(vr_member(e->policy,"topology_rules"),0)));vr_link *l=&e->links[0];
     test_ingress(e,l);
     test_pool(e);
@@ -138,6 +177,8 @@ int main(int argc,char **argv)
     deadline=vr_millis()+5000;while(received_slots!=(unsigned)((1<<expected)-1)&&vr_millis()<deadline)tick(e);
     assert(received_slots==(unsigned)((1<<expected)-1));
     puts("PASS: Probe VR frames received on every physical slot");fflush(stdout);
+    test_hot_update(e,expected);
+    test_tcp_proxy(e);
     for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl)assert(!vr_link_queue(&e->links[i],9,"slot-alive",10));
     deadline=vr_millis()+1000;while(vr_millis()<deadline)tick(e);
     if(expected==1)assert(active(e)==1); /* No speculative extra dials to legacy peers. */
@@ -167,7 +208,7 @@ int main(int argc,char **argv)
             assert(bytes>0&&bytes<=VR_SPEED_BYTES);}
         printf("PASS: C to existing Probe %s\n",kinds[i]);fflush(stdout);
     }
-    vr_handshakes_poll(e,1);for(size_t i=0;i<e->link_count;i++)vr_link_close(&e->links[i],"");json_object_put(e->policy);json_object_put(s.measurement);
+    vr_handshakes_poll(e,1);for(size_t i=0;i<e->link_count;i++)vr_link_close(&e->links[i],"");json_object_put(e->snapshot);json_object_put(s.measurement);
     for(size_t i=0;i<4;i++)json_object_put(e->receives[i].message);
     if(e->lan>=0)close(e->lan);
     SSL_CTX_free(e->tls);json_object_put(e->nonces);

@@ -43,11 +43,35 @@ static vr_nat *nat_forward(vr_engine *e,const vr_packet *p,int entry,uint32_t so
         if(f->entry==entry&&same(p,&f->original)){f->used=now;return f;}
     }
     if(!free_slot)return NULL;
+    memset(free_slot,0,sizeof(*free_slot));
     free_slot->original=*p;free_slot->wire=*p;free_slot->entry=entry;free_slot->used=now;
     free_slot->wire.src=source;free_slot->wire.dst=destination;
     free_slot->wire.sport=(uint16_t)(20000+(free_slot-e->flows));
     if(p->protocol==1)free_slot->wire.dport=free_slot->wire.sport;
     return free_slot;
+}
+
+static vr_nat *established(vr_engine *e,const vr_packet *p,const uint8_t *bytes,size_t n,int entry)
+{
+    if(p->protocol!=6)return NULL;
+    size_t ihl=(bytes[0]&15u)*4u;if(n<ihl+20)return NULL;
+    int syn=(bytes[ihl+13]&0x12)==0x02;uint32_t seq;memcpy(&seq,bytes+ihl+4,4);
+    uint64_t now=vr_millis();
+    for(size_t i=0;i<VR_NAT_MAX;i++) {
+        vr_nat *f=&e->flows[i];
+        if(!f->used||now-f->used>120000||f->entry!=entry||!same(p,&f->original))continue;
+        if(syn&&(!f->tcp_syn||f->tcp_sequence!=seq)){f->used=0;return NULL;}
+        f->used=now;return f;
+    }
+    return NULL;
+}
+static void remember(vr_nat *f,const uint8_t *bytes,size_t n,const char *target)
+{
+    vr_copy(f->target,sizeof(f->target),target);
+    size_t ihl=(bytes[0]&15u)*4u;
+    if(f->original.protocol==6&&n>=ihl+20&&(bytes[ihl+13]&0x12)==0x02) {
+        f->tcp_syn=1;memcpy(&f->tcp_sequence,bytes+ihl+4,4);
+    }
 }
 
 static vr_nat *nat_reverse(vr_engine *e,const vr_packet *p)
@@ -170,29 +194,42 @@ void vr_outgoing(vr_engine *e,uint8_t *b,size_t n)
         char target[129];if(!node_for_ip(e,o->src,target))relay(e,target,b,n);
         return;
     }
+    vr_nat *active=established(e,&p,b,n,1);
+    if(active) {
+        if(!vr_packet_rewrite(b,n,active->wire.src,active->wire.dst,active->wire.sport,active->wire.dport)) {
+            if(*active->target)relay(e,active->target,b,n);else inject(e,b,n);
+        }
+        return;
+    }
     char dest[16],target[129];struct in_addr a={p.dst};inet_ntop(AF_INET,&a,dest,sizeof(dest));
     struct in_addr own;inet_pton(AF_INET,e->own_ip,&own);
     if(!node_for_ip(e,p.dst,target)) {
         if(p.src==own.s_addr){relay(e,target,b,n);
         return;}
         vr_nat *f=nat_forward(e,&p,1,own.s_addr,p.dst);if(!f)return;
+        remember(f,b,n,target);
         if(!vr_packet_rewrite(b,n,f->wire.src,f->wire.dst,f->wire.sport,f->wire.dport))relay(e,target,b,n);
         return;
     }
     if(!fake_ip(e,dest)) {
         vr_decision d=vr_policy_match(e->policy,"",dest);
-        if(d.action!=VR_PROXY || !*d.exit_node || !strcmp(d.exit_node,e->config.node_id))return;
+        if(d.action==VR_REJECT)return;
         vr_nat *f=nat_forward(e,&p,1,own.s_addr,p.dst);if(!f)return;
-        if(!vr_packet_rewrite(b,n,f->wire.src,f->wire.dst,f->wire.sport,f->wire.dport))relay(e,d.exit_node,b,n);
+        remember(f,b,n,d.action==VR_PROXY&&*d.exit_node&&strcmp(d.exit_node,e->config.node_id)?d.exit_node:"");
+        if(!vr_packet_rewrite(b,n,f->wire.src,f->wire.dst,f->wire.sport,f->wire.dport)) {
+            if(d.action==VR_PROXY&&*d.exit_node&&strcmp(d.exit_node,e->config.node_id))relay(e,d.exit_node,b,n);
+            else if(public4(dest))inject(e,b,n);
+        }
         return;
     }
     vr_mapping m;if(packet_mapping(e,dest,&m)){resolve_later(e,dest,b,n,NULL,0);return;}
     if(!strcmp(m.exit,e->config.node_id)) {
         uint32_t real;if(cached_destination(&m,&real)){resolve_later(e,dest,b,n,NULL,0);return;}
         if(real==inet_addr(e->addresses.lan)||real==inet_addr(e->addresses.wan))return;
-        vr_nat *f=nat_forward(e,&p,1,own.s_addr,real);if(f&&!vr_packet_rewrite(b,n,f->wire.src,f->wire.dst,f->wire.sport,f->wire.dport))inject(e,b,n);
+        vr_nat *f=nat_forward(e,&p,1,own.s_addr,real);if(f){remember(f,b,n,"");if(!vr_packet_rewrite(b,n,f->wire.src,f->wire.dst,f->wire.sport,f->wire.dport))inject(e,b,n);}
     } else {
         vr_nat *f=nat_forward(e,&p,1,own.s_addr,p.dst);if(!f)return;
+        remember(f,b,n,m.exit);
         if(!vr_packet_rewrite(b,n,f->wire.src,f->wire.dst,f->wire.sport,f->wire.dport))relay(e,m.exit,b,n);
     }
 }
@@ -204,24 +241,37 @@ void vr_incoming(vr_engine *e,const vr_frame *frame,char path[VR_PATH_MAX][129],
     vr_nat *reverse=nat_reverse(e,&p);
     if(reverse&&reverse->entry) {
         vr_mapping m;char fake[16];struct in_addr addr={p.src};inet_ntop(AF_INET,&addr,fake,sizeof(fake));
-        char source[129];int allowed=!node_for_ip(e,p.src,source)&&!strcmp(source,path[0]);
-        if(!allowed&&fake_ip(e,fake)){
+        char source[129];int pinned=reverse->original.protocol==6&&*reverse->target;
+        int allowed=pinned&&!strcmp(reverse->target,path[0]);
+        if(!pinned)allowed=!node_for_ip(e,p.src,source)&&!strcmp(source,path[0]);
+        if(!pinned&&!allowed&&fake_ip(e,fake)){
             if(packet_mapping(e,fake,&m)){resolve_later(e,fake,b,frame->data_len,path,count);return;}
             allowed=!strcmp(m.exit,path[0]);}
-        if(!allowed){vr_decision d=vr_policy_match(e->policy,"",fake);allowed=d.action==VR_PROXY && !strcmp(d.exit_node,path[0]);}
+        if(!pinned&&!allowed){vr_decision d=vr_policy_match(e->policy,"",fake);allowed=d.action==VR_PROXY && !strcmp(d.exit_node,path[0]);}
         if(!allowed)return;
         vr_packet *o=&reverse->original;
         if(!vr_packet_rewrite(b,frame->data_len,o->dst,o->src,o->dport,o->sport))inject(e,b,frame->data_len);
         return;
     }
     char source[129];if(node_for_ip(e,p.src,source)||strcmp(source,path[0]))return;
+    vr_nat *active=established(e,&p,b,frame->data_len,0);
+    if(active) {
+        if(!vr_packet_rewrite(b,frame->data_len,active->wire.src,active->wire.dst,active->wire.sport,active->wire.dport))inject(e,b,frame->data_len);
+        return;
+    }
     struct in_addr own;inet_pton(AF_INET,e->own_ip,&own);
     if(p.dst==own.s_addr){inject(e,b,frame->data_len);
         return;}
     char fake[16];struct in_addr addr={p.dst};inet_ntop(AF_INET,&addr,fake,sizeof(fake));
     if(!fake_ip(e,fake)) {
-        if(!vr_gateway_allowed(&e->config.gateway,source)||!vr_gateway_contains(&e->config.gateway,fake))return;
+        int allowed=vr_gateway_allowed(&e->config.gateway,source)&&vr_gateway_contains(&e->config.gateway,fake);
+        if(!allowed&&public4(fake)) {
+            vr_decision d=vr_policy_match(e->policy,"",fake);
+            allowed=d.action==VR_PROXY&&(!strcmp(d.exit_node,e->config.node_id)||!strcmp(d.backup,e->config.node_id));
+        }
+        if(!allowed)return;
         vr_nat *f=nat_forward(e,&p,0,p.src,p.dst);
+        if(f)remember(f,b,frame->data_len,"");
         if(f&&!vr_packet_rewrite(b,frame->data_len,f->wire.src,f->wire.dst,f->wire.sport,f->wire.dport))inject(e,b,frame->data_len);
         return;
     }
@@ -233,5 +283,6 @@ void vr_incoming(vr_engine *e,const vr_frame *frame,char path[VR_PATH_MAX][129],
     if(!real&&cached_destination(&m,&real)){resolve_later(e,fake,b,frame->data_len,path,count);return;}
     if(real==inet_addr(e->addresses.lan)||real==inet_addr(e->addresses.wan))return;
     vr_nat *f=nat_forward(e,&p,0,p.src,real);
+    if(f)remember(f,b,frame->data_len,"");
     if(f&&!vr_packet_rewrite(b,frame->data_len,f->wire.src,f->wire.dst,f->wire.sport,f->wire.dport))inject(e,b,frame->data_len);
 }

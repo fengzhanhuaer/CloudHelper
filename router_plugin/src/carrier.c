@@ -20,22 +20,89 @@ int vr_carrier_count(json_object *rule)
 
 int vr_links_add(vr_engine *e,json_object *rule)
 {
-    if(e->link_count+VR_CARRIER_SLOTS>VR_CARRIER_MAX)return -1;
+    size_t base;
+    for(base=0;base<e->link_count;base+=VR_CARRIER_SLOTS)if(!e->links[base].rule)break;
+    if(base+VR_CARRIER_SLOTS>VR_CARRIER_MAX)return -1;
     char route[33];if(vr_route_id(vr_string(rule,"id"),route))return -1;
     const char *from=vr_string(rule,"from_node_id"),*to=vr_string(rule,"to_node_id");
     for(size_t i=0;i<e->link_count;i++)if(!strcmp(e->links[i].route,route))return -1;
     for(int slot=0;slot<VR_CARRIER_SLOTS;slot++) {
-        vr_link *l=&e->links[e->link_count++];l->engine=e;l->rule=rule;l->fd=-1;l->slot=slot;
+        vr_link *l=&e->links[base+(size_t)slot];l->engine=e;l->rule=rule;l->fd=-1;l->slot=slot;
         strcpy(l->route,route);if(vr_copy(l->peer,sizeof(l->peer),!strcmp(from,e->config.node_id)?to:from))return -1;
     }
+    if(base==e->link_count)e->link_count+=VR_CARRIER_SLOTS;
     return 0;
+}
+
+static json_object *local_rule(vr_engine *e,json_object *policy,const char *id)
+{
+    json_object *rules=vr_member(policy,"topology_rules");
+    for(size_t i=0;i<(size_t)json_object_array_length(rules);i++) {
+        json_object *r=json_object_array_get_idx(rules,i);
+        if(!json_object_get_boolean(vr_member(r,"enabled"))||strcmp(vr_string(r,"id"),id))continue;
+        if(!strcmp(vr_string(r,"from_node_id"),e->config.node_id)||!strcmp(vr_string(r,"to_node_id"),e->config.node_id))return r;
+    }
+    return NULL;
+}
+
+static const char *node_ip(json_object *policy,const char *id)
+{
+    json_object *nodes=vr_member(policy,"probe_ips");
+    for(size_t i=0;i<(size_t)json_object_array_length(nodes);i++) {
+        json_object *node=json_object_array_get_idx(nodes,i);
+        if(!strcmp(vr_string(node,"node_id"),id))return vr_string(node,"ip");
+    }
+    return "";
+}
+
+static int same_connection(vr_engine *e,vr_link *l,json_object *r,json_object *policy)
+{
+    const char *fields[]={"from_node_id","to_node_id","secret","user_public_key","route_layer",
+        "from_service_domain","to_service_domain","from_tls_spki_sha256","to_tls_spki_sha256"};
+    if(!r)return 0;
+    for(size_t i=0;i<sizeof(fields)/sizeof(*fields);i++)
+        if(strcmp(vr_string(l->rule,fields[i]),vr_string(r,fields[i])))return 0;
+    const char *peer=l->peer,*field=!strcmp(peer,vr_string(r,"from_node_id"))?"from_service_port":"to_service_port";
+    return !strcmp(node_ip(e->policy,peer),node_ip(policy,peer))&&
+        vr_policy_service_port(e->policy,peer,json_object_get_int(vr_member(l->rule,field)))==
+        vr_policy_service_port(policy,peer,json_object_get_int(vr_member(r,field)));
+}
+
+void vr_links_reconcile(vr_engine *e,json_object *policy)
+{
+    /* Keep fixed array positions: flow affinity and queued TLS writes point at
+       these slots. No handshake may be borrowing the rules at this boundary. */
+    for(size_t base=0;base<e->link_count;base+=VR_CARRIER_SLOTS) {
+        vr_link *first=&e->links[base];if(!first->rule)continue;
+        json_object *r=local_rule(e,policy,vr_string(first->rule,"id"));
+        int same=same_connection(e,first,r,policy);
+        for(size_t i=base;i<base+VR_CARRIER_SLOTS;i++) {
+            vr_link *l=&e->links[i];l->ingress_count=0;
+            if(!same || l->slot>=vr_carrier_count(r)) {
+                vr_link_close(l,r?"connection configuration changed":"topology link removed");
+                l->retry=0;
+            }
+            if(!r){memset(l,0,sizeof(*l));l->fd=-1;continue;}
+            l->rule=r;
+            strcpy(l->peer,!strcmp(vr_string(r,"from_node_id"),e->config.node_id)?vr_string(r,"to_node_id"):vr_string(r,"from_node_id"));
+        }
+    }
+    json_object *rules=vr_member(policy,"topology_rules");
+    for(size_t i=0;i<(size_t)json_object_array_length(rules);i++) {
+        json_object *r=json_object_array_get_idx(rules,i);
+        if(local_rule(e,policy,vr_string(r,"id"))!=r)continue;
+        size_t j;
+        for(j=0;j<e->link_count;j++)if(e->links[j].rule==r)break;
+        if(j==e->link_count)(void)vr_links_add(e,r); /* validated bounded topology */
+    }
+    while(e->link_count&&!e->links[e->link_count-VR_CARRIER_SLOTS].rule)e->link_count-=VR_CARRIER_SLOTS;
 }
 
 json_object *vr_links_status(vr_engine *e)
 {
     json_object *rows=json_object_new_array();
     for(size_t i=0;i<e->link_count;i++) {
-        vr_link *base=&e->links[i];if(base->slot)continue;
+        vr_link *base=&e->links[i];if(!base->rule||base->slot)continue;
         json_object *row=json_object_new_object(),*slots=json_object_new_array(),*carriers=json_object_new_array();
         uint64_t tx=0,rx=0,rtt=0;int count=0;const char *error=base->error;
         for(size_t j=0;j<e->link_count;j++) {
@@ -406,7 +473,7 @@ static int start_handshake(vr_engine *e,int fd,int index)
 void vr_link_dial(vr_link *l)
 {
     vr_engine *e=l->engine;
-    if(l->ssl || vr_millis()<l->retry || strcmp(vr_string(l->rule,"from_node_id"),e->config.node_id))return;
+    if(!l->rule || l->ssl || vr_millis()<l->retry || strcmp(vr_string(l->rule,"from_node_id"),e->config.node_id))return;
     if(l->slot) {
         if(l->slot>=vr_carrier_count(l->rule))return;
         int supported=0;for(size_t i=0;i<e->link_count;i++) {

@@ -32,7 +32,7 @@ typedef struct {
 } vr_gateway;
 
 typedef struct {
-    int enabled, allow_wan, dns_enabled, port;
+    int enabled, allow_wan, dns_enabled, port, tls_sni_enabled;
     int doh_enabled,dot_enabled,plain_dns_enabled;
     char controller[1024], node_id[129], node_key[1025], dns_upstream[64], dns_doh[1024], dns_dot[260];
     vr_gateway gateway;
@@ -58,7 +58,7 @@ typedef struct {
 } vr_question;
 
 typedef enum { VR_DIRECT, VR_REJECT, VR_PROXY } vr_action;
-typedef struct { vr_action action; char rule[129], exit_node[129], backup[129]; } vr_decision;
+typedef struct { vr_action action; char rule[129], exit_node[129], backup[129]; unsigned revision; } vr_decision;
 
 const char *vr_string(json_object *o, const char *key);
 int vr_controller_auth(const vr_config *c,const char *iface,const char *method,const char *path,char challenge[513],char signature[65],char *err,size_t n);
@@ -106,6 +106,7 @@ vr_decision vr_policy_match(json_object *policy, const char *domain, const char 
 int vr_policy_validate(json_object *snapshot, const char *node_id, char *err, size_t n);
 int vr_policy_service_port(json_object *policy,const char *node_id,int fallback);
 int vr_policy_equal(json_object *a,json_object *b);
+int vr_tls_server_name(const uint8_t *wire,size_t n,char out[254]);
 json_object *vr_cache_load(const char *path);
 int vr_cache_save(const char *path,json_object *o);
 json_object *vr_policy_fetch_pending(const vr_config *c,const char *iface,const char *path,json_object *owned_pending,char *err,size_t n);

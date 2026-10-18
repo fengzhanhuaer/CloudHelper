@@ -35,6 +35,7 @@ static void status(vr_engine *e,int ready)
 void vr_link_frame(vr_link *l,const vr_frame *f,char path[VR_PATH_MAX][129],size_t n)
 {
     if(f->main==1)vr_incoming(l->engine,f,path,n);
+    else if(f->main==8)vr_tcp_frame(l->engine,f,path,n);
     else if(f->main>=2&&f->main<=4)vr_measure_frame(l->engine,l,f,path,n);
 }
 
@@ -146,6 +147,7 @@ static int prepare(vr_engine *e)
     if(e->lan<0||(e->config.allow_wan&&*e->addresses.wan&&e->wan<0)){strcpy(e->error,"carrier address or port unavailable");return -1;}
     e->tun=vr_platform_start(&e->config,&e->addresses,e->own_ip,e->cidr);
     if(e->tun<0){strcpy(e->error,"TUN/routing/firewall initialization failed");return -1;}e->platform_started=1;
+    if(e->config.enabled&&e->config.tls_sni_enabled&&vr_tcp_start(e)){strcpy(e->error,"TLS sniff listener unavailable");return -1;}
     if(vr_platform_routes(e->policy)){strcpy(e->error,"published route initialization failed");return -1;}
     if(vr_dataplane_start(e)){strcpy(e->error,"mapping resolver initialization failed");return -1;}
     if(e->config.enabled&&e->config.dns_enabled&&vr_dns_start(e)){strcpy(e->error,"DNS initialization failed");return -1;}
@@ -160,12 +162,19 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
     pthread_mutex_init(&e->mutex,NULL);pthread_cond_init(&e->jobs_changed,NULL);
     for(size_t i=0;i<VR_CARRIER_MAX;i++)e->links[i].fd=-1;
     if(prepare(e))goto done;
-    uint64_t published=0,addresses_checked=vr_millis();
+    uint64_t published=0,addresses_checked=vr_millis(),sniff_retry=0;
     while(!vr_service_stopped(service,generation)) {
         uint64_t now=vr_millis();
-        pthread_mutex_lock(&e->mutex);int refresh=e->refresh;pthread_mutex_unlock(&e->mutex);
-        if(refresh){strcpy(e->error,"controller configuration changed; reloading");break;}
+        pthread_mutex_lock(&service->mutex);int sniff=service->config.tls_sni_enabled;pthread_mutex_unlock(&service->mutex);
+        if(sniff!=e->config.tls_sni_enabled&&now>=sniff_retry) {
+            if(!e->config.enabled||(!(sniff&&vr_tcp_start(e))&&!vr_platform_tls(&e->addresses,e->cidr,sniff))) {
+                e->config.tls_sni_enabled=sniff;vr_service_log(service,"tls",sniff?"SNI enabled for new LAN connections":"SNI disabled for new connections; active streams retained");
+            } else vr_service_log(service,"tls","SNI switch failed; current connections retained, retrying");
+            sniff_retry=now+5000;
+        }
         vr_handshakes_poll(e,0);
+        if(vr_policy_apply_pending(e)==2){strcpy(e->error,"controller interface configuration changed; reloading");break;}
+        pthread_mutex_lock(&e->mutex);int pending_policy=e->next_policy!=NULL;pthread_mutex_unlock(&e->mutex);
         vr_dataplane_tick(e);
         for(size_t i=0;i<e->link_count;i++) {
             vr_link *l=&e->links[i];
@@ -173,18 +182,20 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
             if(l->ssl&&now-l->keepalive_at>=20000) {
                 if(!vr_link_queue(l,9,"",0))l->keepalive_at=now;
             }
-            if(!l->ssl)vr_link_dial(l);
+            if(!l->ssl&&!pending_policy)vr_link_dial(l);
         }
-        struct pollfd fds[5+VR_CARRIER_MAX];fds[0]=(struct pollfd){e->tun,POLLIN,0};fds[1]=(struct pollfd){e->lan,POLLIN,0};
+        struct pollfd fds[5+VR_CARRIER_MAX+129];fds[0]=(struct pollfd){e->tun,POLLIN,0};fds[1]=(struct pollfd){e->lan,POLLIN,0};
         fds[2]=(struct pollfd){e->wan,POLLIN,0};fds[3]=(struct pollfd){e->dns_udp,POLLIN,0};fds[4]=(struct pollfd){e->dns_tcp,POLLIN,0};
         for(size_t i=0;i<e->link_count;i++)fds[5+i]=(struct pollfd){e->links[i].fd,(short)(POLLIN|(e->links[i].used?POLLOUT:0)),0};
         int pending=0;for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl&&SSL_pending(e->links[i].ssl))pending=1;
-        int result=poll(fds,5+e->link_count,pending?0:50);if(result<0&&errno==EINTR)continue;if(result<0){strcpy(e->error,"network poll failed");break;}
+        size_t tcp_count=vr_tcp_pollfds(e,fds+5+e->link_count);
+        int result=poll(fds,5+e->link_count+tcp_count,pending?0:50);if(result<0&&errno==EINTR)continue;if(result<0){strcpy(e->error,"network poll failed");break;}
         for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl)vr_link_poll(&e->links[i],fds[5+i].revents);
         if(fds[0].revents&POLLIN){uint8_t packet[2048];ssize_t n=read(e->tun,packet,sizeof(packet));if(n>0)vr_outgoing(e,packet,(size_t)n);}
-        for(size_t i=1;i<=2;i++)if(fds[i].revents&POLLIN){int fd=accept4(fds[i].fd,NULL,NULL,SOCK_CLOEXEC);if(fd>=0)vr_link_accept(e,fd);}
+        for(size_t i=1;i<=2;i++)if(!pending_policy&&(fds[i].revents&POLLIN)){int fd=accept4(fds[i].fd,NULL,NULL,SOCK_CLOEXEC);if(fd>=0)vr_link_accept(e,fd);}
         if(fds[3].revents&POLLIN)vr_dns_accept(e,0);
         if(fds[4].revents&POLLIN)vr_dns_accept(e,1);
+        if(tcp_count)vr_tcp_poll(e,fds+5+e->link_count);
         vr_measure_tick(e);
         if(now-published>=1000){status(e,1);published=now;}
         if(now-addresses_checked>=10000) {
@@ -205,6 +216,7 @@ done:
     /* Restore dnsmasq while worker sockets are still open, then join bounded jobs. */
     vr_dns_stop(e);
     vr_dataplane_stop(e);
+    vr_tcp_stop(e);
     vr_handshakes_poll(e,1);
     for(size_t i=0;i<e->link_count;i++)vr_link_close(&e->links[i],"");
     if(e->lan>=0)close(e->lan);
@@ -212,6 +224,6 @@ done:
     if(e->platform_started)vr_platform_stop(e->cidr);
     if(e->tun>=0)close(e->tun);
     for(size_t i=0;i<4;i++)json_object_put(e->receives[i].message);
-    json_object_put(e->speed_send);json_object_put(e->snapshot);json_object_put(e->nonces);SSL_CTX_free(e->tls);
+    json_object_put(e->speed_send);json_object_put(e->snapshot);json_object_put(e->next_policy);json_object_put(e->nonces);SSL_CTX_free(e->tls);
     pthread_cond_destroy(&e->jobs_changed);pthread_mutex_destroy(&e->mutex);OPENSSL_cleanse(&e->config,sizeof(e->config));free(e);
 }

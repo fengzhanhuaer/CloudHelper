@@ -5,6 +5,7 @@
 #include "platform.h"
 #include "packet.h"
 #include <netinet/in.h>
+#include <poll.h>
 
 #define VR_TX_CAP (256u*1024u)
 #define VR_NAT_MAX 2048
@@ -22,8 +23,7 @@ typedef struct {
     time_t auth_expires;
     vr_decoder decoder;
     vr_ws_decoder ws;
-    /* Cache only byte-identical, already authorized controls; policy and peer
-       are immutable for this engine. Large/trace controls use normal parsing. */
+    /* Invalidated on every policy publication, including removed path edges. */
     uint8_t ingress_control[1024];char ingress_path[VR_PATH_HOPS+1][129];
     size_t ingress_length,ingress_count,ingress_at;
     uint8_t queue[VR_TX_CAP];size_t head,used,write_pending;
@@ -36,13 +36,15 @@ typedef struct {char domain[254],ip[16],rule[129],exit[129];time_t expires;uint6
 #define VR_MAPPING_FILE_MAX ((1024u*1024u-1u)/2u)
 typedef struct {char key[65];int busy;uint64_t retry,used;} vr_mapping_pending;
 typedef struct {int state,incoming;char ip[16],path[VR_PATH_MAX][129];size_t n,count;uint8_t packet[1500];} vr_resolve_job;
-typedef struct {vr_packet original,wire;int entry;uint64_t used;} vr_nat;
+typedef struct {vr_packet original,wire;int entry,tcp_syn;uint32_t tcp_sequence;uint64_t used;char target[129];} vr_nat;
 typedef struct {int tcp;size_t n;uint8_t query[4096];struct sockaddr_in source;socklen_t source_len;} vr_dns_job;
 typedef struct {char id[129],path[VR_PATH_MAX][129];size_t count;uint64_t first,last,bytes,frames,limit,deadline;json_object *message;} vr_speed_rx;
 struct vr_engine {
     vr_service *service;vr_config config;unsigned generation;
     vr_addresses addresses;
-    json_object *snapshot,*policy,*nonces;
+    json_object *snapshot,*policy,*nonces,*next_policy;
+    unsigned policy_revision;
+    uint64_t policy_retry;
     char own_ip[16],cidr[64],replay_path[512],error[256];
     SSL_CTX *tls;
     vr_link links[VR_CARRIER_MAX];size_t link_count;
@@ -56,6 +58,7 @@ struct vr_engine {
     char mapping_path[512],mapping_scope[65];
     unsigned mapping_dirty;uint64_t mapping_flush_at;
     vr_nat flows[VR_NAT_MAX];uint16_t next_port;
+    struct vr_tcp_state *tcp;
     vr_resolve_job resolves[16];pthread_t resolve_thread;
     pthread_cond_t resolve_changed;int resolve_started,resolve_stop;
     vr_dns_job jobs[16];size_t job_head,job_count;
@@ -75,6 +78,9 @@ void vr_link_dial(vr_link *l);
 int vr_carrier_count(json_object *rule);
 int vr_carrier_slot(const char *header);
 int vr_links_add(vr_engine *e,json_object *rule);
+void vr_links_reconcile(vr_engine *e,json_object *policy);
+/* Main thread only: 0 unchanged/deferred, 1 applied, 2 requires engine rebuild. */
+int vr_policy_apply_pending(vr_engine *e);
 vr_link *vr_carrier_select(vr_engine *e,const char *peer,const vr_frame *frame);
 json_object *vr_links_status(vr_engine *e);
 void vr_link_accept(vr_engine *e,int fd);
@@ -88,6 +94,8 @@ int vr_mapping_get(vr_engine *e,const char *domain,const char *ip,vr_decision de
 int vr_mapping_lookup(vr_engine *e,const char *domain,const char *ip,vr_decision decision,vr_mapping *out);
 void vr_mapping_load(vr_engine *e);
 int vr_mapping_flush(vr_engine *e,int force);
+/* Caller holds e->mutex; retain TTL while reconciling rule/exit changes. */
+void vr_mapping_reconcile(vr_engine *e);
 void vr_outgoing(vr_engine *e,uint8_t *bytes,size_t n);
 int vr_dataplane_start(vr_engine *e);
 void vr_dataplane_tick(vr_engine *e);
@@ -99,4 +107,10 @@ void vr_dns_stop(vr_engine *e);
 void vr_measure_frame(vr_engine *e,vr_link *l,const vr_frame *f,char path[VR_PATH_MAX][129],size_t n);
 void vr_measure_tick(vr_engine *e);
 void vr_measure_stop(vr_engine *e);
+int vr_tcp_start(vr_engine *e);
+int vr_tcp_attach(vr_engine *e,int fd,const char *ip,int port);
+size_t vr_tcp_pollfds(vr_engine *e,struct pollfd *fds);
+void vr_tcp_poll(vr_engine *e,struct pollfd *fds);
+void vr_tcp_frame(vr_engine *e,const vr_frame *f,char path[VR_PATH_MAX][129],size_t count);
+void vr_tcp_stop(vr_engine *e);
 #endif

@@ -7,6 +7,10 @@ build_version="${CHVR_VERSION:?Set CHVR_VERSION to the release tag}"
 sdk="$sdk_root/toolchain"
 rootfs="$sdk_root/rootfs/ax56uv2"
 make VERSION="$build_version" all test bin/native/test-upgrade bin/native/test-httpd-profile bin/native/httpd-fixture bin/native/test-carrier bin/native/test-measure
+make VERSION="$build_version" bin/native/test-policy-update bin/native/test-control bin/native/test-mapping bin/native/test-dns bin/native/test-dataplane bin/native/test-routes bin/native/test-tls-proxy
+for target in policy-update mapping dns dataplane tls-proxy;do bin/native/test-$target;done
+CHVR_DISPOSABLE_TEST=1 python3 tests/test_control.py
+python3 tests/test_routes.py
 bin/native/test-measure
 bin/native/test-httpd-profile
 bin/native/cloudhelper-router-plugin --check-httpd bin/native/httpd-fixture

@@ -8,7 +8,9 @@ int vr_platform_start(const vr_config *c,const vr_addresses *a,const char *ip,co
 void vr_platform_stop(const char *cidr);
 int vr_platform_dns(int enabled);
 int vr_platform_routes(json_object *policy);
+int vr_platform_routes_update(json_object *previous,json_object *next);
 int vr_platform_healthy(void);
+int vr_platform_tls(const vr_addresses *a,const char *cidr,int enabled);
 int vr_bind4(const char *ip,int port,int tcp);
 int vr_runtime_mount(const char *operation);
 #endif

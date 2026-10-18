@@ -49,17 +49,19 @@ def main(binary):
             assert response["ok"] and not response["config"]["enabled"]
             assert response["config"]["port"] == 12040
             assert not response["config"]["allow_wan"]
+            assert not response["config"]["tls_sni_enabled"]
             files_before=set(root.iterdir())
             logs=request(sock,{"action":"logs"})
             assert logs["ok"] and logs["items"]==[] and set(root.iterdir())==files_before
             assert os.stat(sock).st_mode & 0o777 == 0o600
             assert not request(sock, {"action": "configure", "csrf": "invalid", "config": {"allow_wan": True}})["ok"]
             assert not request(sock, {"action": "upgrade", "csrf": "invalid", "check_only": True})["ok"]
-            updated = dict(response["config"], controller="https://controller.test", node_id="7", node_key=secret)
+            updated = dict(response["config"], controller="https://controller.test", node_id="7", node_key=secret,tls_sni_enabled=True)
             response = request(sock, {"action": "configure", "csrf": response["csrf"], "config": updated})
             assert response["ok"] and response["key_set"] and secret not in json.dumps(response)
             assert os.stat(config).st_mode & 0o777 == 0o600
             assert json.loads(config.read_text())["node_key"] == secret
+            assert response['config']['tls_sni_enabled'] and json.loads(config.read_text())['tls_sni_enabled']
             gateway={"enabled":True,"proxy_cidrs":["192.168.50.7/24","10.20.0.0/16"],"allowed_node_ids":["9","14"]}
             response=request(sock,{"action":"configure","csrf":response["csrf"],"config":{"gateway_proxy":gateway}})
             assert response["ok"] and response["config"]["gateway_proxy"]["proxy_cidrs"]==["192.168.50.0/24","10.20.0.0/16"]
@@ -92,6 +94,7 @@ def main(binary):
             assert response["key_set"] and response["csrf"] != csrf
             assert response["config"]["node_id"] == "7"
             assert response["config"]["gateway_proxy"]==saved
+            assert response['config']['tls_sni_enabled']
             assert not list(root.glob("*.log"))
         finally:
             proc.terminate()

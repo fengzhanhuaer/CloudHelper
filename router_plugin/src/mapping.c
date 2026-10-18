@@ -50,6 +50,22 @@ static int scope(vr_engine *e)
     json_object_put(o);return rc;
 }
 
+void vr_mapping_reconcile(vr_engine *e)
+{
+    time_t now=time(NULL);
+    for(size_t i=0;i<VR_MAPPING_MAX;i++) {
+        vr_mapping *m=&e->mappings[i];if(m->expires<=now)continue;
+        char ip[16]="";struct in_addr a={m->resolved};
+        if(m->resolved)inet_ntop(AF_INET,&a,ip,sizeof(ip));
+        else if(inet_pton(AF_INET,m->domain,&a)==1)strcpy(ip,m->domain);
+        vr_decision d=vr_policy_match(e->policy,m->domain,*ip?ip:NULL);
+        if(!usable(e,m,now)||d.action!=VR_PROXY||!*d.exit_node||
+           (vr_policy_needs_ip(e->policy,m->domain)&&!*ip))memset(m,0,sizeof(*m));
+        else {strcpy(m->rule,d.rule);strcpy(m->exit,d.exit_node);}
+    }
+    (void)scope(e);e->mapping_dirty++;
+}
+
 static void remove_interrupted_write(const char *path)
 {
     char parent[512];if(vr_copy(parent,sizeof(parent),path))return;
@@ -105,17 +121,18 @@ static int recent(const void *a,const void *b)
 int vr_mapping_flush(vr_engine *e,int force)
 {
     uint64_t tick=vr_millis();
-    if(!*e->mapping_path||!*e->mapping_scope)return 0;
     pthread_mutex_lock(&e->mutex);
+    if(!*e->mapping_path||!*e->mapping_scope){pthread_mutex_unlock(&e->mutex);return 0;}
     if(!e->mapping_dirty||(!force&&tick-e->mapping_flush_at<60000)){pthread_mutex_unlock(&e->mutex);return 0;}
     e->mapping_flush_at=tick;unsigned revision=e->mapping_dirty;size_t count=0;time_t now=time(NULL);
+    char saved_scope[65];strcpy(saved_scope,e->mapping_scope);
     saved_mapping *saved=malloc(sizeof(*saved)*VR_MAPPING_MAX);
     if(!saved){pthread_mutex_unlock(&e->mutex);return -1;}
     for(size_t i=0;i<VR_MAPPING_MAX;i++)if(usable(e,&e->mappings[i],now))saved[count++].value=e->mappings[i];
     pthread_mutex_unlock(&e->mutex);qsort(saved,count,sizeof(*saved),recent);
     json_object *root=json_object_new_object(),*items=json_object_new_array();
     json_object_object_add(root,"version",json_object_new_int(1));
-    json_object_object_add(root,"scope",json_object_new_string(e->mapping_scope));
+    json_object_object_add(root,"scope",json_object_new_string(saved_scope));
     json_object_object_add(root,"saved_at",json_object_new_int64((int64_t)now));
     json_object_object_add(root,"items",items);
     size_t length=strlen(json_object_to_json_string_ext(root,JSON_C_TO_STRING_PLAIN));
@@ -148,6 +165,9 @@ static int lookup(vr_engine *e,const char *domain,const char *ip,vr_decision d,v
 
 int vr_mapping_get(vr_engine *e,const char *domain,const char *ip,vr_decision d,vr_mapping *out)
 {
+    pthread_mutex_lock(&e->mutex);unsigned revision=e->policy_revision;
+    int stale=domain&&*domain&&d.revision!=revision;pthread_mutex_unlock(&e->mutex);
+    if(stale)return -1;
     if(!vr_mapping_lookup(e,domain,ip,d,out))return 0;
     json_object *body=json_object_new_object();char key[65];
     if(domain&&*domain) {
@@ -158,6 +178,7 @@ int vr_mapping_get(vr_engine *e,const char *domain,const char *ip,vr_decision d,
     uint64_t deadline=vr_millis()+25000;size_t slot=0;
     for(;;) {
         pthread_mutex_lock(&e->mutex);
+        if(revision!=e->policy_revision){pthread_mutex_unlock(&e->mutex);json_object_put(body);return -1;}
         if(!lookup(e,domain,ip,d,out)){pthread_mutex_unlock(&e->mutex);json_object_put(body);return 0;}
         size_t match=16,free_slot=16;uint64_t now=vr_millis();
         for(size_t i=0;i<16;i++) {
@@ -176,11 +197,12 @@ int vr_mapping_get(vr_engine *e,const char *domain,const char *ip,vr_decision d,
     char error[256]={0};json_object *response=vr_controller_call(&e->config,e->addresses.wan_if,"POST","/api/probe/route/fake_ip/resolve",body,error,sizeof(error));json_object_put(body);
     json_object *item=vr_member(response,"item");vr_mapping m;int rc=-1;time_t now=time(NULL);
     if(!item||strcmp(vr_string(item,"action"),"probe_exit")||decode(item,&m)||
-       vr_timestamp(vr_string(item,"expires_at"),&m.expires)||!usable(e,&m,now)||
+       vr_timestamp(vr_string(item,"expires_at"),&m.expires)||
        (domain&&*domain&&(strcmp(domain,m.domain)||strcmp(d.rule,m.rule)||strcmp(d.exit_node,m.exit)))||
        (ip&&*ip&&strcmp(ip,m.ip)))goto done;
     if(m.expires>now+VR_MAPPING_TTL)m.expires=now+VR_MAPPING_TTL;
     m.used=vr_millis();pthread_mutex_lock(&e->mutex);size_t target=0;
+    if(revision!=e->policy_revision||!usable(e,&m,now)){pthread_mutex_unlock(&e->mutex);goto done;}
     /* One authoritative item replaces both domain and fake-IP collisions. */
     for(size_t i=0;i<VR_MAPPING_MAX;i++) {
         vr_mapping *old=&e->mappings[i];
@@ -198,4 +220,8 @@ done:
 }
 
 int vr_mapping_lookup(vr_engine *e,const char *domain,const char *ip,vr_decision d,vr_mapping *out)
-{pthread_mutex_lock(&e->mutex);int rc=lookup(e,domain,ip,d,out);pthread_mutex_unlock(&e->mutex);return rc;}
+{
+    pthread_mutex_lock(&e->mutex);
+    int rc=domain&&*domain&&d.revision!=e->policy_revision?-1:lookup(e,domain,ip,d,out);
+    pthread_mutex_unlock(&e->mutex);return rc;
+}

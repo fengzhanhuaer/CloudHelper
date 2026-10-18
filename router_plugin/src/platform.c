@@ -131,6 +131,8 @@ int vr_bind4(const char *ip,int port,int tcp)
 }
 
 static int carrier_skiplog_port;
+static char policy_lan_if[IFNAMSIZ];
+static int tls_active;
 static int carrier_skiplog_available(void)
 {
     FILE *f=fopen("/proc/net/ip_tables_targets","r");if(!f)return 0;
@@ -139,8 +141,28 @@ static int carrier_skiplog_available(void)
     fclose(f);return found;
 }
 
+int vr_platform_tls(const vr_addresses *a,const char *cidr,int enabled)
+{
+    if(!enabled) {
+        if(!RUN("iptables","-t","nat","-C","PREROUTING","-i",a->lan_if,"-p","tcp","--dport","443","-j","CHVR_TLS")&&
+            RUN("iptables","-t","nat","-D","PREROUTING","-i",a->lan_if,"-p","tcp","--dport","443","-j","CHVR_TLS"))return -1;
+        tls_active=0;return 0;
+    }
+    RUN("iptables","-t","nat","-N","CHVR_TLS");
+    if(RUN("iptables","-t","nat","-F","CHVR_TLS"))return -1;
+    const char *exclude[]={cidr,"0.0.0.0/8","10.0.0.0/8","100.64.0.0/10","127.0.0.0/8","169.254.0.0/16","172.16.0.0/12","192.168.0.0/16","224.0.0.0/3"};
+    for(size_t i=0;i<sizeof(exclude)/sizeof(*exclude);i++)if(RUN("iptables","-t","nat","-A","CHVR_TLS","-d",exclude[i],"-j","RETURN"))return -1;
+    if(RUN("iptables","-t","nat","-A","CHVR_TLS","-p","tcp","--dport","443","-j","REDIRECT","--to-ports","1054"))return -1;
+    if(RUN("iptables","-C","CHVR_IN","-i",a->lan_if,"-d",a->lan,"-p","tcp","--dport","1054","-m","conntrack","--ctstate","DNAT","-j","ACCEPT")&&
+        RUN("iptables","-A","CHVR_IN","-i",a->lan_if,"-d",a->lan,"-p","tcp","--dport","1054","-m","conntrack","--ctstate","DNAT","-j","ACCEPT"))return -1;
+    if(RUN("iptables","-t","nat","-C","PREROUTING","-i",a->lan_if,"-p","tcp","--dport","443","-j","CHVR_TLS")&&
+        RUN("iptables","-t","nat","-I","PREROUTING","1","-i",a->lan_if,"-p","tcp","--dport","443","-j","CHVR_TLS"))return -1;
+    tls_active=1;return 0;
+}
+
 int vr_platform_start(const vr_config *c,const vr_addresses *a,const char *ip,const char *cidr)
 {
+    vr_copy(policy_lan_if,sizeof(policy_lan_if),a->lan_if);
     int fd=open("/dev/net/tun",O_RDWR|O_CLOEXEC|O_NONBLOCK);
     if(fd<0){RUN("modprobe","tun");fd=open("/dev/net/tun",O_RDWR|O_CLOEXEC|O_NONBLOCK);}
     if(fd<0)return -1;
@@ -187,6 +209,45 @@ int vr_platform_start(const vr_config *c,const vr_addresses *a,const char *ip,co
     if(RUN("iptables","-C","INPUT","-j","CHVR_IN") && RUN("iptables","-I","INPUT","1","-j","CHVR_IN"))goto fail;
     if(RUN("iptables","-C","FORWARD","-j","CHVR_FWD") && RUN("iptables","-I","FORWARD","1","-j","CHVR_FWD"))goto fail;
     if(RUN("iptables","-t","nat","-C","POSTROUTING","-j","CHVR_NAT") && RUN("iptables","-t","nat","-I","POSTROUTING","1","-j","CHVR_NAT"))goto fail;
+    if(c->enabled) {
+        /* LAN only: OUTPUT and TUN reinjection never enter this table or the
+           sniff listener. Carriers and controller sockets keep their path. */
+        if(RUN("ip","rule","add","priority","18601","iif",a->lan_if,"lookup","187"))goto fail;
+        /* Keep already captured TCP flows entering TUN when their CIDR rule
+           is removed. Only LAN conntracks that actually crossed chvr0 receive
+           our reserved high-byte mark; preserve all lower mark bits. */
+        if(RUN("ip","route","add","default","dev","chvr0","table","188","proto","186")||
+           RUN("ip","rule","add","priority","18600","iif",a->lan_if,"fwmark","0x43000000/0xff000000","lookup","188"))goto fail;
+        /* Reverse validation of an injected reply must use the same sticky
+           route as its established LAN conntrack, even after CIDR removal.
+           Keep system and physical-interface rp_filter settings unchanged. */
+        int vmark=open("/proc/sys/net/ipv4/conf/chvr0/src_valid_mark",O_WRONLY|O_CLOEXEC);
+        if(vmark<0)goto fail;
+        ssize_t marked=write(vmark,"1\n",2);close(vmark);if(marked!=2)goto fail;
+        RUN("iptables","-t","mangle","-N","CHVR_FLOW");RUN("iptables","-t","mangle","-N","CHVR_MARK");
+        if(RUN("iptables","-t","mangle","-F","CHVR_FLOW")||RUN("iptables","-t","mangle","-F","CHVR_MARK")||
+           RUN("iptables","-t","mangle","-A","CHVR_FLOW","-m","connmark","--mark","0x43000000/0xff000000","-j","CONNMARK","--restore-mark","--nfmask","0xff000000","--ctmask","0xff000000")||
+           RUN("iptables","-t","mangle","-A","CHVR_MARK","-d",cidr,"-j","RETURN")||
+           RUN("iptables","-t","mangle","-A","CHVR_MARK","-p","tcp","-j","CONNMARK","--set-xmark","0x43000000/0xff000000")||
+           RUN("iptables","-t","mangle","-I","PREROUTING","1","-i",a->lan_if,"-j","CHVR_FLOW")||
+           RUN("iptables","-t","mangle","-I","PREROUTING","1","-i","chvr0","-j","CHVR_FLOW")||
+           RUN("iptables","-t","mangle","-I","FORWARD","1","-i",a->lan_if,"-o","chvr0","-j","CHVR_MARK"))goto fail;
+        struct ifaddrs *interfaces=NULL;if(getifaddrs(&interfaces))goto fail;
+        int failed=0;
+        for(struct ifaddrs *p=interfaces;p;p=p->ifa_next) {
+            if(!p->ifa_addr||p->ifa_addr->sa_family!=AF_INET||!p->ifa_netmask||!strcmp(p->ifa_name,"chvr0"))continue;
+            struct sockaddr_in *ip4=(struct sockaddr_in *)p->ifa_addr,*mask=(struct sockaddr_in *)p->ifa_netmask;
+            struct in_addr base={ip4->sin_addr.s_addr&mask->sin_addr.s_addr};char net[32],text[16];unsigned bits=0;
+            for(uint32_t m=ntohl(mask->sin_addr.s_addr);m&0x80000000u;m<<=1)bits++;
+            if(!bits)continue;
+            inet_ntop(AF_INET,&base,text,sizeof(text));snprintf(net,sizeof(net),"%s/%u",text,bits);
+            if(RUN("ip","route","replace","throw",net,"table","187","proto","186"))failed=1;
+        }
+        freeifaddrs(interfaces);if(failed)goto fail;
+        if(c->tls_sni_enabled&&vr_platform_tls(a,cidr,1))goto fail;
+        /* Real-IP CIDRs are forwarded into TUN without using the Fake IP CIDR. */
+        if(RUN("iptables","-A","CHVR_FWD","-i",a->lan_if,"-o","chvr0","-j","ACCEPT"))goto fail;
+    }
     return fd;
 fail:close(fd);vr_platform_stop(cidr);return -1;
 }
@@ -207,24 +268,88 @@ static int connected_cidr(const char *cidr)
     }
     freeifaddrs(list);return found;
 }
-int vr_platform_routes(json_object *policy)
+static int within_connected_cidr(const char *cidr)
+{
+    char text[64];vr_copy(text,sizeof(text),cidr);char *slash=strchr(text,'/');if(!slash)return 1;*slash++=0;
+    unsigned bits=(unsigned)atoi(slash);struct in_addr base;if(inet_pton(AF_INET,text,&base)!=1)return 1;
+    struct ifaddrs *list=NULL;if(getifaddrs(&list))return 1;int found=0;
+    for(struct ifaddrs *p=list;p;p=p->ifa_next) {
+        if(!p->ifa_addr||p->ifa_addr->sa_family!=AF_INET||!strcmp(p->ifa_name,"chvr0")||!p->ifa_netmask)continue;
+        struct sockaddr_in *a=(struct sockaddr_in *)p->ifa_addr,*mask=(struct sockaddr_in *)p->ifa_netmask;
+        unsigned local_bits=0;for(uint32_t m=ntohl(mask->sin_addr.s_addr);m&0x80000000u;m<<=1)local_bits++;
+        if(bits>=local_bits&&(base.s_addr&mask->sin_addr.s_addr)==(a->sin_addr.s_addr&mask->sin_addr.s_addr)){found=1;break;}
+    }
+    freeifaddrs(list);return found;
+}
+typedef struct {char cidr[19];int table;} route_spec;
+static int normalized_cidr(const char *raw,char out[19])
+{
+    char buf[64];if(vr_copy(buf,sizeof(buf),raw))return -1;
+    char *slash=strchr(buf,'/'),*end;long bits=32;if(slash){*slash++=0;bits=strtol(slash,&end,10);if(!*slash||*end||bits<0||bits>32)return -1;}
+    struct in_addr ip;if(inet_pton(AF_INET,buf,&ip)!=1)return -1;
+    ip.s_addr=htonl(ntohl(ip.s_addr)&(bits?0xffffffffu<<(32-bits):0));
+    char text[16];inet_ntop(AF_INET,&ip,text,sizeof(text));snprintf(out,19,"%s/%ld",text,bits);return 0;
+}
+static int published_routes(json_object *policy,route_spec seen[256],size_t *count)
 {
     json_object *rules=vr_member(policy,"route_rules");size_t installed=0;
-    char seen[128][19];
+    if(!rules){*count=0;return 0;}
+    if(!json_object_is_type(rules,json_type_array))return -1;
     for(size_t i=0;i<(size_t)json_object_array_length(rules);i++) {
         json_object *rule=json_object_array_get_idx(rules,i);const char *id=vr_string(rule,"id");
-        if((strncmp(id,"gateway-proxy-",14)&&strncmp(id,"linux-router-",13))||strcmp(vr_string(rule,"action"),"probe_exit"))continue;
+        json_object *enabled=vr_member(rule,"enabled");if(enabled&&!json_object_get_boolean(enabled))continue;
+        int gateway=!strncmp(id,"gateway-proxy-",14)||!strncmp(id,"linux-router-",13);
+        const char *action=vr_string(rule,"action");
+        if(strcmp(action,"probe_exit")&&(gateway||strcmp(action,"reject")))continue;
         json_object *entries=vr_member(rule,"entries");
         for(size_t j=0;j<(size_t)json_object_array_length(entries);j++) {
             const char *entry=json_object_get_string(json_object_array_get_idx(entries,j));char cidr[19];
-            if(!entry||strncmp(entry,"cidr:",5)||vr_private_cidr(entry+5,cidr)||connected_cidr(cidr))continue;
-            size_t k;for(k=0;k<installed;k++)if(!strcmp(cidr,seen[k]))break;
+            if(!entry)continue;
+            const char *value=NULL;
+            if(!strncmp(entry,"cidr:",5))value=entry+5;
+            else if(!strncmp(entry,"ip_cidr:",8)||!strncmp(entry,"ip-cidr:",8))value=entry+8;
+            else if(!strncmp(entry,"ip:",3))value=entry+3;
+            if(!value||(gateway?vr_private_cidr(value,cidr):normalized_cidr(value,cidr)))continue;
+            if(gateway&&connected_cidr(cidr))continue;
+            /* Connected destinations remain reachable via the main table.
+               Broad rules are allowed; table 187 has connected throw routes. */
+            if(!gateway&&within_connected_cidr(cidr))continue;
+            int table=gateway?254:187;
+            size_t k;for(k=0;k<installed;k++)if(!strcmp(cidr,seen[k].cidr)&&seen[k].table==table)break;
             if(k<installed)continue;
-            if(installed>=128||RUN("ip","route","add",cidr,"dev","chvr0","proto","186"))return -1;
-            strcpy(seen[installed++],cidr);
+            if(installed>=256)return -1;
+            strcpy(seen[installed].cidr,cidr);seen[installed++].table=table;
         }
     }
+    *count=installed;return 0;
+}
+
+static int listed(route_spec list[256],size_t count,route_spec item)
+{for(size_t i=0;i<count;i++)if(!strcmp(list[i].cidr,item.cidr)&&list[i].table==item.table)return 1;return 0;}
+static int route_command(const char *op,route_spec item)
+{
+    if(item.table==187)return RUN("ip","route",op,item.cidr,"dev","chvr0","table","187","proto","186");
+    return RUN("ip","route",op,item.cidr,"dev","chvr0","proto","186");
+}
+
+int vr_platform_routes_update(json_object *previous,json_object *next)
+{
+    route_spec old[256],current[256];size_t before=0,after=0,added=0,removed=0;
+    if(published_routes(previous,old,&before)||published_routes(next,current,&after))return -1;
+    for(;added<after;added++)if(!listed(old,before,current[added])&&
+        route_command("add",current[added]))goto rollback;
+    for(;removed<before;removed++)if(!listed(current,after,old[removed])&&
+        route_command("del",old[removed]))goto rollback;
     return 0;
+rollback:
+    for(size_t i=0;i<removed;i++)if(!listed(current,after,old[i]))route_command("add",old[i]);
+    for(size_t i=0;i<added;i++)if(!listed(old,before,current[i]))route_command("del",current[i]);
+    return -1;
+}
+
+int vr_platform_routes(json_object *policy)
+{
+    return vr_platform_routes_update(NULL,policy);
 }
 
 int vr_platform_dns(int enabled)
@@ -261,14 +386,30 @@ void vr_platform_stop(const char *cidr)
     (void)cidr;RUN("ip","route","flush","dev","chvr0","proto","186");
     RUN("ip","rule","del","priority","18600","iif","chvr0","lookup","186");
     RUN("ip","route","flush","table","186","dev","chvr0","proto","186");
+    /* Only this plugin owns priority 18601 and protocol 186 in table 187. */
+    RUN("ip","rule","del","priority","18601","lookup","187");
+    RUN("ip","route","flush","table","187","proto","186");
+    if(*policy_lan_if) {
+        RUN("ip","rule","del","priority","18600","iif",policy_lan_if,"fwmark","0x43000000/0xff000000","lookup","188");
+        RUN("iptables","-t","mangle","-D","PREROUTING","-i",policy_lan_if,"-j","CHVR_FLOW");
+        RUN("iptables","-t","mangle","-D","FORWARD","-i",policy_lan_if,"-o","chvr0","-j","CHVR_MARK");
+    }
+    RUN("ip","route","flush","table","188","proto","186");
+    RUN("iptables","-t","mangle","-D","PREROUTING","-i","chvr0","-j","CHVR_FLOW");
+    RUN("iptables","-t","mangle","-F","CHVR_FLOW");RUN("iptables","-t","mangle","-X","CHVR_FLOW");
+    RUN("iptables","-t","mangle","-F","CHVR_MARK");RUN("iptables","-t","mangle","-X","CHVR_MARK");
+    if(*policy_lan_if)RUN("iptables","-t","nat","-D","PREROUTING","-i",policy_lan_if,"-p","tcp","--dport","443","-j","CHVR_TLS");
+    RUN("iptables","-t","nat","-F","CHVR_TLS");RUN("iptables","-t","nat","-X","CHVR_TLS");
     RUN("iptables","-D","INPUT","-j","CHVR_IN");RUN("iptables","-D","FORWARD","-j","CHVR_FWD");RUN("iptables","-t","nat","-D","POSTROUTING","-j","CHVR_NAT");
     RUN("iptables","-F","CHVR_IN");RUN("iptables","-X","CHVR_IN");RUN("iptables","-F","CHVR_FWD");RUN("iptables","-X","CHVR_FWD");
     RUN("iptables","-t","nat","-F","CHVR_NAT");RUN("iptables","-t","nat","-X","CHVR_NAT");
     carrier_skiplog_port=0;
+    tls_active=0;
 }
 
 int vr_platform_healthy(void)
 {
+    if(tls_active&&RUN("iptables","-t","nat","-C","PREROUTING","-i",policy_lan_if,"-p","tcp","--dport","443","-j","CHVR_TLS"))return 0;
     if(carrier_skiplog_port) {
         char port[8];snprintf(port,sizeof(port),"%d",carrier_skiplog_port);
         if(RUN("iptables","-C","CHVR_IN","-p","tcp","--dport",port,"-j","SKIPLOG"))return 0;

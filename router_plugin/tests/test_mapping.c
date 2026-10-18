@@ -31,7 +31,7 @@ json_object *__wrap_vr_controller_call(const vr_config *c,const char *iface,cons
     time_t until=wall+lifetime;struct tm tm;gmtime_r(&until,&tm);char expires[32];assert(strftime(expires,sizeof(expires),"%Y-%m-%dT%H:%M:%SZ",&tm));
     json_object_object_add(item,"expires_at",json_object_new_string(expires));json_object_object_add(r,"item",item);return r;
 }
-static vr_decision decision(void){vr_decision d={VR_PROXY,"proxy","24",""};return d;}
+static vr_decision decision(void){vr_decision d={VR_PROXY,"proxy","24","",0};return d;}
 static vr_engine *engine(const char *file)
 {
     vr_engine *e=calloc(1,sizeof(*e));assert(e);pthread_mutex_init(&e->mutex,NULL);

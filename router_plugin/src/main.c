@@ -97,6 +97,11 @@ json_object *vr_service_dispatch(vr_service *s,json_object *request)
         pthread_mutex_lock(&s->mutex);
         if(vr_config_parse(&c,vr_member(request,"config"),&s->config,err,sizeof(err))) {pthread_mutex_unlock(&s->mutex);return error_reply(err);}
         if(vr_config_save(&c,s->config_path)){pthread_mutex_unlock(&s->mutex);OPENSSL_cleanse(&c,sizeof(c));return error_reply("cannot persist configuration");}
+        int sniff=c.tls_sni_enabled;c.tls_sni_enabled=s->config.tls_sni_enabled;
+        int live_only=!memcmp(&c,&s->config,sizeof(c));c.tls_sni_enabled=sniff;
+        if(live_only) {
+            s->config=c;pthread_mutex_unlock(&s->mutex);OPENSSL_cleanse(&c,sizeof(c));return status_reply(s);
+        }
         s->config=c;s->generation++;
         vr_controller_link_init(&c,s->config_path);
         json_object_put(s->pending_policy);s->pending_policy=NULL;

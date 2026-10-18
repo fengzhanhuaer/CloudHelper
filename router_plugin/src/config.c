@@ -42,12 +42,13 @@ int vr_config_parse(vr_config *out, json_object *o, const vr_config *previous, c
     if (!o || !json_object_is_type(o,json_type_object)) goto fail;
     json_object_object_foreach(o,key,value) {
         (void)value;
-        if (strcmp(key,"enabled") && strcmp(key,"allow_wan") && strcmp(key,"dns_enabled") &&
+        if (strcmp(key,"enabled") && strcmp(key,"allow_wan") && strcmp(key,"dns_enabled") && strcmp(key,"tls_sni_enabled") &&
             strcmp(key,"port") && strcmp(key,"controller") && strcmp(key,"node_id") &&
             strcmp(key,"node_key") && strcmp(key,"dns_upstream") && strcmp(key,"dns_upstreams") && strcmp(key,"gateway_proxy")) goto fail;
     }
     if (boolean_field(o,"enabled",&c.enabled) || boolean_field(o,"allow_wan",&c.allow_wan) ||
         boolean_field(o,"dns_enabled",&c.dns_enabled) ||
+        boolean_field(o,"tls_sni_enabled",&c.tls_sni_enabled) ||
         string_field(o,"controller",c.controller,sizeof(c.controller)) ||
         string_field(o,"node_id",c.node_id,sizeof(c.node_id)) ||
         string_field(o,"dns_upstream",c.dns_upstream,sizeof(c.dns_upstream))) goto fail;
@@ -101,6 +102,7 @@ json_object *vr_config_json(const vr_config *c, int secrets)
     json_object_object_add(o,"enabled",json_object_new_boolean(c->enabled));
     json_object_object_add(o,"allow_wan",json_object_new_boolean(c->allow_wan));
     json_object_object_add(o,"dns_enabled",json_object_new_boolean(c->dns_enabled));
+    json_object_object_add(o,"tls_sni_enabled",json_object_new_boolean(c->tls_sni_enabled));
     json_object_object_add(o,"port",json_object_new_int(c->port));
     json_object_object_add(o,"controller",json_object_new_string(c->controller));
     json_object_object_add(o,"node_id",json_object_new_string(c->node_id));

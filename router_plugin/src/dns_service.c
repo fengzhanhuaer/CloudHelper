@@ -24,18 +24,29 @@ static int mapping_reply(const uint8_t *query,size_t qn,uint8_t *reply,size_t ca
 static int cached_answer(vr_engine *e,const uint8_t *query,size_t qn,uint8_t *reply,size_t cap,size_t *rn)
 {
     vr_question q;
-    if(vr_dns_question(query,qn,&q)||(query[2]&0x80)||q.type!=1||vr_policy_needs_ip(e->policy,q.name))return -1;
-    vr_decision d=vr_policy_match(e->policy,q.name,NULL);vr_mapping m;
+    if(vr_dns_question(query,qn,&q)||(query[2]&0x80)||q.type!=1)return -1;
+    pthread_mutex_lock(&e->mutex);int needs_ip=vr_policy_needs_ip(e->policy,q.name);
+    vr_decision d=vr_policy_match(e->policy,q.name,NULL);d.revision=e->policy_revision;pthread_mutex_unlock(&e->mutex);
+    if(needs_ip)return -1;
+    vr_mapping m;
     if(d.action!=VR_PROXY||vr_mapping_lookup(e,q.name,NULL,d,&m))return -1;
     return mapping_reply(query,qn,reply,cap,rn,&m);
+}
+
+static vr_decision decision(vr_engine *e,const char *domain,const char *ip,int *needs_ip)
+{
+    pthread_mutex_lock(&e->mutex);
+    vr_decision d=vr_policy_match(e->policy,domain,ip);d.revision=e->policy_revision;
+    if(needs_ip)*needs_ip=vr_policy_needs_ip(e->policy,domain);
+    pthread_mutex_unlock(&e->mutex);return d;
 }
 
 static int dns_answer(vr_engine *e,const uint8_t *query,size_t qn,uint8_t *reply,size_t cap,size_t *rn)
 {
     vr_question q;if(vr_dns_question(query,qn,&q) || (query[2]&0x80))return -1;
-    vr_decision decision=vr_policy_match(e->policy,q.name,NULL);
+    int needs_ip;vr_decision selected=decision(e,q.name,NULL,&needs_ip);
     int upstream_done=0;
-    if((q.type==1||q.type==28||q.type==64||q.type==65)&&vr_policy_needs_ip(e->policy,q.name)) {
+    if((q.type==1||q.type==28||q.type==64||q.type==65)&&needs_ip) {
         char ip[16];int resolved;
         if(q.type==1) {
             if(vr_dns_chain(&e->config,e->addresses.wan_if,query,qn,reply,cap,rn))return vr_dns_reply(query,qn,reply,cap,2,NULL,rn);
@@ -43,14 +54,14 @@ static int dns_answer(vr_engine *e,const uint8_t *query,size_t qn,uint8_t *reply
             if(resolved && ((reply[3]&15)!=0 || (reply[6]==0 && reply[7]==0)))return 0;
         } else resolved=vr_resolve_config4(q.name,&e->config,e->addresses.wan_if,ip);
         if(resolved)return vr_dns_reply(query,qn,reply,cap,2,NULL,rn);
-        decision=vr_policy_match(e->policy,q.name,ip);
+        selected=decision(e,q.name,ip,NULL);
     }
-    if(decision.action==VR_REJECT)return vr_dns_reply(query,qn,reply,cap,5,NULL,rn);
-    if(decision.action==VR_PROXY) {
+    if(selected.action==VR_REJECT)return vr_dns_reply(query,qn,reply,cap,5,NULL,rn);
+    if(selected.action==VR_PROXY) {
         if(q.type==28||q.type==64||q.type==65)return vr_dns_reply(query,qn,reply,cap,0,NULL,rn);
         if(q.type==1) {
             vr_mapping mapping;
-            if(vr_mapping_get(e,q.name,NULL,decision,&mapping))return vr_dns_reply(query,qn,reply,cap,2,NULL,rn);
+            if(vr_mapping_get(e,q.name,NULL,selected,&mapping))return vr_dns_reply(query,qn,reply,cap,2,NULL,rn);
             return mapping_reply(query,qn,reply,cap,rn,&mapping);
         }
     }

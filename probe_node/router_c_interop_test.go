@@ -15,6 +15,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"github.com/gorilla/websocket"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -144,6 +145,36 @@ func testRouterCCarrier(t *testing.T, binary string, serverMode, legacy bool) {
 	path := filepath.Join(t.TempDir(), "carrier.json")
 	if err = os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
+	}
+	// The C transparent source uses the unchanged Probe TCP proxy wire contract.
+	// Only the exit's physical dial is redirected to a disposable echo server;
+	// target assignment and path authorization remain production code.
+	echo, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { echo.Close() })
+	go func() {
+		for {
+			conn, acceptErr := echo.Accept()
+			if acceptErr != nil {
+				return
+			}
+			go func() { defer conn.Close(); _, _ = io.Copy(conn, conn) }()
+		}
+	}()
+	oldDial := probeVRouteProxyExitTCPDial
+	probeVRouteProxyExitTCPDial = func(target string) (net.Conn, error) {
+		if target != "203.0.113.5:443" {
+			return nil, fmt.Errorf("unexpected C proxy target %q", target)
+		}
+		return net.DialTimeout("tcp", echo.Addr().String(), time.Second)
+	}
+	t.Cleanup(func() { resetProbeVRouteProxyTCPStateForTest(); probeVRouteProxyExitTCPDial = oldDial })
+	config.RouteRules = []probeVirtualRouterRouteRule{{ID: "interop-tcp", Name: "Interop TCP", Action: "probe_exit", ExitNodeID: "8", Entries: []string{"cidr:203.0.113.0/24"}}}
+	applyProbeVirtualRouterConfigForNode(config, "8")
+	if err := authorizeProbeVRouteProxyExitTarget("203.0.113.5:443", []string{"7", "8"}); err != nil {
+		t.Fatalf("C proxy fixture exit assignment: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
 	defer cancel()

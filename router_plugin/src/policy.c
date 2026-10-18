@@ -47,6 +47,7 @@ static int matches(const char *entry,const char *domain,const char *ip)
 {
     const char *sep=strchr(entry,':');if(!sep || !sep[1])return 0;
     const char *v=sep+1;size_t kind=(size_t)(sep-entry),a=strlen(domain),b=strlen(v);
+    if(kind==6 && !strncmp(entry,"domain",kind))return !strcasecmp(domain,v);
     if(kind==13 && !strncmp(entry,"domain_suffix",kind))return a>=b && !strcasecmp(domain+a-b,v) && (a==b || domain[a-b-1]=='.');
     if(kind==13 && !strncmp(entry,"domain_prefix",kind))return a>=b && !strncasecmp(domain,v,b);
     if(kind==14 && !strncmp(entry,"domain_keyword",kind)) {
@@ -147,6 +148,10 @@ int vr_policy_validate(json_object *s,const char *node_id,char *err,size_t n)
         if(!json_object_get_boolean(vr_member(r,"enabled")))continue;
         if(strcmp(vr_string(r,"from_node_id"),node_id) && strcmp(vr_string(r,"to_node_id"),node_id))continue;
         if(++adjacent>VR_LINK_MAX){why="router supports at most 8 adjacent links";goto fail;}
+        for(size_t j=0;j<i;j++) {
+            json_object *other=json_object_array_get_idx(links,j);
+            if(!strcmp(vr_string(r,"id"),vr_string(other,"id")))goto fail;
+        }
         const char *layer=vr_string(r,"route_layer");
         if(*layer && strcmp(layer,"auto") && strcmp(layer,"http2") && strcmp(layer,"websocket")) {why="unsupported transport; select TLS/WebSocket";goto fail;}
         if(!text_field(r,"secret",1,1024,0)||!text_field(r,"auth_ticket",1,8192,0)||!text_field(r,"user_public_key",1,4096,1)||
