@@ -419,8 +419,10 @@ jobs:
           CGO_ENABLED: 0
           SDK_DIR: ${{ runner.temp }}/cloudhelper-asus-sdk
         run: |
-          go -C probe_node test -c -o ../router_plugin/artifacts/c-interop.test .
+          # Package output is container-owned; compile on the runner and mount only the fixture.
+          go -C probe_node test -c -o "$RUNNER_TEMP/cloudhelper-c-interop.test" .
           docker run --rm -v "$PWD/router_plugin:/module" -v "$SDK_DIR:/sdk" \
+            -v "$RUNNER_TEMP/cloudhelper-c-interop.test:/module/artifacts/c-interop.test:ro" \
             -e CHVR_CI_SDK=/sdk cloudhelper-router-ci bash tools/test-carrier-interop.sh
 
       - name: Upload ASUS Router Plugin Artifacts
