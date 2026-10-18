@@ -17,8 +17,8 @@ typedef struct {
     json_object *rule;
     char route[33],peer[129],error[96],ping_id[49];
     SSL *ssl;
-    int fd,client;
-    uint64_t retry,rx,tx,last_rx,ping_time,rtt;
+    int fd,client,slot,multi_carrier;
+    uint64_t retry,rx,tx,last_rx,ping_time,rtt,keepalive_at,session;
     time_t auth_expires;
     vr_decoder decoder;
     vr_ws_decoder ws;
@@ -29,6 +29,7 @@ typedef struct {
     uint8_t queue[VR_TX_CAP];size_t head,used,write_pending;
 } vr_link;
 typedef struct {vr_engine *engine;pthread_t thread;int started,done,fd,index;vr_link *result;} vr_handshake;
+typedef struct {uint32_t hash;int link;uint64_t session,used;} vr_flow_binding;
 typedef struct {char domain[254],ip[16],rule[129],exit[129];time_t expires;uint64_t used;uint32_t resolved;} vr_mapping;
 #define VR_MAPPING_TTL (48*60*60)
 /* Atomic replacement can temporarily retain both the old and new file. */
@@ -44,7 +45,8 @@ struct vr_engine {
     json_object *snapshot,*policy,*nonces;
     char own_ip[16],cidr[64],replay_path[512],error[256];
     SSL_CTX *tls;
-    vr_link links[VR_LINK_MAX];size_t link_count;
+    vr_link links[VR_CARRIER_MAX];size_t link_count;
+    vr_flow_binding bindings[VR_NAT_MAX];uint64_t carrier_session;
     vr_handshake handshakes[2];
     pthread_t control_thread;int control_started,control_stop,controller_connected,refresh;
     int tun,lan,wan,dns_udp,dns_tcp,platform_started;
@@ -70,6 +72,11 @@ int vr_send_json(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][
 void vr_link_close(vr_link *l,const char *error);
 int vr_link_queue(vr_link *l,int opcode,const void *bytes,size_t n);
 void vr_link_dial(vr_link *l);
+int vr_carrier_count(json_object *rule);
+int vr_carrier_slot(const char *header);
+int vr_links_add(vr_engine *e,json_object *rule);
+vr_link *vr_carrier_select(vr_engine *e,const char *peer,const vr_frame *frame);
+json_object *vr_links_status(vr_engine *e);
 void vr_link_accept(vr_engine *e,int fd);
 void vr_link_poll(vr_link *l,short events);
 int vr_link_receive(const vr_frame *frame,void *link);

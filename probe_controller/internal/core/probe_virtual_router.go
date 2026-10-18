@@ -208,12 +208,23 @@ func applyProbeRouterTransportCapabilities(config probeVirtualRouterConfig) prob
 	config.TopologyRules = append([]probeVirtualRouterTopologyRule(nil), config.TopologyRules...)
 	for i := range config.TopologyRules {
 		rule := &config.TopologyRules[i]
+		carrierLimit := 0
 		for _, id := range []string{rule.FromNodeID, rule.ToNodeID} {
 			if node, ok := getProbeNodeByID(id); ok && normalizeProbeNodeKind(node.NodeKind) == probeNodeKindAsus56UV2 {
 				rule.RouteLayer = "http2" // Existing protocol name for TLS/WebSocket.
-				rule.CarrierCount = 1
-				break
+				probeRuntimeStore.mu.Lock()
+				limit := probeRuntimeStore.data[id].RouterPluginCarrierSlots
+				probeRuntimeStore.mu.Unlock()
+				if limit != 4 {
+					limit = 1
+				}
+				if carrierLimit == 0 || limit < carrierLimit {
+					carrierLimit = limit
+				}
 			}
+		}
+		if carrierLimit > 0 && (rule.CarrierCount <= 0 || rule.CarrierCount > carrierLimit) {
+			rule.CarrierCount = carrierLimit
 		}
 	}
 	return config

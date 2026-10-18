@@ -10,7 +10,7 @@
 
 static void status(vr_engine *e,int ready)
 {
-    json_object *o=json_object_new_object(),*links=json_object_new_array(),*nodes=json_object_new_array();
+    json_object *o=json_object_new_object(),*links=vr_links_status(e),*nodes=json_object_new_array();
     json_object_object_add(o,"enabled",json_object_new_boolean(e->config.enabled));
     json_object_object_add(o,"gateway_enabled",json_object_new_boolean(e->config.gateway.enabled));
     json_object_object_add(o,"ready",json_object_new_boolean(ready));
@@ -23,16 +23,6 @@ static void status(vr_engine *e,int ready)
     json_object_object_add(o,"route_count",json_object_new_int(e->policy?json_object_array_length(vr_member(e->policy,"route_rules")):0));
     int count=0;pthread_mutex_lock(&e->mutex);for(size_t i=0;i<VR_MAPPING_MAX;i++)if(e->mappings[i].expires>time(NULL))count++;pthread_mutex_unlock(&e->mutex);
     json_object_object_add(o,"mappings",json_object_new_int(count));
-    for(size_t i=0;i<e->link_count;i++) {
-        vr_link *l=&e->links[i];json_object *v=json_object_new_object();
-        json_object_object_add(v,"route",json_object_new_string(l->route));json_object_object_add(v,"peer",json_object_new_string(l->peer));
-        json_object_object_add(v,"state",json_object_new_string(l->ssl?"connected":"disconnected"));
-        const char *domain=vr_string(l->rule,!strcmp(l->peer,vr_string(l->rule,"from_node_id"))?"from_service_domain":"to_service_domain");
-        json_object_object_add(v,"domain",json_object_new_string(domain));
-        json_object_object_add(v,"transport",json_object_new_string("TLS/WebSocket"));json_object_object_add(v,"error",json_object_new_string(l->error));
-        json_object_object_add(v,"rtt_ms",json_object_new_int64((int64_t)l->rtt));
-        json_object_object_add(v,"tx_bytes",json_object_new_int64((int64_t)l->tx));json_object_object_add(v,"rx_bytes",json_object_new_int64((int64_t)l->rx));json_object_array_add(links,v);
-    }
     json_object *list=vr_member(e->policy,"probe_ips");
     if(list)for(size_t i=0;i<(size_t)json_object_array_length(list);i++) {
         json_object *src=json_object_array_get_idx(list,i),*v=json_object_new_object();
@@ -148,9 +138,7 @@ static int prepare(vr_engine *e)
     for(size_t i=0;i<(size_t)json_object_array_length(links);i++) {
         json_object *r=json_object_array_get_idx(links,i);if(!json_object_get_boolean(vr_member(r,"enabled")))continue;
         const char *from=vr_string(r,"from_node_id"),*to=vr_string(r,"to_node_id");if(strcmp(from,e->config.node_id)&&strcmp(to,e->config.node_id))continue;
-        if(e->link_count>=VR_LINK_MAX)return -1;
-        vr_link *l=&e->links[e->link_count++];l->engine=e;l->rule=r;l->fd=-1;
-        if(vr_route_id(vr_string(r,"id"),l->route)||vr_copy(l->peer,sizeof(l->peer),!strcmp(from,e->config.node_id)?to:from))return -1;
+        if(vr_links_add(e,r))return -1;
     }
     if(vr_service_stopped(e->service,e->generation))return -1;
     e->lan=vr_bind4(e->addresses.lan,e->config.port,1);
@@ -170,7 +158,7 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
     vr_engine *e=calloc(1,sizeof(*e));if(!e)return;
     e->service=service;e->config=*config;e->generation=generation;e->tun=e->lan=e->wan=e->dns_udp=e->dns_tcp=-1;
     pthread_mutex_init(&e->mutex,NULL);pthread_cond_init(&e->jobs_changed,NULL);
-    for(size_t i=0;i<VR_LINK_MAX;i++)e->links[i].fd=-1;
+    for(size_t i=0;i<VR_CARRIER_MAX;i++)e->links[i].fd=-1;
     if(prepare(e))goto done;
     uint64_t published=0,addresses_checked=vr_millis();
     while(!vr_service_stopped(service,generation)) {
@@ -182,9 +170,12 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
         for(size_t i=0;i<e->link_count;i++) {
             vr_link *l=&e->links[i];
             if(l->ssl && (l->auth_expires<=time(NULL)||now-l->last_rx>90000))vr_link_close(l,"link authorization or idle timeout");
+            if(l->ssl&&now-l->keepalive_at>=20000) {
+                if(!vr_link_queue(l,9,"",0))l->keepalive_at=now;
+            }
             if(!l->ssl)vr_link_dial(l);
         }
-        struct pollfd fds[5+VR_LINK_MAX];fds[0]=(struct pollfd){e->tun,POLLIN,0};fds[1]=(struct pollfd){e->lan,POLLIN,0};
+        struct pollfd fds[5+VR_CARRIER_MAX];fds[0]=(struct pollfd){e->tun,POLLIN,0};fds[1]=(struct pollfd){e->lan,POLLIN,0};
         fds[2]=(struct pollfd){e->wan,POLLIN,0};fds[3]=(struct pollfd){e->dns_udp,POLLIN,0};fds[4]=(struct pollfd){e->dns_tcp,POLLIN,0};
         for(size_t i=0;i<e->link_count;i++)fds[5+i]=(struct pollfd){e->links[i].fd,(short)(POLLIN|(e->links[i].used?POLLOUT:0)),0};
         int pending=0;for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl&&SSL_pending(e->links[i].ssl))pending=1;

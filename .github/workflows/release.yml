@@ -408,6 +408,21 @@ jobs:
           docker run --rm -v "$PWD/router_plugin:/module" -v "$SDK_DIR:/sdk" \
             -e CHVR_CI_SDK=/sdk -e CHVR_VERSION cloudhelper-router-ci bash tools/build-ci.sh
 
+      - name: Setup Go for Probe Carrier Interoperability
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.4'
+          cache-dependency-path: probe_node/go.sum
+
+      - name: Verify Native and Four Firmware ABI Multi-Slot Interoperability
+        env:
+          CGO_ENABLED: 0
+          SDK_DIR: ${{ runner.temp }}/cloudhelper-asus-sdk
+        run: |
+          go -C probe_node test -c -o ../router_plugin/artifacts/c-interop.test .
+          docker run --rm -v "$PWD/router_plugin:/module" -v "$SDK_DIR:/sdk" \
+            -e CHVR_CI_SDK=/sdk cloudhelper-router-ci bash tools/test-carrier-interop.sh
+
       - name: Upload ASUS Router Plugin Artifacts
         uses: actions/upload-artifact@v7
         with:

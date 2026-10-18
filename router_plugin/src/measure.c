@@ -67,7 +67,10 @@ void vr_measure_frame(vr_engine *e,vr_link *l,const vr_frame *f,char path[VR_PAT
     if(f->main==2 || f->main==3) {
         if(f->sub==1){json_object_object_add(m,"ok",json_object_new_boolean(1));json_object_object_add(m,"responder",json_object_new_string(e->config.node_id));reverse(path,n);vr_send_json(e,f->main,2,path,n,m);}
         else if(f->sub==2) {
-            if(!strcmp(id,l->ping_id)) {l->rtt=vr_millis()-l->ping_time;*l->ping_id=0;}
+            for(size_t i=0;i<e->link_count;i++) {
+                vr_link *sent=&e->links[i];
+                if(!strcmp(sent->peer,l->peer)&&!strcmp(id,sent->ping_id)){sent->rtt=vr_millis()-sent->ping_time;*sent->ping_id=0;}
+            }
             if(!strcmp(id,e->measure_id)) {json_object_object_add(m,"latency_ms",json_object_new_int64((int64_t)(vr_millis()-e->measure_started)));complete(e,m,NULL);}
         }
     } else if(f->main==4) {
@@ -101,6 +104,8 @@ void vr_measure_tick(vr_engine *e)
     for(size_t i=0;i<4;i++)if(e->receives[i].message&&now>=e->receives[i].deadline)finish_receive(e,&e->receives[i]);
     for(size_t i=0;i<e->link_count;i++) {
         vr_link *l=&e->links[i];if(!l->ssl || now-l->ping_time<20000)continue;
+        int primary=1;for(size_t j=0;j<i;j++)if(e->links[j].ssl&&!strcmp(l->route,e->links[j].route))primary=0;
+        if(!primary)continue;
         char path[VR_PATH_MAX][129]={{0}};strcpy(path[0],e->config.node_id);strcpy(path[1],l->peer);
         json_object *m=json_object_new_object();vr_random_hex(l->ping_id,24);l->ping_time=now;
         json_object_object_add(m,"request_id",json_object_new_string(l->ping_id));json_object_object_add(m,"source_node_id",json_object_new_string(e->config.node_id));

@@ -6,7 +6,8 @@ build_version="${CHVR_VERSION:?Set CHVR_VERSION to the release tag}"
 [[ "$build_version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.+-][a-zA-Z0-9.+-]+)?$ ]]
 sdk="$sdk_root/toolchain"
 rootfs="$sdk_root/rootfs/ax56uv2"
-make VERSION="$build_version" all test bin/native/test-upgrade bin/native/test-httpd-profile bin/native/httpd-fixture
+make VERSION="$build_version" all test bin/native/test-upgrade bin/native/test-httpd-profile bin/native/httpd-fixture bin/native/test-carrier bin/native/test-measure
+bin/native/test-measure
 bin/native/test-httpd-profile
 bin/native/cloudhelper-router-plugin --check-httpd bin/native/httpd-fixture
 python3 tests/test_upgrade.py
@@ -24,7 +25,7 @@ make BUILD=bin/arm VERSION="$build_version" CC="$sdk/bin/arm-buildroot-linux-gnu
     CFLAGS='-Os -g -std=c99 -Wall -Wextra -Werror -Wformat=2 -fstack-protector-strong -march=armv7-a -mfloat-abi=soft' \
     DEP_CPPFLAGS="-I$sdk_root/include -I$sdk_root/openssl/include" \
     DEP_LDFLAGS="-L$sdk_root/link -Wl,-rpath-link,$rootfs/usr/lib:$rootfs/lib" \
-    all bin/arm/test-core bin/arm/httpd-fixture
+    all bin/arm/test-core bin/arm/httpd-fixture bin/arm/test-carrier
 "$sdk/bin/arm-buildroot-linux-gnueabi-strip" bin/arm/cloudhelper-router-plugin bin/arm/httpd-bridge.so
 unset LD_LIBRARY_PATH
 for profile in ax56uv2 ax56uv2-koolshare be86u be86u-koolcenter;do

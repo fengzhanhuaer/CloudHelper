@@ -15,6 +15,16 @@ int main(void)
 {
     vr_engine *e=calloc(1,sizeof(*e));vr_service s={0};assert(e);e->service=&s;strcpy(e->config.node_id,"7");
     pthread_mutex_init(&s.mutex,NULL);
+    /* A peer may return a logical ping on another slot or another authorized
+       edge to that same peer. Match the unpredictable request ID and peer. */
+    e->link_count=2;strcpy(e->links[0].peer,"8");strcpy(e->links[1].peer,"8");
+    strcpy(e->links[0].route,"edge-a");strcpy(e->links[1].route,"edge-b");
+    strcpy(e->links[1].ping_id,"return-on-another-edge");e->links[1].ping_time=900;
+    char pong_path[VR_PATH_MAX][129]={{"8"},{"7"}};
+    const char *pong="{\"request_id\":\"return-on-another-edge\"}";
+    vr_frame reply={2,2,NULL,(const uint8_t *)pong,0,strlen(pong)};
+    vr_measure_frame(e,&e->links[0],&reply,pong_path,2);
+    assert(e->links[1].rtt==100&&!*e->links[1].ping_id);e->link_count=0;
     const unsigned durations[]={3000,10000,0,60000};
     for(size_t test=0;test<sizeof(durations)/sizeof(*durations);test++) {
     now=1000;strcpy(e->measure_id,"test");e->measure_started=now;

@@ -19,6 +19,7 @@ json_object *vr_probe_report(const vr_config *c,const vr_addresses *a,const char
     json_object_object_add(o,"arch",json_object_new_string("arm"));json_object_object_add(o,"build_kind",json_object_new_string(VR_KIND));
     json_object_object_add(o,"version",json_object_new_string(VR_VERSION));
     json_object_object_add(o,"router_plugin_upgrade",json_object_new_boolean(1));
+    json_object_object_add(o,"router_plugin_carrier_slots",json_object_new_int(VR_CARRIER_SLOTS));
     if(*a->lan)json_object_array_add(ips,json_object_new_string(a->lan));
     if(*a->wan&&strcmp(a->wan,a->lan))json_object_array_add(ips,json_object_new_string(a->wan));
     json_object_object_add(o,"ipv4",ips);json_object_object_add(o,"lan_ip",json_object_new_string(a->lan));

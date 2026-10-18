@@ -26,6 +26,7 @@ int main(void)
     vr_addresses a={0};strcpy(a.lan,"192.168.52.1");strcpy(a.wan,"192.168.205.2");strcpy(a.wan_if,"wan0");
     o=vr_probe_report(&c,&a,root);json_object *system=vr_member(o,"system");
     assert(!strcmp(vr_string(o,"version"),VR_VERSION)&&!strcmp(vr_string(o,"build_kind"),VR_KIND));
+    assert(json_object_get_int(vr_member(o,"router_plugin_carrier_slots"))==4);
     assert(json_object_array_length(vr_member(o,"ipv4"))==2&&!strcmp(vr_string(o,"lan_ip"),a.lan)&&!strcmp(vr_string(o,"wan_ip"),a.wan));
     assert(json_object_get_boolean(vr_member(system,"network_traffic_available"))&&json_object_get_int64(vr_member(system,"network_rx_bytes"))==123456789012LL&&json_object_get_int64(vr_member(system,"network_tx_bytes"))==9876543210LL);json_object_put(o);
     strcpy(a.wan,a.lan);o=vr_probe_report(&c,&a,root);assert(json_object_array_length(vr_member(o,"ipv4"))==1);json_object_put(o);
