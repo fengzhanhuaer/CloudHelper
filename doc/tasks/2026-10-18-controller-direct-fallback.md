@@ -1,6 +1,6 @@
 # 任务：主控探针专用 IP/TLS 备用连接
 
-- 状态：`进行中`
+- 状态：`已完成`
 - 用户最新指令：2026-10-19修复节点14反复重试不可达IPv6的备用选择缺陷，保留正常IPv6及私有认证；原备用入口、缓存与Web隔离需求继续有效。另已回答SNI的16KiB为上限而非等待门槛，不改变SNI行为。
 - 启用方式：明确跨主控/三客户端/协议/持久化/升级/实机验证的长任务，使用manage-long-tasks；沿用已授权发布部署和在线升级流程，不提交凭据。
 
@@ -92,13 +92,15 @@ REQ-008：IPv6字面地址不调用仅IPv4的绕行设置；仍按系统IPv6路�
 
 架构与单元：UNIT-002增加有界内存Endpoint健康表，snapshot过滤及排序；HTTP尝试/重新取challenge、WS尝试均记录对应地址结果。resolved_dial对IPv6跳过IPv4绕行调用。IF-003保持原格式及安全契约，健康冷却不落盘，网络恢复/重启可重新尝试。
 
-执行任务：TASK-004 `已完成`：实现及真实TLS/WS回归；TASK-005 `进行中`：全套验证、提交、发布及正式附件核验。下一步唯一动作：提交六个任务文件并推送mapledev。
+执行任务：TASK-004 `已完成`：实现及真实TLS/WS回归；TASK-005 `已完成`：全套验证、提交、发布及正式附件核验。下一步唯一动作：无。
 
 测试：TEST-005真实TLS模拟IPv6不可达、IPv4可用，跨HTTP/WS失败冷却、地址成功优先、冷却到期恢复、全冷却回主域名、origin/pin隔离及父上下文取消；TEST-006桌面IPv6直拨不产生IPv4绕行调用并保持正常通信；TEST-007 Probe/主控全套及共享包vet、发布Actions和附件。
 
 追踪：REQ-007→UNIT-002/IF-003→TASK-004/005→TEST-005/007；REQ-008→UNIT-002/resolved_dial→TASK-004/005→TEST-005/006/007。
 DEC-007：不全局禁用IPv6；健康状态仅内存并按当前发现列表裁剪，避免旧pin/已删除地址污染新列表。冷却地址不在每次5秒上报重连中尝试，候选为空时保留主通道。回滚沿用产品在线升级前版，无持久化迁移。
-DEF-002 `已完成`：原选择器每轮从静态列表重新开始，无Endpoint退避；IPv6字面地址触发IPv4绕行告警后仍拨号。已由endpoints.go及resolved_dial.go修复，基线工作区干净e16dc514，新增真实TLS/WS/IPv6套接字回归通过。准备门禁：通过；源码验证：通过；完成门禁：不通过（待正式发布核验）。
+DEF-002 `已完成`：原选择器每轮从静态列表重新开始，无Endpoint退避；IPv6字面地址触发IPv4绕行告警后仍拨号。已由endpoints.go及resolved_dial.go修复，基线工作区干净e16dc514，新增真实TLS/WS/IPv6套接字回归通过。准备门禁：通过；源码验证：通过；完成门禁：通过。
 
 验证检查点：go -C probe_node test ./... -count=1全部通过（含mobilecore）；主控test ./...及vet ./...通过；共享包vet通过。新增TestEndpointCooldownHTTPWebSocketAndIPv6Recovery、TestEndpointCooldownBoundedIsolatedAndCancellation通过，真实IPv6环回读到数据且无IPv4绕行告警；桌面目标回归TestProbe(ControllerDirectIPv6|ResolvedDial)全部通过。既有真实TLS错误pin/新nonce/POST不重放/WS单会话测试继续通过。未声称已在生产节点14部署或其数据路由超时已解决。
 发布预检：原脚本仍因三项已退役Docker/ARM64软路由标记报错；live release.yml SHA256=eabdc410d23951404c905fb3476c68cf8612b0683f5fe3a124529b89522c4ca6，与已验证v0.4.78合同一致。按实际工作流复核12附件、自动版本提交/标签、三平台Probe、Android与ASUS构建，不修改工作流或手动版本。
+发布检查点：功能提交555a03e673785642c66b47ae3888ed46a96a0856已推送origin/mapledev，已按headSha匹配Actions 39183243649（全部成功）。六个任务文件已完整提交，无凭据；Git自动整理提示历史unreachable loose objects，未执行prune或删除操作。新缺陷测试额外连续10次通过；按现有实际合同排除三个过期marker的只读预检通过。
+最终发布核验：自动版本提交c152fda91b0a2d5cb5173531baa7fd4382b80438/tag v0.4.79，其父提交精确为功能提交555a03e6；正式非草稿/非预发布Release含实际合同全部12附件，名称/非空大小/SHA256摘要格式逐项通过。Windows/Linux/Android Probe、主控、软路由及ASUS四ABI多槽互通所有job成功。发布地址https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.79。REQ-007/008实现及TEST-005/006/007闭合；生产节点14未执行在线升级，仍需升级后实机观察，不将发布等同部署或其14>25>17数据路径恢复。
