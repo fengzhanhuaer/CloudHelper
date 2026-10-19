@@ -60,6 +60,7 @@ struct vr_engine {
     vr_flow_binding bindings[VR_NAT_MAX];uint64_t carrier_session;
     vr_handshake handshakes[2];
     pthread_t control_thread;int control_started,control_stop,controller_connected,refresh;
+    char controller_endpoint[280];int controller_direct;
     int tun,lan,wan,dns_udp,dns_tcp,platform_started;
     pthread_mutex_t mutex;pthread_cond_t jobs_changed;
     vr_mapping mappings[VR_MAPPING_MAX];

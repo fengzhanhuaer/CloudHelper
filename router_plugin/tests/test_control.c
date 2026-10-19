@@ -31,8 +31,8 @@ int main(int argc,char **argv)
     while(vr_millis()<deadline){changed=vr_policy_apply_pending(e);if(changed)break;poll(NULL,0,20);}
     assert(changed==1&&!e->refresh&&!s.pending_policy&&json_object_get_int(vr_member(e->snapshot,"revision"))==2);
     deadline=vr_millis()+2500;while(vr_millis()<deadline){assert(vr_policy_apply_pending(e)!=2);poll(NULL,0,20);}
-    pthread_mutex_lock(&e->mutex);assert(e->controller_connected);pthread_mutex_unlock(&e->mutex);
-    vr_control_stop(e);pthread_mutex_destroy(&s.mutex);
+    pthread_mutex_lock(&e->mutex);assert(e->controller_connected);assert(!strcmp(e->controller_endpoint,argv[1]+8));assert(!e->controller_direct);pthread_mutex_unlock(&e->mutex);
+    vr_control_stop(e);assert(!e->controller_connected&&!e->controller_endpoint[0]&&!e->controller_direct);pthread_mutex_destroy(&s.mutex);
     char cache[512];snprintf(cache,sizeof(cache),"%s/route-cache.json",root);assert(!unlink(cache)&&!rmdir(root));
     json_object_put(e->snapshot);pthread_mutex_destroy(&e->mutex);free(e);curl_global_cleanup();
     puts("PASS: real TLS/WebSocket/yamux config sync applies policy without closing control stream");return 0;

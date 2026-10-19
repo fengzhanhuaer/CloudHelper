@@ -18,7 +18,7 @@ typedef struct {
     vr_ws_decoder ws;
     uint8_t header[12];size_t header_used,payload_left;
     uint32_t send_window;size_t message_used;
-    char message[16384];uint64_t ack_at,started;int direct;
+    char endpoint[280];char message[16384];uint64_t ack_at,started;int direct;
 } control;
 
 static uint32_t u32(const uint8_t *b){return ((uint32_t)b[0]<<24)|((uint32_t)b[1]<<16)|((uint32_t)b[2]<<8)|b[3];}
@@ -51,7 +51,7 @@ static int message(control *c)
 {
     json_object *m=vr_json_parse(c->message,c->message_used);c->message_used=0;if(!m)return -1;
     const char *type=vr_string(m,"type");
-    if(!strcmp(type,"ack")){c->ack_at=vr_millis();pthread_mutex_lock(&c->engine->mutex);c->engine->controller_connected=1;pthread_mutex_unlock(&c->engine->mutex);}
+    if(!strcmp(type,"ack")){c->ack_at=vr_millis();pthread_mutex_lock(&c->engine->mutex);c->engine->controller_connected=1;vr_copy(c->engine->controller_endpoint,sizeof(c->engine->controller_endpoint),c->endpoint);c->engine->controller_direct=c->direct;pthread_mutex_unlock(&c->engine->mutex);}
     else if(!strcmp(type,"route_config_sync"))c->refresh=1;
     else if(!strcmp(type,"report_once"))c->report=1;
     else if(!strcmp(type,"upgrade")&&!strcmp(vr_string(m,"build_kind"),"asus_jffs")) {
@@ -117,6 +117,7 @@ static int connect_controller(control *c)
     uint64_t deadline=vr_millis()+5000;
     c->direct=vr_controller_link_target(&e->config,origin,pin);c->started=vr_millis();
     if(vr_origin(origin,host,&port,&tls)||!tls)return -1;
+    snprintf(c->endpoint,sizeof(c->endpoint),"%s:%d",host,port);
     c->ssl=vr_tls_connect(host,port,pin,&e->config,e->addresses.wan_if,&c->fd,deadline);if(!c->ssl){vr_controller_link_feedback(&e->config,c->direct,0,vr_millis()-c->started);vr_service_log(e->service,"controller","Control stream DNS/TCP/TLS connection failed");return -1;}
     uint8_t random[16];if(RAND_bytes(random,16)!=1)return -1;EVP_EncodeBlock((unsigned char *)key,random,16);
     if(vr_ws_accept_key(key,accept))return -1;
@@ -192,7 +193,7 @@ static void *control_worker(void *arg)
           pthread_mutex_lock(&e->mutex);int intentional=e->refresh;pthread_mutex_unlock(&e->mutex);
           if(c->started&&!stopped(e)&&!intentional)vr_controller_link_feedback(&e->config,c->direct,vr_millis()-c->started>=90000,vr_millis()-c->started>=90000?1000:3000);
           SSL_free(c->ssl);if(c->fd>=0)close(c->fd);free(c);
-        pthread_mutex_lock(&e->mutex);e->controller_connected=0;int changed=e->refresh;pthread_mutex_unlock(&e->mutex);if(changed)break;
+        pthread_mutex_lock(&e->mutex);e->controller_connected=0;e->controller_endpoint[0]=0;e->controller_direct=0;int changed=e->refresh;pthread_mutex_unlock(&e->mutex);if(changed)break;
         for(int i=0;i<50&&!stopped(e);i++)poll(NULL,0,100);
     }
     return NULL;

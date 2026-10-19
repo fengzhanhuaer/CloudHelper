@@ -14,7 +14,9 @@ static void status(vr_engine *e,int ready)
     json_object_object_add(o,"enabled",json_object_new_boolean(e->config.enabled));
     json_object_object_add(o,"gateway_enabled",json_object_new_boolean(e->config.gateway.enabled));
     json_object_object_add(o,"ready",json_object_new_boolean(ready));
-    pthread_mutex_lock(&e->mutex);int connected=e->controller_connected;pthread_mutex_unlock(&e->mutex);
+    pthread_mutex_lock(&e->mutex);int connected=e->controller_connected;
+    json_object_object_add(o,"controller_endpoint",json_object_new_string(e->controller_endpoint));
+    json_object_object_add(o,"controller_direct",json_object_new_boolean(e->controller_direct));pthread_mutex_unlock(&e->mutex);
     json_object_object_add(o,"controller_connected",json_object_new_boolean(connected));
     json_object_object_add(o,"error",json_object_new_string(e->error));
     json_object_object_add(o,"lan",json_object_new_string(e->addresses.lan));json_object_object_add(o,"wan",json_object_new_string(e->addresses.wan));
