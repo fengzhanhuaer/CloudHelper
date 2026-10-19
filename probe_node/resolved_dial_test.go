@@ -1,15 +1,69 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"github.com/cloudhelper/probe_node/internal/controllerlink"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestProbeControllerDirectIPv6UsesSystemRoute(t *testing.T) {
+	listener, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("IPv6 loopback unavailable: %v", err)
+	}
+	defer listener.Close()
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previous)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c, err := listener.Accept()
+		if err == nil {
+			defer c.Close()
+			io.WriteString(c, "ipv6")
+		}
+	}()
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	c, err := probeControllerDirectDial(ctx, "tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.SetReadDeadline(time.Now().Add(time.Second))
+	buf := make([]byte, 4)
+	if _, err := io.ReadFull(c, buf); err != nil || string(buf) != "ipv6" {
+		t.Fatalf("IPv6 communication failed: %q %v", buf, err)
+	}
+	<-done
+	log.SetOutput(previous)
+	if strings.Contains(logs.String(), "direct bypass failed") {
+		t.Fatal("IPv6 incorrectly attempted IPv4 bypass:", logs.String())
+	}
+}
+
+func TestProbeResolvedDialIPv6SkipsIPv4Bypass(t *testing.T) {
+	for address, want := range map[string]bool{
+		"[2001:db8::1]:15030":      false,
+		"[::ffff:192.0.2.1]:15030": true,
+		"[fe80::1%12]:15030":       false,
+		"192.0.2.1:15030":          true,
+	} {
+		if got := probeResolvedDialUsesIPv4Bypass(address); got != want {
+			t.Errorf("%s: bypass=%v want=%v", address, got, want)
+		}
+	}
+}
 
 func TestProbeResolvedDialFallsBackWhenFirstTLSStalls(t *testing.T) {
 	slow, err := net.Listen("tcp", "127.0.0.1:0")

@@ -126,7 +126,7 @@ func newProbeResolvedConnectionDialContext(target probeResolvedURLDialTarget, ti
 				if dialCtx.Err() != nil {
 					return
 				}
-				if matched {
+				if matched && probeResolvedDialUsesIPv4Bypass(endpoint) {
 					if err := ensureProbeRouteTransportDirectBypass(endpoint); err != nil {
 						logProbeWarnf("probe resolved dial direct bypass failed: target=%s err=%v", endpoint, err)
 					}
@@ -169,6 +169,17 @@ func newProbeResolvedConnectionDialContext(target probeResolvedURLDialTarget, ti
 		}
 		return nil, errors.Join(failures...)
 	}
+}
+
+// The managed bypass routes cover IPv4 only. IPv6 uses the system IPv6
+// routes; attempting to install an IPv4 host route for it is meaningless.
+func probeResolvedDialUsesIPv4Bypass(endpoint string) bool {
+	host, _, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(strings.SplitN(host, "%", 2)[0])
+	return ip == nil || ip.To4() != nil
 }
 
 func newProbeResolvedHTTPClientForURL(rawURL string, timeout time.Duration) (*http.Client, func(), error) {

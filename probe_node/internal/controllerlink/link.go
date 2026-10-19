@@ -51,6 +51,7 @@ type state struct {
 	primaryFailures, directFailures int
 	primarySuccesses                int
 	primaryLatency, directLatency   time.Duration
+	endpoints                       map[Endpoint]endpointHealth
 	node, secret                    string
 }
 type Manager struct {
@@ -151,7 +152,9 @@ func (m *Manager) snapshot(raw string) (Discovery, bool) {
 	if !valid(s.data) {
 		return Discovery{}, false
 	}
-	return s.data, time.Now().Before(s.preferUntil)
+	data := s.data
+	data.Endpoints = availableEndpoints(s, time.Now())
+	return data, time.Now().Before(s.preferUntil)
 }
 func (m *Manager) Feedback(raw string, direct bool, elapsed time.Duration, ok bool) {
 	m.mu.Lock()
@@ -429,6 +432,9 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 				}
 				nonce, e := challenge(req.Context(), t.origin, node, rt)
 				if e != nil {
+					if direct {
+						t.Manager.endpointFeedback(req.Context(), t.origin, data.Endpoints[index], false)
+					}
 					t.Manager.Feedback(t.origin, direct, 0, false)
 					err = e
 					continue
@@ -446,10 +452,16 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 		resp, err = attempt(candidate, rt, budget)
 		ok := !retryable(resp, err)
+		if direct {
+			t.Manager.endpointFeedback(req.Context(), t.origin, data.Endpoints[index], ok)
+		}
 		t.Manager.Feedback(req.URL.String(), direct, time.Since(start), ok)
 		if ok {
 			resp.Body = observedBody{resp.Body, func() {
 				if req.Context().Err() == nil {
+					if direct {
+						t.Manager.endpointFeedback(req.Context(), t.origin, data.Endpoints[index], false)
+					}
 					t.Manager.Feedback(t.origin, direct, 0, false)
 				}
 			}}
@@ -534,6 +546,7 @@ func (m *Manager) DialWebSocket(ctx context.Context, raw string, headers http.He
 	for _, e := range data.Endpoints {
 		start := time.Now()
 		conn, resp, err = try(true, e)
+		m.endpointFeedback(ctx, raw, e, err == nil)
 		m.Feedback(raw, true, time.Since(start), err == nil)
 		if err == nil {
 			return conn, resp, true, nil
