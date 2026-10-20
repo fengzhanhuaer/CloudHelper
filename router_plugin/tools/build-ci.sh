@@ -7,8 +7,8 @@ build_version="${CHVR_VERSION:?Set CHVR_VERSION to the release tag}"
 sdk="$sdk_root/toolchain"
 rootfs="$sdk_root/rootfs/ax56uv2"
 make VERSION="$build_version" all test bin/native/test-upgrade bin/native/test-httpd-profile bin/native/httpd-fixture bin/native/test-carrier bin/native/test-measure
-make VERSION="$build_version" bin/native/test-policy-update bin/native/test-control bin/native/test-mapping bin/native/test-dns bin/native/test-dataplane bin/native/test-routes bin/native/test-tls-proxy bin/native/test-tx
-for target in policy-update mapping dns dataplane tls-proxy tx;do bin/native/test-$target;done
+make VERSION="$build_version" bin/native/test-policy-update bin/native/test-control bin/native/test-mapping bin/native/test-dns bin/native/test-dataplane bin/native/test-routes bin/native/test-tls-proxy bin/native/test-tcp-close bin/native/test-tx
+for target in policy-update mapping dns dataplane tls-proxy tcp-close tx;do bin/native/test-$target;done
 python3 tests/test_tx.py
 CHVR_DISPOSABLE_TEST=1 python3 tests/test_control.py
 python3 tests/test_routes.py
@@ -32,11 +32,12 @@ make BUILD=bin/arm VERSION="$build_version" CC="$sdk/bin/arm-buildroot-linux-gnu
     CFLAGS='-Os -g -std=c99 -Wall -Wextra -Werror -Wformat=2 -fstack-protector-strong -march=armv7-a -mfloat-abi=soft' \
     DEP_CPPFLAGS="-I$sdk_root/include -I$sdk_root/openssl/include" \
     DEP_LDFLAGS="-L$sdk_root/link -Wl,-rpath-link,$rootfs/usr/lib:$rootfs/lib" \
-    all bin/arm/test-core bin/arm/httpd-fixture bin/arm/test-carrier
+    all bin/arm/test-core bin/arm/httpd-fixture bin/arm/test-carrier bin/arm/test-tcp-close
 "$sdk/bin/arm-buildroot-linux-gnueabi-strip" bin/arm/cloudhelper-router-plugin bin/arm/httpd-bridge.so
 unset LD_LIBRARY_PATH
 for profile in ax56uv2 ax56uv2-koolshare be86u be86u-koolcenter;do
     python3 tools/check-stock-runtime.py "$sdk_root/rootfs/$profile" --profile "$profile" \
         --baseline "ci-inputs.lock.json:$profile" --readelf "$sdk/bin/arm-buildroot-linux-gnueabi-readelf"
+    qemu-arm -L "$sdk_root/rootfs/$profile" -E LD_LIBRARY_PATH=/usr/lib:/lib bin/arm/test-tcp-close
 done
 for profile in ax56uv2 be86u;do python3 tools/package-jffs.py --profile "$profile";done

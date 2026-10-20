@@ -57,6 +57,8 @@ $(BUILD)/test-routes: $(CORE) src/platform.c tests/test_routes.c $(wildcard incl
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/platform.c tests/test_routes.c $(LDFLAGS) $(LDLIBS) -o $@
 $(BUILD)/test-tls-proxy: $(CORE) src/tcp_proxy.c tests/test_tls_proxy.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/tcp_proxy.c tests/test_tls_proxy.c $(LDFLAGS) -Wl,--wrap=connect -Wl,--wrap=vr_resolve_config4 $(LDLIBS) -o $@
+$(BUILD)/test-tcp-close: $(CORE) src/tcp_proxy.c tests/test_tcp_close.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_tcp_close.c $(LDFLAGS) $(LDLIBS) -o $@
 clean:
 	rm -f $(BUILD)/cloudhelper-router-plugin $(BUILD)/test-core
 

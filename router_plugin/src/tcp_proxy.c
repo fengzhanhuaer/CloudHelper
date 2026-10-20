@@ -15,6 +15,7 @@
 #define ORIGINAL_DST 80
 typedef struct {
     int used,fd,up,phase,remote,exit_role,closing;
+    int read_eof[2],write_shutdown[2];
     uint64_t born,active;
     uint8_t id[16];char hex[33],ip[16],domain[254];int port;
     char path[VR_PATH_MAX][129];size_t count;
@@ -162,13 +163,15 @@ size_t vr_tcp_pollfds(vr_engine *e,struct pollfd *fds)
     for(size_t i=0;i<TCP_MAX;i++) {
         tcp_session *s=&e->tcp->sessions[i];short local=0,up=0;
         if(s->used) {
-            if(s->length[0]<TCP_BUFFER&&!s->closing)local|=POLLIN;
+            if(s->length[0]<TCP_BUFFER&&!s->closing&&!s->read_eof[0])local|=POLLIN;
             if(s->length[1])local|=POLLOUT;
             if(s->phase==2)up=POLLOUT;
-            if(s->phase==3) {if(s->length[0])up|=POLLOUT;if(s->length[1]<TCP_BUFFER&&!s->closing)up|=POLLIN;}
+            if(s->phase==3) {if(s->length[0])up|=POLLOUT;if(s->length[1]<TCP_BUFFER&&!s->closing&&!s->read_eof[1])up|=POLLIN;}
         }
-        fds[1+i*2]=(struct pollfd){s->used?s->fd:-1,local,0};
-        fds[2+i*2]=(struct pollfd){s->used?s->up:-1,up,0};
+        /* poll reports HUP even with events=0. While the other end drains,
+           omit this descriptor entirely instead of spinning on its old EOF. */
+        fds[1+i*2]=(struct pollfd){local?s->fd:-1,local,0};
+        fds[2+i*2]=(struct pollfd){up?s->up:-1,up,0};
     }
     return 1+TCP_MAX*2;
 }
@@ -177,6 +180,7 @@ static int write_buffer(int fd,uint8_t *buffer,size_t *length)
     if(!*length)return 0;
     ssize_t n=send(fd,buffer,*length,MSG_NOSIGNAL);
     if(n<0)return errno==EAGAIN||errno==EWOULDBLOCK||errno==EINTR?0:-1;
+    if(!n)return -1;
     if(n>0){memmove(buffer,buffer+n,*length-(size_t)n);*length-=(size_t)n;}
     return 0;
 }
@@ -185,7 +189,7 @@ static int read_buffer(int fd,uint8_t *buffer,size_t *length)
     if(*length==TCP_BUFFER)return 0;
     ssize_t n=recv(fd,buffer+*length,TCP_BUFFER-*length,0);
     if(n<0)return errno==EAGAIN||errno==EWOULDBLOCK||errno==EINTR?0:-1;
-    if(n==0)return -1;
+    if(n==0)return 1;
     *length+=(size_t)n;return 0;
 }
 void vr_tcp_poll(vr_engine *e,struct pollfd *fds)
@@ -210,17 +214,50 @@ void vr_tcp_poll(vr_engine *e,struct pollfd *fds)
             if(getsockopt(s->up,SOL_SOCKET,SO_ERROR,&error,&n)||error){if(s->exit_role)result(e,s,0);drop(e,s,1);continue;}
             s->phase=3;if(s->exit_role)result(e,s,1);
         }
-        if(a&POLLOUT)if(write_buffer(s->fd,s->buffer[1],&s->length[1]))s->closing=1;
-        if(s->phase==3&&(b&POLLOUT))if(write_buffer(s->up,s->buffer[0],&s->length[0]))s->closing=1;
-        if((a&(POLLIN|POLLHUP))&&!s->closing) {size_t before=s->length[0];if(read_buffer(s->fd,s->buffer[0],&s->length[0]))s->closing=1;if(s->length[0]!=before)s->active=now;}
-        if(s->phase==3&&(b&(POLLIN|POLLHUP))&&!s->closing) {size_t before=s->length[1];if(read_buffer(s->up,s->buffer[1],&s->length[1]))s->closing=1;if(s->length[1]!=before)s->active=now;}
-        if(!s->phase&&(vr_tls_server_name(s->buffer[0],s->length[0],s->domain)||now-s->born>=2000))decide(e,s);
+        if(a&POLLOUT) {
+            size_t before=s->length[1];
+            if(write_buffer(s->fd,s->buffer[1],&s->length[1])){drop(e,s,1);continue;}
+            if(s->length[1]!=before)s->active=now;
+        }
+        if(s->phase==3&&(b&POLLOUT)) {
+            size_t before=s->length[0];
+            if(write_buffer(s->up,s->buffer[0],&s->length[0])){drop(e,s,1);continue;}
+            if(s->length[0]!=before)s->active=now;
+        }
+        if((a&(POLLIN|POLLHUP))&&!s->closing&&!s->read_eof[0]) {
+            size_t before=s->length[0];int rc=read_buffer(s->fd,s->buffer[0],&s->length[0]);
+            if(rc<0){drop(e,s,1);continue;}
+            if(rc>0){s->read_eof[0]=1;if(s->remote)s->closing=1;}
+            if(s->length[0]!=before)s->active=now;
+        }
+        if(s->phase==3&&(b&(POLLIN|POLLHUP))&&!s->closing&&!s->read_eof[1]) {
+            size_t before=s->length[1];int rc=read_buffer(s->up,s->buffer[1],&s->length[1]);
+            if(rc<0){drop(e,s,1);continue;}
+            if(rc>0){s->read_eof[1]=1;if(s->remote)s->closing=1;}
+            if(s->length[1]!=before)s->active=now;
+        }
+        if(!s->phase&&(s->read_eof[0]||vr_tls_server_name(s->buffer[0],s->length[0],s->domain)||now-s->born>=2000))decide(e,s);
         if(!s->used)continue;
+        if(s->remote&&(s->read_eof[0]||s->read_eof[1]))s->closing=1;
         size_t lane=s->exit_role?1:0;
         if(s->remote&&s->phase==3&&s->length[lane]) {
             uint8_t payload[32784];size_t n=s->length[lane];if(n>32768)n=32768;
             memcpy(payload,s->id,16);memcpy(payload+16,s->buffer[lane],n);
             if(!vr_send(e,8,3,s->path,s->count,payload,n+16)) {memmove(s->buffer[lane],s->buffer[lane]+n,s->length[lane]-n);s->length[lane]-=n;s->active=now;}
+        }
+        /* A direct TCP FIN ends only its read direction. Forward it after
+           queued bytes, and keep receiving the response in the other one.
+           Remote sessions retain the existing full-close wire contract. */
+        if(!s->remote&&s->phase==3) {
+            int failed=0;
+            for(size_t direction=0;direction<2;direction++) {
+                if(!s->read_eof[direction]||s->length[direction]||s->write_shutdown[direction])continue;
+                int fd=direction?s->fd:s->up;
+                if(shutdown(fd,SHUT_WR)){failed=1;break;}
+                s->write_shutdown[direction]=1;
+            }
+            if(failed){drop(e,s,1);continue;}
+            if(s->read_eof[0]&&s->read_eof[1]&&!s->length[0]&&!s->length[1]){drop(e,s,1);continue;}
         }
         if(s->closing&&!s->length[0]&&!s->length[1])drop(e,s,1);
     }
