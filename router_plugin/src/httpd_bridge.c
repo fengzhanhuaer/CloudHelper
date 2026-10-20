@@ -15,6 +15,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 #include "../include/httpd_layout.h"
+#include "../include/httpd_access.h"
 
 #ifndef CHVR_ADMIN_SOCKET
 #define CHVR_ADMIN_SOCKET "/var/run/cloudhelper-router/admin.sock"
@@ -85,7 +86,10 @@ static int lan_client(FILE *stream)
         in_addr_t address=((struct sockaddr_in *)&request.ifr_addr)->sin_addr.s_addr;
         if(local.sin_addr.s_addr==address && !ioctl(query,SIOCGIFNETMASK,&request)) {
             in_addr_t mask=((struct sockaddr_in *)&request.ifr_netmask)->sin_addr.s_addr;
-            valid=(peer.sin_addr.s_addr&mask)==(address&mask);
+            FILE *routes=NULL;
+            if((peer.sin_addr.s_addr&mask)!=(address&mask))routes=fopen("/proc/net/route","r");
+            valid=chvr_httpd_access(local.sin_addr.s_addr,peer.sin_addr.s_addr,address,mask,routes);
+            if(routes)fclose(routes);
         }
     }
     close(query);return valid;

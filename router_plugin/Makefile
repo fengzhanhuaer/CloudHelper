@@ -19,11 +19,13 @@ $(BUILD)/cloudhelper-router-plugin $(BUILD)/httpd-bridge.so $(BUILD)/httpd-fixtu
 all: $(BUILD)/cloudhelper-router-plugin $(BUILD)/httpd-bridge.so
 $(BUILD)/test-controller-link: $(CORE) tests/test_controller_link.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_controller_link.c $(LDFLAGS) -Wl,--wrap=vr_resolve_config4_all $(LDLIBS) -o $@
-$(BUILD)/httpd-bridge.so: src/httpd_bridge.c include/httpd_layout.h | $(BUILD)
+$(BUILD)/httpd-bridge.so: src/httpd_bridge.c include/httpd_layout.h include/httpd_access.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC -shared $< $(LDFLAGS) -ldl -o $@
 $(BUILD)/httpd-fixture: tests/httpd_fixture.c | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fno-pie $(if $(filter bin/native,$(BUILD)),-no-pie,) -rdynamic $< $(LDFLAGS) -lssl -lcrypto -o $@
 $(BUILD)/test-httpd-profile: tests/test_httpd_profile.c include/httpd_profile.h include/httpd_layout.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LDFLAGS) -o $@
+$(BUILD)/test-httpd-access: tests/test_httpd_access.c include/httpd_access.h $(BUILD)/build-version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LDFLAGS) -o $@
 $(BUILD):
 	mkdir -p $@
