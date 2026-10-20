@@ -1,6 +1,6 @@
 """Run only in a disposable Linux network namespace with CAP_NET_ADMIN.
 
-Example: docker run --rm --cap-add NET_ADMIN -v "$PWD:/module" \
+Example: docker run --rm --cap-add NET_ADMIN -e CHVR_DISPOSABLE_TEST=1 -v "$PWD:/module" \
   cloudhelper-router-ci python3 tests/test_httpd_gateway_network.py
 """
 import os
@@ -9,6 +9,9 @@ import socket
 import struct
 import subprocess
 import sys
+
+if os.environ.get('CHVR_DISPOSABLE_TEST')!='1':
+    raise SystemExit('Set CHVR_DISPOSABLE_TEST=1 only inside a disposable network namespace')
 
 root=Path(__file__).resolve().parents[1]
 created=[]
