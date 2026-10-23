@@ -546,7 +546,7 @@ static void dial_blocking(vr_link *l)
     time_t expires;
     if(vr_ticket_verify(vr_string(r,"auth_ticket"),vr_string(r,"user_public_key"),l->route,vr_string(r,"from_node_id"),vr_string(r,"to_node_id"),time(NULL),&expires)){strcpy(l->error,"route ticket invalid or expired");return;}
     uint64_t deadline=vr_millis()+5000;int fd=-1;char event[240];
-    SSL *ssl=vr_tls_connect(host,port,pin,&e->config,e->addresses.wan_if,&fd,deadline);if(!ssl){strcpy(l->error,"DNS/TCP/TLS connection failed");
+    SSL *ssl=vr_tls_connect_relay(host,port,pin,&e->config,e->addresses.wan_if,&fd,deadline);if(!ssl){strcpy(l->error,"DNS/TCP/TLS connection failed");
         snprintf(event,sizeof(event),"Peer %.32s %.120s:%d: %.64s",l->peer,host,port,l->error);vr_service_log(e->service,"link",event);return;}
     char nonce[49],text[1024],mac[65],ws_key[25],accept[29],actual[64];unsigned char random[16];
     char *request=malloc(16384),*response=malloc(4096);

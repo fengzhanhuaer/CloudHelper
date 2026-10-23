@@ -91,7 +91,7 @@ int vr_tls_pinned(X509 *cert,const char *pin)
     return strcasecmp(text,pin)?-1:0;
 }
 
-SSL *vr_tls_connect_at(const char *host,const char *ip,int port,const char *pin,const char *iface,int *fd,uint64_t deadline)
+static SSL *connect_at(const char *host,const char *ip,int port,const char *pin,const char *iface,int *fd,uint64_t deadline,int send_sni)
 {
     *fd=-1;if(port<1||port>65535)return NULL;
     int sock=socket(AF_INET,SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK,0);if(sock<0)return NULL;
@@ -114,7 +114,8 @@ SSL *vr_tls_connect_at(const char *host,const char *ip,int port,const char *pin,
            SSL_CTX_load_verify_locations(ctx,"/etc/ssl/certs/ca-certificates.crt",NULL)!=1)goto fail;
     }
     ssl=SSL_new(ctx);if(!ssl)goto fail;SSL_CTX_free(ctx);ctx=NULL;
-    SSL_set_fd(ssl,sock);SSL_set_tlsext_host_name(ssl,host);
+    SSL_set_fd(ssl,sock);
+    if(send_sni && SSL_set_tlsext_host_name(ssl,host)!=1)goto fail;
     if(!*pin) {
         struct in_addr numeric;
         if(inet_pton(AF_INET,host,&numeric)==1){if(X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(ssl),host)!=1)goto fail;}
@@ -126,7 +127,10 @@ SSL *vr_tls_connect_at(const char *host,const char *ip,int port,const char *pin,
 fail:SSL_free(ssl);SSL_CTX_free(ctx);close(sock);return NULL;
 }
 
-SSL *vr_tls_connect(const char *host,int port,const char *pin,const vr_config *config,const char *iface,int *fd,uint64_t deadline)
+SSL *vr_tls_connect_at(const char *host,const char *ip,int port,const char *pin,const char *iface,int *fd,uint64_t deadline)
+{return connect_at(host,ip,port,pin,iface,fd,deadline,1);}
+
+static SSL *connect_resolved(const char *host,int port,const char *pin,const vr_config *config,const char *iface,int *fd,uint64_t deadline,int send_sni)
 {
     uint64_t now=vr_millis(),budget=deadline>now?deadline-now:0;
     char addresses[4][16];*fd=-1;int count=vr_resolve_config4_all(host,config,iface,addresses);
@@ -134,10 +138,22 @@ SSL *vr_tls_connect(const char *host,int port,const char *pin,const vr_config *c
     uint64_t end=vr_millis()+budget;
     for(int i=0;i<count;i++) {
         now=vr_millis();if(now>=end)break;
-        SSL *ssl=vr_tls_connect_at(host,addresses[i],port,pin,iface,fd,now+(end-now)/(uint64_t)(count-i));
+        SSL *ssl=connect_at(host,addresses[i],port,pin,iface,fd,now+(end-now)/(uint64_t)(count-i),send_sni);
         if(ssl)return ssl;
     }
     return NULL;
+}
+
+SSL *vr_tls_connect(const char *host,int port,const char *pin,const vr_config *config,const char *iface,int *fd,uint64_t deadline)
+{return connect_resolved(host,port,pin,config,iface,fd,deadline,1);}
+
+SSL *vr_tls_connect_relay(const char *host,int port,const char *pin,const vr_config *config,const char *iface,int *fd,uint64_t deadline)
+{
+    /* Match Probe ordinary relays: no domain SNI. Cloudflare Copilot entry
+       points need SNI to select the service. Certificate identity checks and
+       the carrier's private HMAC/ticket authentication remain independent. */
+    int send_sni=!strncasecmp(host,"api_copilot_",12);
+    return connect_resolved(host,port,pin,config,iface,fd,deadline,send_sni);
 }
 
 int vr_http_header(SSL *ssl,char *header,size_t cap,uint64_t deadline)

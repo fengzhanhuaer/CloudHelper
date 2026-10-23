@@ -18,6 +18,7 @@ int vr_tls_io(SSL *ssl,int write,void *bytes,size_t n,uint64_t deadline);
 SSL_CTX *vr_tls_server_context(const char *cert,const char *key);
 SSL *vr_tls_accept(SSL_CTX *ctx,int fd,uint64_t deadline);
 SSL *vr_tls_connect(const char *host,int port,const char *pin,const vr_config *config,const char *iface,int *fd,uint64_t deadline);
+SSL *vr_tls_connect_relay(const char *host,int port,const char *pin,const vr_config *config,const char *iface,int *fd,uint64_t deadline);
 SSL *vr_tls_connect_at(const char *host,const char *ip,int port,const char *pin,const char *iface,int *fd,uint64_t deadline);
 int vr_http_header(SSL *ssl,char *header,size_t cap,uint64_t deadline);
 const char *vr_http_field(const char *header,const char *name,char *out,size_t cap);

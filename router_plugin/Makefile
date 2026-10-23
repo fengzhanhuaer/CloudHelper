@@ -23,6 +23,8 @@ $(BUILD)/test-telemetry: $(CORE) src/carrier.c tests/test_telemetry.c $(wildcard
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/carrier.c tests/test_telemetry.c $(LDFLAGS) $(LDLIBS) -o $@
 $(BUILD)/test-controller-link: $(CORE) tests/test_controller_link.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_controller_link.c $(LDFLAGS) -Wl,--wrap=vr_resolve_config4_all $(LDLIBS) -o $@
+$(BUILD)/test-tls-connect: $(CORE) tests/test_tls_connect.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_tls_connect.c $(LDFLAGS) -Wl,--wrap=vr_resolve_config4_all $(LDLIBS) -o $@
 $(BUILD)/httpd-bridge.so: src/httpd_bridge.c include/httpd_layout.h include/httpd_access.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC -shared $< $(LDFLAGS) -ldl -o $@
 $(BUILD)/httpd-fixture: tests/httpd_fixture.c | $(BUILD)

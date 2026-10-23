@@ -6,6 +6,8 @@ build_version="${CHVR_VERSION:?Set CHVR_VERSION to the release tag}"
 [[ "$build_version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.+-][a-zA-Z0-9.+-]+)?$ ]]
 sdk="$sdk_root/toolchain"
 rootfs="$sdk_root/rootfs/ax56uv2"
+make VERSION="$build_version" bin/native/test-tls-connect
+python3 tests/test_tls_connect.py
 make VERSION="$build_version" all test bin/native/test-platform-command bin/native/test-telemetry bin/native/test-cache bin/native/test-upgrade bin/native/test-httpd-profile bin/native/test-httpd-access bin/native/httpd-fixture bin/native/test-carrier bin/native/test-measure
 bin/native/test-platform-command
 bin/native/test-telemetry
