@@ -17,6 +17,8 @@ $(BUILD)/build-version.h: FORCE | $(BUILD)
 	@cmp -s $@.new $@ && rm $@.new || mv $@.new $@
 $(BUILD)/cloudhelper-router-plugin $(BUILD)/httpd-bridge.so $(BUILD)/httpd-fixture $(BUILD)/test-core $(BUILD)/test-logs $(BUILD)/test-dataplane $(BUILD)/test-platform $(BUILD)/test-dns $(BUILD)/test-control $(BUILD)/test-certificate $(BUILD)/test-carrier $(BUILD)/test-measure $(BUILD)/test-gateway $(BUILD)/test-cache $(BUILD)/test-mapping $(BUILD)/dns-query-fixture $(BUILD)/test-dns-system $(BUILD)/test-httpd-profile: $(BUILD)/build-version.h
 all: $(BUILD)/cloudhelper-router-plugin $(BUILD)/httpd-bridge.so
+$(BUILD)/test-platform-command: tests/test_platform_command.c src/platform.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_platform_command.c $(LDFLAGS) -Wl,--wrap=read -Wl,--wrap=waitpid $(LDLIBS) -o $@
 $(BUILD)/test-telemetry: $(CORE) src/carrier.c tests/test_telemetry.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/carrier.c tests/test_telemetry.c $(LDFLAGS) $(LDLIBS) -o $@
 $(BUILD)/test-controller-link: $(CORE) tests/test_controller_link.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)

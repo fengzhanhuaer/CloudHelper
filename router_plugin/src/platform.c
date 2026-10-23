@@ -80,6 +80,19 @@ int vr_runtime_mount(const char *op)
     return mount(source,target,NULL,MS_BIND,NULL);
 }
 
+static void command_output(int fd,char *out,size_t capacity,size_t *used)
+{
+    char buf[512];ssize_t n;
+    for(;;) {
+        n=read(fd,buf,sizeof(buf));
+        if(n<0&&errno==EINTR)continue;
+        if(n<=0)break;
+        if(out&&capacity) {
+            size_t k=(size_t)n;if(k>capacity-1-*used)k=capacity-1-*used;
+            memcpy(out+*used,buf,k);*used+=k;
+        }
+    }
+}
 static int command(const char *const *args,char *out,size_t capacity)
 {
     int pipes[2];if(pipe2(pipes,O_CLOEXEC|O_NONBLOCK))return -1;
@@ -91,14 +104,14 @@ static int command(const char *const *args,char *out,size_t capacity)
     }
     close(pipes[1]);size_t used=0;int status=-1,done=0;uint64_t deadline=vr_millis()+5000;
     while(vr_millis()<deadline) {
-        char buf[512];ssize_t n;
-        while((n=read(pipes[0],buf,sizeof(buf)))>0)if(out&&capacity) {
-            size_t k=(size_t)n;if(k>capacity-1-used)k=capacity-1-used;memcpy(out+used,buf,k);used+=k;
-        }
+        command_output(pipes[0],out,capacity,&used);
         if(waitpid(pid,&status,WNOHANG)==pid){done=1;break;}
         struct pollfd p={pipes[0],POLLIN,0};poll(&p,1,20);
     }
     if(!done){kill(pid,SIGKILL);while(waitpid(pid,&status,0)<0&&errno==EINTR){}}
+    /* A child may write and exit between the empty read and waitpid. Reaping
+       it does not consume its pipe: retain that final output before closing. */
+    command_output(pipes[0],out,capacity,&used);
     close(pipes[0]);if(out&&capacity){while(used&&(out[used-1]=='\n'||out[used-1]=='\r'))used--;out[used]=0;}
     return done&&WIFEXITED(status)&&WEXITSTATUS(status)==0?0:-1;
 }
