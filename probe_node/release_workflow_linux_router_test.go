@@ -152,8 +152,6 @@ func TestReleaseWorkflowDefinesLinuxRouterArtifacts(t *testing.T) {
 		"cloudhelper-probe-node-android-arm64.apk",
 		"cloudhelper-asus56uv2-jffs.tar.gz",
 		"cloudhelper-asus56uv2-jffs.tar.gz.json",
-		"cloudhelper-asusbe86u-jffs.tar.gz",
-		"cloudhelper-asusbe86u-jffs.tar.gz.json",
 	}
 	if len(files) != len(expected) {
 		t.Fatalf("release assets=%v, want %d assets", files, len(expected))

@@ -10,6 +10,7 @@
 
 static void status(vr_engine *e,int ready)
 {
+    vr_telemetry_publish(e);
     json_object *o=json_object_new_object(),*links=vr_links_status(e),*nodes=json_object_new_array();
     json_object_object_add(o,"enabled",json_object_new_boolean(e->config.enabled));
     json_object_object_add(o,"gateway_enabled",json_object_new_boolean(e->config.gateway.enabled));
@@ -17,6 +18,11 @@ static void status(vr_engine *e,int ready)
     pthread_mutex_lock(&e->mutex);int connected=e->controller_connected;
     json_object_object_add(o,"controller_endpoint",json_object_new_string(e->controller_endpoint));
     json_object_object_add(o,"controller_direct",json_object_new_boolean(e->controller_direct));pthread_mutex_unlock(&e->mutex);
+    char public4[16],public6[46];pthread_mutex_lock(&e->mutex);
+    vr_copy(public4,sizeof(public4),e->public_ipv4);vr_copy(public6,sizeof(public6),e->public_ipv6);pthread_mutex_unlock(&e->mutex);
+    if(!*public4)vr_public_ip(e->addresses.wan,AF_INET,public4,sizeof(public4));
+    json_object_object_add(o,"public_ipv4",json_object_new_string(public4));
+    json_object_object_add(o,"public_ipv6",json_object_new_string(public6));
     json_object_object_add(o,"controller_connected",json_object_new_boolean(connected));
     json_object_object_add(o,"error",json_object_new_string(e->error));
     json_object_object_add(o,"lan",json_object_new_string(e->addresses.lan));json_object_object_add(o,"wan",json_object_new_string(e->addresses.wan));
@@ -153,6 +159,7 @@ static int prepare(vr_engine *e)
     if(vr_platform_routes(e->policy)){strcpy(e->error,"published route initialization failed");return -1;}
     if(vr_dataplane_start(e)){strcpy(e->error,"mapping resolver initialization failed");return -1;}
     if(e->config.enabled&&e->config.dns_enabled&&vr_dns_start(e)){strcpy(e->error,"DNS initialization failed");return -1;}
+    vr_telemetry_publish(e);
     if(vr_control_start(e)){strcpy(e->error,"controller worker initialization failed");return -1;}
     return 0;
 }
@@ -226,6 +233,6 @@ done:
     if(e->platform_started)vr_platform_stop(e->cidr);
     if(e->tun>=0)close(e->tun);
     for(size_t i=0;i<4;i++)json_object_put(e->receives[i].message);
-    json_object_put(e->speed_send);json_object_put(e->snapshot);json_object_put(e->next_policy);json_object_put(e->nonces);SSL_CTX_free(e->tls);
+    json_object_put(e->telemetry);json_object_put(e->speed_send);json_object_put(e->snapshot);json_object_put(e->next_policy);json_object_put(e->nonces);SSL_CTX_free(e->tls);
     pthread_cond_destroy(&e->jobs_changed);pthread_mutex_destroy(&e->mutex);OPENSSL_cleanse(&e->config,sizeof(e->config));free(e);
 }

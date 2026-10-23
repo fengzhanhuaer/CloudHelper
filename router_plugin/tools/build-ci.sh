@@ -6,7 +6,10 @@ build_version="${CHVR_VERSION:?Set CHVR_VERSION to the release tag}"
 [[ "$build_version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.+-][a-zA-Z0-9.+-]+)?$ ]]
 sdk="$sdk_root/toolchain"
 rootfs="$sdk_root/rootfs/ax56uv2"
-make VERSION="$build_version" all test bin/native/test-upgrade bin/native/test-httpd-profile bin/native/test-httpd-access bin/native/httpd-fixture bin/native/test-carrier bin/native/test-measure
+make VERSION="$build_version" all test bin/native/test-telemetry bin/native/test-upgrade bin/native/test-httpd-profile bin/native/test-httpd-access bin/native/httpd-fixture bin/native/test-carrier bin/native/test-measure
+bin/native/test-telemetry
+mkdir -p artifacts
+bin/native/test-telemetry --json > artifacts/telemetry-fixture.json
 make VERSION="$build_version" bin/native/test-policy-update bin/native/test-control bin/native/test-mapping bin/native/test-dns bin/native/test-dataplane bin/native/test-routes bin/native/test-tls-proxy bin/native/test-tcp-close bin/native/test-tx
 for target in policy-update mapping dns dataplane tls-proxy tcp-close tx;do bin/native/test-$target;done
 python3 tests/test_tx.py
@@ -42,4 +45,5 @@ for profile in ax56uv2 ax56uv2-koolshare be86u be86u-koolcenter;do
     qemu-arm -L "$sdk_root/rootfs/$profile" -E LD_LIBRARY_PATH=/usr/lib:/lib bin/arm/test-tcp-close
     qemu-arm -L "$sdk_root/rootfs/$profile" -E LD_LIBRARY_PATH=/usr/lib:/lib bin/arm/test-httpd-access
 done
-for profile in ax56uv2 be86u;do python3 tools/package-jffs.py --profile "$profile";done
+# BE86U remains an ABI compatibility fixture, but is no longer released.
+python3 tools/package-jffs.py --profile ax56uv2

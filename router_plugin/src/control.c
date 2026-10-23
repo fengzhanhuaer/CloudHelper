@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <openssl/rand.h>
 #include <openssl/err.h>
+#include <curl/curl.h>
 
 /* The existing controller carries one JSON control stream over yamux/WS.
  * Implement only that bounded stream; no general mux runtime or new library. */
@@ -19,6 +20,7 @@ typedef struct {
     uint8_t header[12];size_t header_used,payload_left;
     uint32_t send_window;size_t message_used;
     char endpoint[280];char message[16384];uint64_t ack_at,started;int direct;
+    char *pending;size_t pending_len,pending_at;unsigned reset_epoch;int waiting_reset;
 } control;
 
 static uint32_t u32(const uint8_t *b){return ((uint32_t)b[0]<<24)|((uint32_t)b[1]<<16)|((uint32_t)b[2]<<8)|b[3];}
@@ -28,6 +30,70 @@ static int stopped(vr_engine *e)
 {
     pthread_mutex_lock(&e->mutex);int stop=e->control_stop;pthread_mutex_unlock(&e->mutex);
     return stop||vr_service_stopped(e->service,e->generation);
+}
+
+typedef struct {char text[64];size_t used;} ip_response;
+static size_t ip_received(char *data,size_t size,size_t count,void *arg)
+{
+    ip_response *r=arg;if(size&&count>63/size)return 0;size_t n=size*count;
+    if(n>sizeof(r->text)-1-r->used)return 0;
+    memcpy(r->text+r->used,data,n);r->used+=n;r->text[r->used]=0;return n;
+}
+static int ip_cancel(void *arg,curl_off_t a,curl_off_t b,curl_off_t d,curl_off_t f)
+{(void)a;(void)b;(void)d;(void)f;return stopped(arg);}
+static int public_ip(vr_engine *e,int family,char *out,size_t cap)
+{
+    CURL *curl=curl_easy_init();if(!curl)return -1;ip_response response={{0},0};long status=0;
+    const char *urls4[]={"https://api4.ipify.org","https://ipv4.icanhazip.com"};
+    const char *urls6[]={"https://api6.ipify.org","https://ipv6.icanhazip.com"};
+    curl_easy_setopt(curl,CURLOPT_PROXY,"");curl_easy_setopt(curl,CURLOPT_INTERFACE,e->addresses.wan_if);
+    curl_easy_setopt(curl,CURLOPT_IPRESOLVE,family==AF_INET?CURL_IPRESOLVE_V4:CURL_IPRESOLVE_V6);
+    curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT_MS,2000L);curl_easy_setopt(curl,CURLOPT_TIMEOUT_MS,3000L);curl_easy_setopt(curl,CURLOPT_NOSIGNAL,1L);
+    curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,ip_received);curl_easy_setopt(curl,CURLOPT_WRITEDATA,&response);
+    curl_easy_setopt(curl,CURLOPT_NOPROGRESS,0L);curl_easy_setopt(curl,CURLOPT_XFERINFOFUNCTION,ip_cancel);curl_easy_setopt(curl,CURLOPT_XFERINFODATA,e);
+    int result=-1;
+    for(unsigned i=0;i<2&&!stopped(e);i++) {
+        memset(&response,0,sizeof(response));curl_easy_setopt(curl,CURLOPT_URL,family==AF_INET?urls4[i]:urls6[i]);
+        struct curl_slist *resolve=NULL;
+        if(family==AF_INET) {
+            char host[254],ips[4][16],entry[320];int port,tls;
+            /* Ordinary router DNS may return Fake IPs. Reuse the controller's
+               WAN-bound upstream resolution instead of recursing into dnsmasq. */
+            if(vr_origin(urls4[i],host,&port,&tls)||vr_resolve_config4_all(host,&e->config,e->addresses.wan_if,ips)<1)continue;
+            snprintf(entry,sizeof(entry),"%s:%d:%s",host,port,ips[0]);resolve=curl_slist_append(NULL,entry);
+            if(!resolve)continue;
+            curl_easy_setopt(curl,CURLOPT_RESOLVE,resolve);
+        }
+        CURLcode rc=curl_easy_perform(curl);curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&status);
+        curl_easy_setopt(curl,CURLOPT_RESOLVE,NULL);curl_slist_free_all(resolve);
+        if(rc==CURLE_OK&&status==200&&!vr_public_ip(response.text,family,out,cap)){result=0;break;}
+    }
+    curl_easy_cleanup(curl);return result;
+}
+static void *public_ip_worker(void *arg)
+{
+    vr_engine *e=arg;uint64_t refresh_at=0,last4=0,last6=0;
+    while(!stopped(e)) {
+        uint64_t now=vr_millis();
+        if(now>=refresh_at) {
+            json_object *o=json_object_new_object();json_object_object_add(o,"ipv4",json_object_new_array());
+            int has6=vr_report_addresses(o,"","");char global6[46]="";
+            if(has6)vr_copy(global6,sizeof(global6),json_object_get_string(json_object_array_get_idx(vr_member(o,"ipv6"),0)));
+            json_object_put(o);
+            char v4[16]="",v6[46]="";int ok4=!public_ip(e,AF_INET,v4,sizeof(v4)),ok6=has6&&!stopped(e)&&!public_ip(e,AF_INET6,v6,sizeof(v6));
+            /* A globally routed interface address is already a valid public
+               IPv6 address even if the external reflector is unreachable. */
+            if(has6&&!ok6){vr_copy(v6,sizeof(v6),global6);ok6=1;}
+            if(ok4)last4=now;
+            if(ok6)last6=now;
+            pthread_mutex_lock(&e->mutex);
+            if(ok4)vr_copy(e->public_ipv4,sizeof(e->public_ipv4),v4);else if(now-last4>=1800000)e->public_ipv4[0]=0;
+            if(ok6)vr_copy(e->public_ipv6,sizeof(e->public_ipv6),v6);else if(!has6||now-last6>=1800000)e->public_ipv6[0]=0;
+            pthread_mutex_unlock(&e->mutex);refresh_at=now+(ok4?300000:60000);
+        }
+        poll(NULL,0,100);
+    }
+    return NULL;
 }
 
 static int send_ws(control *c,int opcode,const void *bytes,size_t n)
@@ -54,6 +120,9 @@ static int message(control *c)
     if(!strcmp(type,"ack")){c->ack_at=vr_millis();pthread_mutex_lock(&c->engine->mutex);c->engine->controller_connected=1;vr_copy(c->engine->controller_endpoint,sizeof(c->engine->controller_endpoint),c->endpoint);c->engine->controller_direct=c->direct;pthread_mutex_unlock(&c->engine->mutex);}
     else if(!strcmp(type,"route_config_sync"))c->refresh=1;
     else if(!strcmp(type,"report_once"))c->report=1;
+    else if(!strcmp(type,"virtual_router_buffers_reset")) {
+        pthread_mutex_lock(&c->engine->mutex);c->reset_epoch=c->engine->telemetry_epoch+1;c->engine->buffers_reset=1;pthread_mutex_unlock(&c->engine->mutex);c->waiting_reset=1;
+    }
     else if(!strcmp(type,"upgrade")&&!strcmp(vr_string(m,"build_kind"),"asus_jffs")) {
         char err[256]="cannot start upgrade";
         if(vr_upgrade_start(c->engine->service,m,err,sizeof(err)))vr_service_log(c->engine->service,"upgrade",err);
@@ -131,11 +200,29 @@ static int connect_controller(control *c)
 static int report(control *c)
 {
     vr_engine *e=c->engine;json_object *o=vr_probe_report(&e->config,&e->addresses,"/sys/class/net");
+    char v4[16],v6[46];pthread_mutex_lock(&e->mutex);
+    /* Old firmware json-c may not have atomic reference counts. Copy while
+       locked instead of sharing JSON objects across threads. */
+    const char *wire=e->telemetry?json_object_to_json_string_ext(e->telemetry,JSON_C_TO_STRING_PLAIN):NULL;
+    char *copy=wire&&strlen(wire)<256*1024?strdup(wire):NULL;
+    vr_copy(v4,sizeof(v4),e->public_ipv4);vr_copy(v6,sizeof(v6),e->public_ipv6);pthread_mutex_unlock(&e->mutex);
+    vr_report_addresses(o,v4,v6);
+    json_object *snapshot=copy?vr_json_parse(copy,strlen(copy)):NULL;free(copy);
+    if(snapshot){json_object_object_foreach(snapshot,key,value){json_object_object_add(o,key,json_object_get(value));}json_object_put(snapshot);}
     const char *text=json_object_to_json_string_ext(o,JSON_C_TO_STRING_PLAIN);size_t len=strlen(text);int rc=-1;
-    char *line=malloc(len+1);
-    if(line&&len<16384){memcpy(line,text,len);line[len++]='\n';rc=send_mux(c,0,0,1,(uint32_t)len,line);}
-    free(line);
+    if(len<256*1024&& (c->pending=malloc(len+1))){memcpy(c->pending,text,len);c->pending[len]='\n';c->pending_len=len+1;c->pending_at=0;rc=0;}
     json_object_put(o);return rc;
+}
+
+static int flush_report(control *c)
+{
+    /* Leave time to read ACKs/window updates even on a slow controller. */
+    for(int i=0;i<2&&c->pending&&c->send_window;i++) {
+        size_t n=c->pending_len-c->pending_at;if(n>8192)n=8192;if(n>c->send_window)n=c->send_window;
+        if(send_mux(c,0,0,1,(uint32_t)n,c->pending+c->pending_at))return -1;
+        c->pending_at+=n;if(c->pending_at==c->pending_len){free(c->pending);c->pending=NULL;c->pending_at=c->pending_len=0;}
+    }
+    return 0;
 }
 
 static int refresh(control *c)
@@ -174,7 +261,9 @@ static void *control_worker(void *arg)
             while(!stopped(e)) {
                 uint64_t now=vr_millis();
                 if(now-c->ack_at>65000)break;
-                if(c->report||now-sent>=20000){if(report(c))break;sent=now;c->report=0;}
+                if(c->waiting_reset){pthread_mutex_lock(&e->mutex);int done=e->telemetry_epoch>=c->reset_epoch;pthread_mutex_unlock(&e->mutex);if(done){c->waiting_reset=0;c->report=1;}}
+                if(!c->pending&&!c->waiting_reset&&(c->report||now-sent>=20000)){if(report(c))break;sent=now;c->report=0;}
+                if(flush_report(c))break;
                 if(c->refresh||now>=next_check){int rc=refresh(c);c->refresh=0;
                     if(rc<0){if(failures<4)failures++;unsigned delay=failures==4?30u:5u<<(failures-1);next_check=vr_millis()+delay*1000;}
                     else{failures=0;next_check=vr_millis()+60000;}}
@@ -192,7 +281,7 @@ static void *control_worker(void *arg)
         if(c->ssl&&!stopped(e))vr_service_log(e->service,"controller","Control stream disconnected or handshake failed; retrying");
           pthread_mutex_lock(&e->mutex);int intentional=e->refresh;pthread_mutex_unlock(&e->mutex);
           if(c->started&&!stopped(e)&&!intentional)vr_controller_link_feedback(&e->config,c->direct,vr_millis()-c->started>=90000,vr_millis()-c->started>=90000?1000:3000);
-          SSL_free(c->ssl);if(c->fd>=0)close(c->fd);free(c);
+          SSL_free(c->ssl);if(c->fd>=0)close(c->fd);free(c->pending);free(c);
         pthread_mutex_lock(&e->mutex);e->controller_connected=0;e->controller_endpoint[0]=0;e->controller_direct=0;int changed=e->refresh;pthread_mutex_unlock(&e->mutex);if(changed)break;
         for(int i=0;i<50&&!stopped(e);i++)poll(NULL,0,100);
     }
@@ -202,8 +291,10 @@ static void *control_worker(void *arg)
 int vr_control_start(vr_engine *e)
 {
     pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,256*1024);
-    int rc=pthread_create(&e->control_thread,&attr,control_worker,e);pthread_attr_destroy(&attr);
+    int rc=pthread_create(&e->control_thread,&attr,control_worker,e);
     if(!rc)e->control_started=1;
+    if(!rc&&*e->addresses.wan_if&&!pthread_create(&e->public_ip_thread,&attr,public_ip_worker,e))e->public_ip_started=1;
+    pthread_attr_destroy(&attr);
     return rc;
 }
 
@@ -211,4 +302,5 @@ void vr_control_stop(vr_engine *e)
 {
     pthread_mutex_lock(&e->mutex);e->control_stop=1;pthread_mutex_unlock(&e->mutex);
     if(e->control_started)pthread_join(e->control_thread,NULL);
+    if(e->public_ip_started)pthread_join(e->public_ip_thread,NULL);
 }

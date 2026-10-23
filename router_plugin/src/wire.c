@@ -33,6 +33,7 @@ int vr_decoder_feed(vr_decoder *d, const void *bytes, size_t n, vr_frame_handler
         if(d->needed>sizeof(d->bytes) || d->used>d->needed)return -2;
         size_t k=d->needed-d->used;if(k>n)k=n;
         memcpy(d->bytes+d->used,p,k);d->used+=k;p+=k;n-=k;
+        if(d->used>d->peak)d->peak=d->used;
         if(d->used<d->needed)continue;
         if(d->needed==12) {
             if(get16(d->bytes)!=0x5652)return -3;

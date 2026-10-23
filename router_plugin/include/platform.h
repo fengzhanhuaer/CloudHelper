@@ -3,6 +3,8 @@
 #include "chvr.h"
 typedef struct {char lan[16],wan[16],lan_if[16],wan_if[16];} vr_addresses;
 json_object *vr_probe_report(const vr_config *c,const vr_addresses *a,const char *net_root);
+int vr_public_ip(const char *text,int family,char *out,size_t cap);
+int vr_report_addresses(json_object *report,const char *public4,const char *public6);
 int vr_addresses_get(vr_addresses *a);
 int vr_platform_start(const vr_config *c,const vr_addresses *a,const char *ip,const char *cidr);
 void vr_platform_stop(const char *cidr);

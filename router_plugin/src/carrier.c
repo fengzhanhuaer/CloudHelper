@@ -20,6 +20,7 @@ struct vr_tx_frame {
     size_t length;
     uint64_t enqueued;
     unsigned lane;
+    size_t frame_bytes;
     uint8_t bytes[];
 };
 
@@ -72,6 +73,8 @@ static void write_done(vr_link *l)
 {
     vr_tx_frame *f=l->writing;size_t memory=sizeof(*f)+f->length;
     l->tx_memory-=memory;l->tx_memory_class[f->lane]-=memory;
+    l->tx_dequeued++;
+    if(f->frame_bytes&&l->write_offset==f->length){l->frames_sent++;l->frame_bytes_sent+=f->frame_bytes;}
     free(f);l->writing=NULL;l->write_offset=0;
 }
 
@@ -316,6 +319,7 @@ void vr_link_close(vr_link *l,const char *error)
     }
     l->used=l->tx_memory=l->write_offset=l->write_pending=0;l->write_events=0;l->business_since_bulk=0;
     l->retry=vr_millis()+5000;snprintf(l->error,sizeof(l->error),"%s",error);
+    if(l->decoder.peak>l->rx_peak)l->rx_peak=l->decoder.peak;
     memset(&l->decoder,0,sizeof(l->decoder));memset(&l->ws,0,sizeof(l->ws));
     l->ingress_count=0;
 }
@@ -326,20 +330,24 @@ int vr_link_queue(vr_link *l,int opcode,const void *bytes,size_t n)
     unsigned lane=(unsigned)queue_class(opcode,bytes,n);
     size_t header=(n<126?2:n<=65535?4:10)+(l->client?4:0);
     size_t length=n+header,memory=sizeof(vr_tx_frame)+length;
-    if(memory>VR_TX_CAP-l->tx_memory)return -1;
+    if(memory>VR_TX_CAP-l->tx_memory){l->tx_full++;return -1;}
     if(lane==TX_CONTROL) {
-        if(memory>VR_TX_CONTROL_CAP-l->tx_memory_class[lane])return -1;
+        if(memory>VR_TX_CONTROL_CAP-l->tx_memory_class[lane]){l->tx_full++;return -1;}
     } else {
         size_t business=l->tx_memory_class[TX_BUSINESS]+l->tx_memory_class[TX_BULK];
-        if(memory>VR_TX_CAP-VR_TX_CONTROL_RESERVE-business)return -1;
-        if(lane==TX_BULK&&memory>VR_TX_BULK_CAP-l->tx_memory_class[lane])return -1;
+        if(memory>VR_TX_CAP-VR_TX_CONTROL_RESERVE-business){l->tx_full++;return -1;}
+        if(lane==TX_BULK&&memory>VR_TX_BULK_CAP-l->tx_memory_class[lane]){l->tx_full++;return -1;}
     }
     vr_tx_frame *f=malloc(memory);if(!f)return -1;
     if(vr_ws_encode(opcode,l->client,bytes,n,f->bytes,length,&length)){free(f);return -1;}
     f->next=NULL;f->length=length;f->lane=lane;f->enqueued=vr_millis();
+    f->frame_bytes=opcode==2?n:0;
     if(l->tx_tail[lane])l->tx_tail[lane]->next=f;else l->tx_head[lane]=f;
     l->tx_tail[lane]=f;l->used+=length;l->tx_bytes[lane]+=length;
-    l->tx_memory+=memory;l->tx_memory_class[lane]+=memory;return 0;
+    l->tx_memory+=memory;l->tx_memory_class[lane]+=memory;l->tx_enqueued++;
+    if(l->used>l->tx_peak)l->tx_peak=l->used;
+    if(l->tx_memory>l->tx_memory_peak)l->tx_memory_peak=l->tx_memory;
+    return 0;
 }
 
 static int send_frame(vr_engine *e,const vr_frame *f,char path[VR_PATH_MAX][129],size_t n)
@@ -393,6 +401,7 @@ int vr_link_receive(const vr_frame *f,void *arg)
         l->ingress_length=f->control_len;l->ingress_count=count;l->ingress_at=at;memcpy(l->ingress_path,path,count*129);
     }
 accepted:
+    l->frames_received++;l->frame_bytes_received+=12+f->control_len+f->data_len;
     if(at+1<count){send_frame(e,f,path,count);return 0;}
     vr_link_frame(l,f,path,count);return 0;
 drop:;
@@ -614,7 +623,7 @@ void vr_handshakes_poll(vr_engine *e,int finish)
                 vr_link_close(l,"");l->ssl=result->ssl;l->fd=result->fd;l->client=result->client;
                 carrier_socket(l->fd);
                 l->ws.expect_mask=result->ws.expect_mask;l->last_rx=result->last_rx;l->auth_expires=result->auth_expires;
-                l->multi_carrier=result->multi_carrier;l->keepalive_at=vr_millis();l->session=++e->carrier_session;*l->error=0;
+                l->multi_carrier=result->multi_carrier;l->keepalive_at=vr_millis();l->connected_at=l->keepalive_at;l->session=++e->carrier_session;l->opens++;*l->error=0;
                 if(!l->slot&&!l->multi_carrier)for(size_t k=0;k<e->link_count;k++)
                     if(e->links[k].slot&&!strcmp(e->links[k].route,l->route))vr_link_close(&e->links[k],"");
                 result->ssl=NULL;result->fd=-1;

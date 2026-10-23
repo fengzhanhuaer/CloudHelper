@@ -25,6 +25,9 @@ typedef struct {
     SSL *ssl;
     int fd,client,slot,multi_carrier;
     uint64_t retry,rx,tx,last_rx,ping_time,rtt,keepalive_at,session;
+    uint64_t connected_at,tx_enqueued,tx_dequeued,tx_full;
+    uint64_t opens,frames_sent,frame_bytes_sent,frames_received,frame_bytes_received;
+    size_t tx_peak,tx_memory_peak,rx_peak;
     time_t auth_expires;
     vr_decoder decoder;
     vr_ws_decoder ws;
@@ -61,6 +64,11 @@ struct vr_engine {
     vr_handshake handshakes[2];
     pthread_t control_thread;int control_started,control_stop,controller_connected,refresh;
     char controller_endpoint[280];int controller_direct;
+    /* Immutable main-thread snapshot; readers copy it under mutex. */
+    json_object *telemetry;
+    char stats_started_at[40],public_ipv4[16],public_ipv6[46];
+    unsigned buffers_reset,telemetry_epoch;
+    pthread_t public_ip_thread;int public_ip_started;
     int tun,lan,wan,dns_udp,dns_tcp,platform_started;
     pthread_mutex_t mutex;pthread_cond_t jobs_changed;
     vr_mapping mappings[VR_MAPPING_MAX];
@@ -99,6 +107,7 @@ int vr_link_receive(const vr_frame *frame,void *link);
 void vr_handshakes_poll(vr_engine *e,int finish);
 int vr_control_start(vr_engine *e);
 void vr_control_stop(vr_engine *e);
+void vr_telemetry_publish(vr_engine *e);
 void vr_link_frame(vr_link *l,const vr_frame *f,char path[VR_PATH_MAX][129],size_t count);
 int vr_mapping_get(vr_engine *e,const char *domain,const char *ip,vr_decision decision,vr_mapping *out);
 int vr_mapping_lookup(vr_engine *e,const char *domain,const char *ip,vr_decision decision,vr_mapping *out);

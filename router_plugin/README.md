@@ -1,5 +1,7 @@
 # 华硕路由器 JFFS 虚拟路由插件
 
+“运行状态”显示缓存的公网 IPv4/IPv6，未获取时显示“未获取”；页面刷新不会额外联网探测。公网地址在后台经 WAN 查询，绕过本机 Fake IP DNS，成功后 5 分钟刷新，失败后 1 分钟重试。主控报告同时包含标准路由/槽位会话与 Carrier 收发缓冲快照（`carrier_tx_bytes`、`carrier_rx_bytes` 的容量单位为字节），支持召唤和统计重置；重置不清空业务队列或重连。
+
 独立 C 程序，安装在原厂固件的 `/jffs/cloudhelper-router`。不编译、刷写系统，不包含 Go 或 QUIC；只使用固件已有的 OpenSSL、libcurl、json-c、libdl 和系统库。主控和其他 Probe 按现有 TLS/WebSocket 协议互通。主控HTTP和TLS连接在原有超时预算内尝试最多4个DNS返回地址，证书/主机名或SPKI校验不变；已完成TLS的POST不自动重放。配置拉取暂时失败保留当前策略和控制连接，周期重试。
 
 主控下发分流规则时热更新策略和 Fake IP 缓存出口，保持原 TTL、NAT、物理槽位和控制流。拓扑增删或地址、密钥、公钥、指纹变化只重建受影响链路；槽位数减少只关闭多余槽位。新票据用于后续握手，不延长现有会话认证期限。虚拟 IP、虚拟网段、监听端口、启用状态或 DNS 上游变化仍会重建引擎。网关发布的私网路由按增删差异应用，失败回滚该次系统路由变更。
@@ -22,7 +24,7 @@ TLS SNI 嗅探使用独立开关 `tls_sni_enabled`，默认关闭，不依赖 DN
 
 在线升级：首次安装支持升级的新版包后，可在插件页“运行状态”检查更新并升级，或从主控探针列表下发升级。旧插件没有能力上报时不显示升级按钮。默认经过主控认证代理下载，也支持主控选择直连 GitHub；后台下载支持 Range 续传，按机型、稳定版本、发布 SHA256 和清单校验后安装，失败保留当前版本或恢复 previous。仅更新插件，不刷系统、不重启路由器；下载/安装进度保存在 RAM，不写日志文件。
 
-GitHub Actions 随 Probe Node 同一版本自动编译两款插件，发布两个固定名称包及各自清单。`ci-inputs.lock.json` 固定公开 SDK 和回归镜像的大小与 SHA256；不依赖开发机目录，不上传厂商二进制到仓库。首次构建准备 SDK，之后复用缓存。可独立复现：
+GitHub Actions 随 Probe Node 同一版本发布 AX56U V2 的 `cloudhelper-asus56uv2-jffs.tar.gz` 和清单。BE86U 停止后续打包和发布，已有版本和兼容源码保留；其固件 ABI 仍用于回归验证。`ci-inputs.lock.json` 固定公开 SDK 和回归镜像的大小与 SHA256；不依赖开发机目录，不上传厂商二进制到仓库。首次构建准备 SDK，之后复用缓存。可独立复现：
 
 ```sh
 docker build -f router_plugin/Dockerfile.ci -t cloudhelper-router-ci router_plugin

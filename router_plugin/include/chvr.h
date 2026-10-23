@@ -46,7 +46,7 @@ typedef struct {
 
 typedef struct {
     uint8_t bytes[VR_FRAME_MAX];
-    size_t used, needed;
+    size_t used, needed, peak;
 } vr_decoder;
 
 typedef int (*vr_frame_handler)(const vr_frame *, void *);

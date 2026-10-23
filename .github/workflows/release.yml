@@ -400,7 +400,7 @@ jobs:
             cloudhelper-router-ci python3 tools/prepare-ci.py /sdk --cache /inputs
           sudo chown -R "$(id -u):$(id -g)" "$SDK_DIR"
 
-      - name: Build and Verify AX56U V2 and BE86U Plugin Packages
+      - name: Build and Verify AX56U V2 Plugin Package
         env:
           CHVR_VERSION: v${{ needs.prepare-release.outputs.new_version }}
           SDK_DIR: ${{ runner.temp }}/cloudhelper-asus-sdk
@@ -425,6 +425,11 @@ jobs:
             -v "$RUNNER_TEMP/cloudhelper-c-interop.test:/module/artifacts/c-interop.test:ro" \
             -e CHVR_CI_SDK=/sdk cloudhelper-router-ci bash tools/test-carrier-interop.sh
 
+      - name: Verify Router Telemetry Controller Interoperability
+        env:
+          CHVR_REPORT_FIXTURE: ${{ github.workspace }}/router_plugin/artifacts/telemetry-fixture.json
+        run: go -C probe_controller test ./internal/core -run '^TestRouterPluginTelemetryInterop$' -count=1
+
       - name: Upload ASUS Router Plugin Artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -432,8 +437,6 @@ jobs:
           path: |
             router_plugin/artifacts/jffs/cloudhelper-asus56uv2-jffs.tar.gz
             router_plugin/artifacts/jffs/cloudhelper-asus56uv2-jffs.tar.gz.json
-            router_plugin/artifacts/jffs/cloudhelper-asusbe86u-jffs.tar.gz
-            router_plugin/artifacts/jffs/cloudhelper-asusbe86u-jffs.tar.gz.json
           if-no-files-found: error
 
   create-release:
@@ -546,8 +549,6 @@ jobs:
             release-assets/cloudhelper-probe-node-android-arm64.apk
             release-assets/cloudhelper-asus56uv2-jffs.tar.gz
             release-assets/cloudhelper-asus56uv2-jffs.tar.gz.json
-            release-assets/cloudhelper-asusbe86u-jffs.tar.gz
-            release-assets/cloudhelper-asusbe86u-jffs.tar.gz.json
 
       - name: Keep Latest 10 Releases
         env:
