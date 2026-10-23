@@ -24,8 +24,8 @@ func TestRouterPluginTelemetryInterop(t *testing.T) {
 		t.Fatal(err)
 	}
 	routes := cloneProbeRelayStatusItems(report.RelayStatus)
-	if len(routes) != 8 {
-		t.Fatalf("routes=%d, want 8", len(routes))
+	if len(routes) != 32 {
+		t.Fatalf("routes=%d, want 32", len(routes))
 	}
 	for i, route := range routes {
 		expectedRoute := probeVirtualRouterRuntimeRouteID(probeVirtualRouterTopologyRule{ID: fmt.Sprintf("vrouter-test-%d", i)})
@@ -51,8 +51,8 @@ func TestRouterPluginTelemetryInterop(t *testing.T) {
 		}
 	}
 	buffers := normalizeProbeVirtualRouterBufferReport(report.VirtualRouterBuffers)
-	if len(buffers.Items) != 64 {
-		t.Fatalf("normalized buffers=%d, want 64", len(buffers.Items))
+	if len(buffers.Items) != 256 {
+		t.Fatalf("normalized buffers=%d, want 256", len(buffers.Items))
 	}
 	if _, err := time.Parse(time.RFC3339Nano, buffers.CollectedAt); err != nil {
 		t.Fatal(err)

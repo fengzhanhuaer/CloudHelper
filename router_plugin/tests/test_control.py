@@ -99,8 +99,8 @@ with tempfile.TemporaryDirectory(prefix='chvr-control-') as work:
                             state['reports'] += 1
                             if state['reports'] <= 7:
                                 assert len(line) > 16384
-                                assert len(report['relay_status']) == 8
-                                assert len(report['virtual_router_buffers']['items']) == 64
+                                assert len(report['relay_status']) == 32
+                                assert len(report['virtual_router_buffers']['items']) == 256
                             else:
                                 assert report['relay_status'] == []
                                 assert report['virtual_router_buffers']['items'] == []

@@ -26,8 +26,9 @@ int main(int argc,char **argv)
         }
     }
     vr_telemetry_publish(e);json_object *before=json_object_get(e->telemetry),*rows=vr_member(before,"relay_status"),*items=vr_member(vr_member(before,"virtual_router_buffers"),"items");
-    assert(json_object_array_length(rows)==8&&json_object_array_length(items)==64);
+    assert(json_object_array_length(rows)==VR_LINK_MAX&&json_object_array_length(items)==VR_CARRIER_MAX*2);
     assert(strlen(json_object_to_json_string_ext(before,JSON_C_TO_STRING_PLAIN))>16384);
+    assert(strlen(json_object_to_json_string_ext(before,JSON_C_TO_STRING_PLAIN))<256*1024);
     assert(json_object_array_length(vr_member(json_object_array_get_idx(rows,0),"bridge_sessions"))==3);
     assert(vr_member(json_object_array_get_idx(rows,1),"listen_state"));
     if(argc==2&&!strcmp(argv[1],"--json")){puts(json_object_to_json_string_ext(before,JSON_C_TO_STRING_PLAIN));return 0;}
@@ -37,7 +38,7 @@ int main(int argc,char **argv)
     assert(json_object_get_int(vr_member(json_object_array_get_idx(after,0),"peak_depth"))==128);
     assert(json_object_get_int(vr_member(json_object_array_get_idx(after,0),"enqueued"))==0&&e->links[0].used==128&&e->links[0].ssl);
     for(unsigned i=0;i<4;i++)e->links[i].rule=NULL;
-    vr_telemetry_publish(e);assert(json_object_array_length(vr_member(e->telemetry,"relay_status"))==7);
+    vr_telemetry_publish(e);assert(json_object_array_length(vr_member(e->telemetry,"relay_status"))==VR_LINK_MAX-1);
     char ip[46];assert(!vr_public_ip("8.8.8.8\n",AF_INET,ip,sizeof(ip))&&!strcmp(ip,"8.8.8.8"));
     const char *bad[]={"192.168.1.1","198.18.0.1","100.64.0.1","127.0.0.1","0.0.0.0","224.0.0.1","8.8.8.8 injected","<html>"};
     for(unsigned i=0;i<sizeof(bad)/sizeof(*bad);i++)assert(vr_public_ip(bad[i],AF_INET,ip,sizeof(ip)));
@@ -46,5 +47,5 @@ int main(int argc,char **argv)
     vr_report_addresses(report,"8.8.8.8","");assert(json_object_array_length(vr_member(report,"ipv4"))==2);
     vr_report_addresses(report,"1.1.1.1","");assert(json_object_array_length(vr_member(report,"ipv4"))==3);
     json_object_put(report);json_object_put(before);json_object_put(e->telemetry);json_object_put(rules);pthread_mutex_destroy(&e->mutex);free(e);
-    puts("PASS: router telemetry 32 carriers, immutable snapshots, live queue reset and public-IP validation");return 0;
+    puts("PASS: router telemetry at maximum carrier capacity, immutable snapshots, live queue reset and public-IP validation");return 0;
 }

@@ -28,6 +28,21 @@ int main(void)
     json_object_object_add(rule,"route_layer",json_object_new_string("quic"));assert(vr_policy_validate(online,"7",err,sizeof(err))<0);
     json_object_object_add(rule,"route_layer",json_object_new_string("http2"));assert(!vr_policy_validate(online,"7",err,sizeof(err)));
 
+    /* A ninth adjacent edge must survive a cold start, without dropping any
+       existing policy. Keep a finite limit and reject the thirty-third edge. */
+    json_object *links=vr_member(vr_member(online,"virtual_router"),"topology_rules");
+    assert(VR_LINK_MAX>=9);
+    for(unsigned i=1;i<=VR_LINK_MAX;i++) {
+        json_object *extra=vr_json_parse(json_object_to_json_string(rule),strlen(json_object_to_json_string(rule)));assert(extra);
+        char id[24];snprintf(id,sizeof(id),"capacity-%u",i);json_object_object_add(extra,"id",json_object_new_string(id));json_object_array_add(links,extra);
+        if(i<VR_LINK_MAX)assert(!vr_policy_validate(online,"7",err,sizeof(err)));
+        else assert(vr_policy_validate(online,"7",err,sizeof(err))<0&&strstr(err,"adjacent links"));
+    }
+    json_object_object_add(json_object_array_get_idx(links,VR_LINK_MAX),"enabled",json_object_new_boolean(0));
+    assert(!vr_policy_validate(online,"7",err,sizeof(err)));
+    json_object *restored=json_object_new_array();json_object_array_add(restored,json_object_get(rule));
+    json_object_object_add(vr_member(online,"virtual_router"),"topology_rules",restored);
+
     o=vr_policy_fetch_cached(&c,"",path,err,sizeof(err));assert(o&&json_object_array_length(vr_member(vr_member(o,"virtual_router"),"route_rules"))==1);json_object_put(o);
     strcpy(c.node_id,"8");assert(!vr_policy_fetch_cached(&c,"",path,err,sizeof(err)));strcpy(c.node_id,"7");
     response=json_object_new_object();assert(!vr_policy_fetch_cached(&c,"",path,err,sizeof(err)));json_object_put(response);

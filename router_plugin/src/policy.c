@@ -147,7 +147,7 @@ int vr_policy_validate(json_object *s,const char *node_id,char *err,size_t n)
         if(!text_field(r,"id",1,128,0)||!text_field(r,"from_node_id",1,128,0)||!text_field(r,"to_node_id",1,128,0))goto fail;
         if(!json_object_get_boolean(vr_member(r,"enabled")))continue;
         if(strcmp(vr_string(r,"from_node_id"),node_id) && strcmp(vr_string(r,"to_node_id"),node_id))continue;
-        if(++adjacent>VR_LINK_MAX){why="router supports at most 8 adjacent links";goto fail;}
+        if(++adjacent>VR_LINK_MAX){why="router supports at most 32 adjacent links";goto fail;}
         for(size_t j=0;j<i;j++) {
             json_object *other=json_object_array_get_idx(links,j);
             if(!strcmp(vr_string(r,"id"),vr_string(other,"id")))goto fail;

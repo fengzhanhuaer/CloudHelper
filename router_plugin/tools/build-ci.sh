@@ -6,8 +6,9 @@ build_version="${CHVR_VERSION:?Set CHVR_VERSION to the release tag}"
 [[ "$build_version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.+-][a-zA-Z0-9.+-]+)?$ ]]
 sdk="$sdk_root/toolchain"
 rootfs="$sdk_root/rootfs/ax56uv2"
-make VERSION="$build_version" all test bin/native/test-telemetry bin/native/test-upgrade bin/native/test-httpd-profile bin/native/test-httpd-access bin/native/httpd-fixture bin/native/test-carrier bin/native/test-measure
+make VERSION="$build_version" all test bin/native/test-telemetry bin/native/test-cache bin/native/test-upgrade bin/native/test-httpd-profile bin/native/test-httpd-access bin/native/httpd-fixture bin/native/test-carrier bin/native/test-measure
 bin/native/test-telemetry
+bin/native/test-cache
 mkdir -p artifacts
 bin/native/test-telemetry --json > artifacts/telemetry-fixture.json
 make VERSION="$build_version" bin/native/test-policy-update bin/native/test-control bin/native/test-mapping bin/native/test-dns bin/native/test-dataplane bin/native/test-routes bin/native/test-tls-proxy bin/native/test-tcp-close bin/native/test-tx
