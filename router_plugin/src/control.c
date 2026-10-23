@@ -43,10 +43,11 @@ static int ip_cancel(void *arg,curl_off_t a,curl_off_t b,curl_off_t d,curl_off_t
 {(void)a;(void)b;(void)d;(void)f;return stopped(arg);}
 static int public_ip(vr_engine *e,int family,char *out,size_t cap)
 {
+    vr_addresses addresses=vr_engine_addresses(e);
     CURL *curl=curl_easy_init();if(!curl)return -1;ip_response response={{0},0};long status=0;
     const char *urls4[]={"https://api4.ipify.org","https://ipv4.icanhazip.com"};
     const char *urls6[]={"https://api6.ipify.org","https://ipv6.icanhazip.com"};
-    curl_easy_setopt(curl,CURLOPT_PROXY,"");curl_easy_setopt(curl,CURLOPT_INTERFACE,e->addresses.wan_if);
+    curl_easy_setopt(curl,CURLOPT_PROXY,"");curl_easy_setopt(curl,CURLOPT_INTERFACE,addresses.wan_if);
     curl_easy_setopt(curl,CURLOPT_IPRESOLVE,family==AF_INET?CURL_IPRESOLVE_V4:CURL_IPRESOLVE_V6);
     curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT_MS,2000L);curl_easy_setopt(curl,CURLOPT_TIMEOUT_MS,3000L);curl_easy_setopt(curl,CURLOPT_NOSIGNAL,1L);
     curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,ip_received);curl_easy_setopt(curl,CURLOPT_WRITEDATA,&response);
@@ -59,7 +60,7 @@ static int public_ip(vr_engine *e,int family,char *out,size_t cap)
             char host[254],ips[4][16],entry[320];int port,tls;
             /* Ordinary router DNS may return Fake IPs. Reuse the controller's
                WAN-bound upstream resolution instead of recursing into dnsmasq. */
-            if(vr_origin(urls4[i],host,&port,&tls)||vr_resolve_config4_all(host,&e->config,e->addresses.wan_if,ips)<1)continue;
+            if(vr_origin(urls4[i],host,&port,&tls)||vr_resolve_config4_all(host,&e->config,addresses.wan_if,ips)<1)continue;
             snprintf(entry,sizeof(entry),"%s:%d:%s",host,port,ips[0]);resolve=curl_slist_append(NULL,entry);
             if(!resolve)continue;
             curl_easy_setopt(curl,CURLOPT_RESOLVE,resolve);
@@ -176,10 +177,10 @@ static int received(int opcode,const uint8_t *data,size_t n,void *arg)
 
 static int connect_controller(control *c)
 {
-    vr_engine *e=c->engine;char challenge[513],signature[65],host[254],key[25],accept[29],actual[64],origin[1024],pin[65];int port,tls;
+    vr_engine *e=c->engine;vr_addresses addresses=vr_engine_addresses(e);char challenge[513],signature[65],host[254],key[25],accept[29],actual[64],origin[1024],pin[65];int port,tls;
     char error[128]="invalid controller URL";
     if(vr_origin(e->config.controller,host,&port,&tls)||!tls||
-       vr_controller_auth(&e->config,e->addresses.wan_if,"GET","/api/probe",challenge,signature,error,sizeof(error))||stopped(e)){
+       vr_controller_auth(&e->config,addresses.wan_if,"GET","/api/probe",challenge,signature,error,sizeof(error))||stopped(e)){
         if(!stopped(e))vr_service_log(e->service,"controller",error);
         return -1;
     }
@@ -187,7 +188,7 @@ static int connect_controller(control *c)
     c->direct=vr_controller_link_target(&e->config,origin,pin);c->started=vr_millis();
     if(vr_origin(origin,host,&port,&tls)||!tls)return -1;
     snprintf(c->endpoint,sizeof(c->endpoint),"%s:%d",host,port);
-    c->ssl=vr_tls_connect(host,port,pin,&e->config,e->addresses.wan_if,&c->fd,deadline);if(!c->ssl){vr_controller_link_feedback(&e->config,c->direct,0,vr_millis()-c->started);vr_service_log(e->service,"controller","Control stream DNS/TCP/TLS connection failed");return -1;}
+    c->ssl=vr_tls_connect(host,port,pin,&e->config,addresses.wan_if,&c->fd,deadline);if(!c->ssl){vr_controller_link_feedback(&e->config,c->direct,0,vr_millis()-c->started);vr_service_log(e->service,"controller","Control stream DNS/TCP/TLS connection failed");return -1;}
     uint8_t random[16];if(RAND_bytes(random,16)!=1)return -1;EVP_EncodeBlock((unsigned char *)key,random,16);
     if(vr_ws_accept_key(key,accept))return -1;
     char header[4096];int len=snprintf(header,sizeof(header),"GET /api/probe HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: %s\r\nX-Probe-Node-Id: %s\r\nX-Probe-Rand: %s\r\nX-Probe-Signature: %s\r\n\r\n",host,port,key,e->config.node_id,challenge,signature);
@@ -199,7 +200,7 @@ static int connect_controller(control *c)
 
 static int report(control *c)
 {
-    vr_engine *e=c->engine;json_object *o=vr_probe_report(&e->config,&e->addresses,"/sys/class/net");
+    vr_engine *e=c->engine;vr_addresses addresses=vr_engine_addresses(e);json_object *o=vr_probe_report(&e->config,&addresses,"/sys/class/net");
     char v4[16],v6[46];pthread_mutex_lock(&e->mutex);
     /* Old firmware json-c may not have atomic reference counts. Copy while
        locked instead of sharing JSON objects across threads. */
@@ -227,8 +228,8 @@ static int flush_report(control *c)
 
 static int refresh(control *c)
 {
-    vr_engine *e=c->engine;char error[256];
-    json_object *next=vr_controller_call(&e->config,e->addresses.wan_if,"GET","/api/probe/route/config",NULL,error,sizeof(error));
+    vr_engine *e=c->engine;vr_addresses addresses=vr_engine_addresses(e);char error[256];
+    json_object *next=vr_controller_call(&e->config,addresses.wan_if,"GET","/api/probe/route/config",NULL,error,sizeof(error));
     if(!next){vr_service_log(e->service,"controller","Configuration refresh failed; retaining current policy and control stream");return -1;}
     if(vr_policy_validate(next,e->config.node_id,error,sizeof(error))){vr_service_log(e->service,"controller",error);json_object_put(next);return -1;}
     char path[512];
@@ -290,10 +291,11 @@ static void *control_worker(void *arg)
 
 int vr_control_start(vr_engine *e)
 {
+    vr_addresses addresses=vr_engine_addresses(e);
     pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,256*1024);
     int rc=pthread_create(&e->control_thread,&attr,control_worker,e);
     if(!rc)e->control_started=1;
-    if(!rc&&*e->addresses.wan_if&&!pthread_create(&e->public_ip_thread,&attr,public_ip_worker,e))e->public_ip_started=1;
+    if(!rc&&*addresses.wan_if&&!pthread_create(&e->public_ip_thread,&attr,public_ip_worker,e))e->public_ip_started=1;
     pthread_attr_destroy(&attr);
     return rc;
 }

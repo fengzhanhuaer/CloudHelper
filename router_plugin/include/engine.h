@@ -87,6 +87,13 @@ struct vr_engine {
     uint64_t speed_started,speed_bytes,speed_limit,speed_duration,measure_started,measure_timeout;
 };
 
+/* Workers use a value snapshot: address refresh never mutates their arguments. */
+static inline vr_addresses vr_engine_addresses(vr_engine *e)
+{
+    vr_addresses a;pthread_mutex_lock(&e->mutex);a=e->addresses;pthread_mutex_unlock(&e->mutex);return a;
+}
+/* Main thread only; preserve all established streams on success and failure. */
+int vr_addresses_apply(vr_engine *e,const vr_addresses *next);
 int vr_path(vr_engine *e,const char *target,char path[VR_PATH_MAX][129],size_t *n);
 int vr_send(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],size_t n,const void *data,size_t len);
 int vr_send_json(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],size_t n,json_object *message);
@@ -127,6 +134,8 @@ void vr_measure_frame(vr_engine *e,vr_link *l,const vr_frame *f,char path[VR_PAT
 void vr_measure_tick(vr_engine *e);
 void vr_measure_stop(vr_engine *e);
 int vr_tcp_start(vr_engine *e);
+int vr_tcp_listener_active(vr_engine *e);
+void vr_tcp_listener_replace(vr_engine *e,int fd);
 int vr_tcp_attach(vr_engine *e,int fd,const char *ip,int port);
 size_t vr_tcp_pollfds(vr_engine *e,struct pollfd *fds);
 void vr_tcp_poll(vr_engine *e,struct pollfd *fds);

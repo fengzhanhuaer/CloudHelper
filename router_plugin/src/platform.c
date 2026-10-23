@@ -121,17 +121,62 @@ static int nvram(const char *key,char *out,size_t n){return command((const char 
 static int ipv4(const char *s){struct in_addr a;return inet_pton(AF_INET,s,&a)==1&&a.s_addr&&ntohl(a.s_addr)<0xe0000000u;}
 static int iface(const char *s){if(!*s)return 0;for(;*s;s++)if(!((*s>='a'&&*s<='z')||(*s>='A'&&*s<='Z')||(*s>='0'&&*s<='9')||*s=='_'||*s=='-'||*s=='.'))return 0;return 1;}
 
-int vr_addresses_get(vr_addresses *a)
+static int address_field(const char *key,char *out,size_t n,char *detail,size_t capacity)
 {
-    memset(a,0,sizeof(*a));char unit[8],key[48];
-    if(nvram("lan_ipaddr",a->lan,sizeof(a->lan)) || nvram("lan_ifname",a->lan_if,sizeof(a->lan_if)))return -1;
-    if(!ipv4(a->lan)||!iface(a->lan_if))return -1;
-    nvram("wan_primary",unit,sizeof(unit));int primary=!strcmp(unit,"1")?1:0;
-    snprintf(key,sizeof(key),"wan%d_ipaddr",primary);nvram(key,a->wan,sizeof(a->wan));if(!ipv4(a->wan))*a->wan=0;
-    snprintf(key,sizeof(key),"wan%d_gw_ifname",primary);nvram(key,a->wan_if,sizeof(a->wan_if));
-    if(!iface(a->wan_if)){snprintf(key,sizeof(key),"wan%d_ifname",primary);nvram(key,a->wan_if,sizeof(a->wan_if));}
-    if(!iface(a->wan_if))*a->wan_if=0;
+    if(!nvram(key,out,n))return 0;
+    snprintf(detail,capacity,"NVRAM read failed: %s; bindings retained",key);return -1;
+}
+static int addresses_read(vr_addresses *out,char *detail,size_t capacity)
+{
+    vr_addresses a={0};char unit[8]={0},key[48];
+    if(address_field("lan_ipaddr",a.lan,sizeof(a.lan),detail,capacity) ||
+       address_field("lan_ifname",a.lan_if,sizeof(a.lan_if),detail,capacity))return -1;
+    if(!ipv4(a.lan)||!iface(a.lan_if)) {
+        snprintf(detail,capacity,"Invalid NVRAM field: %s; bindings retained",!ipv4(a.lan)?"lan_ipaddr":"lan_ifname");return -1;
+    }
+    if(address_field("wan_primary",unit,sizeof(unit),detail,capacity))return -1;
+    if(*unit&&strcmp(unit,"0")&&strcmp(unit,"1")) {
+        snprintf(detail,capacity,"Invalid NVRAM field: wan_primary; bindings retained");return -1;
+    }
+    int primary=!strcmp(unit,"1")?1:0;
+    snprintf(key,sizeof(key),"wan%d_ipaddr",primary);
+    if(address_field(key,a.wan,sizeof(a.wan),detail,capacity))return -1;
+    if(!ipv4(a.wan)) {
+        if(*a.wan&&strcmp(a.wan,"0.0.0.0")) {
+            snprintf(detail,capacity,"Invalid NVRAM field: %s; bindings retained",key);return -1;
+        }
+        memset(a.wan,0,sizeof(a.wan));
+    }
+    snprintf(key,sizeof(key),"wan%d_gw_ifname",primary);
+    if(address_field(key,a.wan_if,sizeof(a.wan_if),detail,capacity))return -1;
+    if(!*a.wan_if) {
+        snprintf(key,sizeof(key),"wan%d_ifname",primary);
+        if(address_field(key,a.wan_if,sizeof(a.wan_if),detail,capacity))return -1;
+    }
+    if(*a.wan_if&&!iface(a.wan_if)) {
+        snprintf(detail,capacity,"Invalid NVRAM field: %s; bindings retained",key);return -1;
+    }
+    *out=a;
     return 0;
+}
+int vr_addresses_get(vr_addresses *a)
+{char detail[128];return addresses_read(a,detail,sizeof(detail));}
+
+static int addresses_equal(const vr_addresses *a,const vr_addresses *b)
+{return !strcmp(a->lan,b->lan)&&!strcmp(a->wan,b->wan)&&!strcmp(a->lan_if,b->lan_if)&&!strcmp(a->wan_if,b->wan_if);}
+
+int vr_addresses_check(vr_address_watch *watch,const vr_addresses *current,vr_addresses *next,char *detail,size_t capacity)
+{
+    vr_addresses a;
+    if(capacity)*detail=0;
+    if(addresses_read(&a,detail,capacity)){watch->pending=0;return -1;}
+    if(addresses_equal(&a,current)){watch->pending=0;return 0;}
+    int confirmed=watch->pending&&addresses_equal(&a,&watch->candidate);
+    watch->candidate=a;watch->pending=1;*next=a;
+    snprintf(detail,capacity,"LAN/WAN %s: LAN %s/%s -> %s/%s; WAN %s/%s -> %s/%s",
+        confirmed?"change confirmed":"change pending",current->lan,current->lan_if,a.lan,a.lan_if,
+        *current->wan?current->wan:"-",*current->wan_if?current->wan_if:"-",*a.wan?a.wan:"-",*a.wan_if?a.wan_if:"-");
+    return confirmed?2:1;
 }
 
 int vr_bind4(const char *ip,int port,int tcp)
@@ -146,6 +191,8 @@ int vr_bind4(const char *ip,int port,int tcp)
 static int carrier_skiplog_port;
 static char policy_lan_if[IFNAMSIZ];
 static int tls_active;
+static int tls_prepared;
+#include "platform_address.h"
 static int carrier_skiplog_available(void)
 {
     FILE *f=fopen("/proc/net/ip_tables_targets","r");if(!f)return 0;
@@ -165,12 +212,13 @@ int vr_platform_tls(const vr_addresses *a,const char *cidr,int enabled)
     if(RUN("iptables","-t","nat","-F","CHVR_TLS"))return -1;
     const char *exclude[]={cidr,"0.0.0.0/8","10.0.0.0/8","100.64.0.0/10","127.0.0.0/8","169.254.0.0/16","172.16.0.0/12","192.168.0.0/16","224.0.0.0/3"};
     for(size_t i=0;i<sizeof(exclude)/sizeof(*exclude);i++)if(RUN("iptables","-t","nat","-A","CHVR_TLS","-d",exclude[i],"-j","RETURN"))return -1;
-    if(RUN("iptables","-t","nat","-A","CHVR_TLS","-p","tcp","--dport","443","-j","REDIRECT","--to-ports","1054"))return -1;
+    char target[32];snprintf(target,sizeof(target),"%s:1054",a->lan);
+    if(RUN("iptables","-t","nat","-A","CHVR_TLS","-p","tcp","--dport","443","-j","DNAT","--to-destination",target))return -1;
     if(RUN("iptables","-C","CHVR_IN","-i",a->lan_if,"-d",a->lan,"-p","tcp","--dport","1054","-m","conntrack","--ctstate","DNAT","-j","ACCEPT")&&
         RUN("iptables","-A","CHVR_IN","-i",a->lan_if,"-d",a->lan,"-p","tcp","--dport","1054","-m","conntrack","--ctstate","DNAT","-j","ACCEPT"))return -1;
     if(RUN("iptables","-t","nat","-C","PREROUTING","-i",a->lan_if,"-p","tcp","--dport","443","-j","CHVR_TLS")&&
         RUN("iptables","-t","nat","-I","PREROUTING","1","-i",a->lan_if,"-p","tcp","--dport","443","-j","CHVR_TLS"))return -1;
-    tls_active=1;return 0;
+    tls_prepared=tls_active=1;return 0;
 }
 
 int vr_platform_start(const vr_config *c,const vr_addresses *a,const char *ip,const char *cidr)
@@ -199,13 +247,17 @@ int vr_platform_start(const vr_config *c,const vr_addresses *a,const char *ip,co
         if(RUN("iptables","-A","CHVR_IN","-p","tcp","--dport",port,"-j","SKIPLOG"))goto fail;
         carrier_skiplog_port=c->port;
     }
+    /* Address/interface refresh must not reject previously authenticated
+       streams merely because their original listener is no longer current. */
+    if(RUN("iptables","-A","CHVR_IN","-p","tcp","--dport",port,"-m","conntrack","--ctstate","ESTABLISHED,RELATED","-j","ACCEPT") ||
+       RUN("iptables","-A","CHVR_IN","-p","tcp","--dport","1054","-m","conntrack","--ctstate","ESTABLISHED,RELATED","-j","ACCEPT"))goto fail;
     /* vr_incoming authenticates the original node and checks the gateway CIDR
        before injecting traffic. The router's own LAN address uses INPUT,
        unlike other LAN hosts; place this before the carrier-port guard. */
     if(c->gateway.enabled&&vr_gateway_contains(&c->gateway,a->lan)&&
        RUN("iptables","-A","CHVR_IN","-i","chvr0","-s",cidr,"-d",a->lan,"-j","ACCEPT"))goto fail;
     if(RUN("iptables","-A","CHVR_IN","-i",a->lan_if,"-d",a->lan,"-p","tcp","--dport",port,"-j","ACCEPT") ||
-       RUN("iptables","-A","CHVR_IN","!","-i",a->lan_if,"-d",a->lan,"-p","tcp","--dport",port,"-j","DROP") ||
+       RUN("iptables","-A","CHVR_IN","!","-i",a->lan_if,"-d",a->lan,"-p","tcp","--dport",port,"-m","conntrack","--ctstate","NEW","-j","DROP") ||
        RUN("iptables","-A","CHVR_FWD","-i",a->lan_if,"-o","chvr0","-d",cidr,"-j","ACCEPT") ||
        RUN("iptables","-A","CHVR_FWD","-i","chvr0","-o",a->lan_if,"-m","conntrack","--ctstate","ESTABLISHED,RELATED","-j","ACCEPT"))goto fail;
     if(*a->wan_if) {
@@ -418,6 +470,7 @@ void vr_platform_stop(const char *cidr)
     RUN("iptables","-t","nat","-F","CHVR_NAT");RUN("iptables","-t","nat","-X","CHVR_NAT");
     carrier_skiplog_port=0;
     tls_active=0;
+    tls_prepared=0;
 }
 
 int vr_platform_healthy(void)

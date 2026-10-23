@@ -102,6 +102,13 @@ int vr_tcp_start(vr_engine *e)
     e->tcp->listener=vr_bind4(e->addresses.lan,1054,1);
     return e->tcp->listener<0?-1:0;
 }
+int vr_tcp_listener_active(vr_engine *e)
+{return e->tcp&&e->tcp->listener>=0;}
+void vr_tcp_listener_replace(vr_engine *e,int fd)
+{
+    /* Main-thread listener swap only; accepted sessions and DNS jobs survive. */
+    int old=e->tcp->listener;e->tcp->listener=fd;if(old>=0)close(old);
+}
 static void *dns_worker(void *arg)
 {
     vr_engine *e=arg;struct vr_tcp_state *t=e->tcp;
@@ -112,7 +119,8 @@ static void *dns_worker(void *arg)
             pthread_cond_wait(&t->changed,&t->mutex);}
         if(t->stop){pthread_mutex_unlock(&t->mutex);return NULL;}
         tcp_dns_job job=t->jobs[i];t->jobs[i].state=2;pthread_mutex_unlock(&t->mutex);
-        job.ok=!vr_resolve_config4(job.domain,&e->config,e->addresses.wan_if,job.ip);
+        vr_addresses addresses=vr_engine_addresses(e);
+        job.ok=!vr_resolve_config4(job.domain,&e->config,addresses.wan_if,job.ip);
         pthread_mutex_lock(&t->mutex);t->jobs[i]=job;t->jobs[i].state=3;pthread_mutex_unlock(&t->mutex);
     }
 }

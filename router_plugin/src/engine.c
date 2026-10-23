@@ -172,6 +172,7 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
     for(size_t i=0;i<VR_CARRIER_MAX;i++)e->links[i].fd=-1;
     if(prepare(e))goto done;
     uint64_t published=0,addresses_checked=vr_millis(),sniff_retry=0;
+    vr_address_watch address_watch={0};
     while(!vr_service_stopped(service,generation)) {
         uint64_t now=vr_millis();
         pthread_mutex_lock(&service->mutex);int sniff=service->config.tls_sni_enabled;pthread_mutex_unlock(&service->mutex);
@@ -208,8 +209,13 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
         vr_measure_tick(e);
         if(now-published>=1000){status(e,1);published=now;}
         if(now-addresses_checked>=10000) {
-            vr_addresses next;
-            if(vr_addresses_get(&next)||memcmp(&next,&e->addresses,sizeof(next))){strcpy(e->error,"LAN/WAN changed; rebinding");break;}
+            vr_addresses next;char detail[240];
+            int change=vr_addresses_check(&address_watch,&e->addresses,&next,detail,sizeof(detail));
+            if(change)vr_service_log(service,"service",detail);
+            if(change==2) {
+                if(vr_addresses_apply(e,&next))vr_service_log(service,"service","Address refresh deferred; existing connections retained, retrying");
+                else {address_watch.pending=0;vr_service_log(service,"service","LAN/WAN listeners and rules updated; existing connections retained");}
+            }
             if(!vr_platform_healthy()){strcpy(e->error,"firewall changed; restoring owned rules");break;}
             if(e->config.enabled&&e->config.dns_enabled&&vr_platform_dns(1)){strcpy(e->error,"DNS upstream reconciliation failed");break;}
             addresses_checked=now;

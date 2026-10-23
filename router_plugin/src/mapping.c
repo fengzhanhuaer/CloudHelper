@@ -165,6 +165,7 @@ static int lookup(vr_engine *e,const char *domain,const char *ip,vr_decision d,v
 
 int vr_mapping_get(vr_engine *e,const char *domain,const char *ip,vr_decision d,vr_mapping *out)
 {
+    vr_addresses addresses=vr_engine_addresses(e);
     pthread_mutex_lock(&e->mutex);unsigned revision=e->policy_revision;
     int stale=domain&&*domain&&d.revision!=revision;pthread_mutex_unlock(&e->mutex);
     if(stale)return -1;
@@ -194,7 +195,7 @@ int vr_mapping_get(vr_engine *e,const char *domain,const char *ip,vr_decision d,
         pthread_mutex_unlock(&e->mutex);
         if(now>=deadline){json_object_put(body);return -1;}poll(NULL,0,10);
     }
-    char error[256]={0};json_object *response=vr_controller_call(&e->config,e->addresses.wan_if,"POST","/api/probe/route/fake_ip/resolve",body,error,sizeof(error));json_object_put(body);
+    char error[256]={0};json_object *response=vr_controller_call(&e->config,addresses.wan_if,"POST","/api/probe/route/fake_ip/resolve",body,error,sizeof(error));json_object_put(body);
     json_object *item=vr_member(response,"item");vr_mapping m;int rc=-1;time_t now=time(NULL);
     if(!item||strcmp(vr_string(item,"action"),"probe_exit")||decode(item,&m)||
        vr_timestamp(vr_string(item,"expires_at"),&m.expires)||

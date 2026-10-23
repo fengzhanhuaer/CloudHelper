@@ -2,7 +2,7 @@ FROM ubuntu:18.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential ca-certificates perl python3 autoconf automake libtool \
-    qemu-user squashfs-tools libcurl4-openssl-dev libssl-dev libjson-c-dev \
+    qemu-user squashfs-tools iproute2 iptables openssl libcurl4-openssl-dev libssl-dev libjson-c-dev \
     && rm -rf /var/lib/apt/lists/*
 RUN apt-get update && apt-get install -y --no-install-recommends libc6-i386 lib32stdc++6 lib32z1 \
     && rm -rf /var/lib/apt/lists/*

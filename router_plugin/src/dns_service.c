@@ -43,16 +43,17 @@ static vr_decision decision(vr_engine *e,const char *domain,const char *ip,int *
 
 static int dns_answer(vr_engine *e,const uint8_t *query,size_t qn,uint8_t *reply,size_t cap,size_t *rn)
 {
+    vr_addresses addresses=vr_engine_addresses(e);
     vr_question q;if(vr_dns_question(query,qn,&q) || (query[2]&0x80))return -1;
     int needs_ip;vr_decision selected=decision(e,q.name,NULL,&needs_ip);
     int upstream_done=0;
     if((q.type==1||q.type==28||q.type==64||q.type==65)&&needs_ip) {
         char ip[16];int resolved;
         if(q.type==1) {
-            if(vr_dns_chain(&e->config,e->addresses.wan_if,query,qn,reply,cap,rn))return vr_dns_reply(query,qn,reply,cap,2,NULL,rn);
+            if(vr_dns_chain(&e->config,addresses.wan_if,query,qn,reply,cap,rn))return vr_dns_reply(query,qn,reply,cap,2,NULL,rn);
             upstream_done=1;resolved=vr_dns_address4(reply,*rn,ip);
             if(resolved && ((reply[3]&15)!=0 || (reply[6]==0 && reply[7]==0)))return 0;
-        } else resolved=vr_resolve_config4(q.name,&e->config,e->addresses.wan_if,ip);
+        } else resolved=vr_resolve_config4(q.name,&e->config,addresses.wan_if,ip);
         if(resolved)return vr_dns_reply(query,qn,reply,cap,2,NULL,rn);
         selected=decision(e,q.name,ip,NULL);
     }
@@ -65,7 +66,7 @@ static int dns_answer(vr_engine *e,const uint8_t *query,size_t qn,uint8_t *reply
             return mapping_reply(query,qn,reply,cap,rn,&mapping);
         }
     }
-    if(!upstream_done && vr_dns_chain(&e->config,e->addresses.wan_if,query,qn,reply,cap,rn))return vr_dns_reply(query,qn,reply,cap,2,NULL,rn);
+    if(!upstream_done && vr_dns_chain(&e->config,addresses.wan_if,query,qn,reply,cap,rn))return vr_dns_reply(query,qn,reply,cap,2,NULL,rn);
     return 0;
 }
 

@@ -98,9 +98,10 @@ static int public4(const char *ip)
 
 static int mapping_destination(vr_engine *e,const vr_mapping *m,uint32_t *destination)
 {
+    vr_addresses addresses=vr_engine_addresses(e);
     if(m->resolved){*destination=m->resolved;return 0;}
-    char ip[16];if(vr_resolve4(m->domain,e->config.dns_upstream,e->addresses.wan_if,ip) || !public4(ip) ||
-        !strcmp(ip,e->addresses.lan) || !strcmp(ip,e->addresses.wan))return -1;
+    char ip[16];if(vr_resolve4(m->domain,e->config.dns_upstream,addresses.wan_if,ip) || !public4(ip) ||
+        !strcmp(ip,addresses.lan) || !strcmp(ip,addresses.wan))return -1;
     struct in_addr a;inet_pton(AF_INET,ip,&a);*destination=a.s_addr;return 0;
 }
 
