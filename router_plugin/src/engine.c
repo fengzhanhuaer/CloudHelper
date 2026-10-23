@@ -171,7 +171,8 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
     pthread_mutex_init(&e->mutex,NULL);pthread_cond_init(&e->jobs_changed,NULL);
     for(size_t i=0;i<VR_CARRIER_MAX;i++)e->links[i].fd=-1;
     if(prepare(e))goto done;
-    uint64_t published=0,addresses_checked=vr_millis(),sniff_retry=0;
+    uint64_t published=0,addresses_checked=vr_millis(),sniff_retry=0,firewall_retry=0;
+    unsigned firewall_failures=0;
     vr_address_watch address_watch={0};
     while(!vr_service_stopped(service,generation)) {
         uint64_t now=vr_millis();
@@ -216,9 +217,19 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
                 if(vr_addresses_apply(e,&next))vr_service_log(service,"service","Address refresh deferred; existing connections retained, retrying");
                 else {address_watch.pending=0;vr_service_log(service,"service","LAN/WAN listeners and rules updated; existing connections retained");}
             }
-            if(!vr_platform_healthy()){strcpy(e->error,"firewall changed; restoring owned rules");break;}
-            if(e->config.enabled&&e->config.dns_enabled&&vr_platform_dns(1)){strcpy(e->error,"DNS upstream reconciliation failed");break;}
-            addresses_checked=now;
+            if(!vr_platform_check(detail,sizeof(detail))) {
+                vr_service_log(service,"service",detail);
+                if(firewall_failures<2)firewall_failures++;
+                if(firewall_failures>=2&&vr_millis()>=firewall_retry) {
+                    if(vr_platform_repair(&e->config,&e->addresses,e->cidr))
+                        vr_service_log(service,"service","Firewall repair deferred; existing connections retained, retrying");
+                    else {firewall_failures=0;vr_service_log(service,"service","Owned firewall rules reconciled; existing connections retained");}
+                    firewall_retry=vr_millis()+30000;
+                }
+            } else firewall_failures=0;
+            if(e->config.enabled&&e->config.dns_enabled&&vr_platform_dns(1))
+                vr_service_log(service,"service","DNS upstream reconciliation deferred; existing connections retained, retrying");
+            addresses_checked=vr_millis();
         }
     }
 done:

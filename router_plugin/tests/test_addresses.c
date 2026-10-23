@@ -7,7 +7,8 @@ static const char *fixture_lan="192.168.51.1",*fixture_wan="192.168.50.51";
 static const char *fixture_lan_if="br0",*fixture_wan_if="eth0",*fixture_unit="";
 static const char *fixture_gateway="eth0";
 
-int __wrap_execvp(const char *file,char *const args[])
+int __real_posix_spawnp(pid_t *pid,const char *file,const posix_spawn_file_actions_t *actions,const posix_spawnattr_t *attr,char *const args[],char *const env[]);
+int __wrap_posix_spawnp(pid_t *pid,const char *file,const posix_spawn_file_actions_t *actions,const posix_spawnattr_t *attr,char *const args[],char *const env[])
 {
     assert(!strcmp(file,"nvram")&&!strcmp(args[1],"get")&&args[2]&&!args[3]);
     const char *key=args[2],*value=NULL;
@@ -17,10 +18,9 @@ int __wrap_execvp(const char *file,char *const args[])
     else if(!strcmp(key,"wan0_ipaddr")||!strcmp(key,"wan1_ipaddr"))value=fixture_wan;
     else if(!strcmp(key,"wan0_gw_ifname")||!strcmp(key,"wan1_gw_ifname"))value=fixture_gateway;
     else if(!strcmp(key,"wan0_ifname")||!strcmp(key,"wan1_ifname"))value=fixture_wan_if;
-    assert(value);size_t n=strlen(value);assert(write(STDOUT_FILENO,value,n)==(ssize_t)n);
-    assert(write(STDOUT_FILENO,"\n",1)==1);
     /* A failing child may still have written a perfectly plausible address. */
-    _exit(failed_key&&!strcmp(key,failed_key)?7:0);
+    assert(value);
+    return __real_posix_spawnp(pid,"sh",actions,attr,(char *const[]){"sh","-c","printf '%s\\n' \"$1\"; exit \"$2\"","fixture",(char *)value,failed_key&&!strcmp(key,failed_key)?"7":"0",NULL},env);
 }
 uint64_t vr_millis(void)
 {struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (uint64_t)t.tv_sec*1000+t.tv_nsec/1000000;}

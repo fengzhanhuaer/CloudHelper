@@ -41,7 +41,7 @@ make BUILD=bin/arm VERSION="$build_version" CC="$sdk/bin/arm-buildroot-linux-gnu
     CFLAGS='-Os -g -std=c99 -Wall -Wextra -Werror -Wformat=2 -fstack-protector-strong -march=armv7-a -mfloat-abi=soft' \
     DEP_CPPFLAGS="-I$sdk_root/include -I$sdk_root/openssl/include" \
     DEP_LDFLAGS="-L$sdk_root/link -Wl,-rpath-link,$rootfs/usr/lib:$rootfs/lib" \
-    all bin/arm/test-core bin/arm/httpd-fixture bin/arm/test-carrier bin/arm/test-tcp-close bin/arm/test-httpd-access
+    all bin/arm/test-core bin/arm/httpd-fixture bin/arm/test-carrier bin/arm/test-tcp-close bin/arm/test-httpd-access bin/arm/test-platform-command
 "$sdk/bin/arm-buildroot-linux-gnueabi-strip" bin/arm/cloudhelper-router-plugin bin/arm/httpd-bridge.so
 unset LD_LIBRARY_PATH
 for profile in ax56uv2 ax56uv2-koolshare be86u be86u-koolcenter;do
@@ -49,6 +49,7 @@ for profile in ax56uv2 ax56uv2-koolshare be86u be86u-koolcenter;do
         --baseline "ci-inputs.lock.json:$profile" --readelf "$sdk/bin/arm-buildroot-linux-gnueabi-readelf"
     qemu-arm -L "$sdk_root/rootfs/$profile" -E LD_LIBRARY_PATH=/usr/lib:/lib bin/arm/test-tcp-close
     qemu-arm -L "$sdk_root/rootfs/$profile" -E LD_LIBRARY_PATH=/usr/lib:/lib bin/arm/test-httpd-access
+    qemu-arm -L "$sdk_root/rootfs/$profile" -E LD_LIBRARY_PATH=/usr/lib:/lib bin/arm/test-platform-command
 done
 # BE86U remains an ABI compatibility fixture, but is no longer released.
 python3 tools/package-jffs.py --profile ax56uv2

@@ -4,7 +4,7 @@
 - 状态：进行中
 - 创建/更新时间：2026-10-23 Asia/Singapore
 - 用户原始需求：插件没有上送公网 IP、路由状态与缓冲状态。
-- 用户最新指令：地址变化不应主动影响现有连接，更不应反复异常。REQ-009 改为地址容错及热更新，真实变化也不得重建整个引擎；证书/域名改动继续取消。
+- 用户最新指令：关闭 SNI 能恢复连接，用户确认没有改防火墙；00:27:09 NVRAM 失败后误报 firewall changed 并全引擎重启。持续优化、发布迭代，删除耗时的五组互通测试。REQ-009 扩展为防火墙检查失败容错和原地修复；不修改证书/认证。
 - 启用方式：明确长任务条件，跨采集、控制流、主控兼容和发布验证。
 
 ## 一、需求定义
@@ -22,6 +22,7 @@
 | REQ-007 持续运行与初始化故障 | 修复实机误报地址变化导致的反复重建，继续验证路由初始化与上报 | 确定性回归通过；上线超过 6 分钟无重建，后续策略更新保留连接 |
 | REQ-008 节点链路无 SNI | 普通 relay 不发送 SNI；保留证书验证、HMAC/ticket；主控/DoT 不受影响；ALI 实际连接恢复 | v0.4.86 正式升级后 ALI 4 槽通过 |
 | REQ-009 地址采集容错及 SNI 热切换 | 稳定地址下开启 SNI 不重建全部链路；采集失败保留绑定、两次确认真实变化；记录具体字段；真实变化热更新并保留现有会话 | 进行中；现场再现，修复单次读取失败导致全链路重建 |
+| REQ-012 发布验证提速 | 删除五组独立互通测试及调用，保留编译、固件 ABI 和与修复直接相关的回归 | 进行中 |
 | REQ-010 IP 访问域名暴露检查 | 分别观察插件与 Probe 的无 SNI TLS 证书和未认证 HTTP 响应，区分证书/正文/失败端点 | 已完成 |
 
 ## 二、总体架构
@@ -51,7 +52,7 @@
 | UNIT-004 发布 | release.yml/build-ci.sh/release_workflow_linux_router_test.go | 移除 BE86U 打包与发布断言，保留运行兼容验证 |
 | UNIT-005 本机状态页 | engine.c / VirtualRouter.asp | 用已有状态刷新展示公网地址；只读缓存，不增加查询和磁盘写入 |
 | UNIT-006 Relay TLS | tls.c/transport.h/carrier.c | 拆分 relay 与主控/DoT 的 SNI 选择，复用原 CA/域名或 SPKI 校验及有界握手；服务端观测测试 |
-| UNIT-007 地址观察 | platform.c/platform.h/engine.c | 核查每条 NVRAM 命令；原子快照、失败不重绑、两次变化确认；真实 fork/exec 故障注入回归；engine 地址热更新仅替换监听，worker 锁内复制快照；平台按规则差集添加再删除、错误回退，保留 TUN/conntrack/SNI 会话 |
+| UNIT-007 地址观察与维护 | platform.c/platform_address.h/platform.h/engine.c | 旧固件共享 VM spawn 避免严格 overcommit 下 fork 失败；保留详细错误，检查失败不退出；连续两次后原地幂等补缺，DNS 协调失败保留连接； 核查每条 NVRAM 命令；原子快照、失败不重绑、两次变化确认；真实 fork/exec 故障注入回归；engine 地址热更新仅替换监听，worker 锁内复制快照；平台按规则差集添加再删除、错误回退，保留 TUN/conntrack/SNI 会话 |
 
 ## 四、执行任务
 
@@ -66,7 +67,7 @@
 | TASK-007 | 对齐 Probe 的节点 SNI 并发布复验 | 已完成 | REQ-008 | 服务端观测无 SNI、证书负例/正常 TLS/互通通过，ALI 在线 4 槽恢复 |
 | TASK-008 | SNI 热切换故障调查、地址观察容错与变化日志 | 进行中 | REQ-009 | WAN 读取失败不当作空值，失败/抖动不重绑，持续真实变化热更新监听/规则，主控和 Carrier 不主动关闭 |
 
-当前交接：TASK-008 进行中。实机 v86 日志再次反复 rebinding；LAN/WAN 多次采样稳定，内存/负载无耗尽。下一步唯一动作：完成原生/ARM/Go 全套及互通验证，正式发布后在线持续开启 SNI 验收。证书/域名方案仍取消。
+当前交接：TASK-008 进行中。实机 v86 日志再次反复 rebinding；LAN/WAN 多次采样稳定，内存/负载无耗尽。下一步唯一动作：实现防火墙检查错误分型及非重启恢复，删除五组互通步骤，定向验证后发布在线验收。证书/域名方案仍取消。
 
 ## 五、测试与验证
 
@@ -80,6 +81,7 @@
 | TEST-006 | 32 拓扑边界、满容量报告、真实 TLS 分段与主控解析 | REQ-006/TASK-005 | 第 9/32 条接受、第 33 条拒绝、禁用不计数；128 Carrier / 256 缓冲快照约 163 KiB，主控解析通过；原生真实 TLS/控制/API/升级、ARM 编译与四固件运行兼容全套通过 |
 | TEST-007 | NVRAM 子进程退出时序、截断和失败退出码 | REQ-007/TASK-006 | 强制首次 read=EAGAIN，子进程在 waitpid 前写入并退出：旧代码丢输出断言失败，修复后完整值/截断/失败退出码均通过；原生全套、ARM 编译及四固件运行兼容全套通过。上线后 14:08:07Z 至 14:14:51Z stats_started_at 未改变，无 LAN/WAN changed 或初始化失败，14:10:11Z 策略更新保持既有连接 |
 | TEST-008 | Relay 无 SNI、CA/域名/SPKI 负例及普通 TLS 正例；正式升级后 ALI 槽位 | REQ-008/TASK-007 | 真实服务端观测 8 例通过：普通 relay 无 SNI、域名/CA/指纹错误拒绝、正确 pin 接受、普通 TLS 和 api_copilot_ 保留 SNI；ALI 在线 SPKI 符合下发指纹。原生/ARM 全套、四固件 ABI、5 组 Probe 双向/四槽/旧单槽互通与 Go 全套通过；v0.4.86 Actions 39971613389 全部成功、10 资产核验；节点 25 在线 proxy 升级后正式文件哈希相符、ALI 4 槽恢复 |
+| TEST-012 | 模拟 fork ENOMEM 时共享 VM spawn 成功、具体错误；瞬态检查不改规则、实际删规则原地修复、幂等与既有 TCP/TLS 存活 | REQ-009/012/TASK-008 | 原生及两组隔离内核通过；最终 ARM 固件运行验证中 |
 | TEST-009 | 真实子进程输出/失败退出，旧快照不变、单次空值/交替值、两次有效变化/故障打断确认、日志 | REQ-009/TASK-008 | 旧平台在失败快照原子性断言确定性失败，新版通过；真实内核绑定失败/中途规则删除失败回退、6 次 LAN/WAN IP 与接口迁移、持续双向 Carrier/主控方向 TCP/SNI TLS 和新监听、零规则累积通过。原生/ARM 全套、四固件 ABI、5 组 Probe 多槽/旧版互通通过；主控/Probe 全套及 vet、遥测和 Release 契约、Linux Router 双架构构建通过 |
 
 ## 六、端到端追踪
@@ -94,7 +96,8 @@
 | REQ-006 | UNIT-002/003/IF-001/002 | TASK-005/003 | TEST-006/004 | 第 9/32/33 条边界、128 Carrier 报告、实机 9 拓扑恢复通过；未在生产创建 32 条测试拓扑 |
 | REQ-007 | UNIT-001/002 | TASK-006/003 | TEST-007/004 | 竞态修复前失败、修复后通过；实机连续超过 6 分钟无错误重建 |
 | REQ-008 | UNIT-006/IF-005 | TASK-007 | TEST-008/003 | v86 正式资产及节点 25/26 二进制一致，ALI 4 槽 |
-| REQ-009 | UNIT-007/IF-006 | TASK-008 | TEST-009/003 | 待验证 |
+| REQ-009 | UNIT-007/IF-006 | TASK-008 | TEST-009/012/003 | 原生与内核通过；发布实机待验 |
+| REQ-012 | UNIT-004/IF-003 | TASK-008 | TEST-001/003/012 | 五组调用和脚本删除，Release 契约通过 |
 
 ## 七、决策与冲突
 
@@ -177,3 +180,19 @@ ALI-99-SH 节点 4 在线；主控下发 api.codex.na.002339.xyz:30010，IPv4 �
 2026-10-24 检查点：地址原子采集及变化确认已实现，engine 地址变化不再 break；新增 address_update.c 先准备新 Carrier/SNI 监听，平台差集事务成功后锁内提交快照；失败保留旧快照与监听。platform_address.h 仅修改地址相关规则，不清空 conntrack/TUN/业务队列，保留已建立 INPUT；SNI DNAT 指定当前 LAN 地址，排除列表仍优先。所有 worker 改用锁内值快照。新内核测试绑定失败及部分删除回滚、6 次 IP/接口双向切换、存量流与新流均通过（Temp/router-addresses-kernel.log）；原 Fake IP/CIDR/SNI 开关内核全套通过（router-addresses-existing-kernel.log）。首次测试镜像缺 iproute2 为环境问题，改用已备 platform-test 镜像；一次回滚比较失败是物理改名使内核给旧 ip rule 标记 detached，已将预期基线设在物理改名之后，未放宽规则增删检查。Actions 新增隔离 --network none 内核门禁并补齐测试镜像工具。全套 CI、Go 和 ARM 验证进行中。
 
 2026-10-24 发布前门禁：router-addresses-final-ci.log 完整通过（native+ARM、四固件 ABI、5 组 Probe 双向/四槽/旧单槽互通）；router-addresses-controller.log 与 router-addresses-probe.log 全套通过，controller vet 通过；遥测 fixture 和 Release 契约测试、Linux Router amd64/arm64 构建通过。旧脚本三条退休资产断言仍按 CON-001 处理，其余发布预检通过。最新远程已有 v0.4.87（原 merge 提交触发，无本次功能）；当前节点 25/26 仍 v86，正式发布后再安装本次匹配 SHA 的新版本，不把旧 v87 当修复。下一步唯一动作：提交推送、监控匹配 Actions 并核验正式资产，然后在线升级两台 AX，节点 26 持续启用 SNI 验证。
+
+2026-10-24 正式推送：功能提交经 rebase 到远程自动 v87 版本提交后为 0b2198a6096c12e8a8889b090a697521c2057edf，已推送 origin/mapledev。匹配 Actions 39984712595 正在执行，预计正式 v0.4.88；Temp/router-addresses-release-watch.log 监控中。下一步唯一动作：等匹配运行成功并核验正式资产，在线安装到节点 26/25，持续 SNI 开启验收主控 TCP 与统计起点不重置。
+
+2026-10-24 v88 验收和新现场：0b2198a60 的 Actions 39984712595 全 9 job 成功，正式 10 资产及清单哈希核验；节点 25 经自身 CSRF 在线接口安装 v88，二进制/页面匹配。节点 26 也已上报 v88，但未由本轮成功发起其升级。用户确认 SNI 关闭后恢复、未改防火墙；SSH 已恢复，主控及 24 槽在线，INPUT/FORWARD/NAT/SKIPLOG 实际检查均成功，SNI=false。日志显示检查失败后仍走旧 break 路径，不能认定防火墙被修改。
+
+DEC-008：REQ-009 / UNIT-007 / IF-006 / TASK-008 扩展：命令保留子进程退出码/系统错误，检查失败仅记录具体项并有界重试，不断开控制流/Carrier；连续确认后仅补缺失的插件规则，不 flush TUN/conntrack 或重启工作线程；DNS 协调失败同样保留现有引擎。TEST-012 在既有隔离内核 fixture 内验证瞬态检查失败、规则真实删除后的原地恢复与幂等及存量 TCP/TLS 存活。准备门禁通过。
+
+DEC-009：用户明确删除耗时五组互通测试。移除 release.yml 五组 Native/四固件 ABI 多槽互通步骤及专用脚本，不重跑其五组；保留原生/ARM 编译、普通 C 单测、固件 ABI 加载、真实内核 SNI/地址/修复回归和遥测契约。TEST-003 历史互通通过证据保留；本次无协议修改，以定向内核和已有 ABI 验证覆盖平台修复，不通过删失败断言制造通过。REQ-012 发布验证提速 -> UNIT-004 -> TASK-008 -> TEST-001/003/012，待验证。
+
+DEF-007：firewall 健康检查把任何非零（锁竞争/进程失败/超时/缺规则）统称规则变化并退出全部引擎；DNS 协调失败亦同。用户提供 v88 现场证据，修复中。风险：未捕获 SNI 开启时实际首个失败的退出码，不能声称资源耗尽已确认。
+
+2026-10-24 新证据更新 DEF-007：SSH /proc/sys/vm/overcommit_memory=2（严格提交）、CommitLimit=150428kB、Committed_AS=119872kB（余约 30MiB），SNI 关闭时插件 VmData=28184kB；tcp_proxy.c 固定 64x双64KiB 池增加约 8MiB 虚拟内存。fork 子进程需要再次预留父进程可写映射，SNI 开启后可越过提交上限，造成多个无关命令同时失败的机制明确；旧日志未保留 errno，仍不把旧现场退出码假定为已观测 ENOMEM。新增 DEC-010：命令改 POSIX_SPAWN_USEVFORK 共享地址空间的 posix_spawnp，兼容旧固件 libc；无更改全局 overcommit、无扩大设备内存限制。TEST-012 扩展模拟 fork ENOMEM 下命令成功与 spawn 错误分型，四固件 libc 实际运行命令回归。旧 build-ci 已主动停止以免验证变动中源码，最终稳定版本重跑；之前未使用 nvram 封装造成 Werror 已移除，不隐瞒失败。
+
+2026-10-24 修复本地进展：命令改为显式 USEVFORK 的 posix_spawnp，无改全局内存设置；保留子进程退出码和 spawn errno。原生共享 VM / fork ENOMEM 故障模拟、NVRAM 原子快照通过。瞬态 iptables exit4 不改规则，真实部分/完整插件规则丢失原地修复、存量 Carrier/主控 TCP/SNI TLS 保留，新 SNI 可用、重复无累积；原 FakeIP/CIDR/开关内核回归通过。最终 C/ARM 四固件运行全套进行中，无五组 Probe 互通。
+
+2026-10-24 发布准备完成：原生完整 C 回归通过（Temp/router-firewall-final-ci.log 的 native 段），ARM 新增命令 fixture 首次因该目标覆盖 CFLAGS 后未分节、未丢弃未用平台函数而链接失败，已在目标明确加 function/data sections；只续跑 ARM 段，不重复已通过 native。Temp/router-firewall-arm.log 四固件真实 libc 的共享 VM spawn/命令退出码测试及 ABI 加载、ARM 构建打包全部通过。Temp/router-firewall-kernel.log 和 existing-kernel.log 最终 spawn 实现的两组真实内核回归均通过；Release 契约通过。没有 Go/协议改动，复用 v88 主控/Probe 全套与 vet 证据，不重跑五组互通。原 Skill 预检仍报 CON-001 既有三个退休资产标记；临时纠正预检其余通过。准备正式提交、推送、验证 v89 并通过产品接口在线更新。

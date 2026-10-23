@@ -55,15 +55,71 @@ static int address_rule_run(const char *text,int add)
     for(char *word=strtok_r(buf," ",&save);word;word=strtok_r(NULL," ",&save)) {
         if(n>=44)return -1;
         if(!strcmp(word,"@")) {
-            args[n++]=firewall?(add?"-I":"-D"):(add?"add":"del");
-            if(firewall&&add) {
+            args[n++]=firewall?(add==2?"-C":add?"-I":"-D"):(add?"add":"del");
+            if(firewall&&add==1) {
                 word=strtok_r(NULL," ",&save);if(!word)return -1;
-                if(!strcmp(word,"CHVR_TLS"))args[n-1]="-A";
-                args[n++]=word;if(strcmp(word,"CHVR_TLS"))args[n++]="1";
+                int append=!strcmp(word,"CHVR_TLS")&&strstr(text,"-j DNAT ");
+                if(append)args[n-1]="-A";
+                args[n++]=word;if(!append)args[n++]="1";
             }
         } else args[n++]=word;
     }
-    args[n]=NULL;return command(args,NULL,0);
+    args[n]=NULL;return add==2?command_code(args,NULL,0):command(args,NULL,0);
+}
+
+/* A failed check is not evidence of a firewall reset. Query before inserting:
+ * exit 1 means absent; lock, syntax, fork and timeout errors defer the repair.
+ * Never flush chains, conntrack, policy routes or any established socket. */
+static int firewall_chain(const char *table,const char *chain)
+{
+    int code=command_code((const char *const[]){"iptables","-t",table,"-n","-L",chain,NULL},NULL,0);
+    if(!code)return 0;
+    return code==1?RUN("iptables","-t",table,"-N",chain):-1;
+}
+int vr_platform_repair(const vr_config *c,const vr_addresses *a,const char *cidr)
+{
+    address_plan *p=calloc(1,sizeof(*p));int result=-1;
+    if(!p)return -1;
+#define RULE(...) do{if(address_rule(p,__VA_ARGS__))goto done;}while(0)
+    if(firewall_chain("filter","CHVR_IN")||firewall_chain("filter","CHVR_FWD")||firewall_chain("nat","CHVR_NAT"))goto done;
+    if(carrier_skiplog_port)RULE("iptables -t filter @ CHVR_IN -p tcp --dport %d -j SKIPLOG",carrier_skiplog_port);
+    RULE("iptables -t filter @ CHVR_IN -p tcp --dport %d -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",c->port);
+    RULE("iptables -t filter @ CHVR_IN -p tcp --dport 1054 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT");
+    if(address_plan_build(p,c,a,cidr))goto done;
+    if(c->enabled) {
+        if(firewall_chain("mangle","CHVR_FLOW")||firewall_chain("mangle","CHVR_MARK"))goto done;
+        RULE("iptables -t mangle @ CHVR_FLOW -m connmark --mark 0x43000000/0xff000000 -j CONNMARK --restore-mark --nfmask 0xff000000 --ctmask 0xff000000");
+        RULE("iptables -t mangle @ CHVR_MARK -d %s -j RETURN",cidr);
+        RULE("iptables -t mangle @ CHVR_MARK -p tcp -j CONNMARK --set-xmark 0x43000000/0xff000000");
+        RULE("iptables -t mangle @ PREROUTING -i chvr0 -j CHVR_FLOW");
+        if(tls_prepared) {
+            if(firewall_chain("nat","CHVR_TLS"))goto done;
+            const char *exclude[]={cidr,"0.0.0.0/8","10.0.0.0/8","100.64.0.0/10","127.0.0.0/8","169.254.0.0/16","172.16.0.0/12","192.168.0.0/16","224.0.0.0/3"};
+            for(size_t i=0;i<sizeof(exclude)/sizeof(*exclude);i++)RULE("iptables -t nat @ CHVR_TLS -d %s -j RETURN",exclude[i]);
+        }
+    }
+    RULE("iptables -t filter @ INPUT -j CHVR_IN");
+    RULE("iptables -t filter @ FORWARD -j CHVR_FWD");
+    RULE("iptables -t nat @ POSTROUTING -j CHVR_NAT");
+    unsigned char missing[ADDRESS_RULE_MAX]={0};
+    for(size_t i=0;i<p->count;i++) {
+        if(strncmp(p->rule[i],"iptables ",9))continue;
+        int code=address_rule_run(p->rule[i],2);
+        if(code!=0&&code!=1)goto done;
+        missing[i]=code==1;
+    }
+    /* Populate owned chains before exposing their global hooks. Reverse
+       insertion keeps ACCEPTs before guards and RETURNs before catchalls. */
+    for(int hooks=0;hooks<2;hooks++)for(size_t n=p->count;n;n--) {
+        size_t i=n-1;
+        int hook=strstr(p->rule[i]," @ INPUT ")||strstr(p->rule[i]," @ FORWARD ")||
+            strstr(p->rule[i]," @ PREROUTING ")||strstr(p->rule[i]," @ POSTROUTING ");
+        if(missing[i]&&hook==hooks&&address_rule_run(p->rule[i],1))goto done;
+    }
+    result=0;
+done:
+#undef RULE
+    free(p);return result;
 }
 int vr_platform_readdress(const vr_config *c,const vr_addresses *old,const vr_addresses *next,const char *cidr)
 {

@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <poll.h>
 #include <signal.h>
+#include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,18 +13,24 @@
 static volatile sig_atomic_t stopping;
 static volatile sig_atomic_t toggle_tls;
 static volatile sig_atomic_t refresh_addresses,fail_bind;
+static volatile sig_atomic_t repair_firewall;
 static int carrier=-1;static struct sockaddr_in peer;static socklen_t peer_len;
 static void stop(int sig){(void)sig;stopping=1;}
 static void toggle(int sig){(void)sig;toggle_tls=1;}
 static void refresh(int sig){if(sig==SIGALRM)fail_bind=1;else refresh_addresses=1;}
-int __real_execvp(const char *file,char *const args[]);
-int __wrap_execvp(const char *file,char *const args[])
+static void repair(int sig){(void)sig;repair_firewall=1;}
+int __real_posix_spawnp(pid_t *pid,const char *file,const posix_spawn_file_actions_t *actions,const posix_spawnattr_t *attr,char *const args[],char *const env[]);
+int __wrap_posix_spawnp(pid_t *pid,const char *file,const posix_spawn_file_actions_t *actions,const posix_spawnattr_t *attr,char *const args[],char *const env[])
 {
     const char *failure=getenv("CHVR_PLATFORM_FAIL_FILE");
-    if(failure&&!strcmp(file,"iptables")&&args[1]&&!strcmp(args[1],"-t")&&args[3]&&!strcmp(args[3],"-D")&&args[4]&&!strcmp(args[4],"CHVR_NAT")&&access(failure,F_OK)==0) {
-        unlink(failure);_exit(7);
+    const char *check_failure=getenv("CHVR_CHECK_FAIL_FILE");
+    if(check_failure&&!strcmp(file,"iptables")&&access(check_failure,F_OK)==0) {
+        for(size_t i=1;args[i];i++)if(!strcmp(args[i],"-C"))return __real_posix_spawnp(pid,"sh",actions,attr,(char *const[]){"sh","-c","exit 4",NULL},env);
     }
-    return __real_execvp(file,args);
+    if(failure&&!strcmp(file,"iptables")&&args[1]&&!strcmp(args[1],"-t")&&args[3]&&!strcmp(args[3],"-D")&&args[4]&&!strcmp(args[4],"CHVR_NAT")&&access(failure,F_OK)==0) {
+        unlink(failure);return __real_posix_spawnp(pid,"sh",actions,attr,(char *const[]){"sh","-c","exit 7",NULL},env);
+    }
+    return __real_posix_spawnp(pid,file,actions,attr,args,env);
 }
 int vr_path(vr_engine *e,const char *node,char path[VR_PATH_MAX][129],size_t *n)
 {if(carrier<0)return -1;memset(path,0,VR_PATH_MAX*129);strcpy(path[0],e->config.node_id);strcpy(path[1],node);*n=2;return 0;}
@@ -35,7 +42,7 @@ int vr_send_json(vr_engine *e,uint16_t m,uint16_t s,char path[VR_PATH_MAX][129],
 int main(int argc,char **argv)
 {
     if(argc==3&&!strcmp(argv[1],"--dns"))return vr_platform_dns(atoi(argv[2]))?1:0;
-    assert(argc==2);signal(SIGTERM,stop);signal(SIGINT,stop);signal(SIGPIPE,SIG_IGN);signal(SIGUSR1,toggle);signal(SIGUSR2,refresh);signal(SIGALRM,refresh);
+    assert(argc==2);signal(SIGTERM,stop);signal(SIGINT,stop);signal(SIGPIPE,SIG_IGN);signal(SIGUSR1,toggle);signal(SIGUSR2,refresh);signal(SIGALRM,refresh);signal(SIGWINCH,repair);
     vr_service service={0};pthread_mutex_init(&service.mutex,NULL);
     vr_engine *e=calloc(1,sizeof(*e));assert(e);e->service=&service;pthread_mutex_init(&e->mutex,NULL);vr_config_default(&e->config);
     int gateway=!strncmp(argv[1],"gateway",7);
@@ -66,6 +73,15 @@ int main(int argc,char **argv)
     int streams[32];for(size_t i=0;i<32;i++)streams[i]=-1;
     puts("READY");fflush(stdout);
     while(!stopping){
+        if(repair_firewall) {
+            int tun=e->tun,lan=e->lan,wan=e->wan;unsigned generation=e->generation;char detail[240];
+            int healthy=vr_platform_check(detail,sizeof(detail));
+            if(!healthy&&getenv("CHVR_CHECK_FAIL_FILE")&&access(getenv("CHVR_CHECK_FAIL_FILE"),F_OK)==0)
+                assert(strstr(detail,"SNI hook")&&strstr(detail,"exit 4"));
+            int result=vr_platform_repair(&e->config,&e->addresses,e->cidr);
+            assert(tun==e->tun&&lan==e->lan&&wan==e->wan&&generation==e->generation);
+            puts(result?"REPAIR_DEFERRED":"REPAIRED");fflush(stdout);repair_firewall=0;
+        }
         if(refresh_addresses||fail_bind) {
             vr_addresses next=e->addresses;
             if(fail_bind)strcpy(next.lan,"198.51.100.99");

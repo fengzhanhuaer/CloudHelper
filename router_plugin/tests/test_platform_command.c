@@ -3,6 +3,14 @@
 #include <assert.h>
 
 static int defer_read;
+static int spawn_error;
+pid_t __wrap_fork(void){errno=ENOMEM;return -1;}
+int __real_posix_spawnp(pid_t *pid,const char *file,const posix_spawn_file_actions_t *actions,const posix_spawnattr_t *attr,char *const args[],char *const env[]);
+int __wrap_posix_spawnp(pid_t *pid,const char *file,const posix_spawn_file_actions_t *actions,const posix_spawnattr_t *attr,char *const args[],char *const env[])
+{
+    short flags=0;assert(!posix_spawnattr_getflags(attr,&flags)&&(flags&POSIX_SPAWN_USEVFORK));
+    return spawn_error?spawn_error:__real_posix_spawnp(pid,file,actions,attr,args,env);
+}
 ssize_t __real_read(int fd,void *bytes,size_t n);
 pid_t __real_waitpid(pid_t pid,int *status,int options);
 ssize_t __wrap_read(int fd,void *bytes,size_t n)
@@ -27,5 +35,8 @@ int main(void)
     assert(!strcmp(out,"longer-"));
     defer_read=1;assert(command((const char *const[]){"sh","-c","printf 'error'; exit 7",NULL},out,sizeof(out))<0);
     assert(!strcmp(out,"error"));
+    assert(command_code((const char *const[]){"sh","-c","exit 4",NULL},NULL,0)==4);
+    spawn_error=ENOMEM;assert(command_code((const char *const[]){"sh","-c","exit 0",NULL},NULL,0)==-ENOMEM);
+    puts("PASS: commands use shared-VM spawn when fork is denied, preserve spawn errno and child exit code");
     puts("PASS: child exit race retains complete bounded NVRAM output and exit status");return 0;
 }

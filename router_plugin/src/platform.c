@@ -10,6 +10,7 @@
 #include <net/if.h>
 #include <poll.h>
 #include <signal.h>
+#include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -93,15 +94,27 @@ static void command_output(int fd,char *out,size_t capacity,size_t *used)
         }
     }
 }
-static int command(const char *const *args,char *out,size_t capacity)
+static int command_code(const char *const *args,char *out,size_t capacity)
 {
-    int pipes[2];if(pipe2(pipes,O_CLOEXEC|O_NONBLOCK))return -1;
-    pid_t pid=fork();if(pid<0){close(pipes[0]);close(pipes[1]);return -1;}
-    if(pid==0) {
-        close(pipes[0]);fcntl(pipes[1],F_SETFL,0);dup2(pipes[1],STDOUT_FILENO);close(pipes[1]);
-        int null=open("/dev/null",O_WRONLY);if(null>=0){dup2(null,STDERR_FILENO);close(null);}
-        execvp(args[0],(char *const *)args);_exit(127);
-    }
+    int pipes[2];if(pipe2(pipes,O_CLOEXEC|O_NONBLOCK))return -errno;
+    /* Asuswrt uses strict overcommit. fork() reserves the full parent image:
+       enabling the bounded SNI pool can then make even nvram/iptables fail.
+       USEVFORK matters for the older firmware libc; newer libc already uses
+       shared-VM spawn. Only libc's file actions run in the child. */
+    posix_spawn_file_actions_t actions;posix_spawnattr_t attr;pid_t pid;
+    int code=posix_spawn_file_actions_init(&actions);
+    if(code){close(pipes[0]);close(pipes[1]);return -code;}
+    code=posix_spawnattr_init(&attr);
+    if(code){posix_spawn_file_actions_destroy(&actions);close(pipes[0]);close(pipes[1]);return -code;}
+    if(fcntl(pipes[1],F_SETFL,0)<0)code=errno;
+    if(!code)code=posix_spawnattr_setflags(&attr,POSIX_SPAWN_USEVFORK);
+    if(!code)code=posix_spawn_file_actions_addclose(&actions,pipes[0]);
+    if(!code)code=posix_spawn_file_actions_adddup2(&actions,pipes[1],STDOUT_FILENO);
+    if(!code)code=posix_spawn_file_actions_addclose(&actions,pipes[1]);
+    if(!code)code=posix_spawn_file_actions_addopen(&actions,STDERR_FILENO,"/dev/null",O_WRONLY,0);
+    if(!code)code=posix_spawnp(&pid,args[0],&actions,&attr,(char *const *)args,environ);
+    posix_spawnattr_destroy(&attr);posix_spawn_file_actions_destroy(&actions);
+    if(code){close(pipes[0]);close(pipes[1]);return -code;}
     close(pipes[1]);size_t used=0;int status=-1,done=0;uint64_t deadline=vr_millis()+5000;
     while(vr_millis()<deadline) {
         command_output(pipes[0],out,capacity,&used);
@@ -113,18 +126,20 @@ static int command(const char *const *args,char *out,size_t capacity)
        it does not consume its pipe: retain that final output before closing. */
     command_output(pipes[0],out,capacity,&used);
     close(pipes[0]);if(out&&capacity){while(used&&(out[used-1]=='\n'||out[used-1]=='\r'))used--;out[used]=0;}
-    return done&&WIFEXITED(status)&&WEXITSTATUS(status)==0?0:-1;
+    return !done?-ETIMEDOUT:WIFEXITED(status)?WEXITSTATUS(status):-EINTR;
 }
+static int command(const char *const *args,char *out,size_t capacity)
+{return command_code(args,out,capacity)==0?0:-1;}
 
 #define RUN(...) command((const char *const[]){__VA_ARGS__,NULL},NULL,0)
-static int nvram(const char *key,char *out,size_t n){return command((const char *const[]){"nvram","get",key,NULL},out,n);}
 static int ipv4(const char *s){struct in_addr a;return inet_pton(AF_INET,s,&a)==1&&a.s_addr&&ntohl(a.s_addr)<0xe0000000u;}
 static int iface(const char *s){if(!*s)return 0;for(;*s;s++)if(!((*s>='a'&&*s<='z')||(*s>='A'&&*s<='Z')||(*s>='0'&&*s<='9')||*s=='_'||*s=='-'||*s=='.'))return 0;return 1;}
 
 static int address_field(const char *key,char *out,size_t n,char *detail,size_t capacity)
 {
-    if(!nvram(key,out,n))return 0;
-    snprintf(detail,capacity,"NVRAM read failed: %s; bindings retained",key);return -1;
+    int code=command_code((const char *const[]){"nvram","get",key,NULL},out,n);
+    if(!code)return 0;
+    snprintf(detail,capacity,"NVRAM read failed: %s (%s %d); bindings retained",key,code<0?"system error":"exit",code<0?-code:code);return -1;
 }
 static int addresses_read(vr_addresses *out,char *detail,size_t capacity)
 {
@@ -473,14 +488,21 @@ void vr_platform_stop(const char *cidr)
     tls_prepared=0;
 }
 
-int vr_platform_healthy(void)
+int vr_platform_check(char *detail,size_t capacity)
 {
-    if(tls_active&&RUN("iptables","-t","nat","-C","PREROUTING","-i",policy_lan_if,"-p","tcp","--dport","443","-j","CHVR_TLS"))return 0;
+    int code;
+#define CHECK(label,...) do {code=command_code((const char *const[]){__VA_ARGS__,NULL},NULL,0);if(code) {snprintf(detail,capacity,"Firewall check deferred: %s (%s %d); connections retained",label,code<0?"system error":"exit",code<0?-code:code);return 0;}}while(0)
+    if(tls_active)CHECK("SNI hook","iptables","-t","nat","-C","PREROUTING","-i",policy_lan_if,"-p","tcp","--dport","443","-j","CHVR_TLS");
     if(carrier_skiplog_port) {
         char port[8];snprintf(port,sizeof(port),"%d",carrier_skiplog_port);
-        if(RUN("iptables","-C","CHVR_IN","-p","tcp","--dport",port,"-j","SKIPLOG"))return 0;
+        CHECK("carrier SKIPLOG","iptables","-C","CHVR_IN","-p","tcp","--dport",port,"-j","SKIPLOG");
     }
-    return !RUN("iptables","-C","INPUT","-j","CHVR_IN") &&
-        !RUN("iptables","-C","FORWARD","-j","CHVR_FWD") &&
-        !RUN("iptables","-t","nat","-C","POSTROUTING","-j","CHVR_NAT");
+    CHECK("INPUT hook","iptables","-C","INPUT","-j","CHVR_IN");
+    CHECK("FORWARD hook","iptables","-C","FORWARD","-j","CHVR_FWD");
+    CHECK("NAT hook","iptables","-t","nat","-C","POSTROUTING","-j","CHVR_NAT");
+#undef CHECK
+    if(capacity)*detail=0;
+    return 1;
 }
+int vr_platform_healthy(void)
+{char detail[240];return vr_platform_check(detail,sizeof(detail));}

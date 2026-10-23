@@ -70,7 +70,7 @@ print('READY',flush=True);listen(443)
     helper=None;streams=[]
     try:
         assert line(server)=='READY'
-        env=dict(os.environ,CHVR_PLATFORM_FAIL_FILE=work+'/fail')
+        env=dict(os.environ,CHVR_PLATFORM_FAIL_FILE=work+'/fail',CHVR_CHECK_FAIL_FILE=work+'/check-fail')
         helper=subprocess.Popen([sys.argv[1],'readdress'],env=env,stdout=subprocess.PIPE,universal_newlines=True)
         assert line(helper)=='READY'
         def client(ns,host,port,tls=False):
@@ -93,6 +93,37 @@ s.close()
             for proc in streams:
                 proc.stdin.write('still-connected\n');proc.stdin.flush();assert line(proc)=='OK'
         retained();original=state()
+        Path(env['CHVR_CHECK_FAIL_FILE']).touch()
+        helper.send_signal(signal.SIGWINCH);assert line(helper)=='REPAIR_DEFERRED'
+        unchanged(original);retained()
+        Path(env['CHVR_CHECK_FAIL_FILE']).unlink()
+        print('PASS: transient iptables exit 4 reports exact check, preserves rules and established streams',flush=True)
+        # A partial external change is repaired without flushing live flows.
+        run('iptables','-t','nat','-D','PREROUTING','-i','chvrlan','-p','tcp','--dport','443','-j','CHVR_TLS')
+        run('iptables','-t','nat','-D','CHVR_TLS','-d','192.168.0.0/16','-j','RETURN')
+        helper.send_signal(signal.SIGWINCH);assert line(helper)=='REPAIRED'
+        unchanged(original);retained()
+        tls_rules=run('iptables','-t','nat','-S','CHVR_TLS').splitlines()
+        assert next(i for i,s in enumerate(tls_rules) if '192.168.0.0/16' in s)<next(i for i,s in enumerate(tls_rules) if '-j DNAT' in s)
+        # Emulate firmware resetting only the plugin-owned firewall chains.
+        table='filter'
+        for text in run('iptables-save').splitlines():
+            if text.startswith('*'):table=text[1:]
+            if text.startswith('-A ') and '-j CHVR_' in text and not text.split()[1].startswith('CHVR_'):
+                parts=text.split();parts[0]='-D';run('iptables','-t',table,*parts)
+        chains={'filter':['CHVR_IN','CHVR_FWD'],'nat':['CHVR_NAT','CHVR_TLS'],'mangle':['CHVR_FLOW','CHVR_MARK']}
+        for table,names in chains.items():
+            for name in names:run('iptables','-t',table,'-F',name)
+            for name in names:run('iptables','-t',table,'-X',name)
+        helper.send_signal(signal.SIGWINCH);assert line(helper)=='REPAIRED'
+        unchanged(original);retained()
+        repaired=state()
+        helper.send_signal(signal.SIGWINCH);assert line(helper)=='REPAIRED'
+        unchanged(repaired);retained()
+        new=client('chvr-client','203.0.113.5',443,True)
+        new.stdin.write('repaired-sni\n');new.stdin.flush();assert line(new)=='OK'
+        new.stdin.close();assert new.wait(timeout=5)==0;streams.remove(new)
+        print('PASS: partial and full owned-firewall loss repair in place; existing carriers/control/TLS and new SNI work, repeated repair adds no duplicates',flush=True)
         helper.send_signal(signal.SIGALRM);assert line(helper)=='REFRESH_FAILED'
         unchanged(original);retained()
         print('PASS: unavailable replacement address retains listeners, firewall and established streams',flush=True)

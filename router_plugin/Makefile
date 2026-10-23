@@ -18,9 +18,9 @@ $(BUILD)/build-version.h: FORCE | $(BUILD)
 $(BUILD)/cloudhelper-router-plugin $(BUILD)/httpd-bridge.so $(BUILD)/httpd-fixture $(BUILD)/test-core $(BUILD)/test-logs $(BUILD)/test-dataplane $(BUILD)/test-platform $(BUILD)/test-dns $(BUILD)/test-control $(BUILD)/test-certificate $(BUILD)/test-carrier $(BUILD)/test-measure $(BUILD)/test-gateway $(BUILD)/test-cache $(BUILD)/test-mapping $(BUILD)/dns-query-fixture $(BUILD)/test-dns-system $(BUILD)/test-httpd-profile: $(BUILD)/build-version.h
 all: $(BUILD)/cloudhelper-router-plugin $(BUILD)/httpd-bridge.so
 $(BUILD)/test-platform-command: tests/test_platform_command.c src/platform.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_platform_command.c $(LDFLAGS) -Wl,--wrap=read -Wl,--wrap=waitpid $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -fdata-sections tests/test_platform_command.c $(LDFLAGS) -Wl,--wrap=read -Wl,--wrap=waitpid -Wl,--wrap=fork -Wl,--wrap=posix_spawnp $(LDLIBS) -o $@
 $(BUILD)/test-addresses: tests/test_addresses.c src/platform.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_addresses.c $(LDFLAGS) -Wl,--wrap=execvp $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_addresses.c $(LDFLAGS) -Wl,--wrap=posix_spawnp $(LDLIBS) -o $@
 $(BUILD)/test-telemetry: $(CORE) src/carrier.c tests/test_telemetry.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/carrier.c tests/test_telemetry.c $(LDFLAGS) $(LDLIBS) -o $@
 $(BUILD)/test-controller-link: $(CORE) tests/test_controller_link.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
@@ -48,7 +48,7 @@ $(BUILD)/test-logs: $(CORE) tests/test_logs.c $(wildcard include/*.h) | $(BUILD)
 $(BUILD)/test-dataplane: $(CORE) src/dataplane.c src/mapping.c tests/test_dataplane.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/dataplane.c src/mapping.c tests/test_dataplane.c $(LDFLAGS) -Wl,--wrap=vr_controller_call $(LDLIBS) -o $@
 $(BUILD)/test-platform: $(CORE) src/dataplane.c src/mapping.c src/platform.c src/tcp_proxy.c src/address_update.c tests/test_platform.c $(wildcard include/*.h) | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/dataplane.c src/mapping.c src/platform.c src/tcp_proxy.c src/address_update.c tests/test_platform.c $(LDFLAGS) -Wl,--wrap=execvp $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/dataplane.c src/mapping.c src/platform.c src/tcp_proxy.c src/address_update.c tests/test_platform.c $(LDFLAGS) -Wl,--wrap=posix_spawnp $(LDLIBS) -o $@
 
 $(BUILD)/cloudhelper-router-plugin $(BUILD)/test-platform $(BUILD)/test-platform-command $(BUILD)/test-addresses $(BUILD)/test-control $(BUILD)/test-carrier $(BUILD)/test-policy-update $(BUILD)/test-routes: src/platform_address.h
 $(BUILD)/test-dns: $(CORE) src/dns_service.c tests/test_dns_service.c $(wildcard include/*.h) | $(BUILD)
