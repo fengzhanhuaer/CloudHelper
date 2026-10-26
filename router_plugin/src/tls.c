@@ -91,17 +91,20 @@ int vr_tls_pinned(X509 *cert,const char *pin)
     return strcasecmp(text,pin)?-1:0;
 }
 
-static SSL *connect_at(const char *host,const char *ip,int port,const char *pin,const char *iface,int *fd,uint64_t deadline,int send_sni)
+static SSL *start_at(const char *host,const char *ip,int port,const char *pin,const char *iface,int *fd,int send_sni)
 {
     *fd=-1;if(port<1||port>65535)return NULL;
-    int sock=socket(AF_INET,SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK,0);if(sock<0)return NULL;
+    struct sockaddr_storage address={0};socklen_t address_len;struct sockaddr_in *v4=(struct sockaddr_in *)&address;struct sockaddr_in6 *v6=(struct sockaddr_in6 *)&address;
+    if(inet_pton(AF_INET,ip,&v4->sin_addr)==1){v4->sin_family=AF_INET;v4->sin_port=htons((uint16_t)port);address_len=sizeof(*v4);}
+    else if(inet_pton(AF_INET6,ip,&v6->sin6_addr)==1){v6->sin6_family=AF_INET6;v6->sin6_port=htons((uint16_t)port);address_len=sizeof(*v6);}
+    else return NULL;
+    int sock=socket(address.ss_family,SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK,0);if(sock<0)return NULL;
     SSL_CTX *ctx=NULL;SSL *ssl=NULL;
     int yes=1;if(setsockopt(sock,IPPROTO_TCP,TCP_NODELAY,&yes,sizeof(yes)))goto fail;
-    if(iface&&*iface&&setsockopt(sock,SOL_SOCKET,SO_BINDTODEVICE,iface,strlen(iface)+1))goto fail;
-    struct sockaddr_in sa={0};sa.sin_family=AF_INET;sa.sin_port=htons((uint16_t)port);inet_pton(AF_INET,ip,&sa.sin_addr);
-    if(connect(sock,(struct sockaddr *)&sa,sizeof(sa)) && errno!=EINPROGRESS)goto fail;
-    if(wait_fd(sock,POLLOUT,deadline))goto fail;
-    int error=0;socklen_t len=sizeof(error);if(getsockopt(sock,SOL_SOCKET,SO_ERROR,&error,&len)||error)goto fail;
+    /* The current TUN/policy capture is IPv4-only. IPv6 follows the system
+       route, whose interface can differ from the IPv4 WAN (e.g. PPP). */
+    if(address.ss_family==AF_INET&&iface&&*iface&&setsockopt(sock,SOL_SOCKET,SO_BINDTODEVICE,iface,strlen(iface)+1))goto fail;
+    if(connect(sock,(struct sockaddr *)&address,address_len) && errno!=EINPROGRESS)goto fail;
     ctx=SSL_CTX_new(TLS_client_method());if(!ctx)goto fail;
     SSL_CTX_set_min_proto_version(ctx,TLS1_2_VERSION);SSL_CTX_set_options(ctx,SSL_OP_NO_COMPRESSION);
     if(*pin)SSL_CTX_set_verify(ctx,SSL_VERIFY_NONE,NULL);
@@ -115,33 +118,59 @@ static SSL *connect_at(const char *host,const char *ip,int port,const char *pin,
     }
     ssl=SSL_new(ctx);if(!ssl)goto fail;SSL_CTX_free(ctx);ctx=NULL;
     SSL_set_fd(ssl,sock);
-    if(send_sni && SSL_set_tlsext_host_name(ssl,host)!=1)goto fail;
+    unsigned char numeric[16];int literal=inet_pton(AF_INET,host,numeric)==1||inet_pton(AF_INET6,host,numeric)==1;
+    if(send_sni && !literal && SSL_set_tlsext_host_name(ssl,host)!=1)goto fail;
     if(!*pin) {
-        struct in_addr numeric;
-        if(inet_pton(AF_INET,host,&numeric)==1){if(X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(ssl),host)!=1)goto fail;}
+        if(literal){if(X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(ssl),host)!=1)goto fail;}
         else if(SSL_set1_host(ssl,host)!=1)goto fail;
     }
-    if(handshake(ssl,1,deadline))goto fail;
-    if(*pin){X509 *cert=SSL_get_peer_certificate(ssl);int rc=vr_tls_pinned(cert,pin);X509_free(cert);if(rc)goto fail;}
     *fd=sock;return ssl;
 fail:SSL_free(ssl);SSL_CTX_free(ctx);close(sock);return NULL;
 }
 
 SSL *vr_tls_connect_at(const char *host,const char *ip,int port,const char *pin,const char *iface,int *fd,uint64_t deadline)
-{return connect_at(host,ip,port,pin,iface,fd,deadline,1);}
+{
+    SSL *ssl=start_at(host,ip,port,pin,iface,fd,1);if(!ssl)return NULL;
+    if(!wait_fd(*fd,POLLOUT,deadline)&&!handshake(ssl,1,deadline)) {
+        X509 *cert=SSL_get_peer_certificate(ssl);int bad=*pin?vr_tls_pinned(cert,pin):0;X509_free(cert);if(!bad)return ssl;
+    }
+    SSL_free(ssl);close(*fd);*fd=-1;return NULL;
+}
 
 static SSL *connect_resolved(const char *host,int port,const char *pin,const vr_config *config,const char *iface,int *fd,uint64_t deadline,int send_sni)
 {
     uint64_t now=vr_millis(),budget=deadline>now?deadline-now:0;
-    char addresses[4][16];*fd=-1;int count=vr_resolve_config4_all(host,config,iface,addresses);
+    char addresses[4][46];*fd=-1;int count=vr_resolve_transport(host,config,iface,addresses);
     if(!budget||count<1)return NULL;
     uint64_t end=vr_millis()+budget;
-    for(int i=0;i<count;i++) {
-        now=vr_millis();if(now>=end)break;
-        SSL *ssl=connect_at(host,addresses[i],port,pin,iface,fd,now+(end-now)/(uint64_t)(count-i),send_sni);
-        if(ssl)return ssl;
+    /* Race full TLS establishment, not authenticated HTTP/WS requests. No
+       worker threads or duplicate slots; all losing sockets are closed. */
+    SSL *attempts[4]={0},*winner=NULL;struct pollfd polls[4];int connected[4]={0},next=0;
+    for(int i=0;i<4;i++)polls[i]=(struct pollfd){-1,POLLOUT,0};
+    uint64_t launch=vr_millis();
+    while((now=vr_millis())<end&&!winner) {
+        int live=0;for(int i=0;i<next;i++)if(attempts[i])live++;
+        if(next<count&&(now>=launch||!live)) {
+            attempts[next]=start_at(host,addresses[next],port,pin,iface,&polls[next].fd,send_sni);next++;launch=now+250;
+        }
+        live=0;for(int i=0;i<next;i++)if(attempts[i])live++;
+        if(!live&&next==count)break;
+        now=vr_millis();uint64_t wake=end;if(next<count&&launch<wake)wake=launch;
+        int ready=poll(polls,(nfds_t)next,wake>now?(int)(wake-now):0);if(ready<0){if(errno==EINTR)continue;break;}
+        for(int i=0;i<next;i++)if(attempts[i]&&polls[i].revents) {
+            int bad=0;
+            if(!connected[i]){int error=0;socklen_t len=sizeof(error);bad=getsockopt(polls[i].fd,SOL_SOCKET,SO_ERROR,&error,&len)||error;connected[i]=1;}
+            if(!bad) {
+                ERR_clear_error();errno=0;int rc=SSL_connect(attempts[i]);
+                if(rc==1){X509 *cert=SSL_get_peer_certificate(attempts[i]);bad=*pin?vr_tls_pinned(cert,pin):0;X509_free(cert);
+                    if(!bad){winner=attempts[i];*fd=polls[i].fd;attempts[i]=NULL;polls[i].fd=-1;break;}}
+                else {int error=SSL_get_error(attempts[i],rc);polls[i].events=error==SSL_ERROR_WANT_READ?POLLIN:error==SSL_ERROR_WANT_WRITE?POLLOUT:0;bad=!polls[i].events;}
+            }
+            if(bad){SSL_free(attempts[i]);attempts[i]=NULL;close(polls[i].fd);polls[i].fd=-1;}
+        }
     }
-    return NULL;
+    for(int i=0;i<next;i++){SSL_free(attempts[i]);if(polls[i].fd>=0)close(polls[i].fd);}
+    return winner;
 }
 
 SSL *vr_tls_connect(const char *host,int port,const char *pin,const vr_config *config,const char *iface,int *fd,uint64_t deadline)

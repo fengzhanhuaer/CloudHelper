@@ -8,6 +8,8 @@ sdk="$sdk_root/toolchain"
 rootfs="$sdk_root/rootfs/ax56uv2"
 make VERSION="$build_version" bin/native/test-tls-connect
 python3 tests/test_tls_connect.py
+make VERSION="$build_version" bin/native/test-transport
+python3 tests/test_transport.py
 make VERSION="$build_version" all test bin/native/test-platform-command bin/native/test-addresses bin/native/test-telemetry bin/native/test-cache bin/native/test-upgrade bin/native/test-httpd-profile bin/native/test-httpd-access bin/native/httpd-fixture bin/native/test-carrier bin/native/test-measure
 bin/native/test-platform-command
 bin/native/test-addresses
@@ -19,12 +21,14 @@ make VERSION="$build_version" bin/native/test-policy-update bin/native/test-cont
 for target in policy-update mapping dns dataplane tls-proxy tcp-close tx;do bin/native/test-$target;done
 python3 tests/test_tx.py
 CHVR_DISPOSABLE_TEST=1 python3 tests/test_control.py
+CHVR_DISPOSABLE_TEST=1 CHVR_TEST_IPV6=1 python3 tests/test_control.py
 python3 tests/test_routes.py
 bin/native/test-measure
 bin/native/test-httpd-profile
 bin/native/test-httpd-access
 bin/native/cloudhelper-router-plugin --check-httpd bin/native/httpd-fixture
 python3 tests/test_upgrade.py
+CHVR_TEST_IPV6=1 python3 tests/test_upgrade.py
 make VERSION="$build_version" bin/native/test-controller-link
 python3 tests/test_controller_link.py
 python3 tests/test_service.py bin/native/cloudhelper-router-plugin

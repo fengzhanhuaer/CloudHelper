@@ -5,8 +5,8 @@
 #include <string.h>
 #include <unistd.h>
 
-int __wrap_vr_resolve_config4_all(const char *host,const vr_config *config,const char *iface,char out[4][16])
-{(void)host;(void)config;(void)iface;strcpy(out[0],"127.0.0.1");return 1;}
+int __wrap_vr_resolve_transport(const char *host,const vr_config *config,const char *iface,char out[4][46])
+{(void)host;(void)config;(void)iface;const char *ip=getenv("CHVR_TLS_TEST_ADDRESS"),*other=getenv("CHVR_TLS_TEST_ALTERNATE");snprintf(out[0],46,"%s",ip?ip:"127.0.0.1");if(other){snprintf(out[1],46,"%s",other);return 2;}return 1;}
 
 int main(int argc,char **argv)
 {

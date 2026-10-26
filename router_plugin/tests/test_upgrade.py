@@ -13,9 +13,11 @@ import threading
 import json
 import os
 import secrets
+import socket
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads=True
+    address_family=socket.AF_INET6 if os.environ.get('CHVR_TEST_IPV6')=='1' else socket.AF_INET
 
 binary = str(Path('bin/native/test-upgrade').resolve())
 if os.geteuid()!=0 or not Path('/.dockerenv').exists():
@@ -74,7 +76,7 @@ with tempfile.TemporaryDirectory(prefix='chvr-upgrade-test-') as work:
     cert, key = root/'cert.pem', root/'key.pem'
     subprocess.check_call(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
                            '-keyout', str(key), '-out', str(cert), '-subj', '/CN=127.0.0.1',
-                           '-addext', 'subjectAltName=IP:127.0.0.1'], stderr=subprocess.DEVNULL)
+                           '-addext', 'subjectAltName=IP:127.0.0.1,IP:::1'], stderr=subprocess.DEVNULL)
     trust=Path('/usr/local/share/ca-certificates/chvr-test.crt');trust.write_bytes(cert.read_bytes())
     subprocess.check_call(['update-ca-certificates'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     body=bytes(range(256))*64
@@ -101,17 +103,19 @@ with tempfile.TemporaryDirectory(prefix='chvr-upgrade-test-') as work:
             first=offset+1 if self.path=='/bad-range' else offset
             self.send_header('Content-Range','bytes %d-%d/%d'%(first,len(body)-1,len(body)))
             self.send_header('Content-Length',str(len(body)-offset));self.end_headers();self.wfile.write(body[offset:])
-    server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
+    host='::1' if ThreadingHTTPServer.address_family==socket.AF_INET6 else '127.0.0.1'
+    server=ThreadingHTTPServer((host,0),Handler)
+    authority='['+host+']' if ':' in host else host
     context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.load_cert_chain(str(cert),str(key))
     server.socket=context.wrap_socket(server.socket,server_side=True)
     threading.Thread(target=server.serve_forever,daemon=True).start()
     try:
         parallel_target=root/'parallel.bin'
-        subprocess.check_call([binary,'parallel','https://127.0.0.1:%d/parallel'%server.server_port,str(parallel_target),str(len(parallel_body))])
+        subprocess.check_call([binary,'parallel','https://%s:%d/parallel'%(authority,server.server_port),str(parallel_target),str(len(parallel_body))])
         assert parallel_target.read_bytes()==parallel_body
         for mode in ['resume','restart','bad-range']:
             target=root/(mode+'.bin')
-            rc=subprocess.call([binary,'download','https://127.0.0.1:%d/%s'%(server.server_port,mode),str(target),str(len(body))])
+            rc=subprocess.call([binary,'download','https://%s:%d/%s'%(authority,server.server_port,mode),str(target),str(len(body))])
             assert (rc==0)==(mode!='bad-range')
             if rc==0:assert hashlib.sha256(target.read_bytes()).digest()==hashlib.sha256(body).digest()
             else:assert target.stat().st_size==1500

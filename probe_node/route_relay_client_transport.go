@@ -30,8 +30,10 @@ func dialProbeRouteBoundQUIC(ctx context.Context, dialHostPort string, tlsConf *
 	if err != nil {
 		return nil, err
 	}
-	if err := ensureProbeRouteTransportDirectBypass(dialHostPort); err != nil {
-		log.Printf("probe route relay quic direct bypass failed: target=%s err=%v", strings.TrimSpace(dialHostPort), err)
+	if probeResolvedDialUsesIPv4Bypass(dialHostPort) {
+		if err := ensureProbeRouteTransportDirectBypass(dialHostPort); err != nil {
+			log.Printf("probe route relay quic direct bypass failed: target=%s err=%v", strings.TrimSpace(dialHostPort), err)
+		}
 	}
 	listenNetwork := "udp"
 	if remoteAddr.IP != nil {
@@ -166,9 +168,8 @@ var (
 )
 
 func defaultProbeRouteRelayLookupIP(ctx context.Context, _ string, host string) ([]net.IP, error) {
-	ips, err := resolveProbeLocalDNSInternalRealIPv4sWithContext(ctx, host, probeLocalDNSRouteDecision{
-		Group:  "probe-relay",
-		Action: "direct",
+	ips, err := resolveProbeTransportIPsWithLookup(ctx, host, func(host string) ([]string, error) {
+		return resolveProbeLocalDNSInternalRealIPv4sWithContext(ctx, host, probeLocalDNSRouteDecision{Group: "probe-relay", Action: "direct"})
 	})
 	if err != nil {
 		return nil, err
@@ -1171,8 +1172,10 @@ func openProbeRouteRelayWebSocketNetConn(routeID string, secret string, relayHos
 		WriteBufferSize:   probeRouteRelayWebSocketBufferBytes,
 		EnableCompression: false,
 		NetDialContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
-			if err := ensureProbeRouteTransportDirectBypass(dialHostPort); err != nil {
-				log.Printf("probe route relay websocket direct bypass failed: target=%s err=%v", strings.TrimSpace(dialHostPort), err)
+			if probeResolvedDialUsesIPv4Bypass(dialHostPort) {
+				if err := ensureProbeRouteTransportDirectBypass(dialHostPort); err != nil {
+					log.Printf("probe route relay websocket direct bypass failed: target=%s err=%v", strings.TrimSpace(dialHostPort), err)
+				}
 			}
 			netDialer := applyProbeRouteEgressDialer(&net.Dialer{Timeout: probeRouteRelayDialTimeout})
 			conn, err := netDialer.DialContext(ctx, probeRouteEgressDialNetwork(network, dialHostPort), dialHostPort)
@@ -1187,6 +1190,18 @@ func openProbeRouteRelayWebSocketNetConn(routeID string, secret string, relayHos
 		return nil, err
 	}
 	dialer.TLSClientConfig = tlsConfig
+	// Race only TCP/TLS establishment. Send the authenticated WS upgrade once,
+	// on the winner, so losing addresses cannot register duplicate carrier slots.
+	target := probeResolvedURLDialTarget{OriginalEndpoint: net.JoinHostPort(relayHostHeader, strconv.Itoa(relayPort)), DialEndpoint: dialHostPort, DialEndpoints: probeRouteRelayDialEndpoints(context.Background(), relayHost, relayDialHost, relayPort)}
+	var connectedHost string
+	dialer.NetDialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := newProbeResolvedConnectionDialContext(target, openTimeout, tlsConfig)(ctx, network, addr)
+		if err == nil {
+			connectedHost, _, _ = net.SplitHostPort(conn.RemoteAddr().String())
+			tuneProbeRouteNetConn(conn)
+		}
+		return conn, err
+	}
 	logProbeRouteRelayDialAttempt("websocket", routeID, "websocket", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, openTimeout)
 	ws, response, err := dialer.Dial(relayURL, header)
 	if err != nil {
@@ -1202,7 +1217,7 @@ func openProbeRouteRelayWebSocketNetConn(routeID string, secret string, relayHos
 		return nil, wrappedErr
 	}
 	if cacheOnSuccess {
-		refreshProbeRouteRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
+		refreshProbeRouteRelayResolveCacheOnConnectSuccess(relayHost, firstNonEmpty(connectedHost, relayDialHost), relayHostHeader)
 	}
 	logProbeRouteRelayDialOutcome("websocket", routeID, "websocket", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), nil)
 	responseHeader := http.Header{}
@@ -1234,7 +1249,7 @@ func openProbeRouteRelayHTTP3WebSocketNetConn(routeID string, secret string, rel
 		}
 	}
 	logProbeRouteRelayDialAttempt("websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, openTimeout)
-	quicConn, err := dialProbeRouteBoundQUIC(ctx, dialHostPort, tlsConf, newProbeRouteQUICConfig(0))
+	quicConn, connectedEndpoint, err := dialProbeRouteRelayQUIC(ctx, probeRouteRelayDialEndpoints(ctx, relayHost, relayDialHost, relayPort), tlsConf)
 	if err != nil {
 		stopOpenTimer()
 		cancel()
@@ -1352,7 +1367,8 @@ func openProbeRouteRelayHTTP3WebSocketNetConn(routeID string, secret string, rel
 	_ = stream.SetDeadline(time.Time{})
 
 	if cacheOnSuccess {
-		refreshProbeRouteRelayResolveCacheOnConnectSuccess(relayHost, relayDialHost, relayHostHeader)
+		connectedHost, _, _ := net.SplitHostPort(connectedEndpoint)
+		refreshProbeRouteRelayResolveCacheOnConnectSuccess(relayHost, firstNonEmpty(connectedHost, relayDialHost), relayHostHeader)
 	}
 	stopOpenTimer()
 	logProbeRouteRelayDialOutcome("websocket-h3", routeID, "websocket-h3", relayHost, relayPort, relayDialHost, relayHostHeader, bridgeRole, time.Since(startedAt), nil)
@@ -1373,6 +1389,79 @@ func openProbeRouteRelayHTTP3WebSocketNetConn(routeID string, secret string, rel
 		},
 	}
 	return wrapProbeVirtualRouterNegotiatedConn(conn, connToken, response.Header), nil
+}
+
+// Keep the last working address first, then include both real address families.
+// Only transport handshakes race; private authentication is sent on one winner.
+func probeRouteRelayDialEndpoints(ctx context.Context, host, selected string, port int) []string {
+	first := net.JoinHostPort(selected, strconv.Itoa(port))
+	out := []string{first}
+	if net.ParseIP(strings.Trim(host, "[]")) != nil {
+		return out
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	ips, err := probeRouteRelayLookupIP(ctx, "ip", host)
+	if err != nil {
+		return out
+	}
+	seen := map[string]bool{first: true}
+	for _, ip := range ips {
+		if ip == nil {
+			continue
+		}
+		endpoint := net.JoinHostPort(ip.String(), strconv.Itoa(port))
+		if !seen[endpoint] && len(out) < 4 {
+			out = append(out, endpoint)
+			seen[endpoint] = true
+		}
+	}
+	return out
+}
+
+func dialProbeRouteRelayQUIC(ctx context.Context, endpoints []string, config *tls.Config) (*quic.Conn, string, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type result struct {
+		conn     *quic.Conn
+		endpoint string
+		err      error
+	}
+	results := make(chan result)
+	for i, endpoint := range endpoints {
+		go func() {
+			if i > 0 {
+				timer := time.NewTimer(time.Duration(i) * 250 * time.Millisecond)
+				defer timer.Stop()
+				select {
+				case <-timer.C:
+				case <-ctx.Done():
+					return
+				}
+			}
+			conn, err := dialProbeRouteBoundQUIC(ctx, endpoint, config.Clone(), newProbeRouteQUICConfig(0))
+			select {
+			case results <- result{conn, endpoint, err}:
+			case <-ctx.Done():
+				if conn != nil {
+					_ = conn.CloseWithError(0, "alternate transport selected")
+				}
+			}
+		}()
+	}
+	var failures []error
+	for range endpoints {
+		select {
+		case r := <-results:
+			if r.err == nil {
+				return r.conn, r.endpoint, nil
+			}
+			failures = append(failures, r.err)
+		case <-ctx.Done():
+			return nil, "", ctx.Err()
+		}
+	}
+	return nil, "", errors.Join(failures...)
 }
 
 func probeRouteHTTP3StreamOpenTimeout(openTimeout time.Duration) time.Duration {

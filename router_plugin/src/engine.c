@@ -167,15 +167,25 @@ static int prepare(vr_engine *e)
 void vr_engine_run(vr_service *service,const vr_config *config,unsigned generation)
 {
     vr_engine *e=calloc(1,sizeof(*e));if(!e)return;
-    e->service=service;e->config=*config;e->generation=generation;e->tun=e->lan=e->wan=e->dns_udp=e->dns_tcp=-1;
+    e->service=service;e->config=*config;e->generation=generation;e->tun=e->lan=e->wan=e->dns_udp=e->dns_tcp=e->carrier6=-1;
     pthread_mutex_init(&e->mutex,NULL);pthread_cond_init(&e->jobs_changed,NULL);
     for(size_t i=0;i<VR_CARRIER_MAX;i++)e->links[i].fd=-1;
     if(prepare(e))goto done;
-    uint64_t published=0,addresses_checked=vr_millis(),sniff_retry=0,firewall_retry=0;
+    uint64_t published=0,addresses_checked=vr_millis(),sniff_retry=0,firewall_retry=0,carrier6_checked=0;
     unsigned firewall_failures=0;
     vr_address_watch address_watch={0};
     while(!vr_service_stopped(service,generation)) {
         uint64_t now=vr_millis();
+        if(now>=carrier6_checked) {
+            int listener=e->carrier6>=0?e->carrier6:vr_bind6_carrier(e->config.port);
+            if(listener>=0) {
+                if(!vr_platform_carrier6(&e->config,&e->addresses)) {
+                    if(e->carrier6<0)vr_service_log(service,"link","IPv6 carrier listener ready");
+                    e->carrier6=listener;
+                } else if(e->carrier6<0){close(listener);vr_service_log(service,"link","IPv6 carrier listener deferred; IPv4 retained");}
+            }
+            carrier6_checked=now+30000;
+        }
         pthread_mutex_lock(&service->mutex);int sniff=service->config.tls_sni_enabled;pthread_mutex_unlock(&service->mutex);
         if(sniff!=e->config.tls_sni_enabled&&now>=sniff_retry) {
             if(!e->config.enabled||(!(sniff&&vr_tcp_start(e))&&!vr_platform_tls(&e->addresses,e->cidr,sniff))) {
@@ -195,18 +205,20 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
             }
             if(!l->ssl&&!pending_policy)vr_link_dial(l);
         }
-        struct pollfd fds[5+VR_CARRIER_MAX+129];fds[0]=(struct pollfd){e->tun,POLLIN,0};fds[1]=(struct pollfd){e->lan,POLLIN,0};
+        struct pollfd fds[6+VR_CARRIER_MAX+129];fds[0]=(struct pollfd){e->tun,POLLIN,0};fds[1]=(struct pollfd){e->lan,POLLIN,0};
         fds[2]=(struct pollfd){e->wan,POLLIN,0};fds[3]=(struct pollfd){e->dns_udp,POLLIN,0};fds[4]=(struct pollfd){e->dns_tcp,POLLIN,0};
-        for(size_t i=0;i<e->link_count;i++)fds[5+i]=(struct pollfd){e->links[i].fd,(short)(POLLIN|(e->links[i].used?(e->links[i].write_events?e->links[i].write_events:POLLOUT):0)),0};
+        fds[5]=(struct pollfd){e->carrier6,POLLIN,0};
+        for(size_t i=0;i<e->link_count;i++)fds[6+i]=(struct pollfd){e->links[i].fd,(short)(POLLIN|(e->links[i].used?(e->links[i].write_events?e->links[i].write_events:POLLOUT):0)),0};
         int pending=0;for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl&&SSL_pending(e->links[i].ssl))pending=1;
-        size_t tcp_count=vr_tcp_pollfds(e,fds+5+e->link_count);
-        int result=poll(fds,5+e->link_count+tcp_count,pending?0:50);if(result<0&&errno==EINTR)continue;if(result<0){strcpy(e->error,"network poll failed");break;}
-        for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl)vr_link_poll(&e->links[i],fds[5+i].revents);
+        size_t tcp_count=vr_tcp_pollfds(e,fds+6+e->link_count);
+        int result=poll(fds,6+e->link_count+tcp_count,pending?0:50);if(result<0&&errno==EINTR)continue;if(result<0){strcpy(e->error,"network poll failed");break;}
+        for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl)vr_link_poll(&e->links[i],fds[6+i].revents);
         if(fds[0].revents&POLLIN){uint8_t packet[2048];ssize_t n=read(e->tun,packet,sizeof(packet));if(n>0)vr_outgoing(e,packet,(size_t)n);}
         for(size_t i=1;i<=2;i++)if(!pending_policy&&(fds[i].revents&POLLIN)){int fd=accept4(fds[i].fd,NULL,NULL,SOCK_CLOEXEC);if(fd>=0)vr_link_accept(e,fd);}
+        if(!pending_policy&&(fds[5].revents&POLLIN)){int fd=accept4(fds[5].fd,NULL,NULL,SOCK_CLOEXEC);if(fd>=0)vr_link_accept(e,fd);}
         if(fds[3].revents&POLLIN)vr_dns_accept(e,0);
         if(fds[4].revents&POLLIN)vr_dns_accept(e,1);
-        if(tcp_count)vr_tcp_poll(e,fds+5+e->link_count);
+        if(tcp_count)vr_tcp_poll(e,fds+6+e->link_count);
         vr_measure_tick(e);
         if(now-published>=1000){status(e,1);published=now;}
         if(now-addresses_checked>=10000) {
@@ -247,6 +259,8 @@ done:
     for(size_t i=0;i<e->link_count;i++)vr_link_close(&e->links[i],"");
     if(e->lan>=0)close(e->lan);
     if(e->wan>=0)close(e->wan);
+    if(e->carrier6>=0)close(e->carrier6);
+    vr_platform_carrier6_stop();
     if(e->platform_started)vr_platform_stop(e->cidr);
     if(e->tun>=0)close(e->tun);
     for(size_t i=0;i<4;i++)json_object_put(e->receives[i].message);

@@ -5,8 +5,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestControllerDirectDiscoveryPreservesBothAddressFamilies(t *testing.T) {
+	got := controllerDirectDualStackIPs([]string{"192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4", "2001:db8::1", "2001:db8::2", "2001:0db8::1"})
+	if strings.Join(got, ",") != "192.0.2.1,2001:db8::1,192.0.2.2,2001:db8::2" {
+		t.Fatal(got)
+	}
+}
 
 func TestDirectProbeIsolationAndNonce(t *testing.T) {
 	withProbeStoreSecretForTest(t, "1", "test-secret")

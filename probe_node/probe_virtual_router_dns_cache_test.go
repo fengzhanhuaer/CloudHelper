@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -84,6 +85,7 @@ func TestProbeLocalDNSExternalAndRelayResolutionUseFullUpstreamChain(t *testing.
 	t.Cleanup(resetProbeLocalDNSServiceForTest)
 
 	queries := make([]string, 0, 2)
+	var queriesMu sync.Mutex
 	probeLocalDNSQueryUpstream = func(candidate probeLocalDNSUpstreamCandidate, packet []byte) ([]byte, error) {
 		if candidate.Kind != "doh" {
 			t.Fatalf("first built-in upstream kind=%q want doh", candidate.Kind)
@@ -96,7 +98,9 @@ func TestProbeLocalDNSExternalAndRelayResolutionUseFullUpstreamChain(t *testing.
 			t.Fatalf("questions=%d want 1", len(message.Questions))
 		}
 		domain := strings.TrimSuffix(message.Questions[0].Name.String(), ".")
-		queries = append(queries, domain)
+		queriesMu.Lock()
+		queries = append(queries, domain+"/"+message.Questions[0].Type.String())
+		queriesMu.Unlock()
 		message.Header.Response = true
 		message.Answers = []dnsmessage.Resource{{
 			Header: dnsmessage.ResourceHeader{Name: message.Questions[0].Name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: 60},
@@ -118,8 +122,16 @@ func TestProbeLocalDNSExternalAndRelayResolutionUseFullUpstreamChain(t *testing.
 	if err != nil || len(relayIPs) != 1 || relayIPs[0].String() != "203.0.113.40" {
 		t.Fatalf("relay resolution ips=%v err=%v", relayIPs, err)
 	}
-	if got := strings.Join(queries, ","); got != "www.external.example,relay.external.example" {
-		t.Fatalf("resolved domains=%q", got)
+	queriesMu.Lock()
+	defer queriesMu.Unlock()
+	counts := map[string]int{}
+	for _, query := range queries {
+		counts[query]++
+	}
+	for _, query := range []string{"www.external.example/TypeA", "relay.external.example/TypeA", "relay.external.example/TypeAAAA"} {
+		if counts[query] != 1 {
+			t.Fatalf("resolved domains=%v", queries)
+		}
 	}
 }
 

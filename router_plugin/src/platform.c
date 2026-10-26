@@ -203,6 +203,17 @@ int vr_bind4(const char *ip,int port,int tcp)
     if(bind(fd,(struct sockaddr *)&sa,sizeof(sa))||(tcp&&listen(fd,8))){close(fd);return -1;}return fd;
 }
 
+int vr_bind6_carrier(int port)
+{
+    if(port<1||port>65535)return -1;
+    struct sockaddr_in6 sa={0};sa.sin6_family=AF_INET6;sa.sin6_port=htons((uint16_t)port);
+    int fd=socket(AF_INET6,SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK,0);if(fd<0)return -1;
+    int yes=1;
+    if(setsockopt(fd,IPPROTO_IPV6,IPV6_V6ONLY,&yes,sizeof(yes))||setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof(yes))||
+       bind(fd,(struct sockaddr *)&sa,sizeof(sa))||listen(fd,8)){close(fd);return -1;}
+    return fd;
+}
+
 static int carrier_skiplog_port;
 static char policy_lan_if[IFNAMSIZ];
 static int tls_active;

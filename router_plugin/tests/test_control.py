@@ -5,6 +5,7 @@ import hmac
 import http.server
 import json
 import os
+import socket
 from pathlib import Path
 import socketserver
 import ssl
@@ -18,7 +19,7 @@ with tempfile.TemporaryDirectory(prefix='chvr-control-') as work:
     root = Path(work)
     key, cert = root/'key.pem', root/'cert.pem'
     subprocess.check_call(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
-                           '-subj', '/CN=control fixture', '-addext', 'subjectAltName=IP:127.0.0.1',
+                           '-subj', '/CN=control fixture', '-addext', 'subjectAltName=IP:127.0.0.1,IP:::1',
                            '-keyout', str(key), '-out', str(cert)], stderr=subprocess.DEVNULL)
     bundle = Path('/etc/ssl/certs/ca-certificates.crt')
     original_bundle = bundle.read_bytes()
@@ -128,13 +129,15 @@ with tempfile.TemporaryDirectory(prefix='chvr-control-') as work:
 
     class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
         daemon_threads = True
-    server = Server(('127.0.0.1', 0), Handler)
+        address_family = socket.AF_INET6 if os.environ.get('CHVR_TEST_IPV6')=='1' else socket.AF_INET
+    host='::1' if Server.address_family==socket.AF_INET6 else '127.0.0.1'
+    server = Server((host, 0), Handler)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(cert, key)
     server.socket = context.wrap_socket(server.socket, server_side=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        subprocess.check_call(['bin/native/test-control', 'https://127.0.0.1:'+str(server.server_port), str(fixture)], timeout=50)
+        subprocess.check_call(['bin/native/test-control', 'https://'+('['+host+']' if ':' in host else host)+':'+str(server.server_port), str(fixture)], timeout=50)
         assert not errors, errors
         assert state['upgrades'] == 1 and state['reports'] == 8 and state['configs'] >= 1, state
         assert state['chunks'] > state['reports'], state

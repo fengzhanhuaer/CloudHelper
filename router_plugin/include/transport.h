@@ -4,6 +4,11 @@
 #include <openssl/ssl.h>
 #include <curl/curl.h>
 
+/* Real transport addresses only; business/Fake IP resolution remains IPv4. */
+int vr_resolve_transport(const char *host,const vr_config *config,const char *iface,char out[4][46]);
+int vr_hostport(const char *host,int port,char *out,size_t cap);
+int vr_curl_address(const char *host,int port,const char *ip,char *out,size_t cap);
+
 typedef struct {
     uint8_t header[14], mask[4], control[125];
     size_t header_used, header_needed, payload_used, payload_length, message_length;

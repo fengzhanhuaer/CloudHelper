@@ -17,6 +17,8 @@ CURLcode __wrap_curl_easy_perform(CURL *curl)
     if(url&&(!strcmp(url,"https://api4.ipify.org")||!strcmp(url,"https://ipv4.icanhazip.com"))) {
         if(++public_requests==1)return CURLE_OPERATION_TIMEDOUT;
         char target[256];snprintf(target,sizeof(target),"%s/fixture-public-ip",fixture_origin);curl_easy_setopt(curl,CURLOPT_URL,target);
+        /* The mocked IPv4 public-IP service can itself be hosted on ::1. */
+        curl_easy_setopt(curl,CURLOPT_IPRESOLVE,(long)CURL_IPRESOLVE_WHATEVER);
     }
     return __real_curl_easy_perform(curl);
 }
@@ -30,6 +32,14 @@ int __wrap_vr_resolve_config4_all(const char *host,const vr_config *config,const
 {(void)config;(void)iface;
  if(!strcmp(host,"api4.ipify.org")||!strcmp(host,"ipv4.icanhazip.com")){public_resolves++;strcpy(out[0],"203.0.113.1");return 1;}
  assert(!strcmp(host,"127.0.0.1"));strcpy(out[0],"127.0.0.2");strcpy(out[1],"127.0.0.1");return 2;}
+
+int __wrap_vr_resolve_transport(const char *host,const vr_config *config,const char *iface,char out[4][46])
+{
+ if(!strcmp(host,"::1")){strcpy(out[0],host);return 1;}
+ char v4[4][16];int count=__wrap_vr_resolve_config4_all(host,config,iface,v4);
+ for(int i=0;i<count;i++)strcpy(out[i],v4[i]);
+ return count;
+}
 
 int main(int argc,char **argv)
 {

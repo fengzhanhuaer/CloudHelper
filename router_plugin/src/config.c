@@ -65,7 +65,7 @@ int vr_config_parse(vr_config *out, json_object *o, const vr_config *previous, c
         if (!(isalnum(*p) || *p=='_' || *p=='-' || *p=='.')) goto fail;
     if (*c.controller) {
         char host[254];int port,tls;
-        if(vr_origin(c.controller,host,&port,&tls)) {why="controller must be an HTTP(S) IPv4/hostname origin without credentials or path";goto fail;}
+        if(vr_origin(c.controller,host,&port,&tls)) {why="controller must be an HTTP(S) IP/hostname origin without credentials or path";goto fail;}
         size_t len=strlen(c.controller); if (len && c.controller[len-1]=='/') c.controller[len-1]=0;
     }
     json_object *upstreams=vr_member(o,"dns_upstreams");
@@ -147,10 +147,18 @@ int vr_origin(const char *url,char host[254],int *port,int *tls)
     if(!strncmp(url,"https://",8)){p=url+8;*tls=1;*port=443;}
     else if(!strncmp(url,"http://",7)){p=url+7;*tls=0;*port=80;}
     else return -1;
+    if(*p=='[') {
+        const char *end=strchr(p,']');struct in6_addr ip;
+        if(!end||end-p<2||end-p>46)return -1;
+        memcpy(host,p+1,(size_t)(end-p-1));host[end-p-1]=0;
+        if(inet_pton(AF_INET6,host,&ip)!=1)return -1;
+        p=end+1;
+    } else {
     size_t len=strcspn(p,":/");
     if(!len || len>253 || p[0]=='-' || p[len-1]=='-')return -1;
     for(size_t i=0;i<len;i++)if(!((p[i]>='a'&&p[i]<='z')||(p[i]>='A'&&p[i]<='Z')||(p[i]>='0'&&p[i]<='9')||p[i]=='.'||p[i]=='-'))return -1;
     memcpy(host,p,len);host[len]=0;p+=len;
+    }
     if(*p==':'){
         p++;if(*p<'0'||*p>'9')return -1;
         char *end;long v=strtol(p,&end,10);if(v<1||v>65535)return -1;*port=(int)v;p=end;

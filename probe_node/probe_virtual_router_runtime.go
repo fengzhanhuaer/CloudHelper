@@ -1281,7 +1281,7 @@ func buildProbeVirtualRouterRuntimeConfigForRule(config probeVirtualRouterConfig
 		userPublicKey: userPublicKey,
 		secret:        secret,
 		authTicket:    authTicket,
-		listenHost:    "0.0.0.0",
+		listenHost:    "", // Wildcard tcp/udp listeners accept both address families.
 		listenPort:    localPort,
 		routeLayer:    normalizeProbeRouteRouteLayer(firstNonEmpty(strings.TrimSpace(rule.RouteLayer), probeVirtualRouterRuntimeRouteLayer)),
 		carrierCount:  normalizeProbeVirtualRouterCarrierCount(rule.CarrierCount),

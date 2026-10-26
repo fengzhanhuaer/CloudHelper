@@ -224,7 +224,7 @@ func startControllerDirectListeners(handler http.Handler) error {
 		listeners = append(listeners, l)
 	}
 	items := []controllerDirectEndpoint{}
-	for _, ip := range advertised {
+	for _, ip := range controllerDirectDualStackIPs(advertised) {
 		if len(items) == 4 {
 			break
 		}
@@ -243,4 +243,32 @@ func startControllerDirectListeners(handler http.Handler) error {
 	controllerDirectState.Unlock()
 	logControllerInfof("Probe-only direct TLS active: port=15030 addresses=%d", len(items))
 	return nil
+}
+
+// Keep one family from filling the four-entry discovery limit. IPv4 remains
+// first for old clients that filter IPv6; dual-stack clients get both families.
+func controllerDirectDualStackIPs(addresses []string) []string {
+	var v4, v6 []string
+	seen := map[string]bool{}
+	for _, raw := range addresses {
+		ip := net.ParseIP(raw)
+		if ip == nil || seen[ip.String()] {
+			continue
+		}
+		seen[ip.String()] = true
+		if ip.To4() != nil {
+			v4 = append(v4, ip.String())
+		} else {
+			v6 = append(v6, ip.String())
+		}
+	}
+	out := make([]string, 0, 4)
+	for i := 0; len(out) < 4 && (i < len(v4) || i < len(v6)); i++ {
+		for _, family := range [][]string{v4, v6} {
+			if i < len(family) && len(out) < 4 {
+				out = append(out, family[i])
+			}
+		}
+	}
+	return out
 }

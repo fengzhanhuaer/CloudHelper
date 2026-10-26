@@ -11,6 +11,7 @@ static struct {
     char controller[1024],path[512];
     json_object *data;
     uint64_t prefer_until,last_refresh;
+    uint64_t retry_at[4];
     size_t index;
     int refreshing,healthy;
 } link_state={.mutex=PTHREAD_MUTEX_INITIALIZER};
@@ -22,10 +23,11 @@ static int valid(json_object *o)
     json_object *items=vr_member(o,"endpoints");if(!json_object_is_type(items,json_type_array))return 0;size_t count=json_object_array_length(items);
     if(json_object_get_int(vr_member(o,"version"))!=1||expiry<=time(NULL)||expiry>time(NULL)+31*86400||!count||count>4)return 0;
     for(size_t i=0;i<count;i++) {
-        json_object *item=json_object_array_get_idx(items,i);struct in_addr ip;
+        json_object *item=json_object_array_get_idx(items,i);struct in_addr ip;struct in6_addr ip6;
         const char *pin=vr_string(item,"tls_spki_sha256");
-        if(inet_pton(AF_INET,vr_string(item,"ip"),&ip)!=1||json_object_get_int(vr_member(item,"port"))!=15030||strlen(pin)!=64)return 0;
-        uint32_t host=ntohl(ip.s_addr);if(!host||(host>>24)==127||(host>>28)>=14)return 0;
+        if(json_object_get_int(vr_member(item,"port"))!=15030||strlen(pin)!=64)return 0;
+        if(inet_pton(AF_INET,vr_string(item,"ip"),&ip)==1){uint32_t host=ntohl(ip.s_addr);if(!host||(host>>24)==127||(host>>28)>=14)return 0;}
+        else if(inet_pton(AF_INET6,vr_string(item,"ip"),&ip6)!=1||IN6_IS_ADDR_UNSPECIFIED(&ip6)||IN6_IS_ADDR_LOOPBACK(&ip6)||IN6_IS_ADDR_LINKLOCAL(&ip6)||IN6_IS_ADDR_MULTICAST(&ip6)||IN6_IS_ADDR_V4MAPPED(&ip6))return 0;
         for(size_t j=0;j<64;j++)if(!((pin[j]>='0'&&pin[j]<='9')||(pin[j]>='a'&&pin[j]<='f')))return 0;
     }
     return 1;
@@ -34,6 +36,7 @@ void vr_controller_link_init(const vr_config *c,const char *config_path)
 {
     pthread_mutex_lock(&link_state.mutex);
     json_object_put(link_state.data);link_state.data=NULL;link_state.index=0;link_state.prefer_until=0;link_state.last_refresh=0;link_state.refreshing=0;link_state.healthy=0;
+    memset(link_state.retry_at,0,sizeof(link_state.retry_at));
     snprintf(link_state.controller,sizeof(link_state.controller),"%s",c->controller);
     snprintf(link_state.path,sizeof(link_state.path),"%s",config_path);
     char *slash=strrchr(link_state.path,'/');if(slash)slash[1]=0;else *link_state.path=0;
@@ -52,8 +55,13 @@ int vr_controller_link_target(const vr_config *c,char origin[1024],char pin[65])
     pthread_mutex_lock(&link_state.mutex);
     if(!strcmp(link_state.controller,c->controller)&&valid(link_state.data)&&vr_millis()<link_state.prefer_until) {
         json_object *items=vr_member(link_state.data,"endpoints");
-        json_object *item=json_object_array_get_idx(items,link_state.index%json_object_array_length(items));
-        snprintf(origin,1024,"https://%s:15030",vr_string(item,"ip"));snprintf(pin,65,"%s",vr_string(item,"tls_spki_sha256"));direct=1;
+        size_t count=json_object_array_length(items);
+        for(size_t i=0;i<count;i++) {
+            size_t index=(link_state.index+i)%count;if(vr_millis()<link_state.retry_at[index])continue;
+            link_state.index=index;json_object *item=json_object_array_get_idx(items,index);char endpoint[280];
+            vr_hostport(vr_string(item,"ip"),15030,endpoint,sizeof(endpoint));
+            snprintf(origin,1024,"https://%s",endpoint);snprintf(pin,65,"%s",vr_string(item,"tls_spki_sha256"));direct=1;break;
+        }
     }
     pthread_mutex_unlock(&link_state.mutex);return direct;
 }
@@ -64,6 +72,7 @@ void vr_controller_link_feedback(const vr_config *c,int direct,int ok,uint64_t e
         if(!direct&&(!ok||elapsed>2500)){link_state.prefer_until=vr_millis()+60000;link_state.healthy=0;}
         else if(!direct&&ok&&elapsed<2000&&++link_state.healthy>=2)link_state.prefer_until=0;
         else if(direct&&!ok) {
+            link_state.retry_at[link_state.index%4]=vr_millis()+60000;
             link_state.index++;
             if(link_state.index>=(size_t)json_object_array_length(vr_member(link_state.data,"endpoints"))){link_state.index=0;link_state.prefer_until=0;}
         }
@@ -86,7 +95,11 @@ int vr_controller_link_store(const vr_config *c,json_object *data)
     json_object *filtered=json_object_new_object(),*v4=json_object_new_array();
     json_object_object_add(filtered,"version",json_object_get(vr_member(data,"version")));
     json_object_object_add(filtered,"expires_at",json_object_get(vr_member(data,"expires_at")));
-    for(size_t i=0;i<(size_t)json_object_array_length(items);i++){json_object *item=json_object_array_get_idx(items,i);struct in_addr ip;if(inet_pton(AF_INET,vr_string(item,"ip"),&ip)==1)json_object_array_add(v4,json_object_get(item));}
+    /* Keep IPv4 first for compatibility, but retain discovered IPv6 too. */
+    for(int family=0;family<2;family++)for(size_t i=0;i<(size_t)json_object_array_length(items);i++){
+        json_object *item=json_object_array_get_idx(items,i);struct in_addr ip;
+        if((inet_pton(AF_INET,vr_string(item,"ip"),&ip)==1)==!family)json_object_array_add(v4,json_object_get(item));
+    }
     json_object_object_add(filtered,"endpoints",v4);data=filtered;
     if(!valid(data)){json_object_put(filtered);return -1;}
     pthread_mutex_lock(&link_state.mutex);
@@ -94,7 +107,7 @@ int vr_controller_link_store(const vr_config *c,json_object *data)
     json_object_object_add(data,"controller",json_object_new_string(c->controller));
     const char *bytes=json_object_to_json_string_ext(data,JSON_C_TO_STRING_PLAIN);
     int rc=strlen(bytes)<8192?vr_atomic_write(link_state.path,bytes,strlen(bytes)):-1;
-    if(!rc){json_object_put(link_state.data);link_state.data=json_object_get(data);link_state.last_refresh=vr_millis()+3600000;}
+    if(!rc){json_object_put(link_state.data);link_state.data=json_object_get(data);link_state.index=0;memset(link_state.retry_at,0,sizeof(link_state.retry_at));link_state.last_refresh=vr_millis()+3600000;}
     pthread_mutex_unlock(&link_state.mutex);json_object_put(filtered);return rc;
 }
 static int verify_pinned(X509_STORE_CTX *store,void *pin)

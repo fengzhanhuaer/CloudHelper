@@ -101,6 +101,7 @@ int vr_dns_doh_endpoint(const char *text, char host[254], int *port);
 int vr_dns_chain(const vr_config *config,const char *iface,const void *query,size_t qn,void *reply,size_t cap,size_t *n);
 int vr_resolve_config4(const char *host,const vr_config *config,const char *iface,char out[16]);
 int vr_resolve_config4_all(const char *host,const vr_config *config,const char *iface,char out[4][16]);
+int vr_dns_addresses6(const uint8_t *reply,size_t n,char out[4][46]);
 int vr_resolve4(const char *host, const char *upstream, const char *iface, char out[16]);
 vr_decision vr_policy_match(json_object *policy, const char *domain, const char *ip);
 int vr_policy_validate(json_object *snapshot, const char *node_id, char *err, size_t n);

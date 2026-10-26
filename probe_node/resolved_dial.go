@@ -61,20 +61,20 @@ func resolveProbeLocalURLDialTarget(rawURL string) (probeResolvedURLDialTarget, 
 		return target, nil
 	}
 
-	ips, err := resolveProbeLocalDNSIPv4s(host)
+	ips, err := resolveProbeTransportIPs(context.Background(), host)
 	if err != nil {
 		return probeResolvedURLDialTarget{}, err
 	}
 	if len(ips) == 0 {
-		return probeResolvedURLDialTarget{}, fmt.Errorf("resolved url host has no ipv4 result: %s", host)
+		return probeResolvedURLDialTarget{}, fmt.Errorf("resolved url host has no address: %s", host)
 	}
 	for _, ip := range ips {
-		if parsed := net.ParseIP(strings.TrimSpace(ip)); parsed != nil && parsed.To4() != nil {
+		if parsed := net.ParseIP(strings.TrimSpace(ip)); parsed != nil {
 			target.DialEndpoints = append(target.DialEndpoints, net.JoinHostPort(parsed.String(), strconv.Itoa(portNum)))
 		}
 	}
 	if len(target.DialEndpoints) == 0 {
-		return target, errors.New("resolved url host has no valid ipv4 result")
+		return target, errors.New("resolved url host has no valid address")
 	}
 	target.DialEndpoint = target.DialEndpoints[0]
 	target.ServerName = host

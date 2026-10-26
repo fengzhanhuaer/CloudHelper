@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "upgrade.h"
 #include "transport.h"
+#include <arpa/inet.h>
 #include <curl/curl.h>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -190,14 +191,25 @@ static CURLcode fetch(upgrade_job *job,const char *remote,transfer *t)
   snprintf(line,sizeof(line),"X-CloudHelper-Download-URL: %s",remote);headers=curl_slist_append(headers,line);
   headers=curl_slist_append(headers,"X-CloudHelper-Download-Cache: 1");
  }
- char origin[1024],host[254],ips[4][16],entry[320];int port,tls;
+ char origin[1024],host[254],entry[384];int port,tls;
  /* Resolve the initial TLS origin through the same independent DNS path as
     control traffic. Redirects are HTTPS-only and never carry proxy credentials. */
  const char *slash=strchr(url+8,'/');size_t length=slash?(size_t)(slash-url):strlen(url);
  if(length>=sizeof(origin)){curl_easy_cleanup(curl);curl_slist_free_all(headers);return CURLE_URL_MALFORMAT;}
  memcpy(origin,url,length);origin[length]=0;
- if(vr_origin(origin,host,&port,&tls)||!tls||vr_resolve_config4_all(host,&job->config,job->iface,ips)<1){curl_easy_cleanup(curl);curl_slist_free_all(headers);return CURLE_COULDNT_RESOLVE_HOST;}
- snprintf(entry,sizeof(entry),"%s:%d:%s",host,port,ips[0]);addresses=curl_slist_append(NULL,entry);
+ if(vr_origin(origin,host,&port,&tls)||!tls){curl_easy_cleanup(curl);curl_slist_free_all(headers);return CURLE_URL_MALFORMAT;}
+ /* Select a TCP/TLS-ready address without sending any download credentials.
+    The actual request remains single-shot and is authenticated normally. */
+ int connected=-1;SSL *probe=vr_tls_connect(host,port,pin,&job->config,job->iface,&connected,vr_millis()+8000);
+ if(!probe){curl_easy_cleanup(curl);curl_slist_free_all(headers);return CURLE_COULDNT_CONNECT;}
+ struct sockaddr_storage peer;socklen_t plen=sizeof(peer);char selected_ip[46]="";
+ if(!getpeername(connected,(struct sockaddr *)&peer,&plen)){
+  if(peer.ss_family==AF_INET)inet_ntop(AF_INET,&((struct sockaddr_in *)&peer)->sin_addr,selected_ip,sizeof(selected_ip));
+  else if(peer.ss_family==AF_INET6)inet_ntop(AF_INET6,&((struct sockaddr_in6 *)&peer)->sin6_addr,selected_ip,sizeof(selected_ip));
+ }
+ SSL_free(probe);close(connected);
+ if(!*selected_ip||vr_curl_address(host,port,selected_ip,entry,sizeof(entry))){curl_easy_cleanup(curl);curl_slist_free_all(headers);return CURLE_COULDNT_CONNECT;}
+ if(*entry)addresses=curl_slist_append(NULL,entry);
  curl_easy_setopt(curl,CURLOPT_URL,url);curl_easy_setopt(curl,CURLOPT_RESOLVE,addresses);curl_easy_setopt(curl,CURLOPT_PROXY,"");
  curl_easy_setopt(curl,CURLOPT_PROTOCOLS,(long)CURLPROTO_HTTPS);curl_easy_setopt(curl,CURLOPT_REDIR_PROTOCOLS,(long)CURLPROTO_HTTPS);
  curl_easy_setopt(curl,CURLOPT_FOLLOWLOCATION,job->direct?1L:0L);curl_easy_setopt(curl,CURLOPT_MAXREDIRS,4L);
@@ -205,7 +217,7 @@ static CURLcode fetch(upgrade_job *job,const char *remote,transfer *t)
  curl_easy_setopt(curl,CURLOPT_USERAGENT,"CloudHelper-router/" VR_VERSION);curl_easy_setopt(curl,CURLOPT_HTTPHEADER,headers);
  curl_easy_setopt(curl,CURLOPT_ACCEPT_ENCODING,"identity");curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT,8L);curl_easy_setopt(curl,CURLOPT_TIMEOUT,90L);
  curl_easy_setopt(curl,CURLOPT_LOW_SPEED_LIMIT,1L);curl_easy_setopt(curl,CURLOPT_LOW_SPEED_TIME,20L);curl_easy_setopt(curl,CURLOPT_NOSIGNAL,1L);
- if(*job->iface)curl_easy_setopt(curl,CURLOPT_INTERFACE,job->iface);
+ if(*job->iface&&!strchr(selected_ip,':'))curl_easy_setopt(curl,CURLOPT_INTERFACE,job->iface);
  curl_easy_setopt(curl,CURLOPT_NOPROGRESS,0L);curl_easy_setopt(curl,CURLOPT_XFERINFOFUNCTION,cancelled);curl_easy_setopt(curl,CURLOPT_XFERINFODATA,t);
  curl_easy_setopt(curl,CURLOPT_HEADERFUNCTION,header);curl_easy_setopt(curl,CURLOPT_HEADERDATA,t);
  curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,receive);curl_easy_setopt(curl,CURLOPT_WRITEDATA,t);

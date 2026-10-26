@@ -50,7 +50,7 @@ static int address_rule_present(const address_plan *p,const char *rule)
 {for(size_t i=0;i<p->count;i++)if(!strcmp(p->rule[i],rule))return 1;return 0;}
 static int address_rule_run(const char *text,int add)
 {
-    char buf[512],*save=NULL;const char *args[48];size_t n=0;int firewall=!strncmp(text,"iptables ",9);
+    char buf[512],*save=NULL;const char *args[48];size_t n=0;int firewall=!strncmp(text,"iptables ",9)||!strncmp(text,"ip6tables ",10);
     vr_copy(buf,sizeof(buf),text);
     for(char *word=strtok_r(buf," ",&save);word;word=strtok_r(NULL," ",&save)) {
         if(n>=44)return -1;
@@ -75,6 +75,42 @@ static int firewall_chain(const char *table,const char *chain)
     int code=command_code((const char *const[]){"iptables","-t",table,"-n","-L",chain,NULL},NULL,0);
     if(!code)return 0;
     return code==1?RUN("iptables","-t",table,"-N",chain):-1;
+}
+
+static char carrier6_lan[16];
+static int carrier6_port;
+int vr_platform_carrier6(const vr_config *c,const vr_addresses *a)
+{
+    /* Only locally terminated TLS carriers. Never enable IPv6 forwarding,
+       NAT, TUN interception, or alter the firmware's default policy. */
+    int code=command_code((const char *const[]){"ip6tables","-t","filter","-n","-L","CHVR6_IN",NULL},NULL,0);
+    if(code&&(code!=1||RUN("ip6tables","-t","filter","-N","CHVR6_IN")))return -1;
+    char rules[5][512];
+    snprintf(rules[0],sizeof(rules[0]),"ip6tables -t filter @ CHVR6_IN -p tcp --dport %d -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",c->port);
+    snprintf(rules[1],sizeof(rules[1]),"ip6tables -t filter @ CHVR6_IN -i lo -p tcp --dport %d -j ACCEPT",c->port);
+    snprintf(rules[2],sizeof(rules[2]),"ip6tables -t filter @ CHVR6_IN -i %s -p tcp --dport %d -j ACCEPT",a->lan_if,c->port);
+    snprintf(rules[3],sizeof(rules[3]),"ip6tables -t filter @ CHVR6_IN -p tcp --dport %d -j %s",c->port,c->allow_wan?"ACCEPT":"DROP");
+    strcpy(rules[4],"ip6tables -t filter @ INPUT -j CHVR6_IN");
+    /* Insert accepts ahead of the guard, and expose the hook last. */
+    const int order[]={3,2,1,0};
+    for(size_t i=0;i<4;i++){const char *r=rules[order[i]];code=address_rule_run(r,2);if(code&&(code!=1||address_rule_run(r,1)))return -1;}
+    /* A crash can leave the previous WAN permission in our chain. Remove
+       its opposite guard only after the desired rules have been installed. */
+    char opposite[512];snprintf(opposite,sizeof(opposite),"ip6tables -t filter @ CHVR6_IN -p tcp --dport %d -j %s",c->port,c->allow_wan?"DROP":"ACCEPT");
+    code=address_rule_run(opposite,2);if(code==0){if(address_rule_run(opposite,0))return -1;}else if(code!=1)return -1;
+    code=address_rule_run(rules[4],2);if(code&&(code!=1||address_rule_run(rules[4],1)))return -1;
+    if(*carrier6_lan&&strcmp(carrier6_lan,a->lan_if)) {
+        char old[512];snprintf(old,sizeof(old),"ip6tables -t filter @ CHVR6_IN -i %s -p tcp --dport %d -j ACCEPT",carrier6_lan,carrier6_port);
+        if(address_rule_run(old,0))return -1;
+    }
+    vr_copy(carrier6_lan,sizeof(carrier6_lan),a->lan_if);carrier6_port=c->port;return 0;
+}
+void vr_platform_carrier6_stop(void)
+{
+    if(!carrier6_port)return;
+    RUN("ip6tables","-D","INPUT","-j","CHVR6_IN");
+    RUN("ip6tables","-F","CHVR6_IN");RUN("ip6tables","-X","CHVR6_IN");
+    *carrier6_lan=0;carrier6_port=0;
 }
 int vr_platform_repair(const vr_config *c,const vr_addresses *a,const char *cidr)
 {

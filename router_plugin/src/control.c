@@ -47,7 +47,7 @@ static int public_ip(vr_engine *e,int family,char *out,size_t cap)
     CURL *curl=curl_easy_init();if(!curl)return -1;ip_response response={{0},0};long status=0;
     const char *urls4[]={"https://api4.ipify.org","https://ipv4.icanhazip.com"};
     const char *urls6[]={"https://api6.ipify.org","https://ipv6.icanhazip.com"};
-    curl_easy_setopt(curl,CURLOPT_PROXY,"");curl_easy_setopt(curl,CURLOPT_INTERFACE,addresses.wan_if);
+    curl_easy_setopt(curl,CURLOPT_PROXY,"");curl_easy_setopt(curl,CURLOPT_INTERFACE,family==AF_INET?addresses.wan_if:NULL);
     curl_easy_setopt(curl,CURLOPT_IPRESOLVE,family==AF_INET?CURL_IPRESOLVE_V4:CURL_IPRESOLVE_V6);
     curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT_MS,2000L);curl_easy_setopt(curl,CURLOPT_TIMEOUT_MS,3000L);curl_easy_setopt(curl,CURLOPT_NOSIGNAL,1L);
     curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,ip_received);curl_easy_setopt(curl,CURLOPT_WRITEDATA,&response);
@@ -187,11 +187,11 @@ static int connect_controller(control *c)
     uint64_t deadline=vr_millis()+5000;
     c->direct=vr_controller_link_target(&e->config,origin,pin);c->started=vr_millis();
     if(vr_origin(origin,host,&port,&tls)||!tls)return -1;
-    snprintf(c->endpoint,sizeof(c->endpoint),"%s:%d",host,port);
+    vr_hostport(host,port,c->endpoint,sizeof(c->endpoint));
     c->ssl=vr_tls_connect(host,port,pin,&e->config,addresses.wan_if,&c->fd,deadline);if(!c->ssl){vr_controller_link_feedback(&e->config,c->direct,0,vr_millis()-c->started);vr_service_log(e->service,"controller","Control stream DNS/TCP/TLS connection failed");return -1;}
     uint8_t random[16];if(RAND_bytes(random,16)!=1)return -1;EVP_EncodeBlock((unsigned char *)key,random,16);
     if(vr_ws_accept_key(key,accept))return -1;
-    char header[4096];int len=snprintf(header,sizeof(header),"GET /api/probe HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: %s\r\nX-Probe-Node-Id: %s\r\nX-Probe-Rand: %s\r\nX-Probe-Signature: %s\r\n\r\n",host,port,key,e->config.node_id,challenge,signature);
+    char header[4096];int len=snprintf(header,sizeof(header),"GET /api/probe HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: %s\r\nX-Probe-Node-Id: %s\r\nX-Probe-Rand: %s\r\nX-Probe-Signature: %s\r\n\r\n",c->endpoint,key,e->config.node_id,challenge,signature);
     if(len<0||len>=(int)sizeof(header)||vr_tls_io(c->ssl,1,header,(size_t)len,deadline)||vr_http_header(c->ssl,header,sizeof(header),deadline)||
        strncmp(header,"HTTP/1.1 101 ",13)||!vr_http_token(header,"Connection","Upgrade")||!vr_http_token(header,"Upgrade","websocket")||
        !vr_http_field(header,"Sec-WebSocket-Accept",actual,sizeof(actual))||strcmp(accept,actual))return -1;

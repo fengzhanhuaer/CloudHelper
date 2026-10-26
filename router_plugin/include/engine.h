@@ -69,7 +69,7 @@ struct vr_engine {
     char stats_started_at[40],public_ipv4[16],public_ipv6[46];
     unsigned buffers_reset,telemetry_epoch;
     pthread_t public_ip_thread;int public_ip_started;
-    int tun,lan,wan,dns_udp,dns_tcp,platform_started;
+    int tun,lan,wan,dns_udp,dns_tcp,platform_started,carrier6;
     pthread_mutex_t mutex;pthread_cond_t jobs_changed;
     vr_mapping mappings[VR_MAPPING_MAX];
     vr_mapping_pending mapping_pending[16];

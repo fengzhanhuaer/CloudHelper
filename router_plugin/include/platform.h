@@ -21,5 +21,8 @@ int vr_platform_check(char *detail,size_t capacity);
 int vr_platform_repair(const vr_config *c,const vr_addresses *a,const char *cidr);
 int vr_platform_tls(const vr_addresses *a,const char *cidr,int enabled);
 int vr_bind4(const char *ip,int port,int tcp);
+int vr_bind6_carrier(int port);
+int vr_platform_carrier6(const vr_config *c,const vr_addresses *a);
+void vr_platform_carrier6_stop(void);
 int vr_runtime_mount(const char *operation);
 #endif

@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import socketserver
 import ssl
+import socket
+import time
 import subprocess
 import tempfile
 import threading
@@ -14,7 +16,7 @@ with tempfile.TemporaryDirectory(prefix='chvr-relay-tls-') as directory:
         subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
                         '-days', '1', '-keyout', str(root / (name + '.key')),
                         '-out', str(root / (name + '.crt')), '-subj', '/CN=relay.fixture',
-                        '-addext', 'subjectAltName=DNS:relay.fixture,DNS:api_copilot_fixture.example'],
+                        '-addext', 'subjectAltName=DNS:relay.fixture,DNS:api_copilot_fixture.example,IP:::1'],
                        check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     public = subprocess.check_output(['openssl', 'x509', '-in', str(root / 'trusted.crt'), '-pubkey', '-noout'])
     der = subprocess.check_output(['openssl', 'pkey', '-pubin', '-outform', 'DER'], input=public)
@@ -42,6 +44,12 @@ with tempfile.TemporaryDirectory(prefix='chvr-relay-tls-') as directory:
 
     class Server(socketserver.ThreadingTCPServer):
         daemon_threads = True
+
+    class Server6(Server):
+        address_family = socket.AF_INET6
+        def server_bind(self):
+            self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            super().server_bind()
 
     with Server(('127.0.0.1', 0), Handler) as server:
         worker = threading.Thread(target=server.serve_forever, daemon=True)
@@ -72,3 +80,29 @@ with tempfile.TemporaryDirectory(prefix='chvr-relay-tls-') as directory:
         finally:
             server.shutdown()
             worker.join()
+
+    with Server6(('::1', 0), Handler) as server:
+        threading.Thread(target=server.serve_forever,daemon=True).start()
+        environment=dict(os.environ,SSL_CERT_FILE=str(root/'trusted.crt'),SSL_CERT_DIR=str(root/'empty-ca-directory'),CHVR_TLS_TEST_ADDRESS='::1')
+        for mode,host,key_pin,expected_sni,accepted in [
+            ('relay','relay.fixture',pin,None,True),
+            ('relay','relay.fixture','0'*64,None,False),
+            ('normal','::1','',None,True),
+        ]:
+            observed.clear()
+            result=subprocess.run(['bin/native/test-tls-connect',mode,host,str(server.server_address[1]),key_pin],env=environment,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=7)
+            assert result.returncode==(0 if accepted else 2),(result.stdout,result.stderr)
+            assert observed==[expected_sni],observed
+            print('PASS IPv6:',mode,host,'pin/identity',accepted)
+        class Stall(socketserver.BaseRequestHandler):
+            def handle(self):time.sleep(2)
+        with Server(('127.0.0.1',server.server_address[1]),Stall) as stalled:
+            threading.Thread(target=stalled.serve_forever,daemon=True).start()
+            environment.update(CHVR_TLS_TEST_ADDRESS='127.0.0.1',CHVR_TLS_TEST_ALTERNATE='::1')
+            expected_sni=None;started=time.monotonic()
+            result=subprocess.run(['bin/native/test-tls-connect','relay','relay.fixture',str(server.server_address[1]),pin],env=environment,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=7)
+            assert result.returncode==0,(result.stdout,result.stderr)
+            assert time.monotonic()-started<1.5,'stalled first TLS address blocked IPv6'
+            print('PASS IPv6 fallback wins while IPv4 TLS stalls; losing sockets closed')
+            stalled.shutdown()
+        server.shutdown()
