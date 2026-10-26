@@ -1,7 +1,7 @@
 # 任务：第一阶段 IPv6 承载层双栈直连
 
 - 任务标识：`2026-10-26-ipv6-carrier`
-- 状态：`进行中`
+- 状态：`已完成`
 - 创建/更新时间：2026-10-26 Asia/Singapore
 - 用户原始及最新指令：先做主控连接、节点链路等承载层直连，不需要 Fake IP；虚拟路由留第二阶段。
 - 启用方式：明确长任务条件；跨主控、Probe、安卓、C 插件调查、实现、验证和发布。
@@ -12,14 +12,14 @@
 
 | 编号 | 需求与验收 | 优先级 | 状态 |
 |---|---|---|---|
-| REQ-001 | 主控域名和发现的 IPv6:15030 可连，保持私有认证、SPKI pin 和 Web 隔离；HTTP/控制流/下载均覆盖 | 高 | 已实现，发布待验 |
-| REQ-002 | Probe/安卓/插件节点链路客户端及服务端支持 IPv6，保留多槽位和 IPv4 兼容 | 高 | 已实现，发布待验 |
+| REQ-001 | 主控域名和发现的 IPv6:15030 可连，保持私有认证、SPKI pin 和 Web 隔离；HTTP/控制流/下载均覆盖 | 高 | 已实现并验证 |
+| REQ-002 | Probe/安卓/插件节点链路客户端及服务端支持 IPv6，保留多槽位和 IPv4 兼容 | 高 | 已实现并验证 |
 | REQ-003 | IPv6 不通可回退 IPv4；不把 IPv6 交给 IPv4 bypass；地址/候选更新不关闭既有连接 | 高 | 已实现 |
-| REQ-004 | 源码、针对性实连验证、正式 Release 校验；不发布 BE86U，不用 SSH/SCP 替换生产二进制 | 高 | 待开始 |
+| REQ-004 | 源码、针对性实连验证、正式 Release 校验；不发布 BE86U，不用 SSH/SCP 替换生产二进制 | 高 | 已完成 |
 
 ## 二、总体架构
 
-现状：主控 controller_direct.go 已监听并发布 IPv4/IPv6；Go controllerlink 有 endpoint health。Probe 主控域名/relay 默认查询 A；安卓主控使用系统双栈。插件 tls.c socket(AF_INET)、config.c 不接受 IPv6 origin、controller_link.c 丢弃 IPv6、engine.c 仅 IPv4 监听。
+调查基线：主控 controller_direct.go 已监听并发布 IPv4/IPv6；Go controllerlink 有 endpoint health。Probe 主控域名/relay 默认查询 A；安卓主控使用系统双栈。插件 tls.c socket(AF_INET)、config.c 不接受 IPv6 origin、controller_link.c 丢弃 IPv6、engine.c 仅 IPv4 监听。以上承载限制已由本次修改补齐。
 
 目标：承载专用 A/AAAA 解析与候选选择独立于业务 Fake IP；有界尝试与正确括号格式；现有 pin/HMAC/ticket 不变；IPv6 监听与规则仅作用于节点服务端端口，尊重 allow_wan。旧内层报文协议不变。
 
@@ -41,11 +41,11 @@
 ## 四、执行任务
 
 ### 当前交接
-- 当前阶段：验证与发布
-- 当前计划步骤：TASK-004
-- 当前门禁：准备门禁通过；已确认默认 Probe listener、relay 选址缓存、插件 poll 与 INPUT 入口。
+- 当前阶段：已完成
+- 当前计划步骤：TASK-004 已完成
+- 当前门禁：准备与完成门禁通过；保留既有静态告警和纯IPv6 DNS/外网验证边界。
 - 基线：mapledev，v0.4.91，工作区原本干净。
-- 下一步唯一动作：复核最后的 C DNS/权限增量测试后，提交并跟踪正式 Release。
+- 下一步唯一动作：交付 v0.4.92；生产在线升级/IPv6外网验收尚未执行，需另行部署范围。虚拟路由内层IPv6在第二阶段。
 - 恢复先读：本账本、git status/diff、transport.h、resolved_dial.go、route_relay_client_transport.go。
 
 | 任务 | 内容 | 状态 | 需求 | 完成条件 |
@@ -53,7 +53,7 @@
 | TASK-001 | 调查、确认边界、准备门禁 | 已完成 | 全部 | 入口和设计达到可实现 |
 | TASK-002 | Go 承载 DNS/选址/回退 | 已完成 | 001/002/003 | 专用 A/AAAA、候选上限4、DNS工作上限16；TCP/TLS/QUIC竞速，真实 IPv6 WS/H3 与多槽位认证通过 |
 | TASK-003 | C 插件双栈客户端与服务端 | 已完成 | 001/002/003 | TLS、HTTP、V6ONLY监听、权限测试通过；IPv6 避开 IPv4 WAN 绑定；缺少 IPv6 不重置 IPv4 |
-| TASK-004 | 回归、提交、发布与产物校验 | 进行中 | 004 | Release 已校验并明确生产验收范围 |
+| TASK-004 | 回归、提交、发布与产物校验 | 已完成 | 004 | v0.4.92；Actions 9/9，10个asset与插件全部文件校验通过 |
 
 变更记录：Go 新增 transport_dns.go 并接入主控/relay；默认节点监听改双栈通配。插件新增 transport_dns.c，TLS 有界非阻塞握手竞速；主控 origin/discovery/HTTP/下载支持 v6；carrier6 独立监听和最小 CHVR6_IN 规则。认证、业务映射与内层报文未变。
 
@@ -64,7 +64,7 @@
 | TEST-001 | Go 主控与节点双栈、回退；001/002/003 | Windows/Linux ::1 实际 TLS/WS/H3、4槽位 HMAC+签名ticket、错误密钥401、QUIC黑洞地址回退 | 通过；TestProbeTransport*、Linux容器针对性套件 |
 | TEST-002 | C 客户端/服务端；001/002/003 | WSL严格编译、本地隔离容器TLS/HTTP/控制流/断点下载；IPv6身份与pin拒绝、IPv4阻塞TLS回退、最小INPUT规则 | 通过；真实A/AAAA、IPv6主控认证/监听、IPv4与IPv6 WS/yamux配置同步、IPv4与IPv6双分片/Range/校验、ASAN |
 | TEST-003 | Go/安卓/主控兼容；001/002/003 | 完整 go test ./...、controller vet、Linux router构建、安卓核心IPv6四槽位回显 | 通过；Probe 38s，主控7s；完整Probe vet有既有告警，见下 |
-| TEST-004 | 正式发布；004 | preflight、git diff --check、Actions、tag/asset/hash | 待开始 |
+| TEST-004 | 正式发布；004 | preflight、git diff --check、Actions、tag/asset/hash | 通过；运行40261790158，tag父提交ccceedeeb，精确10项产物 |
 
 验证边界：生产外网 IPv6 需要具备可达网络，不能用本机监听代替外网证明。未恢复用户已删除的五组耗时互通测试。
 
@@ -74,10 +74,10 @@
 
 | 需求 | 单元/接口 | 任务 | 测试 | 结果 |
 |---|---|---|---|---|
-| REQ-001 | UNIT-001/002/004，IF-001/002 | TASK-002/003 | TEST-001/002/003 | 待开始 |
-| REQ-002 | UNIT-001/002/003/004，IF-002/003 | TASK-002/003 | TEST-001/002/003 | 待开始 |
-| REQ-003 | UNIT-001/002/003，IF-002 | TASK-002/003 | TEST-001/002 | 待开始 |
-| REQ-004 | 发布工作流 | TASK-004 | TEST-004 | 待开始 |
+| REQ-001 | UNIT-001/002/004，IF-001/002 | TASK-002/003 | TEST-001/002/003 | 通过 |
+| REQ-002 | UNIT-001/002/003/004，IF-002/003 | TASK-002/003 | TEST-001/002/003 | 通过 |
+| REQ-003 | UNIT-001/002/003，IF-002 | TASK-002/003 | TEST-001/002 | 通过 |
+| REQ-004 | 发布工作流 | TASK-004 | TEST-004 | 通过 |
 
 ## 七、决策与冲突
 
@@ -117,13 +117,13 @@ CON-001：release skill 的 preflight 仍要求已退休的 build-probe-node-doc
 
 ## 十二、质量门禁
 
-准备门禁：通过；需求/范围/追踪/回滚与具体入口已确认。完成门禁：不通过（实现与验证进行中）。
+准备门禁：通过；需求/范围/追踪/回滚与具体入口已确认。完成门禁：通过；本机与隔离容器真实IPv6认证/控制流/监听/多槽位/下载以及正式4款ABI验证完成。完整Probe vet既有告警、纯IPv6 DNS自举、生产升级和外网验收边界均已明确。
 
 ## 十三、检查点
 
-2026-10-26：Go/C实现完成；主控、Probe、安卓核心、C IPv6 TLS/HTTP及IPv4控制流/断点下载回归通过；下一步发布与ABI产物验证。
+2026-10-26：已发布 v0.4.92，以下清单提交与正式产物均验证完毕；生产设备未在线升级。
 
-拟提交：`feat: enable dual-stack IPv6 controller and node carriers`。精确文件清单（仅本任务）：
+已提交：`feat: enable dual-stack IPv6 controller and node carriers`。精确文件清单（仅本任务）：
 
 ```text
 doc/tasks/2026-10-26-ipv6-carrier.md
@@ -167,4 +167,10 @@ router_plugin/tools/build-ci.sh
 
 ## 十四、完成摘要
 
-尚未完成；下一步唯一动作见当前交接。
+第一阶段已完成。功能提交 `ccceedeeb45b679c090c33b61236c1d611d17c6b`；自动版本提交/tag `2b5e2b61163672fce53d0d6df54ee3b7c73dfad0` / `v0.4.92`，父提交已核对。
+
+- Actions：https://github.com/fengzhanhuaer/CloudHelper/actions/runs/40261790158 ，9/9成功；安卓签名APK、各平台Probe、主控、Linux router amd64和AX56U V2插件共10个发布asset，严格清单通过；没有Docker/路由arm64/BE86U发布产物。
+- Release：https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.92 ，正式非草稿非预发布。
+- 插件包SHA256：`1c3f579110005252f00fd79dcf3127c2a442bb1fd9d75825a8f52456b451835c`；外部manifest SHA256：`55327937c178e4f5f8f45d8b371c33352cb66b2ea8f8a6e0c6d243ef6acc75e5`；包内二进制SHA256：`35771b7608cc61db1f4c3fd79c21764fd927bb895644afd01ed07bbcc5c47b5f`。包内checksums逐项通过，二进制版本与IPv6 listener标识存在。
+- CI四款ABI通过；发布manifest只列AX56U V2原厂/官改两种，BE86U仅作兼容夹具。
+- 本次未执行生产升级；不宣称生产外网IPv6已经可达。虚拟路由内层IPv6/Fake IPv6按用户要求留第二阶段。
