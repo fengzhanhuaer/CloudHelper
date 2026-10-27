@@ -143,6 +143,43 @@ static void test_policy(void)
     assert(vr_policy_needs_ip(p,"example.com"));assert(vr_policy_match(p,"example.com","203.0.113.5").action==VR_REJECT);json_object_put(p);
 }
 
+static void test_policy_publication(void)
+{
+    char err[256];
+    json_object *s=parse("{\"node_id\":\"7\",\"expected_node_kind\":\"asus_56uv2\",\"virtual_router\":{\"fake_ip_cidr\":\"198.18.0.0/15\",\"probe_ips\":[{\"node_id\":\"7\",\"ip\":\"198.18.0.7\"}],\"topology_rules\":[],\"route_rules\":[{\"id\":\"empty\",\"action\":\"reject\"},{\"id\":\"active\",\"action\":\"reject\",\"entries\":[\"domain:blocked.test\"]}]}}");
+    json_object *p=vr_member(s,"virtual_router"),*rules=vr_member(p,"route_rules"),*empty=json_object_array_get_idx(rules,0);
+    /* Missing, null and [] all match nothing without hiding later rules. */
+    for(int i=0;i<3;i++) {
+        if(i)json_object_object_add(empty,"entries",i==1?NULL:json_object_new_array());
+        assert(!vr_policy_validate(s,"7",err,sizeof(err)));
+        assert(vr_policy_match(p,"allowed.test",NULL).action==VR_DIRECT);
+        assert(vr_policy_match(p,"blocked.test",NULL).action==VR_REJECT);
+    }
+    const char *invalid[]={"\"text\"","{}","1","false","[null]"};
+    for(size_t i=0;i<sizeof(invalid)/sizeof(*invalid);i++) {
+        json_object *value=json_tokener_parse(invalid[i]);assert(value);
+        json_object_object_add(empty,"entries",value);
+        assert(vr_policy_validate(s,"7",err,sizeof(err))<0);
+    }
+    json_object_object_del(empty,"entries");
+    json_object_object_add(empty,"action",json_object_new_string("probe_exit"));
+    assert(vr_policy_validate(s,"7",err,sizeof(err))<0); /* Empty does not excuse a missing exit identity. */
+    json_object_object_add(empty,"action",json_object_new_string("reject"));
+    json_object *links=vr_member(p,"topology_rules");
+    for(int i=0;i<33;i++) {
+        char id[32];snprintf(id,sizeof(id),"edge-%d",i);
+        json_object *edge=parse("{\"enabled\":true,\"from_node_id\":\"7\",\"to_node_id\":\"8\",\"secret\":\"fixture-secret\",\"auth_ticket\":\"fixture-ticket\",\"user_public_key\":\"fixture-public-key\"}");
+        json_object_object_add(edge,"id",json_object_new_string(id));json_object_array_add(links,edge);
+        int rc=vr_policy_validate(s,"7",err,sizeof(err));
+        assert(i<32?rc==0:rc<0);
+    }
+    assert(strstr(err,"32 adjacent"));
+    json_object_object_add(json_object_array_get_idx(links,32),"enabled",json_object_new_boolean(0));
+    json_object_object_del(json_object_array_get_idx(links,0),"auth_ticket");
+    assert(vr_policy_validate(s,"7",err,sizeof(err))<0); /* Capacity never relaxes edge authorization. */
+    json_object_put(s);
+}
+
 static void base64url(const unsigned char *b,int n,char *out)
 {
     int len=EVP_EncodeBlock((unsigned char *)out,b,n);
@@ -215,8 +252,16 @@ static void test_packet(void)
     }
 }
 
-int main(void)
+int main(int argc,char **argv)
 {
-    test_wire();test_dns();test_config();test_policy();test_auth();test_websocket();test_packet();
+    if(argc==4&&!strcmp(argv[1],"--validate-policy")) {
+        FILE *f=fopen(argv[2],"rb");assert(f);assert(!fseek(f,0,SEEK_END));long n=ftell(f);assert(n>0&&n<16*1024*1024);
+        rewind(f);char *text=malloc((size_t)n);assert(text&&fread(text,1,(size_t)n,f)==(size_t)n);fclose(f);
+        json_object *s=vr_json_parse(text,(size_t)n);free(text);assert(s);char err[256];
+        int rc=vr_policy_validate(s,argv[3],err,sizeof(err));json_object_put(s);
+        puts(rc?err:"PASS: captured controller policy accepted");return rc?1:0;
+    }
+    assert(argc==1);
+    test_wire();test_dns();test_config();test_policy();test_policy_publication();test_auth();test_websocket();test_packet();
     puts("PASS: VR/WebSocket framing, DNS bounds, configuration, policy, Ed25519/HMAC, TCP/UDP/ICMP NAT checksums");return 0;
 }

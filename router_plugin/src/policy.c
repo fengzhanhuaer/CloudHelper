@@ -164,7 +164,10 @@ int vr_policy_validate(json_object *s,const char *node_id,char *err,size_t n)
         const char *action=vr_string(r,"action");
         if(!text_field(r,"id",1,128,0)||!text_field(r,"exit_node_id",!strcmp(action,"probe_exit"),128,0)||!text_field(r,"backup_exit_node_id",0,128,0))goto fail;
         if(strcmp(action,"direct") && strcmp(action,"reject") && strcmp(action,"probe_exit"))goto fail;
-        if(!a || !json_object_is_type(a,json_type_array) || json_object_array_length(a)>4096)goto fail;
+        /* Go encodes an empty slice as null and may omit it. Such a rule
+           matches nothing; it must not block publication of the whole graph. */
+        if(!a || json_object_is_type(a,json_type_null))continue;
+        if(!json_object_is_type(a,json_type_array) || json_object_array_length(a)>4096)goto fail;
         entries+=json_object_array_length(a);if(entries>16384)goto fail;
         for(size_t j=0;j<(size_t)json_object_array_length(a);j++) {
             json_object *v=json_object_array_get_idx(a,j);

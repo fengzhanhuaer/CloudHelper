@@ -77,7 +77,7 @@ clean:
 	rm -f $(BUILD)/cloudhelper-router-plugin $(BUILD)/test-core
 
 $(BUILD)/test-upgrade: $(CORE) src/upgrade.c tests/test_upgrade.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_upgrade.c $(LDFLAGS) $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_upgrade.c $(LDFLAGS) -Wl,--wrap=fork -Wl,--wrap=posix_spawn $(LDLIBS) -o $@
 
 $(BUILD)/test-gateway: $(CORE) tests/test_gateway.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_gateway.c $(LDFLAGS) $(LDLIBS) -o $@

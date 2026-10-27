@@ -2,6 +2,15 @@
 #include "../src/upgrade.c"
 #include <assert.h>
 
+static int spawn_failure;
+pid_t __wrap_fork(void){assert(!"upgrade must not fork the resident image");errno=ENOMEM;return -1;}
+int __real_posix_spawn(pid_t *,const char *,const posix_spawn_file_actions_t *,const posix_spawnattr_t *,char *const[],char *const[]);
+int __wrap_posix_spawn(pid_t *pid,const char *path,const posix_spawn_file_actions_t *actions,const posix_spawnattr_t *attr,char *const argv[],char *const env[])
+{
+ short flags=0;assert(attr&&!posix_spawnattr_getflags(attr,&flags)&&(flags&POSIX_SPAWN_USEVFORK));
+ return spawn_failure?ENOMEM:__real_posix_spawn(pid,path,actions,attr,argv,env);
+}
+
 int vr_service_stopped(vr_service *s,unsigned generation)
 {return s->stop||s->generation!=generation;}
 
@@ -9,6 +18,10 @@ int main(int argc,char **argv)
 {
  assert(!curl_global_init(CURL_GLOBAL_DEFAULT));
  char err[256];
+ if(argc==5&&!strcmp(argv[1],"unpack-spawn-fail")) {
+  spawn_failure=1;assert(vr_upgrade_unpack(argv[2],argv[3],argv[4],err,sizeof(err))<0);
+  assert(strstr(err,"decompressor start failed"));return 0;
+ }
  if(argc==5&&!strcmp(argv[1],"parallel")) {
   upgrade_job job={.direct=1};vr_config_default(&job.config);int fd=open(argv[3],O_RDWR|O_CREAT|O_TRUNC,0600);assert(fd>=0);
   int rc=fetch_parallel(&job,argv[2],fd,strtoll(argv[4],NULL,10));close(fd);return rc?1:0;

@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,6 +19,30 @@
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+extern char **environ;
+
+/* The resident plugin cannot fork its full image under Asuswrt's strict
+ * commit limit. Keep libc in charge of the shared-VM child until exec. */
+static int upgrade_spawn(pid_t *pid,const char *path,char *const argv[],int output,int errors,int lock)
+{
+ posix_spawn_file_actions_t actions;posix_spawnattr_t attr;
+ int code=posix_spawn_file_actions_init(&actions);if(code)return code;
+ code=posix_spawnattr_init(&attr);if(code){posix_spawn_file_actions_destroy(&actions);return code;}
+ code=posix_spawnattr_setflags(&attr,POSIX_SPAWN_USEVFORK);
+ if(!code)code=posix_spawn_file_actions_addopen(&actions,STDIN_FILENO,"/dev/null",O_RDONLY,0);
+ if(!code&&output>=0)code=posix_spawn_file_actions_adddup2(&actions,output,STDOUT_FILENO);
+ if(!code&&errors>=0)code=posix_spawn_file_actions_adddup2(&actions,errors,STDERR_FILENO);
+ if(!code&&lock>=0)code=posix_spawn_file_actions_adddup2(&actions,lock,3);
+ long maxfd=sysconf(_SC_OPEN_MAX);if(maxfd<0||maxfd>65536)maxfd=65536;
+ for(int fd=3;!code&&fd<maxfd;fd++) {
+  if(fd==3&&lock>=0)continue;
+  int flags=fcntl(fd,F_GETFD);
+  if(flags>=0&&!(flags&FD_CLOEXEC))code=posix_spawn_file_actions_addclose(&actions,fd);
+ }
+ if(!code)code=posix_spawn(pid,path,&actions,&attr,argv,environ);
+ posix_spawnattr_destroy(&attr);posix_spawn_file_actions_destroy(&actions);return code;
+}
 
 #define UPGRADE_STATE "/var/run/cloudhelper-router/upgrade.json"
 #define UPGRADE_REPO "fengzhanhuaer/CloudHelper"
@@ -99,10 +124,10 @@ static int file_sha(const char *path,const char *expected)
 int vr_upgrade_unpack(const char *archive,const char *directory,const char *profile,char *err,size_t n)
 {
  int pipefd[2],bad=0,status=0;unsigned seen=0;size_t total=0;
- if(pipe2(pipefd,O_CLOEXEC))return -1;
- pid_t pid=fork();
- if(!pid){dup2(pipefd[1],STDOUT_FILENO);close(pipefd[0]);close(pipefd[1]);execl("/bin/gzip","gzip","-dc",archive,(char *)NULL);_exit(127);}
- close(pipefd[1]);if(pid<0){close(pipefd[0]);return -1;}
+ if(pipe2(pipefd,O_CLOEXEC)){snprintf(err,n,"package decompressor pipe failed (%d)",errno);return -1;}
+ pid_t pid;char *args[]={"gzip","-dc",(char *)archive,NULL};
+ int code=upgrade_spawn(&pid,"/bin/gzip",args,pipefd[1],-1,-1);
+ close(pipefd[1]);if(code){close(pipefd[0]);snprintf(err,n,"package decompressor start failed (%d)",code);return -1;}
  char path[512];const char *dirs[]={"cloudhelper","cloudhelper/payload","cloudhelper/payload/web","cloudhelper/webs","cloudhelper/scripts"};
  for(size_t i=0;i<5;i++){snprintf(path,sizeof(path),"%s/%s",directory,dirs[i]);if(mkdir(path,0700)){bad=1;break;}}
  while(!bad){unsigned char h[512];if(read_exact(pipefd[0],h,512)){bad=1;break;}
@@ -299,7 +324,8 @@ static void *run(void *arg)
  }
  close(fd);if(!complete){snprintf(err,sizeof(err),"下载未完成，当前版本保持运行；请重试");goto failed;}
  state(job,"verifying","正在校验升级包",1,1,bytes,bytes);
- if(file_sha(path,vr_string(asset,"sha256"))||vr_upgrade_unpack(path,job->directory,vr_upgrade_profile(),err,sizeof(err))){snprintf(err,sizeof(err),"升级包校验失败，当前版本保持运行");goto failed;}
+ if(file_sha(path,vr_string(asset,"sha256"))){snprintf(err,sizeof(err),"升级包 SHA256 校验失败，当前版本保持运行");goto failed;}
+ if(vr_upgrade_unpack(path,job->directory,vr_upgrade_profile(),err,sizeof(err)))goto failed;
  char manifest[8192];size_t used;snprintf(path,sizeof(path),"%s/cloudhelper/manifest.json",job->directory);
  if(vr_read_file(path,manifest,sizeof(manifest),&used)){snprintf(err,sizeof(err),"invalid package manifest");goto failed;}
  json_object *m=vr_json_parse(manifest,used);int valid=m&&!strcmp(vr_string(m,"version"),job->version)&&!strcmp(vr_string(m,"device_profile"),vr_upgrade_profile());json_object_put(m);if(!valid){snprintf(err,sizeof(err),"package version or router profile mismatch");goto failed;}
@@ -309,14 +335,11 @@ static void *run(void *arg)
  /* The installed service lives on a removable tmpfs. Run the helper from the
   * verified new payload so stopping the old service can unmount that tmpfs. */
  snprintf(path,sizeof(path),"%s/cloudhelper/payload/cloudhelper-router-plugin",job->directory);
- int console=open("/dev/console",O_WRONLY|O_CLOEXEC);long maxfd=sysconf(_SC_OPEN_MAX);if(maxfd<0||maxfd>65536)maxfd=65536;
- pid_t pid=fork();if(pid<0){if(console>=0)close(console);goto failed;}
- if(!pid){setsid();if(console>=0){dup2(console,STDOUT_FILENO);dup2(console,STDERR_FILENO);}dup2(job->lock,3);fcntl(3,F_SETFD,0);
-  for(int i=4;i<maxfd;i++)close(i);
-  close(STDIN_FILENO);
-  char *argv[]={"cloudhelper-router-plugin","--apply-upgrade",job->directory,NULL};execv(path,argv);_exit(127);
- }
+ int console=open("/dev/console",O_WRONLY|O_CLOEXEC);
+ pid_t pid;char *argv[]={"cloudhelper-router-plugin","--apply-upgrade",job->directory,NULL};
+ int code=upgrade_spawn(&pid,path,argv,console,console,job->lock);
  if(console>=0)close(console);
+ if(code){snprintf(err,sizeof(err),"upgrade installer start failed (%d)",code);goto failed;}
  goto done;
 failed:
  state(job,"failed",err,0,0,0,0);if(job->service)vr_service_log(job->service,"upgrade",err);
@@ -342,26 +365,28 @@ int vr_upgrade_start(vr_service *s,json_object *request,char *err,size_t n)
 void vr_upgrade_join(vr_service *s){if(s->upgrade_joinable){pthread_join(s->upgrade_thread,NULL);s->upgrade_joinable=0;}}
 int vr_upgrade_apply(const char *dir)
 {
+ (void)setsid();
  struct stat st;if(geteuid()||strncmp(dir,"/tmp/chvr-upgrade.",18)||strlen(dir)!=24||lstat(dir,&st)||!S_ISDIR(st.st_mode)||st.st_uid||st.st_mode&077)return 1;
  char p[512],b[4096];size_t used;snprintf(p,sizeof(p),"%s/job.json",dir);if(vr_read_file(p,b,sizeof(b),&used))return 1;
  json_object *o=vr_json_parse(b,used);upgrade_job job={0};vr_copy(job.version,sizeof(job.version),vr_string(o,"version"));
  snprintf(p,sizeof(p),"%s/package.tar.gz",dir);if(!o||file_sha(p,vr_string(o,"sha256"))){json_object_put(o);return 1;}
  char previous[32]={0};size_t previous_size=0;
  if(!vr_read_file("/jffs/cloudhelper-router/active",previous,sizeof(previous)-1,&previous_size))previous[previous_size]=0;
- snprintf(p,sizeof(p),"%s/cloudhelper/install.sh",dir);pid_t pid=fork();int status=0;
- if(!pid){close(3);execl("/bin/sh","sh",p,(char *)NULL);_exit(127);}if(pid<0)status=-1;else while(waitpid(pid,&status,0)<0&&errno==EINTR){}
+ snprintf(p,sizeof(p),"%s/cloudhelper/install.sh",dir);pid_t pid;int status=0;
+ char *install[]={"sh",p,NULL};int code=upgrade_spawn(&pid,"/bin/sh",install,-1,-1,-1);
+ if(code)status=-1;else while(waitpid(pid,&status,0)<0&&errno==EINTR){}
  int ok=status>=0&&WIFEXITED(status)&&!WEXITSTATUS(status);
  if(!ok&&*previous){
   char current[32]={0};size_t current_size=0;
   if(!vr_read_file("/jffs/cloudhelper-router/active",current,sizeof(current)-1,&current_size)&&
      (current_size!=previous_size||memcmp(current,previous,previous_size))){
-   pid=fork();if(!pid){close(3);execl("/bin/sh","sh",p,"--rollback",(char *)NULL);_exit(127);}
-   if(pid>0)while(waitpid(pid,&status,0)<0&&errno==EINTR){}
+   char *rollback[]={"sh",p,"--rollback",NULL};code=upgrade_spawn(&pid,"/bin/sh",rollback,-1,-1,-1);
+   if(!code)while(waitpid(pid,&status,0)<0&&errno==EINTR){}
   }
   /* A failed stop can leave the unchanged old release stopped. Restore its
    * service even when no active-release swap occurred. */
-  pid=fork();if(!pid){close(3);execl("/bin/sh","sh","/jffs/cloudhelper-router/service","start",(char *)NULL);_exit(127);}
-  if(pid>0)while(waitpid(pid,&status,0)<0&&errno==EINTR){}
+  char *start[]={"sh","/jffs/cloudhelper-router/service","start",NULL};code=upgrade_spawn(&pid,"/bin/sh",start,-1,-1,-1);
+  if(!code)while(waitpid(pid,&status,0)<0&&errno==EINTR){}
  }
  state(&job,ok?"complete":"failed",ok?"升级完成，请刷新页面":"安装失败，已尝试恢复上一版本；请检查当前状态",0,0,0,0);
  json_object_put(o);cleanup(dir);return ok?0:1;

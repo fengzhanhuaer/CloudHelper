@@ -44,6 +44,10 @@ with tempfile.TemporaryDirectory(prefix='chvr-upgrade-test-') as work:
             result = subprocess.call([binary, 'unpack', str(packed), dest, 'be86u'])
             assert (result == 0) == succeeds
     unpack(package(), True)
+    packed=root/'spawn-failure.tar.gz';packed.write_bytes(package())
+    with tempfile.TemporaryDirectory(dir=work) as dest:
+        subprocess.check_call([binary,'unpack-spawn-fail',str(packed),dest,'be86u'])
+        assert not list(Path(dest).iterdir())
     unpack(package('ax56uv2'), False)
     unpack(package()[:-8], False)
     unpack(package()+b'bad-gzip-footer', False)

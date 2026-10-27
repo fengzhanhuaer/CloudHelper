@@ -420,6 +420,25 @@ func decideMobileVRouteForIP(config mobileVRouteConfig, ip net.IP, port string) 
 	if target.To4() != nil {
 		target = target.To4()
 	}
+	// Node addresses identify destinations in the overlay, independently of
+	// internet exit rules. The forward planner still requires an authorized
+	// topology path and credentials for the next hop.
+	for _, probe := range config.ProbeIPs {
+		if !target.Equal(net.ParseIP(probe.IP)) {
+			continue
+		}
+		nodeID := normalizeMobileRouteNodeID(probe.NodeID)
+		if nodeID == "" {
+			continue
+		}
+		return mobileVRouteDecision{
+			Matched:    true,
+			Direct:     nodeID == normalizeMobileRouteNodeID(config.LocalNodeID),
+			TargetAddr: net.JoinHostPort(target.String(), port),
+			Group:      "node:" + firstNonEmptyString(probe.DisplayName, nodeID),
+			ExitNodeID: nodeID,
+		}, true
+	}
 	for _, rule := range config.RouteRules {
 		for _, entry := range rule.Entries {
 			if !mobileVRouteRuleEntryMatchesIP(target, entry) {
