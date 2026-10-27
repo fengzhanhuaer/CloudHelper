@@ -18,7 +18,7 @@ $(BUILD)/build-version.h: FORCE | $(BUILD)
 $(BUILD)/cloudhelper-router-plugin $(BUILD)/httpd-bridge.so $(BUILD)/httpd-fixture $(BUILD)/test-core $(BUILD)/test-logs $(BUILD)/test-dataplane $(BUILD)/test-platform $(BUILD)/test-dns $(BUILD)/test-control $(BUILD)/test-certificate $(BUILD)/test-carrier $(BUILD)/test-measure $(BUILD)/test-gateway $(BUILD)/test-cache $(BUILD)/test-mapping $(BUILD)/dns-query-fixture $(BUILD)/test-dns-system $(BUILD)/test-httpd-profile: $(BUILD)/build-version.h
 all: $(BUILD)/cloudhelper-router-plugin $(BUILD)/httpd-bridge.so
 $(BUILD)/test-transport: $(CORE) src/platform.c tests/test_transport.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/platform.c tests/test_transport.c $(LDFLAGS) $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/platform.c tests/test_transport.c $(LDFLAGS) -Wl,--wrap=vr_controller_link_refresh_done $(LDLIBS) -o $@
 $(BUILD)/test-platform-command: tests/test_platform_command.c src/platform.c src/common.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -fdata-sections tests/test_platform_command.c src/common.c $(LDFLAGS) -Wl,--wrap=read -Wl,--wrap=waitpid -Wl,--wrap=fork -Wl,--wrap=posix_spawnp $(LDLIBS) -o $@
 $(BUILD)/test-addresses: tests/test_addresses.c src/platform.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)

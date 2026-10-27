@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory(prefix='chvr-transport6-') as directory:
     trust=Path('/usr/local/share/ca-certificates/chvr-transport6-test.crt')
     trust.write_bytes((root/'cert').read_bytes())
     subprocess.run(['update-ca-certificates'],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-    counts={'challenge':0,'business':0}
+    counts={'challenge':0,'business':0,'discovery':0}
     class Handler(BaseHTTPRequestHandler):
         def log_message(self,*_):pass
         def do_GET(self):
@@ -41,6 +41,7 @@ with tempfile.TemporaryDirectory(prefix='chvr-transport6-') as directory:
                 expected=hmac.new(b'fixture-key',('7\n'+nonce+'\nGET\n'+self.path).encode(),hashlib.sha256).hexdigest()
                 assert self.headers['X-Probe-Node-Id']=='7' and self.headers['X-Probe-Signature']==expected
                 if self.path=='/api/probe/route/config':counts['business']+=1
+                if self.path=='/api/probe/controller/endpoints':counts['discovery']+=1
                 body={'ok':True}
             data=json.dumps(body).encode();self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
     try:
@@ -50,7 +51,7 @@ with tempfile.TemporaryDirectory(prefix='chvr-transport6-') as directory:
             server.socket.settimeout(3)
             threading.Thread(target=server.serve_forever,daemon=True).start()
             subprocess.run(['bin/native/test-transport','--controller',f'https://[::1]:{server.server_port}'],check=True,timeout=15)
-            assert counts['challenge']>=1 and counts['business']==1,counts
+            assert counts['challenge']>=2 and counts['business']==1 and counts['discovery']==1,counts
             server.shutdown()
         with socket.socket(socket.AF_INET6) as reserve:
             reserve.bind(('::1',0));port=reserve.getsockname()[1]

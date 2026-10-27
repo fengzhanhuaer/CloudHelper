@@ -11,6 +11,17 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+static pthread_mutex_t refresh_mutex=PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t refresh_cond=PTHREAD_COND_INITIALIZER;
+static int refresh_finished;
+void __real_vr_controller_link_refresh_done(void);
+void __wrap_vr_controller_link_refresh_done(void)
+{
+    __real_vr_controller_link_refresh_done();
+    pthread_mutex_lock(&refresh_mutex);refresh_finished=1;
+    pthread_cond_signal(&refresh_cond);pthread_mutex_unlock(&refresh_mutex);
+}
+
 int main(int argc,char **argv)
 {
     assert(!curl_global_init(CURL_GLOBAL_DEFAULT));
@@ -25,7 +36,14 @@ int main(int argc,char **argv)
         vr_config c;vr_config_default(&c);snprintf(c.controller,sizeof(c.controller),"%s",argv[2]);strcpy(c.node_id,"7");strcpy(c.node_key,"fixture-key");
         vr_controller_link_init(&c,"/tmp/chvr-transport-fixture-config.json");
         char error[256];json_object *o=vr_controller_call(&c,"missing-v4-wan","GET","/api/probe/route/config",NULL,error,sizeof(error));
-        if(!o){fprintf(stderr,"%s\n",error);}assert(o&&json_object_get_boolean(vr_member(o,"ok")));json_object_put(o);puts("PASS IPv6 authenticated controller HTTP");return 0;
+        if(!o){fprintf(stderr,"%s\n",error);}assert(o&&json_object_get_boolean(vr_member(o,"ok")));json_object_put(o);
+        /* Do not run OpenSSL's process-exit cleanup while the detached
+           discovery worker is still using TLS (notably OpenSSL 1.1). */
+        struct timespec deadline;assert(!clock_gettime(CLOCK_REALTIME,&deadline));deadline.tv_sec+=12;
+        pthread_mutex_lock(&refresh_mutex);
+        while(!refresh_finished)assert(!pthread_cond_timedwait(&refresh_cond,&refresh_mutex,&deadline));
+        pthread_mutex_unlock(&refresh_mutex);
+        puts("PASS IPv6 authenticated controller HTTP; discovery TLS worker finished");return 0;
     }
     if(argc==5&&!strcmp(argv[1],"--server")) {
         char cert[8192],key[8192];size_t n;
