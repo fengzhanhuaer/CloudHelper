@@ -1,6 +1,7 @@
 # 任务：AX56U V2 配置同步与在线升级恢复
 
 - 状态：进行中；日期：2026-10-27（Asia/Singapore）。
+- 2026-10-28追加：用户要求192.168.52.1也升级，纳入节点25现场验证。
 - 用户最新指令：192.168.51.1 新配置下发失败、升级包校验失败，询问是否只能8条连接。
 - 启用方式：明确长任务条件，跨现场调查、C实现、验证、正式发布和产品在线升级。
 
@@ -29,6 +30,7 @@ IF-002：升级子进程改posix_spawn+POSIX_SPAWN_USEVFORK；锁fd3、描述符
 UNIT-001：policy.c 空匹配兼容；test_core.c验证空规则、畸形类型、32/33容量和真实策略。
 UNIT-002：upgrade.c 统一spawn，分离SHA失败与解压启动错误；test_upgrade.c/py验证fork失败仍可解包、spawn失败原因及既有安全/回退/下载。
 UNIT-003：节点26在线升级与状态/日志核对。
+追加节点25（192.168.52.1，RT-AX56U_V2、386_49559_koolshare）同一正式产品在线升级与核对。
 UNIT-004：mobile_vrouter.go 节点IP匹配优先于出口CIDR规则，复用现有授权路径规划；安卓和Probe补空规则兼容验证。
 
 ## 四、执行任务
@@ -92,6 +94,9 @@ FACT-003：真实新配置rr-16 entries不是数组（null/缺失），其余初
 2026-10-27：已回复用户上限32、现场相邻9，已定位空规则和fork提交额度问题。尚未修改生产内存参数或升级。
 2026-10-27 23:45：d2fcd007c已推送；自动v0.4.93未发布，CI 40533020156的旧IPv6 transport fixture --controller退出时SIGSEGV，安卓/其余编译通过。本机ASAN同一路径通过；发现fixture退出不等待detached TLS discovery，补fixture完成通知后退出，保留真实鉴权断言。下一步定向验证此生命周期修正再推送；不重跑五组旧互通测试。
 现场补充：旧缓存8相邻/14节点/22拓扑，新主控9相邻/15节点/23拓扑，故页面停在8，不是容量上限。
+2026-10-28：b97a4e912触发CI 40535797732，9job全部success；自动v0.4.94正式发布，10asset（含签名APK和AX56U V2插件），无BE86U/Docker发布。插件包SHA256=16aea47b54915fdbd333e6887c569af06941be2f0fd46253d42ec2dae03037fb；payload=d1777ceb53bb5c6ea6bf919ee56d2581f2d2ea0fb8fcb1ebdf9b9e0350f4c823。
+节点26产品CSRF升级进行中；旧升级器严格commit额度临时60->100，Python finally恢复60。节点25升级待执行。
+2026-10-28现场缺陷：v0.4.94节点26已安装但服务崩溃，用户要求先集中52.1；26 SSH依赖overlay无法连接，overcommit_ratio=100尚未证实恢复（重启会失效），不得称升级成功。节点25旧升级器ratio60失败，临时80完成产品升级并恢复60；随后同样SIGSEGV。内核LR=0x2e048，正式payload反汇编为published_routes中json_object_array_length(NULL)，r1指向entries字符串，确认漏改platform/policy_needs_ip两处消费。补空规则防护与真实系统路由fixture，准备v0.4.95；25暂存原enabled/gateway开关并暂停数据面保留管理，随后经产品升级和恢复。禁止重复声称94已恢复。
 
 ## 十四、完成摘要
 

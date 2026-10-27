@@ -393,6 +393,8 @@ static int published_routes(json_object *policy,route_spec seen[256],size_t *cou
         const char *action=vr_string(rule,"action");
         if(strcmp(action,"probe_exit")&&(gateway||strcmp(action,"reject")))continue;
         json_object *entries=vr_member(rule,"entries");
+        if(!entries||json_object_is_type(entries,json_type_null))continue;
+        if(!json_object_is_type(entries,json_type_array))return -1;
         for(size_t j=0;j<(size_t)json_object_array_length(entries);j++) {
             const char *entry=json_object_get_string(json_object_array_get_idx(entries,j));char cidr[19];
             if(!entry)continue;

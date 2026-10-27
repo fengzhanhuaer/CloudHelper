@@ -74,6 +74,7 @@ int vr_policy_needs_ip(json_object *policy,const char *domain)
     for(size_t i=0;i<(size_t)json_object_array_length(rules);i++) {
         json_object *rule=json_object_array_get_idx(rules,i),*enabled=vr_member(rule,"enabled"),*a=vr_member(rule,"entries");
         if(enabled&&!json_object_get_boolean(enabled))continue;
+        if(!a||!json_object_is_type(a,json_type_array))continue;
         int ip_rule=0;
         for(size_t j=0;j<(size_t)json_object_array_length(a);j++) {
             const char *entry=json_object_get_string(json_object_array_get_idx(a,j));if(!entry)continue;

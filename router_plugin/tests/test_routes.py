@@ -49,6 +49,9 @@ table.write_text(json.dumps(rows))
     assert not json.loads(commands.read_text())
     old.write_text(json.dumps({'route_rules': []}))
     new.write_text(json.dumps({'route_rules': [
+        {'id':'empty-missing','action':'probe_exit','exit_node_id':'8'},
+        {'id':'empty-null','action':'reject','entries':None},
+        {'id':'empty-array','action':'probe_exit','exit_node_id':'8','entries':[]},
         {'id':'ordinary-cidr','action':'probe_exit','exit_node_id':'8','entries':['cidr:203.0.113.199/24','ip_cidr:198.51.100.0/24','ip-cidr:0.0.0.0/0','ip:192.0.2.8']},
         {'id':'ordinary-reject','action':'reject','entries':['cidr:192.0.2.0/24']},
         {'id':'disabled','enabled':False,'action':'probe_exit','entries':['cidr:8.8.8.0/24']},

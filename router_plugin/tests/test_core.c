@@ -153,6 +153,7 @@ static void test_policy_publication(void)
         if(i)json_object_object_add(empty,"entries",i==1?NULL:json_object_new_array());
         assert(!vr_policy_validate(s,"7",err,sizeof(err)));
         assert(vr_policy_match(p,"allowed.test",NULL).action==VR_DIRECT);
+        assert(!vr_policy_needs_ip(p,"allowed.test"));
         assert(vr_policy_match(p,"blocked.test",NULL).action==VR_REJECT);
     }
     const char *invalid[]={"\"text\"","{}","1","false","[null]"};
