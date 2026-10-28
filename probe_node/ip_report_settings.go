@@ -121,8 +121,8 @@ func effectiveProbeIPReportSettings(settings probeIPReportSettings) probeIPRepor
 		return settings
 	}
 
-	// The router's selected uplink is authoritative for LAN address reporting.
-	// Public addresses are collected separately and are not affected by this filter.
+	// The router's selected uplink is authoritative for interface address reporting.
+	// Public addresses come exclusively from the public-IP API collector.
 	interfaceName := strings.TrimSpace(probeProductLinuxRouterReport().Interface)
 	if interfaceName != "" {
 		settings.SelectedInterfaceIDs = []string{"name:" + interfaceName}
@@ -156,8 +156,13 @@ func probeReportIPIsLAN(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
-	if ip4 := ip.To4(); ip4 != nil && ip4[0] == 198 && (ip4[1] == 18 || ip4[1] == 19) {
-		return true
+	if ip4 := ip.To4(); ip4 != nil {
+		if ip4[0] == 198 && (ip4[1] == 18 || ip4[1] == 19) {
+			return true
+		}
+		if ip4[0] == 100 && ip4[1] >= 64 && ip4[1] <= 127 {
+			return true
+		}
 	}
 	return ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }
@@ -170,8 +175,12 @@ func shouldIncludeProbeReportInterfaceIPByIDs(ip net.IP, interfaceIDs []string, 
 	if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
 		return false
 	}
-	if !settings.OnlySelectedLANInterfaces || !probeReportIPIsLAN(ip) {
-		return true
+	// Interface enumeration must never supply public addresses, even from a
+	// selected interface. collectIPs appends API-discovered public IPs separately.
+	// Require selection for every remaining address, including shared CGNAT IPs;
+	// the legacy OnlySelectedLANInterfaces field cannot bypass this policy.
+	if !probeReportIPIsLAN(ip) {
+		return false
 	}
 	selected := selectedProbeIPReportInterfaceIDSet(settings)
 	for _, interfaceID := range interfaceIDs {

@@ -5,25 +5,53 @@ import (
 	"net/http"
 	"reflect"
 	"testing"
+	"time"
 )
 
-func TestProbeIPReportLANFilterOnlyAppliesToLANIPs(t *testing.T) {
-	settings := probeIPReportSettings{
-		OnlySelectedLANInterfaces: true,
-		SelectedInterfaceIDs:      []string{"name:eth0"},
+func TestProbeIPReportInterfaceAddressesRequireSelection(t *testing.T) {
+	for _, legacyFilter := range []bool{false, true} {
+		settings := probeIPReportSettings{
+			OnlySelectedLANInterfaces: legacyFilter,
+			SelectedInterfaceIDs:      []string{"name:eth0"},
+		}
+		for _, raw := range []string{"192.168.52.172", "100.64.0.1", "100.127.255.254", "198.18.0.2", "169.254.1.2", "fe80::1", "fd00::1"} {
+			if !shouldIncludeProbeReportInterfaceIP(net.ParseIP(raw), "name:eth0", settings) {
+				t.Errorf("selected interface address %s rejected (legacy flag %v)", raw, legacyFilter)
+			}
+			if shouldIncludeProbeReportInterfaceIP(net.ParseIP(raw), "name:wlan0", settings) {
+				t.Errorf("unselected interface address %s leaked (legacy flag %v)", raw, legacyFilter)
+			}
+		}
+		for _, raw := range []string{"172.11.100.200", "8.8.8.8", "100.63.255.254", "100.128.0.1", "2606:4700:4700::1111", "127.0.0.1", "0.0.0.0", "::", "::1", "224.0.0.1", "ff02::1"} {
+			if shouldIncludeProbeReportInterfaceIP(net.ParseIP(raw), "name:eth0", settings) {
+				t.Errorf("public or unusable address %s came from interface enumeration", raw)
+			}
+		}
 	}
+}
 
-	if !shouldIncludeProbeReportInterfaceIP(net.ParseIP("192.168.1.20"), "name:eth0", settings) {
-		t.Fatal("selected lan interface ip should be included")
+func TestCollectIPsUsesAPIPublicAddressesWithoutSelectedInterfaces(t *testing.T) {
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	t.Setenv("PROBE_PUBLIC_IP_SNIFF", "1")
+	oldProfile, oldCollector := activeProbeProductProfile, probePublicIPCollector
+	activeProbeProductProfile.BuildKind = probeBuildKindNormal
+	probePublicIPCollector = newPublicIPCollector()
+	probePublicIPCollector.lastAttempt = time.Now()
+	probePublicIPCollector.update([]string{"123.232.8.66"}, []string{"2606:4700:4700::1111"}, true)
+	t.Cleanup(func() {
+		activeProbeProductProfile, probePublicIPCollector = oldProfile, oldCollector
+	})
+	if _, err := persistProbeIPReportSettings(probeIPReportSettings{}); err != nil {
+		t.Fatal(err)
 	}
-	if shouldIncludeProbeReportInterfaceIP(net.ParseIP("192.168.1.21"), "name:wlan0", settings) {
-		t.Fatal("unselected lan interface ip should be filtered")
+	ipv4, ipv6 := collectIPs()
+	if !reflect.DeepEqual(ipv4, []string{"123.232.8.66"}) || !reflect.DeepEqual(ipv6, []string{"2606:4700:4700::1111"}) {
+		t.Fatalf("unselected interface IPs leaked or API IPs lost: ipv4=%v ipv6=%v", ipv4, ipv6)
 	}
-	if shouldIncludeProbeReportInterfaceIP(net.ParseIP("198.18.0.2"), "name:cloudhelper0", settings) {
-		t.Fatal("unselected tun fake ip should be filtered as local lan-like ip")
-	}
-	if !shouldIncludeProbeReportInterfaceIP(net.ParseIP("8.8.8.8"), "name:wlan0", settings) {
-		t.Fatal("public ip should not be filtered by selected lan interface setting")
+	t.Setenv("PROBE_PUBLIC_IP_SNIFF", "0")
+	ipv4, ipv6 = collectIPs()
+	if len(ipv4) != 0 || len(ipv6) != 0 {
+		t.Fatalf("disabled API discovery must not fall back to interface public IPs: %v %v", ipv4, ipv6)
 	}
 }
 
@@ -39,8 +67,8 @@ func TestEffectiveProbeIPReportSettingsRequiresSelectionForNormalProbe(t *testin
 	if shouldIncludeProbeReportInterfaceIP(net.ParseIP("192.168.1.20"), "name:eth0", settings) {
 		t.Fatal("normal probe must not report LAN addresses before an interface is selected")
 	}
-	if !shouldIncludeProbeReportInterfaceIP(net.ParseIP("8.8.8.8"), "name:eth0", settings) {
-		t.Fatal("public address collection must remain independent from the LAN filter")
+	if shouldIncludeProbeReportInterfaceIP(net.ParseIP("8.8.8.8"), "name:eth0", settings) {
+		t.Fatal("public addresses must come from API discovery, not an unselected interface")
 	}
 }
 
@@ -69,8 +97,8 @@ func TestEffectiveProbeIPReportSettingsUsesLinuxRouterInterface(t *testing.T) {
 	if shouldIncludeProbeReportInterfaceIP(net.ParseIP("198.18.0.17"), "name:cloudhelper0", settings) {
 		t.Fatal("virtual router address must not be reported as a router LAN address")
 	}
-	if !shouldIncludeProbeReportInterfaceIP(net.ParseIP("8.8.8.8"), "name:cloudhelper0", settings) {
-		t.Fatal("public address collection must remain independent from the LAN filter")
+	if shouldIncludeProbeReportInterfaceIP(net.ParseIP("8.8.8.8"), "name:eth0", settings) {
+		t.Fatal("selected router uplink must still use API discovery for public addresses")
 	}
 }
 
