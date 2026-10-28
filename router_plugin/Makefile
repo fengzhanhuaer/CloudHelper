@@ -8,7 +8,7 @@ CFLAGS ?= -Os -g
 CFLAGS += -std=c99 -Wall -Wextra -Werror -Wformat=2 -fstack-protector-strong -ffunction-sections -fdata-sections
 LDLIBS += -lcurl -lssl -lcrypto -ljson-c -lpthread
 LDFLAGS += $(DEP_LDFLAGS) -Wl,--gc-sections -Wl,-z,relro,-z,now
-CORE = src/log.c src/cache.c src/gateway.c src/report.c src/telemetry.c src/common.c src/config.c src/wire.c src/dns.c src/dns_upstream.c src/transport_dns.c src/policy.c src/auth.c src/controller.c src/controller_link.c src/websocket.c src/tls.c src/packet.c src/tls_sniff.c
+CORE = src/log.c src/ip_blacklist.c src/camouflage.c src/cache.c src/gateway.c src/report.c src/telemetry.c src/common.c src/config.c src/wire.c src/dns.c src/dns_upstream.c src/transport_dns.c src/policy.c src/auth.c src/controller.c src/controller_link.c src/websocket.c src/tls.c src/packet.c src/tls_sniff.c
 RUNTIME = src/main.c src/upgrade.c src/engine.c src/address_update.c src/policy_update.c src/carrier.c src/dataplane.c src/mapping.c src/platform.c src/dns_service.c src/measure.c src/control.c src/tcp_proxy.c
 .PHONY: all test clean FORCE
 FORCE:
@@ -43,6 +43,8 @@ $(BUILD)/cloudhelper-router-plugin: $(CORE) $(RUNTIME) $(wildcard include/*.h) |
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) $(RUNTIME) $(LDFLAGS) $(LDLIBS) -o $@
 $(BUILD)/test-core: $(CORE) tests/test_core.c include/chvr.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_core.c $(LDFLAGS) $(LDLIBS) -o $@
+$(BUILD)/test-camouflage: $(CORE) src/platform.c tests/test_camouflage.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/platform.c tests/test_camouflage.c $(LDFLAGS) $(LDLIBS) -o $@
 test: $(BUILD)/test-core
 	$(BUILD)/test-core
 $(BUILD)/test-logs: $(CORE) tests/test_logs.c $(wildcard include/*.h) | $(BUILD)

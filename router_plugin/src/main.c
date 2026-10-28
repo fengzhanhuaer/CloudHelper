@@ -66,6 +66,7 @@ static json_object *status_reply(vr_service *s)
     json_object *o=json_object_new_object();
     json_object_object_add(o,"version",json_object_new_string(VR_VERSION));
     json_object_object_add(o,"upgrade",vr_upgrade_status(s));
+    json_object_object_add(o,"blacklist",vr_service_ip_status(s,vr_millis()));
     pthread_mutex_lock(&s->mutex);
     json_object_object_add(o,"ok",json_object_new_boolean(1));json_object_object_add(o,"csrf",json_object_new_string(s->csrf));
     json_object_object_add(o,"config",vr_config_json(&s->config,0));
@@ -87,6 +88,12 @@ json_object *vr_service_dispatch(vr_service *s,json_object *request)
     if(!strcmp(action,"logs"))return vr_service_logs(s);
     const char *token=vr_string(request,"csrf");
     if(strlen(token)!=48 || CRYPTO_memcmp(token,s->csrf,48))return error_reply("invalid CSRF token");
+    if(!strcmp(action,"blacklist_unblock")) {
+        vr_ip ip;if(vr_ip_parse(vr_string(request,"ip"),&ip))return error_reply("invalid IP address");
+        vr_service_ip_unblock(s,&ip);
+        if(vr_service_ip_flush(s,vr_millis(),1))return error_reply("IP unblocked in memory but could not save blacklist");
+        return status_reply(s);
+    }
     if(!strcmp(action,"upgrade")) {
         char err[256]="cannot start upgrade";
         if(vr_upgrade_start(s,request,err,sizeof(err)))return error_reply(err);
@@ -98,7 +105,9 @@ json_object *vr_service_dispatch(vr_service *s,json_object *request)
         if(vr_config_parse(&c,vr_member(request,"config"),&s->config,err,sizeof(err))) {pthread_mutex_unlock(&s->mutex);return error_reply(err);}
         if(vr_config_save(&c,s->config_path)){pthread_mutex_unlock(&s->mutex);OPENSSL_cleanse(&c,sizeof(c));return error_reply("cannot persist configuration");}
         int sniff=c.tls_sni_enabled;c.tls_sni_enabled=s->config.tls_sni_enabled;
+        vr_ip_blacklist blacklist=c.ip_blacklist;c.ip_blacklist=s->config.ip_blacklist;
         int live_only=!memcmp(&c,&s->config,sizeof(c));c.tls_sni_enabled=sniff;
+        c.ip_blacklist=blacklist;
         if(live_only) {
             s->config=c;pthread_mutex_unlock(&s->mutex);OPENSSL_cleanse(&c,sizeof(c));return status_reply(s);
         }
@@ -181,6 +190,7 @@ int vr_service_run(const char *config_path,const char *socket_path,int cleanup)
     vr_platform_stop(NULL);
     if(cleanup){rc=0;goto done;}
     if(invalid_config || vr_config_save(&s.config,config_path) || vr_random_hex(s.csrf,24)){fprintf(stderr,"configuration or random initialization failed\n");goto done;}
+    if(vr_service_ip_load(&s))vr_service_log(&s,"service","Automatic IP blacklist could not be read; manual list retained");
     struct stat st;if(!lstat(socket_path,&st)){if(!S_ISSOCK(st.st_mode)||st.st_uid!=geteuid())goto done;if(unlink(socket_path))goto done;}
     fd=socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0);if(fd<0)goto done;
     struct sockaddr_un sa={0};sa.sun_family=AF_UNIX;strcpy(sa.sun_path,socket_path);
@@ -196,6 +206,7 @@ int vr_service_run(const char *config_path,const char *socket_path,int cleanup)
     int create=pthread_create(&thread,&attr,worker,&s);pthread_attr_destroy(&attr);if(create)goto done;started=1;
     fprintf(stdout,"cloudhelper-router %s (%s) management ready\n",VR_VERSION,VR_KIND);fflush(stdout);
     while(!interrupted) {
+        if(vr_service_ip_flush(&s,vr_millis(),0))vr_service_log(&s,"service","IP blacklist save failed; retaining memory state and retrying later");
         struct pollfd p[1]={{fd,POLLIN,0}};int n=poll(p,1,250);if(n<0&&errno==EINTR)continue;if(n<0)break;
         if(n>0 && (p[0].revents&POLLIN)){int client=accept4(fd,NULL,NULL,SOCK_CLOEXEC);if(client>=0){admin_client(&s,client);close(client);}}
     }
@@ -203,6 +214,7 @@ int vr_service_run(const char *config_path,const char *socket_path,int cleanup)
 done:
     pthread_mutex_lock(&s.mutex);s.stop=1;pthread_cond_broadcast(&s.changed);pthread_mutex_unlock(&s.mutex);
     if(started)pthread_join(thread,NULL);
+    if(s.auth_ips_revision!=s.auth_ips_saved)vr_service_ip_flush(&s,vr_millis(),1);
     vr_upgrade_join(&s);
     if(fd>=0)close(fd);
     if(bound){unlink(socket_path);unlink(pid_path);}if(lock>=0)close(lock);

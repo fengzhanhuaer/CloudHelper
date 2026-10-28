@@ -44,7 +44,7 @@ int vr_config_parse(vr_config *out, json_object *o, const vr_config *previous, c
         (void)value;
         if (strcmp(key,"enabled") && strcmp(key,"allow_wan") && strcmp(key,"dns_enabled") && strcmp(key,"tls_sni_enabled") &&
             strcmp(key,"port") && strcmp(key,"controller") && strcmp(key,"node_id") &&
-            strcmp(key,"node_key") && strcmp(key,"dns_upstream") && strcmp(key,"dns_upstreams") && strcmp(key,"gateway_proxy")) goto fail;
+            strcmp(key,"node_key") && strcmp(key,"dns_upstream") && strcmp(key,"dns_upstreams") && strcmp(key,"gateway_proxy") && strcmp(key,"ip_blacklist")) goto fail;
     }
     if (boolean_field(o,"enabled",&c.enabled) || boolean_field(o,"allow_wan",&c.allow_wan) ||
         boolean_field(o,"dns_enabled",&c.dns_enabled) ||
@@ -86,6 +86,17 @@ int vr_config_parse(vr_config *out, json_object *o, const vr_config *previous, c
     }
     json_object *gateway=vr_member(o,"gateway_proxy");
     if(gateway && vr_gateway_parse(&c.gateway,gateway)){why="invalid gateway config: private CIDRs and allowed nodes required (max 32/64)";goto fail;}
+    json_object *blacklist=vr_member(o,"ip_blacklist");
+    if(blacklist) {
+        if(!json_object_is_type(blacklist,json_type_array)||json_object_array_length(blacklist)>VR_IP_BLACKLIST_MAX){why="IP blacklist supports at most 32 IPv4/IPv6 addresses";goto fail;}
+        memset(&c.ip_blacklist,0,sizeof(c.ip_blacklist));
+        for(size_t i=0;i<json_object_array_length(blacklist);i++) {
+            json_object *item=json_object_array_get_idx(blacklist,i);vr_ip ip;
+            if(!json_object_is_type(item,json_type_string)||strlen(json_object_get_string(item))!=(size_t)json_object_get_string_len(item)||vr_ip_parse(json_object_get_string(item),&ip)) {why="IP blacklist requires literal IPv4/IPv6 addresses";goto fail;}
+            int found=0;for(size_t j=0;j<c.ip_blacklist.count;j++)if(!memcmp(&ip,&c.ip_blacklist.ips[j],sizeof(ip)))found=1;
+            if(!found)c.ip_blacklist.ips[c.ip_blacklist.count++]=ip;
+        }
+    }
     char host[254];int dns_port;
     if(vr_dns_doh_endpoint(c.dns_doh,host,&dns_port) || vr_dns_endpoint(c.dns_dot,host,&dns_port,0) ||
        vr_dns_endpoint(c.dns_upstream,host,&dns_port,1)) {why="invalid DNS upstreams: require HTTPS DoH, DoT host:port and ordinary IPv4:port";goto fail;}
@@ -106,6 +117,9 @@ json_object *vr_config_json(const vr_config *c, int secrets)
     json_object_object_add(o,"port",json_object_new_int(c->port));
     json_object_object_add(o,"controller",json_object_new_string(c->controller));
     json_object_object_add(o,"node_id",json_object_new_string(c->node_id));
+    json_object *blacklist=json_object_new_array();
+    for(size_t i=0;i<c->ip_blacklist.count;i++){char ip[46];vr_ip_text(&c->ip_blacklist.ips[i],ip);json_object_array_add(blacklist,json_object_new_string(ip));}
+    json_object_object_add(o,"ip_blacklist",blacklist);
     json_object *upstreams=json_object_new_object();
     json_object_object_add(upstreams,"doh",json_object_new_string(c->dns_doh));
     json_object_object_add(upstreams,"dot",json_object_new_string(c->dns_dot));

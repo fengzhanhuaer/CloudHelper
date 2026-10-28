@@ -47,23 +47,6 @@ void vr_link_frame(vr_link *l,const vr_frame *f,char path[VR_PATH_MAX][129],size
     else if(f->main>=2&&f->main<=4)vr_measure_frame(l->engine,l,f,path,n);
 }
 
-static int replay_load(vr_engine *e)
-{
-    if(vr_copy(e->replay_path,sizeof(e->replay_path),e->service->config_path))return -1;
-    char *slash=strrchr(e->replay_path,'/');if(!slash)return -1;
-    if((size_t)(slash-e->replay_path)+sizeof("/auth-replay.json")>sizeof(e->replay_path))return -1;
-    strcpy(slash,"/auth-replay.json");
-    char *buf=malloc(VR_REPLAY_FILE_MAX);size_t n;int rc=-1;if(!buf)return -1;
-    if(vr_read_file(e->replay_path,buf,VR_REPLAY_FILE_MAX,&n)) {
-        if(errno==ENOENT){e->nonces=json_object_new_object();rc=0;}
-    } else {
-        e->nonces=vr_json_parse(buf,n);
-        rc=vr_replay_validate(e->nonces);
-    }
-    free(buf);return rc;
-}
-
-
 static int cache_path(vr_engine *e,const char *name,char out[512])
 {
     if(vr_copy(out,512,e->service->config_path))return -1;
@@ -126,7 +109,6 @@ static int prepare(vr_engine *e)
         json_object *node=json_object_array_get_idx(nodes,i);
         if(!strcmp(vr_string(node,"node_id"),e->config.node_id))vr_copy(e->own_ip,sizeof(e->own_ip),vr_string(node,"ip"));
     }
-    if(replay_load(e)){strcpy(e->error,"authentication replay state invalid");return -1;}
     json_object *cached=vr_cache_load(cert_cache);SSL_CTX *fallback=certificate_context(cached,e->config.node_id);json_object_put(cached);
     strcpy(e->error,"Requesting node TLS certificate from controller");status(e,0);
     vr_service_log(e->service,"service",e->error);
@@ -262,6 +244,6 @@ done:
     if(e->platform_started)vr_platform_stop(e->cidr);
     if(e->tun>=0)close(e->tun);
     for(size_t i=0;i<4;i++)json_object_put(e->receives[i].message);
-    json_object_put(e->telemetry);json_object_put(e->speed_send);json_object_put(e->snapshot);json_object_put(e->next_policy);json_object_put(e->nonces);SSL_CTX_free(e->tls);
+    json_object_put(e->telemetry);json_object_put(e->speed_send);json_object_put(e->snapshot);json_object_put(e->next_policy);SSL_CTX_free(e->tls);
     pthread_cond_destroy(&e->jobs_changed);pthread_mutex_destroy(&e->mutex);OPENSSL_cleanse(&e->config,sizeof(e->config));free(e);
 }

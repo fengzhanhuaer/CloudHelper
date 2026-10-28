@@ -24,15 +24,11 @@
 #define VR_RELAY_PATH "/api/node/route/relay"
 #define VR_GATEWAY_CIDRS 32
 #define VR_GATEWAY_NODES 64
-#define VR_REPLAY_LEGACY_MAX 4096
-#define VR_REPLAY_TIMED_MAX 2048
-#define VR_REPLAY_FILE_MAX (512u*1024u)
-
-/* Timed nonces remain covered by the existing HMAC. Legacy nonces retain
-   their full ticket lifetime; never evict an unexpired replay record. */
-int vr_replay_validate(json_object *records);
-int vr_replay_record(json_object **records,const char *path,const char *key,
-    const char *nonce,time_t ticket_expiry,time_t now);
+#define VR_IP_BLACKLIST_MAX 32
+typedef struct {unsigned char family,bytes[16];} vr_ip;
+typedef struct {size_t count;vr_ip ips[VR_IP_BLACKLIST_MAX];} vr_ip_blacklist;
+int vr_ip_parse(const char *text,vr_ip *ip);
+const char *vr_ip_text(const vr_ip *ip,char out[46]);
 
 typedef struct {
     int enabled;
@@ -45,6 +41,7 @@ typedef struct {
     int doh_enabled,dot_enabled,plain_dns_enabled;
     char controller[1024], node_id[129], node_key[1025], dns_upstream[64], dns_doh[1024], dns_dot[260];
     vr_gateway gateway;
+    vr_ip_blacklist ip_blacklist;
 } vr_config;
 
 typedef struct {

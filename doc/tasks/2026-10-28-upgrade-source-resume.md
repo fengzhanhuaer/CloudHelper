@@ -87,3 +87,24 @@ DEC-003：不能只清空防重放文件或缩短旧nonce TTL，那会丢失有�
 TASK002、TASK004实现完成。TEST004最终Windows Probe全套通过（36.924秒，codex-upgrade-auth-full-tests.jsonl）；此前Windows临时TCP/UDP选端口夹具失败未改代码，最新全套已通过。Probe vet使用既有unsafeptr=false/copylocks=false例外通过；主控全套test/vet通过。Linux C完整程序、test-core（含迁移/容量/时间窗/重启/写失败）、telemetry、TLS IPv4/IPv6和失败回退测试通过；宿主新curl的弃用告警仅以-Wno-deprecated-declarations处理，其他警告仍-Werror。Go/Android core时间戳nonce与HMAC测试通过。未恢复五组昂贵互通测试。
 准备门禁通过；代码验证门禁通过；完成门禁仍等待CI、正式附件与两台产品在线升级后的四槽位实测。原先51.1暂缓已被本次用户明确请求替代；未调整网络、防火墙或清空认证记录。
 下一步唯一动作：提交本任务15个明确路径，fetch/rebase后push mapledev，等待正式Release。
+
+### 用户改定方案：IP失败黑名单
+
+v97已正式发布（CI40622894584，9任务成功、10附件）。先只在线升级51.1后，旧v96的52.1即恢复到26的4槽位；随后52.1也在线升级v97，9个邻接全4槽位。51.1程序/页面哈希与正式附件匹配。这证明旧1024硬限制是故障原因，非IPv6不可达。
+用户最新明确：不需要持久化nonce那样严格；内存紧张，不能保留大量记录，也不能频繁写JFFS；采用IP认证失败黑名单，插件显示并支持手工修改、保存。REQ004旧“防重放持久化”约束被用户取消，DEC003/IF002时间戳持久化方案被DEC004替代。
+REQ006：保留HMAC和签名票据，取消插件nonce记录读写/常驻对象；仅认证失败计数，容量/存储/网络故障不计入。默认同IP60秒10次失败临时封禁5分钟，成功清零计数。REQ007：自动状态RAM固定64条；手工IP名单最多32条，仅保存时写JFFS，同值不重复写。IPv4/IPv6及v4-mapped归一化，仅作用于链路入站。REQ008：黑名单独立标签显示自动IP及剩余时间、支持解除，手工IP可编辑/保存/重启保留；应用名单不重启已有连接。
+架构UNIT006：service持有固定自动IP失败表，config仅手工二进制IP数组，carrier入站按来源IP检查，认证失败更新计数，成功清零。IF003：config.ip_blacklist字符串数组；status.blacklist.automatic；CSRF action blacklist_unblock只清临时内存记录。UNIT007：UI新增黑名单标签，保留其余8项；自动条目可复制至手工保存列表。
+TASK005实施IP黑名单（进行中），TEST006：阈值/成功清零/窗口/到期/满表/映射IP/手工保存CSRF和重启/热应用不换代/无nonce写入/浏览器交互。DEC004：严格保留用户的私有认证，按用户授权取消插件持久化nonce；不将内存或JFFS容量作为正常连接准入条件。
+下一步唯一动作：以IP失败黑名单替换v97插件nonce状态，验证后发布并在线升级两台路由器。
+
+用户继续定标：60分钟内5次失败，永久封禁。替代此前默认60秒/10次/5分钟。永久自动名单最多64 IP，新增封禁后5秒合并落盘，解除时立即保存；失败计数在RAM，成功清零未封禁计数；永久名单重启保留，仅手工解除。status自动条目permanent=true，无TTL。自动状态独立ip-blacklist.json最多约3KiB，非每握手或每失败写盘。名单加载失败报告日志但不终止正常服务。测试更新为永久封禁/重启/写盘频率边界。
+
+### v98发布前检查点
+
+REQ009：路由器普通HTTPS应像Probe返回OpenAI风格信息。UNIT008/IF004：新camouflage.c只处理非私有relay路径；GET /返回200 JSON、/v1类路径401、根路径非GET405、未知404，TLS发送close_notify。不计认证失败，不改证书或TLS最低版本。
+现场curl：mjy:12042在v97前后普通请求直接断开（HTTP处理缺失）；na:12040是TCP拒绝，未进入TLS。na实际30010已实测不加-k也200，返回OpenAI-compatible API endpoint、v96，无需放宽TLS。QUIC TLS1.3要求不改。
+TEST006通过：固定表自动64IP+手工32IP合计<4KiB；IPv4-mapped归一化、成功清零、最近5次滚动60分钟窗口、永久封禁、手工解除、满表不拒绝正常IP；合并保存、无变化不重写、自动名单重启加载、解除持久化。服务API CSRF/非法IP/同名单mtime不变、名单修改不重启worker/重启保留通过。已有服务夹具的2秒启动预算在本机WSL需2.3秒，改为最多5秒，正常提前结束，非新增长时测试。
+TEST007通过：真实TLS1.2普通请求200/401/405/404、close_notify和relay路径分离。短时本地新测试，不恢复五组昂贵互通。
+TEST008通过：Browser plugin not available；使用现有Playwright/Chromium，原ASP+模拟原厂资源/API在1366x1000和390x844渲染，9标签、永久提示、IPv4/IPv6保存及CSRF payload、解除payload和空名单状态、无JS错误。后端真实Unix API另测通过；原厂登录页面交互未自动登录。
+Native全程序、test-core、test-camouflage、test_service均通过；Go代码自v97无变化，沿用本轮已通过Go全套/vet/构建证据，不重复全套。新C/ABI/打包由正式CI继续核验。
+TASK005实现和本地验证完成，准备门禁通过；完成门禁待正式CI、附件hash和两路由器在线升级后的真实4槽位、curl及名单热更新验证。下一步唯一动作：提交本任务明确C源码/界面/测试/账本，正式push发布。

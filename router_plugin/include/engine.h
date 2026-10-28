@@ -54,11 +54,11 @@ typedef struct {char id[129],path[VR_PATH_MAX][129];size_t count;uint64_t first,
 struct vr_engine {
     vr_service *service;vr_config config;unsigned generation;
     vr_addresses addresses;
-    json_object *snapshot,*policy,*nonces,*next_policy;
+    json_object *snapshot,*policy,*next_policy;
     unsigned policy_revision;
     uint64_t policy_retry;
     uint64_t auth_reject_log;
-    char own_ip[16],cidr[64],replay_path[512],error[256];
+    char own_ip[16],cidr[64],error[256];
     SSL_CTX *tls;
     vr_link links[VR_CARRIER_MAX];size_t link_count;
     vr_flow_binding bindings[VR_NAT_MAX];uint64_t carrier_session;

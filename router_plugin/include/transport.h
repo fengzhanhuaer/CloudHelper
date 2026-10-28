@@ -2,6 +2,7 @@
 #define CHVR_TRANSPORT_H
 #include "chvr.h"
 #include <openssl/ssl.h>
+int vr_http_camouflage(SSL *ssl,const char *request,uint64_t deadline);
 #include <curl/curl.h>
 
 /* Real transport addresses only; business/Fake IP resolution remains IPv4. */

@@ -165,8 +165,6 @@ int main(int argc,char **argv)
     test_pool(e);
     if(json_object_get_boolean(vr_member(e->policy,"test_server"))) {
         e->tls=vr_tls_server_context(vr_string(e->policy,"test_cert"),vr_string(e->policy,"test_key"));assert(e->tls);
-        e->nonces=json_object_new_object();assert(!vr_copy(e->replay_path,sizeof(e->replay_path),argv[1]));
-        char *slash=strrchr(e->replay_path,'/');assert(slash);strcpy(slash,"/replay.json");
         e->lan=vr_bind4("127.0.0.1",json_object_get_int(vr_member(e->policy,"test_port")),1);assert(e->lan>=0);
         puts("READY");fflush(stdout);
     }
@@ -216,6 +214,6 @@ int main(int argc,char **argv)
     vr_handshakes_poll(e,1);for(size_t i=0;i<e->link_count;i++)vr_link_close(&e->links[i],"");json_object_put(e->snapshot);json_object_put(s.measurement);
     for(size_t i=0;i<4;i++)json_object_put(e->receives[i].message);
     if(e->lan>=0)close(e->lan);
-    SSL_CTX_free(e->tls);json_object_put(e->nonces);
+    SSL_CTX_free(e->tls);
     json_object_put(e->speed_send);pthread_mutex_destroy(&s.mutex);pthread_mutex_destroy(&e->mutex);free(e);return 0;
 }

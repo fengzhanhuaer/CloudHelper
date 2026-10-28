@@ -2,6 +2,7 @@
 #include "chvr.h"
 #include "transport.h"
 #include "packet.h"
+#include "service.h"
 #include <arpa/inet.h>
 #include <assert.h>
 #include <stdio.h>
@@ -253,49 +254,54 @@ static void test_packet(void)
     }
 }
 
-static void test_replay_retention(void)
+static void test_ip_blacklist(void)
 {
-    char dir[]="/tmp/chvr-replay-XXXXXX",path[128],key[65],nonce[96];assert(mkdtemp(dir));
-    snprintf(path,sizeof(path),"%s/state.json",dir);json_object *records=json_object_new_object();
-    /* Migrate the actual full v96 store without discarding any old nonce. */
-    for(unsigned i=0;i<1024;i++){snprintf(key,sizeof(key),"%064x",i);json_object_object_add(records,key,json_object_new_int64(5000));}
-    assert(!vr_replay_validate(records));
-    snprintf(key,sizeof(key),"%064x",2000);snprintf(nonce,sizeof(nonce),"ts1:1000:%032x",42);
-    assert(!vr_replay_record(&records,path,key,nonce,5000,1000));
-    assert(json_object_object_length(records)==1025);
-    assert(vr_replay_record(&records,path,key,nonce,5000,1000)==-2);
-    char timed_key[66];snprintf(timed_key,sizeof(timed_key),"t%s",key);
-    assert(json_object_get_int64(vr_member(records,timed_key))==1300);
-    char *saved=malloc(VR_REPLAY_FILE_MAX);size_t length;
-    assert(saved&&!vr_read_file(path,saved,VR_REPLAY_FILE_MAX,&length));
-    json_object *loaded=vr_json_parse(saved,length);free(saved);assert(!vr_replay_validate(loaded));
-    json_object_put(records);records=loaded;
-    assert(vr_replay_record(&records,path,key,nonce,5000,1001)==-2);
-    assert(vr_replay_record(&records,path,key,"ts1:699:0123456789abcdef0123456789abcdef",5000,1000)==-1);
-    assert(vr_replay_record(&records,path,key,"ts1:1301:0123456789abcdef0123456789abcdef",5000,1000)==-1);
-    assert(vr_replay_record(&records,path,key,"ts1:1000:bad",5000,1000)==-1);
-    /* Expired timed entries are reclaimed; old records cannot be replayed. */
-    snprintf(nonce,sizeof(nonce),"ts1:1301:%032x",43);
-    assert(!vr_replay_record(&records,path,key,nonce,1350,1301));
-    assert(json_object_get_int64(vr_member(records,timed_key))==1350);
-    snprintf(key,sizeof(key),"%064x",0);
-    assert(vr_replay_record(&records,path,key,"legacy-nonce-0123456789",5000,1301)==-2);
-    unsigned before=(unsigned)json_object_object_length(records);
-    snprintf(key,sizeof(key),"%064x",3000);
-    assert(vr_replay_record(&records,"/nonexistent/chvr/state",key,nonce,5000,1301)==-4);
-    assert((unsigned)json_object_object_length(records)==before);
-    /* Full legacy state must not consume timed-nonce capacity. */
-    for(unsigned i=1024;i<VR_REPLAY_LEGACY_MAX;i++){snprintf(key,sizeof(key),"%064x",i);json_object_object_add(records,key,json_object_new_int64(5000));}
-    snprintf(key,sizeof(key),"%064x",99999);
-    assert(vr_replay_record(&records,path,key,"legacy-nonce-0123456789",5000,1301)==-3);
-    assert(!vr_replay_record(&records,path,key,nonce,5000,1301));
-    for(unsigned i=0;i<VR_REPLAY_TIMED_MAX-2;i++){snprintf(timed_key,sizeof(timed_key),"t%064x",i+10000);json_object_object_add(records,timed_key,json_object_new_int64(1400));}
-    assert(!vr_replay_validate(records));
-    snprintf(key,sizeof(key),"%064x",99998);
-    assert(vr_replay_record(&records,path,key,nonce,5000,1301)==-3);
-    assert(!vr_replay_record(&records,path,key,"ts1:1401:0123456789abcdef0123456789abcdef",5000,1401));
-    assert(!vr_replay_validate(records));json_object_put(records);unlink(path);rmdir(dir);
-    puts("PASS: full legacy replay migration, timed nonce bounds/restart/capacity and persistence failure");
+    vr_service s={0};pthread_mutex_init(&s.mutex,NULL);vr_ip ip,mapped,other;
+    assert(sizeof(s.auth_ips)+sizeof(s.config.ip_blacklist)<4096);
+    assert(!vr_ip_parse("192.0.2.7",&ip)&&!vr_ip_parse("::ffff:192.0.2.7",&mapped));
+    assert(!memcmp(&ip,&mapped,sizeof(ip))&&!vr_ip_parse("2001:db8::9",&other));
+    assert(vr_ip_parse("192.0.2.0/24",&other)&&vr_ip_parse("host.example",&other));
+    for(unsigned i=0;i<VR_AUTH_IP_FAILURES-1;i++)vr_service_ip_result(&s,&ip,0,1000+i);
+    assert(!vr_service_ip_blocked(&s,&mapped,2000));
+    vr_service_ip_result(&s,&ip,1,2001); /* A valid login resets failures. */
+    vr_service_ip_result(&s,&ip,0,2002);assert(!vr_service_ip_blocked(&s,&ip,2003));
+    for(unsigned i=1;i<VR_AUTH_IP_FAILURES;i++)vr_service_ip_result(&s,&ip,0,2002+i);
+    assert(vr_service_ip_blocked(&s,&mapped,2100));
+    assert(vr_service_ip_blocked(&s,&ip,UINT64_MAX-1));
+    json_object *status=vr_service_ip_status(&s,2100),*rows=vr_member(status,"automatic");
+    assert(json_object_array_length(rows)==1&&!strcmp(vr_string(json_object_array_get_idx(rows,0),"ip"),"192.0.2.7"));json_object_put(status);
+    vr_service_ip_unblock(&s,&mapped);assert(!vr_service_ip_blocked(&s,&ip,2200));
+    vr_service_ip_result(&s,&ip,0,0);
+    for(unsigned i=0;i<3;i++)vr_service_ip_result(&s,&ip,0,3590000+i);
+    vr_service_ip_result(&s,&ip,0,3610000);assert(!vr_service_ip_blocked(&s,&ip,3610000));
+    vr_service_ip_result(&s,&ip,0,3620000);assert(vr_service_ip_blocked(&s,&ip,3620000));
+    vr_service_ip_unblock(&s,&ip); /* Sliding window must retain the latest five, not reset by first failure. */
+    for(unsigned i=0;i<VR_AUTH_IP_FAILURES-1;i++)vr_service_ip_result(&s,&ip,0,3000+i);
+    vr_service_ip_result(&s,&ip,0,VR_AUTH_IP_WINDOW_MS+4000);assert(!vr_service_ip_blocked(&s,&ip,VR_AUTH_IP_WINDOW_MS+4000));
+    /* Manual state is separate, normalized and applies to new accepts only. */
+    s.config.ip_blacklist.count=1;s.config.ip_blacklist.ips[0]=ip;
+    vr_service_ip_result(&s,&ip,1,65000);assert(vr_service_ip_blocked(&s,&mapped,65000));
+    s.config.ip_blacklist.count=0;assert(!vr_service_ip_blocked(&s,&ip,65000));
+    memset(s.auth_ips,0,sizeof(s.auth_ips));
+    for(unsigned i=0;i<VR_AUTH_IP_MAX;i++) {
+        char text[32];snprintf(text,sizeof(text),"192.0.2.%u",i+1);assert(!vr_ip_parse(text,&other));
+        for(unsigned j=0;j<VR_AUTH_IP_FAILURES;j++)vr_service_ip_result(&s,&other,0,70000+j);
+    }
+    assert(!vr_ip_parse("198.51.100.7",&other));
+    vr_service_ip_result(&s,&other,0,71000);assert(!vr_service_ip_blocked(&s,&other,71000));
+    char dir[]="/tmp/chvr-ip-state-XXXXXX",path[160];assert(mkdtemp(dir));
+    snprintf(s.config_path,sizeof(s.config_path),"%s/config.json",dir);snprintf(path,sizeof(path),"%s/ip-blacklist.json",dir);
+    assert(!vr_service_ip_flush(&s,71000,0)&&access(path,F_OK)); /* Coalesce new bans. */
+    assert(!vr_service_ip_flush(&s,80000,0));struct stat before,after;assert(!stat(path,&before));
+    assert(!vr_service_ip_flush(&s,81000,0)&&!stat(path,&after)&&before.st_ino==after.st_ino);
+    vr_service restored={0};pthread_mutex_init(&restored.mutex,NULL);strcpy(restored.config_path,s.config_path);
+    assert(!vr_service_ip_load(&restored)&&vr_service_ip_blocked(&restored,&ip,UINT64_MAX-1));
+    vr_service_ip_unblock(&restored,&ip);assert(!vr_service_ip_flush(&restored,82000,1));
+    memset(restored.auth_ips,0,sizeof(restored.auth_ips));
+    assert(!vr_service_ip_load(&restored)&&!vr_service_ip_blocked(&restored,&ip,83000));
+    pthread_mutex_destroy(&restored.mutex);unlink(path);rmdir(dir);
+    pthread_mutex_destroy(&s.mutex);
+    puts("PASS: bounded RAM-only IP failures, mapped IPv4, success reset, permanent bans, unblock and full-table availability");
 }
 
 int main(int argc,char **argv)
@@ -308,6 +314,6 @@ int main(int argc,char **argv)
         puts(rc?err:"PASS: captured controller policy accepted");return rc?1:0;
     }
     assert(argc==1);
-    test_wire();test_dns();test_config();test_policy();test_policy_publication();test_auth();test_replay_retention();test_websocket();test_packet();
+    test_wire();test_dns();test_config();test_policy();test_policy_publication();test_auth();test_ip_blacklist();test_websocket();test_packet();
     puts("PASS: VR/WebSocket framing, DNS bounds, configuration, policy, Ed25519/HMAC, TCP/UDP/ICMP NAT checksums");return 0;
 }
