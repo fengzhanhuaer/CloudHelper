@@ -90,7 +90,7 @@ int vr_config_parse(vr_config *out, json_object *o, const vr_config *previous, c
     if(blacklist) {
         if(!json_object_is_type(blacklist,json_type_array)||json_object_array_length(blacklist)>VR_IP_BLACKLIST_MAX){why="IP blacklist supports at most 32 IPv4/IPv6 addresses";goto fail;}
         memset(&c.ip_blacklist,0,sizeof(c.ip_blacklist));
-        for(size_t i=0;i<json_object_array_length(blacklist);i++) {
+        for(size_t i=0;i<(size_t)json_object_array_length(blacklist);i++) {
             json_object *item=json_object_array_get_idx(blacklist,i);vr_ip ip;
             if(!json_object_is_type(item,json_type_string)||strlen(json_object_get_string(item))!=(size_t)json_object_get_string_len(item)||vr_ip_parse(json_object_get_string(item),&ip)) {why="IP blacklist requires literal IPv4/IPv6 addresses";goto fail;}
             int found=0;for(size_t j=0;j<c.ip_blacklist.count;j++)if(!memcmp(&ip,&c.ip_blacklist.ips[j],sizeof(ip)))found=1;

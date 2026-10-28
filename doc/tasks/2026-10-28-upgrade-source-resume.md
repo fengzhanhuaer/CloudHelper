@@ -108,3 +108,8 @@ TEST007通过：真实TLS1.2普通请求200/401/405/404、close_notify和relay�
 TEST008通过：Browser plugin not available；使用现有Playwright/Chromium，原ASP+模拟原厂资源/API在1366x1000和390x844渲染，9标签、永久提示、IPv4/IPv6保存及CSRF payload、解除payload和空名单状态、无JS错误。后端真实Unix API另测通过；原厂登录页面交互未自动登录。
 Native全程序、test-core、test-camouflage、test_service均通过；Go代码自v97无变化，沿用本轮已通过Go全套/vet/构建证据，不重复全套。新C/ABI/打包由正式CI继续核验。
 TASK005实现和本地验证完成，准备门禁通过；完成门禁待正式CI、附件hash和两路由器在线升级后的真实4槽位、curl及名单热更新验证。下一步唯一动作：提交本任务明确C源码/界面/测试/账本，正式push发布。
+
+### CI ABI兼容修正
+
+v98构建40629282838路由器任务在原有旧json-c环境因两处size_t循环与int返回值比较触发-Werror=sign-compare，未生成正式Release、未部署。失败日志122621663666已核对。config.c和ip_blacklist.c依仓库既有约定显式转换数组长度为size_t，业务语义不变；本地现代json-c返回size_t没有显示该告警。保留-Werror，不绕过构建。两路由器仍v97、52→51的4槽位保持正常。
+下一步唯一动作：旧签名兼容编译验证后提交这两处修正与账本，按正式流程发布下一版本。

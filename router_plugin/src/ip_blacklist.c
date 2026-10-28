@@ -91,7 +91,7 @@ int vr_service_ip_load(vr_service *s)
     json_object *list=vr_json_parse(buffer,n);int rc=-1;
     if(!list||!json_object_is_type(list,json_type_array)||json_object_array_length(list)>VR_AUTH_IP_MAX)goto done;
     vr_auth_ip entries[VR_AUTH_IP_MAX]={0};size_t count=0;
-    for(size_t i=0;i<json_object_array_length(list);i++) {
+    for(size_t i=0;i<(size_t)json_object_array_length(list);i++) {
         json_object *item=json_object_array_get_idx(list,i);vr_ip ip;
         if(!json_object_is_type(item,json_type_string)||strlen(json_object_get_string(item))!=(size_t)json_object_get_string_len(item)||vr_ip_parse(json_object_get_string(item),&ip))goto done;
         int found=0;for(size_t j=0;j<count;j++)if(same(&entries[j].ip,&ip))found=1;
