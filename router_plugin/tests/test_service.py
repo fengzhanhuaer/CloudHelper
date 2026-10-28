@@ -50,6 +50,7 @@ def main(binary):
             assert response["config"]["port"] == 12040
             assert not response["config"]["allow_wan"]
             assert not response["config"]["tls_sni_enabled"]
+            assert response['config']['ip_blacklist']==[] and 'ip_blacklist' not in json.loads(config.read_text())
             files_before=set(root.iterdir())
             logs=request(sock,{"action":"logs"})
             assert logs["ok"] and logs["items"]==[] and set(root.iterdir())==files_before

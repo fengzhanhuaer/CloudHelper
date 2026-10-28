@@ -113,3 +113,6 @@ TASK005实现和本地验证完成，准备门禁通过；完成门禁待正式C
 
 v98构建40629282838路由器任务在原有旧json-c环境因两处size_t循环与int返回值比较触发-Werror=sign-compare，未生成正式Release、未部署。失败日志122621663666已核对。config.c和ip_blacklist.c依仓库既有约定显式转换数组长度为size_t，业务语义不变；本地现代json-c返回size_t没有显示该告警。保留-Werror，不绕过构建。两路由器仍v97、52→51的4槽位保持正常。
 下一步唯一动作：旧签名兼容编译验证后提交这两处修正与账本，按正式流程发布下一版本。
+
+v99构建40630187521旧json-c编译已过，新测试在Ubuntu18.04/Python3.6因subprocess的text=True不兼容失败；无正式Release、未部署。测试改用现有夹具同样的universal_newlines=True和PROTOCOL_TLSv1_2，不修改产品TLS策略。修正版真实TLS测试本地通过。空手工名单不向持久化主配置新增字段（status仍返回空数组），使未编辑黑名单时旧插件回退仍可读取配置，也避免空列表导致启动写盘；保存非空手工名单才增加字段。服务测试核对默认状态/磁盘兼容。
+最新验证：完整Native构建、test-core、service API及TLS伪装测试均通过；空名单磁盘兼容断言通过。发布预检通过（mapledev/origin/工作流/认证），本次仅提交4个已审查路径，提交信息fix: support legacy Python validation and empty blacklist rollback。

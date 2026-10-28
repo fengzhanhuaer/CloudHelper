@@ -119,7 +119,8 @@ json_object *vr_config_json(const vr_config *c, int secrets)
     json_object_object_add(o,"node_id",json_object_new_string(c->node_id));
     json_object *blacklist=json_object_new_array();
     for(size_t i=0;i<c->ip_blacklist.count;i++){char ip[46];vr_ip_text(&c->ip_blacklist.ips[i],ip);json_object_array_add(blacklist,json_object_new_string(ip));}
-    json_object_object_add(o,"ip_blacklist",blacklist);
+    /* Keep an empty saved configuration readable by pre-blacklist versions. */
+    if(c->ip_blacklist.count||!secrets)json_object_object_add(o,"ip_blacklist",blacklist);else json_object_put(blacklist);
     json_object *upstreams=json_object_new_object();
     json_object_object_add(upstreams,"doh",json_object_new_string(c->dns_doh));
     json_object_object_add(upstreams,"dot",json_object_new_string(c->dns_dot));
