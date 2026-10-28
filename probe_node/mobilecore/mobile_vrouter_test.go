@@ -1998,6 +1998,14 @@ func TestMobileVRouteSecretAuthHeaders(t *testing.T) {
 	if nonce == "" || nonce == headers.Get("Authorization") {
 		t.Fatalf("missing bearer nonce: %q", headers.Get("Authorization"))
 	}
+	parts := strings.Split(nonce, ":")
+	if len(parts) != 3 || parts[0] != "ts1" || len(parts[2]) != 32 {
+		t.Fatalf("missing timed random nonce: %q", nonce)
+	}
+	issued, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || issued > time.Now().Unix() || time.Now().Unix()-issued > 2 {
+		t.Fatalf("invalid nonce timestamp: %q", nonce)
+	}
 	expected := buildMobileVRouteHMAC("secret-1", "route-1", nonce, http.MethodGet, mobileVRouteRelayAPIPath, "7", mobileVRouteBridgeRoleToNext)
 	if headers.Get(mobileVRouteCodexMACHeader) != expected {
 		t.Fatalf("mac=%s, want %s", headers.Get(mobileVRouteCodexMACHeader), expected)

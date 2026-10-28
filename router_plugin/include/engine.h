@@ -57,6 +57,7 @@ struct vr_engine {
     json_object *snapshot,*policy,*nonces,*next_policy;
     unsigned policy_revision;
     uint64_t policy_retry;
+    uint64_t auth_reject_log;
     char own_ip[16],cidr[64],replay_path[512],error[256];
     SSL_CTX *tls;
     vr_link links[VR_CARRIER_MAX];size_t link_count;

@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "chvr.h"
 #include <ctype.h>
+#include <errno.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -10,6 +11,47 @@
 #include <openssl/pem.h>
 #include <openssl/rand.h>
 #include <openssl/sha.h>
+
+int vr_replay_validate(json_object *records)
+{
+    if(!records||!json_object_is_type(records,json_type_object))return -1;
+    unsigned legacy=0,timed=0;
+    json_object_object_foreach(records,k,v) {
+        const char *digest=k;
+        if(strlen(k)==65&&k[0]=='t'){timed++;digest++;}else legacy++;
+        if(strlen(digest)!=64||!json_object_is_type(v,json_type_int))return -1;
+        for(const char *p=digest;*p;p++)if(!isxdigit((unsigned char)*p))return -1;
+    }
+    return legacy>VR_REPLAY_LEGACY_MAX||timed>VR_REPLAY_TIMED_MAX?-1:0;
+}
+
+int vr_replay_record(json_object **records,const char *path,const char *key,
+    const char *nonce,time_t ticket_expiry,time_t now)
+{
+    int timed=!strncmp(nonce,"ts1:",4);time_t expiry=ticket_expiry;
+    if(timed) {
+        char *end;errno=0;long long issued=strtoll(nonce+4,&end,10);
+        if(errno||end==nonce+4||*end!=':'||issued<=0||issued>(long long)now+300||issued<=(long long)now-300)return -1;
+        size_t random_length=strlen(end+1);if(random_length<32||random_length>64)return -1;
+        for(const char *p=end+1;*p;p++)if(!isxdigit((unsigned char)*p))return -1;
+        if(issued+300<(long long)expiry)expiry=(time_t)(issued+300);
+    }
+    if(expiry<=now)return -1;
+    char stored[66];snprintf(stored,sizeof(stored),"%s%s",timed?"t":"",key);
+    json_object *fresh=json_object_new_object();unsigned legacy=0,recent=0;int replayed=0;
+    json_object_object_foreach(*records,k,v) {
+        if(json_object_get_int64(v)<=now)continue;
+        if(!strcmp(k,stored))replayed=1;
+        if(strlen(k)==65&&k[0]=='t')recent++;else legacy++;
+        json_object_object_add(fresh,k,json_object_new_int64(json_object_get_int64(v)));
+    }
+    if(replayed){json_object_put(fresh);return -2;}
+    if(timed?recent>=VR_REPLAY_TIMED_MAX:legacy>=VR_REPLAY_LEGACY_MAX){json_object_put(fresh);return -3;}
+    json_object_object_add(fresh,stored,json_object_new_int64(expiry));
+    const char *saved=json_object_to_json_string_ext(fresh,JSON_C_TO_STRING_PLAIN);
+    if(strlen(saved)>=VR_REPLAY_FILE_MAX||vr_atomic_write(path,saved,strlen(saved))){json_object_put(fresh);return -4;}
+    json_object_put(*records);*records=fresh;return 0;
+}
 
 static void hex(const unsigned char *b,size_t n,char *out)
 {

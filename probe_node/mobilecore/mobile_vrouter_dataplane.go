@@ -1622,7 +1622,7 @@ func applyMobileVRouteSecretAuthHeaders(headers http.Header, routeID string, sec
 	if cleanSourceNodeID == "" {
 		return errors.New("source_node_id is required")
 	}
-	nonce := randomHexToken(16)
+	nonce := fmt.Sprintf("ts1:%d:%s", time.Now().Unix(), randomHexToken(16))
 	headers.Set("Authorization", "Bearer "+nonce)
 	headers.Set(mobileVRouteCodexAuthModeHeader, "secret_hmac")
 	headers.Set(mobileVRouteCodexSourceNodeHeader, cleanSourceNodeID)

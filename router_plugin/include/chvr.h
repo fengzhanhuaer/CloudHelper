@@ -24,6 +24,15 @@
 #define VR_RELAY_PATH "/api/node/route/relay"
 #define VR_GATEWAY_CIDRS 32
 #define VR_GATEWAY_NODES 64
+#define VR_REPLAY_LEGACY_MAX 4096
+#define VR_REPLAY_TIMED_MAX 2048
+#define VR_REPLAY_FILE_MAX (512u*1024u)
+
+/* Timed nonces remain covered by the existing HMAC. Legacy nonces retain
+   their full ticket lifetime; never evict an unexpired replay record. */
+int vr_replay_validate(json_object *records);
+int vr_replay_record(json_object **records,const char *path,const char *key,
+    const char *nonce,time_t ticket_expiry,time_t now);
 
 typedef struct {
     int enabled;

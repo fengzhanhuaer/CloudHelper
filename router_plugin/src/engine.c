@@ -53,14 +53,12 @@ static int replay_load(vr_engine *e)
     char *slash=strrchr(e->replay_path,'/');if(!slash)return -1;
     if((size_t)(slash-e->replay_path)+sizeof("/auth-replay.json")>sizeof(e->replay_path))return -1;
     strcpy(slash,"/auth-replay.json");
-    char *buf=malloc(128*1024);size_t n;int rc=-1;if(!buf)return -1;
-    if(vr_read_file(e->replay_path,buf,128*1024,&n)) {
+    char *buf=malloc(VR_REPLAY_FILE_MAX);size_t n;int rc=-1;if(!buf)return -1;
+    if(vr_read_file(e->replay_path,buf,VR_REPLAY_FILE_MAX,&n)) {
         if(errno==ENOENT){e->nonces=json_object_new_object();rc=0;}
     } else {
         e->nonces=vr_json_parse(buf,n);
-        if(e->nonces&&json_object_is_type(e->nonces,json_type_object)&&json_object_object_length(e->nonces)<=1024) {
-            rc=0;json_object_object_foreach(e->nonces,k,v){if(strlen(k)!=64||!json_object_is_type(v,json_type_int))rc=-1;}
-        }
+        rc=vr_replay_validate(e->nonces);
     }
     free(buf);return rc;
 }

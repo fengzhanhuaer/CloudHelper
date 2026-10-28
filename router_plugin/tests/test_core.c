@@ -253,6 +253,51 @@ static void test_packet(void)
     }
 }
 
+static void test_replay_retention(void)
+{
+    char dir[]="/tmp/chvr-replay-XXXXXX",path[128],key[65],nonce[96];assert(mkdtemp(dir));
+    snprintf(path,sizeof(path),"%s/state.json",dir);json_object *records=json_object_new_object();
+    /* Migrate the actual full v96 store without discarding any old nonce. */
+    for(unsigned i=0;i<1024;i++){snprintf(key,sizeof(key),"%064x",i);json_object_object_add(records,key,json_object_new_int64(5000));}
+    assert(!vr_replay_validate(records));
+    snprintf(key,sizeof(key),"%064x",2000);snprintf(nonce,sizeof(nonce),"ts1:1000:%032x",42);
+    assert(!vr_replay_record(&records,path,key,nonce,5000,1000));
+    assert(json_object_object_length(records)==1025);
+    assert(vr_replay_record(&records,path,key,nonce,5000,1000)==-2);
+    char timed_key[66];snprintf(timed_key,sizeof(timed_key),"t%s",key);
+    assert(json_object_get_int64(vr_member(records,timed_key))==1300);
+    char *saved=malloc(VR_REPLAY_FILE_MAX);size_t length;
+    assert(saved&&!vr_read_file(path,saved,VR_REPLAY_FILE_MAX,&length));
+    json_object *loaded=vr_json_parse(saved,length);free(saved);assert(!vr_replay_validate(loaded));
+    json_object_put(records);records=loaded;
+    assert(vr_replay_record(&records,path,key,nonce,5000,1001)==-2);
+    assert(vr_replay_record(&records,path,key,"ts1:699:0123456789abcdef0123456789abcdef",5000,1000)==-1);
+    assert(vr_replay_record(&records,path,key,"ts1:1301:0123456789abcdef0123456789abcdef",5000,1000)==-1);
+    assert(vr_replay_record(&records,path,key,"ts1:1000:bad",5000,1000)==-1);
+    /* Expired timed entries are reclaimed; old records cannot be replayed. */
+    snprintf(nonce,sizeof(nonce),"ts1:1301:%032x",43);
+    assert(!vr_replay_record(&records,path,key,nonce,1350,1301));
+    assert(json_object_get_int64(vr_member(records,timed_key))==1350);
+    snprintf(key,sizeof(key),"%064x",0);
+    assert(vr_replay_record(&records,path,key,"legacy-nonce-0123456789",5000,1301)==-2);
+    unsigned before=(unsigned)json_object_object_length(records);
+    snprintf(key,sizeof(key),"%064x",3000);
+    assert(vr_replay_record(&records,"/nonexistent/chvr/state",key,nonce,5000,1301)==-4);
+    assert((unsigned)json_object_object_length(records)==before);
+    /* Full legacy state must not consume timed-nonce capacity. */
+    for(unsigned i=1024;i<VR_REPLAY_LEGACY_MAX;i++){snprintf(key,sizeof(key),"%064x",i);json_object_object_add(records,key,json_object_new_int64(5000));}
+    snprintf(key,sizeof(key),"%064x",99999);
+    assert(vr_replay_record(&records,path,key,"legacy-nonce-0123456789",5000,1301)==-3);
+    assert(!vr_replay_record(&records,path,key,nonce,5000,1301));
+    for(unsigned i=0;i<VR_REPLAY_TIMED_MAX-2;i++){snprintf(timed_key,sizeof(timed_key),"t%064x",i+10000);json_object_object_add(records,timed_key,json_object_new_int64(1400));}
+    assert(!vr_replay_validate(records));
+    snprintf(key,sizeof(key),"%064x",99998);
+    assert(vr_replay_record(&records,path,key,nonce,5000,1301)==-3);
+    assert(!vr_replay_record(&records,path,key,"ts1:1401:0123456789abcdef0123456789abcdef",5000,1401));
+    assert(!vr_replay_validate(records));json_object_put(records);unlink(path);rmdir(dir);
+    puts("PASS: full legacy replay migration, timed nonce bounds/restart/capacity and persistence failure");
+}
+
 int main(int argc,char **argv)
 {
     if(argc==4&&!strcmp(argv[1],"--validate-policy")) {
@@ -263,6 +308,6 @@ int main(int argc,char **argv)
         puts(rc?err:"PASS: captured controller policy accepted");return rc?1:0;
     }
     assert(argc==1);
-    test_wire();test_dns();test_config();test_policy();test_policy_publication();test_auth();test_websocket();test_packet();
+    test_wire();test_dns();test_config();test_policy();test_policy_publication();test_auth();test_replay_retention();test_websocket();test_packet();
     puts("PASS: VR/WebSocket framing, DNS bounds, configuration, policy, Ed25519/HMAC, TCP/UDP/ICMP NAT checksums");return 0;
 }

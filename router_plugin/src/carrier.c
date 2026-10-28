@@ -503,37 +503,37 @@ static int accept_auth(vr_link *l,const char *header,time_t *expiry)
         vr_ticket_verify(ticket,vr_string(l->rule,"user_public_key"),l->route,vr_string(l->rule,"from_node_id"),vr_string(l->rule,"to_node_id"),time(NULL),expiry))return -1;
     unsigned char digest[32];char key[65];SHA256((unsigned char *)text,strlen(text),digest);
     for(unsigned i=0;i<32;i++)snprintf(key+2*i,3,"%02x",digest[i]);
-    /* Keep a bounded, single security-state file, not a connection log. */
-    json_object *fresh=json_object_new_object();time_t now=time(NULL);int count=0,replayed=0;
-    json_object_object_foreach(e->nonces,k,v) {
-        if(json_object_get_int64(v)<=now)continue;
-        if(!strcmp(k,key))replayed=1;
-        json_object_object_add(fresh,k,json_object_new_int64(json_object_get_int64(v)));count++;
-    }
-    if(replayed || count>=1024){json_object_put(fresh);return -1;}
-    json_object_object_add(fresh,key,json_object_new_int64(*expiry));const char *saved=json_object_to_json_string_ext(fresh,JSON_C_TO_STRING_PLAIN);
-    if(vr_atomic_write(e->replay_path,saved,strlen(saved))){json_object_put(fresh);return -1;}
-    json_object_put(e->nonces);e->nonces=fresh;return 0;
+    int rc=vr_replay_record(&e->nonces,e->replay_path,key,auth+7,*expiry,time(NULL));
+    /* Distinguish replay-state failures from HMAC/ticket rejection. */
+    return rc?rc-10:0;
 }
 
 static vr_link *accept_blocking(vr_engine *e,int fd)
 {
     uint64_t deadline=vr_millis()+4000;SSL *ssl=vr_tls_accept(e->tls,fd,deadline);if(!ssl){close(fd);return NULL;}
     char *header=malloc(16384);char route[64],key[64],accept[29];vr_link *l=NULL;time_t expiry;
+    const char *reason="invalid WebSocket request";
     if(!header || vr_http_header(ssl,header,16384,deadline) ||
         !header_equals(header,"Upgrade","websocket") || !vr_http_token(header,"Connection","Upgrade") || !header_equals(header,"Sec-WebSocket-Version","13") ||
         !vr_http_field(header,"X-Codex-Route-Id",route,sizeof(route)) || !relay_request_line(header,route) || !vr_http_field(header,"Sec-WebSocket-Key",key,sizeof(key)) || vr_ws_accept_key(key,accept))goto fail;
     int slot=vr_carrier_slot(header);if(slot<0)goto fail;
     for(size_t i=0;i<e->link_count;i++)if(!strcmp(route,e->links[i].route)&&e->links[i].slot==slot){l=&e->links[i];break;}
-    if(!l)goto fail;
+    if(!l){reason="route or carrier slot not configured";goto fail;}
     pthread_mutex_lock(&e->mutex);int auth=accept_auth(l,header,&expiry);pthread_mutex_unlock(&e->mutex);
-    if(auth)goto fail;
+    if(auth){reason=auth==-13?"replay record capacity reached":auth==-12?"auth nonce replay rejected":
+        auth==-14?"replay state write failed":auth==-11?"auth nonce timestamp invalid":"HMAC or route ticket rejected";goto fail;}
+    reason="WebSocket response failed";
     char reply[256];int n=snprintf(reply,sizeof(reply),"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nX-Codex-VRouter-Multi-Carrier: 1\r\nSec-WebSocket-Accept: %s\r\n\r\n",accept);
     if(vr_tls_io(ssl,1,reply,(size_t)n,deadline))goto fail;
     vr_link *result=calloc(1,sizeof(*result));if(!result)goto fail;
     result->engine=e;result->rule=l->rule;result->slot=slot;result->multi_carrier=1;strcpy(result->route,l->route);strcpy(result->peer,l->peer);
     result->ssl=ssl;result->fd=fd;result->client=0;result->ws.expect_mask=1;result->last_rx=vr_millis();result->auth_expires=expiry;free(header);return result;
-fail:free(header);SSL_free(ssl);close(fd);return NULL;
+fail:;
+    pthread_mutex_lock(&e->mutex);uint64_t now=vr_millis();int report=!e->auth_reject_log||now-e->auth_reject_log>=10000;
+    if(report)e->auth_reject_log=now;
+    pthread_mutex_unlock(&e->mutex);
+    if(report){char event[240];snprintf(event,sizeof(event),"Incoming carrier rejected: peer %.32s: %s",l?l->peer:"unknown",reason);vr_service_log(e->service,"link",event);}
+    free(header);SSL_free(ssl);close(fd);return NULL;
 }
 
 static void dial_blocking(vr_link *l)
@@ -548,9 +548,10 @@ static void dial_blocking(vr_link *l)
     uint64_t deadline=vr_millis()+5000;int fd=-1;char event[240];
     SSL *ssl=vr_tls_connect_relay(host,port,pin,&e->config,addresses.wan_if,&fd,deadline);if(!ssl){strcpy(l->error,"DNS/TCP/TLS connection failed");
         snprintf(event,sizeof(event),"Peer %.32s %.120s:%d: %.64s",l->peer,host,port,l->error);vr_service_log(e->service,"link",event);return;}
-    char nonce[49],text[1024],mac[65],ws_key[25],accept[29],actual[64];unsigned char random[16];
+    char nonce[80],random_nonce[49],text[1024],mac[65],ws_key[25],accept[29],actual[64];unsigned char random[16];
     char *request=malloc(16384),*response=malloc(4096);
-    if(!request || !response || vr_random_hex(nonce,24) || RAND_bytes(random,16)!=1)goto fail;
+    if(!request || !response || vr_random_hex(random_nonce,24) || RAND_bytes(random,16)!=1)goto fail;
+    snprintf(nonce,sizeof(nonce),"ts1:%lld:%s",(long long)time(NULL),random_nonce);
     EVP_EncodeBlock((unsigned char *)ws_key,random,16);if(vr_ws_accept_key(ws_key,accept))goto fail;
     snprintf(text,sizeof(text),"%s\n%s\nGET\n%s\n%s\nto_next",l->route,nonce,VR_RELAY_PATH,e->config.node_id);
     if(vr_hmac(vr_string(r,"secret"),text,mac))goto fail;

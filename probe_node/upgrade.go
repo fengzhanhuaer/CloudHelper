@@ -580,6 +580,22 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 		knownTotal = state.Total
 	}
 	retries := 0
+	restarts := 0
+	allowParallel := true
+	restart := func() error {
+		if restarts >= 1 {
+			return errors.New("download object changed repeatedly; cannot safely reuse checkpoint")
+		}
+		if err := os.Truncate(partPath, 0); err != nil {
+			return err
+		}
+		// Old parallel files remain isolated by their validator-derived key and
+		// are never joined after this restart. The workspace cleanup owns them.
+		validator, knownTotal = "", -1
+		retries, restarts, allowParallel = 0, restarts+1, false
+		log.Printf("probe upgrade checkpoint content cannot be reused; restarting download automatically")
+		return nil
+	}
 	preparingUntil := time.Now().Add(30 * time.Minute)
 	for {
 		if err := ctx.Err(); err != nil {
@@ -601,6 +617,12 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 			}
 		})
 		if err != nil {
+			if errors.Is(err, errProbeUpgradeRestartDownload) {
+				if err := restart(); err != nil {
+					return err
+				}
+				continue
+			}
 			var status *probeUpgradeHTTPError
 			if errors.As(err, &status) && status.Preparing && time.Now().Before(preparingUntil) {
 				if e := waitProbeUpgradeRetry(ctx, 2*time.Second); e != nil {
@@ -625,8 +647,14 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 			return errors.New("downloaded asset is empty")
 		}
 		if knownTotal >= 0 && next < knownTotal {
-			if mode == "proxy" && knownTotal-next >= 2*probeUpgradeProxyChunkSize && validator != "" {
+			if allowParallel && mode == "proxy" && knownTotal-next >= 2*probeUpgradeProxyChunkSize && validator != "" {
 				if e := downloadProbeParallelRemainder(ctx, mode, assetURL, controllerBase, identity, partPath, next, knownTotal, validator, onProgress); e != nil {
+					if errors.Is(e, errProbeUpgradeRestartDownload) {
+						if err := restart(); err != nil {
+							return err
+						}
+						continue
+					}
 					return e
 				}
 				continue
@@ -711,7 +739,7 @@ func downloadProbeAssetChunk(ctx context.Context, mode, assetURL, controllerBase
 		return 0, 0, &probeUpgradeHTTPError{Status: resp.StatusCode, Detail: strings.TrimSpace(string(body)), Preparing: resp.StatusCode == 503 && resp.Header.Get("X-CloudHelper-Cache") == "preparing"}
 	}
 	if len(rangeEnd) > 0 && resp.StatusCode != http.StatusPartialContent {
-		return 0, 0, errors.New("parallel download requires byte ranges")
+		return 0, 0, errProbeUpgradeRestartDownload
 	}
 	total := resp.ContentLength
 	expectedChunk := resp.ContentLength
@@ -728,19 +756,13 @@ func downloadProbeAssetChunk(ctx context.Context, mode, assetURL, controllerBase
 	} else {
 		offset = 0
 	}
-	nextValidator := strings.TrimSpace(resp.Header.Get("ETag"))
-	if strings.HasPrefix(nextValidator, "W/") {
-		nextValidator = ""
-	}
-	if nextValidator == "" {
-		nextValidator = strings.TrimSpace(resp.Header.Get("Last-Modified"))
-	}
+	nextValidator := probeUpgradeResponseValidator(resp)
 	if offset > 0 && *validator != "" && nextValidator != *validator {
-		return 0, 0, errors.New("download object changed during resume")
+		if err := verifyProbeUpgradeCheckpoint(reqCtx, client, req, mode, identity, partPath, offset, total, nextValidator); err != nil {
+			return 0, 0, err
+		}
 	}
-	if nextValidator != "" {
-		*validator = nextValidator
-	}
+	*validator = nextValidator
 	flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND
 	if offset == 0 {
 		flags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC
