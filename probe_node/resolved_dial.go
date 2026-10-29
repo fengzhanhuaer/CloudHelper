@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/cloudhelper/probe_node/internal/controllerlink"
+	"github.com/cloudhelper/probe_node/internal/transportnet"
 	"net"
 	"net/http"
 	"net/url"
@@ -105,6 +106,10 @@ func newProbeResolvedConnectionDialContext(target probeResolvedURLDialTarget, ti
 				endpoints = []string{target.DialEndpoint}
 			}
 		}
+		endpoints = usableProbeDialEndpoints(endpoints, transportnet.Usable)
+		if len(endpoints) == 0 {
+			return nil, fmt.Errorf("no locally usable address for %s (IPv6 source or route unavailable)", addr)
+		}
 		// Limit parallel sockets for domains publishing many records.
 		if len(endpoints) > 4 {
 			endpoints = endpoints[:4]
@@ -169,6 +174,16 @@ func newProbeResolvedConnectionDialContext(target probeResolvedURLDialTarget, ti
 		}
 		return nil, errors.Join(failures...)
 	}
+}
+
+func usableProbeDialEndpoints(endpoints []string, usable func(string) bool) []string {
+	filtered := make([]string, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		if usable(endpoint) {
+			filtered = append(filtered, endpoint)
+		}
+	}
+	return filtered
 }
 
 // The managed bypass routes cover IPv4 only. IPv6 uses the system IPv6

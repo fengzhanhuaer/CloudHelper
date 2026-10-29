@@ -610,22 +610,40 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 			offset = st.Size()
 		}
 		started := time.Now()
-		next, total, err := downloadProbeAssetChunk(ctx, mode, assetURL, controllerBase, identity, partPath, offset, &validator, knownTotal, func(n, total int64) {
-			if onProgress != nil {
-				elapsed := time.Since(started).Seconds()
-				speed := int64(0)
-				if elapsed > 0 {
-					speed = int64(float64(n-offset) / elapsed)
-				}
-				onProgress(n, total, speed)
+		resumeParallel := allowParallel && mode == "proxy" && offset > 0 && knownTotal-offset >= probeUpgradeProxyParallelism && validator != ""
+		next, total := offset, knownTotal
+		var err error
+		if resumeParallel {
+			// Reuse the same prefix/range boundaries across upgrade retries.
+			// Each worker validates the object before appending new bytes.
+			err = downloadProbeParallelRemainder(ctx, mode, assetURL, controllerBase, identity, partPath, offset, knownTotal, validator, onProgress)
+			if err == nil {
+				next = knownTotal
 			}
-		})
+		} else {
+			next, total, err = downloadProbeAssetChunk(ctx, mode, assetURL, controllerBase, identity, partPath, offset, &validator, knownTotal, func(n, total int64) {
+				if onProgress != nil {
+					elapsed := time.Since(started).Seconds()
+					speed := int64(0)
+					if elapsed > 0 {
+						speed = int64(float64(n-offset) / elapsed)
+					}
+					onProgress(n, total, speed)
+				}
+			})
+		}
 		if err != nil {
 			if errors.Is(err, errProbeUpgradeRestartDownload) {
 				if err := restart(); err != nil {
 					return err
 				}
 				continue
+			}
+			if resumeParallel {
+				return err
+			} // Workers already exhausted their bounded retries.
+			if total > 0 {
+				knownTotal = total
 			}
 			var status *probeUpgradeHTTPError
 			if errors.As(err, &status) && status.Preparing && time.Now().Before(preparingUntil) {
@@ -705,8 +723,8 @@ func downloadProbeAssetChunk(ctx context.Context, mode, assetURL, controllerBase
 		}
 		req.Header.Set("X-CloudHelper-Download-Cache", "1")
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, offset+probeUpgradeProxyChunkSize-1))
-		if offset == 0 && knownTotal < 0 {
-			req.Header.Set("Range", fmt.Sprintf("bytes=0-%d", probeUpgradeProxyInitialSize-1))
+		if knownTotal < 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, offset+probeUpgradeProxyInitialSize-1))
 		}
 		if len(rangeEnd) > 0 {
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, rangeEnd[0]))
@@ -800,7 +818,7 @@ func downloadProbeAssetChunk(ctx context.Context, mode, assetURL, controllerBase
 	}
 	closeErr := f.Close()
 	if copyErr != nil {
-		return 0, 0, errors.Join(copyErr, closeErr)
+		return offset + written, total, errors.Join(copyErr, closeErr)
 	}
 	if closeErr != nil {
 		return 0, 0, closeErr

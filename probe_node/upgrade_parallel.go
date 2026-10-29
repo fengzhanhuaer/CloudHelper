@@ -12,9 +12,12 @@ import (
 	"time"
 )
 
-const probeUpgradeProxyParallelism int64 = 10
+const (
+	probeUpgradeProxyParallelism int64 = 10
+	probeUpgradeProxyPartSize    int64 = 1024 * 1024
+)
 
-// Ten workers download disjoint ranges. Each chunk has a separate file;
+// Up to ten workers download disjoint 1MiB ranges. Each chunk has a separate file;
 // only validated, complete chunks are appended to the contiguous resume file.
 func downloadProbeParallelRemainder(ctx context.Context, mode, assetURL, controller string, id nodeIdentity, part string, prefix, total int64, validator string, progress func(int64, int64, int64)) error {
 	dir := part + ".chunks"
@@ -30,16 +33,12 @@ func downloadProbeParallelRemainder(ctx context.Context, mode, assetURL, control
 	if prefix < 0 || total <= prefix {
 		return errors.New("invalid parallel download bounds")
 	}
-	workers := min(probeUpgradeProxyParallelism, total-prefix)
-	span, extra := (total-prefix)/workers, (total-prefix)%workers
-	for i := int64(0); i < workers; i++ {
-		start := prefix + span*i + min(i, extra)
-		end := start + span - 1
-		if i < extra {
-			end++
-		}
+	for start := prefix; start < total; {
+		end := start + min(probeUpgradeProxyPartSize, total-start) - 1
 		chunks = append(chunks, chunk{start, end, filepath.Join(dir, fmt.Sprintf("%x-%d-%d", objectKey[:8], start, end))})
+		start = end + 1
 	}
+	workers := min(probeUpgradeProxyParallelism, int64(len(chunks)))
 	workCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	jobs := make(chan int)
@@ -47,6 +46,13 @@ func downloadProbeParallelRemainder(ctx context.Context, mode, assetURL, control
 	var mu sync.Mutex
 	var first error
 	done := make([]int64, len(chunks))
+	var restored int64
+	for i, item := range chunks {
+		if info, err := os.Stat(item.path); err == nil && info.Size() <= item.end-item.start+1 {
+			done[i] = info.Size()
+			restored += info.Size()
+		}
+	}
 	started := time.Now()
 	for worker := int64(0); worker < workers; worker++ {
 		wg.Add(1)
@@ -56,7 +62,8 @@ func downloadProbeParallelRemainder(ctx context.Context, mode, assetURL, control
 				item := chunks[index]
 				localValidator := validator
 				var err error
-				for attempt := 0; attempt <= probeUpgradeDownloadMaxRetries; attempt++ {
+				attempt := 0
+				for {
 					size := int64(0)
 					if st, e := os.Stat(item.path); e == nil {
 						size = st.Size()
@@ -69,6 +76,7 @@ func downloadProbeParallelRemainder(ctx context.Context, mode, assetURL, control
 						err = errors.New("oversized partial chunk")
 						break
 					}
+					requestEnd := min(item.end, item.start+size+probeUpgradeProxyInitialSize-1)
 					_, _, err = downloadProbeAssetChunk(workCtx, mode, assetURL, controller, id, item.path, item.start+size, &localValidator, total, func(n, _ int64) {
 						mu.Lock()
 						done[index] = n - item.start
@@ -77,16 +85,18 @@ func downloadProbeParallelRemainder(ctx context.Context, mode, assetURL, control
 							sum += n
 						}
 						if progress != nil {
-							progress(sum, total, int64(float64(sum-prefix)/time.Since(started).Seconds()))
+							progress(sum, total, int64(float64(max(0, sum-prefix-restored))/time.Since(started).Seconds()))
 						}
 						mu.Unlock()
-					}, item.end)
+					}, requestEnd)
 					if err == nil {
+						attempt = 0
+						continue
+					}
+					if workCtx.Err() != nil || !isProbeTransientHTTPError(err) || attempt >= probeUpgradeDownloadMaxRetries {
 						break
 					}
-					if workCtx.Err() != nil || !isProbeTransientHTTPError(err) {
-						break
-					}
+					attempt++
 					if e := waitProbeUpgradeRetry(workCtx, probeUpgradeDownloadRetryDelay(attempt)); e != nil {
 						err = e
 						break

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -109,5 +110,76 @@ func TestDownloadPrefersPinnedIPAndFallsBackWithFreshAuth(t *testing.T) {
 				t.Fatal("incorrect endpoint priority", calls, want)
 			}
 		})
+	}
+}
+
+func TestUpgradeChallengeAndMetadataReuseTrustedIPs(t *testing.T) {
+	var mu sync.Mutex
+	var dials atomic.Int32
+	var allowPrimary atomic.Bool
+	var primaryCalls atomic.Int32
+	var paths []string
+	direct := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		if r.URL.Path == "/api/probe/auth/challenge" {
+			fmt.Fprint(w, `{"challenge":"fresh"}`)
+			return
+		}
+		if r.Header.Get("X-Probe-Signature") == "" {
+			t.Error("private auth missing")
+		}
+		fmt.Fprint(w, "data")
+	}))
+	defer direct.Close()
+	primary := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryCalls.Add(1)
+		if !allowPrimary.Load() {
+			t.Errorf("upgrade contacted primary despite valid IP cache: %s", r.URL.Path)
+		}
+		w.WriteHeader(503)
+	}))
+	defer primary.Close()
+	pin := sha256.Sum256(direct.Certificate().RawSubjectPublicKeyInfo)
+	m := &Manager{entries: map[string]*state{}, reuseDirect: true}
+	m.Remember(primary.URL, "7", "secret")
+	s := m.entry(primary.URL)
+	s.data = Discovery{1, time.Now().Add(7 * 24 * time.Hour).Unix(), []Endpoint{{"192.0.2.1", 15030, hex.EncodeToString(pin[:])}}}
+	tr := m.Wrap(primary.URL, primary.Client().Transport.(*http.Transport).Clone(), func(ctx context.Context, n, a string) (net.Conn, error) {
+		dials.Add(1)
+		return (&net.Dialer{}).DialContext(ctx, n, direct.Listener.Addr().String())
+	})
+	defer tr.CloseIdleConnections()
+	for _, path := range []string{"/api/probe/auth/challenge", "/api/probe/proxy/github/latest", "/api/probe/auth/challenge"} {
+		req, _ := http.NewRequestWithContext(WithUpgradePriority(t.Context()), "GET", primary.URL+path, nil)
+		if path != "/api/probe/auth/challenge" {
+			Sign(req, "7", "secret", "fresh")
+		}
+		resp, err := tr.RoundTrip(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	mu.Lock()
+	if len(paths) != 3 || !s.lastDiscovery.IsZero() || dials.Load() != 1 {
+		t.Fatal("cached IP/TLS connection not reused or requests duplicated", paths, dials.Load())
+	}
+	mu.Unlock()
+	// One slow worker can cool the IP while others are still healthy. If the
+	// CDN also fails, the cached IP must remain available as the final fallback.
+	allowPrimary.Store(true)
+	m.endpointFeedback(t.Context(), primary.URL, s.data.Endpoints[0], false)
+	req, _ := http.NewRequestWithContext(WithUpgradePriority(t.Context()), "GET", primary.URL+"/api/probe/auth/challenge", nil)
+	resp, err := tr.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || primaryCalls.Load() != 1 || dials.Load() != 1 {
+		t.Fatal("cooldown stranded upgrade on failed primary", resp.StatusCode, primaryCalls.Load(), dials.Load())
 	}
 }

@@ -40,6 +40,17 @@ func TestProbeTransportDNSDualStackAndFamilyFailure(t *testing.T) {
 	if err != nil || len(ips) != 1 || ips[0] != "::1" {
 		t.Fatalf("literal %v %v", ips, err)
 	}
+	probeTransportLookupIPv6 = func(context.Context, string) ([]string, error) {
+		t.Error("AAAA queried without local IPv6 support")
+		return []string{"2001:db8::1"}, nil
+	}
+	ips, err = resolveProbeTransportIPsWithLookup(t.Context(), "transport.example", func(string) ([]string, error) {
+		time.Sleep(250 * time.Millisecond) // Unusable AAAA must not win the DNS grace window.
+		return []string{"192.0.2.1"}, nil
+	}, false)
+	if err != nil || strings.Join(ips, ",") != "192.0.2.1" {
+		t.Fatalf("unusable AAAA displaced delayed IPv4: %v %v", ips, err)
+	}
 }
 
 func TestProbeTransportIPv6AuthenticatedCarrierSlots(t *testing.T) {

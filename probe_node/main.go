@@ -1021,6 +1021,7 @@ func fetchProbeAuthChallenge(targetURL string, nodeID string) (string, string, e
 		return "", "", fmt.Errorf("unsupported probe auth target scheme: %s", target.Scheme)
 	}
 	requestPath := target.EscapedPath()
+	upgradePriority := controllerlink.IsUpgradePath(target.Path)
 	if requestPath == "" {
 		requestPath = "/"
 	}
@@ -1041,6 +1042,9 @@ func fetchProbeAuthChallenge(targetURL string, nodeID string) (string, string, e
 		return "", "", err
 	}
 	req.Header.Set("Accept", "application/json")
+	if upgradePriority {
+		req = req.WithContext(controllerlink.WithUpgradePriority(req.Context()))
+	}
 	client, closeClient, err := newProbeResolvedHTTPClientForURL(target.String(), 10*time.Second)
 	if err != nil {
 		return "", "", err

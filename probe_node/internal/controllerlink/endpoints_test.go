@@ -21,6 +21,8 @@ import (
 func TestEndpointCooldownHTTPWebSocketAndIPv6Recovery(t *testing.T) {
 	var challenges, sockets, v4Dials, v6Dials atomic.Int32
 	var ipv6Recovered atomic.Bool
+	var ipv6Supported atomic.Bool
+	ipv6Supported.Store(true)
 	direct := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "challenge") {
 			fmt.Fprintf(w, `{"challenge":"nonce-%d"}`, challenges.Add(1))
@@ -44,7 +46,7 @@ func TestEndpointCooldownHTTPWebSocketAndIPv6Recovery(t *testing.T) {
 	hash := sha256.Sum256(direct.Certificate().RawSubjectPublicKeyInfo)
 	v4 := Endpoint{"192.0.2.1", 15030, hex.EncodeToString(hash[:])}
 	v6 := Endpoint{"2001:db8::1", 15030, v4.Pin}
-	m := &Manager{entries: map[string]*state{}}
+	m := &Manager{entries: map[string]*state{}, endpointUsable: func(ip string) bool { return net.ParseIP(ip).To4() != nil || ipv6Supported.Load() }}
 	m.Remember(primary.URL, "7", "secret")
 	s := m.entry(primary.URL)
 	s.data = Discovery{1, time.Now().Add(time.Hour).Unix(), []Endpoint{v6, v4}}
@@ -124,13 +126,30 @@ func TestEndpointCooldownHTTPWebSocketAndIPv6Recovery(t *testing.T) {
 	if sockets.Load() != 2 || v6Dials.Load() != 4 {
 		t.Fatal("IPv6 did not recover for authenticated WS and HTTP", sockets.Load(), v6Dials.Load())
 	}
+	// Network capability changes must override a previously successful IPv6
+	// endpoint, without deleting it from the authenticated discovery cache.
+	ipv6Supported.Store(false)
+	m.endpointFeedback(t.Context(), primary.URL, v4, true)
+	m.Feedback(primary.URL, false, 0, false)
+	get("direct")
+	connect()
+	if v6Dials.Load() != 4 || len(s.data.Endpoints) != 2 {
+		t.Fatal("unusable IPv6 dialed or trusted address forgotten")
+	}
+	ipv6Supported.Store(true)
+	m.endpointFeedback(t.Context(), primary.URL, v4, false)
+	m.Feedback(primary.URL, false, 0, false)
+	get("direct")
+	if v6Dials.Load() != 5 {
+		t.Fatal("restored IPv6 capability not picked up", v6Dials.Load())
+	}
 }
 
 func TestEndpointCooldownBoundedIsolatedAndCancellation(t *testing.T) {
 	const origin = "https://controller.test"
 	v4 := Endpoint{"192.0.2.1", 15030, strings.Repeat("a", 64)}
 	v6 := Endpoint{"2001:db8::1", 15030, v4.Pin}
-	m := &Manager{entries: map[string]*state{}}
+	m := &Manager{entries: map[string]*state{}, endpointUsable: func(string) bool { return true }}
 	s := m.entry(origin)
 	s.data = Discovery{1, time.Now().Add(time.Hour).Unix(), []Endpoint{v6, v4}}
 	d, _ := m.snapshot(origin)

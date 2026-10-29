@@ -73,7 +73,7 @@ func TestProbeUpgradeWeakNetworkProxyChunks(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(output)
-	if err != nil || !bytes.Equal(got, payload) || requests.Load() != 12 {
+	if err != nil || !bytes.Equal(got, payload) || requests.Load() != 66 {
 		t.Fatalf("requests=%d size=%d err=%v", requests.Load(), len(got), err)
 	}
 }

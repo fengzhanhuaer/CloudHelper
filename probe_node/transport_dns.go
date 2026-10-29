@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/cloudhelper/probe_node/internal/transportnet"
 	"net"
 	"strings"
 	"time"
@@ -43,10 +44,10 @@ func lookupProbeTransportIPv6(ctx context.Context, host string) ([]string, error
 }
 
 func resolveProbeTransportIPs(ctx context.Context, host string) ([]string, error) {
-	return resolveProbeTransportIPsWithLookup(ctx, host, resolveProbeLocalDNSIPv4s)
+	return resolveProbeTransportIPsWithLookup(ctx, host, resolveProbeLocalDNSIPv4s, transportnet.HasIPv6Source())
 }
 
-func resolveProbeTransportIPsWithLookup(ctx context.Context, host string, lookup4 func(string) ([]string, error)) ([]string, error) {
+func resolveProbeTransportIPsWithLookup(ctx context.Context, host string, lookup4 func(string) ([]string, error), ipv6Allowed ...bool) ([]string, error) {
 	host = strings.TrimSpace(strings.Trim(host, "[]"))
 	if ip := net.ParseIP(host); ip != nil {
 		return []string{ip.String()}, nil
@@ -73,7 +74,11 @@ func resolveProbeTransportIPsWithLookup(ctx context.Context, host string, lookup
 		}()
 	}
 	start(func() ([]string, error) { return lookup4(host) })
-	start(func() ([]string, error) { return lookup6(ctx, host) })
+	queries := 1
+	if len(ipv6Allowed) == 0 || ipv6Allowed[0] {
+		start(func() ([]string, error) { return lookup6(ctx, host) })
+		queries++
+	}
 	var v4, v6 []string
 	var failures []error
 	var grace <-chan time.Time
@@ -83,7 +88,7 @@ func resolveProbeTransportIPsWithLookup(ctx context.Context, host string, lookup
 			timer.Stop()
 		}
 	}()
-	for remaining := 2; remaining > 0; remaining-- {
+	for remaining := queries; remaining > 0; remaining-- {
 		select {
 		case result := <-results:
 			if result.err != nil {

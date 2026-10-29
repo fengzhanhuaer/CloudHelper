@@ -445,7 +445,7 @@ func TestDownloadProbeAssetStreamsThroughController(t *testing.T) {
 	if gotPath != "/api/probe/proxy/download" {
 		t.Fatalf("proxy path=%q", gotPath)
 	}
-	if gotRange != "bytes=6-4194309" {
+	if gotRange != "bytes=6-65541" {
 		t.Fatalf("range=%q", gotRange)
 	}
 	if gotNodeID != "9" {

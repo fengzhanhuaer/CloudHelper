@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cloudhelper/probe_node/internal/transportnet"
 	"github.com/gorilla/websocket"
 )
 
@@ -55,11 +56,14 @@ type state struct {
 	node, secret                    string
 }
 type Manager struct {
-	mu      sync.Mutex
-	entries map[string]*state
+	mu             sync.Mutex
+	entries        map[string]*state
+	endpointUsable func(string) bool
+	reuseDirect    bool
+	directPools    map[string]map[Endpoint]*http.Transport
 }
 
-var Default = &Manager{entries: map[string]*state{}}
+var Default = &Manager{entries: map[string]*state{}, reuseDirect: true}
 
 type DialFunc func(context.Context, string, string) (net.Conn, error)
 
@@ -143,7 +147,7 @@ func (m *Manager) load(origin string, s *state) {
 		s.data = c.Discovery
 	}
 }
-func (m *Manager) snapshot(raw string) (Discovery, bool) {
+func (m *Manager) snapshot(raw string, recoverCooling ...bool) (Discovery, bool) {
 	origin := Origin(raw)
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -154,6 +158,24 @@ func (m *Manager) snapshot(raw string) (Discovery, bool) {
 	}
 	data := s.data
 	data.Endpoints = availableEndpoints(s, time.Now())
+	usable := m.endpointUsable
+	if usable == nil {
+		usable = transportnet.Usable
+	}
+	filtered := data.Endpoints[:0]
+	for _, endpoint := range data.Endpoints {
+		if usable(endpoint.IP) {
+			filtered = append(filtered, endpoint)
+		}
+	}
+	data.Endpoints = filtered
+	if len(filtered) == 0 && len(recoverCooling) > 0 && recoverCooling[0] {
+		for _, endpoint := range s.data.Endpoints {
+			if usable(endpoint.IP) {
+				data.Endpoints = append(data.Endpoints, endpoint)
+			}
+		}
+	}
 	return data, time.Now().Before(s.preferUntil)
 }
 func (m *Manager) Feedback(raw string, direct bool, elapsed time.Duration, ok bool) {
@@ -261,6 +283,13 @@ func (m *Manager) prepare(ctx context.Context, raw string, primary http.RoundTri
 	m.mu.Lock()
 	s := m.entry(origin)
 	m.load(origin, s)
+	// A trusted, unexpired address set survives restarts. Do not discover the
+	// same stable IPs again for each upgrade/chunk; refresh near expiry or when
+	// direct connections repeatedly fail (for example after an origin move).
+	if valid(s.data) && s.data.ExpiresAt > time.Now().Add(24*time.Hour).Unix() && s.directFailures < 2 {
+		m.mu.Unlock()
+		return
+	}
 	if s.refreshing || time.Since(s.lastDiscovery) < 30*time.Second || s.node == "" {
 		m.mu.Unlock()
 		return
@@ -327,18 +356,53 @@ func (m *Manager) Wrap(raw string, primary *http.Transport, dial DialFunc) *Tran
 }
 func (t *Transport) CloseIdleConnections() { t.Primary.CloseIdleConnections() }
 func (t *Transport) direct(e Endpoint) *http.Transport {
+	if !t.Manager.reuseDirect {
+		return t.newDirect(e, false)
+	}
+	t.Manager.mu.Lock()
+	defer t.Manager.mu.Unlock()
+	if t.Manager.directPools == nil {
+		t.Manager.directPools = make(map[string]map[Endpoint]*http.Transport)
+	}
+	pool := t.Manager.directPools[t.origin]
+	if pool == nil {
+		pool = make(map[Endpoint]*http.Transport)
+		t.Manager.directPools[t.origin] = pool
+	}
+	// Pins and addresses can rotate. Never keep a transport for a removed pin.
+	for endpoint, transport := range pool {
+		found := false
+		for _, current := range t.Manager.entry(t.origin).data.Endpoints {
+			found = found || current == endpoint
+		}
+		if !found {
+			transport.CloseIdleConnections()
+			delete(pool, endpoint)
+		}
+	}
+	if transport := pool[e]; transport != nil {
+		return transport
+	}
+	transport := t.newDirect(e, true)
+	pool[e] = transport
+	return transport
+}
+
+func (t *Transport) newDirect(e Endpoint, keepAlive bool) *http.Transport {
 	dial := t.Dial
 	if dial == nil {
 		dial = (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext
 	}
-	return &http.Transport{Proxy: nil, DisableKeepAlives: true, DialTLSContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+	tlsConfig := PinTLS(e.Pin)
+	tlsConfig.ClientSessionCache = tls.NewLRUClientSessionCache(16)
+	return &http.Transport{Proxy: nil, DisableKeepAlives: !keepAlive, MaxIdleConnsPerHost: 10, MaxConnsPerHost: 12, IdleConnTimeout: 60 * time.Second, DialTLSContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 		conn, err := dial(ctx, "tcp", net.JoinHostPort(e.IP, fmt.Sprint(e.Port)))
 		if err != nil {
 			return nil, err
 		}
-		secured := tls.Client(conn, PinTLS(e.Pin))
+		secured := tls.Client(conn, tlsConfig)
 		if err = secured.HandshakeContext(ctx); err != nil {
 			conn.Close()
 			return nil, err
@@ -405,6 +469,15 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	t.Manager.prepare(req.Context(), req.URL.String(), t.Primary)
 	data, prefer := t.Manager.snapshot(req.URL.String())
+	upgradePriority, _ := req.Context().Value(upgradePriorityKey{}).(bool)
+	upgradePriority = (req.Method == "GET" || req.Method == "HEAD") && (IsUpgradePath(req.URL.Path) || upgradePriority)
+	recovering := false
+	if len(data.Endpoints) == 0 && upgradePriority {
+		// A single slow chunk must not strand every concurrent worker on a
+		// broken CDN. After trying the primary, allow the cached IP to recover.
+		data, _ = t.Manager.snapshot(req.URL.String(), true)
+		recovering = true
+	}
 	if len(data.Endpoints) == 0 {
 		return t.Primary.RoundTrip(req)
 	}
@@ -417,7 +490,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	var err error
 	// Upgrade payloads should not linger on a responsive but slow CDN path.
 	// Keep normal control traffic on the existing stability-based policy.
-	firstDirect := prefer || ((req.Method == "GET" || req.Method == "HEAD") && req.URL.Path == "/api/probe/proxy/download")
+	firstDirect := (prefer || upgradePriority) && !recovering
 	rounds := len(data.Endpoints) + 1
 	for i := 0; i < rounds; i++ {
 		direct := firstDirect || i > 0
