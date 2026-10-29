@@ -1,6 +1,6 @@
 # 任务：升级代理下载优先直连主控 IP 与十路并行
 
-- 状态：进行中；日期：2026-10-29 Asia/Singapore。
+- 状态：已完成；日期：2026-10-29 Asia/Singapore。
 - 用户最新指令：程序升级代理下载 IP 直连优先；Probe Node 分十份并行，速率小于 10k 可断开；路由器插件体积小，保持轻量。
 - 启用方式：明确长任务条件，涉及 Go 共享承载、Probe 下载及 C 插件认证、验证与正式发布。
 
@@ -30,8 +30,8 @@ UNIT-003：controller_link.c/controller.c/upgrade.c 及头文件，下载目标�
 
 TASK-001 调查与准备：已完成。HEAD 7c98e2878；仅旧 doc/tasks/2026-10-28-upgrade-source-resume.md 有用户修改，不纳入提交。
 TASK-002 实现与定向验证：已完成；范围 UNIT001/002/003。
-TASK-003 全套验证与正式发布：进行中。
-下一步唯一动作：核对最终构建和差异，提交明确路径并正式发布。
+TASK-003 全套验证与正式发布：已完成。
+下一步唯一动作：无。
 
 ## 五、测试与验证
 
@@ -39,15 +39,15 @@ TEST-001 已通过：controllerlink 真实 TLS fixture 验证健康域名仍先 
 TEST-002 已通过：十路同时等待栅栏、一次性 nonce/HMAC、完整文件/不重叠范围、单分片中断后原位续传；旧跨 ETag 内容验证/串行降级仍通过。
 TEST-003 已通过：持续慢、快后停滞取消并返回可重试错误；健康持续流与快速完成小文件不误断。观察窗参数缩短到 30/40ms，未新增十秒级等待测试。
 TEST-004 已通过：WSL 原生全程序编译、test-controller-link 真实 TLS 下载优先和一次性认证断点回退、错误 pin、缓存恢复、域名隔离，test-upgrade 和 test-core 单元通过。make 使用新宿主 OpenSSL/curl 的既有弃用告警例外，其余 -Werror。完整升级安装夹具只允许一次性容器，交由正式 CI。
-TEST-005：`go -C probe_node test -p 1 ./... -count=1` 全通过（main 46.895s、controllerlink 4.970s、mobilecore 1.680s）；最后范围计算和中断夹具增强后定向 `. ./internal/controllerlink` 全通过（7.237s/0.743s）。Probe vet 使用既有 unsafeptr=false/copylocks=false 例外通过。主控全套 test/vet 通过；Linux-router amd64/arm64 交叉构建通过。正式 CI/附件待完成。
+TEST-005 已通过：`go -C probe_node test -p 1 ./... -count=1` 全通过（main 46.895s、controllerlink 4.970s、mobilecore 1.680s）；最后范围计算和中断夹具增强后定向 `. ./internal/controllerlink` 全通过（7.237s/0.743s）。Probe vet 使用既有 unsafeptr=false/copylocks=false 例外通过。主控全套 test/vet 通过；Linux-router amd64/arm64 交叉构建通过。正式 CI 40827413507 全部 9 任务成功，10 附件与当前工作流一致，无 BE86U/Docker/软路由 arm64 包。正式插件包与内外 manifest、全部 payload 字节数/hash、页面源码比对均通过。
 未执行：生产公网速度对比与设备在线升级；发布不等于已部署或实测提速。
 
 ## 六、端到端追踪
 
-REQ001 → UNIT001/003 → TASK002 → IF001/002 → TEST001/004。
-REQ002 → UNIT002 → TASK002 → TEST002/005。
-REQ003 → UNIT002 → TASK002 → TEST003/005。
-REQ004 → TASK003 → TEST005。
+REQ001 → UNIT001/003 → TASK002 → IF001/002 → TEST001/004，已完成。
+REQ002 → UNIT002 → TASK002 → TEST002/005，已完成。
+REQ003 → UNIT002 → TASK002 → TEST003/005，已完成。
+REQ004 → TASK003 → TEST005，已完成。
 
 ## 七、决策与冲突记录
 
@@ -75,7 +75,7 @@ Go shared transport 覆盖 Probe 和 mobilecore；C 使用独立实现。原 Pro
 ## 十二、质量门禁
 
 准备门禁：通过（范围、验收、架构、单元、测试、已有改动和回退已记录）。
-完成门禁：不通过（实现、验证与发布待完成）。
+完成门禁：通过（REQ001–004 已实现并经定向、全套、本地构建、正式 CI/附件核对；无范围漂移或遗留失败，原有无关修改保留）。
 
 ## 十三、检查点
 
@@ -85,8 +85,14 @@ Go shared transport 覆盖 Probe 和 mobilecore；C 使用独立实现。原 Pro
 
 本地验证门禁通过。完成门禁仅待正式 CI 和资产核对；待提交 19 个明确任务路径，旧断点账本修改不纳入。
 
+正式提交 c688476c87dd2cef2d57003c37714bebcac51702 已推送 origin/mapledev。19 个任务路径与预期一致，旧断点账本保持未暂存。匹配该 SHA 的 release.yml 运行 https://github.com/fengzhanhuaer/CloudHelper/actions/runs/40827413507 已排队；不得重复触发发布，待 workflow 自动版本和产物完成。
+
+最终发布：v0.4.102，自动版本提交 247b06385，9 任务成功、10 正式附件。https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.102 。下载正式附件首次遇到 release-assets 主机连接错误；使用 IPv4 curl 成功，包 SHA256=d0c633d7772f0303f9fa04f7e9bd203cc43030a1e5eaecda68ed291fb3408c42，127593 字节；C 程序 SHA256=15580e9e1216af4f51298cf97c3f1fef1d0848cd3f07d9a900b3b59c654014fa，与包 manifest 一致。临时核验产物位于系统 Temp/ch-upgrade-ip-priority-102，未写入路由器 JFFS。
+
+用户询问服务器侧：已说明主控源码无改动，现有认证、IP:15030、缓存及 Range 能服务多路并发；缓存 8 槽为不同资产数量，并非单文件并发上限。本轮主控仅随统一 Release 重新构建，未对生产在线升级。客户端升级到新版后采用新策略，不声称生产吞吐已提高。
+
 发布预检：内置 preflight.ps1 仍要求已退役的 Docker 和 linux-router arm64，报告 missing markers；实时 release.yml、TestReleaseWorkflowDefinesLinuxRouterArtifacts 和已发布 v0.4.101 均明确禁止恢复它们。采用当前经过验证的 mapledev 自动版本/tag、9 任务/10 附件契约，未修改工作流或版本号。分支/远端/无进行中 Git 操作、GitHub 身份与 Actions/Release 读取均已独立核对；上游未领先。此为旧脚本契约滞后，不以改回旧产物绕过。
 
 ## 十四、完成摘要
 
-待完成。
+交付 v0.4.102：Probe/Android 共享下载承载优先可信 IP；Probe 64KiB 首块后十路分片、每路连续 10 秒低于 10KiB/s 主动取消并续传；C 插件仅 IP 优先/失败回退，不新增并发或测速机制。认证、pin、对象/Range 校验保留。全部验收及正式资产核对通过。生产设备在线升级和现场速度对比未执行，需另行操作；无需服务端协议修改。回滚按第九节，下一步唯一动作无。
