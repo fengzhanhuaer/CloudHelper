@@ -137,3 +137,20 @@ TASK004已完成；TASK005进行中（最终全套/正式发布）；TASK006待�
 
 最终本地门禁通过：Probe全套main44.156s/controllerlink4.979s/mobilecore1.868s，全部内部包通过，vet按原有unsafeptr/copylocks例外通过。一次既有IPv6/QUIC回环用例2秒超时，独立连续3次通过（4.143s）及最终全套通过；未放宽/删除该用例。1MiB逻辑片+64KiB实际请求的全套弱网请求数断言同步为66，不是删除验证。此前“15路径”纠正为16个明确任务路径（含新增upgrade_priority及transportnet两文件）。最终源码、真实私有认证续传及完整正式资产hash核对均通过。
 TASK005继续正式发布：待提交16路径，commit message=fix: make probe upgrades resume small chunks over usable IPs。旧source-resume账本仍为无关未暂存改动。准备门禁通过，代码/下载验证通过；整体完成门禁仍待正式CI与本机产品在线升级，未完成生产替换。
+
+正式实现提交 b0354a74c600616308af0d6bd863cef94a2faed0 已推送 origin/mapledev，16路径；匹配该SHA的唯一发布运行 https://github.com/fengzhanhuaer/CloudHelper/actions/runs/40882307758 进行中，Windows构建已成功。不得再次触发发布。工作区旧账本未暂存。TASK005进行中，TASK006待开始。下一步唯一动作：等待该运行正式Release完成，再使用本机产品在线升级API安装。
+
+正式Release v0.4.104已完成：CI40882307758全部9任务success、10附件，自动版本提交ce5130412，正式网址https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.104。Windows资产23505408字节，GitHub SHA256=a6607668353c9dc4495f9e07944bd8eb463aecf816016ba22378e547665d34d2；无BE86U/Docker/软路由arm64产物。TASK005已完成；TASK006进行中。本机检查API显示current=v102/latest=v104，随后正式POST /local/api/system/upgrade {mode:proxy}返回accepted:true；不手工覆盖程序。下一步唯一动作：轮询本机升级与版本、文件hash及连接验收。
+
+本机生产升级验收进展：v102的proxy模式在fetch_release阶段仍因旧策略超时；随后通过产品POST升级API mode=direct获取v104并下载（同一正式包），21:41已达15.1MiB/67%，未改缓存文件、系统路由、身份或程序。该次用于让旧版装上修复版，不能将旧下载器速度算作新版本性能。新源码代理认证64KiB续传已独立完成整包hash验证。保持TASK006进行中，等待内置校验/替换/重启再验版本。
+
+现场证据：旧版直连下载在15MiB后8次重试耗尽，转主控代理后仍低速。新v104下载器使用真实节点9私有认证、缓存IPv4、1MiB逻辑片及64KiB子请求完成v104正式包冷下载，23505408字节，208.7417秒（约110KiB/s整程均值），SHA256与GitHub正式附件完全一致；日志Temp/ch-upgrade-live-v104-formal.log。没有把旧版下载失败当作新算法验收。
+DEC006 本次旧版自升级的缓存辅助：通过产品restart API停止旧下载（PID9184→4736，status idle）；将经正式哈希/大小/asset_hash再次核对的发布包及下载器生成complete receipt放入产品自己的.cloudhelper-upgrade/d842...缓存，旧.part仍保留。仅写缓存，生产probe_node.exe哈希仍旧9d95...；没有手工替换或执行生产程序。随后通过既有产品POST升级API mode=direct触发兼容校验、候选运行验证、安装和重启。这是处理旧下载器自举的辅助步骤，必须在最终报告说明，不能声称未辅助的旧版单击升级已正常。新的代理下载本身已做真实认证整包下载，不是模拟网络。
+TASK006继续进行中，下一步唯一动作：确认产品自行安装后BuildVersion=v104、程序哈希匹配正式包、节点身份与主控/承载恢复。
+
+本机最终验收完成（2026-10-29 21:58 +08:00）：产品升级器已自行替换并重启，运行PID18656，GET /local/api/auth/session 返回 version=v0.4.104；安装路径 C:/Tools/probe_node/probe_node.exe SHA256=a6607668353c9dc4495f9e07944bd8eb463aecf816016ba22378e547665d34d2，与正式Windows附件完全一致。节点仍为9、虚拟IP198.18.0.7；身份文件updated_at在每次启动由resolveNodeIdentity正常更新，故整文件hash变化不能作为身份变化证据，没有手工改身份/密钥。
+主控21:51:02已重连；21:58复核carrier_count=8、frame_link_count=2、收发队列0、recent_drop_count/recent_error_count均0，规则数2，和升级前基线一致。原本“虚拟路由未开启”的warning保留，未为验收改变开关。新版启动后本次筛选日志未出现新的tcp6/IPv6不可达错误。
+真实更新检查：direct及proxy均返回current/latest=v0.4.104、upgradeable=false、正式Windows资产名；产品proxy升级任务也在21:56:40成功取得10资产元数据并返回“当前已是最新版本”。期间proxy检查曾20秒超时，随后同一运行进程重试成功；记录为现场网络波动，不能声称所有请求都无超时。整包新算法冷下载和续传已由前述真实认证实测验证；本次旧版到新版安装使用DEC006缓存辅助，不将其报告为未辅助的旧版单击升级通过。
+TASK004/005/006已完成，REQ005/006验收通过。最终布局：1MiB固定逻辑片队列、最多10路、每路最多64KiB HTTP Range子请求、按实际落盘字节续传、已完成片跨调用复用。完整性/私有认证/SPKI/nonce保留，未扩展轻量C插件。
+准备与完成门禁：通过。遗留限制：公网弱网仍可能触发重试，主控通道元数据检查受既有20秒请求预算限制；不将传输重试支持等同于网络永久无超时。本次不承诺不同ETag来源切换时全部缓存均能无额外校验复用；已观察旧版来源切换丢弃前缀，未把旧版行为隐藏为修复通过。
+下一步唯一动作：无。正式发布和本机安装均已完成；仅提交本账本的验收记录（skip ci/skip release），保留无关doc/tasks/2026-10-28-upgrade-source-resume.md未暂存修改，不产生额外版本。
