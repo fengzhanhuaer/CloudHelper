@@ -93,10 +93,10 @@ TEST基线：首次Go全套仅既有 Windows TCP/UDP测试端口保留失败（T
 
 ## 后续调整：Probe 独立规则出口标签（2026-10-29）
 
-- 状态：进行中；用户最新要求：Probe 出口规则不展示匹配条目，仅选择出口/恢复默认，单独一个 tab。
+- 状态：已完成；用户最新要求：Probe 出口规则不展示匹配条目，仅选择出口/恢复默认，单独一个 tab。
 - REQ-008：保留每条规则独立出口选择，隐藏域名/CIDR 等 entries，独立“规则出口”标签；保存本机与恢复主控默认可用，其他标签和设置保留。
 - 架构/UNIT-008：仅调整 local_pages/virtual_router.html 的面板归属、tab/hash 切换和渲染，不更改覆盖 API、匹配或出口运行逻辑。IF-005：#routeExits 可直达并刷新保持。
-- TASK-006：界面调整及浏览器验证，已完成；TASK-007：正式发布与附件核对，进行中。下一步唯一动作：正式提交并等待 CI。
+- TASK-006：界面调整及浏览器验证，已完成；TASK-007：正式发布与附件核对，已完成。下一步唯一动作：无。
 - TEST-006：Browser plugin not available，复用现有 Playwright；1366x1000 与 390x844 验证独立 tab、隐藏条目、原标签保留、保存真实 payload、恢复默认 payload、hash 刷新和零页面错误。现有本地 API 定向测试及正式 CI 复核。
 - 追踪：REQ008→UNIT008/IF005→TASK006/007→TEST006。DEC-005：沿用此前用户按规则独立选择，不改成一个全局出口；本次限 Probe（含复用该页面的 Linux-router），安卓/插件未要求调整。
 - 工作区：仅旧断点账本有未提交修改，保留。回滚：还原页面后通过正式在线升级，不迁移配置。准备门禁通过，完成门禁待验证与发布。
@@ -104,3 +104,7 @@ TEST基线：首次Go全套仅既有 Windows TCP/UDP测试端口保留失败（T
 - TEST006 已通过：原始完整 HTML + 模拟认证本地 API，Playwright/Chromium 桌面 1366x1000 与手机 390x844；页面身份、非空、无错误覆盖层、零 pageerror、全部旧 tab、隐藏匹配条目、POST {overrides:{domain:'3'}} / {reset:true}、刷新 hash 和已选出口保持均通过。截图 Temp/ch-probe-exits-tab-{desktop,mobile}.png，已目视检查手机截图。无生产页面部署/实机验证。
 - 发布契约：live release.yml 与刚完成的 v0.4.102 一致；preflight 旧脚本仍要求已退役 Docker/router arm64，沿用已记录 DEC004 的当前契约核验，不恢复旧产物。分支/远端/GitHub API、上游未领先、diff --check 均确认。
 - 最终本地验证：`go -C probe_node test -p 1 ./... -count=1` 全套通过（主包 38.316s、controllerlink 4.882s、mobilecore 2.031s）；仅页面和任务账本修改，无需重跑未变更的主控/C 业务套件，正式工作流仍核验全部产物。
+- 发布进行中：提交 a2de4541dea7cd179c168cbc1748b7f871bb53e0 推送 mapledev，匹配 CI 40864941839，https://github.com/fengzhanhuaer/CloudHelper/actions/runs/40864941839 。仅两个任务路径，旧断点账本未纳入。下一步唯一动作：等待正式构建并核验产物内嵌页面。
+- 正式交付 v0.4.103：https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.103 ，自动版本提交 a483b88d7。CI 9 任务全部成功，10 个正式附件/名称/大小/digest 已通过 GitHub Release API 核对，无 BE86U 或旧产物恢复。Windows 程序 23474688 字节，API digest 841e983a45b95ff64dd684674cf851ab2b21c4dd60e982dd54b85b9d49712f3c。
+- 附件重下载限制：Windows curl 报 missing close_notify、gh api 报 unexpected EOF、WSL curl 报 partial file；只取得截断文件，未将它当正式完整程序运行或声称本机 SHA/内嵌字节核验成功。本轮资产来源由匹配提交 CI、tag 和 API digest 确认；页面原文经真实浏览器验证且由既有 go:embed 编译，下载不稳定不构成源码/发布失败。设备在线升级和生产页面未执行。
+- REQ008 验收完成：独立标签、隐藏条目、两列布局、规则级选择/保存/恢复、hash 刷新、旧标签保留和桌面/手机交互已通过；完成门禁通过。只改页面和账本，未改变服务端/路由/存储/手机与插件页面。回滚无需迁移配置，下一步唯一动作无。
