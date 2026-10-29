@@ -90,3 +90,17 @@ TEST基线：首次Go全套仅既有 Windows TCP/UDP测试端口保留失败（T
 - REQ001/002/003/006：Probe与mobilecore全套、API文件持久化/同步/恢复检查及三端UI payload均通过；REQ004：认证路径/租户/目标限制测试及C UDP/TCP真实往返通过；REQ007：配置边界/重启保持/同值不写盘/热重置及CI固件ABI通过；REQ005：正式发布、包与页面/程序哈希通过。
 - 保留边界：未在线升级生产设备、未做手机真机VPN或路由器现场业务验收。旧出口版本需同步升级；私网依旧需要网关ACL。插件回退旧版本前应先恢复默认。
 - 交付文档仅补记验收，提交带skip ci/skip release，不再触发版本递增。既有2026-10-28账本保持未暂存。
+
+## 后续调整：Probe 独立规则出口标签（2026-10-29）
+
+- 状态：进行中；用户最新要求：Probe 出口规则不展示匹配条目，仅选择出口/恢复默认，单独一个 tab。
+- REQ-008：保留每条规则独立出口选择，隐藏域名/CIDR 等 entries，独立“规则出口”标签；保存本机与恢复主控默认可用，其他标签和设置保留。
+- 架构/UNIT-008：仅调整 local_pages/virtual_router.html 的面板归属、tab/hash 切换和渲染，不更改覆盖 API、匹配或出口运行逻辑。IF-005：#routeExits 可直达并刷新保持。
+- TASK-006：界面调整及浏览器验证，已完成；TASK-007：正式发布与附件核对，进行中。下一步唯一动作：正式提交并等待 CI。
+- TEST-006：Browser plugin not available，复用现有 Playwright；1366x1000 与 390x844 验证独立 tab、隐藏条目、原标签保留、保存真实 payload、恢复默认 payload、hash 刷新和零页面错误。现有本地 API 定向测试及正式 CI 复核。
+- 追踪：REQ008→UNIT008/IF005→TASK006/007→TEST006。DEC-005：沿用此前用户按规则独立选择，不改成一个全局出口；本次限 Probe（含复用该页面的 Linux-router），安卓/插件未要求调整。
+- 工作区：仅旧断点账本有未提交修改，保留。回滚：还原页面后通过正式在线升级，不迁移配置。准备门禁通过，完成门禁待验证与发布。
+- UNIT008 已实现：独立 #routeExits；两列规则名和本机出口，主控默认出口合并到“跟随主控”选项；只保留保存/恢复默认两个按钮。手机下不横向裁掉选择框。其他八个标签和规则级覆盖存储/选路不变。
+- TEST006 已通过：原始完整 HTML + 模拟认证本地 API，Playwright/Chromium 桌面 1366x1000 与手机 390x844；页面身份、非空、无错误覆盖层、零 pageerror、全部旧 tab、隐藏匹配条目、POST {overrides:{domain:'3'}} / {reset:true}、刷新 hash 和已选出口保持均通过。截图 Temp/ch-probe-exits-tab-{desktop,mobile}.png，已目视检查手机截图。无生产页面部署/实机验证。
+- 发布契约：live release.yml 与刚完成的 v0.4.102 一致；preflight 旧脚本仍要求已退役 Docker/router arm64，沿用已记录 DEC004 的当前契约核验，不恢复旧产物。分支/远端/GitHub API、上游未领先、diff --check 均确认。
+- 最终本地验证：`go -C probe_node test -p 1 ./... -count=1` 全套通过（主包 38.316s、controllerlink 4.882s、mobilecore 2.031s）；仅页面和任务账本修改，无需重跑未变更的主控/C 业务套件，正式工作流仍核验全部产物。

@@ -163,6 +163,10 @@
       z-index: 1;
     }
     tr.packet-error td { color: var(--danger); }
+    #routeExitsTab table { min-width: 0; table-layout: fixed; }
+    #routeExitsTab th, #routeExitsTab td { white-space: normal; overflow-wrap: anywhere; }
+    #routeExitsTab th:first-child { width: 35%; }
+    #routeExitsTab select { width: 100%; min-width: 0; }
     .mono { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace; }
     .connection-endpoint-copy {
       max-width: 100%;
@@ -358,6 +362,7 @@
 
     <div class="subtabs" role="tablist">
       <button class="subtab active" data-tab="status" type="button" role="tab" aria-selected="true">路由设置</button>
+      <button class="subtab" data-tab="routeExits" type="button" role="tab" aria-selected="false">规则出口</button>
       <button class="subtab" data-tab="routeStatus" type="button" role="tab" aria-selected="false">路由状态</button>
       <button class="subtab" data-tab="buffers" type="button" role="tab" aria-selected="false">缓冲状态</button>
       <button class="subtab" data-tab="connections" type="button" role="tab" aria-selected="false">最近连接</button>
@@ -418,21 +423,6 @@
           <div>代理运行</div><div id="proxyRuntimeStatus">-</div>
           <div>系统代理</div><div id="systemProxyStatus">-</div>
         </div>
-      </section>
-
-      <section class="card" style="grid-column:1 / -1">
-        <h2>规则出口</h2>
-        <p class="hint">规则内容由主控维护。每条代理规则默认使用主控出口；在这里改选仅保存在本机，普通主控同步会保留本地选择。</p>
-        <div style="overflow-x:auto"><table>
-          <thead><tr><th>规则 / 匹配内容</th><th>主控默认出口</th><th>本机出口</th></tr></thead>
-          <tbody id="routeExitsRows"><tr><td colspan="3">正在读取…</td></tr></tbody>
-        </table></div>
-        <div class="actions">
-          <button id="saveRouteExitsBtn" type="button">保存本机出口</button>
-          <button id="resetRouteExitsBtn" class="secondary" type="button">全部使用主控出口</button>
-          <button id="refreshRouteExitsBtn" class="secondary" type="button">刷新规则</button>
-        </div>
-        <p id="routeExitsMessage" class="hint" role="status"></p>
       </section>
 
       <section class="card">
@@ -529,6 +519,22 @@
         </div>
       </section>
     </div>
+    </div>
+
+    <div id="routeExitsTab" class="tab-panel">
+      <section class="card">
+        <h2>规则出口</h2>
+        <p class="hint">每条规则可单独选择出口，仅保存在本机；恢复默认后跟随主控。</p>
+        <div style="overflow-x:auto"><table>
+          <thead><tr><th>规则名称</th><th>本机出口</th></tr></thead>
+          <tbody id="routeExitsRows"><tr><td colspan="2">正在读取…</td></tr></tbody>
+        </table></div>
+        <div class="actions">
+          <button id="saveRouteExitsBtn" type="button">保存本机出口</button>
+          <button id="resetRouteExitsBtn" class="secondary" type="button">恢复默认</button>
+        </div>
+        <p id="routeExitsMessage" class="hint" role="status"></p>
+      </section>
     </div>
 
     <div id="routeStatusTab" class="tab-panel">
@@ -2062,19 +2068,17 @@
         const tr = document.createElement('tr');
         const detail = document.createElement('td');
         const title = document.createElement('strong'); title.textContent = rule.name || rule.id; detail.append(title);
-        const entries = document.createElement('div'); entries.className = 'hint'; entries.style.whiteSpace = 'pre-wrap'; entries.textContent = (rule.entries || []).join('\n'); detail.append(entries);
-        const defaults = document.createElement('td'); defaults.textContent = rule.action === 'probe_exit' ? name(rule.default_exit_node_id) + (rule.default_backup_exit_node_id ? `；备用 ${name(rule.default_backup_exit_node_id)}` : '') : (rule.action === 'reject' ? '拒绝' : '直连');
         const local = document.createElement('td');
         if (rule.action === 'probe_exit') {
           const select = document.createElement('select'); select.dataset.ruleId = rule.id; select.setAttribute('aria-label', `${rule.name || rule.id} 的出口`);
-          select.add(new Option('跟随主控', ''));
+          select.add(new Option(`跟随主控：${name(rule.default_exit_node_id)}`, ''));
           for (const node of nodes) select.add(new Option(name(node.node_id), String(node.node_id)));
           if (rule.local_exit_node_id && !nodes.some(n => String(n.node_id) === String(rule.local_exit_node_id))) select.add(new Option(name(rule.local_exit_node_id), rule.local_exit_node_id));
           select.value = rule.local_exit_node_id || ''; local.append(select);
-        } else { local.textContent = '由主控维护'; }
-        tr.append(detail, defaults, local); rows.append(tr);
+        } else { local.textContent = rule.action === 'reject' ? '拒绝（由主控维护）' : '直连（由主控维护）'; }
+        tr.append(detail, local); rows.append(tr);
       }
-      if (!rows.children.length) { const tr = document.createElement('tr'); const td = document.createElement('td'); td.colSpan = 3; td.textContent = '主控尚未下发路由规则'; tr.append(td); rows.append(tr); }
+      if (!rows.children.length) { const tr = document.createElement('tr'); const td = document.createElement('td'); td.colSpan = 2; td.textContent = '主控尚未下发路由规则'; tr.append(td); rows.append(tr); }
     }
 
     async function loadRouteExits() {
@@ -2399,7 +2403,7 @@
     }
 
     function normalizeTab(tab) {
-      return tab === 'routeStatus' || tab === 'buffers' || tab === 'connections' || tab === 'dnsRecords' || tab === 'packets' || tab === 'routeTest' ? tab : 'status';
+      return tab === 'routeExits' || tab === 'routeStatus' || tab === 'buffers' || tab === 'connections' || tab === 'dnsRecords' || tab === 'packets' || tab === 'routeTest' ? tab : 'status';
     }
 
     function tabFromLocationHash() {
@@ -2417,6 +2421,7 @@
         btn.setAttribute('aria-selected', active ? 'true' : 'false');
       });
       document.getElementById('statusTab').classList.toggle('active', activeTab === 'status');
+      document.getElementById('routeExitsTab').classList.toggle('active', activeTab === 'routeExits');
       document.getElementById('routeStatusTab').classList.toggle('active', activeTab === 'routeStatus');
       document.getElementById('buffersTab').classList.toggle('active', activeTab === 'buffers');
       document.getElementById('connectionsTab').classList.toggle('active', activeTab === 'connections');
@@ -2445,7 +2450,6 @@
 
     document.getElementById('saveRouteExitsBtn').addEventListener('click', () => saveRouteExits().catch(err => { document.getElementById('routeExitsMessage').textContent = '保存失败：' + err.message; }));
     document.getElementById('resetRouteExitsBtn').addEventListener('click', () => saveRouteExits(true).catch(err => { document.getElementById('routeExitsMessage').textContent = '恢复失败：' + err.message; }));
-    document.getElementById('refreshRouteExitsBtn').addEventListener('click', () => loadRouteExits().catch(err => { document.getElementById('routeExitsMessage').textContent = '刷新失败：' + err.message; }));
     document.getElementById('saveSettingsBtn').addEventListener('click', () => {
       saveSettings().catch((err) => setMessage('保存失败：' + err.message, 'error'));
     });
