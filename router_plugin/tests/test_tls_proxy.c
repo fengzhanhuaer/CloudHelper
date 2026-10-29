@@ -75,7 +75,7 @@ static void parser_tests(void)
 }
 static void transfer(const char *action)
 {
-    policy(entry,action);policy(exit_node,"probe_exit");int pair[2];assert(!socketpair(AF_UNIX,SOCK_STREAM|SOCK_NONBLOCK,0,pair));
+    policy(entry,action);policy(exit_node,"reject");int pair[2];assert(!socketpair(AF_UNIX,SOCK_STREAM|SOCK_NONBLOCK,0,pair));
     assert(!vr_tcp_attach(entry,pair[1],"203.0.113.5",443));uint8_t wire[1024],reply[1024];size_t n=hello(wire,"fixture.example");
     int before=connections;assert(write(pair[0],wire,3)==3);for(int i=0;i<3;i++){tick(entry);tick(exit_node);}assert(connections==before);
     assert(write(pair[0],wire+3,n-3)==(ssize_t)n-3);size_t got=0;uint64_t deadline=vr_millis()+5000;
@@ -102,9 +102,9 @@ int main(void)
     pthread_t thread;assert(!pthread_create(&thread,NULL,echo,NULL));
     transfer("direct");transfer("probe_exit");transfer("reject");
     int before=connections;char path[VR_PATH_MAX][129]={{"7"},{"8"}};
-    const char *denied[]={"127.0.0.1:22","169.254.169.254:80","192.168.1.1:80","203.0.113.5:443"};
+    const char *denied[]={"127.0.0.1:22","169.254.169.254:80","192.168.1.1:80"};
     policy(exit_node,"direct");
-    for(size_t i=0;i<4;i++){char data[512];snprintf(data,sizeof(data),"{\"session_id\":\"0123456789abcdef0123456789abcdef\",\"source_node_id\":\"7\",\"exit_node_id\":\"8\",\"target_addr\":\"%s\"}",denied[i]);vr_frame f={8,1,NULL,(const uint8_t *)data,0,strlen(data)};vr_tcp_frame(exit_node,&f,path,2);}
+    for(size_t i=0;i<sizeof(denied)/sizeof(denied[0]);i++){char data[512];snprintf(data,sizeof(data),"{\"session_id\":\"0123456789abcdef0123456789abcdef\",\"source_node_id\":\"7\",\"exit_node_id\":\"8\",\"target_addr\":\"%s\"}",denied[i]);vr_frame f={8,1,NULL,(const uint8_t *)data,0,strlen(data)};vr_tcp_frame(exit_node,&f,path,2);}
     assert(connections==before);vr_tcp_stop(exit_node);
     int held[64];
     for(size_t i=0;i<64;i++) {int pair[2];assert(!socketpair(AF_UNIX,SOCK_STREAM,0,pair));assert(!vr_tcp_attach(entry,pair[1],"203.0.113.5",443));held[i]=pair[0];}
@@ -112,5 +112,5 @@ int main(void)
     vr_tcp_stop(entry);for(size_t i=0;i<64;i++)close(held[i]);
     shutdown(listener,SHUT_RDWR);close(listener);pthread_join(thread,NULL);
     json_object_put(entry->policy);json_object_put(exit_node->policy);pthread_mutex_destroy(&entry->mutex);pthread_mutex_destroy(&exit_node->mutex);free(entry);free(exit_node);
-    puts("PASS: fragmented SNI direct/reject/remote TCP, asynchronous exit DNS, retained stream, private/unassigned exit denied");return 0;
+    puts("PASS: fragmented SNI direct/reject/remote TCP, asynchronous exit DNS, retained stream, generic authenticated exit, private targets denied");return 0;
 }

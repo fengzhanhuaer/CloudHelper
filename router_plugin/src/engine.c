@@ -37,6 +37,14 @@ static void status(vr_engine *e,int ready)
         json_object_object_add(v,"node_id",json_object_new_string(vr_string(src,"node_id")));
         json_object_object_add(v,"display_name",json_object_new_string(vr_string(src,"display_name")));json_object_array_add(nodes,v);
     }
+    json_object *rules=json_object_new_array(),*source=vr_member(e->policy,"route_rules");
+    for(size_t i=0;source&&i<(size_t)json_object_array_length(source)&&i<VR_ROUTE_MAX;i++) {
+        json_object *r=json_object_array_get_idx(source,i),*v=json_object_new_object();
+        const char *fields[]={"id","name","action","exit_node_id","backup_exit_node_id"};
+        for(size_t j=0;j<sizeof(fields)/sizeof(fields[0]);j++)json_object_object_add(v,fields[j],json_object_get(vr_member(r,fields[j])));
+        json_object_array_add(rules,v);
+    }
+    json_object_object_add(o,"route_rules",rules);
     json_object_object_add(o,"links",links);json_object_object_add(o,"nodes",nodes);vr_service_status(e->service,o,e->generation);
 }
 
@@ -166,7 +174,8 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
             }
             carrier6_checked=now+30000;
         }
-        pthread_mutex_lock(&service->mutex);int sniff=service->config.tls_sni_enabled;pthread_mutex_unlock(&service->mutex);
+        pthread_mutex_lock(&service->mutex);int sniff=service->config.tls_sni_enabled;vr_exit_overrides exits=service->config.exit_overrides;pthread_mutex_unlock(&service->mutex);
+        pthread_mutex_lock(&e->mutex);e->config.exit_overrides=exits;pthread_mutex_unlock(&e->mutex);
         if(sniff!=e->config.tls_sni_enabled&&now>=sniff_retry) {
             if(!e->config.enabled||(!(sniff&&vr_tcp_start(e))&&!vr_platform_tls(&e->addresses,e->cidr,sniff))) {
                 e->config.tls_sni_enabled=sniff;vr_service_log(service,"tls",sniff?"SNI enabled for new LAN connections":"SNI disabled for new connections; active streams retained");

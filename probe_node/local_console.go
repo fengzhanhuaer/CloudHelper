@@ -1792,6 +1792,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/tun/uninstall", probeLocalTUNUninstallHandler)
 	mux.HandleFunc("/local/api/logs", probeLocalLogsHandler)
 	mux.HandleFunc("/local/api/virtual_router/settings", probeLocalVirtualRouterSettingsHandler)
+	mux.HandleFunc("/local/api/virtual_router/exits", probeLocalVirtualRouterExitsHandler)
 	mux.HandleFunc("/local/api/virtual_router/status", probeLocalVirtualRouterStatusHandler)
 	mux.HandleFunc("/local/api/virtual_router/buffers", probeLocalVirtualRouterBuffersHandler)
 	mux.HandleFunc("/local/api/virtual_router/packets", probeLocalVirtualRouterPacketsHandler)

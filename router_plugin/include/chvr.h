@@ -25,6 +25,8 @@
 #define VR_GATEWAY_CIDRS 32
 #define VR_GATEWAY_NODES 64
 #define VR_IP_BLACKLIST_MAX 32
+#define VR_EXIT_OVERRIDES_MAX 32
+typedef struct {size_t count;struct {char rule[129],node[129];} items[VR_EXIT_OVERRIDES_MAX];} vr_exit_overrides;
 typedef struct {unsigned char family,bytes[16];} vr_ip;
 typedef struct {size_t count;vr_ip ips[VR_IP_BLACKLIST_MAX];} vr_ip_blacklist;
 int vr_ip_parse(const char *text,vr_ip *ip);
@@ -42,6 +44,7 @@ typedef struct {
     char controller[1024], node_id[129], node_key[1025], dns_upstream[64], dns_doh[1024], dns_dot[260];
     vr_gateway gateway;
     vr_ip_blacklist ip_blacklist;
+    vr_exit_overrides exit_overrides;
 } vr_config;
 
 typedef struct {
@@ -110,6 +113,7 @@ int vr_resolve_config4_all(const char *host,const vr_config *config,const char *
 int vr_dns_addresses6(const uint8_t *reply,size_t n,char out[4][46]);
 int vr_resolve4(const char *host, const char *upstream, const char *iface, char out[16]);
 vr_decision vr_policy_match(json_object *policy, const char *domain, const char *ip);
+vr_decision vr_local_exit(const vr_config *config,vr_decision decision);
 int vr_policy_validate(json_object *snapshot, const char *node_id, char *err, size_t n);
 int vr_policy_service_port(json_object *policy,const char *node_id,int fallback);
 int vr_policy_equal(json_object *a,json_object *b);

@@ -191,10 +191,16 @@ func TestAndroidVPNFakeIPUsesControllerAllocation(t *testing.T) {
 	}))
 	defer server.Close()
 	setMobileVRouteControllerIdentity(server.URL, "15", "secret-15")
+	if err := persistMobileVRouteConfig(configDir, mobileVRouteConfig{Enabled: true, LocalNodeID: "15", RouteRules: []mobileVRouteRouteRule{{ID: "google", Name: "Google", Action: "probe_exit", ExitNodeID: "17", Entries: []string{"domain_suffix:googleapis.com"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := persistMobileVRouteExitChoices(configDir, map[string]string{"google": "18"}); err != nil {
+		t.Fatal(err)
+	}
 
 	fakeIP, ok := allocateAndroidVPNDNSFakeIP("play.googleapis.com", androidRouteDecision{
 		Group:           "Google",
-		SelectedRouteID: "vroute:17",
+		SelectedRouteID: "vroute:18",
 	})
 	if !ok || fakeIP != "198.18.4.9" {
 		t.Fatalf("fake ip=%q ok=%t, want controller allocation", fakeIP, ok)
@@ -208,7 +214,7 @@ func TestAndroidVPNFakeIPUsesControllerAllocation(t *testing.T) {
 	firstExpiresAt := entry.ExpiresAt
 	fakeIP, ok = allocateAndroidVPNDNSFakeIP("play.googleapis.com", androidRouteDecision{
 		Group:           "Google",
-		SelectedRouteID: "vroute:17",
+		SelectedRouteID: "vroute:18",
 	})
 	if !ok || fakeIP != "198.18.4.9" || requestCount != 1 {
 		t.Fatalf("cached fake ip=%q ok=%t controller_requests=%d, want cached controller entry", fakeIP, ok, requestCount)

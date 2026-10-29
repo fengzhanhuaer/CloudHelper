@@ -304,6 +304,24 @@ static void test_ip_blacklist(void)
     puts("PASS: bounded RAM-only IP failures, mapped IPv4, success reset, permanent bans, unblock and full-table availability");
 }
 
+static void test_local_exits(void)
+{
+    vr_config c;vr_config_default(&c);char err[256];
+    const char *raw="{\"exit_overrides\":{\"rule-a\":\"8\"}}";
+    json_object *o=vr_json_parse(raw,strlen(raw));assert(!vr_config_parse(&c,o,&c,err,sizeof(err)));json_object_put(o);
+    vr_decision d={.action=VR_PROXY};strcpy(d.rule,"rule-a");strcpy(d.exit_node,"7");strcpy(d.backup,"9");
+    vr_decision effective=vr_local_exit(&c,d);assert(!strcmp(effective.exit_node,"8")&&!*effective.backup&&!strcmp(d.exit_node,"7"));
+    d.action=VR_DIRECT;assert(vr_local_exit(&c,d).action==VR_DIRECT);
+    d.action=VR_PROXY;strcpy(d.rule,"another");assert(!strcmp(vr_local_exit(&c,d).exit_node,"7"));
+    o=vr_config_json(&c,1);vr_config restored;vr_config_default(&restored);assert(!vr_config_parse(&restored,o,&restored,err,sizeof(err)));json_object_put(o);
+    assert(restored.exit_overrides.count==1&&!strcmp(restored.exit_overrides.items[0].node,"8"));
+    o=json_object_new_object();json_object_object_add(o,"exit_overrides",json_object_new_object());assert(!vr_config_parse(&c,o,&c,err,sizeof(err)));json_object_put(o);assert(!c.exit_overrides.count);
+    o=json_object_new_object();json_object *choices=json_object_new_object();json_object_object_add(o,"exit_overrides",choices);
+    for(unsigned i=0;i<=VR_EXIT_OVERRIDES_MAX;i++){char id[32];snprintf(id,sizeof(id),"rule-%u",i);json_object_object_add(choices,id,json_object_new_string("8"));}
+    assert(vr_config_parse(&c,o,&c,err,sizeof(err)));json_object_put(o);
+    puts("PASS: local-only exit copies, bounded persistence and reset without changing master defaults");
+}
+
 int main(int argc,char **argv)
 {
     if(argc==4&&!strcmp(argv[1],"--validate-policy")) {
@@ -314,6 +332,6 @@ int main(int argc,char **argv)
         puts(rc?err:"PASS: captured controller policy accepted");return rc?1:0;
     }
     assert(argc==1);
-    test_wire();test_dns();test_config();test_policy();test_policy_publication();test_auth();test_ip_blacklist();test_websocket();test_packet();
+    test_local_exits();test_wire();test_dns();test_config();test_policy();test_policy_publication();test_auth();test_ip_blacklist();test_websocket();test_packet();
     puts("PASS: VR/WebSocket framing, DNS bounds, configuration, policy, Ed25519/HMAC, TCP/UDP/ICMP NAT checksums");return 0;
 }

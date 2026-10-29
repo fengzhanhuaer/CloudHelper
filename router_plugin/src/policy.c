@@ -108,6 +108,15 @@ vr_decision vr_policy_match(json_object *policy,const char *domain,const char *i
     return d;
 }
 
+vr_decision vr_local_exit(const vr_config *config,vr_decision decision)
+{
+    if(decision.action!=VR_PROXY)return decision;
+    for(size_t i=0;i<config->exit_overrides.count;i++)if(!strcmp(config->exit_overrides.items[i].rule,decision.rule)) {
+        strcpy(decision.exit_node,config->exit_overrides.items[i].node);*decision.backup=0;break;
+    }
+    return decision;
+}
+
 int vr_policy_service_port(json_object *policy,const char *node_id,int fallback)
 {
     json_object *nodes=vr_member(policy,"probe_ips");

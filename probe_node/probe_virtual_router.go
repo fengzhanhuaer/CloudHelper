@@ -1172,7 +1172,7 @@ func currentProbeVirtualRouterRouteRuleForDomain(domain string) (probeVirtualRou
 			if probeVirtualRouterRouteRuleEntryMatchesDomain(cleanDomain, entry) {
 				rule.Action = action
 				rule.ExitNodeID = normalizeProbeRouteNodeID(rule.ExitNodeID)
-				return rule, true
+				return effectiveProbeVirtualRouterRouteRule(rule), true
 			}
 		}
 	}
@@ -1194,7 +1194,7 @@ func currentProbeVirtualRouterRouteRuleForIP(ipText string) (probeVirtualRouterR
 			if probeVirtualRouterRouteRuleEntryMatchesIP(target, entry) {
 				rule.Action = action
 				rule.ExitNodeID = normalizeProbeRouteNodeID(rule.ExitNodeID)
-				return rule, true
+				return effectiveProbeVirtualRouterRouteRule(rule), true
 			}
 		}
 	}
@@ -3074,6 +3074,11 @@ func probeVirtualRouterPacketTargetsLocalDelivery(runtime *probeVirtualRouterRun
 	if probeProductTargetsLocalDelivery(dstIP) {
 		localNodeID := currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)
 		return localNodeID != "" && (len(path) == 0 || normalizeProbeRouteNodeID(path[len(path)-1]) == localNodeID)
+	}
+	if probeVirtualRouterGenericExitPath(runtime, path) {
+		if _, ok := currentProbeVirtualRouterStoredFakeIPEntryByIP(dstIP); ok {
+			return true
+		}
 	}
 	entry, ok := currentProbeVirtualRouterFakeIPEntryByIP(dstIP)
 	if !ok {

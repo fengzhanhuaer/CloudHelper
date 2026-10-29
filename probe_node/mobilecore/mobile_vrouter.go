@@ -76,6 +76,14 @@ func requestMobileVRouteControllerFakeIP(domain string, route androidRouteDecisi
 	if exitNodeID == "" {
 		return "", true, errors.New("mobile vroute fake ip exit node is missing")
 	}
+	// Shared Fake IP allocation always uses the controller's original rule,
+	// independently of this device's local exit selection.
+	if config, err := loadMobileVRouteConfig(mobileRouteConfigDir()); err == nil {
+		config.LocalExitNodes = nil
+		if decision, ok := decideMobileVRouteForDomain(config, domain, "443"); ok && decision.ExitNodeID != "" && !decision.Reject {
+			exitNodeID = decision.ExitNodeID
+		}
+	}
 	body, err := json.Marshal(map[string]string{
 		"domain":       normalizeMobileVRouteDomain(domain),
 		"action":       "probe_exit",
@@ -137,13 +145,14 @@ type mobileVRouteConfigCacheFile struct {
 }
 
 type mobileVRouteConfig struct {
-	LocalNodeID   string                  `json:"local_node_id,omitempty"`
-	Enabled       bool                    `json:"enabled"`
-	FakeIPCIDR    string                  `json:"fake_ip_cidr,omitempty"`
-	ProbeIPs      []mobileVRouteProbeIP   `json:"probe_ips,omitempty"`
-	TopologyRules []mobileVRouteTopology  `json:"topology_rules,omitempty"`
-	RouteRules    []mobileVRouteRouteRule `json:"route_rules,omitempty"`
-	UpdatedAt     string                  `json:"updated_at,omitempty"`
+	LocalExitNodes map[string]string       `json:"-"`
+	LocalNodeID    string                  `json:"local_node_id,omitempty"`
+	Enabled        bool                    `json:"enabled"`
+	FakeIPCIDR     string                  `json:"fake_ip_cidr,omitempty"`
+	ProbeIPs       []mobileVRouteProbeIP   `json:"probe_ips,omitempty"`
+	TopologyRules  []mobileVRouteTopology  `json:"topology_rules,omitempty"`
+	RouteRules     []mobileVRouteRouteRule `json:"route_rules,omitempty"`
+	UpdatedAt      string                  `json:"updated_at,omitempty"`
 }
 
 type mobileVRouteProbeIP struct {
@@ -214,6 +223,7 @@ func refreshMobileVRouteConfig(controllerURL string, nodeID string, nodeSecret s
 	if err := persistMobileVRouteConfig(configDir, config); err != nil {
 		return mobileVRouteConfig{}, err
 	}
+	config.LocalExitNodes = loadMobileVRouteExitChoices(configDir)
 	return config, nil
 }
 
@@ -282,7 +292,9 @@ func loadMobileVRouteConfig(configDir string) (mobileVRouteConfig, error) {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return mobileVRouteConfig{}, err
 	}
-	return sanitizeMobileVRouteConfig(payload.Item), nil
+	config := sanitizeMobileVRouteConfig(payload.Item)
+	config.LocalExitNodes = loadMobileVRouteExitChoices(configDir)
+	return config, nil
 }
 
 func mobileVRouteConfigPath(configDir string) (string, bool) {
@@ -453,6 +465,9 @@ func decideMobileVRouteForIP(config mobileVRouteConfig, ip net.IP, port string) 
 func mobileVRouteDecisionFromRule(config mobileVRouteConfig, rule mobileVRouteRouteRule, targetAddr string) mobileVRouteDecision {
 	action := normalizeMobileVRouteRuleAction(rule.Action, rule.ExitNodeID)
 	exitNodeID := normalizeMobileRouteNodeID(rule.ExitNodeID)
+	if action == "probe_exit" && config.LocalExitNodes[rule.ID] != "" {
+		exitNodeID = config.LocalExitNodes[rule.ID]
+	}
 	decision := mobileVRouteDecision{
 		Matched:    true,
 		TargetAddr: strings.TrimSpace(targetAddr),

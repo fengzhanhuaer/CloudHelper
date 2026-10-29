@@ -155,9 +155,9 @@ object MobileCoreBridge {
 
     fun vRouteSettings(context: Context, config: ProbeNodeConfig): String {
         return callString(
-            methodName = "vRouteSettings",
-            parameterTypes = arrayOf(String::class.java, String::class.java, String::class.java),
-            args = arrayOf(config.controllerUrl, config.nodeId, config.nodeSecret),
+            methodName = "vRouteLocalSettings",
+            parameterTypes = arrayOf(String::class.java, String::class.java, String::class.java, String::class.java),
+            args = arrayOf(config.controllerUrl, config.nodeId, config.nodeSecret, ProbeNodeConfig.configDir(context)),
         )
     }
 

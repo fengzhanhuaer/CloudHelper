@@ -194,26 +194,12 @@ func authorizeProbeVRouteProxyExitTarget(targetAddr string, path []string) error
 	if len(cleanPath) < 2 || localNodeID == "" || cleanPath[len(cleanPath)-1] != localNodeID {
 		return errors.New("remote proxy target path is unauthorized")
 	}
-	decision, err := decideProbeVRouteProxyTarget(targetAddr)
-	if err != nil {
+	if err := validateProbeVirtualRouterForwardPath(cleanPath); err != nil {
 		return err
 	}
-	if decision.Action != "probe_exit" {
-		return errors.New("remote proxy target is not assigned to this exit node")
-	}
-	var rule probeVirtualRouterRouteRule
-	var matched bool
-	if decision.Domain != "" {
-		rule, matched = currentProbeVirtualRouterRouteRuleForDomain(decision.Domain)
-	} else {
-		rule, matched = currentProbeVirtualRouterRouteRuleForIP(decision.Host)
-	}
-	if !matched || !probeVirtualRouterRuleAllowsExitNode(rule, localNodeID) {
-		if normalizeProbeRouteNodeID(decision.ExitNodeID) != localNodeID {
-			return errors.New("remote proxy target is not assigned to this exit node")
-		}
-	}
-	_, err = resolveProbeVRouteProxyExitTarget(decision.TargetAddr)
+	// The ingress dispatcher already authenticates every path edge. The exit
+	// honors the request, without applying its own origin-routing policy.
+	_, err := resolveProbeVRouteProxyExitTarget(targetAddr)
 	return err
 }
 

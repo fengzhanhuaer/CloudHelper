@@ -43,8 +43,12 @@ int main(void)
     const char *hex="450000210001400040117f98c0a83464c6120014ad9c0035000d52fd68656c6c6f";
     uint8_t packet[1500];size_t len=strlen(hex)/2;for(size_t i=0;i<len;i++){unsigned b;assert(sscanf(hex+2*i,"%2x",&b)==1);packet[i]=(uint8_t)b;}
     vr_packet original;assert(!vr_packet_parse(packet,len,&original));
+    /* Source selects 8 locally while the controller's shared mapping says 9. */
+    strcpy(entry->mappings[0].rule,"fake-rule");strcpy(entry->mappings[0].exit,"9");
+    entry->config.exit_overrides.count=1;strcpy(entry->config.exit_overrides.items[0].rule,"fake-rule");strcpy(entry->config.exit_overrides.items[0].node,"8");
     vr_outgoing(entry,packet,len);assert(carried_len==len);
     char path[VR_PATH_MAX][129]={{"7"},{"8"}};vr_frame frame={1,1,NULL,carried,0,carried_len};
+    strcpy(exit->mappings[0].exit,"9"); /* The shared default differs from this chosen exit. */
     vr_incoming(exit,&frame,path,2);assert(read(exit_pipe[0],packet,sizeof(packet))==(ssize_t)len);
     vr_packet request;assert(!vr_packet_parse(packet,len,&request));struct in_addr real;assert(inet_pton(AF_INET,"203.0.113.5",&real)==1&&request.dst==real.s_addr);
     /* Emulate a response after the kernel's physical-WAN NAT has been undone. */
@@ -56,6 +60,7 @@ int main(void)
     vr_packet reply;assert(!vr_packet_parse(packet,len,&reply));
     assert(reply.src==original.dst&&reply.dst==original.src&&reply.sport==original.dport&&reply.dport==original.sport);
     assert(!memcmp(packet+28,"hello",5));
+    assert(!strcmp(entry->mappings[0].exit,"9")); /* Local selection never changes shared cache defaults. */
     for(size_t i=0;i<VR_NAT_MAX;i++)entry->flows[i].used=0;
     vr_incoming(entry,&frame,path,2);assert(read(entry_pipe[0],packet,sizeof(packet))<0);
     /* Remote LAN access shares the IP frame, but checks source, endpoint and ACL. */
@@ -84,7 +89,7 @@ int main(void)
     /* Ordinary CIDRs (not published gateway rules) select public exits. */
     const char *cidr_rule="[{\"id\":\"ordinary-cidr\",\"action\":\"probe_exit\",\"exit_node_id\":\"8\",\"entries\":[\"cidr:203.0.113.0/24\"]}]";
     json_object_object_add(entry->policy,"route_rules",vr_json_parse(cidr_rule,strlen(cidr_rule)));
-    json_object_object_add(exit->policy,"route_rules",vr_json_parse(cidr_rule,strlen(cidr_rule)));
+    json_object_object_add(exit->policy,"route_rules",json_object_new_array());
     assert(!vr_packet_rewrite(packet,len,inet_addr("192.168.52.100"),inet_addr("203.0.113.5"),46000,53));
     carried_len=0;vr_outgoing(entry,packet,len);assert(carried_len==len);
     frame.data=carried;frame.data_len=len;strcpy(path[0],"7");strcpy(path[1],"8");
@@ -94,6 +99,7 @@ int main(void)
     vr_outgoing(exit,packet,len);strcpy(path[0],"8");strcpy(path[1],"7");vr_incoming(entry,&frame,path,2);
     assert(read(entry_pipe[0],packet,sizeof(packet))==(ssize_t)len);
     /* An exit assigned to self reinjects once for physical WAN NAT. */
+    json_object_object_add(exit->policy,"route_rules",vr_json_parse(cidr_rule,strlen(cidr_rule)));
     assert(!vr_packet_rewrite(packet,len,inet_addr("192.168.52.100"),inet_addr("203.0.113.5"),47000,53));
     carried_len=0;vr_outgoing(exit,packet,len);assert(!carried_len&&read(exit_pipe[0],packet,sizeof(packet))==(ssize_t)len);
     const char *reject="[{\"id\":\"reject\",\"action\":\"reject\",\"entries\":[\"cidr:203.0.113.0/24\"]}]";

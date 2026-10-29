@@ -420,6 +420,21 @@
         </div>
       </section>
 
+      <section class="card" style="grid-column:1 / -1">
+        <h2>规则出口</h2>
+        <p class="hint">规则内容由主控维护。每条代理规则默认使用主控出口；在这里改选仅保存在本机，普通主控同步会保留本地选择。</p>
+        <div style="overflow-x:auto"><table>
+          <thead><tr><th>规则 / 匹配内容</th><th>主控默认出口</th><th>本机出口</th></tr></thead>
+          <tbody id="routeExitsRows"><tr><td colspan="3">正在读取…</td></tr></tbody>
+        </table></div>
+        <div class="actions">
+          <button id="saveRouteExitsBtn" type="button">保存本机出口</button>
+          <button id="resetRouteExitsBtn" class="secondary" type="button">全部使用主控出口</button>
+          <button id="refreshRouteExitsBtn" class="secondary" type="button">刷新规则</button>
+        </div>
+        <p id="routeExitsMessage" class="hint" role="status"></p>
+      </section>
+
       <section class="card">
         <h2>主网卡出口</h2>
         <div class="kv">
@@ -2038,9 +2053,46 @@
       }, 500);
     }
 
+    function renderRouteExits(data) {
+      const rows = document.getElementById('routeExitsRows');
+      rows.replaceChildren();
+      const nodes = Array.isArray(data.nodes) ? data.nodes : [];
+      const name = id => { const n = nodes.find(n => String(n.node_id) === String(id)); return n ? `${n.display_name || n.note || n.node_id} (${n.node_id})` : (id ? `${id}（节点不可用）` : '—'); };
+      for (const rule of data.rules || []) {
+        const tr = document.createElement('tr');
+        const detail = document.createElement('td');
+        const title = document.createElement('strong'); title.textContent = rule.name || rule.id; detail.append(title);
+        const entries = document.createElement('div'); entries.className = 'hint'; entries.style.whiteSpace = 'pre-wrap'; entries.textContent = (rule.entries || []).join('\n'); detail.append(entries);
+        const defaults = document.createElement('td'); defaults.textContent = rule.action === 'probe_exit' ? name(rule.default_exit_node_id) + (rule.default_backup_exit_node_id ? `；备用 ${name(rule.default_backup_exit_node_id)}` : '') : (rule.action === 'reject' ? '拒绝' : '直连');
+        const local = document.createElement('td');
+        if (rule.action === 'probe_exit') {
+          const select = document.createElement('select'); select.dataset.ruleId = rule.id; select.setAttribute('aria-label', `${rule.name || rule.id} 的出口`);
+          select.add(new Option('跟随主控', ''));
+          for (const node of nodes) select.add(new Option(name(node.node_id), String(node.node_id)));
+          if (rule.local_exit_node_id && !nodes.some(n => String(n.node_id) === String(rule.local_exit_node_id))) select.add(new Option(name(rule.local_exit_node_id), rule.local_exit_node_id));
+          select.value = rule.local_exit_node_id || ''; local.append(select);
+        } else { local.textContent = '由主控维护'; }
+        tr.append(detail, defaults, local); rows.append(tr);
+      }
+      if (!rows.children.length) { const tr = document.createElement('tr'); const td = document.createElement('td'); td.colSpan = 3; td.textContent = '主控尚未下发路由规则'; tr.append(td); rows.append(tr); }
+    }
+
+    async function loadRouteExits() {
+      renderRouteExits(await requestJSON('/local/api/virtual_router/exits', {method:'GET'}));
+    }
+
+    async function saveRouteExits(reset = false) {
+      const overrides = {};
+      document.querySelectorAll('#routeExitsRows select[data-rule-id]').forEach(s => { if (s.value) overrides[s.dataset.ruleId] = s.value; });
+      const data = await requestJSON('/local/api/virtual_router/exits', {method:'POST', body:JSON.stringify(reset ? {reset:true} : {overrides})});
+      renderRouteExits(data);
+      document.getElementById('routeExitsMessage').textContent = reset ? '已恢复主控出口；后续同步继续跟随主控。' : '本机出口已保存；新连接使用新选择。';
+    }
+
     async function loadSettings() {
       const data = await requestJSON('/local/api/virtual_router/settings', { method: 'GET' });
       renderSettings(data || {});
+      await loadRouteExits();
       return data || {};
     }
 
@@ -2391,6 +2443,9 @@
       }
     }
 
+    document.getElementById('saveRouteExitsBtn').addEventListener('click', () => saveRouteExits().catch(err => { document.getElementById('routeExitsMessage').textContent = '保存失败：' + err.message; }));
+    document.getElementById('resetRouteExitsBtn').addEventListener('click', () => saveRouteExits(true).catch(err => { document.getElementById('routeExitsMessage').textContent = '恢复失败：' + err.message; }));
+    document.getElementById('refreshRouteExitsBtn').addEventListener('click', () => loadRouteExits().catch(err => { document.getElementById('routeExitsMessage').textContent = '刷新失败：' + err.message; }));
     document.getElementById('saveSettingsBtn').addEventListener('click', () => {
       saveSettings().catch((err) => setMessage('保存失败：' + err.message, 'error'));
     });

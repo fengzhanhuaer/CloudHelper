@@ -1878,13 +1878,22 @@ function renderRouteSettings(data) {
     const select = document.createElement("select");
     select.id = selectID;
     select.dataset.routeGroupId = String(group.id || "");
+    const follow = document.createElement("option");
+    follow.value = "";
+    const defaultNode = routeSettingsState.nodes.find(n => String(n.node_id) === String(group.default_exit_node_id));
+    follow.textContent = `跟随主控（${defaultNode ? defaultNode.display_name : group.default_exit_node_id || "默认"}）`;
+    select.appendChild(follow);
     routeSettingsState.nodes.forEach((node) => {
       const option = document.createElement("option");
       option.value = String(node.node_id || "");
       option.textContent = String(node.display_name || "未命名节点");
-      option.selected = option.value === String(group.exit_node_id || "");
+      option.selected = option.value === String(group.local_exit_node_id || "");
       select.appendChild(option);
     });
+    if (group.local_exit_node_id && !routeSettingsState.nodes.some(n => String(n.node_id) === String(group.local_exit_node_id))) {
+      const missing = document.createElement("option"); missing.value = group.local_exit_node_id; missing.textContent = `${group.local_exit_node_id}（节点不可用）`; select.appendChild(missing);
+    }
+    select.value = String(group.local_exit_node_id || "");
     item.append(label, select);
     target.appendChild(item);
   });
@@ -1898,7 +1907,7 @@ function appendRouteSettingsEmpty(target, message) {
   target.appendChild(empty);
 }
 
-function saveRouteSettings() {
+function saveRouteSettings(reset = false) {
   if (!hasCloudHelper("saveVrouteSettings")) {
     setRouteSettingsFeedback("Android 路由设置保存接口不可用", true);
     return;
@@ -1911,13 +1920,13 @@ function saveRouteSettings() {
   const button = byId("saveRouteSettingsButton");
   if (button) button.disabled = true;
   try {
-    const response = parseJSON(callCloudHelperString("saveVrouteSettings", "{}", JSON.stringify({ exit_nodes: exitNodes })));
+    const response = parseJSON(callCloudHelperString("saveVrouteSettings", "{}", JSON.stringify(reset ? {reset:true} : { exit_nodes: exitNodes })));
     if (!response || response.ok === false) {
       throw new Error(String(response && response.error || "保存失败"));
     }
     renderRouteSettings(response);
     setRouteSettingsFeedback(String(response.warning || response.message || "路由设置已保存"), !!response.warning);
-    appendUILog("route", "移动端路由设置已保存。");
+    appendUILog("route", reset ? "已恢复主控默认出口。" : "出口选择已保存在本机。");
   } catch (error) {
     setRouteSettingsFeedback(`保存失败：${error && error.message ? error.message : error}`, true);
   } finally {

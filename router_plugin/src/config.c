@@ -44,7 +44,7 @@ int vr_config_parse(vr_config *out, json_object *o, const vr_config *previous, c
         (void)value;
         if (strcmp(key,"enabled") && strcmp(key,"allow_wan") && strcmp(key,"dns_enabled") && strcmp(key,"tls_sni_enabled") &&
             strcmp(key,"port") && strcmp(key,"controller") && strcmp(key,"node_id") &&
-            strcmp(key,"node_key") && strcmp(key,"dns_upstream") && strcmp(key,"dns_upstreams") && strcmp(key,"gateway_proxy") && strcmp(key,"ip_blacklist")) goto fail;
+            strcmp(key,"node_key") && strcmp(key,"dns_upstream") && strcmp(key,"dns_upstreams") && strcmp(key,"gateway_proxy") && strcmp(key,"ip_blacklist") && strcmp(key,"exit_overrides")) goto fail;
     }
     if (boolean_field(o,"enabled",&c.enabled) || boolean_field(o,"allow_wan",&c.allow_wan) ||
         boolean_field(o,"dns_enabled",&c.dns_enabled) ||
@@ -97,6 +97,21 @@ int vr_config_parse(vr_config *out, json_object *o, const vr_config *previous, c
             if(!found)c.ip_blacklist.ips[c.ip_blacklist.count++]=ip;
         }
     }
+    json_object *exits=vr_member(o,"exit_overrides");
+    if(exits) {
+        if(!json_object_is_type(exits,json_type_object)){why="exit_overrides must be a rule ID to node ID object";goto fail;}
+        memset(&c.exit_overrides,0,sizeof(c.exit_overrides));
+        json_object_object_foreach(exits,key,value) {
+            if(!*key||strlen(key)>128||!json_object_is_type(value,json_type_string)){why="invalid local exit choice";goto fail;}
+            const char *node=json_object_get_string(value);
+            if(strlen(node)!=(size_t)json_object_get_string_len(value)||strlen(node)>128)goto fail;
+            for(const unsigned char *p=(const unsigned char *)key;*p;p++)if(*p<32||*p==127)goto fail;
+            for(const unsigned char *p=(const unsigned char *)node;*p;p++)if(!(isalnum(*p)||*p=='_'||*p=='-'||*p=='.'))goto fail;
+            if(!*node)continue;
+            if(c.exit_overrides.count>=VR_EXIT_OVERRIDES_MAX){why="at most 32 local exit overrides";goto fail;}
+            size_t i=c.exit_overrides.count++;strcpy(c.exit_overrides.items[i].rule,key);strcpy(c.exit_overrides.items[i].node,node);
+        }
+    }
     char host[254];int dns_port;
     if(vr_dns_doh_endpoint(c.dns_doh,host,&dns_port) || vr_dns_endpoint(c.dns_dot,host,&dns_port,0) ||
        vr_dns_endpoint(c.dns_upstream,host,&dns_port,1)) {why="invalid DNS upstreams: require HTTPS DoH, DoT host:port and ordinary IPv4:port";goto fail;}
@@ -121,6 +136,9 @@ json_object *vr_config_json(const vr_config *c, int secrets)
     for(size_t i=0;i<c->ip_blacklist.count;i++){char ip[46];vr_ip_text(&c->ip_blacklist.ips[i],ip);json_object_array_add(blacklist,json_object_new_string(ip));}
     /* Keep an empty saved configuration readable by pre-blacklist versions. */
     if(c->ip_blacklist.count||!secrets)json_object_object_add(o,"ip_blacklist",blacklist);else json_object_put(blacklist);
+    json_object *exits=json_object_new_object();
+    for(size_t i=0;i<c->exit_overrides.count;i++)json_object_object_add(exits,c->exit_overrides.items[i].rule,json_object_new_string(c->exit_overrides.items[i].node));
+    if(c->exit_overrides.count||!secrets)json_object_object_add(o,"exit_overrides",exits);else json_object_put(exits);
     json_object *upstreams=json_object_new_object();
     json_object_object_add(upstreams,"doh",json_object_new_string(c->dns_doh));
     json_object_object_add(upstreams,"dot",json_object_new_string(c->dns_dot));
@@ -135,7 +153,7 @@ json_object *vr_config_json(const vr_config *c, int secrets)
 
 int vr_config_load(vr_config *c, const char *path, char *err, size_t n)
 {
-    char buf[16384];size_t len;
+    char buf[32768];size_t len;
     vr_config_default(c);
     if(vr_read_file(path,buf,sizeof(buf),&len)) {
         if(errno==ENOENT)return 0;
@@ -150,7 +168,7 @@ int vr_config_save(const vr_config *c, const char *path)
 {
     json_object *o=vr_config_json(c,1);
     const char *s=json_object_to_json_string_ext(o,JSON_C_TO_STRING_PLAIN);
-    char existing[16384];size_t n;
+    char existing[32768];size_t n;
     if(!vr_read_file(path,existing,sizeof(existing),&n)&&n==strlen(s)&&!memcmp(existing,s,n)){memset(existing,0,sizeof(existing));json_object_put(o);return 0;}
     memset(existing,0,sizeof(existing));
     int rc=vr_atomic_write(path,s,strlen(s));json_object_put(o);return rc;

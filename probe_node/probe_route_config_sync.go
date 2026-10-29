@@ -376,6 +376,14 @@ func requestProbeRouteConfig(ctx context.Context, controllerBaseURL string, iden
 }
 
 func requestProbeRouteFakeIP(ctx context.Context, controllerBaseURL string, identity nodeIdentity, domain string, rule probeVirtualRouterRouteRule) (probeVirtualRouterFakeIPEntry, probeVirtualRouterFakeIPLibrary, error) {
+	// Allocate one shared mapping using controller defaults. Local exit choices
+	// never become controller policy or change another probe's Fake IP mapping.
+	for _, original := range currentProbeVirtualRouterConfig().RouteRules {
+		if original.ID == rule.ID {
+			rule = original
+			break
+		}
+	}
 	body, err := json.Marshal(map[string]string{
 		"domain":       strings.TrimSpace(domain),
 		"rule_id":      strings.TrimSpace(rule.ID),

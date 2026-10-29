@@ -213,7 +213,7 @@ void vr_outgoing(vr_engine *e,uint8_t *b,size_t n)
         return;
     }
     if(!fake_ip(e,dest)) {
-        vr_decision d=vr_policy_match(e->policy,"",dest);
+        vr_decision d=vr_local_exit(&e->config,vr_policy_match(e->policy,"",dest));
         if(d.action==VR_REJECT)return;
         vr_nat *f=nat_forward(e,&p,1,own.s_addr,p.dst);if(!f)return;
         remember(f,b,n,d.action==VR_PROXY&&*d.exit_node&&strcmp(d.exit_node,e->config.node_id)?d.exit_node:"");
@@ -224,6 +224,8 @@ void vr_outgoing(vr_engine *e,uint8_t *b,size_t n)
         return;
     }
     vr_mapping m;if(packet_mapping(e,dest,&m)){resolve_later(e,dest,b,n,NULL,0);return;}
+    vr_decision chosen={0};chosen.action=VR_PROXY;strcpy(chosen.rule,m.rule);strcpy(chosen.exit_node,m.exit);
+    chosen=vr_local_exit(&e->config,chosen);strcpy(m.exit,chosen.exit_node);
     if(!strcmp(m.exit,e->config.node_id)) {
         uint32_t real;if(cached_destination(&m,&real)){resolve_later(e,dest,b,n,NULL,0);return;}
         if(real==inet_addr(e->addresses.lan)||real==inet_addr(e->addresses.wan))return;
@@ -247,8 +249,9 @@ void vr_incoming(vr_engine *e,const vr_frame *frame,char path[VR_PATH_MAX][129],
         if(!pinned)allowed=!node_for_ip(e,p.src,source)&&!strcmp(source,path[0]);
         if(!pinned&&!allowed&&fake_ip(e,fake)){
             if(packet_mapping(e,fake,&m)){resolve_later(e,fake,b,frame->data_len,path,count);return;}
-            allowed=!strcmp(m.exit,path[0]);}
-        if(!pinned&&!allowed){vr_decision d=vr_policy_match(e->policy,"",fake);allowed=d.action==VR_PROXY && !strcmp(d.exit_node,path[0]);}
+            vr_decision choice={.action=VR_PROXY};strcpy(choice.rule,m.rule);strcpy(choice.exit_node,m.exit);
+            choice=vr_local_exit(&e->config,choice);allowed=!strcmp(choice.exit_node,path[0]);}
+        if(!pinned&&!allowed){vr_decision d=vr_local_exit(&e->config,vr_policy_match(e->policy,"",fake));allowed=d.action==VR_PROXY && !strcmp(d.exit_node,path[0]);}
         if(!allowed)return;
         vr_packet *o=&reverse->original;
         if(!vr_packet_rewrite(b,frame->data_len,o->dst,o->src,o->dport,o->sport))inject(e,b,frame->data_len);
@@ -266,10 +269,9 @@ void vr_incoming(vr_engine *e,const vr_frame *frame,char path[VR_PATH_MAX][129],
     char fake[16];struct in_addr addr={p.dst};inet_ntop(AF_INET,&addr,fake,sizeof(fake));
     if(!fake_ip(e,fake)) {
         int allowed=vr_gateway_allowed(&e->config.gateway,source)&&vr_gateway_contains(&e->config.gateway,fake);
-        if(!allowed&&public4(fake)) {
-            vr_decision d=vr_policy_match(e->policy,"",fake);
-            allowed=d.action==VR_PROXY&&(!strcmp(d.exit_node,e->config.node_id)||!strcmp(d.backup,e->config.node_id));
-        }
+        /* Authenticated path endpoint is a generic public exit. Private LAN
+           traffic still requires the gateway allowlist above. */
+        if(!allowed&&public4(fake))allowed=1;
         if(!allowed)return;
         vr_nat *f=nat_forward(e,&p,0,p.src,p.dst);
         if(f)remember(f,b,frame->data_len,"");
@@ -277,7 +279,8 @@ void vr_incoming(vr_engine *e,const vr_frame *frame,char path[VR_PATH_MAX][129],
         return;
     }
     vr_mapping m;if(packet_mapping(e,fake,&m)){resolve_later(e,fake,b,frame->data_len,path,count);return;}
-    if(strcmp(m.exit,e->config.node_id))return;
+    /* Mapping identifies the domain; its default exit may differ from the
+       endpoint chosen by the source probe. */
     /* Reuse established destination to avoid DNS on every packet. */
     uint32_t real=0;uint64_t now=vr_millis();
     for(size_t i=0;i<VR_NAT_MAX;i++)if(e->flows[i].used&&now-e->flows[i].used<=120000&&!e->flows[i].entry&&same(&p,&e->flows[i].original)){real=e->flows[i].wire.dst;break;}

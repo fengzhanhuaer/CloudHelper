@@ -81,7 +81,7 @@ static void result(vr_engine *e,tcp_session *s,int ok)
 }
 static void decide(vr_engine *e,tcp_session *s)
 {
-    vr_decision d=vr_policy_match(e->policy,s->domain,s->ip);
+    vr_decision d=vr_local_exit(&e->config,vr_policy_match(e->policy,s->domain,s->ip));
     if(*s->domain) {char event[240];snprintf(event,sizeof(event),"SNI %.150s: %s",s->domain,d.action==VR_REJECT?"reject":d.action==VR_PROXY?"probe_exit":"direct");vr_service_log(e->service,"tls",event);}
     if(d.action==VR_REJECT){drop(e,s,0);return;}
     if(d.action!=VR_PROXY||!strcmp(d.exit_node,e->config.node_id)) {if(connect_ip(s))drop(e,s,0);return;}
@@ -139,8 +139,9 @@ static int resolve_async(vr_engine *e,tcp_session *s)
 static int authorized(vr_engine *e,tcp_session *s)
 {
     if(!public_ip(s->ip))return vr_gateway_allowed(&e->config.gateway,s->path[s->count-1])&&vr_gateway_contains(&e->config.gateway,s->ip);
-    vr_decision d=vr_policy_match(e->policy,s->domain,s->ip);
-    return d.action==VR_PROXY&&(!strcmp(d.exit_node,e->config.node_id)||!strcmp(d.backup,e->config.node_id));
+    /* Carrier ingress already authenticates the complete path. The origin
+       chooses the exit; this node's own routing defaults do not constrain it. */
+    return 1;
 }
 static void dns_results(vr_engine *e)
 {

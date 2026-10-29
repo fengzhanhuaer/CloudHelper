@@ -42,6 +42,7 @@ def main(binary):
         root = Path(work)
         config, sock = root / "config.json", root / "admin.sock"
         secret = "test-only-not-a-live-node-key"
+        config.write_text(json.dumps({"exit_overrides":{"fixture-rule":"8"}}))
         proc = start(binary, config, sock)
         try:
             response = request(sock, {"action": "status"})
@@ -58,6 +59,11 @@ def main(binary):
             assert not request(sock, {"action": "configure", "csrf": "invalid", "config": {"allow_wan": True}})["ok"]
             assert not request(sock, {"action": "upgrade", "csrf": "invalid", "check_only": True})["ok"]
             assert not request(sock, {"action": "blacklist_unblock", "csrf": "invalid", "ip": "192.0.2.7"})["ok"]
+            assert response['config']['exit_overrides']=={'fixture-rule':'8'}
+            stamp=config.stat().st_mtime_ns
+            assert request(sock,{'action':'configure','csrf':response['csrf'],'config':{'exit_overrides':{'fixture-rule':'8'}}})['ok']
+            assert config.stat().st_mtime_ns==stamp
+            assert not request(sock,{'action':'configure','csrf':response['csrf'],'config':{'exit_overrides':{'unknown':'8'}}})['ok']
             before_status=response['status']
             response=request(sock,{'action':'configure','csrf':response['csrf'],'config':{'ip_blacklist':['::ffff:192.0.2.7','192.0.2.7','2001:db8::7']}})
             assert response['ok'] and response['status']==before_status, 'IP edits must not restart the worker'
@@ -109,6 +115,14 @@ def main(binary):
             assert response['config']['tls_sni_enabled']
             assert response['config']['ip_blacklist']==['192.0.2.7','2001:db8::7']
             assert response['blacklist']['automatic']==[]
+            assert response['config']['exit_overrides']=={'fixture-rule':'8'}
+            state=response['status']
+            reset=request(sock,{'action':'configure','csrf':response['csrf'],'config':{'exit_overrides':{}}})
+            assert reset['ok'] and reset['config']['exit_overrides']=={} and reset['status']==state, 'exit reset must not restart worker'
+            stamp=config.stat().st_mtime_ns
+            assert request(sock,{'action':'configure','csrf':response['csrf'],'config':{'exit_overrides':{}}})['ok']
+            assert config.stat().st_mtime_ns==stamp, 'same choices must not rewrite JFFS'
+
             assert not (root/'auth-replay.json').exists()
             assert not list(root.glob("*.log"))
         finally:

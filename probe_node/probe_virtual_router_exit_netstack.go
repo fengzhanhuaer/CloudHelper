@@ -97,6 +97,15 @@ var probeVirtualRouterExitDialTargetUDP = dialProbeVirtualRouterProductExitUDP
 func handleProbeVirtualRouterFakeIPExitPacket(runtime *probeVirtualRouterRuntime, link *probeVirtualRouterFrameLink, packet []byte, path []string) bool {
 	dstIP := probeVirtualRouterIPv4Destination(packet)
 	entry, fakeIP, ok := currentProbeVirtualRouterExitEntryForDestinationIP(dstIP, runtime)
+	if !ok && probeVirtualRouterGenericExitPath(runtime, path) {
+		if probeVirtualRouterIPInCurrentFakeCIDR(dstIP) {
+			entry, ok = currentProbeVirtualRouterStoredFakeIPEntryByIPWithControllerRefresh(dstIP)
+			fakeIP = true
+		} else if probeVirtualRouterGenericExitIP(dstIP) {
+			entry = probeVirtualRouterFakeIPEntry{Domain: dstIP, FakeIP: dstIP, Action: "probe_exit", ExitNodeID: currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)}
+			ok = true
+		}
+	}
 	if !ok {
 		return false
 	}
@@ -587,11 +596,11 @@ func probeVirtualRouterFakeIPTargetsFromTransportID(addr tcpip.Address, port uin
 	var entry probeVirtualRouterFakeIPEntry
 	ok := false
 	if probeVirtualRouterIPInCurrentFakeCIDR(host) {
-		entry, ok = currentProbeVirtualRouterFakeIPEntryByIPWithControllerRefresh(host)
+		entry, ok = currentProbeVirtualRouterStoredFakeIPEntryByIPWithControllerRefresh(host)
 	}
 	if !ok {
 		rule, ruleOK := currentProbeVirtualRouterRouteRuleForIP(host)
-		if !ruleOK || !probeVirtualRouterRuleAllowsExitNode(rule, currentProbeVirtualRouterLocalNodeID()) {
+		if (!ruleOK || !probeVirtualRouterRuleAllowsExitNode(rule, currentProbeVirtualRouterLocalNodeID())) && !probeVirtualRouterGenericExitIP(host) {
 			return nil, probeVirtualRouterFakeIPEntry{}, errors.New("fake ip mapping is unavailable")
 		}
 		targets := buildProbeLocalTunnelRouteTargetCandidates([]string{host}, strconv.Itoa(int(port)))
@@ -654,6 +663,28 @@ func currentProbeVirtualRouterFakeIPEntryByIPWithControllerRefresh(ip string) (p
 		return probeVirtualRouterFakeIPEntry{}, false
 	}
 	return item, true
+}
+
+// Exit-side lookup ignores this probe's own origin-routing preferences. The
+// shared mapping is domain identity, not an assignment to a particular exit.
+func currentProbeVirtualRouterStoredFakeIPEntryByIPWithControllerRefresh(ip string) (probeVirtualRouterFakeIPEntry, bool) {
+	if entry, ok := currentProbeVirtualRouterStoredFakeIPEntryByIP(ip); ok {
+		return entry, true
+	}
+	if !probeVirtualRouterIPCanBeFakeIP(ip) {
+		return probeVirtualRouterFakeIPEntry{}, false
+	}
+	identity, base, ok := currentProbeVirtualRouterController()
+	if !ok {
+		return probeVirtualRouterFakeIPEntry{}, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), probeRouteConfigSyncFetchTimeout)
+	defer cancel()
+	entry, err := probeRequestRouteFakeIPByIP(ctx, base, identity, ip)
+	if err != nil || !applyProbeVirtualRouterFakeIPEntry(entry) {
+		return probeVirtualRouterFakeIPEntry{}, false
+	}
+	return currentProbeVirtualRouterStoredFakeIPEntryByIP(ip)
 }
 
 func probeVirtualRouterFakeIPRealIPs(domain string) ([]string, error) {

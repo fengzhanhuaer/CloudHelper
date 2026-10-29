@@ -65,9 +65,11 @@
           <div class="status-box" id="settingsStatus"></div>
         </div>
         <div id="settingsRoutePanel" class="tab-panel" data-settings-panel="route" hidden>
+          <p class="hint">每条规则默认跟随主控。改选出口仅保存在本机，刷新主控配置会保留选择；恢复默认后重新跟随主控。</p>
           <div id="routeSettingsGrid" class="route-settings-grid" aria-live="polite"></div>
           <div class="actions">
-            <button id="saveRouteSettingsButton" class="command" type="button" onclick="saveRouteSettings()">保存路由设置</button>
+            <button id="saveRouteSettingsButton" class="command" type="button" onclick="saveRouteSettings()">保存本机出口</button>
+            <button id="resetRouteSettingsButton" class="command" type="button" onclick="saveRouteSettings(true)">恢复默认</button>
             <button class="command neutral" type="button" onclick="loadRouteSettings()">重新读取</button>
           </div>
           <div id="routeSettingsFeedback" class="inline-feedback" aria-live="polite"></div>
