@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -40,14 +41,13 @@ func TestProbeUpgradeDownloadFailureDoesNotExtract(t *testing.T) {
 
 func TestProbeUpgradeWeakNetworkProxyChunks(t *testing.T) {
 	payload := bytes.Repeat([]byte("x"), int(probeUpgradeProxyChunkSize)+21)
-	requests := 0
+	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/probe/auth/challenge" {
 			json.NewEncoder(w).Encode(map[string]string{"challenge": "test"})
 			return
 		}
-		requests++
-		if requests == 1 {
+		if requests.Add(1) == 1 {
 			http.Error(w, "temporarily unavailable", 503)
 			return
 		}
@@ -73,8 +73,8 @@ func TestProbeUpgradeWeakNetworkProxyChunks(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(output)
-	if err != nil || !bytes.Equal(got, payload) || requests != 3 {
-		t.Fatalf("requests=%d size=%d err=%v", requests, len(got), err)
+	if err != nil || !bytes.Equal(got, payload) || requests.Load() != 12 {
+		t.Fatalf("requests=%d size=%d err=%v", requests.Load(), len(got), err)
 	}
 }
 

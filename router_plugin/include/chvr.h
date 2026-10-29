@@ -71,6 +71,7 @@ typedef struct { vr_action action; char rule[129], exit_node[129], backup[129]; 
 
 const char *vr_string(json_object *o, const char *key);
 int vr_controller_auth(const vr_config *c,const char *iface,const char *method,const char *path,char challenge[513],char signature[65],char *err,size_t n);
+int vr_controller_auth_at(const vr_config *c,const char *origin,const char *pin,const char *iface,const char *method,const char *path,char challenge[513],char signature[65],char *err,size_t n);
 int vr_timestamp(const char *s,time_t *out);
 int vr_dns_address4(const uint8_t *reply,size_t n,char out[16]);
 int vr_dns_addresses4(const uint8_t *reply,size_t n,char out[4][16]);

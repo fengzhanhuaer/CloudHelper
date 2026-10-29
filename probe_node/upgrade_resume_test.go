@@ -160,7 +160,7 @@ func TestUpgradeParallelChangedSourceFallsBackToSerial(t *testing.T) {
 			fmt.Fprint(w, `{"challenge":"fixture"}`)
 			return
 		}
-		if strings.HasPrefix(r.Header.Get("Range"), "bytes=4194304-") && changed.CompareAndSwap(false, true) {
+		if strings.HasPrefix(r.Header.Get("Range"), fmt.Sprintf("bytes=%d-", probeUpgradeProxyInitialSize)) && changed.CompareAndSwap(false, true) {
 			// If-Range can legitimately return 200 after a source's ETag changes.
 			w.WriteHeader(200)
 			return

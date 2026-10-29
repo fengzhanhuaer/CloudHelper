@@ -49,11 +49,11 @@ void vr_controller_link_init(const vr_config *c,const char *config_path)
     }
     pthread_mutex_unlock(&link_state.mutex);
 }
-int vr_controller_link_target(const vr_config *c,char origin[1024],char pin[65])
+static int link_target(const vr_config *c,char origin[1024],char pin[65],int download)
 {
     snprintf(origin,1024,"%s",c->controller);*pin=0;int direct=0;
     pthread_mutex_lock(&link_state.mutex);
-    if(!strcmp(link_state.controller,c->controller)&&valid(link_state.data)&&vr_millis()<link_state.prefer_until) {
+    if(!strcmp(link_state.controller,c->controller)&&valid(link_state.data)&&(download||vr_millis()<link_state.prefer_until)) {
         json_object *items=vr_member(link_state.data,"endpoints");
         size_t count=json_object_array_length(items);
         for(size_t i=0;i<count;i++) {
@@ -64,6 +64,27 @@ int vr_controller_link_target(const vr_config *c,char origin[1024],char pin[65])
         }
     }
     pthread_mutex_unlock(&link_state.mutex);return direct;
+}
+int vr_controller_link_target(const vr_config *c,char origin[1024],char pin[65])
+{return link_target(c,origin,pin,0);}
+int vr_controller_link_download_target(const vr_config *c,char origin[1024],char pin[65])
+{return link_target(c,origin,pin,1);}
+
+/* Downloads run concurrently. Attribute failures to the selected IP, rather
+   than the shared round-robin index which another transfer may have changed. */
+void vr_controller_link_download_feedback(const vr_config *c,const char *origin,int ok,uint64_t elapsed)
+{
+    if(!strcmp(origin,c->controller)){vr_controller_link_feedback(c,0,ok,elapsed);return;}
+    pthread_mutex_lock(&link_state.mutex);
+    if(!strcmp(c->controller,link_state.controller)&&valid(link_state.data)) {
+        json_object *items=vr_member(link_state.data,"endpoints");
+        for(size_t i=0;i<(size_t)json_object_array_length(items);i++) {
+            char host[280],candidate[1024];vr_hostport(vr_string(json_object_array_get_idx(items,i),"ip"),15030,host,sizeof(host));
+            snprintf(candidate,sizeof(candidate),"https://%s",host);
+            if(!strcmp(candidate,origin)&&!ok)link_state.retry_at[i]=vr_millis()+60000;
+        }
+    }
+    pthread_mutex_unlock(&link_state.mutex);
 }
 void vr_controller_link_feedback(const vr_config *c,int direct,int ok,uint64_t elapsed)
 {

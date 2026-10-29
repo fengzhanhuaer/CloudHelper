@@ -12,7 +12,9 @@ import (
 	"time"
 )
 
-// Two workers cap router/controller pressure. Each chunk has a separate file;
+const probeUpgradeProxyParallelism int64 = 10
+
+// Ten workers download disjoint ranges. Each chunk has a separate file;
 // only validated, complete chunks are appended to the contiguous resume file.
 func downloadProbeParallelRemainder(ctx context.Context, mode, assetURL, controller string, id nodeIdentity, part string, prefix, total int64, validator string, progress func(int64, int64, int64)) error {
 	dir := part + ".chunks"
@@ -25,10 +27,16 @@ func downloadProbeParallelRemainder(ctx context.Context, mode, assetURL, control
 	}
 	var chunks []chunk
 	objectKey := sha256.Sum256([]byte(assetURL + "\n" + validator))
-	for start := prefix; start < total; start += probeUpgradeProxyChunkSize {
-		end := start + probeUpgradeProxyChunkSize - 1
-		if end >= total {
-			end = total - 1
+	if prefix < 0 || total <= prefix {
+		return errors.New("invalid parallel download bounds")
+	}
+	workers := min(probeUpgradeProxyParallelism, total-prefix)
+	span, extra := (total-prefix)/workers, (total-prefix)%workers
+	for i := int64(0); i < workers; i++ {
+		start := prefix + span*i + min(i, extra)
+		end := start + span - 1
+		if i < extra {
+			end++
 		}
 		chunks = append(chunks, chunk{start, end, filepath.Join(dir, fmt.Sprintf("%x-%d-%d", objectKey[:8], start, end))})
 	}
@@ -40,7 +48,7 @@ func downloadProbeParallelRemainder(ctx context.Context, mode, assetURL, control
 	var first error
 	done := make([]int64, len(chunks))
 	started := time.Now()
-	for worker := 0; worker < 2; worker++ {
+	for worker := int64(0); worker < workers; worker++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

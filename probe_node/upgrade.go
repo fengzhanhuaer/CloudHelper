@@ -24,6 +24,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/cloudhelper/probe_node/internal/controllerlink"
 )
 
 type releaseAsset struct {
@@ -522,6 +524,8 @@ func pickAndroidProbeNodeAsset(probeAssets []releaseAsset, platform runtimePlatf
 // A bounded range keeps proxy requests short even when a CDN terminates long responses.
 const probeUpgradeProxyChunkSize int64 = 4 * 1024 * 1024
 
+const probeUpgradeProxyInitialSize int64 = 64 * 1024
+
 type probeUpgradePartialState struct {
 	AssetHash string `json:"asset_hash"`
 	Validator string `json:"validator,omitempty"`
@@ -647,7 +651,7 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 			return errors.New("downloaded asset is empty")
 		}
 		if knownTotal >= 0 && next < knownTotal {
-			if allowParallel && mode == "proxy" && knownTotal-next >= 2*probeUpgradeProxyChunkSize && validator != "" {
+			if allowParallel && mode == "proxy" && knownTotal-next >= probeUpgradeProxyParallelism && validator != "" {
 				if e := downloadProbeParallelRemainder(ctx, mode, assetURL, controllerBase, identity, partPath, next, knownTotal, validator, onProgress); e != nil {
 					if errors.Is(e, errProbeUpgradeRestartDownload) {
 						if err := restart(); err != nil {
@@ -657,10 +661,10 @@ func downloadProbeAsset(ctx context.Context, mode, assetURL, controllerBase stri
 					}
 					return e
 				}
+			} else {
+				retries = 0
 				continue
 			}
-			retries = 0
-			continue
 		}
 		if err := os.Rename(partPath, output); err != nil {
 			return err
@@ -701,6 +705,9 @@ func downloadProbeAssetChunk(ctx context.Context, mode, assetURL, controllerBase
 		}
 		req.Header.Set("X-CloudHelper-Download-Cache", "1")
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, offset+probeUpgradeProxyChunkSize-1))
+		if offset == 0 && knownTotal < 0 {
+			req.Header.Set("Range", fmt.Sprintf("bytes=0-%d", probeUpgradeProxyInitialSize-1))
+		}
 		if len(rangeEnd) > 0 {
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, rangeEnd[0]))
 		}
@@ -781,7 +788,16 @@ func downloadProbeAssetChunk(ctx context.Context, mode, assetURL, controllerBase
 		f.Close()
 		return 0, 0, err
 	}
-	written, copyErr := copyProbeUpgradeWithProgressAndIdleTimeout(f, resp.Body, probeUpgradeDownloadIdleTimeout, cancel, func(n int64) { progress(offset+n, total) })
+	var written int64
+	var copyErr error
+	if mode == "proxy" {
+		written, copyErr = copyProbeUpgradeWithMinimumRate(f, resp.Body, probeUpgradeDownloadMinimumRate, probeUpgradeDownloadRateWindow, func() {
+			controllerlink.ReportDownloadFailure(resp)
+			cancel()
+		}, cancel, func(n int64) { progress(offset+n, total) })
+	} else {
+		written, copyErr = copyProbeUpgradeWithProgressAndIdleTimeout(f, resp.Body, probeUpgradeDownloadIdleTimeout, cancel, func(n int64) { progress(offset+n, total) })
+	}
 	closeErr := f.Close()
 	if copyErr != nil {
 		return 0, 0, errors.Join(copyErr, closeErr)

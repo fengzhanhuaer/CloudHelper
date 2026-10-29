@@ -15,7 +15,7 @@ with tempfile.TemporaryDirectory(prefix='chvr-controller-link-') as directory:
     pin=hashlib.sha256(der).hexdigest()
     trust=Path('/usr/local/share/ca-certificates/chvr-link-test.crt');trust.write_bytes((root/'primary.crt').read_bytes())
     subprocess.check_call(['update-ca-certificates'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-    used=set();sequence=0;lock=threading.Lock()
+    used=set();sequence=0;lock=threading.Lock();downloads=[]
     class Handler(BaseHTTPRequestHandler):
         def log_message(self,*_):pass
         def do_GET(self):
@@ -33,6 +33,16 @@ with tempfile.TemporaryDirectory(prefix='chvr-controller-link-') as directory:
                 if not valid:self.send_error(401);return
                 if self.path=='/api/probe/controller/endpoints':
                     body={'version':1,'expires_at':int(time.time())+3600,'endpoints':[{'ip':'2001:db8::1','port':15030,'tls_spki_sha256':pin},{'ip':'192.0.2.1','port':15030,'tls_spki_sha256':pin}]}
+                elif self.path=='/api/probe/proxy/download':
+                    direct=self.server.server_port==15030
+                    remote=self.headers.get('X-CloudHelper-Download-URL','')
+                    downloads.append(('ip' if direct else 'domain',remote))
+                    if remote.endswith('/fail'):
+                        if direct:self.send_error(503);return
+                        assert self.headers.get('Range')=='bytes=2-'
+                        assert self.headers.get('X-CloudHelper-Download-Cache')=='1'
+                        self.send_response(206);self.send_header('Content-Range','bytes 2-7/8');self.send_header('Content-Length','6');self.end_headers();self.wfile.write(b'cdefgh');return
+                    body={'download':'ip' if direct else 'domain'}
                 elif self.server.server_port==15030:body={'ok':True}
                 else:self.send_error(503);return
             data=json.dumps(body).encode();self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
@@ -41,6 +51,8 @@ with tempfile.TemporaryDirectory(prefix='chvr-controller-link-') as directory:
         for kind,port in [('primary',0),('direct',15030)]:
             server=ThreadingHTTPServer(('127.0.0.1',port),Handler);context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.load_cert_chain(str(root/(kind+'.crt')),str(root/(kind+'.key')));server.socket=context.wrap_socket(server.socket,server_side=True);servers.append(server);threading.Thread(target=server.serve_forever,daemon=True).start()
         subprocess.check_call(['bin/native/test-controller-link',str(servers[0].server_port)])
+        assert downloads==[('ip','https://fixture/metadata'),('ip','https://fixture/fail'),('domain','https://fixture/fail')],downloads
     finally:
         for server in servers:server.shutdown();server.server_close()
         trust.unlink()
+        subprocess.check_call(['update-ca-certificates'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)

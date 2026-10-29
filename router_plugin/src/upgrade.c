@@ -174,7 +174,7 @@ json_object *vr_upgrade_status(vr_service *s)
  if(!o){char b[4096];size_t n;if(!vr_read_file(UPGRADE_STATE,b,sizeof(b),&n))o=vr_json_parse(b,n);}
  return o?o:json_object_new_object();
 }
-typedef struct {upgrade_job *job;int fd;int64_t offset,size,received,end;long status;int range_valid,preparing;char *memory;size_t used;} transfer;
+typedef struct {upgrade_job *job;int fd;int64_t offset,size,received,end;long status;int range_valid,preparing;char *memory;size_t used;uint64_t headers_ms;} transfer;
 static int cancelled(void *arg,curl_off_t a,curl_off_t b,curl_off_t c,curl_off_t d)
 {
  (void)a;(void)b;(void)c;(void)d;transfer *t=arg;return t->job->service&&vr_service_stopped(t->job->service,t->job->generation);
@@ -201,14 +201,13 @@ static size_t receive(void *p,size_t size,size_t count,void *arg)
  if(write(t->fd,p,n)!=(ssize_t)n)return 0;
  t->received+=(int64_t)n;return n;
 }
-static CURLcode fetch(upgrade_job *job,const char *remote,transfer *t)
+static CURLcode fetch_at(upgrade_job *job,const char *remote,transfer *t,const char *selected,const char *pin)
 {
- char url[2048],path[128]="/api/probe/proxy/download",challenge[513],signature[65],line[2200],err[256],selected[1024],pin[65]="";int origin_direct=0;
+ char url[2048],path[128]="/api/probe/proxy/download",challenge[513],signature[65],line[2200],err[256];
  struct curl_slist *headers=NULL,*addresses=NULL;CURL *curl=curl_easy_init();if(!curl)return CURLE_FAILED_INIT;
  if(job->direct)snprintf(url,sizeof(url),"%s",remote);
  else {
-  if(vr_controller_auth(&job->config,job->iface,"GET",path,challenge,signature,err,sizeof(err))){curl_easy_cleanup(curl);return CURLE_LOGIN_DENIED;}
-  origin_direct=vr_controller_link_target(&job->config,selected,pin);
+  if(vr_controller_auth_at(&job->config,selected,pin,job->iface,"GET",path,challenge,signature,err,sizeof(err))){curl_easy_cleanup(curl);return CURLE_LOGIN_DENIED;}
   snprintf(url,sizeof(url),"%s%s",selected,path);
   snprintf(line,sizeof(line),"X-Probe-Node-Id: %s",job->config.node_id);headers=curl_slist_append(headers,line);
   snprintf(line,sizeof(line),"X-Probe-Rand: %s",challenge);headers=curl_slist_append(headers,line);
@@ -251,8 +250,25 @@ static CURLcode fetch(upgrade_job *job,const char *remote,transfer *t)
  vr_curl_pin(curl,pin);
  uint64_t started=vr_millis();CURLcode rc=curl_easy_perform(curl);curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&t->status);
  double headers_at=0;curl_easy_getinfo(curl,CURLINFO_STARTTRANSFER_TIME,&headers_at);
- if(!job->direct&&!t->preparing&&rc!=CURLE_ABORTED_BY_CALLBACK)vr_controller_link_feedback(&job->config,origin_direct,rc==CURLE_OK&&t->status<500,headers_at>0?(uint64_t)(headers_at*1000):vr_millis()-started);
+ t->headers_ms=headers_at>0?(uint64_t)(headers_at*1000):vr_millis()-started;
  curl_easy_cleanup(curl);curl_slist_free_all(headers);curl_slist_free_all(addresses);return rc;
+}
+
+static CURLcode fetch(upgrade_job *job,const char *remote,transfer *t)
+{
+ CURLcode rc=CURLE_COULDNT_CONNECT;
+ for(int attempt=0;attempt<5;attempt++) {
+  char origin[1024]="",pin[65]="";int direct=0;
+  if(!job->direct)direct=vr_controller_link_download_target(&job->config,origin,pin);
+  uint64_t start=vr_millis();rc=fetch_at(job,remote,t,origin,pin);
+  int failed=rc!=CURLE_OK||t->status>=500||t->status==429||t->status==403||t->status==401;
+  if(job->direct||t->preparing||cancelled(t,0,0,0,0))return rc;
+  vr_controller_link_download_feedback(&job->config,origin,!failed,t->headers_ms?t->headers_ms:vr_millis()-start);
+  /* Partial payloads must resume at their new offset in the caller. */
+  if(!failed||!direct||t->received)return rc;
+  free(t->memory);t->memory=NULL;t->used=0;t->status=0;t->range_valid=0;t->headers_ms=0;
+ }
+ return rc;
 }
 
 typedef struct {upgrade_job *job;const char *url;FILE *file;int64_t first,last,total;int ok;} parallel_chunk;

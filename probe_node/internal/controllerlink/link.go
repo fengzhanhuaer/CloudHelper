@@ -357,6 +357,17 @@ type observedBody struct {
 	failed func()
 }
 
+// ReportDownloadFailure lets a payload consumer reject a path whose body is
+// making progress too slowly. Report before cancelling the request so the
+// selected endpoint, rather than all direct endpoints, enters cooldown.
+func ReportDownloadFailure(resp *http.Response) {
+	if resp != nil {
+		if body, ok := resp.Body.(observedBody); ok {
+			body.failed()
+		}
+	}
+}
+
 func (b observedBody) Read(p []byte) (int, error) {
 	n, e := b.ReadCloser.Read(p)
 	if e != nil && e != io.EOF {
@@ -404,7 +415,9 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	var resp *http.Response
 	var err error
-	firstDirect := prefer
+	// Upgrade payloads should not linger on a responsive but slow CDN path.
+	// Keep normal control traffic on the existing stability-based policy.
+	firstDirect := prefer || ((req.Method == "GET" || req.Method == "HEAD") && req.URL.Path == "/api/probe/proxy/download")
 	rounds := len(data.Endpoints) + 1
 	for i := 0; i < rounds; i++ {
 		direct := firstDirect || i > 0

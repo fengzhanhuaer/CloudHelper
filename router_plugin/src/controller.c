@@ -105,12 +105,12 @@ static json_object *request(const vr_config *c,const char *iface,const char *met
     return o;
 }
 
-static int authenticate(const vr_config *c,const char *iface,const char *method,const char *path,char challenge[513],char signature[65],cancellation *cancel,char *err,size_t n)
+static int authenticate(const vr_config *c,const char *iface,const char *method,const char *path,char challenge[513],char signature[65],const char *origin,const char *pin,cancellation *cancel,char *err,size_t n)
 {
     char challenge_path[320],text[2048];
     if(!*c->node_id || !*c->node_key || strlen(path)>1024 || (strcmp(method,"GET")&&strcmp(method,"POST"))) {snprintf(err,n,"controller credentials or method invalid");return -1;}
     snprintf(challenge_path,sizeof(challenge_path),"/api/probe/auth/challenge?node_id=%s",c->node_id);
-    json_object *o=request(c,iface,"GET",challenge_path,NULL,NULL,10000,cancel,err,n);if(!o)return -1;
+    json_object *o=origin?request_at(c,origin,pin,iface,"GET",challenge_path,NULL,NULL,8000,cancel,err,n):request(c,iface,"GET",challenge_path,NULL,NULL,10000,cancel,err,n);if(!o)return -1;
     *challenge=0;int bad=vr_copy(challenge,513,vr_string(o,"challenge")) || !*challenge;
     json_object_put(o);
     for(const unsigned char *p=(const unsigned char *)challenge;*p;p++)if(*p<33||*p>126)bad=1;
@@ -121,12 +121,15 @@ static int authenticate(const vr_config *c,const char *iface,const char *method,
 }
 
 int vr_controller_auth(const vr_config *c,const char *iface,const char *method,const char *path,char challenge[513],char signature[65],char *err,size_t n)
-{return authenticate(c,iface,method,path,challenge,signature,NULL,err,n);}
+{return authenticate(c,iface,method,path,challenge,signature,NULL,NULL,NULL,err,n);}
+
+int vr_controller_auth_at(const vr_config *c,const char *origin,const char *pin,const char *iface,const char *method,const char *path,char challenge[513],char signature[65],char *err,size_t n)
+{return authenticate(c,iface,method,path,challenge,signature,origin,pin,NULL,err,n);}
 
 static json_object *call_once(const vr_config *c,const char *iface,const char *method,const char *path,json_object *body,long budget,cancellation *cancel,char *err,size_t n)
 {
     char challenge[513]={0},signature[65],header[768];
-    if(authenticate(c,iface,method,path,challenge,signature,cancel,err,n))return NULL;
+    if(authenticate(c,iface,method,path,challenge,signature,NULL,NULL,cancel,err,n))return NULL;
     struct curl_slist *headers=NULL,*next=NULL;
     const char *names[]={"X-Probe-Node-Id","X-Probe-Rand","X-Probe-Signature","Content-Type"};
     const char *values[]={c->node_id,challenge,signature,"application/json"};

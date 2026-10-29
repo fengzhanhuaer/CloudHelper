@@ -34,6 +34,8 @@ int vr_tls_pinned(X509 *cert,const char *pin);
 void vr_curl_pin(CURL *curl,const char *pin);
 void vr_controller_link_init(const vr_config *c,const char *config_path);
 int vr_controller_link_target(const vr_config *c,char origin[1024],char pin[65]);
+int vr_controller_link_download_target(const vr_config *c,char origin[1024],char pin[65]);
+void vr_controller_link_download_feedback(const vr_config *c,const char *origin,int ok,uint64_t elapsed);
 void vr_controller_link_feedback(const vr_config *c,int direct,int ok,uint64_t elapsed);
 int vr_controller_link_refresh_due(const vr_config *c);
 int vr_controller_link_store(const vr_config *c,json_object *data);

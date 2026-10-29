@@ -15,7 +15,7 @@ func isProbeTransientHTTPError(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return true
 	}
-	if errors.Is(err, errProbeUpgradeDownloadIdleTimeout) {
+	if errors.Is(err, errProbeUpgradeDownloadIdleTimeout) || errors.Is(err, errProbeUpgradeDownloadTooSlow) {
 		return true
 	}
 	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {

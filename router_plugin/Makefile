@@ -25,7 +25,7 @@ $(BUILD)/test-addresses: tests/test_addresses.c src/platform.c $(wildcard includ
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_addresses.c $(LDFLAGS) -Wl,--wrap=posix_spawnp $(LDLIBS) -o $@
 $(BUILD)/test-telemetry: $(CORE) src/carrier.c tests/test_telemetry.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/carrier.c tests/test_telemetry.c $(LDFLAGS) $(LDLIBS) -o $@
-$(BUILD)/test-controller-link: $(CORE) tests/test_controller_link.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
+$(BUILD)/test-controller-link: $(CORE) src/upgrade.c tests/test_controller_link.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_controller_link.c $(LDFLAGS) -Wl,--wrap=vr_resolve_transport $(LDLIBS) -o $@
 $(BUILD)/test-tls-connect: $(CORE) tests/test_tls_connect.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_tls_connect.c $(LDFLAGS) -Wl,--wrap=vr_resolve_transport $(LDLIBS) -o $@
