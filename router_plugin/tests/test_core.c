@@ -315,6 +315,19 @@ static void test_local_exits(void)
     d.action=VR_PROXY;strcpy(d.rule,"another");assert(!strcmp(vr_local_exit(&c,d).exit_node,"7"));
     o=vr_config_json(&c,1);vr_config restored;vr_config_default(&restored);assert(!vr_config_parse(&restored,o,&restored,err,sizeof(err)));json_object_put(o);
     assert(restored.exit_overrides.count==1&&!strcmp(restored.exit_overrides.items[0].node,"8"));
+    strcpy(d.rule,"rule-a");
+    for(int action=VR_DIRECT;action<=VR_REJECT;action++) {
+        const char *choice=action==VR_DIRECT?"@direct":"@reject";
+        strcpy(c.exit_overrides.items[0].node,choice);
+        for(int original=VR_DIRECT;original<=VR_PROXY;original++) {
+            d.action=original;effective=vr_local_exit(&c,d);
+            assert(effective.action==(vr_action)action&&!*effective.exit_node&&!*effective.backup&&!strcmp(d.exit_node,"7"));
+        }
+        o=vr_config_json(&c,1);assert(!vr_config_parse(&restored,o,&restored,err,sizeof(err)));json_object_put(o);
+        assert(!strcmp(restored.exit_overrides.items[0].node,choice));
+    }
+    const char *bad="{\"exit_overrides\":{\"rule-a\":\"@unknown\"}}";
+    o=vr_json_parse(bad,strlen(bad));assert(vr_config_parse(&restored,o,&restored,err,sizeof(err)));json_object_put(o);
     o=json_object_new_object();json_object_object_add(o,"exit_overrides",json_object_new_object());assert(!vr_config_parse(&c,o,&c,err,sizeof(err)));json_object_put(o);assert(!c.exit_overrides.count);
     o=json_object_new_object();json_object *choices=json_object_new_object();json_object_object_add(o,"exit_overrides",choices);
     for(unsigned i=0;i<=VR_EXIT_OVERRIDES_MAX;i++){char id[32];snprintf(id,sizeof(id),"rule-%u",i);json_object_object_add(choices,id,json_object_new_string("8"));}

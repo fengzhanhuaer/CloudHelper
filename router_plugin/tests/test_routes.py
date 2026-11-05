@@ -62,5 +62,14 @@ table.write_text(json.dumps(rows))
     assert sorted(json.loads(table.read_text())) == sorted(preserved+['187:'+c for c in ['203.0.113.0/24','198.51.100.0/24','0.0.0.0/0','192.0.2.8/32','192.0.2.0/24']])
     assert subprocess.call(['bin/native/test-routes', str(new), str(old)], env=env) == 0
     assert sorted(json.loads(table.read_text())) == sorted(preserved)
+    direct={'route_rules':[{'id':'direct','action':'direct','entries':['cidr:9.9.9.0/24']}]}
+    old.write_text(json.dumps(direct));new.write_text(json.dumps(direct))
+    for before,after,expected in [('', '@reject', ['187:9.9.9.0/24']),('@reject','@direct',[]),('@direct','',[])]:
+        commands.write_text('[]')
+        assert subprocess.call(['bin/native/test-routes',str(old),str(new),before,after],env=env)==0
+        assert sorted(json.loads(table.read_text()))==sorted(preserved+expected)
+    table.write_text(json.dumps(preserved));commands.write_text('[]')
+    assert subprocess.call(['bin/native/test-routes',str(old),str(new),'','@reject'],env=dict(env,CHVR_FAIL_ROUTE='add:9.9.9.0/24'))==1
+    assert sorted(json.loads(table.read_text()))==sorted(preserved)
     print('PASS: private-route add/remove diff, unchanged routes, and partial-add/delete rollback')
     print('PASS: ordinary proxy/reject CIDRs, aliases, canonicalization, default rule and LAN-only table 187')

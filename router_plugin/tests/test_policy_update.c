@@ -10,8 +10,8 @@
 static int platform_fail,platform_calls,delivered,request_started,release_request;
 static pthread_mutex_t request_mutex=PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t request_changed=PTHREAD_COND_INITIALIZER;
-int __wrap_vr_platform_routes_update(json_object *old,json_object *next)
-{assert(old&&next);platform_calls++;return platform_fail;}
+int __wrap_vr_platform_exit_routes(json_object *old,json_object *next,const vr_exit_overrides *before,const vr_exit_overrides *after)
+{assert(old&&next&&before&&after);platform_calls++;return platform_fail;}
 void vr_link_frame(vr_link *l,const vr_frame *f,char path[VR_PATH_MAX][129],size_t n)
 {(void)l;(void)f;(void)path;(void)n;delivered++;}
 json_object *__wrap_vr_controller_call(const vr_config *c,const char *iface,const char *method,const char *path,json_object *body,char *err,size_t cap)

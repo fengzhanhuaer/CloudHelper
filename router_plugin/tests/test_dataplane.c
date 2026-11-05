@@ -9,6 +9,9 @@
 #include <unistd.h>
 
 static uint8_t carried[1500];static size_t carried_len;
+static int resolved_requests;
+int __wrap_vr_resolve4(const char *domain,const char *upstream,const char *iface,char out[16])
+{(void)upstream;(void)iface;assert(!strcmp(domain,"local.example"));resolved_requests++;strcpy(out,"203.0.113.5");return 0;}
 static void tcp_checksums(uint8_t b[40])
 {
     b[10]=b[11]=b[36]=b[37]=0;uint16_t c=vr_checksum(b,20);b[10]=(uint8_t)(c>>8);b[11]=(uint8_t)c;
@@ -63,6 +66,18 @@ int main(void)
     assert(!strcmp(entry->mappings[0].exit,"9")); /* Local selection never changes shared cache defaults. */
     for(size_t i=0;i<VR_NAT_MAX;i++)entry->flows[i].used=0;
     vr_incoming(entry,&frame,path,2);assert(read(entry_pipe[0],packet,sizeof(packet))<0);
+    /* A cached Fake IP observes local actions without changing shared mapping. */
+    for(size_t i=0;i<len;i++){unsigned value;assert(sscanf(hex+2*i,"%2x",&value)==1);packet[i]=(uint8_t)value;}
+    strcpy(entry->config.exit_overrides.items[0].node,"@reject");carried_len=0;
+    vr_outgoing(entry,packet,len);assert(!carried_len&&read(entry_pipe[0],carried,sizeof(carried))<0);
+    strcpy(entry->config.exit_overrides.items[0].node,"@direct");
+    vr_outgoing(entry,packet,len);assert(!carried_len&&read(entry_pipe[0],packet,sizeof(packet))==(ssize_t)len);
+    vr_packet direct;assert(!vr_packet_parse(packet,len,&direct)&&direct.dst==inet_addr("203.0.113.5"));
+    assert(!vr_packet_rewrite(packet,len,direct.dst,direct.src,direct.dport,direct.sport));
+    vr_outgoing(entry,packet,len);assert(read(entry_pipe[0],packet,sizeof(packet))==(ssize_t)len);
+    assert(!vr_packet_parse(packet,len,&reply)&&reply.src==original.dst&&reply.dst==original.src);
+    assert(!strcmp(entry->mappings[0].exit,"9")&&!strcmp(entry->mappings[0].rule,"fake-rule"));
+    strcpy(entry->config.exit_overrides.items[0].node,"8");
     /* Remote LAN access shares the IP frame, but checks source, endpoint and ACL. */
     vr_gateway *g=&exit->config.gateway;g->enabled=1;g->cidr_count=2;g->node_count=1;
     strcpy(g->cidrs[0],"192.168.50.0/24");strcpy(g->cidrs[1],"10.20.0.0/16");strcpy(g->nodes[0],"7");
@@ -132,6 +147,17 @@ int main(void)
     /* A new SYN incarnation on the reused tuple observes the new reject rule. */
     tcp[33]=2;tcp[27]=99;tcp_checksums(tcp);assert(!vr_packet_rewrite(tcp,40,inet_addr("192.168.52.100"),inet_addr("203.0.113.5"),49000,443));
     carried_len=0;vr_outgoing(entry,tcp,40);assert(!carried_len);
+    /* A cold local direct destination resolves off-loop even if shared exit is 9. */
+    int async_pipe[2];vr_engine *local=engine("7","198.18.0.7",async_pipe);
+    strcpy(local->mappings[0].domain,"local.example");strcpy(local->mappings[0].rule,"fake-rule");strcpy(local->mappings[0].exit,"9");
+    local->config.exit_overrides.count=1;strcpy(local->config.exit_overrides.items[0].rule,"fake-rule");strcpy(local->config.exit_overrides.items[0].node,"@direct");
+    for(size_t i=0;i<len;i++){unsigned value;assert(sscanf(hex+2*i,"%2x",&value)==1);packet[i]=(uint8_t)value;}
+    assert(!vr_dataplane_start(local));carried_len=0;vr_outgoing(local,packet,len);ssize_t got=-1;
+    for(unsigned i=0;i<1000&&got<0;i++){vr_dataplane_tick(local);got=read(async_pipe[0],packet,sizeof(packet));if(got<0)usleep(1000);}
+    assert(got==(ssize_t)len&&!carried_len&&resolved_requests==1);
+    assert(!vr_packet_parse(packet,len,&direct)&&direct.dst==inet_addr("203.0.113.5"));
+    assert(!strcmp(local->mappings[0].exit,"9"));vr_dataplane_stop(local);
+    close(async_pipe[0]);close(async_pipe[1]);json_object_put(local->policy);pthread_mutex_destroy(&local->mutex);free(local);
     close(entry_pipe[0]);close(entry_pipe[1]);close(exit_pipe[0]);close(exit_pipe[1]);
     json_object_put(entry->policy);json_object_put(exit->policy);pthread_mutex_destroy(&entry->mutex);pthread_mutex_destroy(&exit->mutex);free(entry);free(exit);
     puts("PASS: LAN fake-IP NAT round trip, spoof rejection, bounded asynchronous mapping resolution");return 0;

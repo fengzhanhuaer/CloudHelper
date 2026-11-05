@@ -92,8 +92,11 @@ static int validate_exit_choices(vr_service *s,const vr_config *c)
         if(retained)continue;
         for(size_t j=0;rules&&j<(size_t)json_object_array_length(rules);j++) {
             json_object *r=json_object_array_get_idx(rules,j);const char *action=vr_string(r,"action");
-            if(!strcmp(rule,vr_string(r,"id"))&&strcmp(action,"direct")&&strcmp(action,"reject"))known_rule=1;
+            if(!strcmp(rule,vr_string(r,"id"))&&
+               ((!strcmp(node,"@direct")||!strcmp(node,"@reject"))||
+                (strcmp(action,"direct")&&strcmp(action,"reject"))))known_rule=1;
         }
+        if(!strcmp(node,"@direct")||!strcmp(node,"@reject"))known_node=1;
         for(size_t j=0;nodes&&j<(size_t)json_object_array_length(nodes);j++)if(!strcmp(node,vr_string(json_object_array_get_idx(nodes,j),"node_id")))known_node=1;
         if(!known_rule||!known_node)return -1;
     }
@@ -122,7 +125,7 @@ json_object *vr_service_dispatch(vr_service *s,json_object *request)
         vr_config c;char err[256];
         pthread_mutex_lock(&s->mutex);
         if(vr_config_parse(&c,vr_member(request,"config"),&s->config,err,sizeof(err))) {pthread_mutex_unlock(&s->mutex);return error_reply(err);}
-        if(validate_exit_choices(s,&c)){pthread_mutex_unlock(&s->mutex);return error_reply("unknown proxy rule or exit node; wait for controller rules");}
+        if(validate_exit_choices(s,&c)){pthread_mutex_unlock(&s->mutex);return error_reply("unknown rule or unavailable exit choice; wait for controller rules");}
         if(vr_config_save(&c,s->config_path)){pthread_mutex_unlock(&s->mutex);OPENSSL_cleanse(&c,sizeof(c));return error_reply("cannot persist configuration");}
         int sniff=c.tls_sni_enabled;c.tls_sni_enabled=s->config.tls_sni_enabled;
         vr_ip_blacklist blacklist=c.ip_blacklist;c.ip_blacklist=s->config.ip_blacklist;

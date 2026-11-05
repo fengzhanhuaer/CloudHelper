@@ -16,6 +16,7 @@ void vr_platform_stop(const char *cidr);
 int vr_platform_dns(int enabled);
 int vr_platform_routes(json_object *policy);
 int vr_platform_routes_update(json_object *previous,json_object *next);
+int vr_platform_exit_routes(json_object *previous,json_object *next,const vr_exit_overrides *before,const vr_exit_overrides *after);
 int vr_platform_healthy(void);
 int vr_platform_check(char *detail,size_t capacity);
 int vr_platform_repair(const vr_config *c,const vr_addresses *a,const char *cidr);

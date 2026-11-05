@@ -73,17 +73,20 @@ static void parser_tests(void)
     for(size_t i=0;i<65536;i++){size_t len=i%sizeof(wire);for(size_t j=0;j<len;j++)wire[j]=(uint8_t)(i*33+j*17);vr_tls_server_name(wire,len,name);}
     puts("PASS: complete/partial/multi-record ClientHello, malformed lengths, names, bounded parser inputs");
 }
-static void transfer(const char *action)
+static void transfer(const char *action,const char *choice)
 {
+    entry->config.exit_overrides.count=choice?1:0;
+    if(choice){strcpy(entry->config.exit_overrides.items[0].rule,"sni-rule");strcpy(entry->config.exit_overrides.items[0].node,choice);}
+    const char *expected=choice?choice+1:action;
     policy(entry,action);policy(exit_node,"reject");int pair[2];assert(!socketpair(AF_UNIX,SOCK_STREAM|SOCK_NONBLOCK,0,pair));
     assert(!vr_tcp_attach(entry,pair[1],"203.0.113.5",443));uint8_t wire[1024],reply[1024];size_t n=hello(wire,"fixture.example");
     int before=connections;assert(write(pair[0],wire,3)==3);for(int i=0;i<3;i++){tick(entry);tick(exit_node);}assert(connections==before);
     assert(write(pair[0],wire+3,n-3)==(ssize_t)n-3);size_t got=0;uint64_t deadline=vr_millis()+5000;
     while(got<n&&vr_millis()<deadline) {tick(entry);tick(exit_node);ssize_t k=read(pair[0],reply+got,n-got);if(k>0)got+=(size_t)k;else if(!k)break;}
-    if(!strcmp(action,"reject")){assert(!got&&connections==before);}
+    if(!strcmp(expected,"reject")){assert(!got&&connections==before);}
     else {
         assert(got==n&&!memcmp(wire,reply,n)&&connections==before+1);
-        if(!strcmp(action,"probe_exit")) {
+        if(!strcmp(expected,"probe_exit")) {
             char data[128];snprintf(data,sizeof(data),"{\"session_id\":\"%s\"}",opened_id);
             char wrong[VR_PATH_MAX][129]={{"9"},{"7"}};vr_frame f={8,4,NULL,(const uint8_t *)data,0,strlen(data)};
             vr_tcp_frame(entry,&f,wrong,2);
@@ -100,7 +103,8 @@ int main(void)
     parser_tests();entry=engine("7");exit_node=engine("8");
     listener=socket(AF_INET,SOCK_STREAM,0);assert(listener>=0);struct sockaddr_in a={0};a.sin_family=AF_INET;a.sin_addr.s_addr=inet_addr("127.0.0.1");assert(!bind(listener,(struct sockaddr *)&a,sizeof(a)));assert(!listen(listener,8));socklen_t size=sizeof(a);assert(!getsockname(listener,(struct sockaddr *)&a,&size));target_port=ntohs(a.sin_port);
     pthread_t thread;assert(!pthread_create(&thread,NULL,echo,NULL));
-    transfer("direct");transfer("probe_exit");transfer("reject");
+    transfer("direct",NULL);transfer("probe_exit",NULL);transfer("reject",NULL);
+    transfer("probe_exit","@direct");transfer("probe_exit","@reject");transfer("reject","@direct");transfer("direct","@reject");entry->config.exit_overrides.count=0;
     int before=connections;char path[VR_PATH_MAX][129]={{"7"},{"8"}};
     const char *denied[]={"127.0.0.1:22","169.254.169.254:80","192.168.1.1:80"};
     policy(exit_node,"direct");

@@ -26,8 +26,11 @@ static int cached_answer(vr_engine *e,const uint8_t *query,size_t qn,uint8_t *re
     vr_question q;
     if(vr_dns_question(query,qn,&q)||(query[2]&0x80)||q.type!=1)return -1;
     pthread_mutex_lock(&e->mutex);int needs_ip=vr_policy_needs_ip(e->policy,q.name);
-    vr_decision d=vr_policy_match(e->policy,q.name,NULL);d.revision=e->policy_revision;pthread_mutex_unlock(&e->mutex);
+    vr_decision d=vr_policy_match(e->policy,q.name,NULL);d.revision=e->policy_revision;
+    vr_decision effective=vr_local_exit(&e->config,d);pthread_mutex_unlock(&e->mutex);
     if(needs_ip)return -1;
+    if(effective.action==VR_REJECT)return vr_dns_reply(query,qn,reply,cap,5,NULL,rn);
+    if(effective.action!=VR_PROXY)return -1;
     vr_mapping m;
     if(d.action!=VR_PROXY||vr_mapping_lookup(e,q.name,NULL,d,&m))return -1;
     return mapping_reply(query,qn,reply,cap,rn,&m);
@@ -37,6 +40,9 @@ static vr_decision decision(vr_engine *e,const char *domain,const char *ip,int *
 {
     pthread_mutex_lock(&e->mutex);
     vr_decision d=vr_policy_match(e->policy,domain,ip);d.revision=e->policy_revision;
+    vr_decision effective=vr_local_exit(&e->config,d);
+    /* Node overrides must not change the controller's shared Fake IP key. */
+    if(effective.action!=VR_PROXY)d=effective;
     if(needs_ip)*needs_ip=vr_policy_needs_ip(e->policy,domain);
     pthread_mutex_unlock(&e->mutex);return d;
 }

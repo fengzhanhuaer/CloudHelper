@@ -19,8 +19,8 @@ bin/native/test-telemetry
 bin/native/test-cache
 mkdir -p artifacts
 bin/native/test-telemetry --json > artifacts/telemetry-fixture.json
-make VERSION="$build_version" bin/native/test-policy-update bin/native/test-control bin/native/test-mapping bin/native/test-dns bin/native/test-dataplane bin/native/test-routes bin/native/test-tls-proxy bin/native/test-tcp-close bin/native/test-tx
-for target in policy-update mapping dns dataplane tls-proxy tcp-close tx;do bin/native/test-$target;done
+make VERSION="$build_version" bin/native/test-exits bin/native/test-policy-update bin/native/test-control bin/native/test-mapping bin/native/test-dns bin/native/test-dataplane bin/native/test-routes bin/native/test-tls-proxy bin/native/test-tcp-close bin/native/test-tx
+for target in exits policy-update mapping dns dataplane tls-proxy tcp-close tx;do bin/native/test-$target;done
 python3 tests/test_tx.py
 CHVR_DISPOSABLE_TEST=1 python3 tests/test_control.py
 CHVR_DISPOSABLE_TEST=1 CHVR_TEST_IPV6=1 python3 tests/test_control.py

@@ -144,7 +144,7 @@ static int prepare(vr_engine *e)
     e->tun=vr_platform_start(&e->config,&e->addresses,e->own_ip,e->cidr);
     if(e->tun<0){strcpy(e->error,"TUN/routing/firewall initialization failed");return -1;}e->platform_started=1;
     if(e->config.enabled&&e->config.tls_sni_enabled&&vr_tcp_start(e)){strcpy(e->error,"TLS sniff listener unavailable");return -1;}
-    if(vr_platform_routes(e->policy)){strcpy(e->error,"published route initialization failed");return -1;}
+    if(vr_platform_exit_routes(NULL,e->policy,NULL,&e->config.exit_overrides)){strcpy(e->error,"published route initialization failed");return -1;}
     if(vr_dataplane_start(e)){strcpy(e->error,"mapping resolver initialization failed");return -1;}
     if(e->config.enabled&&e->config.dns_enabled&&vr_dns_start(e)){strcpy(e->error,"DNS initialization failed");return -1;}
     vr_telemetry_publish(e);
@@ -159,7 +159,7 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
     pthread_mutex_init(&e->mutex,NULL);pthread_cond_init(&e->jobs_changed,NULL);
     for(size_t i=0;i<VR_CARRIER_MAX;i++)e->links[i].fd=-1;
     if(prepare(e))goto done;
-    uint64_t published=0,addresses_checked=vr_millis(),sniff_retry=0,firewall_retry=0,carrier6_checked=0;
+    uint64_t published=0,addresses_checked=vr_millis(),sniff_retry=0,firewall_retry=0,carrier6_checked=0,exits_retry=0;
     unsigned firewall_failures=0;
     vr_address_watch address_watch={0};
     while(!vr_service_stopped(service,generation)) {
@@ -175,7 +175,12 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
             carrier6_checked=now+30000;
         }
         pthread_mutex_lock(&service->mutex);int sniff=service->config.tls_sni_enabled;vr_exit_overrides exits=service->config.exit_overrides;pthread_mutex_unlock(&service->mutex);
-        pthread_mutex_lock(&e->mutex);e->config.exit_overrides=exits;pthread_mutex_unlock(&e->mutex);
+        if(memcmp(&exits,&e->config.exit_overrides,sizeof(exits))&&now>=exits_retry) {
+            if(!e->config.enabled||!vr_platform_exit_routes(e->policy,e->policy,&e->config.exit_overrides,&exits)) {
+                pthread_mutex_lock(&e->mutex);e->config.exit_overrides=exits;pthread_mutex_unlock(&e->mutex);
+            } else vr_service_log(service,"service","Local exit route update failed; current actions and links retained, retrying");
+            exits_retry=now+5000;
+        }
         if(sniff!=e->config.tls_sni_enabled&&now>=sniff_retry) {
             if(!e->config.enabled||(!(sniff&&vr_tcp_start(e))&&!vr_platform_tls(&e->addresses,e->cidr,sniff))) {
                 e->config.tls_sni_enabled=sniff;vr_service_log(service,"tls",sniff?"SNI enabled for new LAN connections":"SNI disabled for new connections; active streams retained");

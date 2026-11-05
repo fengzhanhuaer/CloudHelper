@@ -62,9 +62,25 @@ int main(void)
     assert(sendto(fast,q,n,0,(struct sockaddr *)&target,sizeof(target))==(ssize_t)n);vr_dns_accept(e,0);
     ssize_t fast_n=recv(fast,reply,sizeof(reply),0);assert(fast_n>0&&!vr_dns_address4(reply,(size_t)fast_n,ip)&&!strcmp(ip,"198.18.0.20")&&e->job_count==16);
     close(fast);close(e->dns_udp);e->dns_udp=-1;e->job_count=0;cache_ready=0;
+    /* Action overrides change DNS, while node choices keep the shared key. */
+    e->config.exit_overrides.count=1;strcpy(e->config.exit_overrides.items[0].rule,"proxy");
+    strcpy(e->config.exit_overrides.items[0].node,"9");
+    assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&!vr_dns_address4(reply,rn,ip)&&!strcmp(ip,"198.18.0.20"));
+    int maps=mapping_requests,upstreams=upstream_requests;cache_ready=1;
+    strcpy(e->config.exit_overrides.items[0].node,"@reject");
+    assert(!cached_answer(e,q,n,reply,sizeof(reply),&rn)&&(reply[3]&15)==5);
+    assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&(reply[3]&15)==5);
+    strcpy(e->config.exit_overrides.items[0].node,"@direct");
+    assert(cached_answer(e,q,n,reply,sizeof(reply),&rn));
+    assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&!vr_dns_address4(reply,rn,ip)&&!strcmp(ip,"203.0.113.5"));
+    assert(mapping_requests==maps&&upstream_requests==upstreams+1);cache_ready=0;
+    policy(e,"{\"route_rules\":[{\"id\":\"proxy\",\"action\":\"reject\",\"entries\":[\"domain_suffix:example.com\"]}]}");
+    assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&!vr_dns_address4(reply,rn,ip)&&!strcmp(ip,"203.0.113.5"));
+    e->config.exit_overrides.count=0;
     policy(e,"{\"route_rules\":[{\"id\":\"ip\",\"action\":\"reject\",\"entries\":[\"cidr:203.0.113.0/24\"]},{\"id\":\"direct\",\"action\":\"direct\",\"entries\":[\"domain_suffix:example.com\"]}]}");
-    n=query(q,28);assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&(reply[3]&15)==5&&upstream_requests==2);
-    n=query(q,1);assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&(reply[3]&15)==5&&upstream_requests==3);
+    upstreams=upstream_requests;
+    n=query(q,28);assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&(reply[3]&15)==5&&upstream_requests==upstreams+1);
+    n=query(q,1);assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&(reply[3]&15)==5&&upstream_requests==upstreams+2);
     policy(e,"{\"route_rules\":[]}");assert(!vr_dns_start(e));
     for(int tcp=0;tcp<2;tcp++){
         int client=socket(AF_INET,tcp?SOCK_STREAM:SOCK_DGRAM,0);assert(client>=0);struct sockaddr_in a={0};a.sin_family=AF_INET;a.sin_port=htons(1053);inet_pton(AF_INET,"127.0.0.1",&a.sin_addr);assert(!connect(client,(struct sockaddr *)&a,sizeof(a)));

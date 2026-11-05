@@ -108,3 +108,46 @@ TEST基线：首次Go全套仅既有 Windows TCP/UDP测试端口保留失败（T
 - 正式交付 v0.4.103：https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.103 ，自动版本提交 a483b88d7。CI 9 任务全部成功，10 个正式附件/名称/大小/digest 已通过 GitHub Release API 核对，无 BE86U 或旧产物恢复。Windows 程序 23474688 字节，API digest 841e983a45b95ff64dd684674cf851ab2b21c4dd60e982dd54b85b9d49712f3c。
 - 附件重下载限制：Windows curl 报 missing close_notify、gh api 报 unexpected EOF、WSL curl 报 partial file；只取得截断文件，未将它当正式完整程序运行或声称本机 SHA/内嵌字节核验成功。本轮资产来源由匹配提交 CI、tag 和 API digest 确认；页面原文经真实浏览器验证且由既有 go:embed 编译，下载不稳定不构成源码/发布失败。设备在线升级和生产页面未执行。
 - REQ008 验收完成：独立标签、隐藏条目、两列布局、规则级选择/保存/恢复、hash 刷新、旧标签保留和桌面/手机交互已通过；完成门禁通过。只改页面和账本，未改变服务端/路由/存储/手机与插件页面。回滚无需迁移配置，下一步唯一动作无。
+
+## 十六、2026-11-05 插件本地动作选择（进行中）
+
+用户最新指令：路由器插件本地可以选择“直连”或“拒绝”，截图中的主控直连规则也应允许本机覆盖。本次仅修改C插件，Probe/安卓原有配置接口不扩展。此前REQ002“动作只读”对插件被本次REQ009替代；主控原始规则内容与默认值仍只读。
+
+### 需求定义
+REQ-009：插件所有规则可选跟随主控/直连/拒绝；原代理规则仍可选节点。保存与恢复只作用本机，重启保留，重复保存不写JFFS，保存不重启主控或承载。
+REQ-010：本机动作在DNS、SNI、真实IP/CIDR和已缓存Fake IP新流量上生效；已有TCP继续原出口；默认Fake IP映射不被本机覆盖污染。主控直连CIDR改拒绝时同步补齐本机捕获路由。
+验收：浏览器选择/保存payload/恢复/刷新一致；API拒绝未知规则/非法动作；真实C DNS返回真实地址或REFUSED，Fake IP转本地直连不再发往远端、拒绝无包；回程与既有流保留，重复保存mtime不变。
+
+### 总体架构与接口
+IF-005：现有configure.exit_overrides扩展值@direct/@reject，保留节点ID旧格式。保留@前缀以免与节点名字冲突；仅这两个特殊值可用。默认空表跟随主控。UI所有规则显示动作选项，非代理规则不增加节点选项。
+DEC-005：DNS仅对动作覆盖改变动作；节点覆盖继续用主控原始出口申请共享Fake IP，转发时再应用本机出口。旧Fake IP按缓存rule应用本机动作，direct在本机解析/NAT，reject丢弃。远端通用出口按来源认证请求承接，不套用出口本机动作。
+DEC-006：只对主控direct被本机reject的CIDR增加捕获；其他内核路由沿用原发布规则。构造短生命周期路由视图，不改主控策略，不为所有direct CIDR额外加用户态转发。变更失败保留旧有效配置与连接，5秒后重试。
+
+### 单元设计
+UNIT-008 config.c/main.c/policy.c/web：特殊值解析、当前规则校验、动作副本覆盖和下拉框；CSRF/32条上限/原子去重写盘保持。
+UNIT-009 dns_service.c/dataplane.c：DNS缓存快速路径尊重动作；异步映射解析支持本机direct与通用远端出口；Fake IP reject/direct新流处理，TCP原路径保持。
+UNIT-010 platform.c/engine.c/policy_update.c：本机动作所需的CIDR视图在启动、热更新和主控同步时一致应用；持有旧内核路由直到成功。
+
+### 执行任务与测试
+TASK-006 实现动作覆盖及捕获：进行中。TASK-007 组件/API/页面验证：待开始。TASK-008 正式发布核验：待开始。
+TEST-005 配置/策略及API：特殊值持久化、未知规则拒绝、重置与无变更mtime、无worker重启。
+TEST-006 数据路径：DNS动作与Fake IP/真实IP拒绝/直连、新旧TCP、默认映射不变、CIDR增删及失败回滚。
+TEST-007 真浏览器桌面/手机：选项、实际payload、保存回显/刷新/恢复与主控默认不变；页面异常记录。Browser plugin not available，使用本机已有Playwright，不安装依赖。
+TEST-008 必要Go/C回归、正式CI与附件；不恢复五组耗时互通、不发布BE86U、不手工装生产程序。
+追踪：REQ009→UNIT008→TASK006/007/008→TEST005/007/008；REQ010→UNIT009/010→TASK006/007→TEST006/008。
+
+### 门禁、风险与回滚
+基线89b833f93，仅旧source-resume账本存在无关未暂存修改，保持不动；无需新竞争账本。准备门禁通过：范围/接口/验收/单元/测试/回滚明确。完成门禁不通过（待实现验证发布）。
+回滚：先点恢复默认清除特殊值，再通过正式在线升级回旧版本；未迁移主控/共享Fake IP数据。CIDR更新失败保留旧有效动作，状态日志明确重试。
+已知事实：现页面把direct/reject写死“由主控管理”，后端只校验代理规则及节点，Fake IP转发只读取覆盖出口，故仅改UI不足以实现。
+下一步唯一动作：实现IF005及DNS/Fake IP/CIDR有效动作处理。
+
+2026-11-05 实现与验证检查点：TASK006已完成，TASK007进行中。IF005特殊动作、全规则UI、DNS缓存/完整查询、缓存Fake IP直连/拒绝与异步解析均已落地；CIDR使用只读投影视图在启动/主控更新/本机热更新时应用，失败保留旧有效动作与连接，重复保存不写盘。
+TEST005已通过真实C管理dispatcher：已知direct/reject/proxy规则配置保存、加载、未知规则/非法动作拒绝、工作代数不变、mtime不变与恢复默认。新增test-exits加入原CI短测试循环，无新增互通组。TEST006通过C core/DNS/Fake-IP NAT往返、cold direct异步DNS、CIDR增删/失败回滚、policy热更新保留socket/TLS/NAT、SNI分段ClientHello直连/拒绝及已建连接保留、原管理进程重启持久化。
+环境区别：WSL UbuntuServer新版curl将既有CURLOPT_PROTOCOLS弃用警告视为错误；仅本地构建加-Wno-error=deprecated-declarations，其他Werror保持，不改生产兼容代码。DNS用例53端口受当前网络/权限影响，改用unshare -Urn并仅启用隔离lo后通过，未改变宿主DNS。
+TEST007已通过真实Chromium1280x1000及390x844：原ASP页面连接临时本地HTTP桥及原生C管理dispatcher，真实CSRF/payload保存（direct→@reject、reject→@direct、proxy→@reject）、刷新保留、主控默认栏不变、恢复空表；无pageerror。无浏览器插件，使用frontend-testing-debugging的Playwright后备，既有依赖，无安装。截图与payload位于系统Temp/ch-router-actions-browser/；没有将夹具页面当作生产华硕后台验收。
+TEST008：主控全套test/vet通过（core7.537s/tests3.521s）。Probe全套首轮仅既有TestProbeVirtualRouterTUNPacketDropsFakeIPWhenExitCarrierUnavailable断言frame links=1/want0失败，源码Go未改；正在单独三次及全套复查，不删除或放宽断言。日志Temp/ch-router-actions-probe-test.log。
+发布预检沿用既有DEC004：静态脚本仍要求退役Docker/linux-router arm64，live工作流仍9任务/10附件、BE86U仅ABI夹具，禁止恢复旧产物。origin/mapledev与HEAD一致，GitHub身份/远端读取已核对；不改工作流契约。下一步唯一动作：取得最终Probe回归结果并完成差异核对，随后仅提交本任务文件发布。
+
+最终本地门禁通过：Probe单独失败用例连续3次通过（1.735s），最终全套通过（main44.093s、controllerlink4.967s、mobilecore1.654s及全部内部包），vet按既有unsafeptr/copylocks例外通过。主控全套/vet通过。未修改任何Go测试断言/源码；初次失败按原样记录。C新增冷Fake IP本机direct异步解析与回程通过；SNI用例覆盖主控proxy→本机direct/reject、reject→direct、direct→reject，原流保留。没有新增五组互通。
+TASK006/007已完成，TASK008进行中；REQ009/010本地实现与验证通过。准备门禁通过；完成门禁待正式CI/附件核对。仅提交本账本与21个router_plugin路径（含新test_exits.c），共22路径；不包含无关source-resume账本。提交说明feat: allow local direct and reject choices in router plugin。下一步唯一动作：提交、推送并监控匹配SHA的唯一正式发布。

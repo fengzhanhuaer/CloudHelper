@@ -110,9 +110,13 @@ vr_decision vr_policy_match(json_object *policy,const char *domain,const char *i
 
 vr_decision vr_local_exit(const vr_config *config,vr_decision decision)
 {
-    if(decision.action!=VR_PROXY)return decision;
     for(size_t i=0;i<config->exit_overrides.count;i++)if(!strcmp(config->exit_overrides.items[i].rule,decision.rule)) {
-        strcpy(decision.exit_node,config->exit_overrides.items[i].node);*decision.backup=0;break;
+        const char *choice=config->exit_overrides.items[i].node;
+        if(!strcmp(choice,"@direct")||!strcmp(choice,"@reject")) {
+            decision.action=!strcmp(choice,"@direct")?VR_DIRECT:VR_REJECT;
+            *decision.exit_node=0;*decision.backup=0;
+        } else if(decision.action==VR_PROXY) {strcpy(decision.exit_node,choice);*decision.backup=0;}
+        break;
     }
     return decision;
 }

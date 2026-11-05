@@ -445,6 +445,33 @@ int vr_platform_routes(json_object *policy)
     return vr_platform_routes_update(NULL,policy);
 }
 
+/* Only direct CIDRs newly rejected locally need extra TUN capture. Keep the
+   controller snapshot immutable and retain its existing captures for TCP. */
+static json_object *exit_route_view(json_object *policy,const vr_exit_overrides *choices)
+{
+    if(!policy)return NULL;
+    json_object *view=json_object_new_object(),*rules=json_object_new_array(),*source=vr_member(policy,"route_rules");
+    json_object_object_add(view,"route_rules",rules);
+    for(size_t i=0;i<(size_t)json_object_array_length(source);i++) {
+        json_object *rule=json_object_array_get_idx(source,i);int reject=0;
+        if(!strcmp(vr_string(rule,"action"),"direct"))for(size_t j=0;choices&&j<choices->count;j++)
+            if(!strcmp(vr_string(rule,"id"),choices->items[j].rule)&&!strcmp(choices->items[j].node,"@reject"))reject=1;
+        if(!reject){json_object_array_add(rules,json_object_get(rule));continue;}
+        json_object *copy=json_object_new_object();const char *fields[]={"id","enabled","entries"};
+        for(size_t j=0;j<sizeof(fields)/sizeof(*fields);j++) {
+            json_object *value=vr_member(rule,fields[j]);if(value)json_object_object_add(copy,fields[j],json_object_get(value));
+        }
+        json_object_object_add(copy,"action",json_object_new_string("reject"));json_object_array_add(rules,copy);
+    }
+    return view;
+}
+
+int vr_platform_exit_routes(json_object *previous,json_object *next,const vr_exit_overrides *before,const vr_exit_overrides *after)
+{
+    json_object *old=exit_route_view(previous,before),*current=exit_route_view(next,after);
+    int rc=vr_platform_routes_update(old,current);json_object_put(old);json_object_put(current);return rc;
+}
+
 int vr_platform_dns(int enabled)
 {
     const char *path="/tmp/resolv.dnsmasq",*backup="/tmp/cloudhelper-dns.original";

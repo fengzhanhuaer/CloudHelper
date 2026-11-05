@@ -35,7 +35,7 @@ int vr_policy_apply_pending(vr_engine *e)
     /* Kernel updates run outside the publication lock; the old policy remains
        active until all additions/removals succeed. Queue producers can only
        replace their pending reference, never the applied engine snapshot. */
-    if(vr_platform_routes_update(e->policy,policy)) {
+    if(vr_platform_exit_routes(e->policy,policy,&e->config.exit_overrides,&e->config.exit_overrides)) {
         pthread_mutex_lock(&e->mutex);e->policy_retry=vr_millis()+5000;json_object_put(next);pthread_mutex_unlock(&e->mutex);
         vr_service_log(e->service,"controller","Route update failed; retaining current policy and links");return 0;
     }

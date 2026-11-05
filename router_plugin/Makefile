@@ -47,10 +47,12 @@ $(BUILD)/test-camouflage: $(CORE) src/platform.c tests/test_camouflage.c $(wildc
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/platform.c tests/test_camouflage.c $(LDFLAGS) $(LDLIBS) -o $@
 test: $(BUILD)/test-core
 	$(BUILD)/test-core
+$(BUILD)/test-exits: $(CORE) $(RUNTIME) tests/test_exits.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) $(filter-out src/main.c,$(RUNTIME)) tests/test_exits.c $(LDFLAGS) $(LDLIBS) -o $@
 $(BUILD)/test-logs: $(CORE) tests/test_logs.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_logs.c $(LDFLAGS) $(LDLIBS) -o $@
 $(BUILD)/test-dataplane: $(CORE) src/dataplane.c src/mapping.c tests/test_dataplane.c $(wildcard include/*.h) | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/dataplane.c src/mapping.c tests/test_dataplane.c $(LDFLAGS) -Wl,--wrap=vr_controller_call $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/dataplane.c src/mapping.c tests/test_dataplane.c $(LDFLAGS) -Wl,--wrap=vr_controller_call -Wl,--wrap=vr_resolve4 $(LDLIBS) -o $@
 $(BUILD)/test-platform: $(CORE) src/dataplane.c src/mapping.c src/platform.c src/tcp_proxy.c src/address_update.c tests/test_platform.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/dataplane.c src/mapping.c src/platform.c src/tcp_proxy.c src/address_update.c tests/test_platform.c $(LDFLAGS) -Wl,--wrap=posix_spawnp $(LDLIBS) -o $@
 
@@ -68,7 +70,7 @@ $(BUILD)/test-tx: $(CORE) src/carrier.c tests/test_tx.c $(wildcard include/*.h) 
 $(BUILD)/test-measure: $(CORE) src/measure.c tests/test_measure.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/measure.c tests/test_measure.c $(LDFLAGS) -Wl,--wrap=vr_millis $(LDLIBS) -o $@
 $(BUILD)/test-policy-update: $(CORE) src/policy_update.c src/carrier.c src/mapping.c src/platform.c tests/test_policy_update.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/policy_update.c src/carrier.c src/mapping.c src/platform.c tests/test_policy_update.c $(LDFLAGS) -Wl,--wrap=vr_platform_routes_update -Wl,--wrap=vr_controller_call $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/policy_update.c src/carrier.c src/mapping.c src/platform.c tests/test_policy_update.c $(LDFLAGS) -Wl,--wrap=vr_platform_exit_routes -Wl,--wrap=vr_controller_call $(LDLIBS) -o $@
 $(BUILD)/test-routes: $(CORE) src/platform.c tests/test_routes.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/platform.c tests/test_routes.c $(LDFLAGS) $(LDLIBS) -o $@
 $(BUILD)/test-tls-proxy: $(CORE) src/tcp_proxy.c tests/test_tls_proxy.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)

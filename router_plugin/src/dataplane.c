@@ -149,7 +149,12 @@ static void *resolver(void *arg)
         if(slot==16){pthread_mutex_unlock(&e->mutex);continue;}
         vr_resolve_job *j=&e->resolves[slot];j->state=2;char ip[16];strcpy(ip,j->ip);pthread_mutex_unlock(&e->mutex);
         vr_mapping m;vr_decision none={0};int ok=!vr_mapping_get(e,NULL,ip,none,&m);uint32_t real=0;
-        if(ok&&!strcmp(m.exit,e->config.node_id))ok=!mapping_destination(e,&m,&real);
+        if(ok) {
+            vr_decision d={.action=VR_PROXY};strcpy(d.rule,m.rule);strcpy(d.exit_node,m.exit);
+            pthread_mutex_lock(&e->mutex);d=vr_local_exit(&e->config,d);pthread_mutex_unlock(&e->mutex);
+            if(j->incoming||d.action==VR_DIRECT||(d.action==VR_PROXY&&!strcmp(d.exit_node,e->config.node_id)))
+                ok=!mapping_destination(e,&m,&real);
+        }
         pthread_mutex_lock(&e->mutex);
         if(ok&&real)for(size_t i=0;i<VR_MAPPING_MAX;i++)if(!strcmp(e->mappings[i].ip,m.ip)&&!strcmp(e->mappings[i].domain,m.domain))e->mappings[i].resolved=real;
         j->state=ok?3:0;pthread_mutex_unlock(&e->mutex);
@@ -225,8 +230,10 @@ void vr_outgoing(vr_engine *e,uint8_t *b,size_t n)
     }
     vr_mapping m;if(packet_mapping(e,dest,&m)){resolve_later(e,dest,b,n,NULL,0);return;}
     vr_decision chosen={0};chosen.action=VR_PROXY;strcpy(chosen.rule,m.rule);strcpy(chosen.exit_node,m.exit);
-    chosen=vr_local_exit(&e->config,chosen);strcpy(m.exit,chosen.exit_node);
-    if(!strcmp(m.exit,e->config.node_id)) {
+    chosen=vr_local_exit(&e->config,chosen);
+    if(chosen.action==VR_REJECT)return;
+    strcpy(m.exit,chosen.exit_node);
+    if(chosen.action==VR_DIRECT||!strcmp(m.exit,e->config.node_id)) {
         uint32_t real;if(cached_destination(&m,&real)){resolve_later(e,dest,b,n,NULL,0);return;}
         if(real==inet_addr(e->addresses.lan)||real==inet_addr(e->addresses.wan))return;
         vr_nat *f=nat_forward(e,&p,1,own.s_addr,real);if(f){remember(f,b,n,"");if(!vr_packet_rewrite(b,n,f->wire.src,f->wire.dst,f->wire.sport,f->wire.dport))inject(e,b,n);}
@@ -250,7 +257,7 @@ void vr_incoming(vr_engine *e,const vr_frame *frame,char path[VR_PATH_MAX][129],
         if(!pinned&&!allowed&&fake_ip(e,fake)){
             if(packet_mapping(e,fake,&m)){resolve_later(e,fake,b,frame->data_len,path,count);return;}
             vr_decision choice={.action=VR_PROXY};strcpy(choice.rule,m.rule);strcpy(choice.exit_node,m.exit);
-            choice=vr_local_exit(&e->config,choice);allowed=!strcmp(choice.exit_node,path[0]);}
+            choice=vr_local_exit(&e->config,choice);allowed=choice.action==VR_PROXY&&!strcmp(choice.exit_node,path[0]);}
         if(!pinned&&!allowed){vr_decision d=vr_local_exit(&e->config,vr_policy_match(e->policy,"",fake));allowed=d.action==VR_PROXY && !strcmp(d.exit_node,path[0]);}
         if(!allowed)return;
         vr_packet *o=&reverse->original;

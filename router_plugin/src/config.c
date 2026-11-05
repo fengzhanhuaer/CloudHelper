@@ -99,14 +99,15 @@ int vr_config_parse(vr_config *out, json_object *o, const vr_config *previous, c
     }
     json_object *exits=vr_member(o,"exit_overrides");
     if(exits) {
-        if(!json_object_is_type(exits,json_type_object)){why="exit_overrides must be a rule ID to node ID object";goto fail;}
+        if(!json_object_is_type(exits,json_type_object)){why="exit_overrides must map rule IDs to node IDs, @direct or @reject";goto fail;}
         memset(&c.exit_overrides,0,sizeof(c.exit_overrides));
         json_object_object_foreach(exits,key,value) {
             if(!*key||strlen(key)>128||!json_object_is_type(value,json_type_string)){why="invalid local exit choice";goto fail;}
             const char *node=json_object_get_string(value);
             if(strlen(node)!=(size_t)json_object_get_string_len(value)||strlen(node)>128)goto fail;
             for(const unsigned char *p=(const unsigned char *)key;*p;p++)if(*p<32||*p==127)goto fail;
-            for(const unsigned char *p=(const unsigned char *)node;*p;p++)if(!(isalnum(*p)||*p=='_'||*p=='-'||*p=='.'))goto fail;
+            if(strcmp(node,"@direct")&&strcmp(node,"@reject"))
+                for(const unsigned char *p=(const unsigned char *)node;*p;p++)if(!(isalnum(*p)||*p=='_'||*p=='-'||*p=='.'))goto fail;
             if(!*node)continue;
             if(c.exit_overrides.count>=VR_EXIT_OVERRIDES_MAX){why="at most 32 local exit overrides";goto fail;}
             size_t i=c.exit_overrides.count++;strcpy(c.exit_overrides.items[i].rule,key);strcpy(c.exit_overrides.items[i].node,node);
