@@ -83,6 +83,7 @@ func ProbeRouteFakeIPResolveHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
+		LocalExit  bool   `json:"local_exit,omitempty"`
 		Domain     string `json:"domain"`
 		FakeIP     string `json:"fake_ip,omitempty"`
 		RuleID     string `json:"rule_id,omitempty"`
@@ -99,7 +100,11 @@ func ProbeRouteFakeIPResolveHandler(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "fake ip mapping not found"})
 			return
 		}
-		if _, err := authorizedProbeVirtualRouterFakeIPRule(item.Domain, item.RuleID, item.Action, item.ExitNodeID); err != nil {
+		anchor := item.ExitNodeID
+		if item.LocalExit {
+			anchor = nodeID
+		} // An address anchor grants no forwarding authority.
+		if _, err := authorizedProbeVirtualRouterLocalFakeIPRule(item.Domain, item.RuleID, item.Action, anchor, nodeID, item.LocalExit); err != nil {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
 			return
 		}
@@ -115,12 +120,12 @@ func ProbeRouteFakeIPResolveHandler(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	rule, err := authorizedProbeVirtualRouterFakeIPRule(req.Domain, req.RuleID, req.Action, req.ExitNodeID)
+	rule, err := authorizedProbeVirtualRouterLocalFakeIPRule(req.Domain, req.RuleID, req.Action, req.ExitNodeID, nodeID, req.LocalExit)
 	if err != nil {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
 		return
 	}
-	item, _, changed, err := allocateProbeVirtualRouterFakeIPForDomain(req.Domain, rule)
+	item, _, changed, err := allocateProbeVirtualRouterFakeIPForDomain(req.Domain, rule, req.LocalExit)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -179,6 +184,28 @@ func ProbeRouteFakeIPRenewHandler(w http.ResponseWriter, r *http.Request) {
 		NodeID: nodeID,
 		Items:  items,
 	})
+}
+
+// Local overrides allocate only an address index. The selected exit remains on
+// the source, and carrier authentication/topology checks still govern forwarding.
+func authorizedProbeVirtualRouterLocalFakeIPRule(domain, ruleID, action, exitID, sourceID string, local bool) (probeVirtualRouterRouteRule, error) {
+	if !local {
+		return authorizedProbeVirtualRouterFakeIPRule(domain, ruleID, action, exitID)
+	}
+	if ProbeRouteConfigStore == nil {
+		return probeVirtualRouterRouteRule{}, fmt.Errorf("route config store not initialized")
+	}
+	ProbeRouteConfigStore.mu.RLock()
+	config := normalizeProbeVirtualRouterConfig(ProbeRouteConfigStore.data.VirtualRouter)
+	ProbeRouteConfigStore.mu.RUnlock()
+	rule, ok := probeVirtualRouterRouteRuleForFakeIPDomain(config.RouteRules, domain)
+	if !config.Enabled || !ok || strings.TrimSpace(ruleID) != rule.ID ||
+		normalizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) == probeVirtualRouterRouteRuleActionExit ||
+		action != probeVirtualRouterRouteRuleActionExit || !isProbeVirtualRouterKnownNodeID(sourceID) || !isProbeVirtualRouterKnownNodeID(exitID) {
+		return probeVirtualRouterRouteRule{}, fmt.Errorf("invalid local exit mapping request")
+	}
+	rule.Action, rule.ExitNodeID, rule.BackupExitNodeID = probeVirtualRouterRouteRuleActionExit, sourceID, ""
+	return rule, nil
 }
 
 func authorizedProbeVirtualRouterFakeIPRule(domain string, requestedRuleID string, requestedAction string, requestedExitNodeID string) (probeVirtualRouterRouteRule, error) {

@@ -311,7 +311,10 @@ static void test_local_exits(void)
     json_object *o=vr_json_parse(raw,strlen(raw));assert(!vr_config_parse(&c,o,&c,err,sizeof(err)));json_object_put(o);
     vr_decision d={.action=VR_PROXY};strcpy(d.rule,"rule-a");strcpy(d.exit_node,"7");strcpy(d.backup,"9");
     vr_decision effective=vr_local_exit(&c,d);assert(!strcmp(effective.exit_node,"8")&&!*effective.backup&&!strcmp(d.exit_node,"7"));
-    d.action=VR_DIRECT;assert(vr_local_exit(&c,d).action==VR_DIRECT);
+    for(int original=VR_DIRECT;original<=VR_PROXY;original++) {
+        d.action=original;effective=vr_local_exit(&c,d);
+        assert(effective.action==VR_PROXY&&!strcmp(effective.exit_node,"8")&&!*effective.backup);
+    }
     d.action=VR_PROXY;strcpy(d.rule,"another");assert(!strcmp(vr_local_exit(&c,d).exit_node,"7"));
     o=vr_config_json(&c,1);vr_config restored;vr_config_default(&restored);assert(!vr_config_parse(&restored,o,&restored,err,sizeof(err)));json_object_put(o);
     assert(restored.exit_overrides.count==1&&!strcmp(restored.exit_overrides.items[0].node,"8"));

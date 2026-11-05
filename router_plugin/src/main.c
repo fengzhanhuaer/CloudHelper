@@ -91,10 +91,8 @@ static int validate_exit_choices(vr_service *s,const vr_config *c)
         for(size_t j=0;j<s->config.exit_overrides.count;j++)if(!strcmp(rule,s->config.exit_overrides.items[j].rule)&&!strcmp(node,s->config.exit_overrides.items[j].node))retained=1;
         if(retained)continue;
         for(size_t j=0;rules&&j<(size_t)json_object_array_length(rules);j++) {
-            json_object *r=json_object_array_get_idx(rules,j);const char *action=vr_string(r,"action");
-            if(!strcmp(rule,vr_string(r,"id"))&&
-               ((!strcmp(node,"@direct")||!strcmp(node,"@reject"))||
-                (strcmp(action,"direct")&&strcmp(action,"reject"))))known_rule=1;
+            json_object *r=json_object_array_get_idx(rules,j);
+            if(!strcmp(rule,vr_string(r,"id")))known_rule=1;
         }
         if(!strcmp(node,"@direct")||!strcmp(node,"@reject"))known_node=1;
         for(size_t j=0;nodes&&j<(size_t)json_object_array_length(nodes);j++)if(!strcmp(node,vr_string(json_object_array_get_idx(nodes,j),"node_id")))known_node=1;

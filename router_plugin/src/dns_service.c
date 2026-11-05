@@ -27,7 +27,9 @@ static int cached_answer(vr_engine *e,const uint8_t *query,size_t qn,uint8_t *re
     if(vr_dns_question(query,qn,&q)||(query[2]&0x80)||q.type!=1)return -1;
     pthread_mutex_lock(&e->mutex);int needs_ip=vr_policy_needs_ip(e->policy,q.name);
     vr_decision d=vr_policy_match(e->policy,q.name,NULL);d.revision=e->policy_revision;
-    vr_decision effective=vr_local_exit(&e->config,d);pthread_mutex_unlock(&e->mutex);
+    vr_decision effective=vr_local_exit(&e->config,d);
+    if(effective.action==VR_PROXY&&d.action!=VR_PROXY){d=effective;strcpy(d.exit_node,e->config.node_id);}
+    pthread_mutex_unlock(&e->mutex);
     if(needs_ip)return -1;
     if(effective.action==VR_REJECT)return vr_dns_reply(query,qn,reply,cap,5,NULL,rn);
     if(effective.action!=VR_PROXY)return -1;
@@ -43,6 +45,7 @@ static vr_decision decision(vr_engine *e,const char *domain,const char *ip,int *
     vr_decision effective=vr_local_exit(&e->config,d);
     /* Node overrides must not change the controller's shared Fake IP key. */
     if(effective.action!=VR_PROXY)d=effective;
+    else if(d.action!=VR_PROXY){d=effective;strcpy(d.exit_node,e->config.node_id);}
     if(needs_ip)*needs_ip=vr_policy_needs_ip(e->policy,domain);
     pthread_mutex_unlock(&e->mutex);return d;
 }
@@ -52,7 +55,7 @@ static int dns_answer(vr_engine *e,const uint8_t *query,size_t qn,uint8_t *reply
     vr_addresses addresses=vr_engine_addresses(e);
     vr_question q;if(vr_dns_question(query,qn,&q) || (query[2]&0x80))return -1;
     int needs_ip;vr_decision selected=decision(e,q.name,NULL,&needs_ip);
-    int upstream_done=0;
+    int upstream_done=0,cidr_selected=0;
     if((q.type==1||q.type==28||q.type==64||q.type==65)&&needs_ip) {
         char ip[16];int resolved;
         if(q.type==1) {
@@ -61,12 +64,16 @@ static int dns_answer(vr_engine *e,const uint8_t *query,size_t qn,uint8_t *reply
             if(resolved && ((reply[3]&15)!=0 || (reply[6]==0 && reply[7]==0)))return 0;
         } else resolved=vr_resolve_config4(q.name,&e->config,addresses.wan_if,ip);
         if(resolved)return vr_dns_reply(query,qn,reply,cap,2,NULL,rn);
-        selected=decision(e,q.name,ip,NULL);
+        vr_decision resolved_decision=decision(e,q.name,ip,NULL);
+        cidr_selected=strcmp(selected.rule,resolved_decision.rule)!=0;
+        selected=resolved_decision;
     }
     if(selected.action==VR_REJECT)return vr_dns_reply(query,qn,reply,cap,5,NULL,rn);
     if(selected.action==VR_PROXY) {
         if(q.type==28||q.type==64||q.type==65)return vr_dns_reply(query,qn,reply,cap,0,NULL,rn);
         if(q.type==1) {
+            /* IP rules already capture this real destination in the TUN table. */
+            if(cidr_selected&&upstream_done)return 0;
             vr_mapping mapping;
             if(vr_mapping_get(e,q.name,NULL,selected,&mapping))return vr_dns_reply(query,qn,reply,cap,2,NULL,rn);
             return mapping_reply(query,qn,reply,cap,rn,&mapping);

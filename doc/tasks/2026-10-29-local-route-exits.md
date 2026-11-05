@@ -1,8 +1,24 @@
 # 任务：Probe、安卓、路由器按规则本地选择出口与通用出口
 
-- 状态：已完成（正式发布已核对；生产设备未升级）；日期：2026-10-29 Asia/Singapore。
+## 十七、2026-11-05 修正主控直连规则不能选节点（进行中）
+
+用户最新指令：主控默认直连，本机也必须能选择其他出口。REQ-011替代REQ009及IF005的“仅代理规则可选节点”限制；所有规则均可跟随/直连/拒绝/已知节点，仅本机保存，不修改主控默认。沿用需求跟踪和release技能。
+总体架构：原代理规则继续按主控默认申请共享Fake IP；原direct/reject本机改节点时，认证请求增加local_exit标识，由主控提供稳定域名映射并标记LocalExit，映射锚点为发起节点而非用户所选出口，不存本地选择。普通代理映射仍以主控默认为准。其他来源按自身有效规则决定是否使用映射。CIDR捕获投影增加direct→节点，旧TCP保持。
+UNIT-011：主控probe_route_handlers.go/probe_virtual_router.go扩展显式认证映射申请、冷查询及维护，校验当前规则/已知身份，拒绝未知规则/节点；不放宽原接口默认校验。UNIT-012：插件UI/API/policy/DNS/mapping/dataplane/platform贯通节点覆盖、缓存重启/恢复默认和CIDR捕获。IF-006：fake_ip/resolve增加可选local_exit布尔值，响应映射增加同名字段；旧请求保持原语义。旧主控拒绝新增映射时明确失败，不静默直连。
+DEC-008：特殊映射标记仅用于原非代理规则的域名地址索引，不将实际本地出口同步主控；普通代理映射和默认规则不受影响。取代第十六节DEC005/006对非代理规则的限制，保留其他兼容/内存/JFFS约束。
+TASK-009 实现及定向验证：已完成。TASK-010 浏览器/回归/正式发布核验：进行中。TEST-009覆盖原direct/reject→节点、真实DNS/FakeIP/SNI/CIDR、共享默认不变、冷查询/维护/重启/恢复默认、认证拒绝；TEST-010真实页面保存节点payload/刷新/恢复及CI附件。
+追踪REQ011→UNIT011/012→IF006→TASK009/010→TEST009/010。DEF-003：上一版只扩展动作，UI/API/policy/DNS同时限制非代理规则选节点，用户截图确认；修复中。
+基线f33926018，仅无关source-resume账本未暂存，保留。准备门禁通过；完成门禁待正式发布。回滚先恢复本地默认再在线回退，主控新增可选字段旧客户端忽略；不手工部署生产设备。下一步唯一动作：提交已验证变更并监控唯一匹配SHA的正式CI。
+
+2026-11-05 检查点：UNIT011/012及IF006已实现。主控普通映射校验保持，local_exit仅原direct/reject命中规则且已知认证身份可用；多来源复用同一地址和原锚点，不记录所选出口；维护不丢映射，主控改proxy时恢复默认元数据，删除规则移除映射。冷查询不依赖锚点身份存活，仍由发起请求的认证节点授权。插件记录local_exit位，缓存恢复默认按当前原规则动作；选节点时转发副本覆盖，不改共享映射。
+TEST009通过：C core/exits/DNS/mapping/dataplane/routes/TLS/policy-update及真实管理进程test_service；原direct/reject→节点、真实Fake IP UDP往返、SNI TCP回显、CIDR新增/撤销、缓存重启和恢复默认、旧流保留、重复保存mtime均通过。DNS直连新查询返回203.0.113.5真实地址，域名代理返回198.18.0.20；CIDR代理保留真实DNS地址，由内核按目标捕获。隔离DNS网络unshare -Urn，不改宿主网络；WSL本地仅对既有curl弃用警告加-Wno-error=deprecated-declarations，其他Werror不变。
+TEST010浏览器通过：Browser plugin not available，已有Playwright/Chromium，原ASP+真实C dispatcher HTTP桥；1280x1000/390x844均验证所有规则节点8选项、direct/reject选8保存payload、刷新、默认栏不变、恢复空表、零页面异常。截图及payload：Temp/ch-router-actions-browser；沿用原ASUS固定宽容器，窄屏需要横向滚动，无自适应改版主张。
+回归：主控全套test/vet通过(core7.250s/tests2.801s)，最后TTL续期标记一行调整后相关FakeIP/LocalExit组复测2.352s及vet通过。Probe最终全套通过(main43.566s/controllerlink5.099s/mobilecore2.310s及全部内部包)，vet保留既有unsafeptr/copylocks例外，发布契约组1.429s通过。此前两轮Windows网络夹具失败，第二轮明确TestProbeLocalVirtualRouterSettingsHandlerConfiguresProxy端口预留失败、TestProbeTransportIPv6AuthenticatedCarrierSlots超时；同两用例单独连续3次通过4.395s后最终全套成功，未改Probe源码/断言。新主控夹具初版漏规则Name导致被normalize过滤、C夹具复用已NAT改写包导致错断言，均修正夹具后通过，未放宽产品判断。
+发布预检：静态preflight仍要求退役Docker/router arm64而失败；已用live工作流及当前契约全组核验9任务/10附件，沿用DEC004/007，不恢复旧产物。仅任务20个明确路径提交，旧source-resume账本不暂存；不手改version/tag，不手工部署生产设备。
+
+- 状态：进行中（REQ011补齐非代理规则的节点覆盖；旧发布证据保留）；日期：2026-11-05 Asia/Singapore。
 - 启用方式：明确跨配置、选路、出口承接、界面、验证和发布的长任务。
-- 用户最新指令：2026-11-05插件本地允许选择直连或拒绝（详见第十六节）；此前Probe每条规则独立本地出口；安卓修改现有选路，选择仅本地保存不再同步主控，添加恢复默认；插件同样加入。三端均不编辑主控规则内容，出口按请求通用承接。
+- 用户最新指令：2026-11-05主控默认直连，本机也必须能选择其他出口；询问直连时DNS是否返回Fake IP（新查询应返回真实IP，旧缓存仍按本机直连处理）。详见第十七节。三端均不编辑主控规则内容，出口按请求通用承接。
 
 ## 一、需求定义
 

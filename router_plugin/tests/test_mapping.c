@@ -10,7 +10,7 @@
 
 static time_t wall=1792200000;
 static uint64_t tick=100000;
-static int calls,fail,writes;static time_t lifetime=1000000;
+static int calls,fail,writes,local_response;static time_t lifetime=1000000;
 time_t __wrap_time(time_t *p){if(p)*p=wall;return wall;}
 uint64_t __wrap_vr_millis(void){return tick;}
 int __real_vr_atomic_write(const char *,const void *,size_t);
@@ -23,6 +23,8 @@ json_object *__wrap_vr_controller_call(const vr_config *c,const char *iface,cons
     if(fail){snprintf(err,cap,"fixture timeout");return NULL;}
     json_object *r=json_object_new_object(),*item=json_object_new_object();
     const char *domain=vr_string(body,"domain");
+    if(local_response&&*domain)assert(json_object_get_boolean(vr_member(body,"local_exit"))&&!strcmp(vr_string(body,"exit_node_id"),"25"));
+    if(local_response)json_object_object_add(item,"local_exit",json_object_new_boolean(1));
     json_object_object_add(item,"domain",json_object_new_string(*domain?domain:"example.com"));
     json_object_object_add(item,"fake_ip",json_object_new_string("198.18.7.31"));
     json_object_object_add(item,"rule_id",json_object_new_string("proxy"));
@@ -95,6 +97,24 @@ int main(void)
     FILE *f=fopen(path,"w");assert(f);fputs("{broken",f);fclose(f);restored=engine(path);assert(!count(restored));drop(restored);
     f=fopen(path,"w");assert(f);assert(!ftruncate(fileno(f),VR_MAPPING_FILE_MAX+1));fclose(f);restored=engine(path);assert(!count(restored));drop(restored);
     assert(access(path,F_OK));
+    drop(e);
+    /* Non-proxy defaults allocate a shared index, preserving local-only actions. */
+    e=engine(path);json_object *rule=json_object_array_get_idx(vr_member(e->policy,"route_rules"),0);
+    json_object_object_add(rule,"action",json_object_new_string("direct"));
+    e->config.exit_overrides.count=1;strcpy(e->config.exit_overrides.items[0].rule,"proxy");strcpy(e->config.exit_overrides.items[0].node,"8");
+    vr_decision d=decision();strcpy(d.exit_node,"25");local_response=1;
+    assert(!vr_mapping_get(e,"example.com",NULL,d,&m)&&m.local_exit&&!strcmp(m.exit,"24"));
+    int previous_calls=calls;assert(!vr_mapping_get(e,"example.com",NULL,d,&m)&&calls==previous_calls);
+    assert(vr_mapping_decision(e,&m).action==VR_PROXY&&!strcmp(vr_mapping_decision(e,&m).exit_node,"8"));
+    vr_mapping_reconcile(e);assert(count(e)==1&&e->mappings[0].local_exit);
+    assert(!vr_mapping_flush(e,1));restored=engine(path);
+    json_object *restored_rule=json_object_array_get_idx(vr_member(restored->policy,"route_rules"),0);
+    json_object_object_add(restored_rule,"action",json_object_new_string("direct"));vr_mapping_load(restored);
+    assert(count(restored)==1&&restored->mappings[0].local_exit&&vr_mapping_decision(restored,&restored->mappings[0]).action==VR_DIRECT);drop(restored);
+    e->config.exit_overrides.count=0;assert(vr_mapping_decision(e,&m).action==VR_DIRECT);
+    json_object_object_add(rule,"action",json_object_new_string("reject"));assert(vr_mapping_decision(e,&m).action==VR_REJECT);
+    json_object_object_add(rule,"action",json_object_new_string("probe_exit"));vr_mapping_reconcile(e);
+    assert(count(e)==1&&!e->mappings[0].local_exit&&!strcmp(e->mappings[0].exit,"24"));
     drop(e);unlink(path);rmdir(dir);
     puts("PASS: TTL, singleflight, retry cooldown, bounded atomic JFFS cache, restart and identity/policy invalidation");return 0;
 }

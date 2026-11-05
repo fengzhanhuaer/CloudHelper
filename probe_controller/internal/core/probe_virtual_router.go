@@ -51,6 +51,7 @@ type probeVirtualRouterFakeIPLibrary struct {
 }
 
 type probeVirtualRouterFakeIPEntry struct {
+	LocalExit  bool   `json:"local_exit,omitempty"`
 	Domain     string `json:"domain"`
 	FakeIP     string `json:"fake_ip"`
 	RuleID     string `json:"rule_id,omitempty"`
@@ -791,6 +792,7 @@ func normalizeProbeVirtualRouterFakeIPLibrary(input probeVirtualRouterFakeIPLibr
 		seenDomain[domain] = struct{}{}
 		seenIP[ip] = struct{}{}
 		out.Items = append(out.Items, probeVirtualRouterFakeIPEntry{
+			LocalExit:  item.LocalExit,
 			Domain:     domain,
 			FakeIP:     ip,
 			RuleID:     strings.TrimSpace(item.RuleID),
@@ -866,6 +868,11 @@ func reconcileProbeVirtualRouterFakeIPLibraryWithRouteRules(input probeVirtualRo
 	for _, item := range library.Items {
 		domain := normalizeProbeVirtualRouterFakeIPDomain(item.Domain)
 		rule, ok := probeVirtualRouterRouteRuleForFakeIPDomain(rules, domain)
+		if item.LocalExit && ok && strings.TrimSpace(rule.ID) == strings.TrimSpace(item.RuleID) &&
+			normalizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) != probeVirtualRouterRouteRuleActionExit {
+			kept = append(kept, item)
+			continue
+		}
 		if !ok || normalizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) != probeVirtualRouterRouteRuleActionExit {
 			changed = true
 			continue
@@ -876,11 +883,12 @@ func reconcileProbeVirtualRouterFakeIPLibraryWithRouteRules(input probeVirtualRo
 			continue
 		}
 		next := item
+		next.LocalExit = false
 		next.Domain = domain
 		next.RuleID = strings.TrimSpace(rule.ID)
 		next.Action = probeVirtualRouterRouteRuleActionExit
 		next.ExitNodeID = exitNodeID
-		if next.RuleID != strings.TrimSpace(item.RuleID) ||
+		if next.LocalExit != item.LocalExit || next.RuleID != strings.TrimSpace(item.RuleID) ||
 			normalizeProbeVirtualRouterRouteRuleAction(item.Action, item.ExitNodeID) != next.Action ||
 			normalizeProbeNodeID(item.ExitNodeID) != next.ExitNodeID ||
 			next.Domain != item.Domain {
@@ -976,6 +984,7 @@ func lookupProbeVirtualRouterFakeIPByIP(fakeIP string) (probeVirtualRouterFakeIP
 				exitNodeID := normalizeProbeNodeID(rule.ExitNodeID)
 				if exitNodeID != "" && isProbeVirtualRouterKnownNodeID(exitNodeID) {
 					library.Items[index].Domain = domain
+					library.Items[index].LocalExit = false
 					library.Items[index].RuleID = strings.TrimSpace(rule.ID)
 					library.Items[index].Action = probeVirtualRouterRouteRuleActionExit
 					library.Items[index].ExitNodeID = exitNodeID
@@ -1039,6 +1048,7 @@ func renewProbeVirtualRouterFakeIPDomains(domains []string) ([]probeVirtualRoute
 		}
 		library.Items[index].Domain = domain
 		library.Items[index].RuleID = strings.TrimSpace(rule.ID)
+		library.Items[index].LocalExit = false
 		library.Items[index].Action = probeVirtualRouterRouteRuleActionExit
 		library.Items[index].ExitNodeID = exitNodeID
 		library.Items[index].ExpiresAt = nextExpiresAt
@@ -1053,11 +1063,12 @@ func renewProbeVirtualRouterFakeIPDomains(domains []string) ([]probeVirtualRoute
 	return renewed, library, changed, nil
 }
 
-func allocateProbeVirtualRouterFakeIPForDomain(domain string, rule probeVirtualRouterRouteRule) (probeVirtualRouterFakeIPEntry, probeVirtualRouterFakeIPLibrary, bool, error) {
+func allocateProbeVirtualRouterFakeIPForDomain(domain string, rule probeVirtualRouterRouteRule, localExit ...bool) (probeVirtualRouterFakeIPEntry, probeVirtualRouterFakeIPLibrary, bool, error) {
 	if ProbeRouteConfigStore == nil {
 		return probeVirtualRouterFakeIPEntry{}, probeVirtualRouterFakeIPLibrary{}, false, fmt.Errorf("route config store not initialized")
 	}
 	cleanDomain := normalizeProbeVirtualRouterFakeIPDomain(domain)
+	local := len(localExit) > 0 && localExit[0]
 	if cleanDomain == "" {
 		return probeVirtualRouterFakeIPEntry{}, probeVirtualRouterFakeIPLibrary{}, false, fmt.Errorf("domain is invalid")
 	}
@@ -1085,7 +1096,12 @@ func allocateProbeVirtualRouterFakeIPForDomain(domain string, rule probeVirtualR
 		if library.Items[index].Domain != cleanDomain {
 			continue
 		}
+		// Preserve a shared address anchor across sources; never store their chosen exit.
+		if local && library.Items[index].LocalExit && library.Items[index].RuleID == rule.ID && isProbeVirtualRouterKnownNodeID(library.Items[index].ExitNodeID) {
+			exitNodeID = library.Items[index].ExitNodeID
+		}
 		if strings.TrimSpace(library.Items[index].RuleID) == strings.TrimSpace(rule.ID) &&
+			library.Items[index].LocalExit == local &&
 			normalizeProbeVirtualRouterRouteRuleAction(library.Items[index].Action, library.Items[index].ExitNodeID) == action &&
 			normalizeProbeNodeID(library.Items[index].ExitNodeID) == exitNodeID {
 			library.Items[index].ExpiresAt = expiresAt
@@ -1096,6 +1112,7 @@ func allocateProbeVirtualRouterFakeIPForDomain(domain string, rule probeVirtualR
 			return library.Items[index], library, true, nil
 		}
 		library.Items[index].RuleID = strings.TrimSpace(rule.ID)
+		library.Items[index].LocalExit = local
 		library.Items[index].Action = action
 		library.Items[index].ExitNodeID = exitNodeID
 		library.Items[index].ExpiresAt = expiresAt
@@ -1111,6 +1128,7 @@ func allocateProbeVirtualRouterFakeIPForDomain(domain string, rule probeVirtualR
 		return probeVirtualRouterFakeIPEntry{}, library, changed, fmt.Errorf("virtual router fake ip pool exhausted")
 	}
 	entry := probeVirtualRouterFakeIPEntry{
+		LocalExit:  local,
 		Domain:     cleanDomain,
 		FakeIP:     ip,
 		RuleID:     strings.TrimSpace(rule.ID),

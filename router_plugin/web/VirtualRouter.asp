@@ -90,9 +90,9 @@ rules.forEach(function(rule){var tr=document.createElement('tr'),title=document.
 if(rule.action==='direct'||rule.action==='reject')base.textContent=rule.action==='direct'?'直连':'拒绝';
 var select=document.createElement('select');select.setAttribute('data-rule-id',rule.id);
 [['','跟随主控'],['@direct','直连'],['@reject','拒绝']].forEach(function(item){var option=document.createElement('option');option.value=item[0];option.textContent=item[1];select.appendChild(option)});
-if(rule.action!=='direct'&&rule.action!=='reject')nodes.forEach(function(n){var option=document.createElement('option');option.value=n.node_id;option.textContent=n.display_name||n.node_id;select.appendChild(option)});
+nodes.forEach(function(n){var option=document.createElement('option');option.value=n.node_id;option.textContent=n.display_name||n.node_id;select.appendChild(option)});
 var value=saved[rule.id]||'';
-if(value&&value!=='@direct'&&value!=='@reject'&&(rule.action==='direct'||rule.action==='reject'||!nodes.some(function(n){return n.node_id===value}))){var missing=document.createElement('option');missing.value=value;missing.textContent='已保存节点：'+name(value);select.appendChild(missing)}
+if(value&&value!=='@direct'&&value!=='@reject'&&!nodes.some(function(n){return n.node_id===value})){var missing=document.createElement('option');missing.value=value;missing.textContent='已保存节点：'+name(value);select.appendChild(missing)}
 select.value=value;select.onchange=function(){exitsDirty=true;if(select.value)exitChoices[rule.id]=select.value;else delete exitChoices[rule.id]};choice.appendChild(select);body.appendChild(tr)});
 if(!rules.length){var tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=3;td.textContent='等待主控规则';tr.appendChild(td);body.appendChild(tr)}}
 function saveExitsVR(reset){if(!csrf||exitsSaving)return;exitsSaving=true;el('exits_save').disabled=true;el('exits_reset').disabled=true;el('exits_notice').textContent='正在保存…';api({action:'configure',csrf:csrf,config:{exit_overrides:reset?{}:exitChoices}},function(r){exitsSaving=false;el('exits_save').disabled=!csrf;el('exits_reset').disabled=!csrf;el('exits_notice').textContent=r?(reset?'已恢复主控默认出口':'本机出口已保存'):'保存失败，请重试';if(r){exitsDirty=false;exitsSignature='';render(r)}})}

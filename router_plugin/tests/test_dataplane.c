@@ -48,6 +48,9 @@ int main(void)
     vr_packet original;assert(!vr_packet_parse(packet,len,&original));
     /* Source selects 8 locally while the controller's shared mapping says 9. */
     strcpy(entry->mappings[0].rule,"fake-rule");strcpy(entry->mappings[0].exit,"9");
+    entry->mappings[0].local_exit=1;
+    const char *rules="[{\"id\":\"fake-rule\",\"action\":\"direct\",\"entries\":[\"domain_suffix:example.com\"]}]";
+    json_object_object_add(entry->policy,"route_rules",vr_json_parse(rules,strlen(rules)));
     entry->config.exit_overrides.count=1;strcpy(entry->config.exit_overrides.items[0].rule,"fake-rule");strcpy(entry->config.exit_overrides.items[0].node,"8");
     vr_outgoing(entry,packet,len);assert(carried_len==len);
     char path[VR_PATH_MAX][129]={{"7"},{"8"}};vr_frame frame={1,1,NULL,carried,0,carried_len};
@@ -77,6 +80,20 @@ int main(void)
     vr_outgoing(entry,packet,len);assert(read(entry_pipe[0],packet,sizeof(packet))==(ssize_t)len);
     assert(!vr_packet_parse(packet,len,&reply)&&reply.src==original.dst&&reply.dst==original.src);
     assert(!strcmp(entry->mappings[0].exit,"9")&&!strcmp(entry->mappings[0].rule,"fake-rule"));
+    /* Resetting a formerly direct rule must not route a cached Fake IP to its anchor. */
+    for(size_t i=0;i<VR_NAT_MAX;i++)entry->flows[i].used=0;
+    entry->config.exit_overrides.count=0;
+    for(size_t i=0;i<len;i++){unsigned value;assert(sscanf(hex+2*i,"%2x",&value)==1);packet[i]=(uint8_t)value;}
+    carried_len=0;vr_outgoing(entry,packet,len);assert(!carried_len&&read(entry_pipe[0],carried,sizeof(carried))==(ssize_t)len);
+    json_object *rule=json_object_array_get_idx(vr_member(entry->policy,"route_rules"),0);
+    json_object_object_add(rule,"action",json_object_new_string("reject"));
+    for(size_t i=0;i<VR_NAT_MAX;i++)entry->flows[i].used=0;
+    for(size_t i=0;i<len;i++){unsigned value;assert(sscanf(hex+2*i,"%2x",&value)==1);packet[i]=(uint8_t)value;}
+    vr_outgoing(entry,packet,len);assert(!carried_len&&read(entry_pipe[0],carried,sizeof(carried))<0);
+    entry->config.exit_overrides.count=1;strcpy(entry->config.exit_overrides.items[0].node,"8");
+    vr_outgoing(entry,packet,len);assert(carried_len==len);
+    for(size_t i=0;i<VR_NAT_MAX;i++)entry->flows[i].used=0;
+    entry->mappings[0].local_exit=0;json_object_object_del(entry->policy,"route_rules");
     strcpy(entry->config.exit_overrides.items[0].node,"8");
     /* Remote LAN access shares the IP frame, but checks source, endpoint and ACL. */
     vr_gateway *g=&exit->config.gateway;g->enabled=1;g->cidr_count=2;g->node_count=1;

@@ -445,7 +445,7 @@ int vr_platform_routes(json_object *policy)
     return vr_platform_routes_update(NULL,policy);
 }
 
-/* Only direct CIDRs newly rejected locally need extra TUN capture. Keep the
+/* Direct CIDRs overridden to reject or a node need extra TUN capture. Keep the
    controller snapshot immutable and retain its existing captures for TCP. */
 static json_object *exit_route_view(json_object *policy,const vr_exit_overrides *choices)
 {
@@ -455,7 +455,7 @@ static json_object *exit_route_view(json_object *policy,const vr_exit_overrides 
     for(size_t i=0;i<(size_t)json_object_array_length(source);i++) {
         json_object *rule=json_object_array_get_idx(source,i);int reject=0;
         if(!strcmp(vr_string(rule,"action"),"direct"))for(size_t j=0;choices&&j<choices->count;j++)
-            if(!strcmp(vr_string(rule,"id"),choices->items[j].rule)&&!strcmp(choices->items[j].node,"@reject"))reject=1;
+            if(!strcmp(vr_string(rule,"id"),choices->items[j].rule)&&strcmp(choices->items[j].node,"@direct"))reject=1;
         if(!reject){json_object_array_add(rules,json_object_get(rule));continue;}
         json_object *copy=json_object_new_object();const char *fields[]={"id","enabled","entries"};
         for(size_t j=0;j<sizeof(fields)/sizeof(*fields);j++) {

@@ -23,6 +23,7 @@ static int usable(vr_engine *e,const vr_mapping *m,time_t now)
 static int decode(json_object *o,vr_mapping *m)
 {
     memset(m,0,sizeof(*m));
+    m->local_exit=json_object_get_boolean(vr_member(o,"local_exit"));
     return vr_copy(m->domain,sizeof(m->domain),vr_string(o,"domain"))||
         vr_copy(m->ip,sizeof(m->ip),vr_string(o,"fake_ip"))||
         vr_copy(m->rule,sizeof(m->rule),vr_string(o,"rule_id"))||
@@ -36,6 +37,7 @@ static json_object *encode(const vr_mapping *m)
     json_object_object_add(o,"fake_ip",json_object_new_string(m->ip));
     json_object_object_add(o,"rule_id",json_object_new_string(m->rule));
     json_object_object_add(o,"exit_node_id",json_object_new_string(m->exit));
+    if(m->local_exit)json_object_object_add(o,"local_exit",json_object_new_boolean(1));
     json_object_object_add(o,"expires",json_object_new_int64((int64_t)m->expires));return o;
 }
 
@@ -59,9 +61,10 @@ void vr_mapping_reconcile(vr_engine *e)
         if(m->resolved)inet_ntop(AF_INET,&a,ip,sizeof(ip));
         else if(inet_pton(AF_INET,m->domain,&a)==1)strcpy(ip,m->domain);
         vr_decision d=vr_policy_match(e->policy,m->domain,*ip?ip:NULL);
+        if(m->local_exit&&*d.rule&&!strcmp(d.rule,m->rule)&&d.action!=VR_PROXY&&usable(e,m,now))continue;
         if(!usable(e,m,now)||d.action!=VR_PROXY||!*d.exit_node||
            (vr_policy_needs_ip(e->policy,m->domain)&&!*ip))memset(m,0,sizeof(*m));
-        else {strcpy(m->rule,d.rule);strcpy(m->exit,d.exit_node);}
+        else {strcpy(m->rule,d.rule);strcpy(m->exit,d.exit_node);m->local_exit=0;}
     }
     (void)scope(e);e->mapping_dirty++;
 }
@@ -152,12 +155,41 @@ int vr_mapping_flush(vr_engine *e,int force)
     return rc;
 }
 
+static int local_mapping_rule(vr_engine *e,const char *rule)
+{
+    json_object *rules=vr_member(e->policy,"route_rules");
+    for(size_t i=0;i<(size_t)json_object_array_length(rules);i++) {
+        json_object *r=json_object_array_get_idx(rules,i);
+        if(!strcmp(rule,vr_string(r,"id")))return !strcmp(vr_string(r,"action"),"direct")||!strcmp(vr_string(r,"action"),"reject");
+    }
+    return 0;
+}
+
+vr_decision vr_mapping_decision(vr_engine *e,const vr_mapping *m)
+{
+    vr_decision d={.action=VR_PROXY};strcpy(d.rule,m->rule);strcpy(d.exit_node,m->exit);
+    if(m->local_exit) {
+        d.action=VR_DIRECT;*d.exit_node=0;*d.rule=0;
+        json_object *rules=vr_member(e->policy,"route_rules");
+        for(size_t i=0;i<(size_t)json_object_array_length(rules);i++) {
+            json_object *r=json_object_array_get_idx(rules,i),*enabled=vr_member(r,"enabled");
+            if(strcmp(m->rule,vr_string(r,"id"))||(enabled&&!json_object_get_boolean(enabled)))continue;
+            strcpy(d.rule,m->rule);
+            d.action=!strcmp(vr_string(r,"action"),"direct")?VR_DIRECT:!strcmp(vr_string(r,"action"),"reject")?VR_REJECT:VR_PROXY;
+            vr_copy(d.exit_node,sizeof(d.exit_node),vr_string(r,"exit_node_id"));
+            vr_copy(d.backup,sizeof(d.backup),vr_string(r,"backup_exit_node_id"));break;
+        }
+    }
+    return vr_local_exit(&e->config,d);
+}
+
 static int lookup(vr_engine *e,const char *domain,const char *ip,vr_decision d,vr_mapping *out)
 {
     time_t now=time(NULL);
     for(size_t i=0;i<VR_MAPPING_MAX;i++) {
         vr_mapping *m=&e->mappings[i];
-        if(m->expires>now&&((domain&&*domain&&!strcmp(m->domain,domain)&&!strcmp(m->rule,d.rule)&&!strcmp(m->exit,d.exit_node))||
+        if(m->expires>now&&((domain&&*domain&&!strcmp(m->domain,domain)&&!strcmp(m->rule,d.rule)&&
+           (m->local_exit?local_mapping_rule(e,d.rule):!strcmp(m->exit,d.exit_node)))||
            (ip&&*ip&&!strcmp(m->ip,ip)))){m->used=vr_millis();*out=*m;return 0;}
     }
     return -1;
@@ -167,6 +199,7 @@ int vr_mapping_get(vr_engine *e,const char *domain,const char *ip,vr_decision d,
 {
     vr_addresses addresses=vr_engine_addresses(e);
     pthread_mutex_lock(&e->mutex);unsigned revision=e->policy_revision;
+    int local=domain&&*domain&&local_mapping_rule(e,d.rule);
     int stale=domain&&*domain&&d.revision!=revision;pthread_mutex_unlock(&e->mutex);
     if(stale)return -1;
     if(!vr_mapping_lookup(e,domain,ip,d,out))return 0;
@@ -174,6 +207,7 @@ int vr_mapping_get(vr_engine *e,const char *domain,const char *ip,vr_decision d,
     if(domain&&*domain) {
         json_object_object_add(body,"domain",json_object_new_string(domain));json_object_object_add(body,"rule_id",json_object_new_string(d.rule));
         json_object_object_add(body,"action",json_object_new_string("probe_exit"));json_object_object_add(body,"exit_node_id",json_object_new_string(d.exit_node));
+        if(local)json_object_object_add(body,"local_exit",json_object_new_boolean(1));
     } else json_object_object_add(body,"fake_ip",json_object_new_string(ip?ip:""));
     if(vr_hmac(e->config.node_key,json_object_to_json_string_ext(body,JSON_C_TO_STRING_PLAIN),key)){json_object_put(body);return -1;}
     uint64_t deadline=vr_millis()+25000;size_t slot=0;
@@ -199,7 +233,8 @@ int vr_mapping_get(vr_engine *e,const char *domain,const char *ip,vr_decision d,
     json_object *item=vr_member(response,"item");vr_mapping m;int rc=-1;time_t now=time(NULL);
     if(!item||strcmp(vr_string(item,"action"),"probe_exit")||decode(item,&m)||
        vr_timestamp(vr_string(item,"expires_at"),&m.expires)||
-       (domain&&*domain&&(strcmp(domain,m.domain)||strcmp(d.rule,m.rule)||strcmp(d.exit_node,m.exit)))||
+       (domain&&*domain&&(strcmp(domain,m.domain)||strcmp(d.rule,m.rule)||
+                        (local?!m.local_exit:(m.local_exit||strcmp(d.exit_node,m.exit)))))||
        (ip&&*ip&&strcmp(ip,m.ip)))goto done;
     if(m.expires>now+VR_MAPPING_TTL)m.expires=now+VR_MAPPING_TTL;
     m.used=vr_millis();pthread_mutex_lock(&e->mutex);size_t target=0;

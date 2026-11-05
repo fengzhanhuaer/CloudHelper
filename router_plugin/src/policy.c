@@ -115,7 +115,7 @@ vr_decision vr_local_exit(const vr_config *config,vr_decision decision)
         if(!strcmp(choice,"@direct")||!strcmp(choice,"@reject")) {
             decision.action=!strcmp(choice,"@direct")?VR_DIRECT:VR_REJECT;
             *decision.exit_node=0;*decision.backup=0;
-        } else if(decision.action==VR_PROXY) {strcpy(decision.exit_node,choice);*decision.backup=0;}
+        } else {decision.action=VR_PROXY;strcpy(decision.exit_node,choice);*decision.backup=0;}
         break;
     }
     return decision;

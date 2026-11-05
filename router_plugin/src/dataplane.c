@@ -150,8 +150,7 @@ static void *resolver(void *arg)
         vr_resolve_job *j=&e->resolves[slot];j->state=2;char ip[16];strcpy(ip,j->ip);pthread_mutex_unlock(&e->mutex);
         vr_mapping m;vr_decision none={0};int ok=!vr_mapping_get(e,NULL,ip,none,&m);uint32_t real=0;
         if(ok) {
-            vr_decision d={.action=VR_PROXY};strcpy(d.rule,m.rule);strcpy(d.exit_node,m.exit);
-            pthread_mutex_lock(&e->mutex);d=vr_local_exit(&e->config,d);pthread_mutex_unlock(&e->mutex);
+            pthread_mutex_lock(&e->mutex);vr_decision d=vr_mapping_decision(e,&m);pthread_mutex_unlock(&e->mutex);
             if(j->incoming||d.action==VR_DIRECT||(d.action==VR_PROXY&&!strcmp(d.exit_node,e->config.node_id)))
                 ok=!mapping_destination(e,&m,&real);
         }
@@ -229,8 +228,7 @@ void vr_outgoing(vr_engine *e,uint8_t *b,size_t n)
         return;
     }
     vr_mapping m;if(packet_mapping(e,dest,&m)){resolve_later(e,dest,b,n,NULL,0);return;}
-    vr_decision chosen={0};chosen.action=VR_PROXY;strcpy(chosen.rule,m.rule);strcpy(chosen.exit_node,m.exit);
-    chosen=vr_local_exit(&e->config,chosen);
+    vr_decision chosen=vr_mapping_decision(e,&m);
     if(chosen.action==VR_REJECT)return;
     strcpy(m.exit,chosen.exit_node);
     if(chosen.action==VR_DIRECT||!strcmp(m.exit,e->config.node_id)) {
@@ -256,8 +254,7 @@ void vr_incoming(vr_engine *e,const vr_frame *frame,char path[VR_PATH_MAX][129],
         if(!pinned)allowed=!node_for_ip(e,p.src,source)&&!strcmp(source,path[0]);
         if(!pinned&&!allowed&&fake_ip(e,fake)){
             if(packet_mapping(e,fake,&m)){resolve_later(e,fake,b,frame->data_len,path,count);return;}
-            vr_decision choice={.action=VR_PROXY};strcpy(choice.rule,m.rule);strcpy(choice.exit_node,m.exit);
-            choice=vr_local_exit(&e->config,choice);allowed=choice.action==VR_PROXY&&!strcmp(choice.exit_node,path[0]);}
+            vr_decision choice=vr_mapping_decision(e,&m);allowed=choice.action==VR_PROXY&&!strcmp(choice.exit_node,path[0]);}
         if(!pinned&&!allowed){vr_decision d=vr_local_exit(&e->config,vr_policy_match(e->policy,"",fake));allowed=d.action==VR_PROXY && !strcmp(d.exit_node,path[0]);}
         if(!allowed)return;
         vr_packet *o=&reverse->original;

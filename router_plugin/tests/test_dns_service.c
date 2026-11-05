@@ -12,6 +12,7 @@
 static int upstream_requests,mapping_requests;
 static time_t mapping_ttl=3600;
 static int cache_ready;
+static const char *mapping_exit="8";
 int vr_platform_dns(int enabled){(void)enabled;return 0;}
 int vr_bind4(const char *ip,int port,int tcp)
 {
@@ -20,12 +21,13 @@ int vr_bind4(const char *ip,int port,int tcp)
 }
 int vr_mapping_get(vr_engine *e,const char *domain,const char *ip,vr_decision d,vr_mapping *out)
 {
-    (void)e;(void)ip;assert(domain&&d.action==VR_PROXY&&!strcmp(d.exit_node,"8"));__sync_fetch_and_add(&mapping_requests,1);memset(out,0,sizeof(*out));strcpy(out->ip,"198.18.0.20");out->expires=time(NULL)+mapping_ttl;return 0;
+    (void)e;(void)ip;assert(domain&&d.action==VR_PROXY&&!strcmp(d.exit_node,mapping_exit));__sync_fetch_and_add(&mapping_requests,1);memset(out,0,sizeof(*out));strcpy(out->ip,"198.18.0.20");out->expires=time(NULL)+mapping_ttl;return 0;
 }
 int vr_mapping_lookup(vr_engine *e,const char *domain,const char *ip,vr_decision d,vr_mapping *out)
 {
     (void)e;(void)domain;(void)ip;(void)d;
     if(!cache_ready)return -1;
+    assert(d.action==VR_PROXY&&!strcmp(d.exit_node,mapping_exit));
     memset(out,0,sizeof(*out));strcpy(out->ip,"198.18.0.20");out->expires=time(NULL)+3600;return 0;
 }
 static void *upstream(void *arg)
@@ -76,11 +78,26 @@ int main(void)
     assert(mapping_requests==maps&&upstream_requests==upstreams+1);cache_ready=0;
     policy(e,"{\"route_rules\":[{\"id\":\"proxy\",\"action\":\"reject\",\"entries\":[\"domain_suffix:example.com\"]}]}");
     assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&!vr_dns_address4(reply,rn,ip)&&!strcmp(ip,"203.0.113.5"));
+    /* Non-proxy defaults can choose a node without sending that choice upstream. */
+    strcpy(e->config.node_id,"7");mapping_exit="7";strcpy(e->config.exit_overrides.items[0].node,"9");
+    const char *defaults[]={"reject","direct"};
+    for(size_t i=0;i<2;i++) {
+        char raw[256];snprintf(raw,sizeof(raw),"{\"route_rules\":[{\"id\":\"proxy\",\"action\":\"%s\",\"entries\":[\"domain_suffix:example.com\"]}]}",defaults[i]);policy(e,raw);
+        assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&!vr_dns_address4(reply,rn,ip)&&!strcmp(ip,"198.18.0.20"));
+        cache_ready=1;assert(!cached_answer(e,q,n,reply,sizeof(reply),&rn)&&!vr_dns_address4(reply,rn,ip)&&!strcmp(ip,"198.18.0.20"));cache_ready=0;
+        strcpy(e->config.exit_overrides.items[0].node,"@direct");
+        assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&!vr_dns_address4(reply,rn,ip)&&!strcmp(ip,"203.0.113.5"));
+        strcpy(e->config.exit_overrides.items[0].node,"9");
+    }
     e->config.exit_overrides.count=0;
     policy(e,"{\"route_rules\":[{\"id\":\"ip\",\"action\":\"reject\",\"entries\":[\"cidr:203.0.113.0/24\"]},{\"id\":\"direct\",\"action\":\"direct\",\"entries\":[\"domain_suffix:example.com\"]}]}");
     upstreams=upstream_requests;
     n=query(q,28);assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&(reply[3]&15)==5&&upstream_requests==upstreams+1);
     n=query(q,1);assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&(reply[3]&15)==5&&upstream_requests==upstreams+2);
+    policy(e,"{\"route_rules\":[{\"id\":\"ip\",\"action\":\"direct\",\"entries\":[\"cidr:203.0.113.0/24\"]}]}");
+    e->config.exit_overrides.count=1;strcpy(e->config.exit_overrides.items[0].rule,"ip");strcpy(e->config.exit_overrides.items[0].node,"9");maps=mapping_requests;
+    assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&!vr_dns_address4(reply,rn,ip)&&!strcmp(ip,"203.0.113.5")&&mapping_requests==maps);
+    e->config.exit_overrides.count=0;
     policy(e,"{\"route_rules\":[]}");assert(!vr_dns_start(e));
     for(int tcp=0;tcp<2;tcp++){
         int client=socket(AF_INET,tcp?SOCK_STREAM:SOCK_DGRAM,0);assert(client>=0);struct sockaddr_in a={0};a.sin_family=AF_INET;a.sin_port=htons(1053);inet_pton(AF_INET,"127.0.0.1",&a.sin_addr);assert(!connect(client,(struct sockaddr *)&a,sizeof(a)));

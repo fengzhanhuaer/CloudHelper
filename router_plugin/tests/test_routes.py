@@ -64,7 +64,7 @@ table.write_text(json.dumps(rows))
     assert sorted(json.loads(table.read_text())) == sorted(preserved)
     direct={'route_rules':[{'id':'direct','action':'direct','entries':['cidr:9.9.9.0/24']}]}
     old.write_text(json.dumps(direct));new.write_text(json.dumps(direct))
-    for before,after,expected in [('', '@reject', ['187:9.9.9.0/24']),('@reject','@direct',[]),('@direct','',[])]:
+    for before,after,expected in [('', '@reject', ['187:9.9.9.0/24']),('@reject','@direct',[]),('@direct','8',['187:9.9.9.0/24']),('8','',[]),('', '8',['187:9.9.9.0/24']),('8','@direct',[]),('@direct','',[])]:
         commands.write_text('[]')
         assert subprocess.call(['bin/native/test-routes',str(old),str(new),before,after],env=env)==0
         assert sorted(json.loads(table.read_text()))==sorted(preserved+expected)

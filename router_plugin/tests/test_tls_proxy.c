@@ -77,7 +77,7 @@ static void transfer(const char *action,const char *choice)
 {
     entry->config.exit_overrides.count=choice?1:0;
     if(choice){strcpy(entry->config.exit_overrides.items[0].rule,"sni-rule");strcpy(entry->config.exit_overrides.items[0].node,choice);}
-    const char *expected=choice?choice+1:action;
+    const char *expected=choice?(*choice=='@'?choice+1:"probe_exit"):action;
     policy(entry,action);policy(exit_node,"reject");int pair[2];assert(!socketpair(AF_UNIX,SOCK_STREAM|SOCK_NONBLOCK,0,pair));
     assert(!vr_tcp_attach(entry,pair[1],"203.0.113.5",443));uint8_t wire[1024],reply[1024];size_t n=hello(wire,"fixture.example");
     int before=connections;assert(write(pair[0],wire,3)==3);for(int i=0;i<3;i++){tick(entry);tick(exit_node);}assert(connections==before);
@@ -105,6 +105,7 @@ int main(void)
     pthread_t thread;assert(!pthread_create(&thread,NULL,echo,NULL));
     transfer("direct",NULL);transfer("probe_exit",NULL);transfer("reject",NULL);
     transfer("probe_exit","@direct");transfer("probe_exit","@reject");transfer("reject","@direct");transfer("direct","@reject");entry->config.exit_overrides.count=0;
+    transfer("direct","8");transfer("reject","8");entry->config.exit_overrides.count=0;
     int before=connections;char path[VR_PATH_MAX][129]={{"7"},{"8"}};
     const char *denied[]={"127.0.0.1:22","169.254.169.254:80","192.168.1.1:80"};
     policy(exit_node,"direct");

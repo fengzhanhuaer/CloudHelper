@@ -42,7 +42,7 @@ typedef struct {
 } vr_link;
 typedef struct {vr_engine *engine;pthread_t thread;int started,done,fd,index;vr_link *result;} vr_handshake;
 typedef struct {uint32_t hash;int link;uint64_t session,used;} vr_flow_binding;
-typedef struct {char domain[254],ip[16],rule[129],exit[129];time_t expires;uint64_t used;uint32_t resolved;} vr_mapping;
+typedef struct {char domain[254],ip[16],rule[129],exit[129];time_t expires;uint64_t used;uint32_t resolved;int local_exit;} vr_mapping;
 #define VR_MAPPING_TTL (48*60*60)
 /* Atomic replacement can temporarily retain both the old and new file. */
 #define VR_MAPPING_FILE_MAX ((1024u*1024u-1u)/2u)
@@ -123,6 +123,8 @@ void vr_mapping_load(vr_engine *e);
 int vr_mapping_flush(vr_engine *e,int force);
 /* Caller holds e->mutex; retain TTL while reconciling rule/exit changes. */
 void vr_mapping_reconcile(vr_engine *e);
+/* Caller holds engine mutex. Local-only mappings still follow current rules. */
+vr_decision vr_mapping_decision(vr_engine *e,const vr_mapping *mapping);
 void vr_outgoing(vr_engine *e,uint8_t *bytes,size_t n);
 int vr_dataplane_start(vr_engine *e);
 void vr_dataplane_tick(vr_engine *e);

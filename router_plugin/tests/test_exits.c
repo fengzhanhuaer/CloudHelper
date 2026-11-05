@@ -37,9 +37,10 @@ int main(int argc,char **argv)
     assert(!strcmp(restored.exit_overrides.items[0].node,"@reject"));
     struct stat before,after;assert(!stat(s.config_path,&before));reply=configure(&s,choices,1);json_object_put(reply);
     assert(!stat(s.config_path,&after)&&before.st_mtim.tv_sec==after.st_mtim.tv_sec&&before.st_mtim.tv_nsec==after.st_mtim.tv_nsec);
-    const char *invalid[]={"{\"unknown\":\"@direct\"}","{\"proxy\":\"@unknown\"}","{\"proxy\":\"999\"}","{\"direct\":\"8\"}"};
+    const char *invalid[]={"{\"unknown\":\"@direct\"}","{\"proxy\":\"@unknown\"}","{\"proxy\":\"999\"}","{\"direct\":\"999\"}"};
     for(size_t i=0;i<sizeof(invalid)/sizeof(*invalid);i++){reply=configure(&s,invalid[i],0);json_object_put(reply);}
-    reply=configure(&s,"{\"proxy\":\"8\"}",1);json_object_put(reply);assert(s.generation==7);
+    reply=configure(&s,"{\"proxy\":\"8\",\"direct\":\"8\",\"reject\":\"8\"}",1);json_object_put(reply);assert(s.generation==7);
+    assert(!vr_config_load(&restored,s.config_path,error,sizeof(error))&&restored.exit_overrides.count==3);
     reply=configure(&s,"{}",1);assert(!s.config.exit_overrides.count&&s.generation==7);json_object_put(reply);
     assert(!strcmp(vr_string(json_object_array_get_idx(vr_member(s.status,"route_rules"),0),"action"),"direct"));
     json_object_put(s.status);pthread_cond_destroy(&s.changed);pthread_mutex_destroy(&s.mutex);assert(!unlink(s.config_path)&&!rmdir(dir));
