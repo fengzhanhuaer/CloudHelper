@@ -149,3 +149,5 @@ CON-002：发布 preflight 仍要求已退休 Docker/路由 arm64 三个标记�
 2026-11-05 修复发布等待：d38c36ca71abcec229e26df10cff381a06e9b6c7已推送；精确Actions https://github.com/fengzhanhuaer/CloudHelper/actions/runs/42023077498 对应v0.4.109，旧json-c编译已越过原失败点，插件验证继续。
 
 2026-11-05 DEF-003：v0.4.109运行42023077498已通过完整原生、四套ARM ABI与打包，在新增真实内核夹具test_platform.c:75的合并IPv6监听/防火墙断言失败，尚未测试连接保持。产品command_code将stderr重定向/dev/null，原失败未暴露系统原因；只在测试夹具保留ip6tables stderr并拆分监听/防火墙断言，未放宽断言、不推测修复产品。新增夹具已本地严格编译；下一步唯一动作通过诊断CI取精确失败命令。GitHub API本机TLS访问间歇失败，已用授权localrouter的只读SSH本地转发16443读取日志；未写路由器配置、未部署。
+
+2026-11-05 DEF-003根因确认：诊断运行42025140611（04e2bbc81e55813d9f4ec22ea1db24bfdc7b14ac/v0.4.110）监听成功，但容器旧ip6tables1.6.1报filter表不存在，需要insmod，随后防火墙断言失败。CI宿主机须先加载ip6table_filter/ip6t_REJECT；在release.yml原真实内核步骤添加sudo modprobe，保持ubuntu-24.04、隔离容器和所有断言不变。UNIT-006范围加入工作流的内核前提准备；不改变生产逻辑。正式流程仍9job/10资产、无BE86U或Docker产品。下一步唯一动作验证工作流合同后发布并重跑真实内核测试。

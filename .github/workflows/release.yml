@@ -419,6 +419,10 @@ jobs:
         env:
           CHVR_VERSION: v${{ needs.prepare-release.outputs.new_version }}
         run: |
+          # The firmware-compatible ip6tables inside the container uses the
+          # legacy IPv6 filter table; load host modules before entering netns.
+          sudo modprobe ip6table_filter
+          sudo modprobe ip6t_REJECT
           docker run --rm --privileged --network none -v "$PWD/router_plugin:/module" \
             -e CHVR_DISPOSABLE_TEST=1 -e CHVR_VERSION cloudhelper-router-ci bash -lc \
             'make VERSION="$CHVR_VERSION" bin/native/test-platform && python3 tests/test_platform_addresses.py bin/native/test-platform'
