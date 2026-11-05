@@ -145,3 +145,7 @@ CON-002：发布 preflight 仍要求已退休 Docker/路由 arm64 三个标记�
 2026-11-05 DEF-002：首次正式运行42022644541在Ubuntu18.04旧json-c编译时失败：tcp_proxy.c:84 size_t与int比较触发-Werror=sign-compare；本地新版json-c返回size_t未暴露。改为显式转换非负数组长度为size_t，不改变范围或放宽编译规则。该次v0.4.108未创建正式Release；仅工作流版本提交8800bad9e已产生，本地快进到该版本以继续发布修复。
 
 2026-11-05 DEF-002本地复测：sni-json-c-compat-build.log构建成功，test-tcp-close/test-tls-proxy exit0。下一步唯一动作提交tcp_proxy.c及本账本，提交信息fix: support legacy json-c array length in router cache，再跟踪v0.4.109正式CI；升级续传账本不暂存。
+
+2026-11-05 修复发布等待：d38c36ca71abcec229e26df10cff381a06e9b6c7已推送；精确Actions https://github.com/fengzhanhuaer/CloudHelper/actions/runs/42023077498 对应v0.4.109，旧json-c编译已越过原失败点，插件验证继续。
+
+2026-11-05 DEF-003：v0.4.109运行42023077498已通过完整原生、四套ARM ABI与打包，在新增真实内核夹具test_platform.c:75的合并IPv6监听/防火墙断言失败，尚未测试连接保持。产品command_code将stderr重定向/dev/null，原失败未暴露系统原因；只在测试夹具保留ip6tables stderr并拆分监听/防火墙断言，未放宽断言、不推测修复产品。新增夹具已本地严格编译；下一步唯一动作通过诊断CI取精确失败命令。GitHub API本机TLS访问间歇失败，已用授权localrouter的只读SSH本地转发16443读取日志；未写路由器配置、未部署。

@@ -2,6 +2,7 @@
 #include "engine.h"
 #include <assert.h>
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
@@ -31,6 +32,14 @@ int __wrap_posix_spawnp(pid_t *pid,const char *file,const posix_spawn_file_actio
     }
     if(failure&&!strcmp(file,"iptables")&&args[1]&&!strcmp(args[1],"-t")&&args[3]&&!strcmp(args[3],"-D")&&args[4]&&!strcmp(args[4],"CHVR_NAT")&&access(failure,F_OK)==0) {
         unlink(failure);return __real_posix_spawnp(pid,"sh",actions,attr,(char *const[]){"sh","-c","exit 7",NULL},env);
+    }
+    if(!strcmp(file,"ip6tables")) {
+        /* Keep fixture stdout reserved for READY/events, but retain kernel
+           firewall errors on stderr instead of the production /dev/null. */
+        posix_spawn_file_actions_t visible;assert(!posix_spawn_file_actions_init(&visible));
+        assert(!posix_spawn_file_actions_addopen(&visible,STDOUT_FILENO,"/dev/null",O_WRONLY,0));
+        int code=__real_posix_spawnp(pid,file,&visible,attr,args,env);
+        posix_spawn_file_actions_destroy(&visible);return code;
     }
     return __real_posix_spawnp(pid,file,actions,attr,args,env);
 }
@@ -72,7 +81,7 @@ int main(int argc,char **argv)
     assert(!e->config.allow_wan||e->wan>=0);
     e->tun=vr_platform_start(&e->config,&e->addresses,e->own_ip,e->cidr);assert(e->tun>=0&&vr_platform_healthy());
     if(routing)assert(!vr_platform_routes(e->policy)&&!vr_tcp_start(e));
-    if(readdress){e->carrier6=vr_bind6_carrier(e->config.port,e->addresses.wan_if);assert(e->carrier6>=0&&!vr_platform_carrier6(&e->config,&e->addresses));}
+    if(readdress){e->carrier6=vr_bind6_carrier(e->config.port,e->addresses.wan_if);if(e->carrier6<0)perror("IPv6 WAN listener");assert(e->carrier6>=0);assert(!vr_platform_carrier6(&e->config,&e->addresses));}
     if(gateway){carrier=vr_bind4(e->addresses.wan,18082,0);assert(carrier>=0);}
     int streams[32];for(size_t i=0;i<32;i++)streams[i]=-1;
     puts("READY");fflush(stdout);
