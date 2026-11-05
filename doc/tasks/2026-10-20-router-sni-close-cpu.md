@@ -139,3 +139,9 @@ CON-002：发布 preflight 仍要求已退休 Docker/路由 arm64 三个标记�
 2026-11-05 最新修正检查点：用户将会话上限由128改回256，明确动态内存逐步增长、关闭释放。DEC-005 替代 DEC-003 的128上限：256槽仅保留指针，会话状态calloc按连接创建，关闭free状态和全部方向缓冲；数据从4KiB逐步增长到每方向最多64KiB。此前128容量测试保留为历史证据，256容量及动态状态释放的ASan/UBSan回归正在复测；缓存仍4096条/72小时/64KiB、闲置600秒。其他模块验证无需无理由重跑，新增范围只重测受影响TCP/内存和最终原生构建。
 
 2026-11-05 最终本地验证：256 会话容量及第257个拒绝通过；会话状态及双向缓冲关闭释放、4KiB→8KiB→12KiB线性增长通过。最终 native 构建、test-tcp-close/test-tls-proxy 和同两项 ASan/UBSan/leak 检查全部成功（chvr-sni-256-final.log、chvr-sni-256-growth.log）。其余已完成 Go/网络/平台验证保持有效；TEST-007/008 真内核、厂商 ABI 由正式 CI 隔离执行，完成门禁待该结果和正式资产。仅本次28个路径提交，既有升级续传账本保持未暂存。
+
+2026-11-05 发布等待：功能提交2543c2062420637d72f0580e14449ebdd923f68e已推送origin/mapledev；Actions 42022644541精确匹配，https://github.com/fengzhanhuaer/CloudHelper/actions/runs/42022644541。当前TASK-007进行中，下一步唯一动作跟踪该运行并验收AX56U包；生产设备未升级。
+
+2026-11-05 DEF-002：首次正式运行42022644541在Ubuntu18.04旧json-c编译时失败：tcp_proxy.c:84 size_t与int比较触发-Werror=sign-compare；本地新版json-c返回size_t未暴露。改为显式转换非负数组长度为size_t，不改变范围或放宽编译规则。该次v0.4.108未创建正式Release；仅工作流版本提交8800bad9e已产生，本地快进到该版本以继续发布修复。
+
+2026-11-05 DEF-002本地复测：sni-json-c-compat-build.log构建成功，test-tcp-close/test-tls-proxy exit0。下一步唯一动作提交tcp_proxy.c及本账本，提交信息fix: support legacy json-c array length in router cache，再跟踪v0.4.109正式CI；升级续传账本不暂存。

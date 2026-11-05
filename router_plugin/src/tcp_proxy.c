@@ -81,7 +81,7 @@ static void cache_store(vr_engine *e,tcp_session *s,vr_decision d)
     if(d.action==VR_REJECT)route=-2;
     else if(d.action==VR_PROXY&&strcmp(d.exit_node,e->config.node_id)) {
         json_object *rules=vr_member(e->policy,"route_rules");route=-3;
-        for(size_t i=0;i<json_object_array_length(rules)&&i<VR_ROUTE_MAX;i++)
+        for(size_t i=0;i<(size_t)json_object_array_length(rules)&&i<VR_ROUTE_MAX;i++)
             if(!strcmp(d.rule,vr_string(json_object_array_get_idx(rules,i),"id"))){route=(int16_t)i;break;}
         if(route<0)return;
     }
