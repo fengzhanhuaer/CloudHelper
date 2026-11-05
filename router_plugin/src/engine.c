@@ -165,18 +165,22 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
     while(!vr_service_stopped(service,generation)) {
         uint64_t now=vr_millis();
         if(now>=carrier6_checked) {
-            int listener=e->carrier6>=0?e->carrier6:vr_bind6_carrier(e->config.port);
+            int same=e->carrier6>=0&&!strcmp(e->carrier6_iface,e->addresses.wan_if);
+            int listener=same?e->carrier6:*e->addresses.wan_if?vr_bind6_carrier(e->config.port,e->addresses.wan_if):-1;
             if(listener>=0) {
                 if(!vr_platform_carrier6(&e->config,&e->addresses)) {
-                    if(e->carrier6<0)vr_service_log(service,"link","IPv6 carrier listener ready");
-                    e->carrier6=listener;
-                } else if(e->carrier6<0){close(listener);vr_service_log(service,"link","IPv6 carrier listener deferred; IPv4 retained");}
+                    if(listener!=e->carrier6) {
+                        if(e->carrier6>=0)close(e->carrier6);
+                        vr_service_log(service,"link","IPv6 carrier listener ready on WAN");
+                    }
+                    e->carrier6=listener;strcpy(e->carrier6_iface,e->addresses.wan_if);
+                } else if(listener!=e->carrier6){close(listener);vr_service_log(service,"link","IPv6 carrier listener deferred; IPv4 retained");}
             }
             carrier6_checked=now+30000;
         }
         pthread_mutex_lock(&service->mutex);int sniff=service->config.tls_sni_enabled;vr_exit_overrides exits=service->config.exit_overrides;pthread_mutex_unlock(&service->mutex);
         if(memcmp(&exits,&e->config.exit_overrides,sizeof(exits))&&now>=exits_retry) {
-            if(!e->config.enabled||!vr_platform_exit_routes(e->policy,e->policy,&e->config.exit_overrides,&exits)) {
+            if(!vr_platform_tls_cache_clear()&&(!e->config.enabled||!vr_platform_exit_routes(e->policy,e->policy,&e->config.exit_overrides,&exits))) {
                 pthread_mutex_lock(&e->mutex);e->config.exit_overrides=exits;pthread_mutex_unlock(&e->mutex);
             } else vr_service_log(service,"service","Local exit route update failed; current actions and links retained, retrying");
             exits_retry=now+5000;
@@ -199,7 +203,7 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
             }
             if(!l->ssl&&!pending_policy)vr_link_dial(l);
         }
-        struct pollfd fds[6+VR_CARRIER_MAX+129];fds[0]=(struct pollfd){e->tun,POLLIN,0};fds[1]=(struct pollfd){e->lan,POLLIN,0};
+        struct pollfd fds[6+VR_CARRIER_MAX+VR_TCP_POLL_MAX];fds[0]=(struct pollfd){e->tun,POLLIN,0};fds[1]=(struct pollfd){e->lan,POLLIN,0};
         fds[2]=(struct pollfd){e->wan,POLLIN,0};fds[3]=(struct pollfd){e->dns_udp,POLLIN,0};fds[4]=(struct pollfd){e->dns_tcp,POLLIN,0};
         fds[5]=(struct pollfd){e->carrier6,POLLIN,0};
         for(size_t i=0;i<e->link_count;i++)fds[6+i]=(struct pollfd){e->links[i].fd,(short)(POLLIN|(e->links[i].used?(e->links[i].write_events?e->links[i].write_events:POLLOUT):0)),0};

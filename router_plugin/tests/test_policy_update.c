@@ -67,7 +67,9 @@ int main(void)
     time_t expires=m->expires,auth=e->links[0].auth_expires;
     json_object *next=pending(e);json_object_object_add(route(next),"exit_node_id",json_object_new_string("9"));
     e->handshakes[0].started=1;assert(!vr_policy_apply_pending(e)&&!e->policy_revision&&platform_calls==0);e->handshakes[0].started=0;
+    unsigned epoch=vr_platform_tls_cache_epoch();
     platform_fail=1;assert(!vr_policy_apply_pending(e)&&!e->policy_revision&&!strcmp(m->exit,"8"));platform_fail=0;e->policy_retry=0;
+    assert(vr_platform_tls_cache_epoch()!=epoch); /* Clear bypass before policy publication, even on failed route update. */
     assert(vr_policy_apply_pending(e)==1&&!e->next_policy&&!e->refresh);
     assert(m->expires==expires&&!strcmp(m->exit,"9")&&e->flows[0].used==123&&e->bindings[0].used==456);
     for(int i=0;i<8;i++) {
@@ -76,7 +78,9 @@ int main(void)
     }
     next=pending(e);json_object_object_add(link_rule(next,0),"auth_ticket",json_object_new_string("fresh-ticket"));
     json_object_object_add(link_rule(next,0),"updated_at",json_object_new_string("new"));
+    epoch=vr_platform_tls_cache_epoch();
     assert(vr_policy_apply_pending(e)==1&&e->links[0].ssl==connections[0]&&e->links[0].auth_expires==auth);
+    assert(vr_platform_tls_cache_epoch()==epoch); /* Routine ticket refresh retains the route cache. */
     /* A previously authorized multi-hop frame must revalidate removed edges. */
     const char *control="{\"path\":[\"8\",\"9\",\"7\"]}";vr_frame frame={99,0,(const uint8_t *)control,NULL,strlen(control),0};
     assert(!vr_link_receive(&frame,&e->links[4])&&delivered==1&&e->links[4].ingress_count==3);

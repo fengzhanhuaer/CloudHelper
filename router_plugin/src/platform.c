@@ -203,12 +203,13 @@ int vr_bind4(const char *ip,int port,int tcp)
     if(bind(fd,(struct sockaddr *)&sa,sizeof(sa))||(tcp&&listen(fd,8))){close(fd);return -1;}return fd;
 }
 
-int vr_bind6_carrier(int port)
+int vr_bind6_carrier(int port,const char *iface)
 {
     if(port<1||port>65535)return -1;
     struct sockaddr_in6 sa={0};sa.sin6_family=AF_INET6;sa.sin6_port=htons((uint16_t)port);
     int fd=socket(AF_INET6,SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK,0);if(fd<0)return -1;
     int yes=1;
+    if(iface&&*iface&&setsockopt(fd,SOL_SOCKET,SO_BINDTODEVICE,iface,strlen(iface)+1)){close(fd);return -1;}
     if(setsockopt(fd,IPPROTO_IPV6,IPV6_V6ONLY,&yes,sizeof(yes))||setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof(yes))||
        bind(fd,(struct sockaddr *)&sa,sizeof(sa))||listen(fd,8)){close(fd);return -1;}
     return fd;
@@ -218,6 +219,7 @@ static int carrier_skiplog_port;
 static char policy_lan_if[IFNAMSIZ];
 static int tls_active;
 static int tls_prepared;
+static unsigned tls_cache_epoch;
 #include "platform_address.h"
 static int carrier_skiplog_available(void)
 {
@@ -232,12 +234,16 @@ int vr_platform_tls(const vr_addresses *a,const char *cidr,int enabled)
     if(!enabled) {
         if(!RUN("iptables","-t","nat","-C","PREROUTING","-i",a->lan_if,"-p","tcp","--dport","443","-j","CHVR_TLS")&&
             RUN("iptables","-t","nat","-D","PREROUTING","-i",a->lan_if,"-p","tcp","--dport","443","-j","CHVR_TLS"))return -1;
+        if(vr_platform_tls_cache_clear())return -1;
         tls_active=0;return 0;
     }
     RUN("iptables","-t","nat","-N","CHVR_TLS");
+    if(firewall_chain("nat","CHVR_TLS_IP")||RUN("iptables","-t","nat","-F","CHVR_TLS_IP"))return -1;
+    tls_cache_epoch++;
     if(RUN("iptables","-t","nat","-F","CHVR_TLS"))return -1;
     const char *exclude[]={cidr,"0.0.0.0/8","10.0.0.0/8","100.64.0.0/10","127.0.0.0/8","169.254.0.0/16","172.16.0.0/12","192.168.0.0/16","224.0.0.0/3"};
     for(size_t i=0;i<sizeof(exclude)/sizeof(*exclude);i++)if(RUN("iptables","-t","nat","-A","CHVR_TLS","-d",exclude[i],"-j","RETURN"))return -1;
+    if(RUN("iptables","-t","nat","-A","CHVR_TLS","-j","CHVR_TLS_IP"))return -1;
     char target[32];snprintf(target,sizeof(target),"%s:1054",a->lan);
     if(RUN("iptables","-t","nat","-A","CHVR_TLS","-p","tcp","--dport","443","-j","DNAT","--to-destination",target))return -1;
     if(RUN("iptables","-C","CHVR_IN","-i",a->lan_if,"-d",a->lan,"-p","tcp","--dport","1054","-m","conntrack","--ctstate","DNAT","-j","ACCEPT")&&
@@ -245,6 +251,22 @@ int vr_platform_tls(const vr_addresses *a,const char *cidr,int enabled)
     if(RUN("iptables","-t","nat","-C","PREROUTING","-i",a->lan_if,"-p","tcp","--dport","443","-j","CHVR_TLS")&&
         RUN("iptables","-t","nat","-I","PREROUTING","1","-i",a->lan_if,"-p","tcp","--dport","443","-j","CHVR_TLS"))return -1;
     tls_prepared=tls_active=1;return 0;
+}
+
+unsigned vr_platform_tls_cache_epoch(void){return tls_cache_epoch;}
+int vr_platform_tls_cache_clear(void)
+{
+    if(tls_prepared&&RUN("iptables","-t","nat","-F","CHVR_TLS_IP"))return -1;
+    tls_cache_epoch++;return 0;
+}
+int vr_platform_tls_cache(const char *ip,int add)
+{
+    struct in_addr a;if(inet_pton(AF_INET,ip,&a)!=1||!tls_active)return -1;
+    /* ACCEPT exits nat PREROUTING; RETURN here would resume at the DNAT.
+       It neither accepts filter traffic nor opens a WAN-facing listener. */
+    int code=command_code((const char *const[]){"iptables","-t","nat","-C","CHVR_TLS_IP","-d",ip,"-j","ACCEPT",NULL},NULL,0);
+    if(add) return code==0?0:code==1?RUN("iptables","-t","nat","-A","CHVR_TLS_IP","-d",ip,"-j","ACCEPT"):-1;
+    return code==1?0:code==0?RUN("iptables","-t","nat","-D","CHVR_TLS_IP","-d",ip,"-j","ACCEPT"):-1;
 }
 
 int vr_platform_start(const vr_config *c,const vr_addresses *a,const char *ip,const char *cidr)
@@ -520,6 +542,7 @@ void vr_platform_stop(const char *cidr)
     RUN("iptables","-t","mangle","-F","CHVR_MARK");RUN("iptables","-t","mangle","-X","CHVR_MARK");
     if(*policy_lan_if)RUN("iptables","-t","nat","-D","PREROUTING","-i",policy_lan_if,"-p","tcp","--dport","443","-j","CHVR_TLS");
     RUN("iptables","-t","nat","-F","CHVR_TLS");RUN("iptables","-t","nat","-X","CHVR_TLS");
+    RUN("iptables","-t","nat","-F","CHVR_TLS_IP");RUN("iptables","-t","nat","-X","CHVR_TLS_IP");tls_cache_epoch++;
     RUN("iptables","-D","INPUT","-j","CHVR_IN");RUN("iptables","-D","FORWARD","-j","CHVR_FWD");RUN("iptables","-t","nat","-D","POSTROUTING","-j","CHVR_NAT");
     RUN("iptables","-F","CHVR_IN");RUN("iptables","-X","CHVR_IN");RUN("iptables","-F","CHVR_FWD");RUN("iptables","-X","CHVR_FWD");
     RUN("iptables","-t","nat","-F","CHVR_NAT");RUN("iptables","-t","nat","-X","CHVR_NAT");
@@ -532,7 +555,10 @@ int vr_platform_check(char *detail,size_t capacity)
 {
     int code;
 #define CHECK(label,...) do {code=command_code((const char *const[]){__VA_ARGS__,NULL},NULL,0);if(code) {snprintf(detail,capacity,"Firewall check deferred: %s (%s %d); connections retained",label,code<0?"system error":"exit",code<0?-code:code);return 0;}}while(0)
-    if(tls_active)CHECK("SNI hook","iptables","-t","nat","-C","PREROUTING","-i",policy_lan_if,"-p","tcp","--dport","443","-j","CHVR_TLS");
+    if(tls_active) {
+        CHECK("SNI hook","iptables","-t","nat","-C","PREROUTING","-i",policy_lan_if,"-p","tcp","--dport","443","-j","CHVR_TLS");
+        CHECK("SNI cache hook","iptables","-t","nat","-C","CHVR_TLS","-j","CHVR_TLS_IP");
+    }
     if(carrier_skiplog_port) {
         char port[8];snprintf(port,sizeof(port),"%d",carrier_skiplog_port);
         CHECK("carrier SKIPLOG","iptables","-C","CHVR_IN","-p","tcp","--dport",port,"-j","SKIPLOG");

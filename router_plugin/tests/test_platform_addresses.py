@@ -22,7 +22,9 @@ def line(proc):
     return proc.stdout.readline().strip()
 
 def state():
-    return sorted(s for s in run('iptables-save').splitlines() if s.startswith('-A ')), sorted(run('ip', 'rule', 'show').splitlines())
+    # Successful sniffing populates volatile IP entries; repair invalidates
+    # those entries while static owned rules and existing flows stay intact.
+    return sorted(s for s in run('iptables-save').splitlines() if s.startswith('-A ') and not s.startswith('-A CHVR_TLS_IP ')), sorted(run('ip', 'rule', 'show').splitlines())
 
 def unchanged(original):
     current=state()
@@ -42,6 +44,9 @@ for ns, interface, router, peer in [('chvr-client','chvrlan','192.168.52','192.1
     run('ip','-n',ns,'link','set',interface+'p','up')
     run('ip','-n',ns,'link','set','lo','up')
     run('ip','-n',ns,'route','add','default','via',router+'.1')
+    prefix='fd42:52' if interface=='chvrlan' else 'fd42:113'
+    run('ip','-6','addr','add',prefix+'::1/64','dev',interface,'nodad')
+    run('ip','-n',ns,'-6','addr','add',prefix+'::100/64','dev',interface+'p','nodad')
 Path('/proc/sys/net/ipv4/ip_forward').write_text('1')
 run('iptables','-P','INPUT','DROP')
 run('iptables','-A','INPUT','-m','conntrack','--ctstate','ESTABLISHED,RELATED','-j','ACCEPT')
@@ -77,6 +82,22 @@ print('READY',flush=True);listen(443)
         env=dict(os.environ,CHVR_PLATFORM_FAIL_FILE=work+'/fail',CHVR_CHECK_FAIL_FILE=work+'/check-fail')
         helper=subprocess.Popen([sys.argv[1],'readdress'],env=env,stdout=subprocess.PIPE,universal_newlines=True)
         assert line(helper)=='READY'
+        def carrier6(ns,host,allowed):
+            source='''import socket
+s=socket.socket(socket.AF_INET6);s.settimeout(1)
+ok=s.connect_ex((%r,12040))==0
+assert ok==%r
+if ok:s.sendall(b'wan-carrier');assert s.recv(64)==b'wan-carrier'
+s.close()
+''' % (host,allowed)
+            run('ip','netns','exec',ns,'python3','-c',source)
+        carrier6('chvr-client','fd42:52::1',False)
+        carrier6('chvr-target','fd42:113::1',True)
+        helper.send_signal(signal.SIGURG);assert line(helper)=='CARRIER6_OFF'
+        carrier6('chvr-target','fd42:113::1',False)
+        helper.send_signal(signal.SIGURG);assert line(helper)=='CARRIER6_ON'
+        carrier6('chvr-target','fd42:113::1',True)
+        print('PASS: IPv6 listener bound to WAN, LAN refused and WAN ingress follows public-connection switch',flush=True)
         def client(ns,host,port,tls=False):
             source='''import socket,ssl,sys
 s=socket.create_connection((%r,%d),6);s.settimeout(6)
@@ -93,6 +114,15 @@ s.close()
         client('chvr-target','203.0.113.1',12040)
         client(None,'203.0.113.5',18080)  # Outbound controller-shaped connection.
         client('chvr-client','203.0.113.5',443,True)
+        assert '-d 203.0.113.5/32 -j ACCEPT' in run('iptables','-t','nat','-S','CHVR_TLS_IP')
+        run('iptables','-t','nat','-Z','CHVR_TLS')
+        run('iptables','-t','nat','-Z','CHVR_TLS_IP')
+        cached=client('chvr-client','203.0.113.5',443,True)
+        cached.stdin.write('cached-direct\n');cached.stdin.flush();assert line(cached)=='OK'
+        assert all(int(s.split()[0])==0 for s in run('iptables','-t','nat','-L','CHVR_TLS','-n','-v','-x').splitlines() if 'DNAT' in s)
+        assert any(int(s.split()[0])>0 for s in run('iptables','-t','nat','-L','CHVR_TLS_IP','-n','-v','-x').splitlines() if 'ACCEPT' in s)
+        cached.stdin.close();assert cached.wait(timeout=5)==0;streams.remove(cached)
+        print('PASS: successful SNI caches IP; repeated TLS uses kernel direct path with zero new DNATs',flush=True)
         def retained():
             for proc in streams:
                 proc.stdin.write('still-connected\n');proc.stdin.flush();assert line(proc)=='OK'
@@ -115,7 +145,7 @@ s.close()
             if text.startswith('*'):table=text[1:]
             if text.startswith('-A ') and '-j CHVR_' in text and not text.split()[1].startswith('CHVR_'):
                 parts=text.split();parts[0]='-D';run('iptables','-t',table,*parts)
-        chains={'filter':['CHVR_IN','CHVR_FWD'],'nat':['CHVR_NAT','CHVR_TLS'],'mangle':['CHVR_FLOW','CHVR_MARK']}
+        chains={'filter':['CHVR_IN','CHVR_FWD'],'nat':['CHVR_NAT','CHVR_TLS','CHVR_TLS_IP'],'mangle':['CHVR_FLOW','CHVR_MARK']}
         for table,names in chains.items():
             for name in names:run('iptables','-t',table,'-F',name)
             for name in names:run('iptables','-t',table,'-X',name)
@@ -163,4 +193,5 @@ s.close()
         if helper is not None:
             helper.terminate();assert helper.wait(timeout=20)==0
             assert 'CHVR_' not in run('iptables-save')
+            assert 'CHVR6_' not in run('ip6tables-save')
         server.terminate();server.wait(timeout=10)

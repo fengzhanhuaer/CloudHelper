@@ -30,7 +30,7 @@ int main(int argc,char **argv)
  json_object *discovery=vr_json_parse(saved,saved_n),*endpoints=json_object_new_array();
  json_object_array_add(endpoints,json_object_get(json_object_array_get_idx(vr_member(discovery,"endpoints"),0)));
  json_object_object_add(discovery,"endpoints",endpoints);assert(!vr_controller_link_store(&c,discovery));json_object_put(discovery);
- upgrade_job job={.config=c};transfer metadata={.job=&job,.fd=-1};
+ upgrade_job job={.config=c};strcpy(job.iface,"lo");transfer metadata={.job=&job,.fd=-1};
  assert(fetch(&job,"https://fixture/metadata",&metadata)==CURLE_OK&&metadata.status==200);
  json_object *download=vr_json_parse(metadata.memory,metadata.used);assert(download&&!strcmp(vr_string(download,"download"),"ip"));json_object_put(download);free(metadata.memory);
  assert(!vr_controller_link_target(&c,origin,pin));

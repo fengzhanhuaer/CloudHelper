@@ -11,7 +11,7 @@ int __real_posix_spawnp(pid_t *pid,const char *file,const posix_spawn_file_actio
 int __wrap_posix_spawnp(pid_t *pid,const char *file,const posix_spawn_file_actions_t *actions,const posix_spawnattr_t *attr,char *const args[],char *const env[])
 {
     short flags=0;assert(!posix_spawnattr_getflags(attr,&flags)&&(flags&POSIX_SPAWN_USEVFORK));
-    if(firewall_mock&&!strcmp(file,"ip6tables")) {
+    if(firewall_mock&&(!strcmp(file,"ip6tables")||!strcmp(file,"iptables"))) {
         int check=0;size_t used=strlen(firewall_commands);
         for(size_t i=1;args[i];i++) {
             if(!strcmp(args[i],"-C"))check=1;
@@ -50,18 +50,30 @@ int main(void)
     assert(command_code((const char *const[]){"sh","-c","exit 4",NULL},NULL,0)==4);
     spawn_error=ENOMEM;assert(command_code((const char *const[]){"sh","-c","exit 0",NULL},NULL,0)==-ENOMEM);
     spawn_error=0;firewall_mock=1;firewall_check=1;
-    vr_config config={0};config.port=12040;vr_addresses addresses={0};strcpy(addresses.lan_if,"br0");
+    vr_config config={0};config.port=12040;vr_addresses addresses={0};strcpy(addresses.lan_if,"br0");strcpy(addresses.wan_if,"eth0");
     assert(!vr_platform_carrier6(&config,&addresses));
     assert(strstr(firewall_commands,"-I CHVR6_IN 1 -p tcp --dport 12040 -j DROP"));
-    assert(strstr(firewall_commands,"-I CHVR6_IN 1 -i br0 -p tcp --dport 12040 -j ACCEPT"));
+    assert(strstr(firewall_commands,"-I CHVR6_IN 1 -i br0 -p tcp --dport 12040 -j REJECT --reject-with tcp-reset"));
+    assert(!strstr(firewall_commands,"-I CHVR6_IN 1 -i eth0 -p tcp --dport 12040 -j ACCEPT"));
     assert(!strstr(firewall_commands,"FORWARD")&&!strstr(firewall_commands,"nat")&&!strstr(firewall_commands,"-P "));
     *firewall_commands=0;firewall_check=4;assert(vr_platform_carrier6(&config,&addresses)<0);
     assert(!strstr(firewall_commands,"-I ")&&!strstr(firewall_commands,"-D ")&&!strstr(firewall_commands,"-F "));
     *firewall_commands=0;firewall_check=0;assert(!vr_platform_carrier6(&config,&addresses));assert(!strstr(firewall_commands,"-I "));
     *firewall_commands=0;firewall_check=1;config.allow_wan=1;assert(!vr_platform_carrier6(&config,&addresses));
-    assert(strstr(firewall_commands,"-I CHVR6_IN 1 -p tcp --dport 12040 -j ACCEPT"));
+    assert(strstr(firewall_commands,"-I CHVR6_IN 1 -i eth0 -p tcp --dport 12040 -j ACCEPT"));
+    assert(!strstr(firewall_commands,"-I CHVR6_IN 1 -p tcp --dport 12040 -j ACCEPT"));
     vr_platform_carrier6_stop();
-    puts("PASS: IPv6 carrier firewall retains LAN/WAN permissions, defers failed checks, and never changes forwarding or default policy");
+    tls_active=tls_prepared=1;*firewall_commands=0;firewall_check=1;
+    assert(!vr_platform_tls_cache("203.0.113.5",1));
+    assert(strstr(firewall_commands,"-A CHVR_TLS_IP -d 203.0.113.5 -j ACCEPT"));
+    assert(!strstr(firewall_commands,"-j RETURN")&&!strstr(firewall_commands,"filter"));
+    *firewall_commands=0;firewall_check=4;assert(vr_platform_tls_cache("203.0.113.5",1)<0);
+    assert(!strstr(firewall_commands,"-A "));
+    unsigned epoch=vr_platform_tls_cache_epoch();*firewall_commands=0;
+    assert(!vr_platform_tls_cache_clear()&&vr_platform_tls_cache_epoch()!=epoch);
+    assert(strstr(firewall_commands,"-F CHVR_TLS_IP")&&!strstr(firewall_commands,"conntrack"));
+    puts("PASS: SNI direct cache terminates only owned NAT, defers failed checks, clears in one bounded command");
+    puts("PASS: IPv6 carrier firewall rejects LAN, gates WAN ingress, defers failed checks, and never changes forwarding or default policy");
     puts("PASS: commands use shared-VM spawn when fork is denied, preserve spawn errno and child exit code");
     puts("PASS: child exit race retains complete bounded NVRAM output and exit status");return 0;
 }

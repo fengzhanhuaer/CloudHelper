@@ -44,10 +44,11 @@ static int ip_cancel(void *arg,curl_off_t a,curl_off_t b,curl_off_t d,curl_off_t
 static int public_ip(vr_engine *e,int family,char *out,size_t cap)
 {
     vr_addresses addresses=vr_engine_addresses(e);
+    if(family==AF_INET6&&!*addresses.wan_if)return -1;
     CURL *curl=curl_easy_init();if(!curl)return -1;ip_response response={{0},0};long status=0;
     const char *urls4[]={"https://api4.ipify.org","https://ipv4.icanhazip.com"};
     const char *urls6[]={"https://api6.ipify.org","https://ipv6.icanhazip.com"};
-    curl_easy_setopt(curl,CURLOPT_PROXY,"");curl_easy_setopt(curl,CURLOPT_INTERFACE,family==AF_INET?addresses.wan_if:NULL);
+    curl_easy_setopt(curl,CURLOPT_PROXY,"");curl_easy_setopt(curl,CURLOPT_INTERFACE,addresses.wan_if);
     curl_easy_setopt(curl,CURLOPT_IPRESOLVE,family==AF_INET?CURL_IPRESOLVE_V4:CURL_IPRESOLVE_V6);
     curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT_MS,2000L);curl_easy_setopt(curl,CURLOPT_TIMEOUT_MS,3000L);curl_easy_setopt(curl,CURLOPT_NOSIGNAL,1L);
     curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,ip_received);curl_easy_setopt(curl,CURLOPT_WRITEDATA,&response);

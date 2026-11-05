@@ -100,10 +100,11 @@ static SSL *start_at(const char *host,const char *ip,int port,const char *pin,co
     else return NULL;
     int sock=socket(address.ss_family,SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK,0);if(sock<0)return NULL;
     SSL_CTX *ctx=NULL;SSL *ssl=NULL;
+    if(address.ss_family==AF_INET6&&iface&&!*iface)goto fail;
     int yes=1;if(setsockopt(sock,IPPROTO_TCP,TCP_NODELAY,&yes,sizeof(yes)))goto fail;
-    /* The current TUN/policy capture is IPv4-only. IPv6 follows the system
-       route, whose interface can differ from the IPv4 WAN (e.g. PPP). */
-    if(address.ss_family==AF_INET&&iface&&*iface&&setsockopt(sock,SOL_SOCKET,SO_BINDTODEVICE,iface,strlen(iface)+1))goto fail;
+    /* Both address families use the selected physical WAN. An IPv6 address
+       reachable only through LAN must not move a carrier onto the LAN. */
+    if(iface&&*iface&&setsockopt(sock,SOL_SOCKET,SO_BINDTODEVICE,iface,strlen(iface)+1))goto fail;
     if(connect(sock,(struct sockaddr *)&address,address_len) && errno!=EINPROGRESS)goto fail;
     ctx=SSL_CTX_new(TLS_client_method());if(!ctx)goto fail;
     SSL_CTX_set_min_proto_version(ctx,TLS1_2_VERSION);SSL_CTX_set_options(ctx,SSL_OP_NO_COMPRESSION);

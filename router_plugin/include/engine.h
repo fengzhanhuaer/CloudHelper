@@ -13,6 +13,8 @@
 #define VR_TX_BULK_CAP (96u*1024u)
 #define VR_TX_WRITE_MAX (16u*1024u)
 #define VR_NAT_MAX 2048
+#define VR_TCP_MAX 256
+#define VR_TCP_POLL_MAX (1+VR_TCP_MAX*2)
 #define VR_SPEED_BYTES (128u*1024u*1024u)
 #define VR_SPEED_DURATION_MS 10000u
 #define VR_SPEED_TIMEOUT_MS (VR_SPEED_DURATION_MS+20000u)
@@ -71,6 +73,7 @@ struct vr_engine {
     unsigned buffers_reset,telemetry_epoch;
     pthread_t public_ip_thread;int public_ip_started;
     int tun,lan,wan,dns_udp,dns_tcp,platform_started,carrier6;
+    char carrier6_iface[16];
     pthread_mutex_t mutex;pthread_cond_t jobs_changed;
     vr_mapping mappings[VR_MAPPING_MAX];
     vr_mapping_pending mapping_pending[16];

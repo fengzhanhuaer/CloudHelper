@@ -86,6 +86,15 @@ int vr_policy_needs_ip(json_object *policy,const char *domain)
     return 0;
 }
 
+vr_decision vr_policy_rule_decision(json_object *r)
+{
+    vr_decision d={0};const char *action=vr_string(r,"action");
+    d.action=!strcmp(action,"direct")?VR_DIRECT:!strcmp(action,"reject")?VR_REJECT:VR_PROXY;
+    if(!r||vr_copy(d.rule,sizeof(d.rule),vr_string(r,"id"))||vr_copy(d.exit_node,sizeof(d.exit_node),vr_string(r,"exit_node_id"))||
+       vr_copy(d.backup,sizeof(d.backup),vr_string(r,"backup_exit_node_id")))d.action=VR_REJECT;
+    return d;
+}
+
 vr_decision vr_policy_match(json_object *policy,const char *domain,const char *ip)
 {
     vr_decision d={0};json_object *rules=vr_member(policy,"route_rules");
@@ -98,11 +107,7 @@ vr_decision vr_policy_match(json_object *policy,const char *domain,const char *i
         for(size_t j=0;j<n && j<4096;j++) {
             json_object *e=json_object_array_get_idx(entries,j);
             if(!json_object_is_type(e,json_type_string) || !matches(json_object_get_string(e),domain,ip))continue;
-            const char *action=vr_string(r,"action");
-            d.action=!strcmp(action,"direct")?VR_DIRECT:!strcmp(action,"reject")?VR_REJECT:VR_PROXY;
-            if(vr_copy(d.rule,sizeof(d.rule),vr_string(r,"id")) || vr_copy(d.exit_node,sizeof(d.exit_node),vr_string(r,"exit_node_id")) ||
-               vr_copy(d.backup,sizeof(d.backup),vr_string(r,"backup_exit_node_id")))d.action=VR_REJECT;
-            return d;
+            return vr_policy_rule_decision(r);
         }
     }
     return d;

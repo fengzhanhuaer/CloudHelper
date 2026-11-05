@@ -78,6 +78,7 @@ static int firewall_chain(const char *table,const char *chain)
 }
 
 static char carrier6_lan[16];
+static char carrier6_wan[16];
 static int carrier6_port;
 int vr_platform_carrier6(const vr_config *c,const vr_addresses *a)
 {
@@ -85,32 +86,44 @@ int vr_platform_carrier6(const vr_config *c,const vr_addresses *a)
        NAT, TUN interception, or alter the firmware's default policy. */
     int code=command_code((const char *const[]){"ip6tables","-t","filter","-n","-L","CHVR6_IN",NULL},NULL,0);
     if(code&&(code!=1||RUN("ip6tables","-t","filter","-N","CHVR6_IN")))return -1;
-    char rules[5][512];
+    char rules[6][512];
     snprintf(rules[0],sizeof(rules[0]),"ip6tables -t filter @ CHVR6_IN -p tcp --dport %d -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",c->port);
     snprintf(rules[1],sizeof(rules[1]),"ip6tables -t filter @ CHVR6_IN -i lo -p tcp --dport %d -j ACCEPT",c->port);
-    snprintf(rules[2],sizeof(rules[2]),"ip6tables -t filter @ CHVR6_IN -i %s -p tcp --dport %d -j ACCEPT",a->lan_if,c->port);
-    snprintf(rules[3],sizeof(rules[3]),"ip6tables -t filter @ CHVR6_IN -p tcp --dport %d -j %s",c->port,c->allow_wan?"ACCEPT":"DROP");
-    strcpy(rules[4],"ip6tables -t filter @ INPUT -j CHVR6_IN");
-    /* Insert accepts ahead of the guard, and expose the hook last. */
-    const int order[]={3,2,1,0};
-    for(size_t i=0;i<4;i++){const char *r=rules[order[i]];code=address_rule_run(r,2);if(code&&(code!=1||address_rule_run(r,1)))return -1;}
-    /* A crash can leave the previous WAN permission in our chain. Remove
-       its opposite guard only after the desired rules have been installed. */
-    char opposite[512];snprintf(opposite,sizeof(opposite),"ip6tables -t filter @ CHVR6_IN -p tcp --dport %d -j %s",c->port,c->allow_wan?"DROP":"ACCEPT");
-    code=address_rule_run(opposite,2);if(code==0){if(address_rule_run(opposite,0))return -1;}else if(code!=1)return -1;
-    code=address_rule_run(rules[4],2);if(code&&(code!=1||address_rule_run(rules[4],1)))return -1;
+    snprintf(rules[2],sizeof(rules[2]),"ip6tables -t filter @ CHVR6_IN -i %s -p tcp --dport %d -j REJECT --reject-with tcp-reset",a->lan_if,c->port);
+    snprintf(rules[3],sizeof(rules[3]),"ip6tables -t filter @ CHVR6_IN -i %s -p tcp --dport %d -j ACCEPT",*a->wan_if?a->wan_if:"lo",c->port);
+    snprintf(rules[4],sizeof(rules[4]),"ip6tables -t filter @ CHVR6_IN -p tcp --dport %d -j DROP",c->port);
+    strcpy(rules[5],"ip6tables -t filter @ INPUT -j CHVR6_IN");
+    /* LAN is rejected even with WAN enabled. Established authenticated
+       streams retain their existing lifetime; no forwarding is enabled. */
+    const int order[]={4,3,1,0,2};
+    for(size_t i=0;i<5;i++) {
+        int index=order[i];if(index==3&&(!c->allow_wan||!*a->wan_if))continue;
+        const char *r=rules[index];code=address_rule_run(r,2);if(code&&(code!=1||address_rule_run(r,1)))return -1;
+    }
+    /* Remove old broad permission, legacy LAN accept, and disabled WAN accept
+       only after installing the new guards. Never open other interfaces. */
+    char old[512];const char *stale[3]={old,NULL,NULL};
+    snprintf(old,sizeof(old),"ip6tables -t filter @ CHVR6_IN -p tcp --dport %d -j ACCEPT",c->port);
+    char lan_accept[512];snprintf(lan_accept,sizeof(lan_accept),"ip6tables -t filter @ CHVR6_IN -i %s -p tcp --dport %d -j ACCEPT",a->lan_if,c->port);stale[1]=lan_accept;
+    if(!c->allow_wan&&*a->wan_if)stale[2]=rules[3];
+    for(size_t i=0;i<3;i++)if(stale[i]){code=address_rule_run(stale[i],2);if(code==0){if(address_rule_run(stale[i],0))return -1;}else if(code!=1)return -1;}
+    code=address_rule_run(rules[5],2);if(code&&(code!=1||address_rule_run(rules[5],1)))return -1;
     if(*carrier6_lan&&strcmp(carrier6_lan,a->lan_if)) {
-        char old[512];snprintf(old,sizeof(old),"ip6tables -t filter @ CHVR6_IN -i %s -p tcp --dport %d -j ACCEPT",carrier6_lan,carrier6_port);
+        snprintf(old,sizeof(old),"ip6tables -t filter @ CHVR6_IN -i %s -p tcp --dport %d -j REJECT --reject-with tcp-reset",carrier6_lan,carrier6_port);
         if(address_rule_run(old,0))return -1;
     }
-    vr_copy(carrier6_lan,sizeof(carrier6_lan),a->lan_if);carrier6_port=c->port;return 0;
+    if(*carrier6_wan&&strcmp(carrier6_wan,a->wan_if)) {
+        snprintf(old,sizeof(old),"ip6tables -t filter @ CHVR6_IN -i %s -p tcp --dport %d -j ACCEPT",carrier6_wan,carrier6_port);
+        code=address_rule_run(old,2);if(code==0){if(address_rule_run(old,0))return -1;}else if(code!=1)return -1;
+    }
+    vr_copy(carrier6_lan,sizeof(carrier6_lan),a->lan_if);vr_copy(carrier6_wan,sizeof(carrier6_wan),a->wan_if);carrier6_port=c->port;return 0;
 }
 void vr_platform_carrier6_stop(void)
 {
     if(!carrier6_port)return;
     RUN("ip6tables","-D","INPUT","-j","CHVR6_IN");
     RUN("ip6tables","-F","CHVR6_IN");RUN("ip6tables","-X","CHVR6_IN");
-    *carrier6_lan=0;carrier6_port=0;
+    *carrier6_lan=*carrier6_wan=0;carrier6_port=0;
 }
 int vr_platform_repair(const vr_config *c,const vr_addresses *a,const char *cidr)
 {
@@ -129,7 +142,8 @@ int vr_platform_repair(const vr_config *c,const vr_addresses *a,const char *cidr
         RULE("iptables -t mangle @ CHVR_MARK -p tcp -j CONNMARK --set-xmark 0x43000000/0xff000000");
         RULE("iptables -t mangle @ PREROUTING -i chvr0 -j CHVR_FLOW");
         if(tls_prepared) {
-            if(firewall_chain("nat","CHVR_TLS"))goto done;
+            if(firewall_chain("nat","CHVR_TLS")||firewall_chain("nat","CHVR_TLS_IP"))goto done;
+            RULE("iptables -t nat @ CHVR_TLS -j CHVR_TLS_IP");
             const char *exclude[]={cidr,"0.0.0.0/8","10.0.0.0/8","100.64.0.0/10","127.0.0.0/8","169.254.0.0/16","172.16.0.0/12","192.168.0.0/16","224.0.0.0/3"};
             for(size_t i=0;i<sizeof(exclude)/sizeof(*exclude);i++)RULE("iptables -t nat @ CHVR_TLS -d %s -j RETURN",exclude[i]);
         }
@@ -152,6 +166,7 @@ int vr_platform_repair(const vr_config *c,const vr_addresses *a,const char *cidr
             strstr(p->rule[i]," @ PREROUTING ")||strstr(p->rule[i]," @ POSTROUTING ");
         if(missing[i]&&hook==hooks&&address_rule_run(p->rule[i],1))goto done;
     }
+    if(tls_prepared&&vr_platform_tls_cache_clear())goto done;
     result=0;
 done:
 #undef RULE

@@ -14,11 +14,13 @@ static volatile sig_atomic_t stopping;
 static volatile sig_atomic_t toggle_tls;
 static volatile sig_atomic_t refresh_addresses,fail_bind;
 static volatile sig_atomic_t repair_firewall;
+static volatile sig_atomic_t toggle_carrier6;
 static int carrier=-1;static struct sockaddr_in peer;static socklen_t peer_len;
 static void stop(int sig){(void)sig;stopping=1;}
 static void toggle(int sig){(void)sig;toggle_tls=1;}
 static void refresh(int sig){if(sig==SIGALRM)fail_bind=1;else refresh_addresses=1;}
 static void repair(int sig){(void)sig;repair_firewall=1;}
+static void carrier6_toggle(int sig){(void)sig;toggle_carrier6=1;}
 int __real_posix_spawnp(pid_t *pid,const char *file,const posix_spawn_file_actions_t *actions,const posix_spawnattr_t *attr,char *const args[],char *const env[]);
 int __wrap_posix_spawnp(pid_t *pid,const char *file,const posix_spawn_file_actions_t *actions,const posix_spawnattr_t *attr,char *const args[],char *const env[])
 {
@@ -42,9 +44,10 @@ int vr_send_json(vr_engine *e,uint16_t m,uint16_t s,char path[VR_PATH_MAX][129],
 int main(int argc,char **argv)
 {
     if(argc==3&&!strcmp(argv[1],"--dns"))return vr_platform_dns(atoi(argv[2]))?1:0;
-    assert(argc==2);signal(SIGTERM,stop);signal(SIGINT,stop);signal(SIGPIPE,SIG_IGN);signal(SIGUSR1,toggle);signal(SIGUSR2,refresh);signal(SIGALRM,refresh);signal(SIGWINCH,repair);
+    assert(argc==2);signal(SIGTERM,stop);signal(SIGINT,stop);signal(SIGPIPE,SIG_IGN);signal(SIGUSR1,toggle);signal(SIGUSR2,refresh);signal(SIGALRM,refresh);signal(SIGWINCH,repair);signal(SIGURG,carrier6_toggle);
     vr_service service={0};pthread_mutex_init(&service.mutex,NULL);
     vr_engine *e=calloc(1,sizeof(*e));assert(e);e->service=&service;pthread_mutex_init(&e->mutex,NULL);vr_config_default(&e->config);
+    e->carrier6=-1;
     int gateway=!strncmp(argv[1],"gateway",7);
     int readdress=!strcmp(argv[1],"readdress");
     int routing=!strcmp(argv[1],"routing")||readdress;e->config.enabled=routing;
@@ -69,10 +72,12 @@ int main(int argc,char **argv)
     assert(!e->config.allow_wan||e->wan>=0);
     e->tun=vr_platform_start(&e->config,&e->addresses,e->own_ip,e->cidr);assert(e->tun>=0&&vr_platform_healthy());
     if(routing)assert(!vr_platform_routes(e->policy)&&!vr_tcp_start(e));
+    if(readdress){e->carrier6=vr_bind6_carrier(e->config.port,e->addresses.wan_if);assert(e->carrier6>=0&&!vr_platform_carrier6(&e->config,&e->addresses));}
     if(gateway){carrier=vr_bind4(e->addresses.wan,18082,0);assert(carrier>=0);}
     int streams[32];for(size_t i=0;i<32;i++)streams[i]=-1;
     puts("READY");fflush(stdout);
     while(!stopping){
+        if(toggle_carrier6){toggle_carrier6=0;e->config.allow_wan=!e->config.allow_wan;assert(!vr_platform_carrier6(&e->config,&e->addresses));puts(e->config.allow_wan?"CARRIER6_ON":"CARRIER6_OFF");fflush(stdout);}
         if(repair_firewall) {
             int tun=e->tun,lan=e->lan,wan=e->wan;unsigned generation=e->generation;char detail[240];
             int healthy=vr_platform_check(detail,sizeof(detail));
@@ -95,21 +100,23 @@ int main(int argc,char **argv)
             puts(result?"REFRESH_FAILED":"UPDATED");fflush(stdout);refresh_addresses=fail_bind=0;
         }
         if(readdress) {
-            int listeners[]={e->lan,e->wan};
-            for(size_t i=0;i<2;i++) {int fd=accept(listeners[i],NULL,NULL);if(fd>=0) {size_t j;for(j=0;j<32&&streams[j]>=0;j++);assert(j<32);streams[j]=fd;}}
+            int listeners[]={e->lan,e->wan,e->carrier6};
+            for(size_t i=0;i<3;i++) {int fd=accept(listeners[i],NULL,NULL);if(fd>=0) {size_t j;for(j=0;j<32&&streams[j]>=0;j++);assert(j<32);streams[j]=fd;}}
             for(size_t i=0;i<32;i++)if(streams[i]>=0) {
                 struct pollfd fd={streams[i],POLLIN,0};if(poll(&fd,1,0)>0) {char text[256];ssize_t n=read(streams[i],text,sizeof(text));
                     if(n>0)assert(write(streams[i],text,(size_t)n)==n);else {close(streams[i]);streams[i]=-1;}}
             }
         }
         if(toggle_tls) {toggle_tls=0;e->config.tls_sni_enabled=!e->config.tls_sni_enabled;assert(!vr_platform_tls(&e->addresses,e->cidr,e->config.tls_sni_enabled));puts(e->config.tls_sni_enabled?"TLS_ON":"TLS_OFF");fflush(stdout);}
-        struct pollfd p[131]={{e->tun,POLLIN,0},{carrier,POLLIN,0}};size_t count=vr_tcp_pollfds(e,p+2);if(poll(p,2+count,50)<0)continue;
+        struct pollfd p[2+VR_TCP_POLL_MAX]={{e->tun,POLLIN,0},{carrier,POLLIN,0}};size_t count=vr_tcp_pollfds(e,p+2);if(poll(p,2+count,50)<0)continue;
         uint8_t b[2048];ssize_t n;
         if(p[0].revents&POLLIN){n=read(e->tun,b,sizeof(b));if(n>0)vr_outgoing(e,b,(size_t)n);}
         if(p[1].revents&POLLIN){peer_len=sizeof(peer);n=recvfrom(carrier,b,sizeof(b),0,(struct sockaddr *)&peer,&peer_len);if(n>1){char path[VR_PATH_MAX][129]={{"7"},{"8"}};if(b[0]!=7)strcpy(path[0],"9");vr_frame f={1,1,NULL,b+1,0,(size_t)n-1};vr_incoming(e,&f,path,2);}}
         if(count)vr_tcp_poll(e,p+2);
     }
     if(carrier>=0)close(carrier);
+    if(e->carrier6>=0)close(e->carrier6);
+    vr_platform_carrier6_stop();
     for(size_t i=0;i<32;i++)if(streams[i]>=0)close(streams[i]);
     vr_tcp_stop(e);vr_platform_stop(e->cidr);close(e->tun);close(e->lan);if(e->wan>=0)close(e->wan);
     json_object_put(e->policy);pthread_mutex_destroy(&e->mutex);free(e);return 0;

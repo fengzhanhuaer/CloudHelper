@@ -25,8 +25,8 @@ $(BUILD)/test-addresses: tests/test_addresses.c src/platform.c $(wildcard includ
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_addresses.c $(LDFLAGS) -Wl,--wrap=posix_spawnp $(LDLIBS) -o $@
 $(BUILD)/test-telemetry: $(CORE) src/carrier.c tests/test_telemetry.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/carrier.c tests/test_telemetry.c $(LDFLAGS) $(LDLIBS) -o $@
-$(BUILD)/test-controller-link: $(CORE) src/upgrade.c tests/test_controller_link.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_controller_link.c $(LDFLAGS) -Wl,--wrap=vr_resolve_transport $(LDLIBS) -o $@
+$(BUILD)/test-controller-link: $(CORE) src/upgrade.c src/platform.c tests/test_controller_link.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/platform.c tests/test_controller_link.c $(LDFLAGS) -Wl,--wrap=vr_resolve_transport $(LDLIBS) -o $@
 $(BUILD)/test-tls-connect: $(CORE) tests/test_tls_connect.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_tls_connect.c $(LDFLAGS) -Wl,--wrap=vr_resolve_transport $(LDLIBS) -o $@
 $(BUILD)/httpd-bridge.so: src/httpd_bridge.c include/httpd_layout.h include/httpd_access.h | $(BUILD)
@@ -56,7 +56,7 @@ $(BUILD)/test-dataplane: $(CORE) src/dataplane.c src/mapping.c tests/test_datapl
 $(BUILD)/test-platform: $(CORE) src/dataplane.c src/mapping.c src/platform.c src/tcp_proxy.c src/address_update.c tests/test_platform.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/dataplane.c src/mapping.c src/platform.c src/tcp_proxy.c src/address_update.c tests/test_platform.c $(LDFLAGS) -Wl,--wrap=posix_spawnp $(LDLIBS) -o $@
 
-$(BUILD)/cloudhelper-router-plugin $(BUILD)/test-platform $(BUILD)/test-platform-command $(BUILD)/test-addresses $(BUILD)/test-control $(BUILD)/test-carrier $(BUILD)/test-policy-update $(BUILD)/test-routes: src/platform_address.h
+$(BUILD)/cloudhelper-router-plugin $(BUILD)/test-platform $(BUILD)/test-platform-command $(BUILD)/test-addresses $(BUILD)/test-control $(BUILD)/test-carrier $(BUILD)/test-policy-update $(BUILD)/test-routes $(BUILD)/test-upgrade $(BUILD)/test-controller-link: src/platform_address.h
 $(BUILD)/test-dns: $(CORE) src/dns_service.c tests/test_dns_service.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_dns_service.c $(LDFLAGS) $(LDLIBS) -o $@
 $(BUILD)/test-control: $(CORE) src/control.c src/upgrade.c src/policy_update.c src/carrier.c src/mapping.c src/platform.c tests/test_control.c $(wildcard include/*.h) | $(BUILD)
@@ -76,12 +76,12 @@ $(BUILD)/test-routes: $(CORE) src/platform.c tests/test_routes.c $(wildcard incl
 $(BUILD)/test-tls-proxy: $(CORE) src/tcp_proxy.c tests/test_tls_proxy.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/tcp_proxy.c tests/test_tls_proxy.c $(LDFLAGS) -Wl,--wrap=connect -Wl,--wrap=vr_resolve_config4 $(LDLIBS) -o $@
 $(BUILD)/test-tcp-close: $(CORE) src/tcp_proxy.c tests/test_tcp_close.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_tcp_close.c $(LDFLAGS) $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_tcp_close.c $(LDFLAGS) -Wl,--wrap=vr_millis $(LDLIBS) -o $@
 clean:
 	rm -f $(BUILD)/cloudhelper-router-plugin $(BUILD)/test-core
 
-$(BUILD)/test-upgrade: $(CORE) src/upgrade.c tests/test_upgrade.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_upgrade.c $(LDFLAGS) -Wl,--wrap=fork -Wl,--wrap=posix_spawn $(LDLIBS) -o $@
+$(BUILD)/test-upgrade: $(CORE) src/upgrade.c src/platform.c tests/test_upgrade.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/platform.c tests/test_upgrade.c $(LDFLAGS) -Wl,--wrap=fork -Wl,--wrap=posix_spawn $(LDLIBS) -o $@
 
 $(BUILD)/test-gateway: $(CORE) tests/test_gateway.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_gateway.c $(LDFLAGS) $(LDLIBS) -o $@

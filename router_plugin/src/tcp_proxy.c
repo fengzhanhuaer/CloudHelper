@@ -10,22 +10,91 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#define TCP_MAX 64
+#define TCP_MAX VR_TCP_MAX
 #define TCP_BUFFER 65536
+#define TCP_IDLE_MS 600000u
+#define TCP_CACHE_MAX 4096
+#define TCP_CACHE_TTL_MS (72ull*60*60*1000)
 #define ORIGINAL_DST 80
 typedef struct {
     int used,fd,up,phase,remote,exit_role,closing;
+    size_t slot;
     int read_eof[2],write_shutdown[2];
     uint64_t born,active;
     uint8_t id[16];char hex[33],ip[16],domain[254];int port;
     char path[VR_PATH_MAX][129];size_t count;
-    uint8_t buffer[2][TCP_BUFFER];size_t length[2];
+    uint8_t *buffer[2];size_t length[2],capacity[2];
 } tcp_session;
 typedef struct {int state,ok;char id[33],domain[254],ip[16];} tcp_dns_job;
+/* Exactly 16 bytes: binary IPv4, rule ordinal or -1 direct/-2 reject, TTL.
+   No duplicated domains, node identifiers, policy objects or packet data. */
+typedef struct {uint64_t expires;uint32_t ip;int16_t route;uint8_t direct;} tcp_sni_cache;
 struct vr_tcp_state {
     int listener,started,stop;pthread_t thread;pthread_mutex_t mutex;pthread_cond_t changed;
-    tcp_dns_job jobs[8];tcp_session sessions[TCP_MAX];
+    tcp_dns_job jobs[8];tcp_session *sessions[TCP_MAX];
+    tcp_sni_cache cache[TCP_CACHE_MAX];unsigned cache_epoch;uint64_t cache_retry;
 };
+
+static int reserve(tcp_session *s,size_t lane,size_t needed)
+{
+    if(needed>TCP_BUFFER)return -1;
+    if(needed<=s->capacity[lane])return 0;
+    size_t cap=s->capacity[lane]?s->capacity[lane]:4096;
+    while(cap<needed)cap+=4096;
+    uint8_t *p=realloc(s->buffer[lane],cap);if(!p)return -1;
+    s->buffer[lane]=p;s->capacity[lane]=cap;return 0;
+}
+
+static void cache_tick(vr_engine *e)
+{
+    struct vr_tcp_state *t=e->tcp;unsigned epoch=vr_platform_tls_cache_epoch();
+    if(t->cache_epoch!=epoch){memset(t->cache,0,sizeof(t->cache));t->cache_epoch=epoch;t->cache_retry=0;}
+    uint64_t now=vr_millis();if(now<t->cache_retry)return;
+    int expired_direct=0;
+    for(size_t i=0;i<TCP_CACHE_MAX;i++)if(t->cache[i].direct&&t->cache[i].expires<=now){expired_direct=1;break;}
+    if(expired_direct) {
+        /* One bounded flush rather than thousands of spawned deletions at
+           a shared 72h deadline. Keep unexpired compact route entries; their
+           next hit reinstalls direct bypass without another SNI probe. */
+        if(vr_platform_tls_cache_clear()){t->cache_retry=now+5000;return;}
+        t->cache_epoch=vr_platform_tls_cache_epoch();
+        for(size_t i=0;i<TCP_CACHE_MAX;i++)t->cache[i].direct=0;
+    }
+    for(size_t i=0;i<TCP_CACHE_MAX;i++) {
+        tcp_sni_cache *c=&t->cache[i];if(!c->expires||now<c->expires)continue;
+        memset(c,0,sizeof(*c));
+    }
+}
+static void cache_direct(vr_engine *e,tcp_sni_cache *c,const char *ip)
+{
+    if(c->route!=-1||c->direct||vr_millis()<e->tcp->cache_retry)return;
+    /* Domain direct can override a captured real-IP CIDR. Plain NAT bypass
+       would route back into TUN, so retain the transparent direct socket. */
+    vr_decision d=vr_local_exit(&e->config,vr_policy_match(e->policy,"",ip));
+    if(d.action==VR_DIRECT&&!vr_platform_tls_cache(ip,1))c->direct=1;
+}
+static void cache_store(vr_engine *e,tcp_session *s,vr_decision d)
+{
+    if(s->port!=443||!*s->domain||!e->config.tls_sni_enabled)return;
+    struct in_addr address;if(inet_pton(AF_INET,s->ip,&address)!=1)return;
+    int16_t route=-1;
+    if(d.action==VR_REJECT)route=-2;
+    else if(d.action==VR_PROXY&&strcmp(d.exit_node,e->config.node_id)) {
+        json_object *rules=vr_member(e->policy,"route_rules");route=-3;
+        for(size_t i=0;i<json_object_array_length(rules)&&i<VR_ROUTE_MAX;i++)
+            if(!strcmp(d.rule,vr_string(json_object_array_get_idx(rules,i),"id"))){route=(int16_t)i;break;}
+        if(route<0)return;
+    }
+    cache_tick(e);struct vr_tcp_state *t=e->tcp;tcp_sni_cache *c=NULL;
+    if(vr_millis()<t->cache_retry)return;
+    for(size_t i=0;i<TCP_CACHE_MAX;i++)if(t->cache[i].expires&&t->cache[i].ip==address.s_addr){c=&t->cache[i];break;}
+    if(!c)for(size_t i=0;i<TCP_CACHE_MAX;i++)if(!t->cache[i].expires){c=&t->cache[i];break;}
+    if(!c) {c=&t->cache[0];for(size_t i=1;i<TCP_CACHE_MAX;i++)if(t->cache[i].expires<c->expires)c=&t->cache[i];}
+    struct in_addr old={.s_addr=c->ip};char previous[16];inet_ntop(AF_INET,&old,previous,sizeof(previous));
+    if(c->direct&&vr_platform_tls_cache(previous,0))return;
+    memset(c,0,sizeof(*c));c->ip=address.s_addr;c->route=route;c->expires=vr_millis()+TCP_CACHE_TTL_MS;
+    cache_direct(e,c,s->ip);
+}
 
 static int public_ip(const char *s)
 {
@@ -51,18 +120,21 @@ static json_object *message(tcp_session *s)
 {json_object *o=json_object_new_object();json_object_object_add(o,"session_id",json_object_new_string(s->hex));return o;}
 static void drop(vr_engine *e,tcp_session *s,int notify)
 {
-    if(!s->used)return;
+    if(!s||!s->used)return;
+    s->used=0;e->tcp->sessions[s->slot]=NULL;
     if(notify&&s->remote&&s->count>=2) {json_object *o=message(s);vr_send_json(e,8,4,s->path,s->count,o);json_object_put(o);}
     if(s->fd>=0)close(s->fd);
     if(s->up>=0)close(s->up);
-    memset(s,0,sizeof(*s));s->fd=s->up=-1;
+    free(s->buffer[0]);free(s->buffer[1]);
+    free(s);
 }
 static tcp_session *allocate(vr_engine *e)
 {
     if(!e->tcp) {e->tcp=calloc(1,sizeof(*e->tcp));if(!e->tcp)return NULL;e->tcp->listener=-1;
-        pthread_mutex_init(&e->tcp->mutex,NULL);pthread_cond_init(&e->tcp->changed,NULL);}
-    for(size_t i=0;i<TCP_MAX;i++)if(!e->tcp->sessions[i].used) {
-        tcp_session *s=&e->tcp->sessions[i];memset(s,0,sizeof(*s));s->used=1;s->fd=s->up=-1;s->born=s->active=vr_millis();return s;}
+        pthread_mutex_init(&e->tcp->mutex,NULL);pthread_cond_init(&e->tcp->changed,NULL);e->tcp->cache_epoch=vr_platform_tls_cache_epoch();}
+    for(size_t i=0;i<TCP_MAX;i++)if(!e->tcp->sessions[i]) {
+        tcp_session *s=calloc(1,sizeof(*s));if(!s)return NULL;
+        s->slot=i;e->tcp->sessions[i]=s;s->used=1;s->fd=s->up=-1;s->born=s->active=vr_millis();return s;}
     return NULL;
 }
 static int connect_ip(tcp_session *s)
@@ -79,9 +151,8 @@ static void result(vr_engine *e,tcp_session *s,int ok)
     if(!ok)json_object_object_add(o,"error",json_object_new_string("target unavailable or not authorized"));
     vr_send_json(e,8,2,s->path,s->count,o);json_object_put(o);
 }
-static void decide(vr_engine *e,tcp_session *s)
+static void connect_decision(vr_engine *e,tcp_session *s,vr_decision d)
 {
-    vr_decision d=vr_local_exit(&e->config,vr_policy_match(e->policy,s->domain,s->ip));
     if(*s->domain) {char event[240];snprintf(event,sizeof(event),"SNI %.150s: %s",s->domain,d.action==VR_REJECT?"reject":d.action==VR_PROXY?"probe_exit":"direct");vr_service_log(e->service,"tls",event);}
     if(d.action==VR_REJECT){drop(e,s,0);return;}
     if(d.action!=VR_PROXY||!strcmp(d.exit_node,e->config.node_id)) {if(connect_ip(s))drop(e,s,0);return;}
@@ -93,6 +164,11 @@ static void decide(vr_engine *e,tcp_session *s)
     json_object_object_add(o,"exit_node_id",json_object_new_string(d.exit_node));
     if(vr_send_json(e,8,1,s->path,s->count,o))drop(e,s,0);
     json_object_put(o);
+}
+static void decide(vr_engine *e,tcp_session *s)
+{
+    vr_decision d=vr_local_exit(&e->config,vr_policy_match(e->policy,s->domain,s->ip));
+    cache_store(e,s,d);connect_decision(e,s,d);
 }
 
 int vr_tcp_start(vr_engine *e)
@@ -148,8 +224,8 @@ static void dns_results(vr_engine *e)
     for(size_t i=0;i<8;i++) {
         tcp_dns_job job;pthread_mutex_lock(&e->tcp->mutex);int ready=e->tcp->jobs[i].state==3;
         if(ready){job=e->tcp->jobs[i];e->tcp->jobs[i].state=0;}pthread_mutex_unlock(&e->tcp->mutex);if(!ready)continue;
-        for(size_t j=0;j<TCP_MAX;j++) {tcp_session *s=&e->tcp->sessions[j];
-            if(!s->used||s->phase!=4||strcmp(s->hex,job.id))continue;
+        for(size_t j=0;j<TCP_MAX;j++) {tcp_session *s=e->tcp->sessions[j];
+            if(!s||s->phase!=4||strcmp(s->hex,job.id))continue;
             strcpy(s->ip,job.ip);
             if(!job.ok||!authorized(e,s)||connect_ip(s)){result(e,s,0);drop(e,s,0);}break;
         }
@@ -163,15 +239,27 @@ int vr_tcp_attach(vr_engine *e,int fd,const char *ip,int port)
     if(!public_ip(ip)||port<1||port>65535||vr_copy(s->ip,sizeof(s->ip),ip)){drop(e,s,0);return -1;}
     s->fd=fd;s->port=port;
     if(fcntl(fd,F_SETFL,fcntl(fd,F_GETFL,0)|O_NONBLOCK)<0){s->fd=-1;drop(e,s,0);return -1;}
+    cache_tick(e);
+    struct in_addr target;inet_pton(AF_INET,ip,&target);
+    if(port==443&&e->config.tls_sni_enabled)for(size_t i=0;i<TCP_CACHE_MAX;i++) {
+        tcp_sni_cache *c=&e->tcp->cache[i];
+        if(c->expires>vr_millis()&&c->ip==target.s_addr) {
+            cache_direct(e,c,ip);
+            vr_decision d={.action=c->route==-1?VR_DIRECT:VR_REJECT};
+            if(c->route>=0)d=vr_local_exit(&e->config,vr_policy_rule_decision(json_object_array_get_idx(vr_member(e->policy,"route_rules"),(size_t)c->route)));
+            connect_decision(e,s,d);break;
+        }
+    }
     return 0;
 }
 size_t vr_tcp_pollfds(vr_engine *e,struct pollfd *fds)
 {
     if(!e->tcp)return 0;
+    cache_tick(e);
     fds[0]=(struct pollfd){e->tcp->listener,POLLIN,0};
     for(size_t i=0;i<TCP_MAX;i++) {
-        tcp_session *s=&e->tcp->sessions[i];short local=0,up=0;
-        if(s->used) {
+        tcp_session *s=e->tcp->sessions[i];short local=0,up=0;
+        if(s) {
             if(s->length[0]<TCP_BUFFER&&!s->closing&&!s->read_eof[0])local|=POLLIN;
             if(s->length[1])local|=POLLOUT;
             if(s->phase==2)up=POLLOUT;
@@ -193,10 +281,13 @@ static int write_buffer(int fd,uint8_t *buffer,size_t *length)
     if(n>0){memmove(buffer,buffer+n,*length-(size_t)n);*length-=(size_t)n;}
     return 0;
 }
-static int read_buffer(int fd,uint8_t *buffer,size_t *length)
+static int read_buffer(int fd,tcp_session *s,size_t lane)
 {
+    size_t *length=&s->length[lane];
     if(*length==TCP_BUFFER)return 0;
-    ssize_t n=recv(fd,buffer+*length,TCP_BUFFER-*length,0);
+    size_t needed=*length+4096;if(needed>TCP_BUFFER)needed=TCP_BUFFER;
+    if(reserve(s,lane,needed))return -1;
+    ssize_t n=recv(fd,s->buffer[lane]+*length,s->capacity[lane]-*length,0);
     if(n<0)return errno==EAGAIN||errno==EWOULDBLOCK||errno==EINTR?0:-1;
     if(n==0)return 1;
     *length+=(size_t)n;return 0;
@@ -214,9 +305,9 @@ void vr_tcp_poll(vr_engine *e,struct pollfd *fds)
     }
     uint64_t now=vr_millis();
     for(size_t i=0;i<TCP_MAX;i++) {
-        tcp_session *s=&e->tcp->sessions[i];if(!s->used)continue;
+        tcp_session *s=e->tcp->sessions[i];if(!s)continue;
         short a=fds[1+i*2].fd==s->fd?fds[1+i*2].revents:0,b=fds[2+i*2].fd==s->up?fds[2+i*2].revents:0;
-        if(now-s->active>120000||(s->phase!=3&&now-s->born>12000)){drop(e,s,1);continue;}
+        if(now-s->active>TCP_IDLE_MS||(s->phase!=3&&now-s->born>12000)){drop(e,s,1);continue;}
         if((a|b)&(POLLERR|POLLNVAL)){drop(e,s,1);continue;}
         if(s->phase==2&&(b&(POLLOUT|POLLHUP))) {
             int error=0;socklen_t n=sizeof(error);
@@ -234,19 +325,19 @@ void vr_tcp_poll(vr_engine *e,struct pollfd *fds)
             if(s->length[0]!=before)s->active=now;
         }
         if((a&(POLLIN|POLLHUP))&&!s->closing&&!s->read_eof[0]) {
-            size_t before=s->length[0];int rc=read_buffer(s->fd,s->buffer[0],&s->length[0]);
+            size_t before=s->length[0];int rc=read_buffer(s->fd,s,0);
             if(rc<0){drop(e,s,1);continue;}
             if(rc>0){s->read_eof[0]=1;if(s->remote)s->closing=1;}
             if(s->length[0]!=before)s->active=now;
         }
         if(s->phase==3&&(b&(POLLIN|POLLHUP))&&!s->closing&&!s->read_eof[1]) {
-            size_t before=s->length[1];int rc=read_buffer(s->up,s->buffer[1],&s->length[1]);
+            size_t before=s->length[1];int rc=read_buffer(s->up,s,1);
             if(rc<0){drop(e,s,1);continue;}
             if(rc>0){s->read_eof[1]=1;if(s->remote)s->closing=1;}
             if(s->length[1]!=before)s->active=now;
         }
         if(!s->phase&&(s->read_eof[0]||vr_tls_server_name(s->buffer[0],s->length[0],s->domain)||now-s->born>=2000))decide(e,s);
-        if(!s->used)continue;
+        if(e->tcp->sessions[i]!=s)continue;
         if(s->remote&&(s->read_eof[0]||s->read_eof[1]))s->closing=1;
         size_t lane=s->exit_role?1:0;
         if(s->remote&&s->phase==3&&s->length[lane]) {
@@ -280,7 +371,7 @@ void vr_tcp_frame(vr_engine *e,const vr_frame *f,char path[VR_PATH_MAX][129],siz
     else {if(f->data_len>4096)return;o=vr_json_parse(f->data,f->data_len);const char *raw=vr_string(o,"session_id");
         if(hex_id(raw,id)){json_object_put(o);return;}strcpy(hex,raw);}
     tcp_session *s=NULL;
-    if(e->tcp)for(size_t i=0;i<TCP_MAX;i++)if(e->tcp->sessions[i].used&&!memcmp(e->tcp->sessions[i].id,id,16)){s=&e->tcp->sessions[i];break;}
+    if(e->tcp)for(size_t i=0;i<TCP_MAX;i++)if(e->tcp->sessions[i]&&!memcmp(e->tcp->sessions[i]->id,id,16)){s=e->tcp->sessions[i];break;}
     if(s) {
         /* Session IDs are not authorization: bind every frame to its complete
          * authenticated reverse path, including the original endpoint. */
@@ -289,7 +380,7 @@ void vr_tcp_frame(vr_engine *e,const vr_frame *f,char path[VR_PATH_MAX][129],siz
         if(f->sub==2&&!s->exit_role&&s->phase==1) {if(json_object_get_boolean(vr_member(o,"ok")))s->phase=3;else drop(e,s,0);}
         else if(f->sub==3&&s->phase==3) {
             size_t lane=s->exit_role?0:1,len=f->data_len-16;
-            if(len>TCP_BUFFER-s->length[lane])drop(e,s,1);
+            if(len>TCP_BUFFER-s->length[lane]||reserve(s,lane,s->length[lane]+len))drop(e,s,1);
             else {memcpy(s->buffer[lane]+s->length[lane],f->data+16,len);s->length[lane]+=len;s->active=vr_millis();}
         } else if(f->sub==4)s->closing=1;
         goto done;
@@ -319,6 +410,6 @@ void vr_tcp_stop(vr_engine *e)
     if(!e->tcp)return;
     if(e->tcp->started) {pthread_mutex_lock(&e->tcp->mutex);e->tcp->stop=1;pthread_cond_signal(&e->tcp->changed);pthread_mutex_unlock(&e->tcp->mutex);pthread_join(e->tcp->thread,NULL);}
     if(e->tcp->listener>=0)close(e->tcp->listener);
-    for(size_t i=0;i<TCP_MAX;i++)drop(e,&e->tcp->sessions[i],0);
+    for(size_t i=0;i<TCP_MAX;i++)drop(e,e->tcp->sessions[i],0);
     pthread_cond_destroy(&e->tcp->changed);pthread_mutex_destroy(&e->tcp->mutex);free(e->tcp);e->tcp=NULL;
 }

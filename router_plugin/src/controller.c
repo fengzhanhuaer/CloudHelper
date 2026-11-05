@@ -57,8 +57,8 @@ static json_object *request_at(const vr_config *c,const char *origin,const char 
     if(body)curl_easy_setopt(curl,CURLOPT_POSTFIELDS,json_object_to_json_string_ext(body,JSON_C_TO_STRING_PLAIN));
     CURLcode rc=CURLE_OPERATION_TIMEDOUT;long status=0;uint64_t deadline=vr_millis()+(uint64_t)budget;
     for(int i=0;i<count;i++) {
-        /* IPv6 follows the native route, not the IPv4 WAN binding. */
-        curl_easy_setopt(curl,CURLOPT_INTERFACE,strchr(ips[i],':')?NULL:iface);
+        /* Keep controller traffic on WAN for both address families. */
+        curl_easy_setopt(curl,CURLOPT_INTERFACE,iface);
         uint64_t now=vr_millis();if(now>=deadline)break;
         long remaining=(long)(deadline-now),connect_budget=remaining/(count-i);if(connect_budget>5000)connect_budget=5000;
         if(count>1&&connect_budget>1500)connect_budget=1500;

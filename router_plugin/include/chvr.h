@@ -114,6 +114,7 @@ int vr_resolve_config4_all(const char *host,const vr_config *config,const char *
 int vr_dns_addresses6(const uint8_t *reply,size_t n,char out[4][46]);
 int vr_resolve4(const char *host, const char *upstream, const char *iface, char out[16]);
 vr_decision vr_policy_match(json_object *policy, const char *domain, const char *ip);
+vr_decision vr_policy_rule_decision(json_object *rule);
 vr_decision vr_local_exit(const vr_config *config,vr_decision decision);
 int vr_policy_validate(json_object *snapshot, const char *node_id, char *err, size_t n);
 int vr_policy_service_port(json_object *policy,const char *node_id,int fallback);

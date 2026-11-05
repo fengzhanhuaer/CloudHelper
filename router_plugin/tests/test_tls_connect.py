@@ -83,7 +83,7 @@ with tempfile.TemporaryDirectory(prefix='chvr-relay-tls-') as directory:
 
     with Server6(('::1', 0), Handler) as server:
         threading.Thread(target=server.serve_forever,daemon=True).start()
-        environment=dict(os.environ,SSL_CERT_FILE=str(root/'trusted.crt'),SSL_CERT_DIR=str(root/'empty-ca-directory'),CHVR_TLS_TEST_ADDRESS='::1')
+        environment=dict(os.environ,SSL_CERT_FILE=str(root/'trusted.crt'),SSL_CERT_DIR=str(root/'empty-ca-directory'),CHVR_TLS_TEST_ADDRESS='::1',CHVR_TLS_TEST_INTERFACE='lo')
         for mode,host,key_pin,expected_sni,accepted in [
             ('relay','relay.fixture',pin,None,True),
             ('relay','relay.fixture','0'*64,None,False),
@@ -94,6 +94,9 @@ with tempfile.TemporaryDirectory(prefix='chvr-relay-tls-') as directory:
             assert result.returncode==(0 if accepted else 2),(result.stdout,result.stderr)
             assert observed==[expected_sni],observed
             print('PASS IPv6:',mode,host,'pin/identity',accepted)
+        result=subprocess.run(['bin/native/test-tls-connect','relay','relay.fixture',str(server.server_address[1]),pin],env=dict(environment,CHVR_TLS_TEST_INTERFACE='chvr-missing'),stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=7)
+        assert result.returncode==2,(result.stdout,result.stderr)
+        print('PASS: IPv6 carrier cannot bypass the selected WAN device')
         class Stall(socketserver.BaseRequestHandler):
             def handle(self):time.sleep(2)
         with Server(('127.0.0.1',server.server_address[1]),Stall) as stalled:

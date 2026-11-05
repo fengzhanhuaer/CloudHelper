@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "upgrade.h"
 #include "transport.h"
+#include "platform.h"
 #include <arpa/inet.h>
 #include <curl/curl.h>
 #include <openssl/crypto.h>
@@ -241,7 +242,7 @@ static CURLcode fetch_at(upgrade_job *job,const char *remote,transfer *t,const c
  curl_easy_setopt(curl,CURLOPT_USERAGENT,"CloudHelper-router/" VR_VERSION);curl_easy_setopt(curl,CURLOPT_HTTPHEADER,headers);
  curl_easy_setopt(curl,CURLOPT_ACCEPT_ENCODING,"identity");curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT,8L);curl_easy_setopt(curl,CURLOPT_TIMEOUT,90L);
  curl_easy_setopt(curl,CURLOPT_LOW_SPEED_LIMIT,1L);curl_easy_setopt(curl,CURLOPT_LOW_SPEED_TIME,20L);curl_easy_setopt(curl,CURLOPT_NOSIGNAL,1L);
- if(*job->iface&&!strchr(selected_ip,':'))curl_easy_setopt(curl,CURLOPT_INTERFACE,job->iface);
+ if(*job->iface)curl_easy_setopt(curl,CURLOPT_INTERFACE,job->iface);
  curl_easy_setopt(curl,CURLOPT_NOPROGRESS,0L);curl_easy_setopt(curl,CURLOPT_XFERINFOFUNCTION,cancelled);curl_easy_setopt(curl,CURLOPT_XFERINFODATA,t);
  curl_easy_setopt(curl,CURLOPT_HEADERFUNCTION,header);curl_easy_setopt(curl,CURLOPT_HEADERDATA,t);
  curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,receive);curl_easy_setopt(curl,CURLOPT_WRITEDATA,t);
@@ -316,6 +317,8 @@ static void cleanup(const char *dir)
 static void *run(void *arg)
 {
  upgrade_job *job=arg;char err[240]="upgrade failed",path[512];json_object *release=NULL,*asset=NULL;
+ vr_addresses addresses;
+ if(!vr_addresses_get(&addresses))vr_copy(job->iface,sizeof(job->iface),addresses.wan_if);
  state(job,"checking","正在检查发布版本",1,0,0,0);
  if(job->direct){transfer t={.job=job,.fd=-1};CURLcode rc=fetch(job,"https://api.github.com/repos/" UPGRADE_REPO "/releases/latest",&t);if(rc==CURLE_OK&&t.status==200)release=vr_json_parse(t.memory,t.used);free(t.memory);}
  else release=vr_controller_call(&job->config,job->iface,"GET","/api/probe/proxy/github/latest?repo=" UPGRADE_REPO,NULL,err,sizeof(err));

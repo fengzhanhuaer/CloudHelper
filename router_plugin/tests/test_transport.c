@@ -35,7 +35,9 @@ int main(int argc,char **argv)
     if(argc==3&&!strcmp(argv[1],"--controller")) {
         vr_config c;vr_config_default(&c);snprintf(c.controller,sizeof(c.controller),"%s",argv[2]);strcpy(c.node_id,"7");strcpy(c.node_key,"fixture-key");
         vr_controller_link_init(&c,"/tmp/chvr-transport-fixture-config.json");
-        char error[256];json_object *o=vr_controller_call(&c,"missing-v4-wan","GET","/api/probe/route/config",NULL,error,sizeof(error));
+        /* The isolated fixture's selected WAN is lo. IPv6 must now respect
+           the requested WAN device, just like IPv4. */
+        char error[256];json_object *o=vr_controller_call(&c,"lo","GET","/api/probe/route/config",NULL,error,sizeof(error));
         if(!o){fprintf(stderr,"%s\n",error);}assert(o&&json_object_get_boolean(vr_member(o,"ok")));json_object_put(o);
         /* Do not run OpenSSL's process-exit cleanup while the detached
            discovery worker is still using TLS (notably OpenSSL 1.1). */
@@ -50,9 +52,11 @@ int main(int argc,char **argv)
         assert(!vr_read_file(argv[2],cert,sizeof(cert)-1,&n));cert[n]=0;
         assert(!vr_read_file(argv[3],key,sizeof(key)-1,&n));key[n]=0;
         SSL_CTX *ctx=vr_tls_server_context(cert,key);assert(ctx);
-        int listener=vr_bind6_carrier(atoi(argv[4]));assert(listener>=0);puts("READY");fflush(stdout);
+        int listener=vr_bind6_carrier(atoi(argv[4]),"lo");assert(listener>=0);puts("READY");fflush(stdout);
         struct pollfd p={listener,POLLIN,0};assert(poll(&p,1,5000)>0);
         int fd=accept4(listener,NULL,NULL,SOCK_CLOEXEC);assert(fd>=0);
+        char bound[16]={0};socklen_t bound_len=sizeof(bound);
+        assert(!getsockopt(fd,SOL_SOCKET,SO_BINDTODEVICE,bound,&bound_len)&&!strcmp(bound,"lo"));
         SSL *ssl=vr_tls_accept(ctx,fd,vr_millis()+3000);assert(ssl);char header[1024];assert(!vr_http_header(ssl,header,sizeof(header),vr_millis()+1000));
         const char *response="HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n";assert(!vr_tls_io(ssl,1,(void *)response,strlen(response),vr_millis()+1000));
         SSL_free(ssl);SSL_CTX_free(ctx);close(fd);close(listener);puts("PASS IPv6 carrier TLS accept");return 0;

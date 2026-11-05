@@ -49,7 +49,7 @@ static void tick(vr_engine *e)
 {
     vr_handshakes_poll(e,0);
     if(e->lan>=0){int fd=accept4(e->lan,NULL,NULL,SOCK_CLOEXEC);if(fd>=0)vr_link_accept(e,fd);}
-    struct pollfd fds[VR_CARRIER_MAX+129];
+    struct pollfd fds[VR_CARRIER_MAX+VR_TCP_POLL_MAX];
     for(size_t i=0;i<e->link_count;i++) {
         vr_link *l=&e->links[i];if(!l->ssl)vr_link_dial(l);
         fds[i]=(struct pollfd){l->fd,(short)(POLLIN|(l->used?(l->write_events?l->write_events:POLLOUT):0)),0};
@@ -156,7 +156,7 @@ int main(int argc,char **argv)
 {
     assert(argc==2);signal(SIGPIPE,SIG_IGN);
     vr_engine *e=calloc(1,sizeof(*e));assert(e);vr_service s={0};e->service=&s;e->lan=-1;
-    pthread_mutex_init(&e->mutex,NULL);pthread_mutex_init(&s.mutex,NULL);vr_config_default(&e->config);strcpy(e->config.node_id,"7");
+    pthread_mutex_init(&e->mutex,NULL);pthread_mutex_init(&s.mutex,NULL);vr_config_default(&e->config);strcpy(e->config.node_id,"7");strcpy(e->addresses.wan_if,"lo");
     char buffer[32768];size_t len;assert(!vr_read_file(argv[1],buffer,sizeof(buffer),&len));e->policy=vr_json_parse(buffer,len);assert(e->policy);
     e->snapshot=json_object_new_object();json_object_object_add(e->snapshot,"virtual_router",e->policy);
     strcpy(e->cidr,vr_string(e->policy,"fake_ip_cidr"));strcpy(e->own_ip,"198.18.0.7");

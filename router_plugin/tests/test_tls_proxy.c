@@ -15,6 +15,9 @@ static vr_engine *entry,*exit_node;
 static vr_service services[2];
 static int listener,target_port,connections;
 static char opened_id[33];
+unsigned vr_platform_tls_cache_epoch(void){return 0;}
+int vr_platform_tls_cache_clear(void){return 0;}
+int vr_platform_tls_cache(const char *ip,int add){(void)ip;(void)add;return 0;}
 static void *echo(void *unused)
 {
     (void)unused;
@@ -40,7 +43,7 @@ int vr_send_json(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][
 {const char *s=json_object_to_json_string_ext(o,JSON_C_TO_STRING_PLAIN);return vr_send(e,main,sub,path,count,s,strlen(s));}
 int vr_bind4(const char *ip,int port,int tcp){(void)ip;(void)port;(void)tcp;return -1;}
 static void tick(vr_engine *e)
-{struct pollfd fds[129];size_t n=vr_tcp_pollfds(e,fds);if(n){assert(poll(fds,n,1)>=0);vr_tcp_poll(e,fds);}}
+{struct pollfd fds[VR_TCP_POLL_MAX];size_t n=vr_tcp_pollfds(e,fds);if(n){assert(poll(fds,n,1)>=0);vr_tcp_poll(e,fds);}}
 static size_t hello(uint8_t out[1024],const char *name)
 {
     memset(out,0,1024);out[0]=22;out[1]=3;out[2]=1;out[5]=1;out[9]=3;out[10]=3;
@@ -98,6 +101,26 @@ static void transfer(const char *action,const char *choice)
     }
     close(pair[0]);for(int i=0;i<8;i++){tick(entry);tick(exit_node);}vr_tcp_stop(entry);vr_tcp_stop(exit_node);
 }
+static void cached_proxy(void)
+{
+    policy(entry,"probe_exit");policy(exit_node,"reject");entry->config.tls_sni_enabled=1;
+    for(unsigned iteration=0;iteration<2;iteration++) {
+        int pair[2];assert(!socketpair(AF_UNIX,SOCK_STREAM|SOCK_NONBLOCK,0,pair));
+        int before=connections;assert(!vr_tcp_attach(entry,pair[1],"203.0.113.5",443));
+        uint64_t deadline=vr_millis()+3000;
+        if(iteration) {
+            while(connections==before&&vr_millis()<deadline){tick(entry);tick(exit_node);}
+            assert(connections==before+1); /* Dialled from cache, no SNI bytes. */
+        } else assert(connections==before);
+        uint8_t bytes[1024],reply[1024];size_t n=hello(bytes,"fixture.example"),got=0;
+        assert(write(pair[0],bytes,n)==(ssize_t)n);deadline=vr_millis()+3000;
+        while(got<n&&vr_millis()<deadline){tick(entry);tick(exit_node);ssize_t k=read(pair[0],reply+got,n-got);if(k>0)got+=(size_t)k;else if(!k)break;}
+        assert(got==n&&!memcmp(bytes,reply,n));
+        close(pair[0]);for(unsigned i=0;i<10;i++){tick(entry);tick(exit_node);}
+    }
+    vr_tcp_stop(entry);vr_tcp_stop(exit_node);entry->config.tls_sni_enabled=0;
+    puts("PASS: cached IP rule opens authenticated remote exit before SNI; original ClientHello bytes unchanged");
+}
 int main(void)
 {
     parser_tests();entry=engine("7");exit_node=engine("8");
@@ -106,15 +129,16 @@ int main(void)
     transfer("direct",NULL);transfer("probe_exit",NULL);transfer("reject",NULL);
     transfer("probe_exit","@direct");transfer("probe_exit","@reject");transfer("reject","@direct");transfer("direct","@reject");entry->config.exit_overrides.count=0;
     transfer("direct","8");transfer("reject","8");entry->config.exit_overrides.count=0;
+    cached_proxy();
     int before=connections;char path[VR_PATH_MAX][129]={{"7"},{"8"}};
     const char *denied[]={"127.0.0.1:22","169.254.169.254:80","192.168.1.1:80"};
     policy(exit_node,"direct");
     for(size_t i=0;i<sizeof(denied)/sizeof(denied[0]);i++){char data[512];snprintf(data,sizeof(data),"{\"session_id\":\"0123456789abcdef0123456789abcdef\",\"source_node_id\":\"7\",\"exit_node_id\":\"8\",\"target_addr\":\"%s\"}",denied[i]);vr_frame f={8,1,NULL,(const uint8_t *)data,0,strlen(data)};vr_tcp_frame(exit_node,&f,path,2);}
     assert(connections==before);vr_tcp_stop(exit_node);
-    int held[64];
-    for(size_t i=0;i<64;i++) {int pair[2];assert(!socketpair(AF_UNIX,SOCK_STREAM,0,pair));assert(!vr_tcp_attach(entry,pair[1],"203.0.113.5",443));held[i]=pair[0];}
+    int held[VR_TCP_MAX];assert(VR_TCP_MAX==256);
+    for(size_t i=0;i<VR_TCP_MAX;i++) {int pair[2];assert(!socketpair(AF_UNIX,SOCK_STREAM,0,pair));assert(!vr_tcp_attach(entry,pair[1],"203.0.113.5",443));held[i]=pair[0];}
     int full[2];assert(!socketpair(AF_UNIX,SOCK_STREAM,0,full));assert(vr_tcp_attach(entry,full[1],"203.0.113.5",443));close(full[0]);close(full[1]);
-    vr_tcp_stop(entry);for(size_t i=0;i<64;i++)close(held[i]);
+    tick(entry);vr_tcp_stop(entry);for(size_t i=0;i<VR_TCP_MAX;i++)close(held[i]);
     shutdown(listener,SHUT_RDWR);close(listener);pthread_join(thread,NULL);
     json_object_put(entry->policy);json_object_put(exit_node->policy);pthread_mutex_destroy(&entry->mutex);pthread_mutex_destroy(&exit_node->mutex);free(entry);free(exit_node);
     puts("PASS: fragmented SNI direct/reject/remote TCP, asynchronous exit DNS, retained stream, generic authenticated exit, private targets denied");return 0;
