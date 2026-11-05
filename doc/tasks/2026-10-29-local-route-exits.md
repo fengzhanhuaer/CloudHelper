@@ -1,12 +1,12 @@
 # 任务：Probe、安卓、路由器按规则本地选择出口与通用出口
 
-## 十七、2026-11-05 修正主控直连规则不能选节点（进行中）
+## 十七、2026-11-05 修正主控直连规则不能选节点（已完成）
 
 用户最新指令：主控默认直连，本机也必须能选择其他出口。REQ-011替代REQ009及IF005的“仅代理规则可选节点”限制；所有规则均可跟随/直连/拒绝/已知节点，仅本机保存，不修改主控默认。沿用需求跟踪和release技能。
 总体架构：原代理规则继续按主控默认申请共享Fake IP；原direct/reject本机改节点时，认证请求增加local_exit标识，由主控提供稳定域名映射并标记LocalExit，映射锚点为发起节点而非用户所选出口，不存本地选择。普通代理映射仍以主控默认为准。其他来源按自身有效规则决定是否使用映射。CIDR捕获投影增加direct→节点，旧TCP保持。
 UNIT-011：主控probe_route_handlers.go/probe_virtual_router.go扩展显式认证映射申请、冷查询及维护，校验当前规则/已知身份，拒绝未知规则/节点；不放宽原接口默认校验。UNIT-012：插件UI/API/policy/DNS/mapping/dataplane/platform贯通节点覆盖、缓存重启/恢复默认和CIDR捕获。IF-006：fake_ip/resolve增加可选local_exit布尔值，响应映射增加同名字段；旧请求保持原语义。旧主控拒绝新增映射时明确失败，不静默直连。
 DEC-008：特殊映射标记仅用于原非代理规则的域名地址索引，不将实际本地出口同步主控；普通代理映射和默认规则不受影响。取代第十六节DEC005/006对非代理规则的限制，保留其他兼容/内存/JFFS约束。
-TASK-009 实现及定向验证：已完成。TASK-010 浏览器/回归/正式发布核验：进行中。TEST-009覆盖原direct/reject→节点、真实DNS/FakeIP/SNI/CIDR、共享默认不变、冷查询/维护/重启/恢复默认、认证拒绝；TEST-010真实页面保存节点payload/刷新/恢复及CI附件。
+TASK-009 实现及定向验证：已完成。TASK-010 浏览器/回归/正式发布核验：已完成。TEST-009覆盖原direct/reject→节点、真实DNS/FakeIP/SNI/CIDR、共享默认不变、冷查询/维护/重启/恢复默认、认证拒绝；TEST-010真实页面保存节点payload/刷新/恢复及CI附件。
 追踪REQ011→UNIT011/012→IF006→TASK009/010→TEST009/010。DEF-003：上一版只扩展动作，UI/API/policy/DNS同时限制非代理规则选节点，用户截图确认；修复中。
 基线f33926018，仅无关source-resume账本未暂存，保留。准备门禁通过；完成门禁待正式发布。回滚先恢复本地默认再在线回退，主控新增可选字段旧客户端忽略；不手工部署生产设备。下一步唯一动作：提交已验证变更并监控唯一匹配SHA的正式CI。
 
@@ -16,7 +16,9 @@ TEST010浏览器通过：Browser plugin not available，已有Playwright/Chromiu
 回归：主控全套test/vet通过(core7.250s/tests2.801s)，最后TTL续期标记一行调整后相关FakeIP/LocalExit组复测2.352s及vet通过。Probe最终全套通过(main43.566s/controllerlink5.099s/mobilecore2.310s及全部内部包)，vet保留既有unsafeptr/copylocks例外，发布契约组1.429s通过。此前两轮Windows网络夹具失败，第二轮明确TestProbeLocalVirtualRouterSettingsHandlerConfiguresProxy端口预留失败、TestProbeTransportIPv6AuthenticatedCarrierSlots超时；同两用例单独连续3次通过4.395s后最终全套成功，未改Probe源码/断言。新主控夹具初版漏规则Name导致被normalize过滤、C夹具复用已NAT改写包导致错断言，均修正夹具后通过，未放宽产品判断。
 发布预检：静态preflight仍要求退役Docker/router arm64而失败；已用live工作流及当前契约全组核验9任务/10附件，沿用DEC004/007，不恢复旧产物。仅任务20个明确路径提交，旧source-resume账本不暂存；不手改version/tag，不手工部署生产设备。
 
-- 状态：进行中（REQ011补齐非代理规则的节点覆盖；旧发布证据保留）；日期：2026-11-05 Asia/Singapore。
+发布进行中：功能提交07449edbbdf14e721d324e43980f22b5f30880a3已推送origin/mapledev。匹配正式CI41979183356：https://github.com/fengzhanhuaer/CloudHelper/actions/runs/41979183356 。TASK010继续，完成门禁未关闭；下一步唯一动作：监控此运行并核对自动版本/正式包中的页面、二进制和manifest。不重复触发发布。
+
+- 状态：已完成（REQ011及正式发布核验通过，生产未升级）；日期：2026-11-05 Asia/Singapore。
 - 启用方式：明确跨配置、选路、出口承接、界面、验证和发布的长任务。
 - 用户最新指令：2026-11-05主控默认直连，本机也必须能选择其他出口；询问直连时DNS是否返回Fake IP（新查询应返回真实IP，旧缓存仍按本机直连处理）。详见第十七节。三端均不编辑主控规则内容，出口按请求通用承接。
 
@@ -186,3 +188,11 @@ DEC-007 / DEF-002 CI执行环境：首轮日志确认runner Ubuntu26.04.1（imag
 REQ009验收通过：所有规则跟随/直连/拒绝、代理规则原节点选项；本机保存/刷新/重启加载/恢复默认、配置mtime去重、CSRF与当前规则校验、工作代数不变均有TEST005/007证据。
 REQ010验收通过：DNS缓存及普通请求、Fake IP缓存拒绝/本机直连及冷异步解析、真实CIDR捕获增删/失败回滚、SNI动作与已建TCP保留、共享映射出口不改，有TEST006及正式CI证据。IF005/UNIT008–010、TASK006–008、TEST005–008闭合，DEF002环境兼容已由固定Ubuntu24后的完整CI成功关闭。准备与完成门禁均通过。
 遗留边界：保持原华硕固定宽度布局；尚未做生产设备在线升级与现场流量验收。用户可从运行状态检查更新/在线升级到v106。回滚先恢复默认再用正式在线升级回退。额外提交仅此账本完成记录，skip ci/skip release，不触发新版本；无关source-resume账本保留。下一步唯一动作：无。
+
+
+### 第十七节最终交付：v0.4.107
+正式Release：https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.107 ，2026-11-05T06:21:12Z发布。CI41979183356全部9任务success，主控/三款Probe/软路由/安卓/华硕完整检查通过，10附件的名称/大小/digest核对完成。无BE86U、Docker或router arm64产物恢复。
+功能提交07449edbbdf14e721d324e43980f22b5f30880a3，自动版本提交1ec63ed60。正式插件包及外部清单已重下载至Temp/ch-router-all-exits-formal-107，与已验证CI附件逐字节一致；包128968字节，SHA256=80a50b6fd86002dd010d7b5292e55a0c239b35c3f4ed4c9521279f933b534fc3，程序SHA256=52034bf4d4e1ec4b675c3b3f16cc0c201e56a078ee2ed8768efef9f7dbf3ac9e。全部11个manifest文件大小/哈希通过，页面与源码一致、包含所有规则节点选择，二进制包含local_exit及v107版本，ABI PASS；API digest与下载内容一致。
+REQ011通过，UNIT011/012、IF006、TASK009/010、TEST009/010追踪闭合。DEF003已修复：主控direct/reject的本机节点覆盖从UI/API到DNS/FakeIP/SNI/CIDR贯通，主控规则默认与普通共享映射不变。准备与完成门禁均通过，下一步唯一动作：无。
+部署边界：此次仅正式发布，未连接或升级生产设备。原direct/reject域名改走节点需主控和插件配套在线升级；旧主控会明确拒绝新映射，不声称旧版本支持。生产现场流量与手机真机仍未测试；浏览器为原ASP/真实C dispatcher桥，原ASUS固定宽度布局保持。既有来源/出口需支持通用出口，私网仍受网关ACL约束。回退前恢复本机默认。
+最终记录仅此账本以skip ci/skip release提交，不另发版本；无关source-resume账本保持未暂存。
