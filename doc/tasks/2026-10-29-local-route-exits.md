@@ -151,3 +151,12 @@ TEST008：主控全套test/vet通过（core7.537s/tests3.521s）。Probe全套�
 
 最终本地门禁通过：Probe单独失败用例连续3次通过（1.735s），最终全套通过（main44.093s、controllerlink4.967s、mobilecore1.654s及全部内部包），vet按既有unsafeptr/copylocks例外通过。主控全套/vet通过。未修改任何Go测试断言/源码；初次失败按原样记录。C新增冷Fake IP本机direct异步解析与回程通过；SNI用例覆盖主控proxy→本机direct/reject、reject→direct、direct→reject，原流保留。没有新增五组互通。
 TASK006/007已完成，TASK008进行中；REQ009/010本地实现与验证通过。准备门禁通过；完成门禁待正式CI/附件核对。仅提交本账本与21个router_plugin路径（含新test_exits.c），共22路径；不包含无关source-resume账本。提交说明feat: allow local direct and reject choices in router plugin。下一步唯一动作：提交、推送并监控匹配SHA的唯一正式发布。
+
+发布检查点：实现提交6771b1157abf7856dc72d4a0233c83abd8022e35已推送origin/mapledev，22个明确路径，旧source-resume账本未暂存。唯一匹配该SHA的正式CI为41973090286：https://github.com/fengzhanhuaer/CloudHelper/actions/runs/41973090286 ，进行中。不重复触发发布；下一步唯一动作：等待此运行完成并核验Release附件内页面/manifest。
+页面范围补充：390px视口沿用原华硕插件固定宽度容器，截图页面宽约768px，控件通过横向滚动可操作；本次没有改动布局，不将此报告成移动自适应重排通过。桌面及窄视口交互、保存/恢复与无JS异常均已验证。
+
+正式CI41973090286首轮失败：所有其他构建成功，华硕Build and Verify AX56U V2 Plugin Package步骤（含本次core/API/DNS/Fake IP/SNI/CIDR、ARM编译与包ABI）已成功；后续既有Verify Router Address Updates Preserve Established Connections在测试夹具初始化iptables -P INPUT DROP时exit3，尚未启动被测二进制，错误日志Temp/ch-router-actions-ci-failed.log。并非动作断言失败，未跳过该门禁。先仅重跑失败job并打开debug，验证执行机环境是否瞬态；若重复再补充环境诊断，不直接删除验证或放宽断言。TASK008仍进行中，完成门禁未通过，v105尚无正式Release。
+
+DEC-007 / DEF-002 CI执行环境：首轮日志确认runner Ubuntu26.04.1（image ubuntu-26.04/20261025.179.1），上次成功v104使用24.04.5（image ubuntu-24.04/20261025.353.1）。重跑仍在Verify Router Address Updates Preserve Established Connections失败，BuildPackage已再次通过；首轮明确iptables初始化exit3。重跑完整debug日志下载遇unexpected EOF，未从缺失日志推断更细内核原因。将仅华硕job的runs-on固定为已验证ubuntu-24.04，Ubuntu18.04 ABI容器和全部网络断言保持；夹具run函数只在异常时补打原命令stderr再原样抛出异常，不改变通过条件。
+此为关闭发布阻塞所需的环境修复，主控/Probe平台任务、9任务10附件契约和固件ABI不变。发布契约全组TestReleaseWorkflow通过1.519s，Python AST通过；产品业务源码未再改，不重复已通过的组件套件。准备门禁通过，最终环境兼容仍由新CI验证；v105因发布门禁失败尚无Release，下一正式版本由工作流自动生成，不手改version/tag。
+下一步唯一动作：提交上述2个环境文件与本账本，触发新运行并核验完整测试。

@@ -372,7 +372,8 @@ jobs:
 
   build-asus-router-plugins:
     needs: prepare-release
-    runs-on: ubuntu-latest
+    # Match the verified host kernel for the Ubuntu 18.04/legacy iptables fixture.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Checkout Tagged Source

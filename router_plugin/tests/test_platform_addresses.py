@@ -11,7 +11,11 @@ if os.environ.get('CHVR_DISPOSABLE_TEST') != '1' or not Path('/.dockerenv').exis
     raise SystemExit('Run only inside the disposable network container')
 
 def run(*args):
-    return subprocess.check_output(args, stderr=subprocess.STDOUT, universal_newlines=True)
+    try:
+        return subprocess.check_output(args, stderr=subprocess.STDOUT, universal_newlines=True)
+    except subprocess.CalledProcessError as error:
+        print(error.output, file=sys.stderr)
+        raise
 
 def line(proc):
     assert select.select([proc.stdout], [], [], 15)[0], ('timeout', proc.poll())
