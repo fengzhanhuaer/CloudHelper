@@ -1,7 +1,7 @@
 # 任务：修复华硕插件 SNI 连接关闭后 CPU 空转
 
 - 任务标识：`2026-10-20-router-sni-close-cpu`
-- 状态：`进行中（2026-11-05 追加容量与 IP 缓存）`
+- 状态：`已完成（2026-11-05 追加容量、IP 缓存与 WAN IPv6）`
 - 用户最新指令：256 个会话，状态和缓冲随连接按需创建、逐步增长、关闭释放、闲置 600 秒、4096 条 IP 选路缓存 72 小时；只存 IP 和策略序号，特殊值用负数。IPv6 只做 WAN 双向承载，入站受公网开关控制；LAN 不允许 IPv6 入站或出站，不增加 IPv6 SNI/业务转发。
 - 启用方式：明确长任务条件；涉及故障复现、TCP 生命周期实现、回归、发布及现场在线升级。
 - 基线：`468aa383`，`mapledev`，工作区干净；BE86U / AX56U 插件均 v0.4.80。
@@ -106,11 +106,11 @@ FACT-002：诊断只读取 poll/session 元数据，不打印、保存原始内�
 |---|---|---|---|
 | TASK-005 | REQ-004～008 / UNIT-003～007 | 已完成 | 容量、时限、缓存、内核旁路和失效、IPv6 WAN 约束已实现 |
 | TASK-006 | REQ-004～008 | 已完成 | TEST-005 容量/超时/懒分配；TEST-006 命中/TTL/淘汰/策略失效；TEST-007 真内核直连旁路与既有 TCP 生命周期；TEST-008 IPv6 WAN 绑定、LAN 拒接和公网开关；Go 发布基线通过 |
-| TASK-007 | REQ-004～008 | 进行中 | 正式提交发布，精确 SHA 的 Actions 及 AX56U 资产验收 |
+| TASK-007 | REQ-004～008 | 已完成 | 正式提交发布，精确 SHA 的 Actions 及 AX56U 资产验收 |
 
 追踪：REQ-004→UNIT-003→TASK-005/006→TEST-005；REQ-005→UNIT-003/005→TEST-006；REQ-006→UNIT-004/005→TEST-006/007；REQ-007→UNIT-003→TEST-005/007；REQ-008→UNIT-007（tls/platform/engine/controller/control/upgrade）→IF-003（vr_bind6_carrier 的 WAN 参数及双栈出站绑定）→TASK-005/006→TEST-008。源代码/ABI 测试保持同一接口，认证与帧格式不变。
 
-回滚：撤销本次代码并发布更高补丁版本；配置/身份无迁移，停止时清理新增自有链。准备门禁通过；追加完成门禁待测试和发布。当前唯一进行中 TASK-007；下一步唯一动作：提交已验证代码并跟踪正式 CI 的真实内核和厂商 ABI 验证。
+回滚：撤销本次代码并发布更高补丁版本；配置/身份无迁移，停止时清理新增自有链。准备门禁通过；追加完成门禁待测试和发布。当前交接：TASK-005～007已完成，最终证据见2026-11-05完成检查点；下一步唯一动作：无。
 
 2026-11-05 本地检查点：TEST-005/006 的原生及 ASan/UBSan/leak 回归通过，实际 sizeof(cache entry)=16，4096 条 64 KiB；128 会话容量及第129个拒绝、600秒边界、72小时到期、当前规则索引、拒绝、无出口不回退、淘汰和代数失效均已覆盖；直连批量到期一次清空内核子链，未到期记录仍保留且可重装。TEST-007 本地真 socket 的关闭/背压/半关闭与 TLS 字节完整性通过。Go controller/node 全套与 vet、发布合同通过（controller core 7.765s、tests 3.447s；node 45.720s；workflow 1.836s）。本地新版 libcurl 的既有 deprecated 警告仅降级为 warning；时钟偏移有 make clock-skew 提示，实际目标均重新构建。测试曾暴露旧 transport fixture 假定 IPv6 忽略无效 IPv4 WAN，现按新需求用 lo 作为隔离 WAN，并增加无效 WAN 拒绝和 accepted socket 继承设备绑定验证。一次 fixture if 缩进警告已修正。WSL 用户态缺乏 root 导致 CA 写入失败后改用本地 WSL root；需容器隔离的升级/control/真实内核脚本由 guard 拒绝，未绕过，留待正式 CI。Docker Desktop 当前未运行；不启动生产主机或测试容器。
 
@@ -155,3 +155,7 @@ CON-002：发布 preflight 仍要求已退休 Docker/路由 arm64 三个标记�
 2026-11-05 环境修复验证：Go TestReleaseWorkflow全部通过（1.786s），临时兼容预检ready=true；新workflow SHA256=0cfd7f3cd28ef86665c8a47a73bd1554d42cc7c3cdd5ac25fd52a2e341457143。提交639b4b50863891929a526f394a6a5653951fff68对应精确运行https://github.com/fengzhanhuaer/CloudHelper/actions/runs/42025813930（v0.4.111）。当前TASK-007进行中，下一步唯一动作核对真实内核通过及正式10资产。
 
 2026-11-05 DEF-003已关闭：42025813930/v0.4.111的模块加载成功，真实IPv6 WAN监听/LAN拒绝/公网开关、SNI缓存内核绕行零DNAT、exit4无损、完整防火墙修复和失败回滚均通过。后续DEF-004为夹具约束错误：第一次接口改名后，夹具自己的FORWARD允许规则仍使用旧chvrlan/chvrwan，缓存直连已绕过DNAT而被该旧规则丢弃（test_platform_addresses.py:184 TCP SYN超时）。修正夹具在每次接口改名时同步自身同端口/同接口权限；不修改产品防火墙，不放宽断言。首轮迁移额外清空缓存再握手，分别覆盖缓存直连和真正移位的SNI监听。Python语法通过；下一步唯一动作正式CI复核六轮迁移。
+
+2026-11-05 完成检查点：e19a580f809e598cc2c2a27b65dbd7b312afeaf8对应精确Actions42026930017九个job全部success；https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.112 正式发布，工作流版本提交7ff340392，非草稿/预发布、10资产全部非空且名称符合当前合同。已下载AX56U包及JSON，对照Release API digest、包SHA256、版本、profile、12个成员和内部manifest逐个校验通过；包130457字节，SHA256=30f45c583830b60ab50fb4e37be22c7dc5e7369f3d580ff8ae6f237512de820e，ARM二进制SHA256=f7662b456b1d69e70631eff7547d5f3f622a9419faa5d335989c40d7441d900f。
+
+TEST-005/006：最终256容量、第257个拒绝、动态状态及4KiB线性增长/关闭释放、600秒闲置、72小时缓存、4096×16字节、命中/到期/淘汰/失效原生和ASan/UBSan/leak通过。TEST-007/008：四套厂商ABI通过，真实内核IPv6 WAN绑定/LAN拒绝/公网开关通过；缓存直连零新DNAT、六轮接口/IP迁移保持载体/主控/TLS连接、部分和完整防火墙修复、失败事务回滚通过；遥测主控互操作通过。原Go全套/vet和工作流验证有效，DEF-002/003/004均关闭。REQ-004～008追踪闭合，TASK-005/006/007已完成，完成门禁通过。生产路由器未升级，未写生产配置；后续安装仅走产品在线升级。旧升级续传账本未暂存。无待办、下一步唯一动作：无。
