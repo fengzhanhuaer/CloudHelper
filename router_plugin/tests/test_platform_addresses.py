@@ -166,6 +166,11 @@ s.close()
             target=not current
             for name in ('chvrlan','chvrwan'):
                 run('ip','link','set',name+('2' if current else ''),'name',name+('2' if target else ''))
+            # The fixture owns ordinary LAN-to-WAN forwarding, like firmware.
+            # Keep the same narrow permission on the renamed interfaces so a
+            # cached kernel-direct TLS flow is not blocked by stale test rules.
+            run('iptables','-A','FORWARD','-i','chvrlan'+('2' if target else ''),'-o','chvrwan'+('2' if target else ''),'-p','tcp','--dport','443','-j','ACCEPT')
+            run('iptables','-D','FORWARD','-i','chvrlan'+('2' if current else ''),'-o','chvrwan'+('2' if current else ''),'-p','tcp','--dport','443','-j','ACCEPT')
             if iteration==0:
                 # The kernel labels old iif rules detached after a physical
                 # interface rename, independently of the plugin transaction.
@@ -184,6 +189,13 @@ s.close()
             proc=client('chvr-client','203.0.113.5',443,True)
             proc.stdin.write('new-sni-listener\n');proc.stdin.flush();assert line(proc)=='OK'
             proc.stdin.close();assert proc.wait(timeout=5)==0;streams.remove(proc)
+            if iteration==0:
+                # Also exercise the moved SNI listener after invalidating the
+                # warm direct entry; the first connection above used bypass.
+                helper.send_signal(signal.SIGWINCH);assert line(helper)=='REPAIRED'
+                proc=client('chvr-client','203.0.113.5',443,True)
+                proc.stdin.write('moved-sni-listener\n');proc.stdin.flush();assert line(proc)=='OK'
+                proc.stdin.close();assert proc.wait(timeout=5)==0;streams.remove(proc)
             if not current:unchanged(original)
         print('PASS: six LAN/WAN IP and interface migrations preserve inbound carriers, outbound control and SNI TLS; new listeners work, no rule accumulation',flush=True)
     finally:
