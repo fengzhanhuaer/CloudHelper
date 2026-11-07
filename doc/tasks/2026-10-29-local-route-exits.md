@@ -1,6 +1,6 @@
 # 任务：Probe、安卓、路由器按规则本地选择出口与通用出口
 
-## 十八、2026-11-07 Probe 默认直连规则不能本地选出口（进行中）
+## 十八、2026-11-07 Probe 与安卓默认直连规则不能本地选出口（已完成）
 
 最新指令：probe node 的路由规则本地无法设置。现场本机节点9经Maple捕获198.18/15，PT主控默认direct，本机API/UI只允许probe_exit规则选择节点；路由器的rr-8→18不作用于Windows。此前建议本机直接选择节点18不适用于当前实现，已向用户纠正。
 REQ-012：Probe所有已知规则可本地选已知节点或跟随主控；覆盖只保存在本机，重启/主控同步保留，恢复默认；不修改规则匹配内容。用户随后要求“手机端也确认下”，范围追加Android现有本地出口入口；C插件与新增本地动作选项不在本次范围。
@@ -18,6 +18,14 @@ Linux定向测试由Windows交叉编译测试二进制，在本地WSL UbuntuServ
 TEST012页面通过：Browser plugin not available，使用既有Playwright/Chromium；Probe完整HTML+模拟本地API、Android完整settings.html/app.js+模拟WebView桥，1366x1000/390x844均验证全规则选18、真实保存payload、刷新保持、恢复空表及直连/拒绝默认标签，零pageerror/启动错误。截图与请求Temp/ch-probe-all-exits-browser已目视检查窄屏。安卓真机/VPN现场与生产在线升级未执行。
 发布预检沿用DEC004/007：原skill静态脚本仍要求退役Docker/router arm64；现有临时检查副本仅排除3个废弃marker通过。live workflow SHA256=0cfd7f3cd28ef86665c8a47a73bd1554d42cc7c3cdd5ac25fd52a2e341457143未变，当前契约组确认9任务/10附件，不恢复退役产物；预检输出旧routerArtifacts数组不作现行产物依据。branch/remote/auth/upstream/diff已核对，无并发上游变更。
 准备门禁通过；本地验证完成，完成门禁待唯一匹配SHA的正式CI与附件。下一步唯一动作：仅提交本任务17个路径并推送正式发布，不包含旧source-resume账本。
+
+正式发布进行中：实现提交c02a9d280fcbb0509cf34c19266af6c28191f8b0已推送origin/mapledev。唯一匹配CI42330659539：https://github.com/fengzhanhuaer/CloudHelper/actions/runs/42330659539 ，TASK012继续，完成门禁待CI/版本/附件核对；不重复触发构建。无关账本保持未暂存。下一步唯一动作：监控此运行并核验生成的Windows及Android正式文件。
+
+2026-11-07 最终交付：v0.4.113，https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.113 ，publishedAt 2026-11-07T02:48:45Z，非draft/非prerelease。正式CI42330659539全部9任务success，包括Android核心/AAR、unsigned打包、正式签名及全部既有ASUS门禁。自动版本提交/标签7c15a54d2ed118942ad079162332b4dca267c321，已核对包含功能提交c02a9d280；本地仅快进workflow版本提交。
+正式Release API的10附件名称集合、非零大小、SHA256 digest格式均通过核验。Windows 23508992字节，digest=6cfe7144a3736a9cab216241f90703f8524c2d711d89095a88c25c2a42d0be43；Android 18842945字节，digest=9d7ba2dbbc4dc8e78d28332a9cde4bf5c29f0fc50a0f79d438e906dc742eecd4。没有BE86U/Docker/router arm64恢复。
+下载边界：gh CI artifact下载长期无完成后停止；正式Windows curl连接超时，APK下载仅约2MiB且速率慢，已停止并将不完整文件改名.partial，不作为可安装文件。未声称正式附件完整重下载、本地字节哈希或内嵌页面提取核验成功；本轮来源由匹配SHA/tag/CI和Release API摘要确认，页面行为由真实Chromium原页面测试确认。
+gh run watch最终因读取check annotations连接重置退出1；独立run view返回workflow completed/success且9job均success，非构建失败。API的首次Release快照仍为draft，待create-release完成再次核对正式published状态，未将draft当发布成功。
+REQ012、UNIT013/014、IF006/007、TASK011/012、TEST011/012追踪闭合。Probe及Android已知规则都可覆盖为本地节点，主控默认动作只读、同步/重载/恢复可用，认证/FakeIP/DNS/CIDR/路径及原代理回归通过。准备及完成门禁通过；安卓真机、设备在线升级及现场curl流量验收尚未执行，不作已恢复生产连通性结论。无关source-resume账本保留。最终仅提交本账本skip ci/skip release记录；下一步唯一动作：无。
 
 ## 十七、2026-11-05 修正主控直连规则不能选节点（已完成）
 
