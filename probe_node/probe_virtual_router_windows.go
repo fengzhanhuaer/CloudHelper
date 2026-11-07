@@ -216,6 +216,7 @@ func buildProbeVirtualRouterWindowsPublishedRouteDefs(interfaceLUID uint64, ifIn
 	seen := make(map[string]struct{})
 	out := make([]probeRouteWindowsRouteDef, 0)
 	for _, rule := range config.RouteRules {
+		rule = effectiveProbeVirtualRouterRouteRule(rule)
 		if !isProbeGatewayPublishedRuleID(rule.ID) || sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) != "probe_exit" {
 			continue
 		}

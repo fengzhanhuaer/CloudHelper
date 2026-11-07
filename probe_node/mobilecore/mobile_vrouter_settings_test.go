@@ -6,8 +6,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
+
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 func TestMobileVRouteSettingsReadFromController(t *testing.T) {
@@ -113,7 +116,7 @@ func TestMobileVRouteSettingsStayLocalAcrossRefreshAndReset(t *testing.T) {
 	if countPosts != 0 || countGets != 1 {
 		t.Fatalf("posts=%d gets=%d", countPosts, countGets)
 	}
-	for _, payload := range []string{`{"exit_nodes":{"rr-ai":"999"}}`, `{"exit_nodes":{"direct":"18"}}`, `{"exit_nodes":{},"rules":[]}`, `{"reset":true,"exit_nodes":{"rr-ai":"18"}}`} {
+	for _, payload := range []string{`{"exit_nodes":{"rr-ai":"999"}}`, `{"exit_nodes":{"missing":"18"}}`, `{"exit_nodes":{},"rules":[]}`, `{"reset":true,"exit_nodes":{"rr-ai":"18"}}`} {
 		if save(payload)["ok"] == true {
 			t.Fatalf("accepted %s", payload)
 		}
@@ -135,4 +138,89 @@ func decodeMobileVRouteSettingsResponse(t *testing.T, raw string) map[string]any
 		t.Fatalf("decode settings response %q: %v", raw, err)
 	}
 	return payload
+}
+
+func TestMobileLocalExitDirectAndRejectDNSAndReset(t *testing.T) {
+	for _, action := range []string{"direct", "reject"} {
+		t.Run(action, func(t *testing.T) {
+			dir := t.TempDir()
+			resetMobileVRouteVPNStateForTest(t, dir)
+			config := mobileVRouteConfig{Enabled: true, LocalNodeID: "9", FakeIPCIDR: "198.18.0.0/15", ProbeIPs: []mobileVRouteProbeIP{{NodeID: "9", IP: "198.18.0.9"}, {NodeID: "18", IP: "198.18.0.18"}}, RouteRules: []mobileVRouteRouteRule{{ID: "pt", Name: "PT", Action: action, Entries: []string{"domain_suffix:hxpt.org", "cidr:203.0.113.0/24"}}}}
+			if err := persistMobileVRouteConfig(dir, config); err != nil {
+				t.Fatal(err)
+			}
+			save := func(body string) {
+				t.Helper()
+				result := decodeMobileVRouteSettingsResponse(t, SaveVRouteSettings("https://controller.invalid", "9", "secret", dir, body))
+				if result["ok"] != true {
+					t.Fatal(result)
+				}
+			}
+			save(`{"exit_nodes":{"pt":"18"}}`)
+			view := decodeMobileVRouteSettingsResponse(t, VRouteLocalSettings("", "", "", dir))
+			group := view["groups"].([]any)[0].(map[string]any)
+			if group["default_action"] != action || group["local_exit_node_id"] != "18" {
+				t.Fatal(group)
+			}
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveMobileProbeChallengeForTest(w, r) {
+					return
+				}
+				if r.URL.Path != mobileVRouteFakeIPResolveAPIPath || r.Header.Get("X-Probe-Node-Id") != "9" || r.Header.Get("X-Probe-Signature") == "" {
+					t.Errorf("unexpected unauthenticated request %s", r.URL.Path)
+					http.Error(w, "bad auth", 403)
+					return
+				}
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				if body["local_exit"] != true || body["exit_node_id"] != "9" || body["rule_id"] != "pt" || body["action"] != "probe_exit" {
+					t.Errorf("request=%+v", body)
+				}
+				requests++
+				// Mapping already exists with another source as anchor.
+				_ = json.NewEncoder(w).Encode(map[string]any{"item": map[string]any{"domain": "www.hxpt.org", "fake_ip": "198.18.4.95", "action": "probe_exit", "exit_node_id": "17", "local_exit": true}})
+			}))
+			defer server.Close()
+			setMobileVRouteControllerIdentity(server.URL, "9", "secret")
+			query, err := buildAndroidVPNDNSQuery("www.hxpt.org", dnsmessage.TypeA)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := resolveAndroidVPNDNSPacket(query)
+			if err != nil || !reflect.DeepEqual(extractAndroidVPNDNSResponseIPs(response), []string{"198.18.4.95"}) {
+				t.Fatalf("DNS err=%v ips=%v", err, extractAndroidVPNDNSResponseIPs(response))
+			}
+			route, err := decideVPNRouteForTarget("198.18.4.95:443")
+			if err != nil || route.Direct || route.Reject || route.SelectedRouteID != "vroute:18" || route.TargetAddr != "www.hxpt.org:443" {
+				t.Fatalf("route=%+v err=%v", route, err)
+			}
+			if requests != 1 {
+				t.Fatalf("requests=%d", requests)
+			}
+			if err := persistMobileVRouteConfig(dir, config); err != nil {
+				t.Fatal(err)
+			}
+			loaded, _ := loadMobileVRouteConfig(dir)
+			decision, ok := decideMobileVRouteForDomain(loaded, "www.hxpt.org", "443")
+			if !ok || decision.Direct || decision.Reject || decision.ExitNodeID != "18" {
+				t.Fatalf("sync/reload=%+v", decision)
+			}
+			if d, _ := decideMobileVRouteForIP(loaded, []byte{203, 0, 113, 8}, "443"); d.ExitNodeID != "18" || d.Direct || d.Reject {
+				t.Fatalf("CIDR=%+v", d)
+			}
+			save(`{"reset":true}`)
+			loaded, _ = loadMobileVRouteConfig(dir)
+			decision, _ = decideMobileVRouteForDomain(loaded, "www.hxpt.org", "443")
+			if (action == "direct" && !decision.Direct) || (action == "reject" && !decision.Reject) {
+				t.Fatalf("reset=%+v", decision)
+			}
+			route, err = decideVPNRouteForTarget("198.18.4.95:443")
+			if err != nil || (action == "direct" && !route.Direct) || (action == "reject" && !route.Reject) {
+				t.Fatalf("cached reset route=%+v err=%v", route, err)
+			}
+		})
+	}
 }

@@ -497,3 +497,29 @@ func assertProbeVirtualRouterWindowsRouteDef(t *testing.T, routes []probeRouteWi
 	}
 	t.Fatalf("missing route %+v in %+v", want, routes)
 }
+
+func TestProbeLocalExitPublishedCIDRCapture(t *testing.T) {
+	localExitTestRuntime(t)
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	config := localExitTestConfig()
+	config.RouteRules = []probeVirtualRouterRouteRule{{ID: "gateway-proxy-remote", Name: "Remote", Action: "direct", Entries: []string{"cidr:203.0.113.0/24"}}}
+	applyProbeVirtualRouterConfigForNode(config, "1")
+	if routes := buildProbeVirtualRouterWindowsPublishedRouteDefs(77, 40); len(routes) != 0 {
+		t.Fatalf("default direct captured: %+v", routes)
+	}
+	if err := saveProbeVirtualRouterExitOverrides(map[string]string{"gateway-proxy-remote": "3"}); err != nil {
+		t.Fatal(err)
+	}
+	if routes := buildProbeVirtualRouterWindowsPublishedRouteDefs(77, 40); len(routes) != 1 {
+		t.Fatalf("local proxy capture=%+v", routes)
+	}
+	if !probeVirtualRouterConfigRoutesIPViaProbeExit(currentProbeVirtualRouterConfig(), []byte{203, 0, 113, 8}) {
+		t.Fatal("local CIDR still bypassed")
+	}
+	if err := saveProbeVirtualRouterExitOverrides(nil); err != nil {
+		t.Fatal(err)
+	}
+	if routes := buildProbeVirtualRouterWindowsPublishedRouteDefs(77, 40); len(routes) != 0 {
+		t.Fatalf("reset retained capture: %+v", routes)
+	}
+}

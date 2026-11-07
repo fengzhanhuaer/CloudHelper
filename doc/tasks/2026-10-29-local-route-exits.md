@@ -1,5 +1,24 @@
 # 任务：Probe、安卓、路由器按规则本地选择出口与通用出口
 
+## 十八、2026-11-07 Probe 默认直连规则不能本地选出口（进行中）
+
+最新指令：probe node 的路由规则本地无法设置。现场本机节点9经Maple捕获198.18/15，PT主控默认direct，本机API/UI只允许probe_exit规则选择节点；路由器的rr-8→18不作用于Windows。此前建议本机直接选择节点18不适用于当前实现，已向用户纠正。
+REQ-012：Probe所有已知规则可本地选已知节点或跟随主控；覆盖只保存在本机，重启/主控同步保留，恢复默认；不修改规则匹配内容。用户随后要求“手机端也确认下”，范围追加Android现有本地出口入口；C插件与新增本地动作选项不在本次范围。
+架构/UNIT-013：现有独立覆盖文件、API、页面解除原direct/reject限制，有效规则副本置probe_exit；原非代理规则通过已有IF006 local_exit申请共享FakeIP，锚定认证来源，不上送所选出口；映射标记跨缓存/主控同步保留，普通映射继续使用主控默认。CIDR捕获/直连旁路按有效规则投影，保存后更新自有路由，不重连承载。
+UNIT-014：Android设置分组/保存校验及选路解除相同限制，原非代理规则的FakeIP申请复用IF006，保留主控默认动作标签；WebView桥/API只写本地文件，保存/同步后重建DNS有效选择。
+IF-007：既有exits接口值仍为节点ID，无新请求格式；IF006复用于Probe。拒绝未知规则/节点及规则内容写入，不减认证或通用出口目标校验。
+TASK-011 实现及定向验证：进行中；TASK-012 浏览器/回归与正式发布：待开始。TEST-011：API保存direct/reject、FakeIP认证请求/冷查询/重启/同步/恢复及路径和CIDR，普通代理不变；TEST-012：桌面/手机真实页面选择保存payload/刷新恢复、必要Go套件与匹配SHA正式CI。
+追踪REQ012→UNIT013/014/IF006/007→TASK011/012→TEST011/012。DEC-009：沿用IF006，主控已经v0.4.112支持，不增加新的主控策略或持久化；以现场选路证据为准，不将路由器设置视作本机设置。
+基线3778857f5，保留无关2026-10-28-upgrade-source-resume账本。准备门禁通过；完成门禁不通过（待实现验证发布）。回滚先恢复默认，再通过产品在线升级回退；不手工替换生产程序、不恢复耗时互通组或BE86U产物。下一步唯一动作：实现UNIT013并跑定向测试。
+
+2026-11-07 验证检查点：TASK011完成，TASK012进行中。UNIT013/014贯通页面/认证API/文件/有效规则/FakeIP及CIDR投影。主控原direct/reject通过local_exit请求，锚点认证来源；普通proxy仍按主控默认申请，不上送实际选择。安卓分组增加default_action只读标签、现有exit_nodes接口覆盖所有已知规则，恢复默认不写主控。未知规则/节点、内容写入及跨租户目标保护不放宽。
+TEST011通过：Probe本地认证API保存direct/reject→节点3，真实HTTP挑战/签名/FakeIP请求及DNS报文返回198.18.4.95，域名/该IP选路1→3，映射锚点2不变，重复查询仅请求一次，配置同步/覆盖文件重载保持，reset恢复原动作。Windows/Linux已发布CIDR默认direct不捕获，覆盖后增加、reset撤销；直连旁路识别有效规则。安卓真实HTTP认证/FakeIP及VPN DNS报文返回198.18.4.95，已存在其他来源锚点17仍允许本机18出口，CIDR/域名/缓存FakeIP同向，保存/重载/同步/reset均通过。
+完整Probe套件通过(main54.634s、controllerlink5.411s、mobilecore3.615s及所有内部包)；安卓原动作判断细化后mobilecore全套再次通过3.422s。主控全套/core8.208s/tests3.719s及vet通过；Probe vet沿用既有unsafeptr/copylocks例外通过，发布契约TestReleaseWorkflow全组1.998s通过。
+Linux定向测试由Windows交叉编译测试二进制，在本地WSL UbuntuServer运行普通Probe及linux_router两种profile均PASS；同时linux_router amd64/arm64构建通过。WSL默认用户无改路由权限，测试中127.0.0.1 direct-bypass有Operation not permitted警告，HTTP/DNS/选路断言通过，无宿主路由更改；不将其声明为内核实网转发测试。先前两次WSL参数未引用导致test flag解析失败，引用后执行成功。新夹具第一次按sanitize排序前索引断言及第二次用完整旧FakeIP库模拟日常同步均错误，已改为按ID和实际省略FakeIP库的同步语义，未修改产品断言。
+TEST012页面通过：Browser plugin not available，使用既有Playwright/Chromium；Probe完整HTML+模拟本地API、Android完整settings.html/app.js+模拟WebView桥，1366x1000/390x844均验证全规则选18、真实保存payload、刷新保持、恢复空表及直连/拒绝默认标签，零pageerror/启动错误。截图与请求Temp/ch-probe-all-exits-browser已目视检查窄屏。安卓真机/VPN现场与生产在线升级未执行。
+发布预检沿用DEC004/007：原skill静态脚本仍要求退役Docker/router arm64；现有临时检查副本仅排除3个废弃marker通过。live workflow SHA256=0cfd7f3cd28ef86665c8a47a73bd1554d42cc7c3cdd5ac25fd52a2e341457143未变，当前契约组确认9任务/10附件，不恢复退役产物；预检输出旧routerArtifacts数组不作现行产物依据。branch/remote/auth/upstream/diff已核对，无并发上游变更。
+准备门禁通过；本地验证完成，完成门禁待唯一匹配SHA的正式CI与附件。下一步唯一动作：仅提交本任务17个路径并推送正式发布，不包含旧source-resume账本。
+
 ## 十七、2026-11-05 修正主控直连规则不能选节点（已完成）
 
 用户最新指令：主控默认直连，本机也必须能选择其他出口。REQ-011替代REQ009及IF005的“仅代理规则可选节点”限制；所有规则均可跟随/直连/拒绝/已知节点，仅本机保存，不修改主控默认。沿用需求跟踪和release技能。

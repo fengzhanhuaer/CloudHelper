@@ -281,6 +281,7 @@ func buildProbeVirtualRouterLinuxPublishedRouteDefs(dev string, srcIP string) []
 	seen := make(map[string]struct{})
 	out := make([]probeVirtualRouterLinuxRouteDef, 0)
 	for _, rule := range config.RouteRules {
+		rule = effectiveProbeVirtualRouterRouteRule(rule)
 		if !isProbeGatewayPublishedRuleID(rule.ID) || sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) != "probe_exit" {
 			continue
 		}

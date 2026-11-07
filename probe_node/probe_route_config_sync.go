@@ -105,6 +105,7 @@ type probeVirtualRouterFakeIPEntry struct {
 	RuleID     string `json:"rule_id,omitempty"`
 	Action     string `json:"action,omitempty"`
 	ExitNodeID string `json:"exit_node_id,omitempty"`
+	LocalExit  bool   `json:"local_exit,omitempty"`
 	ExpiresAt  string `json:"expires_at,omitempty"`
 	UpdatedAt  string `json:"updated_at,omitempty"`
 }
@@ -378,17 +379,24 @@ func requestProbeRouteConfig(ctx context.Context, controllerBaseURL string, iden
 func requestProbeRouteFakeIP(ctx context.Context, controllerBaseURL string, identity nodeIdentity, domain string, rule probeVirtualRouterRouteRule) (probeVirtualRouterFakeIPEntry, probeVirtualRouterFakeIPLibrary, error) {
 	// Allocate one shared mapping using controller defaults. Local exit choices
 	// never become controller policy or change another probe's Fake IP mapping.
+	localExit := false
 	for _, original := range currentProbeVirtualRouterConfig().RouteRules {
 		if original.ID == rule.ID {
-			rule = original
+			if sanitizeProbeVirtualRouterRouteRuleAction(original.Action, original.ExitNodeID) != "probe_exit" && sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) == "probe_exit" {
+				localExit = true
+				rule.ExitNodeID = identity.NodeID // Shared mapping anchor, never the local exit choice.
+			} else {
+				rule = original
+			}
 			break
 		}
 	}
-	body, err := json.Marshal(map[string]string{
+	body, err := json.Marshal(map[string]any{
 		"domain":       strings.TrimSpace(domain),
 		"rule_id":      strings.TrimSpace(rule.ID),
 		"action":       strings.TrimSpace(rule.Action),
 		"exit_node_id": strings.TrimSpace(rule.ExitNodeID),
+		"local_exit":   localExit,
 	})
 	if err != nil {
 		return probeVirtualRouterFakeIPEntry{}, probeVirtualRouterFakeIPLibrary{}, err

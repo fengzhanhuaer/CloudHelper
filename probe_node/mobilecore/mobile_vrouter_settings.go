@@ -23,6 +23,7 @@ type mobileVRouteSettingsGroup struct {
 	Name              string `json:"name"`
 	ExitNodeID        string `json:"exit_node_id"`
 	DefaultExitNodeID string `json:"default_exit_node_id"`
+	DefaultAction     string `json:"default_action,omitempty"`
 	LocalExitNodeID   string `json:"local_exit_node_id,omitempty"`
 }
 
@@ -56,14 +57,11 @@ func mobileVRouteLocalSettingsResponse(config mobileVRouteConfig, choices map[st
 		response.Nodes = append(response.Nodes, mobileVRouteSettingsNode{NodeID: node.NodeID, DisplayName: node.DisplayName})
 	}
 	for _, rule := range config.RouteRules {
-		if normalizeMobileVRouteRuleAction(rule.Action, rule.ExitNodeID) != "probe_exit" {
-			continue
-		}
 		exit := rule.ExitNodeID
 		if choices[rule.ID] != "" {
 			exit = choices[rule.ID]
 		}
-		response.Groups = append(response.Groups, mobileVRouteSettingsGroup{ID: rule.ID, Name: rule.Name, ExitNodeID: exit, DefaultExitNodeID: rule.ExitNodeID, LocalExitNodeID: choices[rule.ID]})
+		response.Groups = append(response.Groups, mobileVRouteSettingsGroup{ID: rule.ID, Name: rule.Name, ExitNodeID: exit, DefaultExitNodeID: rule.ExitNodeID, DefaultAction: normalizeMobileVRouteRuleAction(rule.Action, rule.ExitNodeID), LocalExitNodeID: choices[rule.ID]})
 	}
 	return response
 }
@@ -107,7 +105,7 @@ func SaveVRouteSettings(controllerURL string, nodeID string, nodeSecret string, 
 	rules := map[string]bool{}
 	nodes := map[string]bool{}
 	for _, r := range config.RouteRules {
-		rules[r.ID] = normalizeMobileVRouteRuleAction(r.Action, r.ExitNodeID) == "probe_exit"
+		rules[r.ID] = true
 	}
 	for _, n := range config.ProbeIPs {
 		nodes[n.NodeID] = true
@@ -117,7 +115,7 @@ func SaveVRouteSettings(controllerURL string, nodeID string, nodeSecret string, 
 	if !request.Reset {
 		for id, node := range request.ExitNodes {
 			if !rules[id] || (node != "" && !nodes[node] && previous[id] != node) {
-				return marshalRouteJSON(map[string]any{"ok": false, "error": "unknown proxy rule or exit node"})
+				return marshalRouteJSON(map[string]any{"ok": false, "error": "unknown route rule or exit node"})
 			}
 			if node != "" {
 				choices[id] = node

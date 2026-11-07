@@ -2069,13 +2069,14 @@
         const detail = document.createElement('td');
         const title = document.createElement('strong'); title.textContent = rule.name || rule.id; detail.append(title);
         const local = document.createElement('td');
-        if (rule.action === 'probe_exit') {
+        {
           const select = document.createElement('select'); select.dataset.ruleId = rule.id; select.setAttribute('aria-label', `${rule.name || rule.id} 的出口`);
-          select.add(new Option(`跟随主控：${name(rule.default_exit_node_id)}`, ''));
+          const defaultExit = rule.action === 'probe_exit' ? name(rule.default_exit_node_id) : (rule.action === 'reject' ? '拒绝' : '直连');
+          select.add(new Option(`跟随主控：${defaultExit}`, ''));
           for (const node of nodes) select.add(new Option(name(node.node_id), String(node.node_id)));
           if (rule.local_exit_node_id && !nodes.some(n => String(n.node_id) === String(rule.local_exit_node_id))) select.add(new Option(name(rule.local_exit_node_id), rule.local_exit_node_id));
           select.value = rule.local_exit_node_id || ''; local.append(select);
-        } else { local.textContent = rule.action === 'reject' ? '拒绝（由主控维护）' : '直连（由主控维护）'; }
+        }
         tr.append(detail, local); rows.append(tr);
       }
       if (!rows.children.length) { const tr = document.createElement('tr'); const td = document.createElement('td'); td.colSpan = 2; td.textContent = '主控尚未下发路由规则'; tr.append(td); rows.append(tr); }

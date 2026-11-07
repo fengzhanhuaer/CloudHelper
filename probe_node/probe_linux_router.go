@@ -279,6 +279,7 @@ func probeLinuxRouterSNATCIDRs(config probeVirtualRouterConfig) []string {
 		appendCIDR(probeLocalFakeIPDefaultCIDR)
 	}
 	for _, rule := range config.RouteRules {
+		rule = effectiveProbeVirtualRouterRouteRule(rule)
 		action := sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID)
 		if action != "probe_exit" && action != "reject" {
 			continue

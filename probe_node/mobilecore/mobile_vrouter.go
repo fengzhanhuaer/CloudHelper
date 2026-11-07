@@ -42,6 +42,7 @@ type mobileVRouteControllerFakeIPResponse struct {
 		FakeIP     string `json:"fake_ip"`
 		Action     string `json:"action,omitempty"`
 		ExitNodeID string `json:"exit_node_id,omitempty"`
+		LocalExit  bool   `json:"local_exit,omitempty"`
 	} `json:"item"`
 }
 
@@ -78,17 +79,35 @@ func requestMobileVRouteControllerFakeIP(domain string, route androidRouteDecisi
 	}
 	// Shared Fake IP allocation always uses the controller's original rule,
 	// independently of this device's local exit selection.
+	localExit := false
+	ruleID := ""
 	if config, err := loadMobileVRouteConfig(mobileRouteConfigDir()); err == nil {
 		config.LocalExitNodes = nil
-		if decision, ok := decideMobileVRouteForDomain(config, domain, "443"); ok && decision.ExitNodeID != "" && !decision.Reject {
-			exitNodeID = decision.ExitNodeID
+		if decision, ok := decideMobileVRouteForDomain(config, domain, "443"); ok {
+			ruleID = decision.RuleID
+			for _, rule := range config.RouteRules {
+				if rule.ID == ruleID {
+					localExit = normalizeMobileVRouteRuleAction(rule.Action, rule.ExitNodeID) != "probe_exit"
+					break
+				}
+			}
+			if localExit {
+				exitNodeID = nodeID
+			} else {
+				exitNodeID = decision.ExitNodeID
+			}
 		}
 	}
-	body, err := json.Marshal(map[string]string{
+	request := map[string]any{
 		"domain":       normalizeMobileVRouteDomain(domain),
 		"action":       "probe_exit",
 		"exit_node_id": exitNodeID,
-	})
+		"rule_id":      ruleID,
+	}
+	if localExit {
+		request["local_exit"] = true
+	}
+	body, err := json.Marshal(request)
 	if err != nil {
 		return "", true, err
 	}
@@ -123,7 +142,7 @@ func requestMobileVRouteControllerFakeIP(domain string, route androidRouteDecisi
 	if normalizeMobileVRouteDomain(payload.Item.Domain) != normalizeMobileVRouteDomain(domain) {
 		return "", true, errors.New("controller returned mismatched mobile vroute fake ip domain")
 	}
-	if normalizeMobileRouteNodeID(payload.Item.ExitNodeID) != exitNodeID {
+	if normalizeMobileRouteNodeID(payload.Item.ExitNodeID) != exitNodeID && !(localExit && payload.Item.LocalExit && normalizeMobileRouteNodeID(payload.Item.ExitNodeID) != "") {
 		return "", true, errors.New("controller returned mismatched mobile vroute fake ip exit node")
 	}
 	return fakeIP.String(), true, nil
@@ -465,7 +484,8 @@ func decideMobileVRouteForIP(config mobileVRouteConfig, ip net.IP, port string) 
 func mobileVRouteDecisionFromRule(config mobileVRouteConfig, rule mobileVRouteRouteRule, targetAddr string) mobileVRouteDecision {
 	action := normalizeMobileVRouteRuleAction(rule.Action, rule.ExitNodeID)
 	exitNodeID := normalizeMobileRouteNodeID(rule.ExitNodeID)
-	if action == "probe_exit" && config.LocalExitNodes[rule.ID] != "" {
+	if config.LocalExitNodes[rule.ID] != "" {
+		action = "probe_exit"
 		exitNodeID = config.LocalExitNodes[rule.ID]
 	}
 	decision := mobileVRouteDecision{

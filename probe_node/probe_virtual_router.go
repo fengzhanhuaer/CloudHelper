@@ -589,6 +589,7 @@ func sanitizeProbeVirtualRouterFakeIPLibrary(input probeVirtualRouterFakeIPLibra
 			RuleID:     strings.TrimSpace(item.RuleID),
 			Action:     sanitizeProbeVirtualRouterRouteRuleAction(item.Action, item.ExitNodeID),
 			ExitNodeID: normalizeProbeRouteNodeID(item.ExitNodeID),
+			LocalExit:  item.LocalExit,
 			ExpiresAt:  strings.TrimSpace(item.ExpiresAt),
 			UpdatedAt:  strings.TrimSpace(item.UpdatedAt),
 		})
@@ -1051,6 +1052,11 @@ func reconcileProbeVirtualRouterFakeIPLibraryWithRouteRules(library probeVirtual
 			continue
 		}
 		if sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) != "probe_exit" {
+			if item.LocalExit {
+				// Keep the shared address index; each source applies its own action.
+				kept = append(kept, item)
+				continue
+			}
 			changed = true
 			continue
 		}
@@ -1064,10 +1070,11 @@ func reconcileProbeVirtualRouterFakeIPLibraryWithRouteRules(library probeVirtual
 		next.RuleID = strings.TrimSpace(rule.ID)
 		next.Action = "probe_exit"
 		next.ExitNodeID = exitNodeID
+		next.LocalExit = false
 		if next.Domain != item.Domain ||
 			next.RuleID != strings.TrimSpace(item.RuleID) ||
 			sanitizeProbeVirtualRouterRouteRuleAction(item.Action, item.ExitNodeID) != next.Action ||
-			normalizeProbeRouteNodeID(item.ExitNodeID) != next.ExitNodeID {
+			normalizeProbeRouteNodeID(item.ExitNodeID) != next.ExitNodeID || item.LocalExit != next.LocalExit {
 			next.UpdatedAt = updatedAt
 			changed = true
 		}
@@ -2015,6 +2022,7 @@ func sanitizeProbeVirtualRouterFakeIPEntry(item probeVirtualRouterFakeIPEntry) p
 		RuleID:     strings.TrimSpace(item.RuleID),
 		Action:     sanitizeProbeVirtualRouterRouteRuleAction(item.Action, item.ExitNodeID),
 		ExitNodeID: normalizeProbeRouteNodeID(item.ExitNodeID),
+		LocalExit:  item.LocalExit,
 		ExpiresAt:  strings.TrimSpace(item.ExpiresAt),
 		UpdatedAt:  strings.TrimSpace(item.UpdatedAt),
 	}

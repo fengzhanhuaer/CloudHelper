@@ -1881,7 +1881,8 @@ function renderRouteSettings(data) {
     const follow = document.createElement("option");
     follow.value = "";
     const defaultNode = routeSettingsState.nodes.find(n => String(n.node_id) === String(group.default_exit_node_id));
-    follow.textContent = `跟随主控（${defaultNode ? defaultNode.display_name : group.default_exit_node_id || "默认"}）`;
+    const defaultExit = group.default_action === "direct" ? "直连" : group.default_action === "reject" ? "拒绝" : (defaultNode ? defaultNode.display_name : group.default_exit_node_id || "默认");
+    follow.textContent = `跟随主控（${defaultExit}）`;
     select.appendChild(follow);
     routeSettingsState.nodes.forEach((node) => {
       const option = document.createElement("option");

@@ -45,9 +45,6 @@ func loadProbeVirtualRouterExitOverrides() map[string]string {
 }
 
 func effectiveProbeVirtualRouterRouteRule(rule probeVirtualRouterRouteRule) probeVirtualRouterRouteRule {
-	if sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) != "probe_exit" {
-		return rule
-	}
 	// Load once; ordinary packet matching only reads one cached choice.
 	state := &probeVirtualRouterExitSettingsState
 	state.Lock()
@@ -60,6 +57,7 @@ func effectiveProbeVirtualRouterRouteRule(rule probeVirtualRouterRouteRule) prob
 	node := state.overrides[strings.TrimSpace(rule.ID)]
 	state.Unlock()
 	if node != "" {
+		rule.Action = "probe_exit"
 		rule.ExitNodeID = node
 		rule.BackupExitNodeID = "" // An explicit local choice must not fall back to a controller-selected exit.
 	}
@@ -72,7 +70,7 @@ func saveProbeVirtualRouterExitOverrides(values map[string]string) error {
 	rules := make(map[string]bool, len(config.RouteRules))
 	nodes := make(map[string]bool, len(config.ProbeIPs))
 	for _, r := range config.RouteRules {
-		rules[r.ID] = sanitizeProbeVirtualRouterRouteRuleAction(r.Action, r.ExitNodeID) == "probe_exit"
+		rules[r.ID] = true
 	}
 	for _, n := range config.ProbeIPs {
 		nodes[n.NodeID] = true
@@ -83,7 +81,7 @@ func saveProbeVirtualRouterExitOverrides(values map[string]string) error {
 	}
 	for id, node := range values {
 		if !rules[id] {
-			return fmt.Errorf("rule %q is not a proxy rule", id)
+			return fmt.Errorf("unknown route rule %q", id)
 		}
 		if node == "" {
 			continue
@@ -107,7 +105,19 @@ func saveProbeVirtualRouterExitOverrides(values map[string]string) error {
 	}
 	state := &probeVirtualRouterExitSettingsState
 	state.Lock()
-	defer state.Unlock()
+	defer func() {
+		state.Unlock()
+		// Reconcile after releasing the settings lock: route builders read it.
+		if err == nil {
+			clearProbeVirtualRouterRouteCache("local exits updated")
+			if config.Enabled {
+				cleanupProbeRouteDirectBypassForVirtualRouterRules(config)
+			}
+			if activeProbeProductProfile.EnableVRoutePlatformInterface {
+				scheduleProbeVirtualRouterLocalInterfaceIPEnsure("local_exits_updated")
+			}
+		}
+	}()
 	f, err := os.CreateTemp(dir, ".probe-exits-*")
 	if err != nil {
 		return err

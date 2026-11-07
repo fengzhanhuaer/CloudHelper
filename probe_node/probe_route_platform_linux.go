@@ -361,6 +361,7 @@ func probeVirtualRouterConfigRoutesIPViaProbeExit(config probeVirtualRouterConfi
 	}
 	config = sanitizeProbeVirtualRouterConfigForCache(config)
 	for _, rule := range config.RouteRules {
+		rule = effectiveProbeVirtualRouterRouteRule(rule)
 		if sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID) != "probe_exit" || normalizeProbeRouteNodeID(rule.ExitNodeID) == "" {
 			continue
 		}
