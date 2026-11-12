@@ -1,6 +1,6 @@
 # Cloudflare IPv4 / IPv6 独立域名
 
-- 状态：进行中；创建/更新：2026-11-12 Asia/Singapore。
+- 状态：已完成；创建/更新：2026-11-12 Asia/Singapore。
 - 用户原始需求：主控 Cloudflare 模块为 v4、v6 申请不同域名。最新指令：可以（授权实现、验证和发布）。
 - 启用方式：明确跨 DNS 同步、持久化、路由候选页面和发布的长任务条件。
 
@@ -13,7 +13,7 @@ IPv4 保留现有名称，IPv6 独立命名；涵盖业务、公网 DDNS、局�
 | REQ-001 | A 保留原域名，AAAA 使用 api6.codex./ddns6_go_/local6_go_；多地址和仅 IPv6 节点正确 | UNIT-001 / IF-001 | TASK-001 / TEST-001 | 已完成 |
 | REQ-002 | 手动与自动更新迁移旧 AAAA，失败保留可用记录和存储，重试可恢复；识别新前缀 | UNIT-001 / IF-001 | TASK-001 / TEST-002 | 已完成 |
 | REQ-003 | Cloudflare 页面说明命名，路由候选区分 IPv4/IPv6，保存下发域名不改写；无客户端协议变更 | UNIT-002 / IF-002 | TASK-002 / TEST-003 | 已完成 |
-| REQ-004 | 主控回归与浏览器验证通过，按现行十资产工作流发布 | UNIT-001/002 | TASK-003 / TEST-004 | 进行中 |
+| REQ-004 | 主控回归与浏览器验证通过，按现行十资产工作流发布 | UNIT-001/002 | TASK-003 / TEST-004 | 已完成 |
 
 ## 二、总体架构
 
@@ -37,9 +37,9 @@ IPv4 保留现有名称，IPv6 独立命名；涵盖业务、公网 DDNS、局�
 |---|---|---|
 | TASK-001 | 域名生成、迁移/同步及回归 | 已完成 |
 | TASK-002 | 页面候选、说明和实际浏览器验证 | 已完成 |
-| TASK-003 | 主控完整 tests/vet，发布与十资产核验 | 进行中 |
+| TASK-003 | 主控完整 tests/vet，发布与十资产核验 | 已完成 |
 
-当前交接：基线 a1a2ce39d；无关 `doc/tasks/2026-10-28-upgrade-source-resume.md` 保持原样。准备门禁通过；实现与本地验证完成，下一步唯一动作：提交六个任务文件并核验发布。
+当前交接：基线 a1a2ce39d；无关 `doc/tasks/2026-10-28-upgrade-source-resume.md` 保持原样。六文件功能提交 `9f824dec5d90deb907bf9d60b10af27931ffeab1` 已推送 `origin/mapledev`，匹配 [Actions 43227590417](https://github.com/fengzhanhuaer/CloudHelper/actions/runs/43227590417) 九项任务全部成功。工作流版本提交/标签 `859ee2ba8`（父提交为本功能提交）生成 [v0.4.118](https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.118)，非草稿/非预发布，十资产精确匹配且大小非零。实现、验证、发布已完成；未升级生产或修改真实 DNS。下一步唯一动作：无。
 
 ## 五、测试与验证
 
@@ -49,7 +49,7 @@ IPv4 保留现有名称，IPv6 独立命名；涵盖业务、公网 DDNS、局�
 - TEST-004：`go -C probe_controller test ./... -count=1`、`vet ./...`、现行 workflow/Actions/十资产。未改 Probe/插件，不增加五组长互通测试。
 - TEST-001/002 已完成：`go -C probe_controller test ./internal/core -run 'TestCloudflare(AddressFamily|Copilot|Is)' -count=1` 通过（2.514s）；新增生成测试及六种手动/自动×成功/创建失败/删除失败场景，验证 API 创建先于删除、同 IP 新名称写入、失败保留旧 DNS/持久化状态、重试与幂等。假 API 拦截全部出站请求，无真实云写入。
 - TEST-003 已完成：Browser plugin not available，使用已安装 Playwright/Chrome；`%TEMP%/cloudhelper-cf-family-qa.cjs` 在 `http://127.0.0.1:57990` 模拟接口上运行真实 HTML，1440/390px；DDNS 申请载荷、说明/表格、路由节点过滤、IPv4/IPv6 选项、IPv6 保存/PATCH 原值与重载、IPv4 切回保存均通过，控制台错误为空。证据 `%TEMP%/ch-cf-family-20261112/`。手机 DDNS 表格使用局部横向滚动，地址族标签前置，避免长域名截断后无法辨别类型。主控管理 API 原保存/GET/落盘测试同时验证 api6 域名不改写。
-- TEST-004 本地通过：主控完整 tests（core 8.126s、tests 3.711s）/vet 通过；现行预检通过，workflow SHA256 `0cfd7f3cd28ef86665c8a47a73bd1554d42cc7c3cdd5ac25fd52a2e341457143`，十项产物不变，无 Docker/BE86U/ARM64 router 资产，预检旧 routerArtifacts 硬编码不作为事实。最终页面微调重跑浏览器通过；Actions 待执行。
+- TEST-004 已完成：主控完整 tests（core 8.126s、tests 3.711s）/vet 通过；现行预检通过，workflow SHA256 `0cfd7f3cd28ef86665c8a47a73bd1554d42cc7c3cdd5ac25fd52a2e341457143`，十项产物不变，无 Docker/BE86U/ARM64 router 资产，预检旧 routerArtifacts 硬编码不作为事实。最终页面微调重跑浏览器通过；Actions/十资产最终核验见当前交接。
 - 未执行：生产 DNS/升级未授权，不以本地模拟冒充线上生效；只改主控，不重跑 Probe/插件五组长互通测试。客户端 TLS 源码确认已有 SPKI 身份验证分支，不修改证书名或降低验证。
 
 ## 六、决策、冲突与缺陷
@@ -63,4 +63,4 @@ IPv4 保留现有名称，IPv6 独立命名；涵盖业务、公网 DDNS、局�
 回滚代码后重新执行 DDNS 申请即可重建旧 AAAA；新域名可能仍在 DNS 中，按实际迁移状态手动核对，不能盲删。迁移会让旧域名仅保留 A，原 IPv6 用户需选新域名；同步失败要保留旧记录，DNS TTL 60 秒仍会有客户端缓存。
 
 - 准备门禁：通过（范围、接口、追踪、回滚与验证已记录）。
-- 完成门禁：不通过（实现、验证和发布待完成）。
+- 完成门禁：通过（REQ-001 至 REQ-004 实现/测试/证据闭合，生产应用独立授权，未冒充线上生效）。
