@@ -12,10 +12,19 @@ static json_object *result(vr_engine *e,unsigned timeout)
     while(!(text=vr_monitor_take(e))&&vr_millis()<until)poll(NULL,0,10);
     assert(text);json_object *o=vr_json_parse(text,strlen(text));free(text);assert(o);return o;
 }
-int main(void)
+int main(int argc,char **argv)
 {
     vr_engine *e=calloc(1,sizeof(*e));assert(e);vr_service service={0};e->service=&service;
     pthread_mutex_init(&e->mutex,NULL);strcpy(e->config.node_id,"7");strcpy(e->addresses.wan_if,"lo");assert(!vr_monitor_start(e));
+    /* Go omits the tasks field when no tasks exist. Stock json-c does not
+       accept NULL in json_object_array_length, unlike modern host libraries. */
+    submit(e,"{\"type\":\"network_monitor_tasks\"}");
+    submit(e,"{\"type\":\"network_monitor_tasks\",\"tasks\":null}");
+    submit(e,"{\"type\":\"network_monitor_tasks\",\"tasks\":[]}");
+    if(argc==2&&!strcmp(argv[1],"--empty-tasks")) {
+        vr_monitor_stop(e);pthread_mutex_destroy(&e->mutex);free(e);
+        puts("PASS: omitted/null/empty controller tasks on stock json-c");return 0;
+    }
     submit(e,"{\"type\":\"network_monitor_test\",\"request_id\":\"dual\",\"targets\":[\"127.0.0.1\",\"::1\",\"::1\"],\"count\":3,\"timeout_ms\":300}");
     json_object *o=result(e,3000),*rows=vr_member(o,"results");assert(!strcmp(vr_string(o,"request_id"),"dual")&&!strcmp(vr_string(o,"node_id"),"7"));
     assert(json_object_array_length(rows)==2);

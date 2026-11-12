@@ -173,7 +173,9 @@ void vr_monitor_submit(vr_engine *e,json_object *message)
     vr_monitor *m=e->monitor;if(!m)return;
     if(!strcmp(vr_string(message,"type"),"network_monitor_tasks")) {
         json_object *tasks=vr_member(message,"tasks");if(tasks&&!json_object_is_type(tasks,json_type_array))return;
-        size_t n=json_object_array_length(tasks);if(n>TASKS){vr_service_log(e->service,"ping","Too many network monitor tasks (maximum 32)");return;}
+        /* Empty controller snapshots may omit tasks (Go omitempty). Stock
+           json-c dereferences NULL here; treat omitted/null as an empty list. */
+        size_t n=tasks?json_object_array_length(tasks):0;if(n>TASKS){vr_service_log(e->service,"ping","Too many network monitor tasks (maximum 32)");return;}
         monitor_job *next=calloc(TASKS,sizeof(*next));if(!next)return;size_t count=0;int valid=1;
         for(size_t i=0;i<n;i++) {json_object *task=json_object_array_get_idx(tasks,i);if(!json_object_get_boolean(vr_member(task,"enabled")))continue;
             if(parse_job(task,&next[count],1)){valid=0;break;}

@@ -73,6 +73,8 @@ with tempfile.TemporaryDirectory(prefix='chvr-control-') as work:
                     self.send_header('Sec-WebSocket-Accept', accept)
                     self.end_headers()
                     self.send_control({'type': 'ack'})
+                    self.send_control({'type': 'network_monitor_tasks'})
+                    self.send_control({'type': 'network_monitor_tasks', 'tasks': None})
                     self.send_control({'type': 'route_config_sync'})
                     # Legitimate task snapshots can exceed the old 16KiB
                     # message limit; keep receiving ACKs on the same stream.
