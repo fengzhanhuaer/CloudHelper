@@ -11,6 +11,8 @@ int vr_send(vr_engine *e,uint16_t a,uint16_t b,char path[VR_PATH_MAX][129],size_
 {(void)e;(void)a;(void)b;(void)path;(void)n;(void)data;(void)size;return 0;}
 int vr_send_json(vr_engine *e,uint16_t a,uint16_t b,char path[VR_PATH_MAX][129],size_t n,json_object *m)
 {(void)e;(void)a;(void)b;(void)path;(void)n;(void)m;return 0;}
+int vr_link_send_json(vr_link *l,uint16_t a,uint16_t b,char path[VR_PATH_MAX][129],size_t n,json_object *m)
+{(void)l;(void)a;(void)b;(void)path;(void)n;(void)m;return 0;}
 int main(void)
 {
     vr_engine *e=calloc(1,sizeof(*e));vr_service s={0};assert(e);e->service=&s;strcpy(e->config.node_id,"7");
@@ -21,7 +23,7 @@ int main(void)
     strcpy(e->links[0].route,"edge-a");strcpy(e->links[1].route,"edge-b");
     strcpy(e->links[1].ping_id,"return-on-another-edge");e->links[1].ping_time=900;
     char pong_path[VR_PATH_MAX][129]={{"8"},{"7"}};
-    const char *pong="{\"request_id\":\"return-on-another-edge\"}";
+    const char *pong="{\"request_id\":\"return-on-another-edge\",\"ok\":true}";
     vr_frame reply={2,2,NULL,(const uint8_t *)pong,0,strlen(pong)};
     vr_measure_frame(e,&e->links[0],&reply,pong_path,2);
     assert(e->links[1].rtt==100&&!*e->links[1].ping_id);e->link_count=0;

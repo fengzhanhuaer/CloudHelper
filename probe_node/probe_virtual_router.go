@@ -8003,32 +8003,39 @@ func probeVirtualRouterRuntimeForAdjacentNode(nodeID string) (*probeVirtualRoute
 	return findProbeVirtualRouterRuntimeForAdjacentNodeLocked(target)
 }
 
+// Routes to the same adjacent node have equal hop count. Prefer a live
+// carrier, then a measured low RTT; IDs make ties independent of map order.
 func findProbeVirtualRouterRuntimeForAdjacentNodeLocked(target string) (*probeVirtualRouterRuntime, string) {
-	var fallbackRT *probeVirtualRouterRuntime
-	var fallbackDirection string
+	var best *probeVirtualRouterRuntime
+	var direction string
+	var bestLive bool
+	var bestRTT int64
 	for _, rt := range probeVirtualRouterRuntimeState.runtimes {
-		if rt == nil {
+		if rt == nil || normalizeProbeRouteNodeID(rt.cfg.peerNodeID) != target {
 			continue
 		}
-		if normalizeProbeRouteNodeID(rt.cfg.peerNodeID) != target {
-			continue
+		live := probeVirtualRouterRuntimeHasPhysicalBridgeSession(rt)
+		var rtt int64
+		if stats := snapshotProbeVirtualRouterRuntimeStats(rt.cfg.routeID); stats != nil {
+			if stats.LastPingLatencyMS > 0 && stats.LastPingError == "" {
+				rtt = stats.LastPingLatencyMS
+			} else if stats.LastRemoteRTTMS > 0 && stats.LastRemoteRTTError == "" {
+				rtt = stats.LastRemoteRTTMS
+			}
 		}
-		direction := probeRouteBridgeRoleToPrev
-		if rt.cfg.dialer {
-			direction = probeRouteBridgeRoleToNext
+		less := best == nil || live && !bestLive
+		if best != nil && live == bestLive {
+			less = rtt > 0 && (bestRTT <= 0 || rtt < bestRTT) || rtt == bestRTT && rt.cfg.routeID < best.cfg.routeID
 		}
-		if probeVirtualRouterRuntimeHasBridgeSession(rt, direction) {
-			return rt, direction
-		}
-		if fallbackRT == nil {
-			fallbackRT = rt
-			fallbackDirection = direction
+		if less {
+			best, bestLive, bestRTT = rt, live, rtt
+			direction = probeRouteBridgeRoleToPrev
+			if rt.cfg.dialer {
+				direction = probeRouteBridgeRoleToNext
+			}
 		}
 	}
-	if fallbackRT != nil {
-		return fallbackRT, fallbackDirection
-	}
-	return nil, ""
+	return best, direction
 }
 
 func selectProbeVirtualRouterBridgeDirection(rt *probeVirtualRouterRuntime, preferred string) string {

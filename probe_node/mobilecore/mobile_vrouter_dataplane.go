@@ -150,6 +150,8 @@ type mobileVRouteCarrier struct {
 	rx              chan mobileVRouteFrame
 	done            chan struct{}
 	multiCarrier    bool
+	rttMS           atomic.Int64
+	rttAt           atomic.Int64
 }
 
 type mobileVRouteCarrierWorker struct {
@@ -160,6 +162,7 @@ type mobileVRouteCarrierWorker struct {
 }
 
 type mobileVRouteCarrierFlowBinding struct {
+	Path       []string
 	CarrierKey string
 	LastSeen   time.Time
 }
@@ -335,6 +338,7 @@ func mobileVRouteHandleVPNPacket(configDir string, packet []byte, writeBack func
 		}
 		return writeBack(restored)
 	}
+	plan = pinMobileVRouteFlowPlan(plan, forwardPacket)
 	frame, err := buildMobileVRouteIPFrame(forwardPacket, plan.Path)
 	if err != nil {
 		return true, err
@@ -539,9 +543,9 @@ func selectMobileVRouteCarrier(plan mobileVRouteForwardPlan, frame mobileVRouteF
 		selected := active[0]
 		if frame.MainType == mobileVRouteFrameMainTypeIP {
 			hash := mobileVRoutePacketFlowHash(frame.Data, 2166136261)
-			bindingKey := baseKey + "|" + strconv.FormatUint(uint64(hash), 10)
+			bindingKey := mobileVRouteBindingKey(plan, hash)
 			if binding, ok := mobileVRouteCarrierState.flowBindings[bindingKey]; ok {
-				if carrier := mobileVRouteCarrierState.items[binding.CarrierKey]; carrier != nil {
+				if carrier := mobileVRouteCarrierState.items[binding.CarrierKey]; carrier != nil && carrier.plan.NextNode == plan.NextNode && now.Sub(binding.LastSeen) <= mobileVRouteCarrierFlowBindingTTL {
 					binding.LastSeen = now
 					mobileVRouteCarrierState.flowBindings[bindingKey] = binding
 					selected = carrier
@@ -551,7 +555,7 @@ func selectMobileVRouteCarrier(plan mobileVRouteForwardPlan, frame mobileVRouteF
 				delete(mobileVRouteCarrierState.flowBindings, bindingKey)
 			}
 			selected = active[int(hash%uint32(len(active)))]
-			mobileVRouteCarrierState.flowBindings[bindingKey] = mobileVRouteCarrierFlowBinding{CarrierKey: selected.key, LastSeen: now}
+			mobileVRouteCarrierState.flowBindings[bindingKey] = mobileVRouteCarrierFlowBinding{CarrierKey: selected.key, Path: append([]string(nil), plan.Path...), LastSeen: now}
 			pruneMobileVRouteCarrierFlowBindingsLocked(now)
 		}
 		mobileVRouteCarrierState.mu.Unlock()
@@ -1115,11 +1119,22 @@ func (w *mobileVRouteCarrierWorker) waitCarrier(carrier *mobileVRouteCarrier) bo
 	if carrier == nil || carrier.done == nil {
 		return w.wait(mobileVRouteCarrierRetryMin)
 	}
-	select {
-	case <-w.stopCh:
-		return false
-	case <-carrier.done:
-		return true
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	if w.plan.CarrierSlot == 0 {
+		_, _ = measureMobileVRoutePath(carrier, []string{w.plan.LocalNode, w.plan.NextNode}, w.stopCh)
+	}
+	for {
+		select {
+		case <-w.stopCh:
+			return false
+		case <-carrier.done:
+			return true
+		case <-ticker.C:
+			if w.plan.CarrierSlot == 0 {
+				_, _ = measureMobileVRoutePath(carrier, []string{w.plan.LocalNode, w.plan.NextNode}, w.stopCh)
+			}
+		}
 	}
 }
 
@@ -1255,6 +1270,7 @@ func (c *mobileVRouteCarrier) markError(err error) {
 }
 
 func closeMobileVRouteCarriers() {
+	resetMobileVRoutePathSamples()
 	mobileVRouteCarrierState.mu.Lock()
 	items := make([]*mobileVRouteCarrier, 0, len(mobileVRouteCarrierState.items))
 	for _, item := range mobileVRouteCarrierState.items {
@@ -1967,66 +1983,44 @@ func writeMobileVRouteAll(writer io.Writer, payload []byte) error {
 }
 
 func mobileVRouteShortestPath(config mobileVRouteConfig, from string, to string) ([]string, error) {
-	from = normalizeMobileRouteNodeID(from)
-	to = normalizeMobileRouteNodeID(to)
-	if from == "" || to == "" {
-		return nil, errors.New("vroute path endpoint is missing")
+	paths := mobileVRouteShortestCandidates(config, from, to)
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("vroute path unavailable: %s>%s", from, to)
 	}
-	if from == to {
-		return []string{from}, nil
-	}
-	neighbors := map[string][]string{}
-	for _, rule := range config.TopologyRules {
-		left := normalizeMobileRouteNodeID(rule.FromNodeID)
-		right := normalizeMobileRouteNodeID(rule.ToNodeID)
-		if left == "" || right == "" {
-			continue
-		}
-		neighbors[left] = append(neighbors[left], right)
-		neighbors[right] = append(neighbors[right], left)
-	}
-	queue := []string{from}
-	prev := map[string]string{from: ""}
-	hops := map[string]int{from: 0}
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-		if hops[current] >= mobileVRouteMaxHops {
-			continue
-		}
-		for _, next := range neighbors[current] {
-			if _, seen := prev[next]; seen {
-				continue
-			}
-			prev[next] = current
-			hops[next] = hops[current] + 1
-			if next == to {
-				path := []string{to}
-				for at := current; at != ""; at = prev[at] {
-					path = append([]string{at}, path...)
-				}
-				return path, nil
-			}
-			queue = append(queue, next)
+	best := paths[0]
+	for _, path := range paths[1:] {
+		if mobileVRoutePathLess(config, path, best) {
+			best = path
 		}
 	}
-	return nil, fmt.Errorf("vroute path unavailable: %s>%s", from, to)
+	scheduleMobileVRoutePathSamples(config, paths)
+	return append([]string(nil), best...), nil
 }
 
 func mobileVRouteFindTopologyRule(config mobileVRouteConfig, local string, peer string) (mobileVRouteTopology, bool, bool) {
-	local = normalizeMobileRouteNodeID(local)
-	peer = normalizeMobileRouteNodeID(peer)
+	local, peer = normalizeMobileRouteNodeID(local), normalizeMobileRouteNodeID(peer)
+	var best mobileVRouteTopology
+	var reverse, found, bestLive bool
+	var bestRTT int64
 	for _, rule := range config.TopologyRules {
-		from := normalizeMobileRouteNodeID(rule.FromNodeID)
-		to := normalizeMobileRouteNodeID(rule.ToNodeID)
-		if from == local && to == peer {
-			return rule, false, true
+		if !rule.Enabled {
+			continue
 		}
-		if from == peer && to == local {
-			return rule, true, true
+		from, to := normalizeMobileRouteNodeID(rule.FromNodeID), normalizeMobileRouteNodeID(rule.ToNodeID)
+		rev := from == peer && to == local
+		if !rev && !(from == local && to == peer) {
+			continue
+		}
+		live, rtt := mobileVRouteRuleRTT(rule)
+		less := !found || live && !bestLive
+		if found && live == bestLive {
+			less = rtt > 0 && (bestRTT <= 0 || rtt < bestRTT) || rtt == bestRTT && rule.ID < best.ID
+		}
+		if less {
+			best, reverse, found, bestLive, bestRTT = rule, rev, true, live, rtt
 		}
 	}
-	return mobileVRouteTopology{}, false, false
+	return best, reverse, found
 }
 
 func mobileVRoutePeerEndpoint(config mobileVRouteConfig, rule mobileVRouteTopology, reverse bool) (string, int) {

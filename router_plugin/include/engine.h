@@ -4,6 +4,7 @@
 #include "transport.h"
 #include "platform.h"
 #include "packet.h"
+#include "network_monitor.h"
 #include <netinet/in.h>
 #include <poll.h>
 
@@ -43,7 +44,11 @@ typedef struct {
     short write_events;
 } vr_link;
 typedef struct {vr_engine *engine;pthread_t thread;int started,done,fd,index;vr_link *result;} vr_handshake;
-typedef struct {uint32_t hash;int link;uint64_t session,used;} vr_flow_binding;
+typedef struct {uint32_t hash;int link;uint64_t session,used;unsigned revision;uint8_t nodes[VR_PATH_HOPS+1],count;} vr_flow_binding;
+
+#define VR_PATH_RTT_MAX 64
+/* Node indexes are valid only within policy_revision; no strings or JFFS writes. */
+typedef struct {uint8_t nodes[VR_PATH_HOPS+1],count;char id[49];uint64_t rtt,updated,sent,used;} vr_path_rtt;
 typedef struct {char domain[254],ip[16],rule[129],exit[129];time_t expires;uint64_t used;uint32_t resolved;int local_exit;} vr_mapping;
 #define VR_MAPPING_TTL (48*60*60)
 /* Atomic replacement can temporarily retain both the old and new file. */
@@ -64,6 +69,7 @@ struct vr_engine {
     SSL_CTX *tls;
     vr_link links[VR_CARRIER_MAX];size_t link_count;
     vr_flow_binding bindings[VR_NAT_MAX];uint64_t carrier_session;
+    vr_path_rtt path_rtt[VR_PATH_RTT_MAX];unsigned paths_revision;uint64_t path_probe_at;
     vr_handshake handshakes[2];
     pthread_t control_thread;int control_started,control_stop,controller_connected,refresh;
     char controller_endpoint[280];int controller_direct;
@@ -72,6 +78,7 @@ struct vr_engine {
     char stats_started_at[40],public_ipv4[16],public_ipv6[46];
     unsigned buffers_reset,telemetry_epoch;
     pthread_t public_ip_thread;int public_ip_started;
+    vr_monitor *monitor;
     int tun,lan,wan,dns_udp,dns_tcp,platform_started,carrier6;
     char carrier6_iface[16];
     pthread_mutex_t mutex;pthread_cond_t jobs_changed;
@@ -99,8 +106,10 @@ static inline vr_addresses vr_engine_addresses(vr_engine *e)
 /* Main thread only; preserve all established streams on success and failure. */
 int vr_addresses_apply(vr_engine *e,const vr_addresses *next);
 int vr_path(vr_engine *e,const char *target,char path[VR_PATH_MAX][129],size_t *n);
+int vr_packet_path(vr_engine *e,const char *target,const uint8_t *packet,size_t length,char path[VR_PATH_MAX][129],size_t *n);
 int vr_send(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],size_t n,const void *data,size_t len);
 int vr_send_json(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],size_t n,json_object *message);
+int vr_link_send_json(vr_link *link,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],size_t n,json_object *message);
 void vr_link_close(vr_link *l,const char *error);
 int vr_link_queue(vr_link *l,int opcode,const void *bytes,size_t n);
 void vr_link_dial(vr_link *l);

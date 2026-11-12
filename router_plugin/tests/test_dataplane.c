@@ -27,6 +27,9 @@ json_object *__wrap_vr_controller_call(const vr_config *c,const char *iface,cons
 }
 int vr_path(vr_engine *e,const char *target,char path[VR_PATH_MAX][129],size_t *n)
 {memset(path,0,VR_PATH_MAX*129);strcpy(path[0],e->config.node_id);strcpy(path[1],target);*n=2;return 0;}
+int vr_packet_path(vr_engine *e,const char *target,const uint8_t *packet,size_t length,char path[VR_PATH_MAX][129],size_t *n)
+{(void)packet;(void)length;return vr_path(e,target,path,n);}
+
 int vr_send(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],size_t n,const void *b,size_t len)
 {(void)e;(void)path;assert(main==1&&sub==1&&n==2&&len<=sizeof(carried));memcpy(carried,b,len);carried_len=len;return 0;}
 

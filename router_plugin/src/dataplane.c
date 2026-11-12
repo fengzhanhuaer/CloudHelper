@@ -85,7 +85,7 @@ static vr_nat *nat_reverse(vr_engine *e,const vr_packet *p)
 }
 
 static int relay(vr_engine *e,const char *target,uint8_t *b,size_t n)
-{char path[VR_PATH_MAX][129];size_t count;return vr_path(e,target,path,&count)?-1:vr_send(e,1,1,path,count,b,n);}
+{char path[VR_PATH_MAX][129];size_t count;return vr_packet_path(e,target,b,n,path,&count)?-1:vr_send(e,1,1,path,count,b,n);}
 
 static int public4(const char *ip)
 {

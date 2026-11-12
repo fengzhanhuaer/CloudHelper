@@ -9,7 +9,7 @@ CFLAGS += -std=c99 -Wall -Wextra -Werror -Wformat=2 -fstack-protector-strong -ff
 LDLIBS += -lcurl -lssl -lcrypto -ljson-c -lpthread
 LDFLAGS += $(DEP_LDFLAGS) -Wl,--gc-sections -Wl,-z,relro,-z,now
 CORE = src/log.c src/ip_blacklist.c src/camouflage.c src/cache.c src/gateway.c src/report.c src/telemetry.c src/common.c src/config.c src/wire.c src/dns.c src/dns_upstream.c src/transport_dns.c src/policy.c src/auth.c src/controller.c src/controller_link.c src/websocket.c src/tls.c src/packet.c src/tls_sniff.c
-RUNTIME = src/main.c src/upgrade.c src/engine.c src/address_update.c src/policy_update.c src/carrier.c src/dataplane.c src/mapping.c src/platform.c src/dns_service.c src/measure.c src/control.c src/tcp_proxy.c
+RUNTIME = src/main.c src/upgrade.c src/engine.c src/address_update.c src/policy_update.c src/carrier.c src/dataplane.c src/mapping.c src/platform.c src/dns_service.c src/measure.c src/control.c src/network_monitor.c src/tcp_proxy.c
 .PHONY: all test clean FORCE
 FORCE:
 $(BUILD)/build-version.h: FORCE | $(BUILD)
@@ -59,8 +59,8 @@ $(BUILD)/test-platform: $(CORE) src/dataplane.c src/mapping.c src/platform.c src
 $(BUILD)/cloudhelper-router-plugin $(BUILD)/test-platform $(BUILD)/test-platform-command $(BUILD)/test-addresses $(BUILD)/test-control $(BUILD)/test-carrier $(BUILD)/test-policy-update $(BUILD)/test-routes $(BUILD)/test-upgrade $(BUILD)/test-controller-link: src/platform_address.h
 $(BUILD)/test-dns: $(CORE) src/dns_service.c tests/test_dns_service.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_dns_service.c $(LDFLAGS) $(LDLIBS) -o $@
-$(BUILD)/test-control: $(CORE) src/control.c src/upgrade.c src/policy_update.c src/carrier.c src/mapping.c src/platform.c tests/test_control.c $(wildcard include/*.h) | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/control.c src/upgrade.c src/policy_update.c src/carrier.c src/mapping.c src/platform.c tests/test_control.c $(LDFLAGS) -Wl,--wrap=vr_resolve_config4_all -Wl,--wrap=vr_resolve_transport -Wl,--wrap=curl_easy_perform $(LDLIBS) -o $@
+$(BUILD)/test-control: $(CORE) src/control.c src/network_monitor.c src/upgrade.c src/policy_update.c src/carrier.c src/mapping.c src/platform.c tests/test_control.c $(wildcard include/*.h) | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/control.c src/network_monitor.c src/upgrade.c src/policy_update.c src/carrier.c src/mapping.c src/platform.c tests/test_control.c $(LDFLAGS) -Wl,--wrap=vr_resolve_config4_all -Wl,--wrap=vr_resolve_transport -Wl,--wrap=curl_easy_perform $(LDLIBS) -o $@
 $(BUILD)/test-certificate: $(CORE) tests/test_certificate.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_certificate.c $(LDFLAGS) -Wl,--wrap=vr_resolve_config4_all $(LDLIBS) -o $@
 $(BUILD)/test-carrier: $(CORE) src/carrier.c src/measure.c src/platform.c src/policy_update.c src/mapping.c src/tcp_proxy.c tests/test_carrier.c $(wildcard include/*.h) | $(BUILD)
@@ -97,3 +97,8 @@ $(BUILD)/dns-query-fixture: $(CORE) tests/dns_query_fixture.c $(wildcard include
 
 $(BUILD)/test-dns-system: $(CORE) tests/test_dns_system.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_dns_system.c $(LDFLAGS) -Wl,--wrap=vr_dns_exchange $(LDLIBS) -o $@
+
+$(BUILD)/test-network-monitor: $(CORE) src/network_monitor.c tests/test_network_monitor.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/network_monitor.c tests/test_network_monitor.c $(LDFLAGS) $(LDLIBS) -o $@
+$(BUILD)/test-path-selection: $(CORE) src/carrier.c src/measure.c tests/test_path_selection.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/carrier.c src/measure.c tests/test_path_selection.c $(LDFLAGS) $(LDLIBS) -o $@

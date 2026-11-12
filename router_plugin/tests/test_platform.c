@@ -45,6 +45,9 @@ int __wrap_posix_spawnp(pid_t *pid,const char *file,const posix_spawn_file_actio
 }
 int vr_path(vr_engine *e,const char *node,char path[VR_PATH_MAX][129],size_t *n)
 {if(carrier<0)return -1;memset(path,0,VR_PATH_MAX*129);strcpy(path[0],e->config.node_id);strcpy(path[1],node);*n=2;return 0;}
+int vr_packet_path(vr_engine *e,const char *target,const uint8_t *packet,size_t length,char path[VR_PATH_MAX][129],size_t *n)
+{(void)packet;(void)length;return vr_path(e,target,path,n);}
+
 int vr_send(vr_engine *e,uint16_t m,uint16_t s,char path[VR_PATH_MAX][129],size_t n,const void *b,size_t len)
 {(void)e;(void)m;(void)s;(void)path;(void)n;return carrier<0?-1:(sendto(carrier,b,len,0,(struct sockaddr *)&peer,peer_len)==(ssize_t)len?0:-1);}
 int vr_send_json(vr_engine *e,uint16_t m,uint16_t s,char path[VR_PATH_MAX][129],size_t n,json_object *o)

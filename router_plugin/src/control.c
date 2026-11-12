@@ -19,7 +19,7 @@ typedef struct {
     vr_ws_decoder ws;
     uint8_t header[12];size_t header_used,payload_left;
     uint32_t send_window;size_t message_used;
-    char endpoint[280];char message[16384];uint64_t ack_at,started;int direct;
+    char endpoint[280];char *message;size_t message_cap;uint64_t ack_at,started;int direct;
     char *pending;size_t pending_len,pending_at;unsigned reset_epoch;int waiting_reset;
 } control;
 
@@ -122,6 +122,7 @@ static int message(control *c)
     if(!strcmp(type,"ack")){c->ack_at=vr_millis();pthread_mutex_lock(&c->engine->mutex);c->engine->controller_connected=1;vr_copy(c->engine->controller_endpoint,sizeof(c->engine->controller_endpoint),c->endpoint);c->engine->controller_direct=c->direct;pthread_mutex_unlock(&c->engine->mutex);}
     else if(!strcmp(type,"route_config_sync"))c->refresh=1;
     else if(!strcmp(type,"report_once"))c->report=1;
+    else if(!strcmp(type,"network_monitor_tasks")||!strcmp(type,"network_monitor_test"))vr_monitor_submit(c->engine,m);
     else if(!strcmp(type,"virtual_router_buffers_reset")) {
         pthread_mutex_lock(&c->engine->mutex);c->reset_epoch=c->engine->telemetry_epoch+1;c->engine->buffers_reset=1;pthread_mutex_unlock(&c->engine->mutex);c->waiting_reset=1;
     }
@@ -164,7 +165,11 @@ static int received(int opcode,const uint8_t *data,size_t n,void *arg)
         for(size_t i=0;i<take;i++) {
             uint8_t b=data[offset+i];
             if(b=='\n'){if(c->message_used&&message(c))return -1;continue;}
-            if(!b || c->message_used>=sizeof(c->message))return -1;
+            if(!b || c->message_used>=65536)return -1;
+            if(c->message_used==c->message_cap) {
+                size_t cap=c->message_cap?c->message_cap*2:4096;
+                char *next=realloc(c->message,cap);if(!next)return -1;c->message=next;c->message_cap=cap;
+            }
             c->message[c->message_used++]=(char)b;
         }
         offset+=take;c->payload_left-=take;
@@ -264,6 +269,7 @@ static void *control_worker(void *arg)
                 uint64_t now=vr_millis();
                 if(now-c->ack_at>65000)break;
                 if(c->waiting_reset){pthread_mutex_lock(&e->mutex);int done=e->telemetry_epoch>=c->reset_epoch;pthread_mutex_unlock(&e->mutex);if(done){c->waiting_reset=0;c->report=1;}}
+                if(!c->pending){c->pending=vr_monitor_take(e);if(c->pending){c->pending_len=strlen(c->pending);c->pending_at=0;}}
                 if(!c->pending&&!c->waiting_reset&&(c->report||now-sent>=20000)){if(report(c))break;sent=now;c->report=0;}
                 if(flush_report(c))break;
                 if(c->refresh||now>=next_check){int rc=refresh(c);c->refresh=0;
@@ -283,7 +289,7 @@ static void *control_worker(void *arg)
         if(c->ssl&&!stopped(e))vr_service_log(e->service,"controller","Control stream disconnected or handshake failed; retrying");
           pthread_mutex_lock(&e->mutex);int intentional=e->refresh;pthread_mutex_unlock(&e->mutex);
           if(c->started&&!stopped(e)&&!intentional)vr_controller_link_feedback(&e->config,c->direct,vr_millis()-c->started>=90000,vr_millis()-c->started>=90000?1000:3000);
-          SSL_free(c->ssl);if(c->fd>=0)close(c->fd);free(c->pending);free(c);
+          SSL_free(c->ssl);if(c->fd>=0)close(c->fd);free(c->pending);free(c->message);free(c);
         pthread_mutex_lock(&e->mutex);e->controller_connected=0;e->controller_endpoint[0]=0;e->controller_direct=0;int changed=e->refresh;pthread_mutex_unlock(&e->mutex);if(changed)break;
         for(int i=0;i<50&&!stopped(e);i++)poll(NULL,0,100);
     }
@@ -293,11 +299,13 @@ static void *control_worker(void *arg)
 int vr_control_start(vr_engine *e)
 {
     vr_addresses addresses=vr_engine_addresses(e);
+    if(vr_monitor_start(e)){vr_service_log(e->service,"ping","Cannot start network monitor worker");return -1;}
     pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,256*1024);
     int rc=pthread_create(&e->control_thread,&attr,control_worker,e);
     if(!rc)e->control_started=1;
     if(!rc&&*addresses.wan_if&&!pthread_create(&e->public_ip_thread,&attr,public_ip_worker,e))e->public_ip_started=1;
     pthread_attr_destroy(&attr);
+    if(rc)vr_monitor_stop(e);
     return rc;
 }
 
@@ -306,4 +314,5 @@ void vr_control_stop(vr_engine *e)
     pthread_mutex_lock(&e->mutex);e->control_stop=1;pthread_mutex_unlock(&e->mutex);
     if(e->control_started)pthread_join(e->control_thread,NULL);
     if(e->public_ip_started)pthread_join(e->public_ip_thread,NULL);
+    vr_monitor_stop(e);
 }

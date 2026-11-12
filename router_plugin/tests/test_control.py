@@ -24,7 +24,7 @@ with tempfile.TemporaryDirectory(prefix='chvr-control-') as work:
     bundle = Path('/etc/ssl/certs/ca-certificates.crt')
     original_bundle = bundle.read_bytes()
     bundle.write_bytes(original_bundle + cert.read_bytes())
-    state = {'upgrades': 0, 'reports': 0, 'configs': 0, 'chunks': 0, 'public_reported': False}
+    state = {'upgrades': 0, 'reports': 0, 'configs': 0, 'chunks': 0, 'public_reported': False, 'ping_tasks': 0, 'ping_tests': 0}
     fixture = root/'telemetry.json'
     fixture.write_bytes(subprocess.check_output(['bin/native/test-telemetry', '--json']))
     errors = []
@@ -74,6 +74,16 @@ with tempfile.TemporaryDirectory(prefix='chvr-control-') as work:
                     self.end_headers()
                     self.send_control({'type': 'ack'})
                     self.send_control({'type': 'route_config_sync'})
+                    # Legitimate task snapshots can exceed the old 16KiB
+                    # message limit; keep receiving ACKs on the same stream.
+                    self.send_control({'type': 'network_monitor_tasks', 'tasks': [
+                        {'id': 'disabled-'+str(i), 'enabled': False, 'name': 'x'*1024}
+                        for i in range(32)]})
+                    self.send_control({'type': 'network_monitor_tasks', 'tasks': [
+                        {'id': 'controller-ping', 'enabled': True, 'targets': ['127.0.0.1', '::1'],
+                         'count': 2, 'timeout_ms': 300, 'cycle_sec': 60}]})
+                    self.send_control({'type': 'network_monitor_test', 'request_id': 'manual-ping',
+                                       'targets': ['127.0.0.1', '::1'], 'count': 2, 'timeout_ms': 300})
                     pending = b''
                     while True:
                         h = self.rfile.read(2)
@@ -94,6 +104,14 @@ with tempfile.TemporaryDirectory(prefix='chvr-control-') as work:
                             if b'\n' not in pending: continue
                             line, pending = pending.split(b'\n', 1)
                             report = json.loads(line)
+                            if report['type'] == 'network_monitor_result':
+                                assert report['node_id'] == '7' and report['ok'], report
+                                assert len(report['results']) == 2, report
+                                for result in report['results']:
+                                    assert result['sent'] == result['received'] == 2 and result['loss_percent'] == 0, result
+                                state['ping_tasks' if report.get('task_id') == 'controller-ping' else 'ping_tests'] += 1
+                                self.send_control({'type': 'ack'})
+                                continue
                             assert report['type'] == 'report' and report['node_id'] == '7'
                             assert 'ipv6' in report and report['timestamp'].endswith('Z')
                             state['public_reported'] |= '1.2.3.4' in report['ipv4']
@@ -142,6 +160,7 @@ with tempfile.TemporaryDirectory(prefix='chvr-control-') as work:
         assert state['upgrades'] == 1 and state['reports'] == 8 and state['configs'] >= 1, state
         assert state['chunks'] > state['reports'], state
         assert state['public_reported'], state
+        assert state['ping_tasks'] == state['ping_tests'] == 1, state
         print('PASS: one control stream retained across real configuration sync and repeated reports')
     finally:
         server.shutdown()

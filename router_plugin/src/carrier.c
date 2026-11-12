@@ -252,17 +252,21 @@ static int flow_hash(const vr_frame *f,uint32_t *hash)
     *hash=hash_bytes(2166136261u,(const uint8_t *)id,32);return 1;
 }
 
+static vr_link *best_route(vr_engine *e,const char *peer)
+{
+    vr_link *best=NULL;
+    for(size_t i=0;i<e->link_count;i++) {
+        vr_link *l=&e->links[i];if(!l->ssl||strcmp(peer,l->peer))continue;
+        if(!best || (l->rtt && (!best->rtt || l->rtt<best->rtt)) ||
+           (l->rtt==best->rtt && strcmp(l->route,best->route)<0))best=l;
+    }
+    return best;
+}
+
 vr_link *vr_carrier_select(vr_engine *e,const char *peer,const vr_frame *f)
 {
-    vr_link *active[VR_CARRIER_SLOTS];size_t count=0;const char *route=NULL;
-    for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl&&!strcmp(peer,e->links[i].peer)) {
-        if(!route)route=e->links[i].route;
-        if(!strcmp(route,e->links[i].route)&&count<VR_CARRIER_SLOTS)active[count++]=&e->links[i];
-    }
-    if(!count)return NULL;
-    uint32_t hash;if(!flow_hash(f,&hash))return active[0];
-    vr_flow_binding *oldest=&e->bindings[0];
-    for(size_t i=0;i<VR_NAT_MAX;i++) {
+    uint32_t hash=0;int flow=flow_hash(f,&hash);vr_flow_binding *oldest=&e->bindings[0];
+    if(flow)for(size_t i=0;i<VR_NAT_MAX;i++) {
         vr_flow_binding *b=&e->bindings[i];
         if(b->used&&b->hash==hash&&b->link>=0&&(size_t)b->link<e->link_count) {
             vr_link *l=&e->links[b->link];
@@ -270,6 +274,10 @@ vr_link *vr_carrier_select(vr_engine *e,const char *peer,const vr_frame *f)
         }
         if(b->used<oldest->used)oldest=b;
     }
+    vr_link *best=best_route(e,peer);if(!best)return NULL;
+    vr_link *active[VR_CARRIER_SLOTS];size_t count=0;
+    for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl&&!strcmp(best->route,e->links[i].route)&&count<VR_CARRIER_SLOTS)active[count++]=&e->links[i];
+    if(!flow)return active[0];
     vr_link *chosen=active[hash%count];oldest->hash=hash;oldest->link=(int)(chosen-e->links);
     oldest->session=chosen->session;oldest->used=vr_millis();return chosen;
 }
@@ -285,28 +293,92 @@ static int adjacent(vr_engine *e,const char *a,const char *b)
     return 0;
 }
 
+typedef struct {
+    vr_engine *e;json_object *nodes;size_t count;int goal,start,dist[256];
+    uint8_t current[VR_PATH_HOPS+1],best[VR_PATH_HOPS+1];
+    size_t length,candidates;uint64_t rtt;int missing,found;
+} path_search;
+
+static void path_candidate(path_search *s)
+{
+    vr_engine *e=s->e;uint64_t now=vr_millis();vr_path_rtt *record=NULL,*oldest=NULL;
+    for(size_t i=0;i<VR_PATH_RTT_MAX;i++) {
+        vr_path_rtt *r=&e->path_rtt[i];
+        if(r->count==s->length&&!memcmp(r->nodes,s->current,s->length)){record=r;break;}
+        if(!*r->id&&(!oldest||r->used<oldest->used))oldest=r;
+    }
+    if(!record&&oldest){record=oldest;memset(record,0,sizeof(*record));record->count=(uint8_t)s->length;memcpy(record->nodes,s->current,s->length);}
+    if(record)record->used=now;
+    const char *peer=vr_string(json_object_array_get_idx(s->nodes,s->current[1]),"node_id");
+    vr_link *first=best_route(e,peer);uint64_t rtt=first?first->rtt:0;
+    int missing=(int)s->length-1-(rtt?1:0);
+    if(record&&record->rtt&&now-record->updated<=90000){rtt=record->rtt;missing=0;}
+    int less=!s->found||missing<s->missing||(missing==s->missing&&rtt<s->rtt);
+    if(s->found&&missing==s->missing&&rtt==s->rtt)for(size_t i=0;i<s->length;i++) {
+        int cmp=strcmp(vr_string(json_object_array_get_idx(s->nodes,s->current[i]),"node_id"),vr_string(json_object_array_get_idx(s->nodes,s->best[i]),"node_id"));
+        if(cmp){less=cmp<0;break;}
+    }
+    if(less){memcpy(s->best,s->current,s->length);s->rtt=rtt;s->missing=missing;s->found=1;}
+    s->candidates++;
+}
+
+static void path_walk(path_search *s,int at,size_t depth)
+{
+    if(s->candidates>=VR_PATH_RTT_MAX)return;
+    s->current[depth]=(uint8_t)at;
+    if(at==s->goal){path_candidate(s);return;}
+    if(depth+1>=s->length)return;
+    const char *from=vr_string(json_object_array_get_idx(s->nodes,(size_t)at),"node_id");
+    for(size_t i=0;i<s->count;i++) {
+        if((int)i==s->start || s->dist[i]!=(int)(s->length-depth-2))continue;
+        const char *to=vr_string(json_object_array_get_idx(s->nodes,i),"node_id");
+        if((depth==0&&!connected(s->e,to))||!adjacent(s->e,from,to))continue;
+        path_walk(s,(int)i,depth+1);
+    }
+}
+
 int vr_path(vr_engine *e,const char *target,char path[VR_PATH_MAX][129],size_t *n)
 {
-    memset(path,0,VR_PATH_MAX*129);
-    json_object *nodes=vr_member(e->policy,"probe_ips");size_t count=json_object_array_length(nodes);
-    int parent[256],queue[256],start=-1,goal=-1;size_t head=0,tail=0;
-    for(size_t i=0;i<count;i++) {parent[i]=-2;const char *id=vr_string(json_object_array_get_idx(nodes,i),"node_id");if(!strcmp(id,e->config.node_id))start=(int)i;if(!strcmp(id,target))goal=(int)i;}
-    if(start<0||goal<0||start==goal)return -1;
-    queue[tail++]=start;parent[start]=-1;
-    while(head<tail && parent[goal]==-2) {
-        int at=queue[head++];const char *from=vr_string(json_object_array_get_idx(nodes,(size_t)at),"node_id");
-        for(size_t i=0;i<count;i++) {
-            const char *to=vr_string(json_object_array_get_idx(nodes,i),"node_id");
-            if(parent[i]!=-2 || (at==start&&!connected(e,to)) || !adjacent(e,from,to))continue;
-            parent[i]=at;queue[tail++]=(int)i;
-        }
+    memset(path,0,VR_PATH_MAX*129);*n=0;
+    if(e->paths_revision!=e->policy_revision){memset(e->path_rtt,0,sizeof(e->path_rtt));e->paths_revision=e->policy_revision;}
+    path_search s={0};s.e=e;s.nodes=vr_member(e->policy,"probe_ips");s.count=json_object_array_length(s.nodes);s.start=s.goal=-1;
+    if(s.count>256)return -1;
+    for(size_t i=0;i<s.count;i++) {
+        s.dist[i]=-1;const char *id=vr_string(json_object_array_get_idx(s.nodes,i),"node_id");
+        if(!strcmp(id,e->config.node_id))s.start=(int)i;
+        if(!strcmp(id,target))s.goal=(int)i;
     }
-    if(parent[goal]==-2)return -1;
-    int reverse[VR_PATH_MAX];size_t used=0;
-    for(int at=goal;at>=0;at=parent[at]) {if(used>=VR_PATH_MAX)return -1;reverse[used++]=at;}
-    for(size_t i=0;i<used;i++)if(vr_copy(path[i],129,vr_string(json_object_array_get_idx(nodes,(size_t)reverse[used-i-1]),"node_id")))return -1;
-    if(used>VR_PATH_HOPS+1)return -1;
-    *n=used;return 0;
+    if(s.start<0||s.goal<0||s.start==s.goal)return -1;
+    int queue[256];size_t head=0,tail=0;queue[tail++]=s.goal;s.dist[s.goal]=0;
+    while(head<tail) {
+        int at=queue[head++];if(at==s.start||s.dist[at]>=VR_PATH_HOPS)continue;
+        const char *from=vr_string(json_object_array_get_idx(s.nodes,(size_t)at),"node_id");
+        for(size_t i=0;i<s.count;i++)if(s.dist[i]<0&&adjacent(e,from,vr_string(json_object_array_get_idx(s.nodes,i),"node_id"))){s.dist[i]=s.dist[at]+1;queue[tail++]=(int)i;}
+    }
+    int hops=VR_PATH_HOPS+1;
+    for(size_t i=0;i<s.count;i++)if((int)i!=s.start&&s.dist[i]>=0&&s.dist[i]+1<hops) {
+        const char *to=vr_string(json_object_array_get_idx(s.nodes,i),"node_id");
+        if(connected(e,to)&&adjacent(e,e->config.node_id,to))hops=s.dist[i]+1;
+    }
+    if(hops>VR_PATH_HOPS)return -1;
+    s.length=(size_t)hops+1;path_walk(&s,s.start,0);if(!s.found)return -1;
+    for(size_t i=0;i<s.length;i++)if(vr_copy(path[i],129,vr_string(json_object_array_get_idx(s.nodes,s.best[i]),"node_id")))return -1;
+    *n=s.length;return 0;
+}
+
+int vr_packet_path(vr_engine *e,const char *target,const uint8_t *packet,size_t length,char path[VR_PATH_MAX][129],size_t *n)
+{
+    uint32_t hash=packet_hash(packet,length);json_object *nodes=vr_member(e->policy,"probe_ips");
+    for(size_t i=0;i<VR_NAT_MAX;i++) {
+        vr_flow_binding *b=&e->bindings[i];
+        if(!b->used||b->hash!=hash||b->revision!=e->policy_revision||b->count<2||b->count>VR_PATH_HOPS+1||b->link<0||(size_t)b->link>=e->link_count)continue;
+        vr_link *l=&e->links[b->link];if(!l->ssl||l->session!=b->session)continue;
+        int valid=1;for(size_t k=0;k<b->count;k++)if(vr_copy(path[k],129,vr_string(json_object_array_get_idx(nodes,b->nodes[k]),"node_id")))valid=0;
+        if(!valid||strcmp(path[0],e->config.node_id)||strcmp(path[b->count-1],target))continue;
+        for(size_t k=1;k<b->count;k++)if(!adjacent(e,path[k-1],path[k]))valid=0;
+        if(valid){*n=b->count;b->used=vr_millis();return 0;}
+    }
+    return vr_path(e,target,path,n);
 }
 
 void vr_link_close(vr_link *l,const char *error)
@@ -322,7 +394,7 @@ void vr_link_close(vr_link *l,const char *error)
     l->retry=vr_millis()+5000;snprintf(l->error,sizeof(l->error),"%s",error);
     if(l->decoder.peak>l->rx_peak)l->rx_peak=l->decoder.peak;
     memset(&l->decoder,0,sizeof(l->decoder));memset(&l->ws,0,sizeof(l->ws));
-    l->ingress_count=0;
+    l->ingress_count=0;l->rtt=0;l->ping_time=0;*l->ping_id=0;
 }
 
 int vr_link_queue(vr_link *l,int opcode,const void *bytes,size_t n)
@@ -351,17 +423,30 @@ int vr_link_queue(vr_link *l,int opcode,const void *bytes,size_t n)
     return 0;
 }
 
+static int link_frame(vr_link *l,const vr_frame *f)
+{
+    if(!l||!l->ssl)return -1;
+    uint8_t *b=malloc(12+f->control_len+f->data_len);size_t len;if(!b)return -1;
+    int rc=vr_frame_encode(f,b,12+f->control_len+f->data_len,&len);
+    if(!rc)rc=vr_link_queue(l,2,b,len);
+    free(b);return rc;
+}
+
+int vr_link_send_json(vr_link *l,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],size_t n,json_object *m)
+{
+    json_object *o=json_object_new_object(),*a=json_object_new_array();
+    for(size_t i=0;i<n;i++)json_object_array_add(a,json_object_new_string(path[i]));
+    json_object_object_add(o,"path",a);
+    const char *control=json_object_to_json_string_ext(o,JSON_C_TO_STRING_PLAIN),*data=json_object_to_json_string_ext(m,JSON_C_TO_STRING_PLAIN);
+    vr_frame f={main,sub,(const uint8_t *)control,(const uint8_t *)data,strlen(control),strlen(data)};
+    int rc=link_frame(l,&f);json_object_put(o);return rc;
+}
+
 static int send_frame(vr_engine *e,const vr_frame *f,char path[VR_PATH_MAX][129],size_t n)
 {
     size_t at;for(at=0;at<n;at++)if(!strcmp(path[at],e->config.node_id))break;
     if(at+1>=n)return -1;
-    vr_link *l=vr_carrier_select(e,path[at+1],f);if(l) {
-        uint8_t *b=malloc(12+f->control_len+f->data_len);size_t len;if(!b)return -1;
-        int rc=vr_frame_encode(f,b,12+f->control_len+f->data_len,&len);
-        if(!rc)rc=vr_link_queue(l,2,b,len);
-        free(b);return rc;
-    }
-    return -1;
+    return link_frame(vr_carrier_select(e,path[at+1],f),f);
 }
 
 int vr_send(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],size_t n,const void *data,size_t length)
@@ -370,7 +455,17 @@ int vr_send(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],
     for(size_t i=0;i<n;i++)json_object_array_add(a,json_object_new_string(path[i]));
     json_object_object_add(o,"path",a);
     const char *control=json_object_to_json_string_ext(o,JSON_C_TO_STRING_PLAIN);
-    vr_frame f={main,sub,(const uint8_t *)control,data,strlen(control),length};int rc=send_frame(e,&f,path,n);json_object_put(o);return rc;
+    vr_frame f={main,sub,(const uint8_t *)control,data,strlen(control),length};int rc=send_frame(e,&f,path,n);
+    if(!rc&&main==1&&n<=VR_PATH_HOPS+1&&!strcmp(path[0],e->config.node_id)) {
+        uint32_t hash=packet_hash(data,length);json_object *nodes=vr_member(e->policy,"probe_ips");
+        for(size_t i=0;i<VR_NAT_MAX;i++)if(e->bindings[i].used&&e->bindings[i].hash==hash&&e->bindings[i].link>=0&&(size_t)e->bindings[i].link<e->link_count&&!strcmp(e->links[e->bindings[i].link].peer,path[1])) {
+            vr_flow_binding *b=&e->bindings[i];b->count=0;b->revision=e->policy_revision;int valid=1;
+            for(size_t k=0;k<n;k++){size_t j;for(j=0;j<(size_t)json_object_array_length(nodes);j++)if(!strcmp(path[k],vr_string(json_object_array_get_idx(nodes,j),"node_id")))break;if(j>=256||j>=(size_t)json_object_array_length(nodes)){valid=0;break;}b->nodes[k]=(uint8_t)j;}
+            if(valid)b->count=(uint8_t)n;
+            break;
+        }
+    }
+    json_object_put(o);return rc;
 }
 
 int vr_send_json(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],size_t n,json_object *m)

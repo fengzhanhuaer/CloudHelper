@@ -65,11 +65,17 @@ void vr_measure_frame(vr_engine *e,vr_link *l,const vr_frame *f,char path[VR_PAT
     json_object *m=vr_json_parse(f->data,f->data_len);const char *id=vr_string(m,"request_id");
     if(!m || !*id || strlen(id)>128){json_object_put(m);return;}
     if(f->main==2 || f->main==3) {
-        if(f->sub==1){json_object_object_add(m,"ok",json_object_new_boolean(1));json_object_object_add(m,"responder",json_object_new_string(e->config.node_id));reverse(path,n);vr_send_json(e,f->main,2,path,n,m);}
+        if(f->sub==1){json_object_object_add(m,"ok",json_object_new_boolean(1));json_object_object_add(m,"responder",json_object_new_string(e->config.node_id));reverse(path,n);if(n==2&&l)vr_link_send_json(l,f->main,2,path,n,m);else vr_send_json(e,f->main,2,path,n,m);}
         else if(f->sub==2) {
-            for(size_t i=0;i<e->link_count;i++) {
+            for(size_t i=0;json_object_get_boolean(vr_member(m,"ok"))&&i<e->link_count;i++) {
                 vr_link *sent=&e->links[i];
-                if(!strcmp(sent->peer,l->peer)&&!strcmp(id,sent->ping_id)){sent->rtt=vr_millis()-sent->ping_time;*sent->ping_id=0;}
+                if(!strcmp(sent->peer,l->peer)&&!strcmp(id,sent->ping_id)){sent->rtt=vr_millis()-sent->ping_time;if(!sent->rtt)sent->rtt=1;*sent->ping_id=0;}
+            }
+            if(e->paths_revision==e->policy_revision)for(size_t i=0;i<VR_PATH_RTT_MAX;i++) {
+                vr_path_rtt *r=&e->path_rtt[i];if(!*r->id||strcmp(id,r->id)||r->count!=n)continue;
+                json_object *nodes=vr_member(e->policy,"probe_ips");int match=1;
+                for(size_t j=0;j<n;j++)if(strcmp(path[n-j-1],vr_string(json_object_array_get_idx(nodes,r->nodes[j]),"node_id")))match=0;
+                if(match){r->rtt=json_object_get_boolean(vr_member(m,"ok"))?vr_millis()-r->sent:0;if(json_object_get_boolean(vr_member(m,"ok"))&&!r->rtt)r->rtt=1;r->updated=vr_millis();*r->id=0;}
             }
             if(!strcmp(id,e->measure_id)) {json_object_object_add(m,"latency_ms",json_object_new_int64((int64_t)(vr_millis()-e->measure_started)));complete(e,m,NULL);}
         }
@@ -109,7 +115,29 @@ void vr_measure_tick(vr_engine *e)
         char path[VR_PATH_MAX][129]={{0}};strcpy(path[0],e->config.node_id);strcpy(path[1],l->peer);
         json_object *m=json_object_new_object();vr_random_hex(l->ping_id,24);l->ping_time=now;
         json_object_object_add(m,"request_id",json_object_new_string(l->ping_id));json_object_object_add(m,"source_node_id",json_object_new_string(e->config.node_id));
-        json_object_object_add(m,"target_node_id",json_object_new_string(l->peer));message_path(m,path,2);vr_send_json(e,2,1,path,2,m);json_object_put(m);
+        json_object_object_add(m,"target_node_id",json_object_new_string(l->peer));message_path(m,path,2);if(vr_link_send_json(l,2,1,path,2,m))*l->ping_id=0;json_object_put(m);
+    }
+    /* Background path samples share the existing RTT protocol. One request per
+       500ms, 64 compact records, no blocking waits or persistence. */
+    if(e->paths_revision==e->policy_revision&&now>=e->path_probe_at) {
+        vr_path_rtt *next=NULL;
+        for(size_t i=0;i<VR_PATH_RTT_MAX;i++) {
+            vr_path_rtt *r=&e->path_rtt[i];
+            if(*r->id&&now-r->sent>=5000)*r->id=0;
+            if(r->count<3||*r->id||now-r->sent<30000||now-r->used>90000)continue;
+            if(!next||r->sent<next->sent)next=r;
+        }
+        if(next) {
+            char path[VR_PATH_MAX][129]={{0}};json_object *nodes=vr_member(e->policy,"probe_ips");
+            for(size_t i=0;i<next->count;i++)vr_copy(path[i],129,vr_string(json_object_array_get_idx(nodes,next->nodes[i]),"node_id"));
+            next->sent=now;e->path_probe_at=now+500;
+            if(!vr_random_hex(next->id,24)) {
+                json_object *m=json_object_new_object();json_object_object_add(m,"request_id",json_object_new_string(next->id));
+                json_object_object_add(m,"source_node_id",json_object_new_string(path[0]));json_object_object_add(m,"target_node_id",json_object_new_string(path[next->count-1]));message_path(m,path,next->count);
+                if(vr_send_json(e,3,1,path,next->count,m))*next->id=0;
+                json_object_put(m);
+            }
+        }
     }
     vr_service *s=e->service;char node[129]={0},kind[16]={0};
     pthread_mutex_lock(&s->mutex);if(*s->measure_node){strcpy(node,s->measure_node);strcpy(kind,s->measure_kind);*s->measure_node=0;}pthread_mutex_unlock(&s->mutex);
