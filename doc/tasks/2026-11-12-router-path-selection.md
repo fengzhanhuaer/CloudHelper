@@ -1,6 +1,6 @@
 # 任务：三端按跳数和延迟选路，插件支持双栈 Ping 上报
 
-- 状态：进行中
+- 状态：已完成
 - 创建时间：2026-11-12 Asia/Singapore
 - 启用方式：明确长任务条件，跨 Probe、安卓核心、C 插件实现和发布验证。
 - 用户最新指令：跳数优先，同跳数选延迟低的；Probe、安卓使用相同策略；插件执行主控下发 IPv4/IPv6 Ping 并汇报。
@@ -13,7 +13,7 @@
 | REQ-002 | 新流选择低延迟承载，保留多槽位分摊和现有流绑定；不主动重建主控/承载 | 已完成 |
 | REQ-003 | 插件处理 network_monitor_tasks / network_monitor_test，周期执行 IPv4/IPv6 ICMP 并按现有协议上报真实延迟、丢包 | 已完成 |
 | REQ-004 | 有界 RAM、后台探测不阻塞控制流、不写 JFFS；IPv6 探测经 WAN，不扩大 LAN IPv6 范围 | 已完成 |
-| REQ-005 | 针对性测试及必要组件验证通过，沿既有 Actions 发布；不主动升级生产设备 | 待开始 |
+| REQ-005 | 针对性测试及必要组件验证通过，沿既有 Actions 发布；不主动升级生产设备 | 已完成 |
 
 范围：选路与探测，无新增路由器手动 Ping 页面；不改认证、证书、LAN IPv6、防火墙及用户规则。
 基线：mapledev；已有无关改动 doc/tasks/2026-10-28-upgrade-source-resume.md 保留不提交。
@@ -47,9 +47,9 @@ Probe 已有 hop / RTT / lexicographic 比较，但同一相邻节点的多承�
 | TASK-001 | 完成三端路径与承载选路及回归 | 已完成 | REQ-001,002,004 |
 | TASK-002 | 完成双栈 Ping 任务、结果、取消与控制流接入 | 已完成 | REQ-003,004 |
 | TASK-003 | 组件验证、审查差异和资源边界 | 已完成 | 全部 |
-| TASK-004 | 提交发布、监控 Actions、核验资产 | 进行中 | REQ-005 |
+| TASK-004 | 提交发布、监控 Actions、核验资产 | 已完成 | REQ-005 |
 
-当前交接：实现及本地验证完成；下一步唯一动作：仅提交本任务文件并推送 mapledev，跟踪对应 Actions 发布。
+当前交接：实现、本地验证及 v0.4.119 发布完成；下一步唯一动作：无。
 
 ## 五、测试与验证
 
@@ -59,7 +59,7 @@ Probe 已有 hop / RTT / lexicographic 比较，但同一相邻节点的多承�
 | TEST-002 | 插件 C：相同上述路径场景、链路断开回退、测量请求固定承载 | 已完成 |
 | TEST-003 | 插件 IPv4/IPv6 loopback ICMP，失联目标丢包，参数校验、更新/取消、yamux 结果 | 已完成 |
 | TEST-004 | Go 组件测试 / vet，WSL C 编译与相关回归；不恢复用户删除的五组耗时互通 | 已完成 |
-| TEST-005 | Actions 成功、版本提交与标签归属、发布资产非空及精确集合 | 待开始 |
+| TEST-005 | Actions 成功、版本提交与标签归属、发布资产非空及精确集合 | 已完成 |
 
 ## 六、端到端追踪
 
@@ -100,7 +100,7 @@ DEF-001（已修复）：原插件相邻 Ping 经 vr_send 会被第一个 route 
 ## 十二、质量门禁
 
 - 准备门禁：通过。最新范围、接口、单元、验收、基线和回滚已记录。
-- 完成门禁：不通过，待 Actions 发布及资产核验。
+- 完成门禁：通过。REQ-001..005、TEST-001..005 均有实现与验证证据；既有 vet 提示、race 环境限制如实记录，未改变无关文件或部署生产。
 
 
 ## 检查点：实现及初步验证
@@ -120,3 +120,17 @@ DEF-001（已修复）：原插件相邻 Ping 经 vr_send 会被第一个 route 
 - 资源边界：最短路径候选及样本各最多 64；C 原始流增加紧凑路径索引，约 32KiB；任务最多 32、每任务 20 目标、单次任务队列 4、结果队列 8；无 JFFS 写入。
 - 真实生产安装未执行；本地测试不能替代设备在线升级验收。Go vet 两类既有提示与未执行 race 的限制如上记录。
 - 发布预检 ready=true；当前版本 0.4.118，预期下个版本由 Actions 自动生成；十资产集合以 live workflow 为准，临时预检输出中的旧 routerArtifacts 展示字段不作为资产证据。
+
+## 检查点：已推送，等待发布
+
+- 提交 `23a41b170ca258fb4ee75b037b8388d873fa5f31`，22 个任务文件；无关 upgrade-source-resume 账本未暂存、未提交。
+- 推送 `origin/mapledev` 成功；精确 SHA 对应 Actions： https://github.com/fengzhanhuaer/CloudHelper/actions/runs/43252595507 。
+- 流水线正在运行，版本准备、主控、Linux Probe 与 Linux router 已成功；继续等待 Android 与 C 插件及发布，不提前标记完成。
+
+## 检查点：发布完成
+
+- Actions 43252595507 最终 completed/success，9 个作业全部 success，包含 Android、插件 ABI/打包及主控遥测兼容检查。
+- 自动版本提交 `68810d6ef642a68207f7cea03259129e1746a513` 的父提交为本任务 `23a41b170ca258fb4ee75b037b8388d873fa5f31`；标签 v0.4.119 指向该版本提交。
+- Release： https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.119 ，正式发布、非草稿、非预发布；十项资产精确匹配 workflow，全部非空。插件包 136685 字节、manifest 4701 字节，Android APK 18879809 字节。
+- 资产为 controller-linux-amd64、node-linux-amd64/arm64/windows-amd64、router-linux-amd64 及 manifest、Android arm64 APK、AX56U V2 JFFS 包及 manifest、mihomo-LICENSE；未恢复 BE86U、Docker 或 ARM64 router 资产。
+- 未执行生产升级。用户已有 `doc/tasks/2026-10-28-upgrade-source-resume.md` 改动保留。完成后仅提交本账本的发布记录，带 skip ci / skip release，避免产生额外版本。
