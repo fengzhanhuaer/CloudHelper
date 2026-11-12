@@ -548,7 +548,7 @@ func bucketDashboardWeightedNetworkPoints(points []dashboardNetworkWeightedPoint
 		if bucket.resultCount == 0 {
 			continue
 		}
-		latencyAvg, lossAvg := 0.0, 0.0
+		latencyAvg, lossAvg := -1.0, -1.0
 		if bucket.latencyCount > 0 {
 			latencyAvg = bucket.latencySum / float64(bucket.latencyCount)
 		}

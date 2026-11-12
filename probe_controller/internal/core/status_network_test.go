@@ -73,6 +73,41 @@ func TestDashboardProbeNetworkLatestAndPublicContract(t *testing.T) {
 	if b.Available || b.Timestamp != "" || b.LatencyAvgMS != -1 || b.LossPercent != -1 {
 		t.Fatalf("missing measurements must not become zero: %+v", b)
 	}
+	// Chart points must agree with the latest card: a total-loss sample has
+	// no RTT, rather than an artificial drop of the latency line to 0 ms.
+	rr = httptest.NewRecorder()
+	dashboardNetworkHandler(rr, httptest.NewRequest(http.MethodGet, "/dashboard/network?scale=minute", nil))
+	var chart struct {
+		Items []dashboardPublicNetworkProbeItem
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &chart); err != nil {
+		t.Fatal(err)
+	}
+	if len(chart.Items) != 1 || len(chart.Items[0].Series) != 1 {
+		t.Fatalf("unexpected chart: %+v", chart.Items)
+	}
+	points := chart.Items[0].Series[0].Points
+	latest := points[len(points)-1]
+	if latest.LatencyAvgMS != -1 || latest.LossPercent != 100 {
+		t.Fatalf("total-loss chart point fabricated latency: %+v", latest)
+	}
+}
+
+func TestDashboardNetworkWeightedMetricsKeepMissingSeparateFromZero(t *testing.T) {
+	points := []dashboardNetworkWeightedPoint{
+		{Timestamp: "2026-11-12T01:00:00Z", LossSum: 100, LossCount: 1, ResultCount: 1},
+		{Timestamp: "2026-11-12T01:01:00Z", LatencyCount: 1, LossCount: 1, ResultCount: 1},
+		{Timestamp: "2026-11-12T01:02:00Z", LatencySum: 80, LatencyCount: 1, ResultCount: 1},
+	}
+	minute := bucketDashboardWeightedNetworkPoints(points, "minute")
+	if len(minute) != 3 || minute[0].LatencyAvgMS != -1 || minute[0].LossPercent != 100 ||
+		minute[1].LatencyAvgMS != 0 || minute[1].LossPercent != 0 || minute[2].LossPercent != -1 {
+		t.Fatalf("missing metrics became zero: %+v", minute)
+	}
+	hour := bucketDashboardWeightedNetworkPoints(points, "hour")
+	if len(hour) != 1 || hour[0].LatencyAvgMS != 40 || hour[0].LossPercent != 50 {
+		t.Fatalf("missing metrics diluted averages: %+v", hour)
+	}
 }
 
 func TestDashboardProbeNetworkFreshnessAndLegacyStore(t *testing.T) {

@@ -442,7 +442,7 @@
             color: var(--task-color, var(--text-secondary));
         }
         .network-summary-value {
-            white-space: nowrap;
+            white-space: normal;
             text-align: right;
         }
         .chart-wrap {
@@ -472,10 +472,10 @@
             vertical-align: middle;
         }
         .legend-latency::before {
-            border-top: 2px solid #58a6ff;
+            border-top: 2px solid currentColor;
         }
         .legend-loss::before {
-            border-top: 2px dashed #ff5c54;
+            border-top: 2px dashed currentColor;
         }
         .task-legend::before {
             width: 8px !important;
@@ -504,6 +504,7 @@
                 flex-direction: column;
             }
             .network-summary {
+                flex-basis: auto;
                 width: 100%;
                 max-width: none;
                 min-width: 0;
@@ -863,7 +864,7 @@
                     ? summary.map((entry) => {
                         return '<div class="network-summary-row" style="--task-color:' + entry.color + '">'
                             + '<span class="network-summary-name" title="' + escapeHTML(entry.name) + '">' + escapeHTML(entry.name) + '</span>'
-                            + '<span class="network-summary-value">' + entry.latency + 'ms / ' + entry.loss + '%</span>'
+                            + '<span class="network-summary-value">延迟 ' + entry.latency + ' ms / 丢包 ' + entry.loss + '%</span>'
                             + '</div>';
                     }).join('')
                     : '<div class="network-meta">No points</div>';
@@ -871,7 +872,7 @@
                     const color = taskColors[seriesIndex % taskColors.length];
                     return '<span class="task-legend" style="--task-color:' + color + '">' + escapeHTML(entry.task_name || entry.task_id || '未命名任务') + '</span>';
                 }).join('');
-                const legend = '<span class="legend-latency">延迟</span><span class="legend-loss">丢包</span>' + taskLegend;
+                const legend = '<span class="legend-latency">延迟 · 左轴 ms</span><span class="legend-loss">丢包 · 右轴 %</span>' + taskLegend;
                 return '<div class="network-card">'
                     + '<div class="network-head">'
                     + '<div class="network-node-meta">'
@@ -897,7 +898,9 @@
             return series.map((entry) => ({
                 task_id: String((entry && entry.task_id) || ''),
                 task_name: String((entry && entry.task_name) || (entry && entry.task_id) || '未命名任务'),
-                points: Array.isArray(entry && entry.points) ? entry.points : []
+                points: Array.isArray(entry && entry.points)
+                    ? entry.points.filter((point) => point && Number.isFinite(Date.parse(point.timestamp)))
+                        .slice().sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp)) : []
             })).filter((entry) => entry.points.length > 0);
         }
 
@@ -913,10 +916,19 @@
                 return {
                     name: entry.task_name || entry.task_id || '未命名任务',
                     color: taskColors[index % taskColors.length],
-                    latency: Number(latest.point.latency_avg_ms || 0).toFixed(1),
-                    loss: Number(latest.point.loss_percent || 0).toFixed(1)
+                    latency: formatNetworkMetric(latest.point.latency_avg_ms),
+                    loss: formatNetworkMetric(latest.point.loss_percent, 100)
                 };
             }).filter(Boolean);
+        }
+
+        function networkMetricValue(value, maximum = Infinity) {
+            return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= maximum ? value : null;
+        }
+
+        function formatNetworkMetric(value, maximum = Infinity) {
+            const measured = networkMetricValue(value, maximum);
+            return measured == null ? '—' : measured.toFixed(1);
         }
 
         function drawNetworkChart(canvas, series) {
@@ -933,7 +945,7 @@
             ctx.clearRect(0, 0, width, height);
             const padL = 54 * ratio;
             const padR = 48 * ratio;
-            const padT = 18 * ratio;
+            const padT = 30 * ratio;
             const padB = 34 * ratio;
             const plotW = Math.max(1, width - padL - padR);
             const plotH = Math.max(1, height - padT - padB);
@@ -948,8 +960,8 @@
             const allPoints = series.flatMap((entry) => entry.points);
             const minTime = Math.min(...allPoints.map((p) => Date.parse(p.timestamp)).filter(Number.isFinite));
             const maxTime = Math.max(...allPoints.map((p) => Date.parse(p.timestamp)).filter(Number.isFinite));
-            const latencyMax = Math.max(10, ...allPoints.map((p) => Number(p.latency_avg_ms) || 0));
-            const lossMax = Math.max(10, ...allPoints.map((p) => Number(p.loss_percent) || 0));
+            const latencyMax = Math.max(10, ...allPoints.map((p) => networkMetricValue(p.latency_avg_ms) ?? 0));
+            const lossMax = 100;
             drawChartAxes(ctx, ratio, width, height, padL, padR, padT, padB, plotW, plotH, latencyMax, lossMax, minTime, maxTime);
             const xOfTime = (raw) => {
                 const ts = Date.parse(raw);
@@ -963,8 +975,9 @@
                 const color = taskColors[index % taskColors.length];
                 drawLine(ctx, entry.points, xOfTime, latencyY, 'latency_avg_ms', color, ratio, false);
             });
-            series.forEach((entry) => {
-                drawLine(ctx, entry.points, xOfTime, lossY, 'loss_percent', '#ff5c54', ratio, true);
+            series.forEach((entry, index) => {
+                const color = taskColors[index % taskColors.length];
+                drawLine(ctx, entry.points, xOfTime, lossY, 'loss_percent', color, ratio, true);
             });
 
         }
@@ -977,6 +990,11 @@
             ctx.font = (10 * ratio) + 'px Courier New';
             ctx.textBaseline = 'middle';
 
+            ctx.textAlign = 'left';
+            ctx.fillText('延迟 ms', padL, padT - 16 * ratio);
+            ctx.textAlign = 'right';
+            ctx.fillText('丢包 %', width - padR, padT - 16 * ratio);
+
             for (let i = 0; i <= 4; i += 1) {
                 const y = padT + (plotH * i / 4);
                 const valueRatio = 1 - i / 4;
@@ -985,10 +1003,10 @@
                 ctx.lineTo(width - padR, y);
                 ctx.stroke();
                 ctx.textAlign = 'right';
-                ctx.fillStyle = 'rgba(88,166,255,0.72)';
+                ctx.fillStyle = 'rgba(201,209,217,0.78)';
                 ctx.fillText(Math.round(latencyMax * valueRatio) + 'ms', padL - 8 * ratio, y);
                 ctx.textAlign = 'left';
-                ctx.fillStyle = 'rgba(248,81,73,0.72)';
+                ctx.fillStyle = 'rgba(201,209,217,0.78)';
                 ctx.fillText(Math.round(lossMax * valueRatio) + '%', width - padR + 8 * ratio, y);
             }
 
@@ -1003,7 +1021,7 @@
             ctx.textBaseline = 'top';
             ctx.fillStyle = 'rgba(201,209,217,0.62)';
             const tickCount = (Number.isFinite(minTime) && Number.isFinite(maxTime) && maxTime > minTime)
-                ? Math.min(9, Math.max(4, Math.floor((plotW / ratio) / 110) + 1))
+                ? Math.min(9, Math.max(2, Math.floor((plotW / ratio) / 110) + 1))
                 : 1;
             for (let index = 0; index < tickCount; index += 1) {
                 const position = tickCount === 1 ? 1 : index / (tickCount - 1);
@@ -1027,17 +1045,39 @@
             ctx.setLineDash(dashed ? [9 * ratio, 5 * ratio] : []);
             ctx.beginPath();
             let started = false;
-            points.forEach((point, index) => {
+            let segmentLength = 0;
+            let segmentStart = null;
+            const isolated = [];
+            const endSegment = () => {
+                if (segmentLength === 1) isolated.push(segmentStart);
+                started = false;
+                segmentLength = 0;
+            };
+            points.forEach((point) => {
+                const value = networkMetricValue(point[field], field === 'loss_percent' ? 100 : Infinity);
+                if (value == null || !Number.isFinite(Date.parse(point.timestamp))) {
+                    endSegment();
+                    return;
+                }
                 const x = xOf(point.timestamp);
-                const y = yOf(point[field]);
+                const y = yOf(value);
                 if (!started) {
                     ctx.moveTo(x, y);
                     started = true;
+                    segmentStart = { x, y };
                 }
                 else ctx.lineTo(x, y);
+                segmentLength++;
             });
+            endSegment();
             ctx.stroke();
             ctx.setLineDash([]);
+            ctx.fillStyle = color;
+            isolated.forEach(({ x, y }) => {
+                ctx.beginPath();
+                ctx.arc(x, y, 2.5 * ratio, 0, Math.PI * 2);
+                ctx.fill();
+            });
         }
 
         function formatTimeLabel(raw, scale) {
