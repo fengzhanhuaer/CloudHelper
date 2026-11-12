@@ -57,7 +57,9 @@ type probeNetworkMonitorResultPayload struct {
 	Timestamp  string                            `json:"timestamp"`
 }
 
-var probeNetworkMonitorRTTPattern = regexp.MustCompile(`(?i)(?:time|时间|平均|avg)[=<>：]?\s*([0-9]+(?:[.,][0-9]+)?)\s*ms`)
+// A comparison/assignment is required: "time 0ms" in Linux packet-loss
+// statistics is the command duration, not an echo reply's round-trip time.
+var probeNetworkMonitorRTTPattern = regexp.MustCompile(`(?i)(?:time|时间|平均|avg)\s*[=<>：:]\s*([0-9]+(?:[.,][0-9]+)?)\s*ms`)
 
 var probeNetworkMonitorTaskState = struct {
 	mu      sync.Mutex
@@ -251,9 +253,6 @@ func runProbeNetworkMonitorPing(target string, timeoutMS int) (float64, error) {
 	if ctx.Err() != nil {
 		return 0, fmt.Errorf("ping timeout")
 	}
-	if latency, ok := parseProbeNetworkMonitorLatency(text); ok {
-		return latency, nil
-	}
 	if err != nil {
 		trimmed := strings.TrimSpace(text)
 		if trimmed == "" {
@@ -263,6 +262,9 @@ func runProbeNetworkMonitorPing(target string, timeoutMS int) (float64, error) {
 			return 0, fmt.Errorf("ping permission denied: grant cap_net_raw to ping/probe process or run probe with NET_RAW/root permission")
 		}
 		return 0, fmt.Errorf("%s", compactProbeNetworkMonitorError(trimmed))
+	}
+	if latency, ok := parseProbeNetworkMonitorLatency(text); ok {
+		return latency, nil
 	}
 	return 0, fmt.Errorf("ping latency not found")
 }

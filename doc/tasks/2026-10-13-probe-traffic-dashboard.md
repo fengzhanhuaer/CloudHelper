@@ -111,12 +111,12 @@ Dashboard 当前探针卡片只显示 CPU、内存、磁盘和开机时长，没
 
 ### 4.1 当前交接
 
-- 当前阶段：2026-11-12 资源占比和本轮丢包标注增量修复验证已通过，待发布；最新事实见第十六章。
+- 当前阶段：2026-11-12 资源占比和本轮丢包标注增量修复验证已通过，发布构建中；最新事实见第十六章。
 - 当前计划步骤：TASK-013 进行中。
 - 当前门禁：准备门禁通过；本轮完成门禁待实现验证和发布。
 - 最近完成检查点：主控完整回归/vet；Chrome 1440x900/390x844/320x844 模拟 API 验证两页签、状态卡片流量/网络质量及缺测/过期状态，无 JS 错误和横向溢出。
 - 工作区状态：功能提交 `98edbee43` 已推送；已有无关 `doc/tasks/2026-10-28-upgrade-source-resume.md` 修改保留。v0.4.114 发布证据已回填。
-- 下一步唯一动作：显式提交四个任务文件并核验对应 Actions/Release。
+- 下一步唯一动作：核验 Actions `43142569404` 及其 Release。
 - 恢复时先读取：本账本、git status/diff、`probe_node/main.go`、`probe_node/mobilecore`、`probe_runtime.go`、`probe_ws.go`、管理probe页面和Dashboard页面。
 
 ### 4.2 任务计划
@@ -318,6 +318,16 @@ ARM64 router 追加准备门禁：通过。构建矩阵、下载、manifest 生�
 - TASK-013 进行中：主控 `go test ./... -count=1`（core 7.973s、tests 3.013s）和 `go vet ./...` 均通过；无 Probe/插件源码改动，不运行用户已停止的五组互通测试。
 - TEST-013 本地浏览器通过：Browser plugin not available，复用已安装 Playwright/Chrome。本机模拟 API `http://127.0.0.1:64252/dashboard`，1440x900、390x844、320x844；实际内存样本显示 76.4%/80.9%，圆环角度一致，CPU 缺失/零值、容量缺测/零占用、上下界、丢包标签、页签/刷新/曲线、转义与无横向溢出通过，控制台错误为空。证据 `%TEMP%/ch-dashboard-ratio-20261112/`，非生产渲染验证。
 - 发布预检通过：沿用本任务已说明的临时适配预检，live workflow SHA256 `0cfd7f3cd28ef86665c8a47a73bd1554d42cc7c3cdd5ac25fd52a2e341457143`，现行十项资产不变；预检 routerArtifacts 旧硬编码不作为当前资产事实。
+- 发布检查点：四文件提交 `2fc953c849b960873474709a0ac1bec395f9bc46` 已推送 `origin/mapledev`，匹配 [Actions 43142569404](https://github.com/fengzhanhuaer/CloudHelper/actions/runs/43142569404) 构建中；未包含无关升级账本。
+- 浏览器最后复核地址 `http://127.0.0.1:59934/dashboard`（临时服务已关闭），新增 `router-desktop.png` 和 `router-mobile.png` 显示两台路由器 RAM 的实际比例，已目视确认总容量不截断、缺测说明清晰。
+- DEF-002 新发现：`probe_node/network_monitor.go` 的 RTT 正则把可选等号后的 `time 0ms`（Linux 失败统计行）当成回包 RTT，且进程失败前先解析，导致丢包被误记为成功。独立复现 `1 packets transmitted, 0 received, 100% packet loss, time 0ms` 被当前正则匹配为 0。
+- REQ-012/TASK-012 重新打开：此前只读历史证据只能证明 Windows 节点有丢包及卡片口径，不能排除 Linux 采集缺陷。UNIT-010 探针 ping 解析只接受有比较/赋值符的 RTT，进程失败优先返回错误；加 Linux/Windows/BSD/BusyBox 文本回归，不改变发包频率或协议。TEST-014 为错误行拒绝及正常多平台回包兼容。安卓 mobilecore 与插件未实现此任务采集，不添加无关能力。
+- 准备门禁追加：通过。先增加可复现失败回归，再修复 Probe 解析；主控比例修复的 v0.4.115 构建继续，新增采集修复另走下一次已授权发布，最终交付以含二者的版本为准。
+- TEST-014 修复前确实失败：两条 Linux 全丢包统计行分别被识别成 0ms/3000ms；中文带空格平均值未识别。修复后定向测试通过（1.763s），仅真正回包 RTT 的赋值/比较格式可匹配，进程非零退出优先失败；正常 Linux/BusyBox/Windows 中文英文、小于 1ms、逗号小数、真实 0ms 保持兼容。
+- 探针完整 `go test ./... -count=1` 正在执行。探针完整 vet 报既有告警：`mobile_vrouter_test.go:71,114` 复制锁；`local_tun_egress_windows.go:185,187` 和 `local_windows_netapi.go:695,697,728,730,825` unsafe.Pointer。以上文件本轮未改，不宣称完整 vet 通过；单独核验其余分析器，保留告警。
+- 探针完整回归通过：主包 61.287s，controllerlink/dnsupstream/quicsniff/tlssniff/transportnet/mobilecore 全部通过。`go vet -copylocks=false -unsafeptr=false ./...` 通过，其余分析器无告警；既有文件对 HEAD 无差异。TASK-012/TEST-014 关闭，下一步同步工作流版本提交后发布本次两文件采集修复及账本。
+- 本机 WSL 的一次实际 Linux `ping -c 1 -W 1 192.0.2.1` 返回 exit 1，原始统计确为 `1 packets transmitted, 0 received, 100% packet loss, time 0ms`，与失败回归一致。未在远端机器运行测试或修改服务。
+- v0.4.115 对应 Actions `43142569404` 已成功；其版本提交 `58a70f306` 已安全 fast-forward 同步（仅 version 文件）。采集修复需升级运行监测任务的 Probe，旧错误样本无法从已丢失的信息中还原，不清空历史。
 
 ### 决策、约束和回滚
 
