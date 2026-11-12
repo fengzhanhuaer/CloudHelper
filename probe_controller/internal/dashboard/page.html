@@ -350,9 +350,8 @@
             font-size: 11px;
             line-height: 1.2;
             text-align: center;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+            overflow-wrap: anywhere;
+            white-space: normal;
         }
         .probe-uptime {
             color: var(--text-primary);
@@ -649,13 +648,16 @@
         }
 
         function metricGauge(label, percent, used, total) {
-            const value = normalizedPercent(percent);
-            const usedText = used == null ? pct(percent) : formatUsedBytes(used);
-            const totalText = total == null ? '' : formatBytes(total);
-            const caption = pct(percent) + (totalText && totalText !== '-' ? ' / 总 ' + totalText : '');
-            const title = label + ': ' + pct(percent)
-                + (used == null ? '' : ' / ' + usedText)
-                + (totalText && totalText !== '-' ? ' / ' + totalText : '');
+            const capacity = used != null || total != null;
+            const hasCapacity = typeof used === 'number' && Number.isFinite(used) && used >= 0
+                && typeof total === 'number' && Number.isFinite(total) && total > 0;
+            const actual = capacity ? (hasCapacity ? normalizedPercent(used / total * 100) : null)
+                : (typeof percent === 'number' && Number.isFinite(percent) && percent >= 0 ? normalizedPercent(percent) : null);
+            const value = actual == null ? 0 : actual;
+            const usedText = capacity ? (hasCapacity ? formatUsedBytes(used) : '—') : pct(actual);
+            const totalText = hasCapacity ? formatBytes(total) : '';
+            const caption = actual == null ? '暂无数据' : pct(actual) + (totalText ? ' / 总 ' + totalText : '');
+            const title = label + ': ' + caption + (hasCapacity ? ' / ' + usedText : '');
             return '<div class="metric-gauge" title="' + escapeHTML(title) + '">'
                 + '<div class="metric-ring" style="--metric-angle:' + (value * 3.6).toFixed(1) + 'deg;--metric-color:' + usageColor(value) + ';">'
                 + '<div class="metric-center">' + escapeHTML(usedText) + '</div>'
@@ -717,7 +719,7 @@
         }
 
         function pct(v) {
-            if (typeof v !== 'number' || Number.isNaN(v)) return '--';
+            if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return '—';
             return v.toFixed(1) + '%';
         }
 
@@ -828,8 +830,8 @@
                 const stale = !online || item.stale;
                 const state = !item.available ? '等待监测' : stale ? (online ? '数据已过期' : '离线前记录') : '最近监测';
                 const values = item.available
-                    ? '延迟 ' + metric(item.latency_avg_ms, ' ms') + ' / 丢包 ' + metric(item.loss_percent, '%')
-                    : '延迟 — / 丢包 —';
+                    ? '延迟 ' + metric(item.latency_avg_ms, ' ms') + ' / 本轮丢包 ' + metric(item.loss_percent, '%')
+                    : '延迟 — / 本轮丢包 —';
                 return '<div class="probe-network-row' + (stale ? ' stale' : '') + '">'
                     + '<span class="probe-network-name">' + escapeHTML(item.task_name || item.task_id || '网络监测') + '</span>'
                     + '<span class="probe-network-values">' + values + '</span>'

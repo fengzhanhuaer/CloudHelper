@@ -1,6 +1,8 @@
 package core
 
 import (
+	"encoding/json"
+	"math"
 	"net/netip"
 	"slices"
 	"sort"
@@ -23,6 +25,33 @@ type probeSystemMetrics struct {
 	NetworkRXBytes    uint64  `json:"network_rx_bytes"`
 	NetworkTXBytes    uint64  `json:"network_tx_bytes"`
 	NetworkAvailable  bool    `json:"network_traffic_available"`
+}
+
+// Older reporters may send byte counters without percentages. Missing CPU
+// samples must remain distinguishable from an explicitly reported idle CPU.
+func (metrics *probeSystemMetrics) UnmarshalJSON(data []byte) error {
+	type plainMetrics probeSystemMetrics
+	decoded := plainMetrics{CPUPercent: -1, MemoryUsedPercent: -1, SwapUsedPercent: -1, DiskUsedPercent: -1}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*metrics = probeSystemMetrics(decoded)
+	metrics.MemoryUsedPercent = probeCapacityUsedPercent(metrics.MemoryUsedBytes, metrics.MemoryTotalBytes)
+	metrics.SwapUsedPercent = probeCapacityUsedPercent(metrics.SwapUsedBytes, metrics.SwapTotalBytes)
+	metrics.DiskUsedPercent = probeCapacityUsedPercent(metrics.DiskUsedBytes, metrics.DiskTotalBytes)
+	if metrics.CPUPercent < 0 || math.IsNaN(metrics.CPUPercent) || math.IsInf(metrics.CPUPercent, 0) {
+		metrics.CPUPercent = -1
+	} else {
+		metrics.CPUPercent = math.Min(100, metrics.CPUPercent)
+	}
+	return nil
+}
+
+func probeCapacityUsedPercent(used, total uint64) float64 {
+	if total == 0 {
+		return -1
+	}
+	return math.Min(100, float64(used)/float64(total)*100)
 }
 
 type probeAdaptiveQueueSnapshot struct {
