@@ -1,7 +1,7 @@
 # 探针流量统计与月度周期
 
 - 任务标识：`2026-10-13-probe-traffic-dashboard`
-- 状态：`进行中`
+- 状态：`已完成`
 - 创建时间：`2026-10-13 Asia/Singapore`
 - 更新时间：`2026-11-12 Asia/Singapore`
 - 用户原始需求：Dashboard 增加探针总流量（进/出分开）及月度流量；月度默认从每月1号开始，可在探针编辑页为每个探针单独设置月度起始日。
@@ -111,12 +111,12 @@ Dashboard 当前探针卡片只显示 CPU、内存、磁盘和开机时长，没
 
 ### 4.1 当前交接
 
-- 当前阶段：2026-11-12 资源占比和本轮丢包标注增量修复验证已通过，发布构建中；最新事实见第十六章。
-- 当前计划步骤：TASK-013 进行中。
-- 当前门禁：准备门禁通过；本轮完成门禁待实现验证和发布。
+- 当前阶段：2026-11-12 资源占比和 Probe 丢包误判修复、验证及 v0.4.116 发布已完成；最新事实见第十六章。
+- 当前计划步骤：TASK-013 已完成。
+- 当前门禁：准备门禁、完成门禁通过；Probe 全量 vet 的既有告警已逐项记录。
 - 最近完成检查点：主控完整回归/vet；Chrome 1440x900/390x844/320x844 模拟 API 验证两页签、状态卡片流量/网络质量及缺测/过期状态，无 JS 错误和横向溢出。
-- 工作区状态：功能提交 `98edbee43` 已推送；已有无关 `doc/tasks/2026-10-28-upgrade-source-resume.md` 修改保留。v0.4.114 发布证据已回填。
-- 下一步唯一动作：核验 Actions `43142569404` 及其 Release。
+- 工作区状态：功能提交 `2fc953c84` 和 `9c7862935` 已推送；已有无关 `doc/tasks/2026-10-28-upgrade-source-resume.md` 修改保留。v0.4.116 发布证据已回填。
+- 下一步唯一动作：本轮无待办；生产主控和执行监测任务的 Probe 在线升级另行授权。插件指定 IP ICMP 任务仍未实现。
 - 恢复时先读取：本账本、git status/diff、`probe_node/main.go`、`probe_node/mobilecore`、`probe_runtime.go`、`probe_ws.go`、管理probe页面和Dashboard页面。
 
 ### 4.2 任务计划
@@ -299,7 +299,7 @@ ARM64 router 追加准备门禁：通过。构建矩阵、下载、manifest 生�
 |---|---|---|---|---|
 | REQ-011 | 有容量时圆环、比例和字节数一致；未上报 CPU/容量不可冒充 0% | UNIT-009 解码、UNIT-007 页面 / IF-005 system 摘要 | TASK-011 / TEST-011 解码回归和现场字节数浏览器复现 | 已完成 |
 | REQ-012 | 核对实际丢包来源，明确卡片为本轮而非累计，不改写历史或伪造丢包 | UNIT-007/008 / IF-004 | TASK-012 / TEST-012 在线只读与浏览器标注 | 已完成 |
-| REQ-013 | 主控完整回归、响应式验收后沿现行工作流发布 | UNIT-009/007 | TASK-013 / TEST-013 Actions 十项资产 | 进行中 |
+| REQ-013 | 主控完整回归、响应式验收后沿现行工作流发布 | UNIT-009/007 | TASK-013 / TEST-013 Actions 十项资产 | 已完成 |
 
 ### 总体架构和单元设计
 
@@ -328,6 +328,10 @@ ARM64 router 追加准备门禁：通过。构建矩阵、下载、manifest 生�
 - 探针完整回归通过：主包 61.287s，controllerlink/dnsupstream/quicsniff/tlssniff/transportnet/mobilecore 全部通过。`go vet -copylocks=false -unsafeptr=false ./...` 通过，其余分析器无告警；既有文件对 HEAD 无差异。TASK-012/TEST-014 关闭，下一步同步工作流版本提交后发布本次两文件采集修复及账本。
 - 本机 WSL 的一次实际 Linux `ping -c 1 -W 1 192.0.2.1` 返回 exit 1，原始统计确为 `1 packets transmitted, 0 received, 100% packet loss, time 0ms`，与失败回归一致。未在远端机器运行测试或修改服务。
 - v0.4.115 对应 Actions `43142569404` 已成功；其版本提交 `58a70f306` 已安全 fast-forward 同步（仅 version 文件）。采集修复需升级运行监测任务的 Probe，旧错误样本无法从已丢失的信息中还原，不清空历史。
+- 最终发布检查点：Probe 采集修复及回归、账本提交 `9c7862935ef3ba61efe4755a16cf5c3a2ae8bf0c` 已推送 `origin/mapledev`，匹配 [Actions 43143323148](https://github.com/fengzhanhuaer/CloudHelper/actions/runs/43143323148)；该提交包含上轮主控比例修复，等待本轮十项发布资产核验。无关账本仍未暂存，生产主控/Probe 未升级。
+- 用户追加询问插件 ping：查明 `router_plugin/src/measure.c` 实现链路控制帧定时 RTT 与手动测延迟，未实现 `network_monitor_tasks`/`network_monitor_result` 的指定 IP ICMP 任务。节点 25/26 的 `network:[]` 与此一致，不是 0% 丢包；本轮不擅自新增采集功能。
+- 最终完成证据：Actions `43143323148` 九项任务全部成功，生成版本提交/标签 `f5f880c3b4be0c4be9559c0045aadf66a149e0c9` / [v0.4.116](https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.116)，父提交 `9c7862935ef3ba61efe4755a16cf5c3a2ae8bf0c`。Release 非草稿、非预发布，十项资产名精确匹配现行 workflow，大小均非零；包含上轮主控比例修复及本轮 Probe 采集修复。
+- TASK-013 已完成。完成门禁：通过。主控完整 tests/vet、Probe 完整 tests/其余 vet 分析器、Chrome 桌面/手机及最终发布均有通过证据；Probe 完整 vet 既有 copylocks/unsafeptr 告警未隐藏。下一步唯一动作：本轮无待办，线上升级另行授权。当前生产未升级，旧错误丢包历史不删除。
 
 ### 决策、约束和回滚
 
