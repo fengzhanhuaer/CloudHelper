@@ -24,13 +24,14 @@ import (
 const (
 	cloudflareStoreFile                         = "cloudflare.json"
 	cloudflareManagedBusinessNamePrefix         = "api.codex."
+	cloudflareManagedBusinessIPv6NamePrefix     = "api6.codex."
 	cloudflareCopilotCandidateNamePrefix        = "api_copilot_"
 	cloudflareZeroTrustDefaultSyncIntervalSec   = 300
 	cloudflareZeroTrustMinSyncIntervalSec       = 30
 	cloudflareZeroTrustSchedulerTickIntervalSec = 15
 )
 
-var cloudflareManagedLabelPrefixes = [...]string{"ddns_go_", "local_go_"}
+var cloudflareManagedLabelPrefixes = [...]string{"ddns_go_", "local_go_", "ddns6_go_", "local6_go_"}
 
 type cloudflareStore struct {
 	mu   sync.RWMutex
@@ -519,8 +520,16 @@ func applyCloudflareDDNS(req cloudflareDDNSApplyRequest) (cloudflareDDNSApplyRes
 				Sequence:    d.Sequence,
 				ContentIP:   d.ContentIP,
 			}
-			action, ensuredRecordID, msg, ensureErr := cloudflareEnsureDNSRecord(token, targetZoneID, d.RecordName, d.RecordType, d.ContentIP, prev.RecordID)
+			action, ensuredRecordID, msg, ensureErr := cloudflareEnsureDDNSRecord(token, targetZoneID, d, prev)
 			if ensureErr != nil {
+				// Keep the last working record, including its cleanup protection,
+				// until the replacement and migration have both succeeded.
+				if prev.RecordID != "" {
+					next = append(next, prev)
+					if normalizeCloudflareZoneName(prev.ZoneName) == zoneName {
+						desiredRecordKeys[cloudflareRecordNameTypeKey(prev.RecordName, prev.RecordType)] = struct{}{}
+					}
+				}
 				row.Status = "failed"
 				row.Message = ensureErr.Error()
 				items = append(items, row)
@@ -750,7 +759,7 @@ func applyCloudflareAutoDDNSForNode(nodeID string) error {
 			}
 			targetZoneID = resolvedZoneID
 		}
-		action, ensuredRecordID, msg, err := cloudflareEnsureDNSRecord(token, targetZoneID, d.RecordName, d.RecordType, d.ContentIP, prev.RecordID)
+		action, ensuredRecordID, msg, err := cloudflareEnsureDDNSRecord(token, targetZoneID, d, prev)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
@@ -840,6 +849,7 @@ func buildCloudflareDesiredRecords(node probeNodeStatusRecord, zoneName string) 
 	groups := collectCloudflareIPs(node.Runtime.IPv4, node.Runtime.IPv6)
 	out := make([]cloudflareDesiredRecord, 0, len(groups.PublicIPv4)+len(groups.PublicIPv6)+len(groups.LocalIPv4)+len(groups.LocalIPv6)+len(groups.PublicIPv4)+len(groups.PublicIPv6))
 	appendRecords := func(recordClass string, recordType string, base string, values []string) {
+		base = cloudflareAddressFamilyRecordBase(base, recordType)
 		for i, ip := range values {
 			seq := i + 1
 			recordName := buildCloudflareRecordName(base, zoneName, seq)
@@ -970,6 +980,18 @@ func buildCloudflareBusinessRecordBase(nodeNo int) string {
 		return ""
 	}
 	return "api.codex." + tag
+}
+
+func cloudflareAddressFamilyRecordBase(base, recordType string) string {
+	if normalizeCloudflareRecordType(recordType) != "AAAA" {
+		return base
+	}
+	for _, pair := range [][2]string{{"api.codex.", "api6.codex."}, {"ddns_go_", "ddns6_go_"}, {"local_go_", "local6_go_"}} {
+		if strings.HasPrefix(base, pair[0]) {
+			return pair[1] + strings.TrimPrefix(base, pair[0])
+		}
+	}
+	return base
 }
 
 func buildCloudflareCopilotCandidateRecordBase(nodeNo int) string {
@@ -1104,6 +1126,30 @@ func cloudflareListDNSRecords(token, zoneID string) ([]cloudflareDNSRecord, erro
 		}
 	}
 	return nil, errors.New("cloudflare list dns records exceeded page limit")
+}
+
+// Migrate only this node's previous same-zone AAAA record, after the new
+// family-specific record is available. Other records and certificate names
+// are outside this migration. A failed cleanup retains prev for a safe retry.
+func cloudflareEnsureDDNSRecord(token, zoneID string, desired cloudflareDesiredRecord, prev cloudflareDDNSResolvedRecord) (string, string, string, error) {
+	action, id, msg, err := cloudflareEnsureDNSRecord(token, zoneID, desired.RecordName, desired.RecordType, desired.ContentIP, prev.RecordID)
+	if err != nil {
+		return "", "", "", err
+	}
+	if desired.RecordType != "AAAA" || prev.RecordType != "AAAA" || prev.RecordID == "" || prev.RecordID == id ||
+		normalizeCloudflareZoneName(prev.ZoneName) != normalizeCloudflareZoneName(desired.ZoneName) ||
+		cloudflareAddressFamilyRecordBase(normalizeCloudflareRecordName(prev.RecordName), "AAAA") != desired.RecordName ||
+		normalizeCloudflareRecordName(prev.RecordName) == desired.RecordName {
+		return action, id, msg, nil
+	}
+	oldID, _, err := cloudflareFindDNSRecord(token, zoneID, prev.RecordName, "AAAA", prev.RecordID)
+	if err == nil && oldID != "" && oldID != id {
+		err = cloudflareDeleteDNSRecord(token, zoneID, oldID)
+	}
+	if err != nil {
+		return "", "", "", fmt.Errorf("new IPv6 record ready; cleanup previous AAAA failed: %w", err)
+	}
+	return action, id, msg, nil
 }
 
 func cloudflareEnsureDNSRecord(token, zoneID, recordName, recordType, contentIP, preferredRecordID string) (string, string, string, error) {
@@ -2122,7 +2168,7 @@ func isCloudflareManagedDDNSRecordName(recordName string) bool {
 	if recordName == "" {
 		return false
 	}
-	if strings.HasPrefix(recordName, cloudflareManagedBusinessNamePrefix) {
+	if strings.HasPrefix(recordName, cloudflareManagedBusinessNamePrefix) || strings.HasPrefix(recordName, cloudflareManagedBusinessIPv6NamePrefix) {
 		return true
 	}
 	label := recordName
@@ -2149,14 +2195,14 @@ func normalizeCloudflareRecordClass(raw string, recordName string) string {
 		return value
 	}
 	fullName := strings.TrimSpace(strings.ToLower(recordName))
-	if strings.HasPrefix(fullName, "api.codex.") {
+	if strings.HasPrefix(fullName, cloudflareManagedBusinessNamePrefix) || strings.HasPrefix(fullName, cloudflareManagedBusinessIPv6NamePrefix) {
 		return "business"
 	}
 	name := fullName
 	if dot := strings.Index(name, "."); dot > 0 {
 		name = name[:dot]
 	}
-	if strings.HasPrefix(name, "local_go_") {
+	if strings.HasPrefix(name, "local_go_") || strings.HasPrefix(name, "local6_go_") {
 		return "local"
 	}
 	return "public"

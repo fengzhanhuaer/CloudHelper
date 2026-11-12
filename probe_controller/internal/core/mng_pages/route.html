@@ -1272,6 +1272,7 @@
           name,
           source: 'cloudflare',
           source_label: 'CF',
+          address_family: '',
           content_ip: '',
         });
       });
@@ -1285,6 +1286,7 @@
           name,
           source: 'ddns',
           source_label: 'DDNS',
+          address_family: String(item && item.record_type || '').toUpperCase() === 'AAAA' ? 'IPv6' : String(item && item.record_type || '').toUpperCase() === 'A' ? 'IPv4' : '',
           content_ip: String(item && item.content_ip || '').trim(),
         });
       });
@@ -1301,9 +1303,9 @@
       const rows = [`<option value="" ${value ? '' : 'selected'}>不使用域名</option>`];
       if (value && !hasCurrent) rows.push(`<option value="${escapeHTML(value)}" selected>${escapeHTML(value)} (当前)</option>`);
       options.forEach((item) => {
-        rows.push(`<option value="${escapeHTML(item.name)}" ${item.name === value ? 'selected' : ''}>${escapeHTML(item.name)}</option>`);
+        rows.push(`<option value="${escapeHTML(item.name)}" ${item.name === value ? 'selected' : ''}>${item.address_family ? escapeHTML(item.address_family) + ' · ' : ''}${escapeHTML(item.name)}</option>`);
       });
-      return `<select data-vr-domain-select="${idx}" data-vr-domain-side="${escapeHTML(side)}">${rows.join('')}</select>`;
+      return `<select data-vr-domain-select="${idx}" data-vr-domain-side="${escapeHTML(side)}" title="${escapeHTML(value)}">${rows.join('')}</select>`;
     }
 
     function reconcileVirtualRouterDomainForNode(rule, side) {

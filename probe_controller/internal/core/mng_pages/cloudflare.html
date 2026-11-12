@@ -33,6 +33,7 @@
     th { color:#8b949e; font-weight:600; }
     .muted { color:#8b949e; }
     .mono { font-family:Consolas,monospace; }
+    .table-scroll { max-width:100%; overflow-x:auto; }
   </style>
 </head>
 <body>
@@ -76,7 +77,8 @@
           <button id="btn-refresh-ddns" class="btn" type="button">刷新记录</button>
           <span class="muted">当前 Zone：<span id="ddns-zone" class="mono">--</span></span>
         </div>
-        <table>
+        <p class="muted">IPv4 / IPv6 分别使用独立域名：A 为 api.codex.…、ddns_go_…、local_go_…；AAAA 为 api6.codex.…、ddns6_go_…、local6_go_…。申请成功后迁移旧 AAAA 记录，IPv4 域名保持不变。</p>
+        <div class="table-scroll"><table>
           <thead>
             <tr>
               <th>节点</th>
@@ -87,7 +89,7 @@
             </tr>
           </thead>
           <tbody id="ddns-records-body"></tbody>
-        </table>
+        </table></div>
       </section>
 
       <section id="section-zerotrust" class="section">

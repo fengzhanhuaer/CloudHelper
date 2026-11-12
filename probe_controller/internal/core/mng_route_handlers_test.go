@@ -436,7 +436,7 @@ func TestMngLinkVirtualRouterHandlerSaveAndGet(t *testing.T) {
       "direction":"bidirectional",
       "from_service_domain":"edge-a-alt.example.com",
       "from_service_port":443,
-      "to_service_domain":"edge-b-alt.internal.lan",
+      "to_service_domain":"api6.codex.mg.example.com",
       "to_service_port":443,
       "enabled":true
     }
@@ -483,6 +483,9 @@ func TestMngLinkVirtualRouterHandlerSaveAndGet(t *testing.T) {
 	if payload.Item.TopologyRules[1].FromServicePort != 443 || payload.Item.TopologyRules[1].ToServicePort != 0 {
 		t.Fatalf("topology rule ports were not normalized: %+v", payload.Item.TopologyRules)
 	}
+	if payload.Item.TopologyRules[1].ToServiceDomain != "api6.codex.mg.example.com" {
+		t.Fatalf("IPv6 DDNS domain was rewritten: %+v", payload.Item.TopologyRules[1])
+	}
 
 	raw, err := os.ReadFile(filepath.Join(tmpDir, "probe_route_config.json"))
 	if err != nil {
@@ -494,6 +497,9 @@ func TestMngLinkVirtualRouterHandlerSaveAndGet(t *testing.T) {
 	}
 	if len(stored.VirtualRouter.TopologyRules) != 2 {
 		t.Fatalf("route config store topology rules=%+v, want 2", stored.VirtualRouter.TopologyRules)
+	}
+	if stored.VirtualRouter.TopologyRules[1].ToServiceDomain != "api6.codex.mg.example.com" {
+		t.Fatalf("IPv6 DDNS domain not persisted: %+v", stored.VirtualRouter.TopologyRules[1])
 	}
 }
 
