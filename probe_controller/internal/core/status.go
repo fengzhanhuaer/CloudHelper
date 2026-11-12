@@ -69,17 +69,30 @@ func dashboardNetworkHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 type dashboardPublicProbeItem struct {
-	NodeNo               int                `json:"node_no"`
-	NodeName             string             `json:"node_name"`
-	VendorName           string             `json:"vendor_name,omitempty"`
-	VendorURL            string             `json:"vendor_url,omitempty"`
-	Locations            []string           `json:"locations,omitempty"`
-	Online               bool               `json:"online"`
-	LastSeen             string             `json:"last_seen"`
-	MachineUptimeSeconds int64              `json:"machine_uptime_seconds,omitempty"`
-	MachineBootTime      string             `json:"machine_boot_time,omitempty"`
-	Traffic              probeTrafficUsage  `json:"traffic"`
-	System               probeSystemMetrics `json:"system"`
+	NodeNo               int                           `json:"node_no"`
+	NodeName             string                        `json:"node_name"`
+	VendorName           string                        `json:"vendor_name,omitempty"`
+	VendorURL            string                        `json:"vendor_url,omitempty"`
+	Locations            []string                      `json:"locations,omitempty"`
+	Online               bool                          `json:"online"`
+	LastSeen             string                        `json:"last_seen"`
+	MachineUptimeSeconds int64                         `json:"machine_uptime_seconds,omitempty"`
+	MachineBootTime      string                        `json:"machine_boot_time,omitempty"`
+	Traffic              probeTrafficUsage             `json:"traffic"`
+	System               probeSystemMetrics            `json:"system"`
+	Network              []dashboardPublicProbeNetwork `json:"network"`
+}
+
+// Only public task metadata and measurements belong in this DTO. In particular,
+// do not copy targets, resolved addresses or raw diagnostic errors here.
+type dashboardPublicProbeNetwork struct {
+	TaskID       string  `json:"task_id"`
+	TaskName     string  `json:"task_name"`
+	Available    bool    `json:"available"`
+	Stale        bool    `json:"stale"`
+	Timestamp    string  `json:"timestamp,omitempty"`
+	LatencyAvgMS float64 `json:"latency_avg_ms"`
+	LossPercent  float64 `json:"loss_percent"`
 }
 
 type dashboardPublicNetworkPoint struct {
@@ -126,6 +139,7 @@ func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
 		trafficStartDay int
 	}
 	metaMap := map[string]nodeMeta{}
+	var networkTasks []probeNetworkMonitorTaskRecord
 	if ProbeStore != nil {
 		ProbeStore.mu.RLock()
 		for _, node := range loadProbeNodesLocked() {
@@ -141,6 +155,7 @@ func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
 				trafficStartDay: normalizeMonthlyTrafficStartDay(node.MonthlyTrafficStartDay),
 			}
 		}
+		networkTasks = loadProbeNetworkMonitorTasksLocked()
 		ProbeStore.mu.RUnlock()
 	}
 
@@ -182,6 +197,7 @@ func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
 			MachineBootTime:      machineBootTime,
 			Traffic:              traffic,
 			System:               rt.System,
+			Network:              dashboardProbeNetwork(normalizedID, networkTasks, rt.Online, time.Now().UTC()),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -199,6 +215,66 @@ func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
 			return out[i].NodeName < out[j].NodeName
 		}
 		return i < j
+	})
+	return out
+}
+
+func dashboardProbeNetwork(nodeID string, tasks []probeNetworkMonitorTaskRecord, online bool, now time.Time) []dashboardPublicProbeNetwork {
+	out := []dashboardPublicProbeNetwork{}
+	for _, task := range tasks {
+		if !task.Enabled {
+			continue
+		}
+		for _, id := range task.NodeIDs {
+			if normalizeProbeNodeID(id) == nodeID {
+				out = append(out, dashboardPublicProbeNetwork{
+					TaskID: task.ID, TaskName: normalizeProbeNetworkMonitorTaskName(task.Name),
+					LatencyAvgMS: -1, LossPercent: -1,
+				})
+				break
+			}
+		}
+	}
+	if len(out) == 0 {
+		return out
+	}
+	latest := map[string]probeNetworkMonitorResultRecord{}
+	for _, result := range loadProbeNetworkMonitorLatestResultsForNode(nodeID) {
+		current, exists := latest[result.TaskID]
+		if !exists || probeNetworkMonitorResultTimestamp(result).After(probeNetworkMonitorResultTimestamp(current)) {
+			latest[result.TaskID] = result
+		}
+	}
+	for i := range out {
+		item := &out[i]
+		if item.TaskName == "" {
+			item.TaskName = item.TaskID
+		}
+		result, exists := latest[item.TaskID]
+		if !exists {
+			continue
+		}
+		ts := parseDashboardNetworkTimestamp(firstNonEmptyNetworkMonitor(result.FinishedAt, result.Timestamp, result.StartedAt))
+		if ts.IsZero() || ts.After(now.Add(time.Minute)) {
+			continue
+		}
+		item.LatencyAvgMS, item.LossPercent = summarizeDashboardNetworkResult(result.Results)
+		item.Available = item.LatencyAvgMS >= 0 || item.LossPercent >= 0
+		item.Timestamp = ts.Format(time.RFC3339)
+		for _, task := range tasks {
+			if task.ID == item.TaskID {
+				window := time.Duration(2*normalizeProbeNetworkMonitorCycleSec(task.CycleSec))*time.Second +
+					time.Duration(normalizeProbeNetworkMonitorCount(task.Count)*normalizeProbeNetworkMonitorTimeoutMS(task.TimeoutMS))*time.Millisecond
+				item.Stale = !online || now.Sub(ts) > window
+				break
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].TaskName != out[j].TaskName {
+			return out[i].TaskName < out[j].TaskName
+		}
+		return out[i].TaskID < out[j].TaskID
 	})
 	return out
 }

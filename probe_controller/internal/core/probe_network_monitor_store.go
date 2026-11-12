@@ -240,6 +240,23 @@ func loadProbeNetworkMonitorResultsLocked(limit int) []probeNetworkMonitorResult
 	return out
 }
 
+// Dashboard refreshes need the small latest snapshot, not the full raw history.
+// Older stores without this snapshot are read compatibly without rewriting them.
+func loadProbeNetworkMonitorLatestResultsForNode(nodeID string) []probeNetworkMonitorResultRecord {
+	probeNetworkMonitorResultStore.mu.Lock()
+	defer probeNetworkMonitorResultStore.mu.Unlock()
+	history, err := loadProbeNetworkMonitorHistoryForNodeLocked(nodeID)
+	if err == nil && len(history.Latest) > 0 {
+		return history.Latest
+	}
+	items, loadErr := loadProbeNetworkMonitorResultsForNodeFromDiskLocked(nodeID)
+	if loadErr != nil {
+		logControllerWarnf("failed to load latest network measurements: node=%s err=%v", nodeID, loadErr)
+		return nil
+	}
+	return mergeProbeNetworkMonitorLatest(nil, items, nil)
+}
+
 func loadProbeNetworkMonitorLatestResultsByNodeTask() []probeNetworkMonitorResultRecord {
 	probeNetworkMonitorResultStore.mu.Lock()
 	nodeIDs, err := listProbeNetworkMonitorResultNodeIDsLocked()

@@ -166,14 +166,8 @@
         }
         .probe-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-            gap: 14px;
-        }
-        .traffic-grid {
             grid-template-columns: repeat(auto-fit, minmax(min(400px, 100%), 1fr));
-        }
-        .traffic-grid .probe-item {
-            min-height: 0;
+            gap: 14px;
         }
         .probe-item {
             border: 1px solid rgba(255, 255, 255, 0.08);
@@ -239,6 +233,34 @@
         .probe-traffic-period {
             color: var(--text-secondary);
         }
+        .probe-network {
+            display: grid;
+            gap: 8px;
+            padding-top: 8px;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            font-size: 12px;
+        }
+        .probe-network-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: baseline;
+            gap: 3px 10px;
+        }
+        .probe-network-name {
+            overflow-wrap: anywhere;
+        }
+        .probe-network-values {
+            color: var(--text-primary);
+            font-variant-numeric: tabular-nums;
+        }
+        .probe-network-time {
+            grid-column: 1 / -1;
+            color: var(--text-secondary);
+            overflow-wrap: anywhere;
+        }
+        .probe-network-row.stale .probe-network-values {
+            color: var(--text-secondary);
+        }
         .probe-traffic-row {
             display: flex;
             justify-content: space-between;
@@ -248,8 +270,16 @@
         }
         @media (max-width: 480px) {
             .probe-traffic-row {
+                display: grid;
+                grid-template-columns: auto 1fr;
                 font-size: 11px;
                 gap: 4px;
+            }
+            .probe-traffic-row span:nth-child(even) {
+                text-align: right;
+            }
+            .probe-network-row {
+                grid-template-columns: minmax(0, 1fr);
             }
         }
         .probe-online {
@@ -498,7 +528,6 @@
             <div class="tabs" role="tablist">
                 <button class="tab-button active" type="button" data-tab="probe-status">探针状态</button>
                 <button class="tab-button" type="button" data-tab="network-status">网络状态</button>
-                <button class="tab-button" type="button" data-tab="traffic-status">流量统计</button>
             </div>
             <div id="probe-status" class="tab-panel active">
                 <div class="info-grid">
@@ -529,15 +558,6 @@
                     <div class="network-card">No network data</div>
                 </div>
             </div>
-            <div id="traffic-status" class="tab-panel">
-                <div class="panel-toolbar">
-                    <div class="probe-panel-title">流量统计</div>
-                    <button id="traffic-refresh" class="refresh-button" type="button">刷新</button>
-                </div>
-                <div id="traffic-grid" class="probe-grid traffic-grid">
-                    <div class="probe-item">点击页签加载流量统计</div>
-                </div>
-            </div>
         </div>
     </div>
     <script>
@@ -546,8 +566,6 @@
         const probeGridEl = document.getElementById('probe-grid');
         const networkGridEl = document.getElementById('network-grid');
         const networkRefreshEl = document.getElementById('network-refresh');
-        const trafficGridEl = document.getElementById('traffic-grid');
-        const trafficRefreshEl = document.getElementById('traffic-refresh');
         let activeTab = 'probe-status';
         let currentNetworkScale = 'minute';
         let networkLoaded = false;
@@ -762,6 +780,8 @@
                     + metricGauge('SWAP', sys.swap_used_percent, sys.swap_used_bytes, sys.swap_total_bytes)
                     + metricGauge('DISK', sys.disk_used_percent, sys.disk_used_bytes, sys.disk_total_bytes)
                     + '</div>'
+                    + renderProbeNetwork(item.network, item.online)
+                    + renderProbeTraffic(item.traffic)
                     + '<div class="probe-uptime">机器运行: ' + machineUptime + ' / 开机: ' + bootTime + '</div>'
                     + '<div class="probe-last-seen">Last Seen: ' + escapeHTML(lastSeen) + '</div>'
                     + '</div>';
@@ -770,53 +790,52 @@
 
         async function checkProbes() {
             const requestedTab = activeTab;
-            if (requestedTab !== 'probe-status' && requestedTab !== 'traffic-status') return;
+            if (requestedTab !== 'probe-status') return;
             try {
                 const res = await fetch('/dashboard/probes');
                 if (!res.ok) throw new Error('Not OK');
                 const data = await res.json();
                 if (activeTab !== requestedTab) return;
-                if (requestedTab === 'traffic-status') renderTraffic(data.items || []);
-                else renderProbes(data.items || []);
+                renderProbes(data.items || []);
             } catch (_) {
                 // keep old view
             }
         }
 
-        function renderTraffic(items) {
-            const sorted = sortedByNodeNo(items);
-            if (!sorted.length) {
-                trafficGridEl.innerHTML = '<div class="probe-item">暂无探针流量数据</div>';
-                return;
+        function renderProbeTraffic(traffic) {
+            traffic = traffic || {};
+            if (!traffic.available) return '<div class="probe-traffic probe-traffic-period">流量统计等待探针上报</div>';
+            const bytes = (value) => Math.max(0, Number(value) || 0);
+            const totalRX = bytes(traffic.total_rx_bytes);
+            const totalTX = bytes(traffic.total_tx_bytes);
+            const monthRX = bytes(traffic.month_rx_bytes);
+            const monthTX = bytes(traffic.month_tx_bytes);
+            return '<div class="probe-traffic" title="仅统计启用中的硬件出口接口；累计从本统计口径首次采样后开始">'
+                + '<div class="probe-traffic-row"><span>累计</span><span>合计 ' + formatTrafficBytes(totalRX + totalTX) + '</span><span title="下行（接收）">↓' + formatTrafficBytes(totalRX) + '</span><span title="上行（发送）">↑' + formatTrafficBytes(totalTX) + '</span></div>'
+                + '<div class="probe-traffic-row"><span>月度</span><span>合计 ' + formatTrafficBytes(monthRX + monthTX) + '</span><span title="下行（接收）">↓' + formatTrafficBytes(monthRX) + '</span><span title="上行（发送）">↑' + formatTrafficBytes(monthTX) + '</span></div>'
+                + '<div class="probe-traffic-period">周期起始: ' + escapeHTML(traffic.period_start || '-') + ' UTC (每月 ' + (Number(traffic.monthly_start_day) || 1) + ' 日)</div>'
+                + '<div class="probe-traffic-period">统计更新: ' + escapeHTML(formatDateTime(traffic.updated_at)) + '</div>'
+                + '</div>';
+        }
+
+        function renderProbeNetwork(network, online) {
+            if (!Array.isArray(network) || !network.length) {
+                return '<div class="probe-network probe-network-time">延迟 / 丢包：暂无监测数据</div>';
             }
-            trafficGridEl.innerHTML = sorted.map((item, index) => {
-                const nodeNo = nodeNoOf(item);
-                const name = String(item.node_name || '').trim() || ('probe #' + (nodeNo || index + 1));
-                const traffic = item.traffic || {};
-                const bytes = (value) => Math.max(0, Number(value) || 0);
-                const totalRX = bytes(traffic.total_rx_bytes);
-                const totalTX = bytes(traffic.total_tx_bytes);
-                const monthRX = bytes(traffic.month_rx_bytes);
-                const monthTX = bytes(traffic.month_tx_bytes);
-                const usage = traffic.available
-                    ? '<div class="probe-traffic" title="仅统计启用中的硬件出口接口；累计从本统计口径首次采样后开始">'
-                        + '<div class="probe-traffic-row"><span>累计</span><span>合计 ' + formatTrafficBytes(totalRX + totalTX) + '</span><span title="下行（接收）">↓' + formatTrafficBytes(totalRX) + '</span><span title="上行（发送）">↑' + formatTrafficBytes(totalTX) + '</span></div>'
-                        + '<div class="probe-traffic-row"><span>月度</span><span>合计 ' + formatTrafficBytes(monthRX + monthTX) + '</span><span title="下行（接收）">↓' + formatTrafficBytes(monthRX) + '</span><span title="上行（发送）">↑' + formatTrafficBytes(monthTX) + '</span></div>'
-                        + '<div class="probe-traffic-period">周期起始: ' + escapeHTML(traffic.period_start || '-') + ' UTC (每月 ' + (Number(traffic.monthly_start_day) || 1) + ' 日)</div>'
-                    + '</div>'
-                    : '<div class="probe-traffic probe-traffic-period">流量统计等待探针上报</div>';
-                return '<div class="probe-item">'
-                    + '<div class="probe-item-head">'
-                        + '<div class="probe-node-meta">'
-                            + '<div class="probe-node-name">' + escapeHTML(name) + '</div>'
-                            + '<div class="probe-node-no">序号: ' + (nodeNo || '-') + '</div>'
-                        + '</div>'
-                        + '<div class="probe-online ' + (item.online ? 'yes' : 'no') + '">' + (item.online ? 'online' : 'offline') + '</div>'
-                    + '</div>'
-                    + usage
-                    + '<div class="probe-last-seen">统计更新: ' + escapeHTML(traffic.updated_at || '-') + '</div>'
+            const metric = (value, unit) => typeof value === 'number' && Number.isFinite(value) && value >= 0
+                ? value.toFixed(1) + unit : '—';
+            return '<div class="probe-network" aria-label="最近监测的延迟和丢包">' + network.map((item) => {
+                const stale = !online || item.stale;
+                const state = !item.available ? '等待监测' : stale ? (online ? '数据已过期' : '离线前记录') : '最近监测';
+                const values = item.available
+                    ? '延迟 ' + metric(item.latency_avg_ms, ' ms') + ' / 丢包 ' + metric(item.loss_percent, '%')
+                    : '延迟 — / 丢包 —';
+                return '<div class="probe-network-row' + (stale ? ' stale' : '') + '">'
+                    + '<span class="probe-network-name">' + escapeHTML(item.task_name || item.task_id || '网络监测') + '</span>'
+                    + '<span class="probe-network-values">' + values + '</span>'
+                    + '<span class="probe-network-time">' + state + (item.timestamp ? ' · ' + escapeHTML(formatDateTime(item.timestamp)) : '') + '</span>'
                     + '</div>';
-            }).join('');
+            }).join('') + '</div>';
         }
 
         function renderNetwork(items) {
@@ -1050,7 +1069,7 @@
                 document.querySelectorAll('.tab-button').forEach((item) => item.classList.toggle('active', item === button));
                 document.querySelectorAll('.tab-panel').forEach((panel) => panel.classList.toggle('active', panel.id === tab));
                 if (tab === 'network-status' && !networkLoaded) checkNetwork();
-                if (tab === 'probe-status' || tab === 'traffic-status') checkProbes();
+                if (tab === 'probe-status') checkProbes();
             });
         });
 
@@ -1064,9 +1083,6 @@
 
         if (networkRefreshEl) {
             networkRefreshEl.addEventListener('click', () => checkNetwork());
-        }
-        if (trafficRefreshEl) {
-            trafficRefreshEl.addEventListener('click', () => checkProbes());
         }
 
         checkStatus();
