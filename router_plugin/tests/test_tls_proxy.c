@@ -14,8 +14,8 @@
 static vr_engine *entry,*exit_node;
 static vr_service services[2];
 static int listener,target_port,connections;
-static char opened_id[33];
-unsigned vr_platform_tls_cache_epoch(void){return 0;}
+static char opened_id[33];static unsigned cache_epoch;
+unsigned vr_platform_tls_cache_epoch(void){return cache_epoch;}
 int vr_platform_tls_cache_clear(void){return 0;}
 int vr_platform_tls_cache(const char *ip,int add){(void)ip;(void)add;return 0;}
 static void *echo(void *unused)
@@ -78,6 +78,7 @@ static void parser_tests(void)
 }
 static void transfer(const char *action,const char *choice)
 {
+    entry->config.tls_sni_enabled=1;
     entry->config.exit_overrides.count=choice?1:0;
     if(choice){strcpy(entry->config.exit_overrides.items[0].rule,"sni-rule");strcpy(entry->config.exit_overrides.items[0].node,choice);}
     const char *expected=choice?(*choice=='@'?choice+1:"probe_exit"):action;
@@ -99,7 +100,12 @@ static void transfer(const char *action,const char *choice)
         while(got<15&&vr_millis()<deadline){tick(entry);tick(exit_node);ssize_t k=read(pair[0],reply+got,15-got);if(k>0)got+=(size_t)k;}
         assert(got==15&&!memcmp(reply,"still-connected",15));
     }
-    close(pair[0]);for(int i=0;i<8;i++){tick(entry);tick(exit_node);}vr_tcp_stop(entry);vr_tcp_stop(exit_node);
+    json_object *cache=vr_tcp_sni_cache_status(entry);
+    assert(json_object_get_int(vr_member(cache,"used"))==1);
+    assert(json_object_get_int(vr_member(cache, !strcmp(expected,"probe_exit")?"proxy":expected))==1);
+    assert(json_object_get_int(vr_member(cache,"capacity"))==4096&&json_object_get_int64(vr_member(cache,"ttl_seconds"))==72*60*60);
+    json_object_put(cache);
+    close(pair[0]);for(int i=0;i<8;i++){tick(entry);tick(exit_node);}vr_tcp_stop(entry);vr_tcp_stop(exit_node);entry->config.tls_sni_enabled=0;
 }
 static void cached_proxy(void)
 {
@@ -118,12 +124,15 @@ static void cached_proxy(void)
         assert(got==n&&!memcmp(bytes,reply,n));
         close(pair[0]);for(unsigned i=0;i<10;i++){tick(entry);tick(exit_node);}
     }
+    json_object *cache=vr_tcp_sni_cache_status(entry);assert(json_object_get_int(vr_member(cache,"used"))==1);json_object_put(cache);
+    cache_epoch++;cache=vr_tcp_sni_cache_status(entry);assert(json_object_get_int(vr_member(cache,"used"))==0);json_object_put(cache);
     vr_tcp_stop(entry);vr_tcp_stop(exit_node);entry->config.tls_sni_enabled=0;
     puts("PASS: cached IP rule opens authenticated remote exit before SNI; original ClientHello bytes unchanged");
 }
 int main(void)
 {
     parser_tests();entry=engine("7");exit_node=engine("8");
+    json_object *empty=vr_tcp_sni_cache_status(entry);assert(json_object_get_int(vr_member(empty,"used"))==0&&json_object_get_int(vr_member(empty,"capacity"))==4096);json_object_put(empty);
     listener=socket(AF_INET,SOCK_STREAM,0);assert(listener>=0);struct sockaddr_in a={0};a.sin_family=AF_INET;a.sin_addr.s_addr=inet_addr("127.0.0.1");assert(!bind(listener,(struct sockaddr *)&a,sizeof(a)));assert(!listen(listener,8));socklen_t size=sizeof(a);assert(!getsockname(listener,(struct sockaddr *)&a,&size));target_port=ntohs(a.sin_port);
     pthread_t thread;assert(!pthread_create(&thread,NULL,echo,NULL));
     transfer("direct",NULL);transfer("probe_exit",NULL);transfer("reject",NULL);

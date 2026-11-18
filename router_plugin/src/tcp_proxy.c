@@ -73,6 +73,27 @@ static void cache_direct(vr_engine *e,tcp_sni_cache *c,const char *ip)
     vr_decision d=vr_local_exit(&e->config,vr_policy_match(e->policy,"",ip));
     if(d.action==VR_DIRECT&&!vr_platform_tls_cache(ip,1))c->direct=1;
 }
+/* Called by the engine thread while publishing its immutable status snapshot.
+   Counting must not flush firewall rules or change cache expiry. */
+json_object *vr_tcp_sni_cache_status(vr_engine *e)
+{
+    int direct=0,proxy=0,reject=0;
+    if(e->tcp&&e->tcp->cache_epoch==vr_platform_tls_cache_epoch()) {
+        uint64_t now=vr_millis();
+        for(size_t i=0;i<TCP_CACHE_MAX;i++) {
+            tcp_sni_cache *c=&e->tcp->cache[i];if(c->expires<=now)continue;
+            if(c->route==-1)direct++;else if(c->route==-2)reject++;else if(c->route>=0)proxy++;
+        }
+    }
+    json_object *o=json_object_new_object();
+    json_object_object_add(o,"used",json_object_new_int(direct+proxy+reject));
+    json_object_object_add(o,"capacity",json_object_new_int(TCP_CACHE_MAX));
+    json_object_object_add(o,"direct",json_object_new_int(direct));
+    json_object_object_add(o,"proxy",json_object_new_int(proxy));
+    json_object_object_add(o,"reject",json_object_new_int(reject));
+    json_object_object_add(o,"ttl_seconds",json_object_new_int64(TCP_CACHE_TTL_MS/1000));
+    return o;
+}
 static void cache_store(vr_engine *e,tcp_session *s,vr_decision d)
 {
     if(s->port!=443||!*s->domain||!e->config.tls_sni_enabled)return;

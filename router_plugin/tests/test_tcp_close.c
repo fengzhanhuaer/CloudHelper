@@ -137,6 +137,13 @@ static void idle_timeout(void)
     test_now++;step(&f);assert(!f.e->tcp->sessions[0]);
     destroy(&f);test_now=0;
 }
+static void expect_cache(vr_engine *e,int direct,int proxy,int reject)
+{
+    json_object *o=vr_tcp_sni_cache_status(e);
+    assert(json_object_get_int(vr_member(o,"used"))==direct+proxy+reject);
+    assert(json_object_get_int(vr_member(o,"direct"))==direct&&json_object_get_int(vr_member(o,"proxy"))==proxy&&json_object_get_int(vr_member(o,"reject"))==reject);
+    json_object_put(o);
+}
 static void sni_cache(void)
 {
     test_now=1000000;fixture f=create();vr_service service={0};
@@ -145,21 +152,25 @@ static void sni_cache(void)
     vr_decision direct={.action=VR_DIRECT},reject={.action=VR_REJECT},proxy={.action=VR_PROXY};strcpy(proxy.exit_node,"8");
     unsigned adds=cache_adds,deletes=cache_deletes,clears=cache_clears;
     cache_store(f.e,&temp,direct);assert(cache_adds==adds+1&&f.e->tcp->cache[0].direct);
+    expect_cache(f.e,1,0,0);
     uint64_t expiry=f.e->tcp->cache[0].expires;assert(expiry-test_now==72ull*60*60*1000);
     const char *rules="{\"route_rules\":[{\"id\":\"one\",\"action\":\"probe_exit\",\"exit_node_id\":\"8\",\"entries\":[\"domain:fixture.example\"]}]}";
     f.e->policy=vr_json_parse(rules,strlen(rules));assert(f.e->policy);
     assert(f.e->tcp->cache[0].expires==expiry);
-    test_now=expiry;cache_fail=1;cache_tick(f.e);assert(cache_deletes==deletes&&f.e->tcp->cache[0].expires);
+    test_now=expiry;expect_cache(f.e,0,0,0);assert(cache_clears==clears&&cache_deletes==deletes);
+    cache_fail=1;cache_tick(f.e);assert(cache_deletes==deletes&&f.e->tcp->cache[0].expires);
     cache_fail=0;test_now+=5000;cache_tick(f.e);assert(cache_clears==clears+1&&cache_deletes==deletes&&!f.e->tcp->cache[0].expires);
     /* Neither proxy nor reject entries install kernel bypasses. */
     assert(sizeof(tcp_sni_cache)==16);strcpy(proxy.rule,"one");
     adds=cache_adds;cache_store(f.e,&temp,proxy);assert(!f.e->tcp->cache[0].direct&&cache_adds==adds&&f.e->tcp->cache[0].route==0);
+    expect_cache(f.e,0,1,0);
     /* The cached rule ordinal chooses its exit before any ClientHello. A
        missing carrier must close, never fall back to the physical route. */
     int pair[2];assert(!socketpair(AF_UNIX,SOCK_STREAM|SOCK_NONBLOCK,0,pair));unsigned paths=path_calls;
     assert(!vr_tcp_attach(f.e,pair[1],temp.ip,443));char byte;assert(!read(pair[0],&byte,1));close(pair[0]);assert(path_calls==paths+1);
     cache_store(f.e,&temp,reject);assert(!f.e->tcp->cache[0].direct&&cache_adds==adds);
     assert(f.e->tcp->cache[0].route==-2);
+    expect_cache(f.e,0,0,1);
     assert(!socketpair(AF_UNIX,SOCK_STREAM|SOCK_NONBLOCK,0,pair));assert(!vr_tcp_attach(f.e,pair[1],temp.ip,443));assert(!read(pair[0],&byte,1));close(pair[0]);assert(path_calls==paths+1);
     cache_epoch++;cache_tick(f.e);assert(!f.e->tcp->cache[0].expires);
     /* Bounded eviction removes the old direct rule before reusing its slot. */
@@ -169,6 +180,7 @@ static void sni_cache(void)
     }
     unsigned count=0;for(unsigned i=0;i<TCP_CACHE_MAX;i++){count+=!!f.e->tcp->cache[i].expires;assert(f.e->tcp->cache[i].ip!=inet_addr("203.0.0.0"));}
     assert(count==TCP_CACHE_MAX&&cache_deletes==deletes+1);
+    expect_cache(f.e,TCP_CACHE_MAX,0,0);
     clears=cache_clears;test_now=f.e->tcp->cache[1].expires;uint64_t retained=f.e->tcp->cache[2].expires;
     cache_tick(f.e);assert(cache_clears==clears+1&&!f.e->tcp->cache[1].expires);
     assert(f.e->tcp->cache[2].expires==retained&&!f.e->tcp->cache[2].direct);

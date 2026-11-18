@@ -150,6 +150,7 @@ void vr_measure_tick(vr_engine *e);
 void vr_measure_stop(vr_engine *e);
 int vr_tcp_start(vr_engine *e);
 int vr_tcp_listener_active(vr_engine *e);
+json_object *vr_tcp_sni_cache_status(vr_engine *e);
 void vr_tcp_listener_replace(vr_engine *e,int fd);
 int vr_tcp_attach(vr_engine *e,int fd,const char *ip,int port);
 size_t vr_tcp_pollfds(vr_engine *e,struct pollfd *fds);

@@ -31,6 +31,7 @@ static void status(vr_engine *e,int ready)
     json_object_object_add(o,"route_count",json_object_new_int(e->policy?json_object_array_length(vr_member(e->policy,"route_rules")):0));
     int count=0;pthread_mutex_lock(&e->mutex);for(size_t i=0;i<VR_MAPPING_MAX;i++)if(e->mappings[i].expires>time(NULL))count++;pthread_mutex_unlock(&e->mutex);
     json_object_object_add(o,"mappings",json_object_new_int(count));
+    json_object_object_add(o,"sni_cache",ready?vr_tcp_sni_cache_status(e):NULL);
     json_object *list=vr_member(e->policy,"probe_ips");
     if(list)for(size_t i=0;i<(size_t)json_object_array_length(list);i++) {
         json_object *src=json_object_array_get_idx(list,i),*v=json_object_new_object();
