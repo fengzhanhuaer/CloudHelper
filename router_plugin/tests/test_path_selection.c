@@ -4,12 +4,76 @@
 #include <stdlib.h>
 #include <string.h>
 
+static unsigned delivered;
 void vr_link_frame(vr_link *l,const vr_frame *f,char path[VR_PATH_MAX][129],size_t n)
-{vr_measure_frame(l->engine,l,f,path,n);}
+{delivered++;vr_measure_frame(l->engine,l,f,path,n);}
 static void expect(vr_engine *e,const char *middle,size_t length)
 {char path[VR_PATH_MAX][129];size_t n;assert(!vr_path(e,"4",path,&n)&&n==length&&!strcmp(path[1],middle));}
+
+static void test_owner_authorization(void)
+{
+    vr_engine *e=calloc(1,sizeof(*e));assert(e);vr_service s={0};e->service=&s;
+    pthread_mutex_init(&s.mutex,NULL);strcpy(e->config.node_id,"7");
+    const char *text="{\"probe_ips\":[],\"topology_rules\":["
+        "{\"id\":\"ingress\",\"enabled\":true,\"from_node_id\":\"8\",\"to_node_id\":\"7\",\"user_id\":\"A\"},"
+        "{\"id\":\"foreign-prefix\",\"enabled\":true,\"from_node_id\":\"9\",\"to_node_id\":\"8\",\"user_id\":\"B\"},"
+        "{\"id\":\"egress-a\",\"enabled\":true,\"from_node_id\":\"7\",\"to_node_id\":\"6\",\"user_id\":\"A\"},"
+        "{\"id\":\"egress-b\",\"enabled\":true,\"from_node_id\":\"7\",\"to_node_id\":\"6\",\"user_id\":\"B\"},"
+        "{\"id\":\"return-prefix\",\"enabled\":true,\"from_node_id\":\"10\",\"to_node_id\":\"8\",\"user_id\":\"A\"},"
+        "{\"id\":\"return-b\",\"enabled\":true,\"from_node_id\":\"7\",\"to_node_id\":\"8\",\"user_id\":\"B\"}]}";
+    e->policy=vr_json_parse(text,strlen(text));assert(e->policy);
+    json_object *rules=vr_member(e->policy,"topology_rules");
+    assert(!vr_links_add(e,json_object_array_get_idx(rules,0)));
+    assert(!vr_links_add(e,json_object_array_get_idx(rules,2)));
+    assert(!vr_links_add(e,json_object_array_get_idx(rules,3)));
+    assert(!vr_links_add(e,json_object_array_get_idx(rules,5)));
+    SSL_CTX *ctx=SSL_CTX_new(TLS_method());assert(ctx);
+    vr_link *in=&e->links[0],*own=&e->links[VR_CARRIER_SLOTS],*other=&e->links[2*VR_CARRIER_SLOTS];
+    in->ssl=SSL_new(ctx);own->ssl=SSL_new(ctx);other->ssl=SSL_new(ctx);
+    assert(in->ssl&&own->ssl&&other->ssl);own->rtt=50;other->rtt=1;
+    uint8_t packet[28]={0x45,0,0,28,0,0,0,0,64,17,0,0,10,0,0,1,10,0,0,2,3,232,1,187,0,8,0,0};
+    const char *foreign="{\"path\":[\"9\",\"8\",\"7\"]}";
+    vr_frame f={1,1,(const uint8_t *)foreign,packet,strlen(foreign),sizeof(packet)};
+    unsigned before=delivered;assert(!vr_link_receive(&f,in));assert(delivered==before&&in->ssl);
+    const char *local="{\"path\":[\"8\",\"7\"]}";
+    f.control=(const uint8_t *)local;f.control_len=strlen(local);
+    assert(!vr_link_receive(&f,in));assert(delivered==before+1);
+    f.control=NULL;f.control_len=0;assert(!vr_link_receive(&f,in));assert(delivered==before+2);
+    const char *forward="{\"path\":[\"8\",\"7\",\"6\"]}";
+    f.control=(const uint8_t *)forward;f.control_len=strlen(forward);
+    /* A cached local flow or a faster foreign carrier cannot override ingress ownership. */
+    assert(vr_carrier_select(e,"6",&f)==other);
+    assert(!vr_link_receive(&f,in));assert(own->used&&other->used==0);
+    size_t sent=own->used;assert(!vr_link_receive(&f,in));assert(own->used>sent&&other->used==0);
+    /* Every slot of the eligible route remains usable. */
+    vr_link *slot=&e->links[VR_CARRIER_SLOTS+1];slot->ssl=SSL_new(ctx);assert(slot->ssl);
+    vr_link_close(own,"");assert(!vr_link_receive(&f,in));assert(slot->used&&other->used==0);
+    vr_link_close(slot,"");assert(!vr_link_receive(&f,in));assert(other->used==0);
+    own->ssl=SSL_new(ctx);assert(own->ssl);
+    /* Local multi-hop Ping responses must also retain a path's owner scope. */
+    vr_link *return_other=&e->links[3*VR_CARRIER_SLOTS];return_other->ssl=SSL_new(ctx);assert(return_other->ssl);
+    in->rtt=50;return_other->rtt=1;
+    const char *request="{\"path\":[\"10\",\"8\",\"7\"]}",*ping="{\"request_id\":\"owner-ping\"}";
+    vr_frame request_frame={2,1,(const uint8_t *)request,(const uint8_t *)ping,strlen(request),strlen(ping)};
+    assert(vr_carrier_select(e,"8",&request_frame)==return_other);
+    size_t replies=in->used;assert(!vr_link_receive(&request_frame,in));assert(in->used>replies&&return_other->used==0);
+    char response_path[VR_PATH_MAX][129]={{"7"},{"8"},{"10"}};
+    vr_link_close(in,"");
+    assert(vr_send(e,2,2,response_path,3,ping,strlen(ping))<0&&return_other->used==0);
+    in->ssl=SSL_new(ctx);assert(in->ssl);
+    const char *encoded=json_object_to_json_string_ext(e->policy,JSON_C_TO_STRING_PLAIN);
+    json_object *next=vr_json_parse(encoded,strlen(encoded));assert(next);
+    json_object *changed=json_object_array_get_idx(vr_member(next,"topology_rules"),2);
+    json_object_object_add(changed,"user_id",json_object_new_string("B"));
+    vr_links_reconcile(e,next);assert(in->ssl&&!in->ingress_count&&!own->ssl);
+    json_object_put(e->policy);e->policy=next;
+    before=delivered;assert(!vr_link_receive(&f,in));assert(delivered==before&&other->used==0);
+    for(size_t i=0;i<e->link_count;i++)vr_link_close(&e->links[i],"");
+    json_object_put(e->policy);pthread_mutex_destroy(&s.mutex);SSL_CTX_free(ctx);free(e);
+}
 int main(void)
 {
+    test_owner_authorization();
     vr_engine *e=calloc(1,sizeof(*e));assert(e);vr_service s={0};e->service=&s;pthread_mutex_init(&s.mutex,NULL);strcpy(e->config.node_id,"1");
     const char *text="{\"probe_ips\":[{\"node_id\":\"1\"},{\"node_id\":\"3\"},{\"node_id\":\"2\"},{\"node_id\":\"4\"}],\"topology_rules\":[{\"enabled\":true,\"from_node_id\":\"1\",\"to_node_id\":\"2\"},{\"enabled\":true,\"from_node_id\":\"1\",\"to_node_id\":\"3\"},{\"enabled\":true,\"from_node_id\":\"2\",\"to_node_id\":\"4\"},{\"enabled\":true,\"from_node_id\":\"3\",\"to_node_id\":\"4\"},{\"enabled\":true,\"from_node_id\":\"1\",\"to_node_id\":\"4\"}]}";
     e->policy=vr_json_parse(text,strlen(text));SSL_CTX *ctx=SSL_CTX_new(TLS_method());assert(ctx);e->link_count=4;
@@ -40,5 +104,5 @@ int main(void)
     assert(e->links[0].used&&e->links[3].used&&*e->links[0].ping_id&&*e->links[3].ping_id);
     for(size_t i=0;i<4;i++)vr_link_close(&e->links[i],"");
     json_object_put(e->policy);pthread_mutex_destroy(&s.mutex);SSL_CTX_free(ctx);free(e);
-    puts("PASS: hops first, equal-hop RTT, unknown/ties, disconnected paths, flow affinity and endpoint-pinned probes");return 0;
+    puts("PASS: owner-scoped ingress/forwarding/cache/slots, owner changes, hops first, equal-hop RTT, flow affinity and endpoint-pinned probes");return 0;
 }

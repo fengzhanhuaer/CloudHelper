@@ -215,6 +215,29 @@ func TestMngProbeConsoleHeaderFilters(t *testing.T) {
 	}
 }
 
+func TestMngProbeConsoleAllContentTypesAreIsolated(t *testing.T) {
+	for _, contentType := range []string{
+		"text/html; charset=utf-8", "application/xhtml+xml", "image/svg+xml", "application/xml",
+		"application/json", "text/plain", "application/octet-stream", "", "TEXT/HTML",
+	} {
+		t.Run(contentType, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			rec.Header().Set("Content-Type", contentType)
+			rec.Header().Set("Content-Security-Policy", "default-src *")
+			setMngProbeConsoleBridgeSecurityHeaders(rec)
+			csp := rec.Header().Get("Content-Security-Policy")
+			if !strings.Contains(csp, "sandbox allow-scripts") || strings.Contains(csp, "allow-same-origin") ||
+				!strings.Contains(csp, "form-action 'none'") {
+				t.Fatalf("content type %q not isolated: %q", contentType, csp)
+			}
+			if rec.Header().Get("Access-Control-Allow-Origin") != "null" ||
+				rec.Header().Get("Content-Type") != contentType {
+				t.Fatal("existing opaque-origin API access or content type changed")
+			}
+		})
+	}
+}
+
 func TestMngProbeConsoleBridgeMarksControllerBridgeResponse(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()

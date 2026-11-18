@@ -92,7 +92,7 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer stream.Close()
-	decoder := json.NewDecoder(stream)
+	decoder := newProbeControlJSONDecoder(stream, probeControlMessageMaxBytes)
 
 	probeSession := registerProbeSession(nodeID, stream)
 	defer unregisterProbeSession(nodeID, probeSession)
@@ -101,8 +101,8 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for {
-		var raw json.RawMessage
-		if err := decoder.Decode(&raw); err != nil {
+		raw, err := decoder.Decode()
+		if err != nil {
 			return
 		}
 

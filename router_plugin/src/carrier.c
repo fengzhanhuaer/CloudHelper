@@ -124,7 +124,7 @@ static const char *node_ip(json_object *policy,const char *id)
 
 static int same_connection(vr_engine *e,vr_link *l,json_object *r,json_object *policy)
 {
-    const char *fields[]={"from_node_id","to_node_id","secret","user_public_key","route_layer",
+    const char *fields[]={"from_node_id","to_node_id","secret","user_id","user_public_key","route_layer",
         "from_service_domain","to_service_domain","from_tls_spki_sha256","to_tls_spki_sha256"};
     if(!r)return 0;
     for(size_t i=0;i<sizeof(fields)/sizeof(*fields);i++)
@@ -252,45 +252,85 @@ static int flow_hash(const vr_frame *f,uint32_t *hash)
     *hash=hash_bytes(2166136261u,(const uint8_t *)id,32);return 1;
 }
 
-static vr_link *best_route(vr_engine *e,const char *peer)
+static int owner_matches(vr_link *l,const char *user)
+{return !user || !strcmp(vr_string(l->rule,"user_id"),user);}
+
+static vr_link *best_route_for_user(vr_engine *e,const char *peer,const char *user)
 {
     vr_link *best=NULL;
     for(size_t i=0;i<e->link_count;i++) {
-        vr_link *l=&e->links[i];if(!l->ssl||strcmp(peer,l->peer))continue;
+        vr_link *l=&e->links[i];if(!l->ssl||strcmp(peer,l->peer)||!owner_matches(l,user))continue;
         if(!best || (l->rtt && (!best->rtt || l->rtt<best->rtt)) ||
            (l->rtt==best->rtt && strcmp(l->route,best->route)<0))best=l;
     }
     return best;
 }
 
-vr_link *vr_carrier_select(vr_engine *e,const char *peer,const vr_frame *f)
+static vr_link *best_route(vr_engine *e,const char *peer)
+{return best_route_for_user(e,peer,NULL);}
+
+static vr_link *carrier_select_for_user(vr_engine *e,const char *peer,const vr_frame *f,const char *user)
 {
     uint32_t hash=0;int flow=flow_hash(f,&hash);vr_flow_binding *oldest=&e->bindings[0];
     if(flow)for(size_t i=0;i<VR_NAT_MAX;i++) {
         vr_flow_binding *b=&e->bindings[i];
         if(b->used&&b->hash==hash&&b->link>=0&&(size_t)b->link<e->link_count) {
             vr_link *l=&e->links[b->link];
-            if(l->ssl&&l->session==b->session&&!strcmp(peer,l->peer)){b->used=vr_millis();return l;}
+            if(l->ssl&&l->session==b->session&&!strcmp(peer,l->peer)&&owner_matches(l,user)){b->used=vr_millis();return l;}
         }
         if(b->used<oldest->used)oldest=b;
     }
-    vr_link *best=best_route(e,peer);if(!best)return NULL;
+    vr_link *best=best_route_for_user(e,peer,user);if(!best)return NULL;
     vr_link *active[VR_CARRIER_SLOTS];size_t count=0;
-    for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl&&!strcmp(best->route,e->links[i].route)&&count<VR_CARRIER_SLOTS)active[count++]=&e->links[i];
+    for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl&&!strcmp(best->route,e->links[i].route)&&owner_matches(&e->links[i],user)&&count<VR_CARRIER_SLOTS)active[count++]=&e->links[i];
     if(!flow)return active[0];
     vr_link *chosen=active[hash%count];oldest->hash=hash;oldest->link=(int)(chosen-e->links);
     oldest->session=chosen->session;oldest->used=vr_millis();return chosen;
 }
 
-static int adjacent(vr_engine *e,const char *a,const char *b)
+vr_link *vr_carrier_select(vr_engine *e,const char *peer,const vr_frame *f)
+{return carrier_select_for_user(e,peer,f,NULL);}
+
+static int adjacent_for_user(vr_engine *e,const char *a,const char *b,const char *user)
 {
     json_object *links=vr_member(e->policy,"topology_rules");
     for(size_t i=0;i<(size_t)json_object_array_length(links);i++) {
         json_object *r=json_object_array_get_idx(links,i);if(!json_object_get_boolean(vr_member(r,"enabled")))continue;
+        if(user && strcmp(vr_string(r,"user_id"),user))continue;
         const char *from=vr_string(r,"from_node_id"),*to=vr_string(r,"to_node_id");
         if((!strcmp(from,a)&&!strcmp(to,b))||(!strcmp(from,b)&&!strcmp(to,a)))return 1;
     }
     return 0;
+}
+
+static int adjacent(vr_engine *e,const char *a,const char *b)
+{return adjacent_for_user(e,a,b,NULL);}
+
+static int path_owned_by_link(vr_engine *e,vr_link *l,char path[VR_PATH_MAX][129],size_t n)
+{
+    /* A locally generated response can reuse the reverse of this carrier's
+       already authorized ingress path. Policy publication clears that cache. */
+    if(l->ingress_count==n) {
+        size_t i;for(i=0;i<n;i++)if(strcmp(path[i],l->ingress_path[n-i-1]))break;
+        if(i==n)return 1;
+    }
+    const char *user=vr_string(l->rule,"user_id");
+    for(size_t i=1;i<n;i++)if(!adjacent_for_user(e,path[i-1],path[i],user))return 0;
+    return 1;
+}
+
+static vr_link *path_carrier_select(vr_engine *e,const char *peer,const vr_frame *f,char path[VR_PATH_MAX][129],size_t n)
+{
+    vr_link *chosen=vr_carrier_select(e,peer,f);
+    if(!chosen || path_owned_by_link(e,chosen,path,n))return chosen;
+    vr_link *best=NULL;
+    for(size_t i=0;i<e->link_count;i++) {
+        vr_link *l=&e->links[i];
+        if(!l->ssl||strcmp(peer,l->peer)||!path_owned_by_link(e,l,path,n))continue;
+        if(!best || (l->rtt && (!best->rtt || l->rtt<best->rtt)) ||
+           (l->rtt==best->rtt && strcmp(l->route,best->route)<0))best=l;
+    }
+    return best?carrier_select_for_user(e,peer,f,vr_string(best->rule,"user_id")):NULL;
 }
 
 typedef struct {
@@ -442,11 +482,12 @@ int vr_link_send_json(vr_link *l,uint16_t main,uint16_t sub,char path[VR_PATH_MA
     int rc=link_frame(l,&f);json_object_put(o);return rc;
 }
 
-static int send_frame(vr_engine *e,const vr_frame *f,char path[VR_PATH_MAX][129],size_t n)
+static int send_frame(vr_engine *e,const vr_frame *f,char path[VR_PATH_MAX][129],size_t n,const char *user)
 {
     size_t at;for(at=0;at<n;at++)if(!strcmp(path[at],e->config.node_id))break;
     if(at+1>=n)return -1;
-    return link_frame(vr_carrier_select(e,path[at+1],f),f);
+    vr_link *l=user?carrier_select_for_user(e,path[at+1],f,user):path_carrier_select(e,path[at+1],f,path,n);
+    return link_frame(l,f);
 }
 
 int vr_send(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],size_t n,const void *data,size_t length)
@@ -455,7 +496,7 @@ int vr_send(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],
     for(size_t i=0;i<n;i++)json_object_array_add(a,json_object_new_string(path[i]));
     json_object_object_add(o,"path",a);
     const char *control=json_object_to_json_string_ext(o,JSON_C_TO_STRING_PLAIN);
-    vr_frame f={main,sub,(const uint8_t *)control,data,strlen(control),length};int rc=send_frame(e,&f,path,n);
+    vr_frame f={main,sub,(const uint8_t *)control,data,strlen(control),length};int rc=send_frame(e,&f,path,n,NULL);
     if(!rc&&main==1&&n<=VR_PATH_HOPS+1&&!strcmp(path[0],e->config.node_id)) {
         uint32_t hash=packet_hash(data,length);json_object *nodes=vr_member(e->policy,"probe_ips");
         for(size_t i=0;i<VR_NAT_MAX;i++)if(e->bindings[i].used&&e->bindings[i].hash==hash&&e->bindings[i].link>=0&&(size_t)e->bindings[i].link<e->link_count&&!strcmp(e->links[e->bindings[i].link].peer,path[1])) {
@@ -491,14 +532,14 @@ int vr_link_receive(const vr_frame *f,void *arg)
     if(count>VR_PATH_HOPS+1){rejected="path exceeds maximum hops";goto drop;}
     for(at=0;at<count;at++)if(!strcmp(path[at],e->config.node_id))break;
     if(!at || at>=count || strcmp(path[at-1],l->peer)){rejected="ingress peer mismatch";goto drop;}
-    for(size_t i=1;i<count;i++)if(!adjacent(e,path[i-1],path[i])){rejected="unauthorized path edge";goto drop;}
+    for(size_t i=1;i<count;i++)if(!adjacent_for_user(e,path[i-1],path[i],vr_string(l->rule,"user_id"))){rejected="unauthorized path edge";goto drop;}
     if(f->control_len<=sizeof(l->ingress_control)) {
         if(f->control_len)memcpy(l->ingress_control,f->control,f->control_len);
         l->ingress_length=f->control_len;l->ingress_count=count;l->ingress_at=at;memcpy(l->ingress_path,path,count*129);
     }
 accepted:
     l->frames_received++;l->frame_bytes_received+=12+f->control_len+f->data_len;
-    if(at+1<count){send_frame(e,f,path,count);return 0;}
+    if(at+1<count){send_frame(e,f,path,count,vr_string(l->rule,"user_id"));return 0;}
     vr_link_frame(l,f,path,count);return 0;
 drop:;
     /* Match Probe Node: reject the business frame, not its healthy carrier. */

@@ -5823,6 +5823,9 @@ func handleProbeVirtualRouterBusinessFrame(runtime *probeVirtualRouterRuntime, l
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		return err
 	}
+	if err := validateProbeVirtualRouterBusinessPayloadPath(mainType, subType, msg.Path, framePath); err != nil {
+		return err
+	}
 	if len(msg.Path) == 0 {
 		msg.Path = append([]string(nil), framePath...)
 	}
@@ -5875,6 +5878,31 @@ func handleProbeVirtualRouterBusinessFrame(runtime *probeVirtualRouterRuntime, l
 	default:
 		return fmt.Errorf("unsupported virtual router business type=%d subtype=%d", mainType, subType)
 	}
+}
+
+// Diagnostic JSON may repeat the route, but it cannot introduce a different
+// route after the frame envelope has passed ingress authorization. Pong/RTT
+// replies historically retain the request path while their envelope reverses it.
+func validateProbeVirtualRouterBusinessPayloadPath(mainType, subType uint16, payloadPath, framePath []string) error {
+	if len(payloadPath) == 0 {
+		return nil // Legacy messages inherit the authenticated envelope path.
+	}
+	payloadPath = cleanProbeVirtualRouterPath(payloadPath)
+	framePath = cleanProbeVirtualRouterPath(framePath)
+	if len(payloadPath) != len(framePath) || len(framePath) < 2 {
+		return errors.New("virtual router business payload path does not match authenticated frame")
+	}
+	same, reversed := true, true
+	for i := range framePath {
+		same = same && payloadPath[i] == framePath[i]
+		reversed = reversed && payloadPath[i] == framePath[len(framePath)-1-i]
+	}
+	legacyReply := mainType == probeVirtualRouterFrameMainTypePingPong && subType == probeVirtualRouterPingPongSubTypePong ||
+		mainType == probeVirtualRouterFrameMainTypePathRTT && subType == probeVirtualRouterPathRTTSubTypeResp
+	if same || legacyReply && reversed {
+		return nil
+	}
+	return errors.New("virtual router business payload path does not match authenticated frame")
 }
 
 func handleProbeVirtualRouterControlPing(runtime *probeVirtualRouterRuntime, link *probeVirtualRouterFrameLink, msg probeVirtualRouterControlProbePayload) error {

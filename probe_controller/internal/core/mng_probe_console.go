@@ -321,7 +321,7 @@ func mngProbeConsoleBridgeHandler(w http.ResponseWriter, r *http.Request) {
 			w.Header().Add(canonical, value)
 		}
 	}
-	setMngProbeConsoleBridgeSecurityHeaders(w, result.Headers)
+	setMngProbeConsoleBridgeSecurityHeaders(w)
 	w.Header().Set("X-Probe-Console-Bridge", "controller")
 	status := result.StatusCode
 	if status == 0 {
@@ -339,15 +339,14 @@ func setMngProbeConsoleBridgeCORSHeaders(w http.ResponseWriter) {
 	w.Header().Add("Vary", "Origin")
 }
 
-func setMngProbeConsoleBridgeSecurityHeaders(w http.ResponseWriter, responseHeaders map[string][]string) {
+func setMngProbeConsoleBridgeSecurityHeaders(w http.ResponseWriter) {
 	setMngProbeConsoleBridgeCORSHeaders(w)
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
-	if !mngProbeConsoleLooksLikeHTML(responseHeaders) {
-		return
-	}
+	// The node controls Content-Type as well as the body. All bridge responses
+	// must be isolated, including active documents other than text/html.
 	w.Header().Set("Content-Security-Policy", strings.Join([]string{
 		"sandbox allow-scripts allow-modals allow-downloads",
 		"default-src 'self' data: blob:",

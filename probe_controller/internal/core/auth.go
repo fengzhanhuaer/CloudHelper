@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"io"
 	"log"
 	"math/big"
 	"net"
@@ -45,7 +46,12 @@ const (
 	// Long-term certificate validity (years).
 	rootCAValidityYears = 100
 	adminCertYears      = 100
+
+	loginBodyMaxBytes = 64 << 10
+	loginReadTimeout  = 15 * time.Second
 )
+
+var loginRequests = make(chan struct{}, 16)
 
 var (
 	certUsernameExtensionOID = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 0}
@@ -796,7 +802,29 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req LoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	select {
+	case loginRequests <- struct{}{}:
+		defer func() { <-loginRequests }()
+	default:
+		w.Header().Set("Retry-After", "1")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authentication busy"})
+		return
+	}
+	controller := http.NewResponseController(w)
+	_ = controller.SetReadDeadline(time.Now().Add(loginReadTimeout))
+	defer controller.SetReadDeadline(time.Time{})
+	r.Body = http.MaxBytesReader(w, r.Body, loginBodyMaxBytes)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "login request too large"})
+		} else {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		}
+		return
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
 		return
 	}
@@ -804,6 +832,10 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	req.Signature = strings.TrimSpace(req.Signature)
 	if req.Nonce == "" || req.Signature == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nonce and signature are required"})
+		return
+	}
+	if len(req.Nonce) > 128 || len(req.Signature) > 256 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid credential length"})
 		return
 	}
 
