@@ -33,9 +33,9 @@ UNIT-005：test_platform_command.c 与有界 kernel MSS 测试；验证错误检
 | TASK-002 最小修复 | 已完成 | 定向双向 SYN 规则保存至 JFFS，两个启动钩子各一条调用 |
 | TASK-003 手机与网页最终验收 | 待开始 | 保留已有结果，等待用户实测；网页动画为独立问题 |
 | TASK-004 通用 MSS 规则实现 | 已完成 | 启动/健康/修复/卸载接入，Probe/安卓已核对，README 更新 |
-| TASK-005 测试与正式发布 | 进行中 | 相关组件测试及真实内核测试通过，工作流正式资产核验 |
+| TASK-005 测试与正式发布 | 已完成 | 运行 44293950561 成功，v0.4.122 正式资产 10 个核验，插件包内部 11 个文件校验通过 |
 
-当前交接：发布；初始仅本账本未跟踪；下一步唯一动作：提交本任务七个文件并同步 mapledev。
+当前交接：通用规则实现和发布已完成；代码提交 67f016d3d264985ee0fcdeaa1ebecb87dd5a06ed 已推送 mapledev；通用化下一步唯一动作：无。原打印机手机最终验收仍待用户反馈；生产插件尚未升级，通用规则升级后生效。
 
 ## 五、测试与验证
 
@@ -48,7 +48,7 @@ UNIT-005：test_platform_command.c 与有界 kernel MSS 测试；验证错误检
 | TEST-005 网关授权与主控上报 | 26 Unix API 配置为 9/14/25，主控运行报告同步为 9/14/25；节点25 LAN=52.1、在线；26 ready=true、controller_connected=true、error 空；配置后 HTML 2152 字节 / 0.116 秒 | 已完成 |
 | TEST-006 真实内核 MSS | BuildServer 隔离特权容器 test_mss_kernel.py：双向 MSS=1360、小 MSS=600 不提高、252000 字节回显、规则丢失补回后原 TCP 继续、幂等、普通转发 MSS=1460、自有规则卸载均通过 | 已完成 |
 | TEST-007 命令错误和既有链路回归 | test-platform-command 通过；test_platform_addresses.py 通过，覆盖防火墙修复、SNI、IPv6 监听、6 次地址迁移及既有连接保留 | 已完成 |
-| TEST-008 客户端与正式发布 | 源码核对：Probe exit netstack、Android VPN gVisor TCP forwarder；现有工作流资产 10 个，不含 Docker/ARM64 router/BE86U 包。发布工作流断言通过，正式发布待执行 | 进行中 |
+| TEST-008 客户端与正式发布 | 源码核对：Probe exit netstack、Android VPN gVisor TCP forwarder；v0.4.122 工作流成功、正式资产 10 个齐全，不含 Docker/ARM64 router/BE86U 包。正式插件包 137177 字节，与 GitHub digest、清单及内部 11 个文件散列均一致 | 已完成 |
 | TEST-009 固定 SDK / 原厂库 | build-ci.sh 退出 0；native 测试、ARM32 编译、4 个固件 ABI/QEMU 均通过；产物 ELF 214396 字节，无新增运行库；开发验证包 137196 字节，不用于生产安装 | 已完成 |
 | TEST-010 主控 / Probe 发布基线 | controller test ./... 和 vet ./... 通过；Probe test ./... 第二次 JSON 记录全部通过，包含 mobilecore；首次并行基线曾失败且长输出截断，未修改 Go 源码后重跑通过。JSON 留在 TEMP，不入库 | 已完成 |
 
@@ -56,6 +56,7 @@ UNIT-005：test_platform_command.c 与有界 kernel MSS 测试；验证错误检
 
 REQ-001 → UNIT-001/002/003 → TASK-001/002/003 → TEST-001/002/003/004/005。大包与手机网关授权均已修复，手机实际打印尚未闭合。
 REQ-002 → UNIT-004/005 → TASK-004/005 → TEST-006（内核 MSS）、TEST-007（命令错误与幂等）。REQ-003 → TASK-004/005 → TEST-008（客户端源码核对与发行核验）。
+REQ-002/003 验收通过，正式 v0.4.122 已发布；REQ-001 仍保留手机实际打印与原网页动画异常的验收边界，不以本次通用化发布代替手机实测。
 
 ## 七、决策与冲突记录
 
@@ -74,6 +75,7 @@ DEF-002：26 网关缺少 25 授权；Windows 的 9/14 身份可访问，不代�
 
 注释模块不可用，未安装带注释的规则。回滚时删除 nat-start/services-start 中精确的 helper 调用与 helper 文件，再以原参数 -D 删除两条打印机规则。不重启网络，不删除或刷新整个链。不存在临时 1200 规则残留。
 网关授权回滚：使用相同 configure 接口将 allowed_node_ids 恢复为 9、14，不改其他配置；核对配置与主控上报。保存授权可能短暂重新应用插件配置，随后复查主控和链路。
+通用规则回滚：源码 revert 67f016d3d 后走正式发布；已升级设备使用产品支持的正式包回退流程。停止新插件会删除 CHVR_MSS 两个钩子及自有链，不更改普通防火墙策略、conntrack 或其他组件规则。现场旧的打印机定向修复仍保留，本轮未动生产。
 
 ## 十、已验证事实
 
@@ -93,6 +95,7 @@ DEF-002：26 网关缺少 25 授权；Windows 的 9/14 身份可访问，不代�
 
 准备门禁：通过，定向实验已验证，持久配置范围和回滚清楚。
 完成门禁：有条件通过，仅定向 MSS 运行修复和持久配置验证通过；完整网页原样加载及手机实际打印未验收，整体保持进行中。
+本次追加的通用规则（REQ-002/003）完成门禁：通过。实现、相关测试、正式构建与资产核验全部闭合，未执行生产安装；原 REQ-001 的待验收项不在此次通用化完成结论内。
 
 ## 十三、检查点
 
@@ -105,3 +108,7 @@ DEF-002：26 网关缺少 25 授权；Windows 的 9/14 身份可访问，不代�
 通用化验证检查点：首轮新脚本使用 text=True 与 Ubuntu18 Python3.6 不兼容，改用 universal_newlines=True 后通过。两套内核测试串在同一容器会冲突，改为独立容器；既有 IPv6 测试首轮缺 ip6table_filter，按工作流方式在 BuildServer 加载模块后通过。以上均为测试环境/组织问题，未修改断言。普通主控/Probe 基线测试及固定 SDK 验证进行中。生产路由器仍为 v0.4.120，本轮尚未升级或改动现场通用规则。
 
 发布前检查点：所有相关验证完成，Go 主控/Probe（含 mobilecore）基线最终通过；read-only 预检通过。现有 GitHub 最新为 v0.4.121（43992996798 成功，10 个资产），本地 version 仍 0.4.120，正式提交后 fetch/rebase 工作流版本提交，不手动修改版本或标签。
+
+发布检查点：原提交 c2045acb1 在远端仅有 v0.4.121 版本提交的情况下 rebase，最终 67f016d3d 已成功推送。匹配 SHA 的运行 https://github.com/fengzhanhuaer/CloudHelper/actions/runs/44293950561 正在执行，watch 日志仅保存在 TEMP。尚未部署生产。
+
+正式交付检查点：运行 44293950561 最终 success；插件内核回归/地址迁移与 Telemetry 互操作步骤全部 success。工作流版本提交 8b3d256e8、标签 v0.4.122，https://github.com/fengzhanhuaer/CloudHelper/releases/tag/v0.4.122 已公开发布。正式插件包 SHA256=67f46ab948b4290b8438e305f1418caeab7e4c41dff42772970b754684c9f35c，137177 字节；下载清单匹配版本，内部 11 个文件大小及 SHA256 均核验。产物只下载到 TEMP，未生产安装。通用规则随新插件启动生效；Probe/安卓无需为本次系统规则单独升级。
