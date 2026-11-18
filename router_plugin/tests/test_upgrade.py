@@ -69,6 +69,11 @@ with tempfile.TemporaryDirectory(prefix='chvr-upgrade-test-') as work:
         (stage/'job.json').write_text(json.dumps({'sha256':hashlib.sha256(packed.read_bytes()).hexdigest(),'version':'v0.4.70'}))
         marker=base/'installer-lock-closed'
         (stage/'cloudhelper/install.sh').write_text('#!/bin/sh\ntest ! -e /proc/$$/fd/3 || exit 9\nprintf closed > /jffs/cloudhelper-router/installer-lock-closed\nif test "${1:-}" = --rollback;then printf "%s\\n" '+('a'*16)+' > /jffs/cloudhelper-router/active;exit 0;fi\nprintf "%s\\n" '+('b'*16)+' > /jffs/cloudhelper-router/active\nexit 1\n')
+        valid_job=(stage/'job.json').read_text()
+        (stage/'job.json').write_text(json.dumps({'sha256':'0'*64,'version':'v0.4.70'}))
+        rejected=subprocess.call([str(Path('bin/native/cloudhelper-router-plugin').resolve()),'--apply-upgrade',str(stage)])
+        assert rejected!=0 and active.read_text().strip()=='a'*16 and not marker.exists()
+        (stage/'job.json').write_text(valid_job)
         rc=subprocess.call(['/bin/sh','-c','exec 3>"$1"; exec "$2" --apply-upgrade "$3"', 'fixture',str(root/'upgrade.lock'),str(Path('bin/native/cloudhelper-router-plugin').resolve()),str(stage)])
         assert rc!=0 and active.read_text().strip()=='a'*16
         assert marker.read_text()=='closed'
@@ -84,17 +89,10 @@ with tempfile.TemporaryDirectory(prefix='chvr-upgrade-test-') as work:
     trust=Path('/usr/local/share/ca-certificates/chvr-test.crt');trust.write_bytes(cert.read_bytes())
     subprocess.check_call(['update-ca-certificates'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     body=bytes(range(256))*64
-    parallel_body=body*32
-    parallel_barrier=threading.Barrier(2)
     class Handler(BaseHTTPRequestHandler):
         attempts={}
         def log_message(self, *_): pass
         def do_GET(self):
-            if self.path=='/parallel':
-                first,last=map(int,self.headers['Range'].split('=')[1].split('-'))
-                parallel_barrier.wait(timeout=10)
-                data=parallel_body[first:last+1]
-                self.send_response(206);self.send_header('Content-Range','bytes %d-%d/%d'%(first,last,len(parallel_body)));self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data);return
             attempt=self.attempts.get(self.path,0);self.attempts[self.path]=attempt+1
             offset=int(self.headers.get('Range','bytes=0-').split('=')[1].split('-')[0])
             if attempt == 0:
@@ -114,9 +112,6 @@ with tempfile.TemporaryDirectory(prefix='chvr-upgrade-test-') as work:
     server.socket=context.wrap_socket(server.socket,server_side=True)
     threading.Thread(target=server.serve_forever,daemon=True).start()
     try:
-        parallel_target=root/'parallel.bin'
-        subprocess.check_call([binary,'parallel','https://%s:%d/parallel'%(authority,server.server_port),str(parallel_target),str(len(parallel_body))])
-        assert parallel_target.read_bytes()==parallel_body
         for mode in ['resume','restart','bad-range']:
             target=root/(mode+'.bin')
             rc=subprocess.call([binary,'download','https://%s:%d/%s'%(authority,server.server_port,mode),str(target),str(len(body))])

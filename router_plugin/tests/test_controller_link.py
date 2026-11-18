@@ -20,6 +20,11 @@ with tempfile.TemporaryDirectory(prefix='chvr-controller-link-') as directory:
         def log_message(self,*_):pass
         def do_GET(self):
             global sequence
+            if self.path=='/github-fallback':
+                assert not self.headers.get('X-Probe-Signature')
+                assert self.headers.get('Range')=='bytes=2-'
+                downloads.append(('github',self.path))
+                self.send_response(206);self.send_header('ETag','github-validator');self.send_header('Content-Range','bytes 2-7/8');self.send_header('Content-Length','6');self.end_headers();self.wfile.write(b'cdefgh');return
             if self.path.startswith('/api/probe/auth/challenge'):
                 with lock:sequence+=1;nonce='nonce-'+str(sequence)
                 if self.server.server_port!=15030:time.sleep(4)
@@ -33,10 +38,19 @@ with tempfile.TemporaryDirectory(prefix='chvr-controller-link-') as directory:
                 if not valid:self.send_error(401);return
                 if self.path=='/api/probe/controller/endpoints':
                     body={'version':1,'expires_at':int(time.time())+3600,'endpoints':[{'ip':'2001:db8::1','port':15030,'tls_spki_sha256':pin},{'ip':'192.0.2.1','port':15030,'tls_spki_sha256':pin}]}
+                elif self.path=='/api/probe/proxy/github/latest?repo=fengzhanhuaer/CloudHelper':
+                    assert self.server.server_port==15030
+                    body={'tag_name':'v0.4.123','assets':[]}
                 elif self.path=='/api/probe/proxy/download':
                     direct=self.server.server_port==15030
                     remote=self.headers.get('X-CloudHelper-Download-URL','')
                     downloads.append(('ip' if direct else 'domain',remote))
+                    if remote.endswith('/github-fallback'):
+                        if not direct:self.send_error(503);return
+                        assert not self.headers.get('Range')
+                        self.send_response(200);self.send_header('ETag','controller-validator');self.send_header('Content-Length','8');self.end_headers();self.wfile.write(b'ab');self.wfile.flush();self.close_connection=True;return
+                    if remote.endswith('/preparing'):
+                        self.send_response(503);self.send_header('X-CloudHelper-Cache','preparing');self.send_header('Content-Length','15');self.end_headers();self.wfile.write(b'cache preparing');return
                     if remote.endswith('/fail'):
                         if direct:self.send_error(503);return
                         assert self.headers.get('Range')=='bytes=2-'
@@ -51,7 +65,8 @@ with tempfile.TemporaryDirectory(prefix='chvr-controller-link-') as directory:
         for kind,port in [('primary',0),('direct',15030)]:
             server=ThreadingHTTPServer(('127.0.0.1',port),Handler);context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.load_cert_chain(str(root/(kind+'.crt')),str(root/(kind+'.key')));server.socket=context.wrap_socket(server.socket,server_side=True);servers.append(server);threading.Thread(target=server.serve_forever,daemon=True).start()
         subprocess.check_call(['bin/native/test-controller-link',str(servers[0].server_port)])
-        assert downloads==[('ip','https://fixture/metadata'),('ip','https://fixture/fail'),('domain','https://fixture/fail')],downloads
+        assert downloads[:3]==[('ip','https://fixture/metadata'),('ip','https://fixture/fail'),('domain','https://fixture/fail')],downloads
+        assert [kind for kind,remote in downloads[3:]]==['ip','domain','github','ip'],downloads
     finally:
         for server in servers:server.shutdown();server.server_close()
         trust.unlink()

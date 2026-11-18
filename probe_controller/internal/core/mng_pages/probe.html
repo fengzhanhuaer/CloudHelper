@@ -342,10 +342,10 @@
           <input id="edit-vendor-url" />
         </div>
         <div class="form-field full">
-          <label>direct_connect</label>
+          <label>安装与升级下载方式</label>
           <div class="checkbox-row">
             <input id="edit-direct-connect" type="checkbox" />
-            <label for="edit-direct-connect">直连</label>
+            <label for="edit-direct-connect">直接从 GitHub 下载（路由器插件自动选择可用来源）</label>
           </div>
         </div>
         <div class="form-field full">
@@ -507,10 +507,24 @@
       const registeredNode = state.nodes.find((entry) => Number(entry.node_no) === Number(node.node_no));
       const buildKind = String((node.runtime || {}).build_kind || '').trim().toLowerCase();
       if (normalizeNodeKind(node) === 'asus_56uv2' || normalizeNodeKind(registeredNode) === 'asus_56uv2' || buildKind === 'asus_56uv2') {
-        if ((node.runtime || {}).router_plugin_upgrade === true) return renderProbeVersion(version, online);
+        if ((node.runtime || {}).router_plugin_upgrade === true) return renderProbeVersion(version, online) + renderRouterUpgrade(node.runtime);
         return `<div class="version-cell"><span class="mono">${escapeHTML(String(version || '').trim() || '-')}</span></div>`;
       }
       return renderProbeVersion(version, online);
+    }
+
+    function renderRouterUpgrade(runtime) {
+      const upgrade = (runtime || {}).router_plugin_upgrade_status;
+      if (!upgrade || !upgrade.phase) return '';
+      const phases = {checking:'检查版本', checked:'检查完成', downloading:'下载中', verifying:'校验中', applying:'安装中', complete:'升级完成', failed:'升级失败'};
+      const sources = {controller_ip:'主控 IP', controller_domain:'主控域名', github:'GitHub'};
+      const parts = [phases[upgrade.phase] || upgrade.phase];
+      if (upgrade.latest_version) parts.push(upgrade.latest_version);
+      if (upgrade.source) parts.push(sources[upgrade.source] || upgrade.source);
+      if (upgrade.total_bytes > 0) parts.push(`${formatBytes(upgrade.downloaded_bytes)} / ${formatBytes(upgrade.total_bytes)}`);
+      if (upgrade.running && upgrade.speed_bytes_per_sec > 0) parts.push(`${formatBytes(upgrade.speed_bytes_per_sec)}/s`);
+      const detail = [upgrade.message, upgrade.error, upgrade.endpoint].filter(Boolean).join(' · ');
+      return `<div class="muted" title="${escapeHTML(detail)}">${escapeHTML(parts.join(' · '))}${upgrade.error ? '<br>' + escapeHTML(upgrade.error) : ''}</div>`;
     }
 
     async function refreshProbeLatestVersion(force) {
@@ -816,7 +830,7 @@
           return `<tr>
             <td>${escapeHTML(item.node_no)}</td>
             <td>${escapeHTML(item.node_name || '-')}${kindLabel}</td>
-            <td>${systemLabel}<br><span class="muted">${item.direct_connect ? '直连' : '主控转发'} / 本机控制台${item.local_console_enabled ? '启用' : '关闭'}</span></td>
+            <td>${systemLabel}<br><span class="muted">${nodeKind === 'asus_56uv2' ? '升级自动选源' : item.direct_connect ? 'GitHub 直连下载' : '主控转发下载'} / 本机控制台${item.local_console_enabled ? '启用' : '关闭'}</span></td>
             <td>${remark}<br><span class="muted">${ddns}</span><br><span class="muted">厂家：${vendor}</span></td>
             <td>${renderNodeVersion(version, online, status || item)}<span class="muted">${escapeHTML(formatTime(item.updated_at))}</span></td>
             <td>

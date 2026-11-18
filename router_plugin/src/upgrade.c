@@ -53,6 +53,8 @@ static const char *members[]={"checksums","device-profile","install.sh","manifes
 typedef struct {
  vr_service *service;vr_config config;unsigned generation;int check_only,direct,lock;
  char directory[80],version[64],iface[16];
+ char source[24],endpoint[1024],error[192];long http_status;CURLcode curl_code;
+ int64_t downloaded,total;uint64_t started,progress_at;
 } upgrade_job;
 
 const char *vr_upgrade_profile(void)
@@ -166,16 +168,24 @@ static void state(upgrade_job *job,const char *phase,const char *message,int run
  json_object_object_add(o,"message",json_object_new_string(message));json_object_object_add(o,"running",json_object_new_boolean(running));
  json_object_object_add(o,"latest_version",json_object_new_string(job->version));json_object_object_add(o,"upgrade_available",json_object_new_boolean(available));
  json_object_object_add(o,"downloaded_bytes",json_object_new_int64(received));json_object_object_add(o,"total_bytes",json_object_new_int64(bytes));
+ json_object_object_add(o,"source",json_object_new_string(job->source));json_object_object_add(o,"endpoint",json_object_new_string(job->endpoint));
+ json_object_object_add(o,"http_status",json_object_new_int64(job->http_status));json_object_object_add(o,"curl_code",json_object_new_int(job->curl_code));
+ json_object_object_add(o,"error",json_object_new_string(job->error));
+ uint64_t elapsed=job->started?vr_millis()-job->started:0;
+ json_object_object_add(o,"speed_bytes_per_sec",json_object_new_int64(elapsed?(int64_t)((uint64_t)received*1000/elapsed):0));
  if(job->service){pthread_mutex_lock(&job->service->mutex);json_object_put(job->service->upgrade);job->service->upgrade=json_object_get(o);pthread_mutex_unlock(&job->service->mutex);}
  const char *text=json_object_to_json_string_ext(o,JSON_C_TO_STRING_PLAIN);vr_atomic_write(UPGRADE_STATE,text,strlen(text));json_object_put(o);
 }
 json_object *vr_upgrade_status(vr_service *s)
 {
- pthread_mutex_lock(&s->mutex);json_object *o=s->upgrade?json_object_get(s->upgrade):NULL;pthread_mutex_unlock(&s->mutex);
+ pthread_mutex_lock(&s->mutex);
+ const char *wire=s->upgrade?json_object_to_json_string_ext(s->upgrade,JSON_C_TO_STRING_PLAIN):NULL;
+ char *copy=wire?strdup(wire):NULL;pthread_mutex_unlock(&s->mutex);
+ json_object *o=copy?vr_json_parse(copy,strlen(copy)):NULL;free(copy);
  if(!o){char b[4096];size_t n;if(!vr_read_file(UPGRADE_STATE,b,sizeof(b),&n))o=vr_json_parse(b,n);}
  return o?o:json_object_new_object();
 }
-typedef struct {upgrade_job *job;int fd;int64_t offset,size,received,end;long status;int range_valid,preparing;char *memory;size_t used;uint64_t headers_ms;} transfer;
+typedef struct {upgrade_job *job;int fd,release;int64_t offset,size,received;long status;int range_valid,preparing;char *memory;size_t used;uint64_t headers_ms;} transfer;
 static int cancelled(void *arg,curl_off_t a,curl_off_t b,curl_off_t c,curl_off_t d)
 {
  (void)a;(void)b;(void)c;(void)d;transfer *t=arg;return t->job->service&&vr_service_stopped(t->job->service,t->job->generation);
@@ -183,38 +193,42 @@ static int cancelled(void *arg,curl_off_t a,curl_off_t b,curl_off_t c,curl_off_t
 static size_t header(void *p,size_t size,size_t count,void *arg)
 {
  transfer *t=arg;size_t n=size*count;char b[512];if(n>=sizeof(b))return n;memcpy(b,p,n);b[n]=0;
- if(!strncasecmp(b,"X-CloudHelper-Cache: preparing",29))t->preparing=1;
- if(!strncmp(b,"HTTP/",5)){char *space=strchr(b,' ');t->status=space?strtol(space+1,NULL,10):0;t->range_valid=0;if(t->fd<0)t->used=0;}
- if(!strncasecmp(b,"Content-Range:",14)){long long first,last,total;if(sscanf(b+14," bytes %lld-%lld/%lld",&first,&last,&total)==3&&first==t->offset&&last>=first&&last<t->size&&total==t->size&&(!t->end||last==t->end))t->range_valid=1;}
+ if(!strncasecmp(b,"X-CloudHelper-Cache: preparing",30))t->preparing=1;
+ if(!strncmp(b,"HTTP/",5)){char *space=strchr(b,' ');t->status=space?strtol(space+1,NULL,10):0;t->range_valid=0;t->preparing=0;if(t->fd<0)t->used=0;}
+ if(!strncasecmp(b,"Content-Range:",14)){long long first,last,total;if(sscanf(b+14," bytes %lld-%lld/%lld",&first,&last,&total)==3&&first==t->offset&&last==t->size-1&&total==t->size)t->range_valid=1;}
  return n;
 }
 static size_t receive(void *p,size_t size,size_t count,void *arg)
 {
  transfer *t=arg;if(size&&count>VR_UPGRADE_PACKAGE_MAX/size)return 0;size_t n=size*count;
+ if(t->preparing&&t->status==503)return n;
  if(t->job->direct&&t->status>=300&&t->status<400)return n;
  if(t->fd<0){if(t->used+n>512u*1024u)return 0;char *b=realloc(t->memory,t->used+n+1);if(!b)return 0;t->memory=b;memcpy(b+t->used,p,n);t->used+=n;b[t->used]=0;return n;}
  if(t->status!=200&&t->status!=206)return 0;
- if(t->end&&t->status!=206)return 0;
  if(t->status==206&&!t->range_valid)return 0;
  if(t->offset&&t->status==200){if(ftruncate(t->fd,0)||lseek(t->fd,0,SEEK_SET)<0)return 0;t->offset=0;t->received=0;}
  if(t->offset+t->received+(int64_t)n>t->size)return 0;
- if(t->end&&t->offset+t->received+(int64_t)n>t->end+1)return 0;
- if(write(t->fd,p,n)!=(ssize_t)n)return 0;
- t->received+=(int64_t)n;return n;
+ ssize_t written;do{written=write(t->fd,p,n);}while(written<0&&errno==EINTR);
+ if(written>0)t->received+=written;
+ t->job->downloaded=t->offset+t->received;
+ if(written!=(ssize_t)n)return 0;
+ if(t->job->service&&vr_millis()-t->job->progress_at>=1000){t->job->progress_at=vr_millis();state(t->job,"downloading","正在下载升级包",1,1,t->job->downloaded,t->size);}
+ return n;
 }
 static CURLcode fetch_at(upgrade_job *job,const char *remote,transfer *t,const char *selected,const char *pin)
 {
- char url[2048],path[128]="/api/probe/proxy/download",challenge[513],signature[65],line[2200],err[256];
+ char url[2048],challenge[513],signature[65],line[2200],err[256];
+ const char *path=t->release?"/api/probe/proxy/github/latest?repo=" UPGRADE_REPO:"/api/probe/proxy/download";
+ job->curl_code=CURLE_OK;job->http_status=0;*job->error=0;
  struct curl_slist *headers=NULL,*addresses=NULL;CURL *curl=curl_easy_init();if(!curl)return CURLE_FAILED_INIT;
  if(job->direct)snprintf(url,sizeof(url),"%s",remote);
  else {
-  if(vr_controller_auth_at(&job->config,selected,pin,job->iface,"GET",path,challenge,signature,err,sizeof(err))){curl_easy_cleanup(curl);return CURLE_LOGIN_DENIED;}
+  if(vr_controller_auth_at(&job->config,selected,pin,job->iface,"GET",path,challenge,signature,err,sizeof(err))){vr_copy(job->error,sizeof(job->error),err);curl_easy_cleanup(curl);return CURLE_LOGIN_DENIED;}
   snprintf(url,sizeof(url),"%s%s",selected,path);
   snprintf(line,sizeof(line),"X-Probe-Node-Id: %s",job->config.node_id);headers=curl_slist_append(headers,line);
   snprintf(line,sizeof(line),"X-Probe-Rand: %s",challenge);headers=curl_slist_append(headers,line);
   snprintf(line,sizeof(line),"X-Probe-Signature: %s",signature);headers=curl_slist_append(headers,line);
-  snprintf(line,sizeof(line),"X-CloudHelper-Download-URL: %s",remote);headers=curl_slist_append(headers,line);
-  headers=curl_slist_append(headers,"X-CloudHelper-Download-Cache: 1");
+  if(!t->release){snprintf(line,sizeof(line),"X-CloudHelper-Download-URL: %s",remote);headers=curl_slist_append(headers,line);headers=curl_slist_append(headers,"X-CloudHelper-Download-Cache: 1");}
  }
  char origin[1024],host[254],entry[384];int port,tls;
  /* Resolve the initial TLS origin through the same independent DNS path as
@@ -241,13 +255,12 @@ static CURLcode fetch_at(upgrade_job *job,const char *remote,transfer *t,const c
  curl_easy_setopt(curl,CURLOPT_SSL_VERIFYPEER,1L);curl_easy_setopt(curl,CURLOPT_SSL_VERIFYHOST,2L);curl_easy_setopt(curl,CURLOPT_SSLVERSION,(long)CURL_SSLVERSION_TLSv1_2);
  curl_easy_setopt(curl,CURLOPT_USERAGENT,"CloudHelper-router/" VR_VERSION);curl_easy_setopt(curl,CURLOPT_HTTPHEADER,headers);
  curl_easy_setopt(curl,CURLOPT_ACCEPT_ENCODING,"identity");curl_easy_setopt(curl,CURLOPT_CONNECTTIMEOUT,8L);curl_easy_setopt(curl,CURLOPT_TIMEOUT,90L);
- curl_easy_setopt(curl,CURLOPT_LOW_SPEED_LIMIT,1L);curl_easy_setopt(curl,CURLOPT_LOW_SPEED_TIME,20L);curl_easy_setopt(curl,CURLOPT_NOSIGNAL,1L);
+ curl_easy_setopt(curl,CURLOPT_LOW_SPEED_LIMIT,10L*1024);curl_easy_setopt(curl,CURLOPT_LOW_SPEED_TIME,10L);curl_easy_setopt(curl,CURLOPT_NOSIGNAL,1L);
  if(*job->iface)curl_easy_setopt(curl,CURLOPT_INTERFACE,job->iface);
  curl_easy_setopt(curl,CURLOPT_NOPROGRESS,0L);curl_easy_setopt(curl,CURLOPT_XFERINFOFUNCTION,cancelled);curl_easy_setopt(curl,CURLOPT_XFERINFODATA,t);
  curl_easy_setopt(curl,CURLOPT_HEADERFUNCTION,header);curl_easy_setopt(curl,CURLOPT_HEADERDATA,t);
  curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,receive);curl_easy_setopt(curl,CURLOPT_WRITEDATA,t);
- char range[64];if(t->end){snprintf(range,sizeof(range),"%lld-%lld",(long long)t->offset,(long long)t->end);curl_easy_setopt(curl,CURLOPT_RANGE,range);}
- else if(t->offset){snprintf(range,sizeof(range),"%lld-",(long long)t->offset);curl_easy_setopt(curl,CURLOPT_RANGE,range);}
+ char range[64];if(t->offset){snprintf(range,sizeof(range),"%lld-",(long long)t->offset);curl_easy_setopt(curl,CURLOPT_RANGE,range);}
  vr_curl_pin(curl,pin);
  uint64_t started=vr_millis();CURLcode rc=curl_easy_perform(curl);curl_easy_getinfo(curl,CURLINFO_RESPONSE_CODE,&t->status);
  double headers_at=0;curl_easy_getinfo(curl,CURLINFO_STARTTRANSFER_TIME,&headers_at);
@@ -258,55 +271,35 @@ static CURLcode fetch_at(upgrade_job *job,const char *remote,transfer *t,const c
 static CURLcode fetch(upgrade_job *job,const char *remote,transfer *t)
 {
  CURLcode rc=CURLE_COULDNT_CONNECT;
- for(int attempt=0;attempt<5;attempt++) {
+ for(int attempt=0;attempt<6;attempt++) {
   char origin[1024]="",pin[65]="";int direct=0;
   if(!job->direct)direct=vr_controller_link_download_target(&job->config,origin,pin);
+  vr_copy(job->source,sizeof(job->source),job->direct?"github":direct?"controller_ip":"controller_domain");
+  vr_copy(job->endpoint,sizeof(job->endpoint),job->direct?(t->release?"https://api.github.com":"https://github.com"):origin);
+  if(job->service)state(job,t->release?"checking":"downloading",t->release?"正在检查发布版本":"正在下载升级包",1,!t->release,job->downloaded,job->total);
   uint64_t start=vr_millis();rc=fetch_at(job,remote,t,origin,pin);
-  int failed=rc!=CURLE_OK||t->status>=500||t->status==429||t->status==403||t->status==401;
-  if(job->direct||t->preparing||cancelled(t,0,0,0,0))return rc;
-  vr_controller_link_download_feedback(&job->config,origin,!failed,t->headers_ms?t->headers_ms:vr_millis()-start);
+  job->curl_code=rc;job->http_status=t->status;
+  if(t->preparing&&t->status==503){
+   *job->error=0;
+   if(job->service)state(job,"downloading","主控正在缓存升级包，稍后继续",1,1,job->downloaded,job->total);
+   return rc;
+  }
+  int failed=rc!=CURLE_OK||(t->status!=200&&t->status!=206);
+  if(!failed){*job->error=0;return rc;}
+  if(!*job->error)snprintf(job->error,sizeof(job->error),"%s: HTTP %ld, curl %d (%s)",job->source,t->status,(int)rc,curl_easy_strerror(rc));
+  /* A cache fill is healthy: wait with a fresh nonce at the same origin. */
+  if(cancelled(t,0,0,0,0))return rc;
+  if(job->service)vr_service_log(job->service,"upgrade",job->error);
+  if(!job->direct)vr_controller_link_download_feedback(&job->config,origin,0,t->headers_ms?t->headers_ms:vr_millis()-start);
+  int last=job->direct;
+  if(!direct)job->direct=1;
   /* Partial payloads must resume at their new offset in the caller. */
-  if(!failed||!direct||t->received)return rc;
+  if(last||t->received)return rc;
   free(t->memory);t->memory=NULL;t->used=0;t->status=0;t->range_valid=0;t->headers_ms=0;
  }
  return rc;
 }
 
-typedef struct {upgrade_job *job;const char *url;FILE *file;int64_t first,last,total;int ok;} parallel_chunk;
-static void *fetch_chunk(void *arg)
-{
- parallel_chunk *c=arg;
- for(int attempt=0;attempt<3;attempt++) {
-  off_t size=lseek(fileno(c->file),0,SEEK_END);if(size<0)return NULL;
-  if(size==c->last-c->first+1){c->ok=1;return NULL;}
-  transfer t={.job=c->job,.fd=fileno(c->file),.offset=c->first+size,.size=c->total,.end=c->last};
-  CURLcode rc=fetch(c->job,c->url,&t);
-  if(rc==CURLE_OK&&t.status==206&&lseek(t.fd,0,SEEK_END)==c->last-c->first+1){c->ok=1;return NULL;}
-  if(t.preparing||cancelled(&t,0,0,0,0))return NULL;
- }
- return NULL;
-}
-static int fetch_parallel(upgrade_job *job,const char *url,int fd,int64_t bytes)
-{
- if(bytes<256*1024)return -1;
- parallel_chunk chunks[2]={{.job=job,.url=url,.first=0,.last=bytes/2-1,.total=bytes},{.job=job,.url=url,.first=bytes/2,.last=bytes-1,.total=bytes}};
- pthread_t threads[2];int started=0,ok=0;pthread_attr_t attr;pthread_attr_init(&attr);pthread_attr_setstacksize(&attr,256*1024);
- for(int i=0;i<2;i++) {chunks[i].file=tmpfile();if(!chunks[i].file)goto done;}
- for(int i=0;i<2;i++) {if(pthread_create(&threads[i],&attr,fetch_chunk,&chunks[i]))break;started++;}
- for(int i=0;i<started;i++)pthread_join(threads[i],NULL);
- if(started!=2||!chunks[0].ok||!chunks[1].ok)goto done;
- for(int i=0;i<2;i++) {
-  if(lseek(fileno(chunks[i].file),0,SEEK_SET)<0)goto done;
-  char buffer[16384];ssize_t n;
-  while((n=read(fileno(chunks[i].file),buffer,sizeof(buffer)))>0)if(write(fd,buffer,(size_t)n)!=n)goto done;
-  if(n<0)goto done;
- }
- ok=1;
-done:
- pthread_attr_destroy(&attr);
- for(int i=0;i<2;i++)if(chunks[i].file)fclose(chunks[i].file);
- if(!ok){if(ftruncate(fd,0)||lseek(fd,0,SEEK_SET)<0)return -1;}return ok?0:-1;
-}
 static void cleanup(const char *dir)
 {
  char p[512];for(size_t i=0;i<12;i++){snprintf(p,sizeof(p),"%s/cloudhelper/%s",dir,members[i]);unlink(p);}
@@ -314,14 +307,23 @@ static void cleanup(const char *dir)
  for(size_t i=0;i<5;i++){snprintf(p,sizeof(p),"%s/%s",dir,paths[i]);rmdir(p);}
  snprintf(p,sizeof(p),"%s/package.tar.gz",dir);unlink(p);snprintf(p,sizeof(p),"%s/job.json",dir);unlink(p);rmdir(dir);
 }
+static int prefer_controller(upgrade_job *job)
+{
+ job->direct=!*job->config.controller||!*job->config.node_id||!*job->config.node_key;
+ return job->direct;
+}
 static void *run(void *arg)
 {
  upgrade_job *job=arg;char err[240]="upgrade failed",path[512];json_object *release=NULL,*asset=NULL;
  vr_addresses addresses;
  if(!vr_addresses_get(&addresses))vr_copy(job->iface,sizeof(job->iface),addresses.wan_if);
  state(job,"checking","正在检查发布版本",1,0,0,0);
- if(job->direct){transfer t={.job=job,.fd=-1};CURLcode rc=fetch(job,"https://api.github.com/repos/" UPGRADE_REPO "/releases/latest",&t);if(rc==CURLE_OK&&t.status==200)release=vr_json_parse(t.memory,t.used);free(t.memory);}
- else release=vr_controller_call(&job->config,job->iface,"GET","/api/probe/proxy/github/latest?repo=" UPGRADE_REPO,NULL,err,sizeof(err));
+ /* Legacy direct/proxy commands both use automatic selection when the router
+    has a controller identity. Never confuse GitHub download with IP transport. */
+ int standalone=prefer_controller(job);
+ transfer latest={.job=job,.fd=-1,.release=1};CURLcode latest_rc=fetch(job,"https://api.github.com/repos/" UPGRADE_REPO "/releases/latest",&latest);
+ if(latest_rc==CURLE_OK&&latest.status==200)release=vr_json_parse(latest.memory,latest.used);
+ free(latest.memory);
  if(!release){snprintf(err,sizeof(err),"无法获取发布信息，请稍后重试");goto failed;}
  asset=vr_upgrade_select(release,vr_upgrade_profile(),VR_VERSION,err,sizeof(err));if(!asset)goto failed;
  vr_copy(job->version,sizeof(job->version),vr_string(asset,"version"));
@@ -331,7 +333,7 @@ static void *run(void *arg)
  snprintf(path,sizeof(path),"%s/package.tar.gz",job->directory);int fd=open(path,O_RDWR|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW,0600);
  if(fd<0)goto failed;
  int64_t bytes=json_object_get_int64(vr_member(asset,"bytes"));int complete=0;
- if(!fetch_parallel(job,vr_string(asset,"url"),fd,bytes))complete=1;
+ job->total=bytes;job->started=vr_millis();job->direct=standalone;
  for(int attempt=0,preparing=0;!complete&&attempt<6;attempt++) {
   off_t offset=lseek(fd,0,SEEK_END);if(offset<0)break;
   state(job,"downloading",attempt?"正在续传升级包":"正在下载升级包",1,1,offset,bytes);
@@ -339,15 +341,16 @@ static void *run(void *arg)
   off_t got=lseek(fd,0,SEEK_END);if(rc==CURLE_OK&&(t.status==200||t.status==206)&&got==bytes){complete=1;break;}
   if(cancelled(&t,0,0,0,0))break;
   if(t.status==503&&t.preparing&&preparing++<900){attempt--;for(int i=0;i<20&&!cancelled(&t,0,0,0,0);i++)poll(NULL,0,100);continue;}
-  for(int i=0;i<(1<<attempt)*10;i++){if(cancelled(&t,0,0,0,0))break;poll(NULL,0,100);}
+  for(int i=0;i<(attempt+1)*5;i++){if(cancelled(&t,0,0,0,0))break;poll(NULL,0,100);}
  }
- close(fd);if(!complete){snprintf(err,sizeof(err),"下载未完成，当前版本保持运行；请重试");goto failed;}
+ job->downloaded=lseek(fd,0,SEEK_END);close(fd);if(!complete){snprintf(err,sizeof(err),"下载未完成，当前版本保持运行");goto failed;}
  state(job,"verifying","正在校验升级包",1,1,bytes,bytes);
  if(file_sha(path,vr_string(asset,"sha256"))){snprintf(err,sizeof(err),"升级包 SHA256 校验失败，当前版本保持运行");goto failed;}
  if(vr_upgrade_unpack(path,job->directory,vr_upgrade_profile(),err,sizeof(err)))goto failed;
  char manifest[8192];size_t used;snprintf(path,sizeof(path),"%s/cloudhelper/manifest.json",job->directory);
  if(vr_read_file(path,manifest,sizeof(manifest),&used)){snprintf(err,sizeof(err),"invalid package manifest");goto failed;}
  json_object *m=vr_json_parse(manifest,used);int valid=m&&!strcmp(vr_string(m,"version"),job->version)&&!strcmp(vr_string(m,"device_profile"),vr_upgrade_profile());json_object_put(m);if(!valid){snprintf(err,sizeof(err),"package version or router profile mismatch");goto failed;}
+ json_object_object_add(asset,"source",json_object_new_string(job->source));json_object_object_add(asset,"endpoint",json_object_new_string(job->endpoint));
  snprintf(path,sizeof(path),"%s/job.json",job->directory);const char *text=json_object_to_json_string_ext(asset,JSON_C_TO_STRING_PLAIN);
  if(vr_atomic_write(path,text,strlen(text)))goto failed;
  state(job,"applying","正在安装，管理页面将短暂重连",1,1,bytes,bytes);
@@ -361,7 +364,7 @@ static void *run(void *arg)
  if(code){snprintf(err,sizeof(err),"upgrade installer start failed (%d)",code);goto failed;}
  goto done;
 failed:
- state(job,"failed",err,0,0,0,0);if(job->service)vr_service_log(job->service,"upgrade",err);
+ state(job,"failed",err,0,*job->version&&vr_upgrade_version_newer(job->version,VR_VERSION),job->downloaded,job->total);if(job->service)vr_service_log(job->service,"upgrade",err);
  if(*job->directory)cleanup(job->directory);
 done:
  json_object_put(asset);json_object_put(release);close(job->lock);OPENSSL_cleanse(&job->config,sizeof(job->config));free(job);return NULL;
@@ -388,6 +391,7 @@ int vr_upgrade_apply(const char *dir)
  struct stat st;if(geteuid()||strncmp(dir,"/tmp/chvr-upgrade.",18)||strlen(dir)!=24||lstat(dir,&st)||!S_ISDIR(st.st_mode)||st.st_uid||st.st_mode&077)return 1;
  char p[512],b[4096];size_t used;snprintf(p,sizeof(p),"%s/job.json",dir);if(vr_read_file(p,b,sizeof(b),&used))return 1;
  json_object *o=vr_json_parse(b,used);upgrade_job job={0};vr_copy(job.version,sizeof(job.version),vr_string(o,"version"));
+ vr_copy(job.source,sizeof(job.source),vr_string(o,"source"));vr_copy(job.endpoint,sizeof(job.endpoint),vr_string(o,"endpoint"));job.total=json_object_get_int64(vr_member(o,"bytes"));
  snprintf(p,sizeof(p),"%s/package.tar.gz",dir);if(!o||file_sha(p,vr_string(o,"sha256"))){json_object_put(o);return 1;}
  char previous[32]={0};size_t previous_size=0;
  if(!vr_read_file("/jffs/cloudhelper-router/active",previous,sizeof(previous)-1,&previous_size))previous[previous_size]=0;
@@ -407,6 +411,6 @@ int vr_upgrade_apply(const char *dir)
   char *start[]={"sh","/jffs/cloudhelper-router/service","start",NULL};code=upgrade_spawn(&pid,"/bin/sh",start,-1,-1,-1);
   if(!code)while(waitpid(pid,&status,0)<0&&errno==EINTR){}
  }
- state(&job,ok?"complete":"failed",ok?"升级完成，请刷新页面":"安装失败，已尝试恢复上一版本；请检查当前状态",0,0,0,0);
+ state(&job,ok?"complete":"failed",ok?"升级完成，请刷新页面":"安装失败，已尝试恢复上一版本；请检查当前状态",0,0,job.total,job.total);
  json_object_put(o);cleanup(dir);return ok?0:1;
 }

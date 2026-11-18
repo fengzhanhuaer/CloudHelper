@@ -129,6 +129,7 @@ static int message(control *c)
     else if(!strcmp(type,"upgrade")&&!strcmp(vr_string(m,"build_kind"),"asus_jffs")) {
         char err[256]="cannot start upgrade";
         if(vr_upgrade_start(c->engine->service,m,err,sizeof(err)))vr_service_log(c->engine->service,"upgrade",err);
+        else c->report=1;
     }
     json_object_put(m);return 0;
 }
@@ -214,6 +215,8 @@ static int report(control *c)
     char *copy=wire&&strlen(wire)<256*1024?strdup(wire):NULL;
     vr_copy(v4,sizeof(v4),e->public_ipv4);vr_copy(v6,sizeof(v6),e->public_ipv6);pthread_mutex_unlock(&e->mutex);
     vr_report_addresses(o,v4,v6);
+    json_object *upgrade=vr_upgrade_status(e->service);
+    if(*vr_string(upgrade,"phase"))json_object_object_add(o,"router_plugin_upgrade_status",upgrade);else json_object_put(upgrade);
     json_object *snapshot=copy?vr_json_parse(copy,strlen(copy)):NULL;free(copy);
     if(snapshot){json_object_object_foreach(snapshot,key,value){json_object_object_add(o,key,json_object_get(value));}json_object_put(snapshot);}
     const char *text=json_object_to_json_string_ext(o,JSON_C_TO_STRING_PLAIN);size_t len=strlen(text);int rc=-1;

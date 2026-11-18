@@ -31,6 +31,9 @@ int main(int argc,char **argv)
  json_object_array_add(endpoints,json_object_get(json_object_array_get_idx(vr_member(discovery,"endpoints"),0)));
  json_object_object_add(discovery,"endpoints",endpoints);assert(!vr_controller_link_store(&c,discovery));json_object_put(discovery);
  upgrade_job job={.config=c};strcpy(job.iface,"lo");transfer metadata={.job=&job,.fd=-1};
+ transfer latest={.job=&job,.fd=-1,.release=1};
+ assert(fetch(&job,"https://api.github.com/repos/fixture/releases/latest",&latest)==CURLE_OK&&latest.status==200);
+ json_object *release=vr_json_parse(latest.memory,latest.used);assert(release&&!strcmp(vr_string(release,"tag_name"),"v0.4.123")&&!strcmp(job.source,"controller_ip"));json_object_put(release);free(latest.memory);
  assert(fetch(&job,"https://fixture/metadata",&metadata)==CURLE_OK&&metadata.status==200);
  json_object *download=vr_json_parse(metadata.memory,metadata.used);assert(download&&!strcmp(vr_string(download,"download"),"ip"));json_object_put(download);free(metadata.memory);
  assert(!vr_controller_link_target(&c,origin,pin));
@@ -39,6 +42,21 @@ int main(int argc,char **argv)
  assert(fetch(&job,"https://fixture/fail",&body)==CURLE_OK&&body.status==206&&body.received==6);
  char result[9]={0};rewind(file);assert(fread(result,1,8,file)==8&&!strcmp(result,"abcdefgh"));fclose(file);
  assert(!vr_controller_link_download_target(&c,origin,pin));
+ /* An old direct command must prefer the controller, then resume the same
+    package through GitHub if both controller transports fail. */
+ vr_controller_link_init(&c,config);job.direct=1;assert(!prefer_controller(&job));
+ file=tmpfile();assert(file);char remote[1100];snprintf(remote,sizeof(remote),"%s/github-fallback",c.controller);
+ transfer partial={.job=&job,.fd=fileno(file),.size=8};
+ assert(fetch(&job,remote,&partial)!=CURLE_OK&&partial.received==2);
+ transfer resumed={.job=&job,.fd=fileno(file),.offset=2,.size=8};
+ assert(fetch(&job,remote,&resumed)==CURLE_OK&&resumed.status==206&&resumed.received==6);
+ assert(job.direct&&!strcmp(job.source,"github")&&!*job.error);
+ memset(result,0,sizeof(result));rewind(file);assert(fread(result,1,8,file)==8&&!strcmp(result,"abcdefgh"));fclose(file);
+ /* A warming cache must not trigger GitHub fallback or IP cooldown. */
+ vr_controller_link_init(&c,config);job.direct=0;
+ file=tmpfile();assert(file);transfer preparing={.job=&job,.fd=fileno(file),.size=8};
+ assert(fetch(&job,"https://fixture/preparing",&preparing)==CURLE_OK&&preparing.status==503&&preparing.preparing);
+ assert(!job.direct&&!*job.error&&vr_controller_link_download_target(&c,origin,pin));assert(lseek(fileno(file),0,SEEK_END)==0);fclose(file);
  vr_controller_link_init(&c,config);
  vr_controller_link_feedback(&c,0,0,3000);assert(vr_controller_link_target(&c,origin,pin)==1);assert(!strcmp(origin,"https://192.0.2.1:15030")&&strlen(pin)==64);
  json_object *o=vr_controller_call(&c,"","GET","/api/probe/route/config",NULL,err,sizeof(err));if(!o)fprintf(stderr,"%s\n",err);assert(o&&json_object_get_boolean(vr_member(o,"ok")));json_object_put(o);

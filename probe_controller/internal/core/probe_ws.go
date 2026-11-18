@@ -11,27 +11,28 @@ import (
 )
 
 type probeReportMessage struct {
-	RouterPluginCarrierSlots int                            `json:"router_plugin_carrier_slots,omitempty"`
-	RouterPluginUpgrade      bool                           `json:"router_plugin_upgrade,omitempty"`
-	GatewayProxy             *probeGatewayProxyConfig       `json:"gateway_proxy,omitempty"`
-	LANIP                    string                         `json:"lan_ip,omitempty"`
-	WANIP                    string                         `json:"wan_ip,omitempty"`
-	Type                     string                         `json:"type"`
-	NodeID                   string                         `json:"node_id"`
-	Platform                 string                         `json:"platform,omitempty"`
-	OS                       string                         `json:"os,omitempty"`
-	Arch                     string                         `json:"arch,omitempty"`
-	IPv4                     []string                       `json:"ipv4,omitempty"`
-	IPv6                     []string                       `json:"ipv6,omitempty"`
-	System                   probeSystemMetrics             `json:"system"`
-	MachineUptimeSeconds     int64                          `json:"machine_uptime_seconds,omitempty"`
-	Version                  string                         `json:"version,omitempty"`
-	BuildKind                string                         `json:"build_kind,omitempty"`
-	SpecialExit              probeSpecialExitRuntimeReport  `json:"special_exit,omitempty"`
-	LinuxRouter              probeLinuxRouterRuntimeReport  `json:"linux_router,omitempty"`
-	RelayStatus              []probeRelayStatusItem         `json:"relay_status,omitempty"`
-	VirtualRouterBuffers     probeVirtualRouterBufferReport `json:"virtual_router_buffers,omitempty"`
-	Timestamp                string                         `json:"timestamp,omitempty"`
+	RouterPluginCarrierSlots  int                            `json:"router_plugin_carrier_slots,omitempty"`
+	RouterPluginUpgrade       bool                           `json:"router_plugin_upgrade,omitempty"`
+	RouterPluginUpgradeStatus *probeRouterUpgradeStatus      `json:"router_plugin_upgrade_status,omitempty"`
+	GatewayProxy              *probeGatewayProxyConfig       `json:"gateway_proxy,omitempty"`
+	LANIP                     string                         `json:"lan_ip,omitempty"`
+	WANIP                     string                         `json:"wan_ip,omitempty"`
+	Type                      string                         `json:"type"`
+	NodeID                    string                         `json:"node_id"`
+	Platform                  string                         `json:"platform,omitempty"`
+	OS                        string                         `json:"os,omitempty"`
+	Arch                      string                         `json:"arch,omitempty"`
+	IPv4                      []string                       `json:"ipv4,omitempty"`
+	IPv6                      []string                       `json:"ipv6,omitempty"`
+	System                    probeSystemMetrics             `json:"system"`
+	MachineUptimeSeconds      int64                          `json:"machine_uptime_seconds,omitempty"`
+	Version                   string                         `json:"version,omitempty"`
+	BuildKind                 string                         `json:"build_kind,omitempty"`
+	SpecialExit               probeSpecialExitRuntimeReport  `json:"special_exit,omitempty"`
+	LinuxRouter               probeLinuxRouterRuntimeReport  `json:"linux_router,omitempty"`
+	RelayStatus               []probeRelayStatusItem         `json:"relay_status,omitempty"`
+	VirtualRouterBuffers      probeVirtualRouterBufferReport `json:"virtual_router_buffers,omitempty"`
+	Timestamp                 string                         `json:"timestamp,omitempty"`
 }
 
 type probeAckMessage struct {
@@ -131,6 +132,7 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 				scheduleProbeRouteConfigSyncToKnownNodes()
 			}
 			updateProbeRuntimeRouterPluginUpgrade(nodeID, msg.RouterPluginUpgrade)
+			updateProbeRuntimeRouterPluginUpgradeStatus(nodeID, msg.RouterPluginUpgradeStatus)
 
 			_ = probeSession.writeJSON(probeAckMessage{
 				Type:      "ack",
