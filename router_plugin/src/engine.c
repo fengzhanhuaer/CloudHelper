@@ -193,6 +193,7 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
             sniff_retry=now+5000;
         }
         vr_handshakes_poll(e,0);
+        if(e->config.enabled)vr_dns_filter_tick(e);
         if(vr_policy_apply_pending(e)==2){strcpy(e->error,"controller interface configuration changed; reloading");break;}
         pthread_mutex_lock(&e->mutex);int pending_policy=e->next_policy!=NULL;pthread_mutex_unlock(&e->mutex);
         vr_dataplane_tick(e);
@@ -244,6 +245,7 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
         }
     }
 done:
+    vr_dns_filter_stop(e);
     /* Restore ordinary DNS before waiting for controller network deadlines. */
     if(e->platform_started)vr_platform_dns(0);
     vr_control_stop(e);

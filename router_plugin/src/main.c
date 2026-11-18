@@ -128,9 +128,11 @@ json_object *vr_service_dispatch(vr_service *s,json_object *request)
         int sniff=c.tls_sni_enabled;c.tls_sni_enabled=s->config.tls_sni_enabled;
         vr_ip_blacklist blacklist=c.ip_blacklist;c.ip_blacklist=s->config.ip_blacklist;
         vr_exit_overrides exits=c.exit_overrides;c.exit_overrides=s->config.exit_overrides;
+        vr_dns_filter dns_filter=c.dns_filter;c.dns_filter=s->config.dns_filter;
         int live_only=!memcmp(&c,&s->config,sizeof(c));c.tls_sni_enabled=sniff;
         c.ip_blacklist=blacklist;
         c.exit_overrides=exits;
+        c.dns_filter=dns_filter;
         if(live_only) {
             s->config=c;pthread_mutex_unlock(&s->mutex);OPENSSL_cleanse(&c,sizeof(c));return status_reply(s);
         }

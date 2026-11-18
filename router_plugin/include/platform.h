@@ -14,6 +14,8 @@ int vr_platform_start(const vr_config *c,const vr_addresses *a,const char *ip,co
 int vr_platform_readdress(const vr_config *c,const vr_addresses *old,const vr_addresses *next,const char *cidr);
 void vr_platform_stop(const char *cidr);
 int vr_platform_dns(int enabled);
+int vr_platform_dns_filter(const vr_dns_filter *filter,const vr_addresses *a,const char ips[][46],size_t count);
+void vr_platform_dns_filter_stop(void);
 int vr_platform_routes(json_object *policy);
 int vr_platform_routes_update(json_object *previous,json_object *next);
 int vr_platform_exit_routes(json_object *previous,json_object *next,const vr_exit_overrides *before,const vr_exit_overrides *after);

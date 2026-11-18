@@ -88,6 +88,7 @@ struct vr_engine {
     unsigned mapping_dirty;uint64_t mapping_flush_at;
     vr_nat flows[VR_NAT_MAX];uint16_t next_port;
     struct vr_tcp_state *tcp;
+    struct vr_dns_filter_state *dns_filter;
     vr_resolve_job resolves[16];pthread_t resolve_thread;
     pthread_cond_t resolve_changed;int resolve_started,resolve_stop;
     vr_dns_job jobs[16];size_t job_head,job_count;
@@ -145,6 +146,8 @@ void vr_incoming(vr_engine *e,const vr_frame *f,char path[VR_PATH_MAX][129],size
 int vr_dns_start(vr_engine *e);
 void vr_dns_accept(vr_engine *e,int tcp);
 void vr_dns_stop(vr_engine *e);
+void vr_dns_filter_tick(vr_engine *e);
+void vr_dns_filter_stop(vr_engine *e);
 void vr_measure_frame(vr_engine *e,vr_link *l,const vr_frame *f,char path[VR_PATH_MAX][129],size_t n);
 void vr_measure_tick(vr_engine *e);
 void vr_measure_stop(vr_engine *e);

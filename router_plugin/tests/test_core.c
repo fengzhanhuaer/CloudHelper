@@ -78,6 +78,26 @@ static json_object *parse(const char *s){json_object *o=vr_json_parse(s,strlen(s
 
 static void test_config(void)
 {
+    /* LAN DNS controls are independent local settings and must survive save/load. */
+    vr_config filtered;char filter_error[256];
+    json_object *filter_input=json_tokener_parse("{\"dns_filter\":{\"block_doh\":true,\"block_dot\":true,\"redirect_plain\":true,\"blacklist\":[\"DNS.Example.COM.\",\"1.1.1.1\",\"dns.example.com\"]}}");
+    assert(!vr_config_parse(&filtered,filter_input,NULL,filter_error,sizeof(filter_error)));
+    json_object *filter_saved=vr_config_json(&filtered,1),*filter=vr_member(filter_saved,"dns_filter");
+    assert(json_object_get_boolean(vr_member(filter,"block_doh"))&&json_object_get_boolean(vr_member(filter,"block_dot"))&&json_object_get_boolean(vr_member(filter,"redirect_plain")));
+    assert(json_object_array_length(vr_member(filter,"blacklist"))==2);
+    assert(!strcmp(json_object_get_string(json_object_array_get_idx(vr_member(filter,"blacklist"),0)),"dns.example.com"));
+    vr_config reloaded;assert(!vr_config_parse(&reloaded,filter_saved,NULL,filter_error,sizeof(filter_error)));
+    assert(vr_dns_filter_domain(&reloaded.dns_filter,"DNS.EXAMPLE.COM"));
+    assert(vr_dns_filter_domain(&reloaded.dns_filter,"a.dns.example.com"));
+    assert(!vr_dns_filter_domain(&reloaded.dns_filter,"notdns.example.com"));
+    assert(!vr_dns_filter_domain(&reloaded.dns_filter,"1.1.1.1"));
+    const char *invalid_filters[]={"{\"dns_filter\":null}","{\"dns_filter\":{\"block_doh\":1}}","{\"dns_filter\":{\"blacklist\":[\"https://dns.example.com/dns-query\"]}}","{\"dns_filter\":{\"blacklist\":[\"a;reboot\"]}}","{\"dns_filter\":{\"blacklist\":[\"a..com\"]}}","{\"dns_enabled\":false,\"dns_filter\":{\"redirect_plain\":true}}","{\"dns_filter\":{\"blacklist\":[\"a\\u0000b\"]}}"};
+    for(size_t i=0;i<sizeof(invalid_filters)/sizeof(*invalid_filters);i++){json_object *bad=json_tokener_parse(invalid_filters[i]);assert(vr_config_parse(&reloaded,bad,NULL,filter_error,sizeof(filter_error)));json_object_put(bad);}
+    json_object *too_many=json_object_new_object(),*too_many_filter=json_object_new_object(),*too_many_list=json_object_new_array();
+    for(int i=0;i<33;i++)json_object_array_add(too_many_list,json_object_new_string("dns.example.com"));
+    json_object_object_add(too_many_filter,"blacklist",too_many_list);json_object_object_add(too_many,"dns_filter",too_many_filter);
+    assert(vr_config_parse(&reloaded,too_many,NULL,filter_error,sizeof(filter_error)));json_object_put(too_many);
+    json_object_put(filter_input);json_object_put(filter_saved);
     char err[256];vr_config c,updated;vr_config_default(&c);
     assert(!c.enabled && c.port==12040 && !c.allow_wan);
     assert(!strcmp(c.dns_doh,"https://dns.alidns.com/dns-query")&&!strcmp(c.dns_dot,"dns.alidns.com:853")&&!strcmp(c.dns_upstream,"223.5.5.5:53"));

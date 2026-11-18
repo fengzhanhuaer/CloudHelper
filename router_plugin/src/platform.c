@@ -94,7 +94,7 @@ static void command_output(int fd,char *out,size_t capacity,size_t *used)
         }
     }
 }
-static int command_code(const char *const *args,char *out,size_t capacity)
+static int command_code_input(const char *const *args,char *out,size_t capacity,int input)
 {
     int pipes[2];if(pipe2(pipes,O_CLOEXEC|O_NONBLOCK))return -errno;
     /* Asuswrt uses strict overcommit. fork() reserves the full parent image:
@@ -112,6 +112,7 @@ static int command_code(const char *const *args,char *out,size_t capacity)
     if(!code)code=posix_spawn_file_actions_adddup2(&actions,pipes[1],STDOUT_FILENO);
     if(!code)code=posix_spawn_file_actions_addclose(&actions,pipes[1]);
     if(!code)code=posix_spawn_file_actions_addopen(&actions,STDERR_FILENO,"/dev/null",O_WRONLY,0);
+    if(!code&&input>=0)code=posix_spawn_file_actions_adddup2(&actions,input,STDIN_FILENO);
     if(!code)code=posix_spawnp(&pid,args[0],&actions,&attr,(char *const *)args,environ);
     posix_spawnattr_destroy(&attr);posix_spawn_file_actions_destroy(&actions);
     if(code){close(pipes[0]);close(pipes[1]);return -code;}
@@ -128,6 +129,8 @@ static int command_code(const char *const *args,char *out,size_t capacity)
     close(pipes[0]);if(out&&capacity){while(used&&(out[used-1]=='\n'||out[used-1]=='\r'))used--;out[used]=0;}
     return !done?-ETIMEDOUT:WIFEXITED(status)?WEXITSTATUS(status):-EINTR;
 }
+static int command_code(const char *const *args,char *out,size_t capacity)
+{return command_code_input(args,out,capacity,-1);}
 static int command(const char *const *args,char *out,size_t capacity)
 {return command_code(args,out,capacity)==0?0:-1;}
 
@@ -521,6 +524,41 @@ int vr_platform_dns(int enabled)
     /* If the vendor already replaced our file, keep its new contents. */
     if(unlink(backup)&&errno!=ENOENT)return -1;
     return 0;
+}
+
+/* One restore transaction per table, never flush vendor tables or conntrack.
+ * The temporary batch is RAM-backed; no shell or JFFS writes are involved. */
+static int dns_filter_prepared;
+int vr_platform_dns_filter(const vr_dns_filter *f,const vr_addresses *a,const char ips[][46],size_t count)
+{
+    if(!iface(a->lan_if)||!ipv4(a->lan)||count>VR_DNS_BLACKLIST_MAX*4)return -1;
+    FILE *batch=tmpfile();if(!batch)return -1;
+    fprintf(batch,"*mangle\n:CHVR_DNS - [0:0]\n-F CHVR_DNS\n");
+    if(f->block_dot)for(int i=0;i<2;i++)fprintf(batch,"-A CHVR_DNS -i %s -p %s --dport 853 -j DROP\n",a->lan_if,i?"udp":"tcp");
+    if(f->block_doh)for(size_t i=0;i<count;i++) {
+        vr_ip ip;if(vr_ip_parse(ips[i],&ip)){fclose(batch);return -1;}
+        /* LAN IPv6 is already denied by the carrier-only IPv6 policy. */
+        if(ip.family!=4)continue;
+        for(int j=0;j<2;j++)fprintf(batch,"-A CHVR_DNS -i %s -d %s -p %s --dport 443 -j DROP\n",a->lan_if,ips[i],j?"udp":"tcp");
+    }
+    fprintf(batch,"COMMIT\n*nat\n:CHVR_DNS53 - [0:0]\n-F CHVR_DNS53\n");
+    if(f->redirect_plain)for(int i=0;i<2;i++)fprintf(batch,"-A CHVR_DNS53 -i %s -p %s --dport 53 -j DNAT --to-destination %s:53\n",a->lan_if,i?"udp":"tcp",a->lan);
+    fprintf(batch,"COMMIT\n");
+    int rc=fflush(batch)||ferror(batch)||fseek(batch,0,SEEK_SET)?-1:command_code_input((const char *const[]){"iptables-restore","--noflush",NULL},NULL,0,fileno(batch));fclose(batch);
+    if(rc)return -1;
+    dns_filter_prepared=1;
+    if((RUN("iptables","-t","mangle","-C","PREROUTING","-j","CHVR_DNS")&&RUN("iptables","-t","mangle","-I","PREROUTING","1","-j","CHVR_DNS"))||
+       (RUN("iptables","-t","nat","-C","PREROUTING","-j","CHVR_DNS53")&&RUN("iptables","-t","nat","-I","PREROUTING","1","-j","CHVR_DNS53")))return -1;
+    return 0;
+}
+void vr_platform_dns_filter_stop(void)
+{
+    if(!dns_filter_prepared)return;
+    RUN("iptables","-t","mangle","-D","PREROUTING","-j","CHVR_DNS");
+    RUN("iptables","-t","nat","-D","PREROUTING","-j","CHVR_DNS53");
+    RUN("iptables","-t","mangle","-F","CHVR_DNS");RUN("iptables","-t","mangle","-X","CHVR_DNS");
+    RUN("iptables","-t","nat","-F","CHVR_DNS53");RUN("iptables","-t","nat","-X","CHVR_DNS53");
+    dns_filter_prepared=0;
 }
 
 void vr_platform_stop(const char *cidr)

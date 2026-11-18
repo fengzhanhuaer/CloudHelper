@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 
 void vr_config_default(vr_config *c)
@@ -34,6 +35,52 @@ static int boolean_field(json_object *o, const char *key, int *dst)
     *dst=json_object_get_boolean(v); return 0;
 }
 
+static int dns_filter_entry(const char *raw,char out[254])
+{
+    vr_ip ip;
+    if(!vr_ip_parse(raw,&ip)){char text[46];return vr_copy(out,254,vr_ip_text(&ip,text));}
+    size_t n=strlen(raw);if(n&&raw[n-1]=='.')n--;
+    if(!n||n>253)return -1;
+    size_t label=0;
+    for(size_t i=0;i<n;i++) {
+        unsigned char c=(unsigned char)raw[i];
+        if(c=='.'){if(!label||label>63||raw[i-1]=='-')return -1;label=0;}
+        else {if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='-')||(!label&&c=='-'))return -1;label++;}
+        out[i]=(char)tolower(c);
+    }
+    if(!label||label>63||raw[n-1]=='-')return -1;
+    out[n]=0;return 0;
+}
+
+static int dns_filter_parse(vr_dns_filter *f,json_object *o)
+{
+    if(!json_object_is_type(o,json_type_object))return -1;
+    json_object_object_foreach(o,key,value){if(strcmp(key,"blacklist")) {if(strcmp(key,"block_doh")&&strcmp(key,"block_dot")&&strcmp(key,"redirect_plain"))return -1;if(!json_object_is_type(value,json_type_boolean))return -1;}}
+    if(boolean_field(o,"block_doh",&f->block_doh)||boolean_field(o,"block_dot",&f->block_dot)||boolean_field(o,"redirect_plain",&f->redirect_plain))return -1;
+    json_object *list=NULL;if(!json_object_object_get_ex(o,"blacklist",&list))return 0;
+    if(!json_object_is_type(list,json_type_array)||json_object_array_length(list)>VR_DNS_BLACKLIST_MAX)return -1;
+    f->count=0;memset(f->entries,0,sizeof(f->entries));
+    for(size_t i=0;i<(size_t)json_object_array_length(list);i++) {
+        json_object *v=json_object_array_get_idx(list,i);char entry[254];
+        if(!json_object_is_type(v,json_type_string)||strlen(json_object_get_string(v))!=(size_t)json_object_get_string_len(v)||dns_filter_entry(json_object_get_string(v),entry))return -1;
+        size_t j=0;while(j<f->count&&strcmp(f->entries[j],entry))j++;
+        if(j==f->count)strcpy(f->entries[f->count++],entry);
+    }
+    return 0;
+}
+
+int vr_dns_filter_domain(const vr_dns_filter *f,const char *domain)
+{
+    if(!f->block_doh)return 0;
+    size_t n=strlen(domain);if(n&&domain[n-1]=='.')n--;
+    for(size_t i=0;i<f->count;i++) {
+        vr_ip ip;if(!vr_ip_parse(f->entries[i],&ip))continue;
+        size_t k=strlen(f->entries[i]);
+        if(n>=k&&!strncasecmp(domain+n-k,f->entries[i],k)&&(n==k||domain[n-k-1]=='.'))return 1;
+    }
+    return 0;
+}
+
 int vr_config_parse(vr_config *out, json_object *o, const vr_config *previous, char *err, size_t n)
 {
     vr_config c;
@@ -44,7 +91,7 @@ int vr_config_parse(vr_config *out, json_object *o, const vr_config *previous, c
         (void)value;
         if (strcmp(key,"enabled") && strcmp(key,"allow_wan") && strcmp(key,"dns_enabled") && strcmp(key,"tls_sni_enabled") &&
             strcmp(key,"port") && strcmp(key,"controller") && strcmp(key,"node_id") &&
-            strcmp(key,"node_key") && strcmp(key,"dns_upstream") && strcmp(key,"dns_upstreams") && strcmp(key,"gateway_proxy") && strcmp(key,"ip_blacklist") && strcmp(key,"exit_overrides")) goto fail;
+            strcmp(key,"node_key") && strcmp(key,"dns_upstream") && strcmp(key,"dns_upstreams") && strcmp(key,"gateway_proxy") && strcmp(key,"ip_blacklist") && strcmp(key,"exit_overrides") && strcmp(key,"dns_filter")) goto fail;
     }
     if (boolean_field(o,"enabled",&c.enabled) || boolean_field(o,"allow_wan",&c.allow_wan) ||
         boolean_field(o,"dns_enabled",&c.dns_enabled) ||
@@ -85,6 +132,9 @@ int vr_config_parse(vr_config *out, json_object *o, const vr_config *previous, c
         }
     }
     json_object *gateway=vr_member(o,"gateway_proxy");
+    json_object *filter=NULL;
+    if(json_object_object_get_ex(o,"dns_filter",&filter)&&dns_filter_parse(&c.dns_filter,filter)){why="DNS blacklist: at most 32 domain names or literal IP addresses; boolean switches required";goto fail;}
+    if((c.dns_filter.block_doh||c.dns_filter.redirect_plain)&&!c.dns_enabled){why="enable DNS splitting before DoH blocking or ordinary DNS redirection";goto fail;}
     if(gateway && vr_gateway_parse(&c.gateway,gateway)){why="invalid gateway config: private CIDRs and allowed nodes required (max 32/64)";goto fail;}
     json_object *blacklist=vr_member(o,"ip_blacklist");
     if(blacklist) {
@@ -148,6 +198,14 @@ json_object *vr_config_json(const vr_config *c, int secrets)
     json_object_object_add(upstreams,"dot_enabled",json_object_new_boolean(c->dot_enabled));
     json_object_object_add(upstreams,"dns_enabled",json_object_new_boolean(c->plain_dns_enabled));
     json_object_object_add(o,"dns_upstreams",upstreams);
+    if(c->dns_filter.block_doh||c->dns_filter.block_dot||c->dns_filter.redirect_plain||c->dns_filter.count||!secrets) {
+        json_object *filter=json_object_new_object(),*list=json_object_new_array();
+        json_object_object_add(filter,"block_doh",json_object_new_boolean(c->dns_filter.block_doh));
+        json_object_object_add(filter,"block_dot",json_object_new_boolean(c->dns_filter.block_dot));
+        json_object_object_add(filter,"redirect_plain",json_object_new_boolean(c->dns_filter.redirect_plain));
+        for(size_t i=0;i<c->dns_filter.count;i++)json_object_array_add(list,json_object_new_string(c->dns_filter.entries[i]));
+        json_object_object_add(filter,"blacklist",list);json_object_object_add(o,"dns_filter",filter);
+    }
     if(secrets) json_object_object_add(o,"node_key",json_object_new_string(c->node_key));
     return o;
 }

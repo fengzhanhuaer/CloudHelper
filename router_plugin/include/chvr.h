@@ -26,6 +26,8 @@
 #define VR_GATEWAY_NODES 64
 #define VR_IP_BLACKLIST_MAX 32
 #define VR_EXIT_OVERRIDES_MAX 32
+#define VR_DNS_BLACKLIST_MAX 32
+typedef struct {int block_doh,block_dot,redirect_plain;size_t count;char entries[VR_DNS_BLACKLIST_MAX][254];} vr_dns_filter;
 typedef struct {size_t count;struct {char rule[129],node[129];} items[VR_EXIT_OVERRIDES_MAX];} vr_exit_overrides;
 typedef struct {unsigned char family,bytes[16];} vr_ip;
 typedef struct {size_t count;vr_ip ips[VR_IP_BLACKLIST_MAX];} vr_ip_blacklist;
@@ -45,6 +47,7 @@ typedef struct {
     vr_gateway gateway;
     vr_ip_blacklist ip_blacklist;
     vr_exit_overrides exit_overrides;
+    vr_dns_filter dns_filter;
 } vr_config;
 
 typedef struct {
@@ -86,6 +89,7 @@ void vr_config_default(vr_config *c);
 int vr_config_parse(vr_config *out, json_object *o, const vr_config *previous, char *err, size_t n);
 int vr_config_load(vr_config *c, const char *path, char *err, size_t n);
 int vr_config_save(const vr_config *c, const char *path);
+int vr_dns_filter_domain(const vr_dns_filter *filter,const char *domain);
 json_object *vr_config_json(const vr_config *c, int include_secret);
 int vr_gateway_parse(vr_gateway *g, json_object *o);
 json_object *vr_gateway_json(const vr_gateway *g);

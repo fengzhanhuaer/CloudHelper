@@ -74,6 +74,16 @@ def main(binary):
             assert not request(sock,{'action':'configure','csrf':response['csrf'],'config':{'ip_blacklist':['192.0.2.0/24']}})['ok']
             assert request(sock,{'action':'blacklist_unblock','csrf':response['csrf'],'ip':'192.0.2.7'})['ok']
             assert config.stat().st_mtime_ns==stamp, 'temporary unblock must not write JFFS'
+            dns_filter = {'block_doh': True, 'block_dot': True, 'redirect_plain': True, 'blacklist': ['DNS.Example.COM.', '1.1.1.1']}
+            before_status = response['status']
+            response = request(sock, {'action': 'configure', 'csrf': response['csrf'], 'config': {'dns_filter': dns_filter}})
+            assert response['ok'] and response['status'] == before_status, 'DNS controls must not restart the worker'
+            assert response['config']['dns_filter']['blacklist'] == ['dns.example.com', '1.1.1.1']
+            stamp = config.stat().st_mtime_ns
+            assert request(sock, {'action': 'configure', 'csrf': response['csrf'], 'config': {'dns_filter': response['config']['dns_filter']}})['ok']
+            assert config.stat().st_mtime_ns == stamp, 'same DNS controls must not rewrite JFFS'
+            response = request(sock, {'action': 'configure', 'csrf': response['csrf'], 'config': {'dns_filter': {'block_doh': False, 'block_dot': False, 'redirect_plain': False, 'blacklist': []}}})
+            assert response['ok'] and response['status'] == before_status
             updated = dict(response["config"], controller="https://controller.test", node_id="7", node_key=secret,tls_sni_enabled=True)
             response = request(sock, {"action": "configure", "csrf": response["csrf"], "config": updated})
             assert response["ok"] and response["key_set"] and secret not in json.dumps(response)

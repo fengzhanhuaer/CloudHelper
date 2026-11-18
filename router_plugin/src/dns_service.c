@@ -25,6 +25,8 @@ static int cached_answer(vr_engine *e,const uint8_t *query,size_t qn,uint8_t *re
 {
     vr_question q;
     if(vr_dns_question(query,qn,&q)||(query[2]&0x80)||q.type!=1)return -1;
+    pthread_mutex_lock(&e->mutex);int blocked=vr_dns_filter_domain(&e->config.dns_filter,q.name);pthread_mutex_unlock(&e->mutex);
+    if(blocked)return vr_dns_reply(query,qn,reply,cap,5,NULL,rn);
     pthread_mutex_lock(&e->mutex);int needs_ip=vr_policy_needs_ip(e->policy,q.name);
     vr_decision d=vr_policy_match(e->policy,q.name,NULL);d.revision=e->policy_revision;
     vr_decision effective=vr_local_exit(&e->config,d);
@@ -54,6 +56,8 @@ static int dns_answer(vr_engine *e,const uint8_t *query,size_t qn,uint8_t *reply
 {
     vr_addresses addresses=vr_engine_addresses(e);
     vr_question q;if(vr_dns_question(query,qn,&q) || (query[2]&0x80))return -1;
+    pthread_mutex_lock(&e->mutex);int blocked=vr_dns_filter_domain(&e->config.dns_filter,q.name);pthread_mutex_unlock(&e->mutex);
+    if(blocked)return vr_dns_reply(query,qn,reply,cap,5,NULL,rn);
     int needs_ip;vr_decision selected=decision(e,q.name,NULL,&needs_ip);
     int upstream_done=0,cidr_selected=0;
     if((q.type==1||q.type==28||q.type==64||q.type==65)&&needs_ip) {

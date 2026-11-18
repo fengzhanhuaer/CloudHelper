@@ -48,6 +48,10 @@ int main(void)
     vr_engine *e=calloc(1,sizeof(*e));assert(e);pthread_mutex_init(&e->mutex,NULL);pthread_cond_init(&e->jobs_changed,NULL);e->dns_udp=e->dns_tcp=-1;
     e->config.plain_dns_enabled=1;strcpy(e->config.dns_upstream,"127.0.0.1:53");uint8_t q[512],reply[512];size_t n=query(q,1),rn;char ip[16];
     policy(e,"{\"route_rules\":[]}");assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&!vr_dns_address4(reply,rn,ip)&&!strcmp(ip,"203.0.113.5"));assert(upstream_requests==1&&!mapping_requests);
+    e->config.dns_filter.block_doh=1;e->config.dns_filter.count=1;strcpy(e->config.dns_filter.entries[0],"example.com");
+    for(int i=0;i<4;i++){int types[]={1,28,64,65};n=query(q,types[i]);assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&(reply[3]&15)==5&&upstream_requests==1&&!mapping_requests);}
+    n=query(q,1);cache_ready=1;assert(!cached_answer(e,q,n,reply,sizeof(reply),&rn)&&(reply[3]&15)==5);cache_ready=0;
+    memset(&e->config.dns_filter,0,sizeof(e->config.dns_filter));
     policy(e,"{\"route_rules\":[{\"id\":\"block\",\"action\":\"reject\",\"entries\":[\"domain_suffix:example.com\"]}]}");
     assert(!dns_answer(e,q,n,reply,sizeof(reply),&rn)&&(reply[3]&15)==5&&upstream_requests==1);
     policy(e,"{\"route_rules\":[{\"id\":\"proxy\",\"action\":\"probe_exit\",\"exit_node_id\":\"8\",\"entries\":[\"domain_suffix:example.com\"]}]}");
