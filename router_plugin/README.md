@@ -100,6 +100,8 @@ fake IP映射先查本地缓存，命中不请求主控；与Probe Node一致，
 
 “网关代理”标签独立于DNS/连接设置。可发布32个私有IPv4网段，选择最多64个允许访问节点；主控只向获准源节点发布对应路由，出口再次核对来源虚拟IP、路径终点和允许列表。华硕通过现有TUN、iptables/conntrack转发和SNAT；普通Probe采用已有用户态转发组件，协议仍为普通IPv4帧。此能力不依赖旁路由或单臂路由模式。
 
+插件对经过 `chvr0` 转发的 IPv4 TCP SYN/SYN-ACK 自动限制 MSS 至 1360，与隧道 MTU 1400 对齐，避免远端大包返回时分片导致停滞。较小的 MSS 保持原值；自有 `CHVR_MSS` 链在启动时安装，丢失时补回，停止时清理。规则覆盖网关代理及普通虚拟路由的双向转发，不改主控或节点承载连接、普通物理转发、IPv6 WAN 承载或网关授权。Probe 与安卓的独立 TCP 协议栈不需要安装这组系统防火墙规则。
+
 本机设置保存在config.json的gateway_proxy中。收到的完整策略和本节点证书分别保存route-cache.json、node-certificate.json，0600且原子替换，相同内容不重写。主控不可达时可恢复有效缓存；认证票据过期仍拒绝建链，持久化不绕过链路授权。收到撤销配置后覆盖缓存，重建受管路由。与本地物理网段重叠的远端路由跳过，防止接管本地管理连接；最多安装128条远端CIDR路由。
 
 Probe状态上报ipv4包含去重的LAN/WAN地址，并以lan_ip/wan_ip区分来源。system.network_rx_bytes/network_tx_bytes只读取活动WAN接口的累计收发字节（含该接口所有流量），由主控现有增量逻辑累计；WAN无地址或计数不可读时network_traffic_available=false，不混入LAN或TUN流量。地址变更检查每10秒，普通状态上报约20秒。

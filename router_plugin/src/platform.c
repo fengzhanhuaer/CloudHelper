@@ -361,6 +361,7 @@ int vr_platform_start(const vr_config *c,const vr_addresses *a,const char *ip,co
         /* Real-IP CIDRs are forwarded into TUN without using the Fake IP CIDR. */
         if(RUN("iptables","-A","CHVR_FWD","-i",a->lan_if,"-o","chvr0","-j","ACCEPT"))goto fail;
     }
+    if(platform_mss())goto fail;
     return fd;
 fail:close(fd);vr_platform_stop(cidr);return -1;
 }
@@ -525,6 +526,9 @@ int vr_platform_dns(int enabled)
 void vr_platform_stop(const char *cidr)
 {
     vr_platform_dns(0);
+    RUN("iptables","-t","mangle","-D","FORWARD","-i","chvr0","-j","CHVR_MSS");
+    RUN("iptables","-t","mangle","-D","FORWARD","-o","chvr0","-j","CHVR_MSS");
+    RUN("iptables","-t","mangle","-F","CHVR_MSS");RUN("iptables","-t","mangle","-X","CHVR_MSS");
     (void)cidr;RUN("ip","route","flush","dev","chvr0","proto","186");
     RUN("ip","rule","del","priority","18600","iif","chvr0","lookup","186");
     RUN("ip","route","flush","table","186","dev","chvr0","proto","186");
@@ -566,6 +570,10 @@ int vr_platform_check(char *detail,size_t capacity)
     CHECK("INPUT hook","iptables","-C","INPUT","-j","CHVR_IN");
     CHECK("FORWARD hook","iptables","-C","FORWARD","-j","CHVR_FWD");
     CHECK("NAT hook","iptables","-t","nat","-C","POSTROUTING","-j","CHVR_NAT");
+    for(size_t i=0;i<sizeof(mss_rules)/sizeof(*mss_rules);i++) {
+        code=address_rule_run(mss_rules[i],2);
+        if(code){snprintf(detail,capacity,"Firewall check deferred: MSS rule %zu (%s %d); connections retained",i,code<0?"system error":"exit",code<0?-code:code);return 0;}
+    }
 #undef CHECK
     if(capacity)*detail=0;
     return 1;

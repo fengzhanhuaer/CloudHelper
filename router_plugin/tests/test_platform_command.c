@@ -4,7 +4,7 @@
 
 static int defer_read;
 static int spawn_error;
-static int firewall_mock,firewall_check;
+static int firewall_mock,firewall_check,mss_check=-1;
 static char firewall_commands[8192];
 pid_t __wrap_fork(void){errno=ENOMEM;return -1;}
 int __real_posix_spawnp(pid_t *pid,const char *file,const posix_spawn_file_actions_t *actions,const posix_spawnattr_t *attr,char *const args[],char *const env[]);
@@ -12,13 +12,15 @@ int __wrap_posix_spawnp(pid_t *pid,const char *file,const posix_spawn_file_actio
 {
     short flags=0;assert(!posix_spawnattr_getflags(attr,&flags)&&(flags&POSIX_SPAWN_USEVFORK));
     if(firewall_mock&&(!strcmp(file,"ip6tables")||!strcmp(file,"iptables"))) {
-        int check=0;size_t used=strlen(firewall_commands);
+        int check=0,mss=0;size_t used=strlen(firewall_commands);
         for(size_t i=1;args[i];i++) {
             if(!strcmp(args[i],"-C"))check=1;
+            if(!strcmp(args[i],"CHVR_MSS"))mss=1;
             int n=snprintf(firewall_commands+used,sizeof(firewall_commands)-used,"%s ",args[i]);assert(n>0&&(size_t)n<sizeof(firewall_commands)-used);used+=(size_t)n;
         }
         strcat(firewall_commands,"\n");
-        const char *script=check?(firewall_check==4?"exit 4":firewall_check==1?"exit 1":"exit 0"):"exit 0";
+        int result=mss&&mss_check>=0?mss_check:firewall_check;
+        const char *script=check?(result==4?"exit 4":result==1?"exit 1":"exit 0"):"exit 0";
         return __real_posix_spawnp(pid,"sh",actions,attr,(char *const[]){"sh","-c",(char *)script,NULL},env);
     }
     return spawn_error?spawn_error:__real_posix_spawnp(pid,file,actions,attr,args,env);
@@ -50,6 +52,18 @@ int main(void)
     assert(command_code((const char *const[]){"sh","-c","exit 4",NULL},NULL,0)==4);
     spawn_error=ENOMEM;assert(command_code((const char *const[]){"sh","-c","exit 0",NULL},NULL,0)==-ENOMEM);
     spawn_error=0;firewall_mock=1;firewall_check=1;
+    assert(!platform_mss());
+    assert(strstr(firewall_commands,"-I CHVR_MSS 1 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360"));
+    assert(strstr(firewall_commands,"-I FORWARD 1 -i chvr0 -j CHVR_MSS"));
+    assert(strstr(firewall_commands,"-I FORWARD 1 -o chvr0 -j CHVR_MSS"));
+    assert(!strstr(firewall_commands,"OUTPUT")&&!strstr(firewall_commands,"ACCEPT")&&!strstr(firewall_commands,"-F "));
+    *firewall_commands=0;firewall_check=0;assert(!platform_mss());assert(!strstr(firewall_commands,"-I "));
+    *firewall_commands=0;firewall_check=4;assert(platform_mss()<0);assert(!strstr(firewall_commands,"-I "));
+    *firewall_commands=0;firewall_check=0;mss_check=1;
+    char detail[240];assert(!vr_platform_check(detail,sizeof(detail))&&strstr(detail,"MSS rule"));
+    assert(!strstr(firewall_commands,"-I "));
+    mss_check=-1;assert(vr_platform_check(detail,sizeof(detail)));
+    *firewall_commands=0;firewall_check=1;
     vr_config config={0};config.port=12040;vr_addresses addresses={0};strcpy(addresses.lan_if,"br0");strcpy(addresses.wan_if,"eth0");
     assert(!vr_platform_carrier6(&config,&addresses));
     assert(strstr(firewall_commands,"-I CHVR6_IN 1 -p tcp --dport 12040 -j DROP"));
@@ -72,6 +86,7 @@ int main(void)
     unsigned epoch=vr_platform_tls_cache_epoch();*firewall_commands=0;
     assert(!vr_platform_tls_cache_clear()&&vr_platform_tls_cache_epoch()!=epoch);
     assert(strstr(firewall_commands,"-F CHVR_TLS_IP")&&!strstr(firewall_commands,"conntrack"));
+    puts("PASS: MSS covers only forwarded TUN traffic, installs once, and defers failed checks");
     puts("PASS: SNI direct cache terminates only owned NAT, defers failed checks, clears in one bounded command");
     puts("PASS: IPv6 carrier firewall rejects LAN, gates WAN ingress, defers failed checks, and never changes forwarding or default policy");
     puts("PASS: commands use shared-VM spawn when fork is denied, preserve spawn errno and child exit code");

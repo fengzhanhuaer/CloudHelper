@@ -77,6 +77,25 @@ static int firewall_chain(const char *table,const char *chain)
     return code==1?RUN("iptables","-t",table,"-N",chain):-1;
 }
 
+/* chvr0's IPv4 MTU is 1400. Bound peer advertisements before a LAN endpoint
+ * emits packets that would require fragmentation on the return TUN path.
+ * TCPMSS only lowers existing MSS values and handles SYN as well as SYN-ACK.
+ * Scope both hooks to forwarded TUN traffic, never controller/carrier sockets. */
+static const char *const mss_rules[]={
+    "iptables -t mangle @ CHVR_MSS -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1360",
+    "iptables -t mangle @ FORWARD -i chvr0 -j CHVR_MSS",
+    "iptables -t mangle @ FORWARD -o chvr0 -j CHVR_MSS"
+};
+static int platform_mss(void)
+{
+    if(firewall_chain("mangle","CHVR_MSS"))return -1;
+    for(size_t i=0;i<sizeof(mss_rules)/sizeof(*mss_rules);i++) {
+        int code=address_rule_run(mss_rules[i],2);
+        if(code&&(code!=1||address_rule_run(mss_rules[i],1)))return -1;
+    }
+    return 0;
+}
+
 static char carrier6_lan[16];
 static char carrier6_wan[16];
 static int carrier6_port;
@@ -131,6 +150,8 @@ int vr_platform_repair(const vr_config *c,const vr_addresses *a,const char *cidr
     if(!p)return -1;
 #define RULE(...) do{if(address_rule(p,__VA_ARGS__))goto done;}while(0)
     if(firewall_chain("filter","CHVR_IN")||firewall_chain("filter","CHVR_FWD")||firewall_chain("nat","CHVR_NAT"))goto done;
+    if(firewall_chain("mangle","CHVR_MSS"))goto done;
+    for(size_t i=0;i<sizeof(mss_rules)/sizeof(*mss_rules);i++)RULE("%s",mss_rules[i]);
     if(carrier_skiplog_port)RULE("iptables -t filter @ CHVR_IN -p tcp --dport %d -j SKIPLOG",carrier_skiplog_port);
     RULE("iptables -t filter @ CHVR_IN -p tcp --dport %d -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",c->port);
     RULE("iptables -t filter @ CHVR_IN -p tcp --dport 1054 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT");
