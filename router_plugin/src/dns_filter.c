@@ -68,7 +68,10 @@ void vr_dns_filter_tick(vr_engine *e)
     if(now>=s->retry&&(serial!=s->applied||memcmp(&s->addresses,&a,sizeof(a))||now>=s->check)) {
         /* Restore only owned chains, including after a vendor firewall reload. */
         if(vr_platform_dns_filter(&wanted,&a,ips,count)) {vr_service_log(e->service,"dns","LAN DNS controls could not be applied; retrying");s->retry=now+5000;return;}
-        pthread_mutex_lock(&e->mutex);e->config.dns_filter=wanted;pthread_mutex_unlock(&e->mutex);
+        pthread_mutex_lock(&e->mutex);
+        int changed=memcmp(&e->config.dns_filter,&wanted,sizeof(wanted));e->config.dns_filter=wanted;
+        if(changed)vr_mapping_dns_refresh(e);
+        pthread_mutex_unlock(&e->mutex);
         s->applied=serial;s->addresses=a;s->check=now+30000;
     }
     if(!s->started&&has_domains(&wanted)) {

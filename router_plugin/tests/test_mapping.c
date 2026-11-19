@@ -47,16 +47,26 @@ static void *request(void *arg){vr_mapping m;assert(!vr_mapping_get(arg,"example
 static int count(vr_engine *e){int n=0;for(size_t i=0;i<VR_MAPPING_MAX;i++)if(e->mappings[i].expires>wall)n++;return n;}
 int main(void)
 {
+    struct legacy_mapping {char domain[254],ip[16],rule[129],exit[129];time_t expires;uint64_t used;uint32_t resolved;int local_exit;};
+    assert(sizeof(vr_mapping)<=sizeof(struct legacy_mapping)); /* reuse padding, no larger cache */
     char dir[]="/tmp/chvr-mapping-XXXXXX",path[512];assert(mkdtemp(dir));snprintf(path,sizeof(path),"%s/fake-ip-cache.json",dir);
     vr_engine *e=engine(path);pthread_t workers[5];
     for(size_t i=0;i<5;i++)assert(!pthread_create(&workers[i],NULL,request,e));
     for(size_t i=0;i<5;i++)pthread_join(workers[i],NULL);
     assert(calls==1);vr_mapping m;assert(!vr_mapping_get(e,"example.com",NULL,decision(),&m));assert(m.expires==wall+VR_MAPPING_TTL);
+    e->config.dns_filter.block_doh=1;e->config.dns_filter.count=1;strcpy(e->config.dns_filter.entries[0],"example.com");
+    unsigned dirty=e->mapping_dirty;vr_mapping_dns_refresh(e);assert(e->mappings[0].dns_blocked&&e->mapping_dirty==dirty&&calls==1&&!writes);
+    strcpy(e->config.dns_filter.entries[0],"198.18.7.31");vr_mapping_dns_refresh(e);assert(e->mappings[0].dns_blocked);
+    strcpy(e->config.dns_filter.entries[0],"1.2.3.4");vr_mapping_dns_refresh(e);assert(!e->mappings[0].dns_blocked);
+    e->mappings[0].resolved=htonl(0x01020304);vr_mapping_dns_update(e,&e->mappings[0]);assert(e->mappings[0].dns_blocked);
+    e->config.dns_filter.block_doh=0;vr_mapping_dns_refresh(e);assert(!e->mappings[0].dns_blocked&&e->mapping_dirty==dirty);
     wall+=31;tick+=31000;assert(!vr_mapping_get(e,"example.com",NULL,decision(),&m)&&calls==1);
     e->mappings[0].resolved=1234;assert(!vr_mapping_flush(e,0)&&writes==1);
     struct stat st;assert(!stat(path,&st)&&st.st_size<VR_MAPPING_FILE_MAX&&(st.st_mode&0777)==0600);
     vr_engine *restored=engine(path);assert(count(restored)==1);assert(!vr_mapping_get(restored,"example.com",NULL,decision(),&m));
-    assert(!strcmp(m.exit,"24")&&!strcmp(m.rule,"proxy")&&!m.resolved&&calls==1);drop(restored);
+    assert(!strcmp(m.exit,"24")&&!strcmp(m.rule,"proxy")&&!m.resolved&&calls==1);
+    restored->config.dns_filter.block_doh=1;restored->config.dns_filter.count=1;strcpy(restored->config.dns_filter.entries[0],"example.com");vr_mapping_load(restored);
+    assert(restored->mappings[0].dns_blocked&&calls==1);drop(restored);
     char interrupted[540];snprintf(interrupted,sizeof(interrupted),"%s.aBc123",path);
     FILE *orphan=fopen(interrupted,"w");assert(orphan);fputs("interrupted",orphan);fclose(orphan);
     restored=engine(path);assert(access(interrupted,F_OK)&&count(restored)==1);drop(restored);
@@ -115,6 +125,11 @@ int main(void)
     json_object_object_add(rule,"action",json_object_new_string("reject"));assert(vr_mapping_decision(e,&m).action==VR_REJECT);
     json_object_object_add(rule,"action",json_object_new_string("probe_exit"));vr_mapping_reconcile(e);
     assert(count(e)==1&&!e->mappings[0].local_exit&&!strcmp(e->mappings[0].exit,"24"));
+    /* An uncached reverse lookup records the deny once, then uses the cache. */
+    e->mappings[0].expires=wall;e->config.dns_filter.block_doh=1;e->config.dns_filter.count=1;
+    strcpy(e->config.dns_filter.entries[0],"example.com");local_response=0;previous_calls=calls;
+    assert(!vr_mapping_get(e,NULL,"198.18.7.31",decision(),&m)&&m.dns_blocked&&calls==previous_calls+1);
+    for(int i=0;i<64;i++)assert(!vr_mapping_get(e,NULL,"198.18.7.31",decision(),&m)&&m.dns_blocked&&calls==previous_calls+1);
     drop(e);unlink(path);rmdir(dir);
     puts("PASS: TTL, singleflight, retry cooldown, bounded atomic JFFS cache, restart and identity/policy invalidation");return 0;
 }

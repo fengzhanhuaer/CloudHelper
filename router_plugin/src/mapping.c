@@ -9,6 +9,24 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+void vr_mapping_dns_update(vr_engine *e,vr_mapping *m)
+{
+    const vr_dns_filter *f=&e->config.dns_filter;m->dns_blocked=0;
+    if(!f->block_doh)return;
+    if(vr_dns_filter_domain(f,m->domain)){m->dns_blocked=1;return;}
+    for(size_t i=0;i<f->count;i++) {
+        vr_ip ip;if(vr_ip_parse(f->entries[i],&ip)||ip.family!=4)continue;
+        struct in_addr domain,fake;
+        if((inet_pton(AF_INET,m->domain,&domain)==1&&!memcmp(ip.bytes,&domain.s_addr,4))||
+           (inet_pton(AF_INET,m->ip,&fake)==1&&!memcmp(ip.bytes,&fake.s_addr,4))||
+           (m->resolved&&!memcmp(ip.bytes,&m->resolved,4))){m->dns_blocked=1;return;}
+    }
+}
+void vr_mapping_dns_refresh(vr_engine *e)
+{
+    for(size_t i=0;i<VR_MAPPING_MAX;i++)vr_mapping_dns_update(e,&e->mappings[i]);
+}
+
 static int usable(vr_engine *e,const vr_mapping *m,time_t now)
 {
     struct in_addr a;
@@ -107,7 +125,7 @@ void vr_mapping_load(vr_engine *e)
         if(expires<=now||expires>(int64_t)now+VR_MAPPING_TTL)continue;
         m.expires=(time_t)expires;if(!usable(e,&m,now))continue;
         /* The snapshot is MRU-first; preserve that order on subsequent saves. */
-        m.used=VR_MAPPING_MAX-i;e->mappings[slot++]=m;
+        m.used=VR_MAPPING_MAX-i;vr_mapping_dns_update(e,&m);e->mappings[slot++]=m;
     }
     if(slot&&e->service)vr_service_log(e->service,"dns","Restored unexpired fake IP cache including exit nodes");
 done:
@@ -248,7 +266,7 @@ int vr_mapping_get(vr_engine *e,const char *domain,const char *ip,vr_decision d,
         if(e->mappings[i].expires<=now){target=i;break;}
         if(e->mappings[i].used<e->mappings[target].used)target=i;
     }
-    e->mappings[target]=m;e->mapping_dirty++;pthread_mutex_unlock(&e->mutex);*out=m;rc=0;
+    vr_mapping_dns_update(e,&m);e->mappings[target]=m;e->mapping_dirty++;pthread_mutex_unlock(&e->mutex);*out=m;rc=0;
 done:
     pthread_mutex_lock(&e->mutex);e->mapping_pending[slot].retry=vr_millis()+(rc?1000:0);e->mapping_pending[slot].busy=0;pthread_mutex_unlock(&e->mutex);
     if(rc&&e->service){char event[240];snprintf(event,sizeof(event),"Fake IP lookup failed: %.160s",*error?error:"invalid authoritative mapping");vr_service_log(e->service,"dns",event);}

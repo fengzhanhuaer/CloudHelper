@@ -9,7 +9,7 @@
 #include <unistd.h>
 
 static uint8_t carried[1500];static size_t carried_len;
-static int resolved_requests;
+static int resolved_requests,controller_requests;
 int __wrap_vr_resolve4(const char *domain,const char *upstream,const char *iface,char out[16])
 {(void)upstream;(void)iface;assert(!strcmp(domain,"local.example"));resolved_requests++;strcpy(out,"203.0.113.5");return 0;}
 static void tcp_checksums(uint8_t b[40])
@@ -21,7 +21,7 @@ static void tcp_checksums(uint8_t b[40])
 json_object *__wrap_vr_controller_call(const vr_config *c,const char *iface,const char *method,const char *path,json_object *body,char *error,size_t capacity)
 {
     (void)c;(void)iface;(void)method;(void)body;(void)error;(void)capacity;
-    assert(!strcmp(path,"/api/probe/route/fake_ip/resolve"));usleep(200000);
+    assert(!strcmp(path,"/api/probe/route/fake_ip/resolve"));controller_requests++;usleep(200000);
     const char *reply="{\"item\":{\"domain\":\"203.0.113.5\",\"fake_ip\":\"198.18.0.20\",\"action\":\"probe_exit\",\"exit_node_id\":\"8\",\"expires_at\":\"2099-01-01T00:00:00Z\"}}";
     return vr_json_parse(reply,strlen(reply));
 }
@@ -43,12 +43,46 @@ static vr_engine *engine(const char *id,const char *ip,int pipes[2])
     return e;
 }
 
+static void test_fake_dns_blacklist(void)
+{
+    int pipes[2];vr_engine *e=engine("7","198.18.0.7",pipes);
+    strcpy(e->mappings[0].domain,"dns.google.com");
+    const uint8_t udp[]={0x45,0,0,28,0,0,0x40,0,64,17,0,0,0,0,0,0,0,0,0,0,0xbe,0xef,1,0xbb,0,8,0,0};
+    uint8_t tcp[40]={0x45,0,0,40,0,0,0x40,0,64,6};tcp[32]=0x50;tcp[33]=2;tcp[27]=10;tcp_checksums(tcp);
+    int before_http=controller_requests,before_dns=resolved_requests;
+    for(int protocol=0;protocol<2;protocol++) {
+        uint8_t request[40];size_t len=protocol?sizeof(tcp):sizeof(udp);memcpy(request,protocol?tcp:udp,len);
+        if(!protocol){uint16_t sum=vr_checksum(request,20);request[10]=(uint8_t)(sum>>8);request[11]=(uint8_t)sum;}
+        assert(!vr_packet_rewrite(request,len,inet_addr("192.168.52.100"),inet_addr("198.18.0.20"),49000,443));
+        uint8_t wire[40];memcpy(wire,request,len);carried_len=0;vr_outgoing(e,wire,len);assert(carried_len==len);
+        if(protocol){request[33]=0x10;tcp_checksums(request);} /* existing TCP flow */
+        e->config.dns_filter.block_doh=1;e->config.dns_filter.count=1;strcpy(e->config.dns_filter.entries[0],"google.com");vr_mapping_dns_refresh(e);
+        assert(e->mappings[0].dns_blocked);
+        for(int i=0;i<64;i++){memcpy(wire,request,len);carried_len=0;vr_outgoing(e,wire,len);assert(!carried_len&&read(pipes[0],carried,sizeof(carried))<0);}
+        /* Removing a list item and disabling the switch both unblock locally. */
+        e->config.dns_filter.count=0;vr_mapping_dns_refresh(e);assert(!e->mappings[0].dns_blocked);
+        memcpy(wire,request,len);carried_len=0;vr_outgoing(e,wire,len);assert(carried_len==len);
+        e->config.dns_filter.block_doh=0;vr_mapping_dns_refresh(e);
+    }
+    assert(controller_requests==before_http&&resolved_requests==before_dns);
+    close(pipes[0]);close(pipes[1]);json_object_put(e->policy);pthread_mutex_destroy(&e->mutex);free(e);
+    puts("PASS: cached Fake IP blacklist blocks TCP/UDP before established reuse, removes locally, no controller or DNS lookups");
+}
+
 int main(void)
 {
+    test_fake_dns_blacklist();
     int entry_pipe[2],exit_pipe[2];vr_engine *entry=engine("7","198.18.0.7",entry_pipe),*exit=engine("8","198.18.0.8",exit_pipe);
     const char *hex="450000210001400040117f98c0a83464c6120014ad9c0035000d52fd68656c6c6f";
     uint8_t packet[1500];size_t len=strlen(hex)/2;for(size_t i=0;i<len;i++){unsigned b;assert(sscanf(hex+2*i,"%2x",&b)==1);packet[i]=(uint8_t)b;}
     vr_packet original;assert(!vr_packet_parse(packet,len,&original));
+    /* A browser can retain its Fake IP after the DNS blacklist is enabled. */
+    strcpy(entry->mappings[0].domain,"dns.google.com");
+    entry->config.dns_filter.block_doh=1;entry->config.dns_filter.count=1;
+    strcpy(entry->config.dns_filter.entries[0],"dns.google.com");
+    vr_mapping_dns_refresh(entry);
+    carried_len=0;vr_outgoing(entry,packet,len);assert(!carried_len&&read(entry_pipe[0],carried,sizeof(carried))<0);
+    memset(&entry->config.dns_filter,0,sizeof(entry->config.dns_filter));strcpy(entry->mappings[0].domain,"203.0.113.5");vr_mapping_dns_refresh(entry);
     /* Source selects 8 locally while the controller's shared mapping says 9. */
     strcpy(entry->mappings[0].rule,"fake-rule");strcpy(entry->mappings[0].exit,"9");
     entry->mappings[0].local_exit=1;

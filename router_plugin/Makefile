@@ -59,8 +59,8 @@ $(BUILD)/test-platform: $(CORE) src/dataplane.c src/mapping.c src/platform.c src
 $(BUILD)/cloudhelper-router-plugin $(BUILD)/test-platform $(BUILD)/test-platform-command $(BUILD)/test-addresses $(BUILD)/test-control $(BUILD)/test-carrier $(BUILD)/test-policy-update $(BUILD)/test-routes $(BUILD)/test-upgrade $(BUILD)/test-controller-link: src/platform_address.h
 $(BUILD)/test-dns: $(CORE) src/dns_service.c tests/test_dns_service.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_dns_service.c $(LDFLAGS) $(LDLIBS) -o $@
-$(BUILD)/test-dns-filter: $(CORE) src/dns_filter.c tests/test_dns_filter.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_dns_filter.c $(LDFLAGS) -Wl,--wrap=vr_resolve_config4_all $(LDLIBS) -o $@
+$(BUILD)/test-dns-filter: $(CORE) src/dns_filter.c src/mapping.c tests/test_dns_filter.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/mapping.c tests/test_dns_filter.c $(LDFLAGS) -Wl,--wrap=vr_resolve_config4_all $(LDLIBS) -o $@
 $(BUILD)/dns-filter-fixture: $(CORE) src/platform.c tests/dns_filter_fixture.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/platform.c tests/dns_filter_fixture.c $(LDFLAGS) $(LDLIBS) -o $@
 $(BUILD)/test-control: $(CORE) src/control.c src/network_monitor.c src/upgrade.c src/policy_update.c src/carrier.c src/mapping.c src/platform.c tests/test_control.c $(wildcard include/*.h) | $(BUILD)

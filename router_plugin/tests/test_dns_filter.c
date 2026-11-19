@@ -23,11 +23,12 @@ int main(void)
     strcpy(e->addresses.lan,"192.0.2.1");strcpy(e->addresses.lan_if,"lan0");strcpy(e->addresses.wan_if,"wan0");
     vr_dns_filter_tick(e);assert(!e->dns_filter&&!applied);
     vr_dns_filter *f=&service.config.dns_filter;f->block_doh=f->block_dot=f->redirect_plain=1;f->count=2;strcpy(f->entries[0],"1.1.1.1");strcpy(f->entries[1],"dns.example.test");
-    uint64_t before=vr_millis();vr_dns_filter_tick(e);assert(vr_millis()-before<200&&applied==1&&has_ip("1.1.1.1"));
+    strcpy(e->mappings[0].domain,"dns.example.test");strcpy(e->mappings[0].ip,"198.18.0.20");e->mappings[0].expires=time(NULL)+600;
+    uint64_t before=vr_millis();vr_dns_filter_tick(e);assert(vr_millis()-before<200&&applied==1&&has_ip("1.1.1.1")&&e->mappings[0].dns_blocked);
     for(int i=0;i<100&&!has_ip("203.0.113.53");i++){usleep(10000);vr_dns_filter_tick(e);}
     assert(has_ip("203.0.113.53")&&has_ip("1.1.1.1")&&installed.block_dot&&installed.redirect_plain);
     int old=applied;for(int i=0;i<10;i++)vr_dns_filter_tick(e);assert(applied==old); /* no repeated subprocess batch */
-    f->block_doh=f->block_dot=f->redirect_plain=0;vr_dns_filter_tick(e);assert(!installed.block_doh&&!installed.block_dot&&!installed.redirect_plain&&!installed_count);
+    f->block_doh=f->block_dot=f->redirect_plain=0;vr_dns_filter_tick(e);assert(!installed.block_doh&&!installed.block_dot&&!installed.redirect_plain&&!installed_count&&!e->mappings[0].dns_blocked);
     fail=1;f->block_dot=1;vr_dns_filter_tick(e);assert(!e->config.dns_filter.block_dot);
     fail=0;e->dns_filter->retry=0;vr_dns_filter_tick(e);assert(e->config.dns_filter.block_dot&&installed.block_dot);
     vr_dns_filter_stop(e);assert(stopped==1&&!e->dns_filter);
