@@ -904,6 +904,7 @@ func applyProbeVirtualRouterConfigForNode(config probeVirtualRouterConfig, nodeI
 	signature := probeVirtualRouterTopologySignature(sanitized, index, effectiveNodeID)
 	topologyChanged := probeVirtualRouterState.topologySignature != signature
 	probeVirtualRouterState.config = sanitized
+	probeDNSFilter.Invalidate("")
 	probeVirtualRouterState.localNodeID = effectiveNodeID
 	probeVirtualRouterState.nodeToIP = index.nodeToIP
 	probeVirtualRouterState.ipToNode = index.ipToNode
@@ -1943,6 +1944,7 @@ func applyProbeVirtualRouterFakeIPLibrary(library probeVirtualRouterFakeIPLibrar
 	currentVersion := probeVirtualRouterState.config.FakeIPLibrary.Version
 	if nextLibrary.Version >= currentVersion {
 		probeVirtualRouterState.config.FakeIPLibrary = nextLibrary
+		probeDNSFilter.Invalidate("")
 	}
 	probeVirtualRouterState.mu.Unlock()
 }
@@ -1977,6 +1979,7 @@ func applyProbeVirtualRouterFakeIPEntry(item probeVirtualRouterFakeIPEntry) bool
 		return library.Items[i].Domain < library.Items[j].Domain
 	})
 	probeVirtualRouterState.config.FakeIPLibrary = library
+	probeDNSFilter.Invalidate(item.FakeIP)
 	probeVirtualRouterState.mu.Unlock()
 	return true
 }
@@ -3559,6 +3562,9 @@ func writeProbeVirtualRouterAllWithWriteIdleTimeout(writer io.Writer, deadlineWr
 }
 
 func handleProbeVirtualRouterTUNPacket(packet []byte) bool {
+	if probeDNSFilterBlocksPacket(packet) {
+		return true
+	}
 	dstIP := probeVirtualRouterIPv4Destination(packet)
 	if dstIP == "" {
 		return false

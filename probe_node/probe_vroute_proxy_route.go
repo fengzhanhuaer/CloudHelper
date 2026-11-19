@@ -45,6 +45,10 @@ func decideProbeVRouteProxyTarget(targetAddr string) (probeVRouteProxyTargetDeci
 		Port:           port,
 		Action:         "direct",
 	}
+	if probeDNSFilterBlocksTarget(host, port) {
+		decision.Action = "reject"
+		return decision, &probeLocalRouteRejectError{Group: "dns-blacklist"}
+	}
 
 	var fakeEntry probeVirtualRouterFakeIPEntry
 	if parsed := net.ParseIP(host); parsed != nil && probeVirtualRouterIPInCurrentFakeCIDR(parsed.String()) {

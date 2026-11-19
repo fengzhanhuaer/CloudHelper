@@ -25,6 +25,7 @@
           <button class="sub-tab-button active" type="button" data-settings-tab="upgrade">升级</button>
           <button class="sub-tab-button" type="button" data-settings-tab="controller">主控</button>
           <button class="sub-tab-button" type="button" data-settings-tab="route">路由设置</button>
+          <button class="sub-tab-button" type="button" data-settings-tab="dnsFilter">DNS 拦截</button>
         </div>
         <div id="settingsUpgradePanel" class="tab-panel" data-settings-panel="upgrade">
           <div class="actions">
@@ -63,6 +64,20 @@
           </div>
           <div id="saveFeedback" class="inline-feedback" aria-live="polite"></div>
           <div class="status-box" id="settingsStatus"></div>
+        </div>
+        <div id="settingsDNSFilterPanel" class="tab-panel" data-settings-panel="dnsFilter" hidden>
+          <p class="hint">仅保存在本机，保存后立即生效。作用于 VPN 接管的流量；未接管的应用与系统旁路连接不经过此检查。</p>
+          <p><label><input id="dnsFilterDoH" type="checkbox"> 阻断黑名单 DoH（TCP/UDP 443）</label></p>
+          <p><label><input id="dnsFilterDoT" type="checkbox"> 阻断 DoT / DoQ（TCP/UDP 853，所有目标）</label></p>
+          <label for="dnsFilterList">DNS 黑名单：每行一个域名或 IP，最多 32 条</label>
+          <textarea id="dnsFilterList" rows="8" spellcheck="false" style="width:100%;box-sizing:border-box;resize:vertical" placeholder="dns.google&#10;1.1.1.1"></textarea>
+          <p class="hint">域名同时匹配子域名。开启 DoH 阻断后，拒绝黑名单域名查询，并阻断其已缓存 Fake IP 的 TCP/UDP 流量。真实 IP 按上述端口拦截。</p>
+          <div class="actions">
+            <button id="saveDNSFilterButton" class="command" type="button" onclick="saveDNSFilter()" disabled>保存本机 DNS 设置</button>
+            <button id="reloadDNSFilterButton" class="command neutral" type="button" onclick="loadDNSFilter()">重新读取</button>
+            <button id="resetDNSFilterButton" class="command neutral" type="button" onclick="saveDNSFilter(true)">恢复默认</button>
+          </div>
+          <div id="dnsFilterFeedback" class="inline-feedback" aria-live="polite"></div>
         </div>
         <div id="settingsRoutePanel" class="tab-panel" data-settings-panel="route" hidden>
           <p class="hint">每条规则默认跟随主控。改选出口仅保存在本机，刷新主控配置会保留选择；恢复默认后重新跟随主控。</p>

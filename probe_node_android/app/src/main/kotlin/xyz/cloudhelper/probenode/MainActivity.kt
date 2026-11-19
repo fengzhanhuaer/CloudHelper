@@ -375,6 +375,16 @@ class MainActivity : Activity() {
         }
 
         @JavascriptInterface
+        fun dnsFilterSettings(): String {
+            return MobileCoreBridge.dnsFilterSettings(this@MainActivity)
+        }
+
+        @JavascriptInterface
+        fun saveDNSFilterSettings(payload: String): String {
+            return MobileCoreBridge.saveDNSFilterSettings(this@MainActivity, payload)
+        }
+
+        @JavascriptInterface
         fun infoBoxRefresh(): String {
             val config = ProbeNodeConfig.load(this@MainActivity)
             thread(name = "cloudhelper-android-info-list") {

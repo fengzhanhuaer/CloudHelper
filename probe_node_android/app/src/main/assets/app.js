@@ -1824,7 +1824,7 @@ function setupSettingsTabs() {
 }
 
 function activateSettingsTab(tab) {
-  const clean = ["upgrade", "controller", "route"].includes(tab) ? tab : "upgrade";
+  const clean = ["upgrade", "controller", "route", "dnsFilter"].includes(tab) ? tab : "upgrade";
   document.querySelectorAll("[data-settings-tab]").forEach((button) => {
     button.classList.toggle("active", button.dataset.settingsTab === clean);
   });
@@ -1835,7 +1835,52 @@ function activateSettingsTab(tab) {
     refreshUpgradeStatus();
   } else if (clean === "route") {
     loadRouteSettings();
+  } else if (clean === "dnsFilter" && !dnsFilterLoaded) {
+    loadDNSFilter();
   }
+}
+
+let dnsFilterLoaded = false;
+let dnsFilterBusy = false;
+function renderDNSFilter(data) {
+  if (!data || data.ok !== true || !data.config) throw new Error(data && data.error || "DNS 设置读取失败");
+  byId("dnsFilterDoH").checked = !!data.config.block_doh;
+  byId("dnsFilterDoT").checked = !!data.config.block_dot;
+  byId("dnsFilterList").value = (Array.isArray(data.config.blacklist) ? data.config.blacklist : []).join("\n");
+  dnsFilterLoaded = true;
+}
+function setDNSFilterBusy(busy) {
+  dnsFilterBusy = busy;
+  ["dnsFilterDoH", "dnsFilterDoT", "dnsFilterList", "reloadDNSFilterButton", "resetDNSFilterButton"].forEach(id => { byId(id).disabled = busy; });
+  byId("saveDNSFilterButton").disabled = busy || !dnsFilterLoaded;
+}
+function loadDNSFilter() {
+  if (dnsFilterBusy) return;
+  setDNSFilterBusy(true);
+  try {
+    if (!hasCloudHelper("dnsFilterSettings")) throw new Error("当前安卓内核不支持 DNS 拦截设置，请升级应用");
+    renderDNSFilter(parseJSON(callCloudHelperString("dnsFilterSettings", "{}")));
+    byId("dnsFilterFeedback").textContent = "已读取本机 DNS 设置";
+  } catch (err) {
+    dnsFilterLoaded = false;
+    byId("dnsFilterFeedback").textContent = "读取失败：" + err.message;
+  } finally { setDNSFilterBusy(false); }
+}
+function saveDNSFilter(reset = false) {
+  if (dnsFilterBusy || (!reset && !dnsFilterLoaded)) return;
+  const config = reset ? { block_doh: false, block_dot: false, blacklist: [] } : {
+    block_doh: byId("dnsFilterDoH").checked,
+    block_dot: byId("dnsFilterDoT").checked,
+    blacklist: byId("dnsFilterList").value.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
+  };
+  setDNSFilterBusy(true);
+  try {
+    if (!hasCloudHelper("saveDNSFilterSettings")) throw new Error("DNS 拦截保存接口不可用，请升级应用");
+    renderDNSFilter(parseJSON(window.CloudHelper.saveDNSFilterSettings(JSON.stringify(config))));
+    byId("dnsFilterFeedback").textContent = reset ? "已恢复默认，DNS 拦截已关闭" : "DNS 设置已保存在本机并生效";
+  } catch (err) {
+    byId("dnsFilterFeedback").textContent = "保存失败：" + err.message;
+  } finally { setDNSFilterBusy(false); }
 }
 
 function loadRouteSettings() {

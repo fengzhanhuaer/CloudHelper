@@ -169,6 +169,14 @@ object MobileCoreBridge {
         ))
     }
 
+    fun dnsFilterSettings(context: Context): String {
+        return callString("getDNSFilterSettings", arrayOf(String::class.java), arrayOf(ProbeNodeConfig.configDir(context)))
+    }
+
+    fun saveDNSFilterSettings(context: Context, payload: String): String {
+        return callString("saveDNSFilterSettings", arrayOf(String::class.java, String::class.java), arrayOf(ProbeNodeConfig.configDir(context), payload))
+    }
+
     fun infoBoxList(config: ProbeNodeConfig): String {
         return callString(
             methodName = "infoBoxList",

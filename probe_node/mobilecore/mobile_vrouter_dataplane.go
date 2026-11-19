@@ -293,6 +293,9 @@ func (c *mobileVRouteH3StreamNetConn) SetWriteDeadline(t time.Time) error {
 var mobileVRouteCarrierRetryMin = time.Second
 
 func mobileVRouteHandleVPNPacket(configDir string, packet []byte, writeBack func([]byte) error) (bool, error) {
+	if mobileDNSFilterBlocksPacket(configDir, packet) {
+		return true, nil
+	}
 	if len(packet) == 0 {
 		return false, nil
 	}

@@ -654,6 +654,9 @@ func (n *androidVPNDataPlane) inputLoop(ctx context.Context) {
 			continue
 		}
 		packet := append([]byte(nil), buf[:readN]...)
+		if mobileDNSFilterBlocksPacket(currentAndroidVPNConfigDir(), packet) {
+			continue
+		}
 		if rewritten, ok, rewriteErr := rewriteAndroidVPNRealIPPacketToFake(packet); rewriteErr != nil {
 			recordVPNRuntimeError("real_ip_fake_rewrite", rewriteErr)
 		} else if ok {
@@ -1243,6 +1246,10 @@ func resolveAndroidVPNDNSPacket(packet []byte) ([]byte, error) {
 	}
 	if domain == "" {
 		return buildAndroidVPNDNSRCode(packet, dnsmessage.RCodeNameError), nil
+	}
+	ensureMobileDNSFilter(currentAndroidVPNConfigDir())
+	if mobileDNSFilter.BlockDomain(domain) {
+		return buildAndroidVPNDNSRCode(packet, dnsmessage.RCodeRefused), nil
 	}
 	route, routeErr := decideAndroidRouteForTarget(net.JoinHostPort(domain, "443"))
 	if routeErr != nil {
@@ -2135,6 +2142,7 @@ func storeAndroidVPNControllerFakeIP(configDir string, domain string, fakeIP str
 		SelectedRouteID: strings.TrimSpace(route.SelectedRouteID),
 		ExpiresAt:       androidVPNFakeIPExpiresAt(now),
 	}
+	mobileDNSFilter.Invalidate(ipText)
 	vpnDNSState.mu.Unlock()
 	return ipText, true
 }

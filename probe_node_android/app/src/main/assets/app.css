@@ -98,6 +98,23 @@ select {
   gap: 10px;
   margin-top: 16px;
 }
+#settingsDNSFilterPanel input[type="checkbox"] {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  margin: 0 6px 0 0;
+  vertical-align: middle;
+}
+#dnsFilterList {
+  display: block;
+  padding: 10px;
+  border: 1px solid #c9c5bd;
+  border-radius: 6px;
+  font: 15px/1.5 monospace;
+  color: #171717;
+  background: #fff;
+}
 .actions.compact {
   margin-top: 12px;
 }

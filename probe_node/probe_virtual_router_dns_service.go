@@ -305,6 +305,12 @@ func resolveProbeVirtualRouterDNSPacketFromSource(packet []byte, requestSource s
 		result.Response = buildProbeLocalDNSRefused(packet)
 		return result, nil
 	}
+	ensureProbeDNSFilter()
+	if probeDNSFilter.BlockDomain(cleanDomain) {
+		trackingAction = "reject"
+		result.Response = buildProbeLocalDNSRefused(packet)
+		return result, nil
+	}
 	rule, matched := currentProbeVirtualRouterRouteRuleForDomain(cleanDomain)
 	if !matched {
 		response, realIPs, err := resolveProbeVirtualRouterDNSDirectPacket(packet, cleanDomain, false)

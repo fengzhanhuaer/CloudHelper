@@ -167,6 +167,9 @@
     #routeExitsTab th, #routeExitsTab td { white-space: normal; overflow-wrap: anywhere; }
     #routeExitsTab th:first-child { width: 35%; }
     #routeExitsTab select { width: 100%; min-width: 0; }
+    #dnsFilterTab .dns-filter-toggle { display: flex; align-items: center; gap: 8px; }
+    #dnsFilterTab input[type="checkbox"] { display: inline-block; width: 18px; height: 18px; margin: 0; flex-shrink: 0; }
+    #dnsFilterList { padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: 14px/1.5 monospace; }
     .mono { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace; }
     .connection-endpoint-copy {
       max-width: 100%;
@@ -367,6 +370,7 @@
       <button class="subtab" data-tab="buffers" type="button" role="tab" aria-selected="false">缓冲状态</button>
       <button class="subtab" data-tab="connections" type="button" role="tab" aria-selected="false">最近连接</button>
       <button class="subtab" data-tab="dnsRecords" type="button" role="tab" aria-selected="false">DNS 查询记录</button>
+      <button class="subtab" data-tab="dnsFilter" type="button" role="tab" aria-selected="false">DNS 拦截</button>
       <button class="subtab" data-tab="packets" type="button" role="tab" aria-selected="false">最近报文</button>
       <button class="subtab" data-tab="routeTest" type="button" role="tab" aria-selected="false">路由测试</button>
       <a class="subtab" href="/local/virtual-router/gateway" role="tab" aria-selected="false">网关代理</a><!-- product-virtual-router-subtabs -->
@@ -534,6 +538,24 @@
           <button id="resetRouteExitsBtn" class="secondary" type="button">恢复默认</button>
         </div>
         <p id="routeExitsMessage" class="hint" role="status"></p>
+      </section>
+    </div>
+
+    <div id="dnsFilterTab" class="tab-panel">
+      <section class="card">
+        <h2>DNS 拦截</h2>
+        <p class="hint">仅保存在本机，保存后生效。作用于虚拟 DNS、本机代理的新连接和 TUN 接管的流量；系统旁路流量不经过此检查。</p>
+        <p><label class="dns-filter-toggle"><input id="dnsFilterDoH" type="checkbox"> 阻断黑名单 DoH（TCP/UDP 443）</label></p>
+        <p><label class="dns-filter-toggle"><input id="dnsFilterDoT" type="checkbox"> 阻断 DoT / DoQ（TCP/UDP 853，所有目标）</label></p>
+        <label for="dnsFilterList">DNS 黑名单：每行一个域名或 IP，最多 32 条</label>
+        <textarea id="dnsFilterList" rows="8" spellcheck="false" style="width:100%;box-sizing:border-box;resize:vertical" placeholder="dns.google&#10;1.1.1.1"></textarea>
+        <p class="hint">域名同时匹配子域名。启用 DoH 阻断后，拒绝黑名单域名的 DNS 查询，并阻断其已缓存 Fake IP 的 TCP/UDP 流量。真实 IP 按上述端口拦截。</p>
+        <div class="actions">
+          <button id="saveDNSFilterBtn" type="button" disabled>保存本机 DNS 设置</button>
+          <button id="reloadDNSFilterBtn" class="secondary" type="button">重新读取</button>
+          <button id="resetDNSFilterBtn" class="secondary" type="button">恢复默认</button>
+        </div>
+        <p id="dnsFilterFeedback" class="hint" role="status" aria-live="polite"></p>
       </section>
     </div>
 
@@ -2094,6 +2116,48 @@
       document.getElementById('routeExitsMessage').textContent = reset ? '已恢复主控出口；后续同步继续跟随主控。' : '本机出口已保存；新连接使用新选择。';
     }
 
+    let dnsFilterLoaded = false;
+    let dnsFilterBusy = false;
+    function renderDNSFilter(data) {
+      if (!data || data.ok !== true || !data.config) throw new Error(data && data.error || 'DNS 设置读取失败');
+      const c = data.config;
+      document.getElementById('dnsFilterDoH').checked = !!c.block_doh;
+      document.getElementById('dnsFilterDoT').checked = !!c.block_dot;
+      document.getElementById('dnsFilterList').value = (Array.isArray(c.blacklist) ? c.blacklist : []).join('\n');
+      dnsFilterLoaded = true;
+    }
+    function setDNSFilterBusy(busy) {
+      dnsFilterBusy = busy;
+      ['dnsFilterDoH', 'dnsFilterDoT', 'dnsFilterList', 'reloadDNSFilterBtn', 'resetDNSFilterBtn'].forEach(id => { document.getElementById(id).disabled = busy; });
+      document.getElementById('saveDNSFilterBtn').disabled = busy || !dnsFilterLoaded;
+    }
+    async function loadDNSFilter() {
+      if (dnsFilterBusy) return;
+      setDNSFilterBusy(true);
+      try {
+        renderDNSFilter(await requestJSON('/local/api/virtual_router/dns_filter'));
+        document.getElementById('dnsFilterFeedback').textContent = '已读取本机 DNS 设置';
+      } catch (err) {
+        dnsFilterLoaded = false;
+        document.getElementById('dnsFilterFeedback').textContent = '读取失败：' + err.message;
+      } finally { setDNSFilterBusy(false); }
+    }
+    async function saveDNSFilter(reset = false) {
+      if (dnsFilterBusy || (!reset && !dnsFilterLoaded)) return;
+      const config = reset ? { block_doh: false, block_dot: false, blacklist: [] } : {
+        block_doh: document.getElementById('dnsFilterDoH').checked,
+        block_dot: document.getElementById('dnsFilterDoT').checked,
+        blacklist: document.getElementById('dnsFilterList').value.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
+      };
+      setDNSFilterBusy(true);
+      try {
+        renderDNSFilter(await requestJSON('/local/api/virtual_router/dns_filter', { method: 'POST', body: JSON.stringify(config) }));
+        document.getElementById('dnsFilterFeedback').textContent = reset ? '已恢复默认，DNS 拦截已关闭' : 'DNS 设置已保存在本机并生效';
+      } catch (err) {
+        document.getElementById('dnsFilterFeedback').textContent = '保存失败：' + err.message;
+      } finally { setDNSFilterBusy(false); }
+    }
+
     async function loadSettings() {
       const data = await requestJSON('/local/api/virtual_router/settings', { method: 'GET' });
       renderSettings(data || {});
@@ -2404,7 +2468,7 @@
     }
 
     function normalizeTab(tab) {
-      return tab === 'routeExits' || tab === 'routeStatus' || tab === 'buffers' || tab === 'connections' || tab === 'dnsRecords' || tab === 'packets' || tab === 'routeTest' ? tab : 'status';
+      return tab === 'dnsFilter' || tab === 'routeExits' || tab === 'routeStatus' || tab === 'buffers' || tab === 'connections' || tab === 'dnsRecords' || tab === 'packets' || tab === 'routeTest' ? tab : 'status';
     }
 
     function tabFromLocationHash() {
@@ -2423,6 +2487,8 @@
       });
       document.getElementById('statusTab').classList.toggle('active', activeTab === 'status');
       document.getElementById('routeExitsTab').classList.toggle('active', activeTab === 'routeExits');
+      document.getElementById('dnsFilterTab').classList.toggle('active', activeTab === 'dnsFilter');
+      if (activeTab === 'dnsFilter' && !dnsFilterLoaded) loadDNSFilter();
       document.getElementById('routeStatusTab').classList.toggle('active', activeTab === 'routeStatus');
       document.getElementById('buffersTab').classList.toggle('active', activeTab === 'buffers');
       document.getElementById('connectionsTab').classList.toggle('active', activeTab === 'connections');
@@ -2450,6 +2516,9 @@
     }
 
     document.getElementById('saveRouteExitsBtn').addEventListener('click', () => saveRouteExits().catch(err => { document.getElementById('routeExitsMessage').textContent = '保存失败：' + err.message; }));
+    document.getElementById('saveDNSFilterBtn').addEventListener('click', () => saveDNSFilter());
+    document.getElementById('reloadDNSFilterBtn').addEventListener('click', loadDNSFilter);
+    document.getElementById('resetDNSFilterBtn').addEventListener('click', () => saveDNSFilter(true));
     document.getElementById('resetRouteExitsBtn').addEventListener('click', () => saveRouteExits(true).catch(err => { document.getElementById('routeExitsMessage').textContent = '恢复失败：' + err.message; }));
     document.getElementById('saveSettingsBtn').addEventListener('click', () => {
       saveSettings().catch((err) => setMessage('保存失败：' + err.message, 'error'));

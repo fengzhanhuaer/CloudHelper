@@ -1232,6 +1232,7 @@ func allocateProbeLocalDNSFakeIP(domain string, decision probeLocalDNSRouteDecis
 		Group:     strings.TrimSpace(decision.Group),
 		ExpiresAt: now.Add(probeLocalDNSCacheTTL),
 	}
+	probeDNSFilter.Invalidate(ip)
 	upsertProbeLocalDNSUnifiedRecordFakeIPLocked(cleanDomain, ip, decision.Group, now)
 	storeProbeLocalDNSRouteHintLocked(cleanDomain, decision.Group, now)
 	return ip, true
