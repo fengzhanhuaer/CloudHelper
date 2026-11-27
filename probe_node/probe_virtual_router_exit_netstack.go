@@ -239,8 +239,12 @@ func handleProbeVirtualRouterFakeIPExitICMPEchoRequest(runtime *probeVirtualRout
 
 func newProbeVirtualRouterExitNetstack() (*probeVirtualRouterExitNetstack, error) {
 	gStack := stack.New(stack.Options{
-		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol},
-		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocolCUBIC, udp.NewProtocol},
+		NetworkProtocols: []stack.NetworkProtocolFactory{ipv4.NewProtocol},
+		// The inner TCP segments travel over an already congestion-controlled
+		// carrier. ACK batches from that carrier can trip CUBIC HyStart even
+		// with no packet loss. Reno avoids that ACK-train heuristic while
+		// retaining congestion handling for losses in the overlay.
+		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol},
 	})
 	if err := configureProbeVirtualRouterExitNetstackTCP(gStack); err != nil {
 		gStack.Destroy()

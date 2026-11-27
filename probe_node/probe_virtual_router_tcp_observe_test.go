@@ -85,6 +85,21 @@ func TestExitTCPObservationReadsRealEndpointOptions(t *testing.T) {
 		t.Fatalf("missing real TCP endpoint options: %+v", item)
 	}
 }
+
+func TestExitOverlayTCPUsesReno(t *testing.T) {
+	runner, err := newProbeVirtualRouterExitNetstack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Close()
+	var algorithm tcpip.CongestionControlOption
+	if err := runner.stack.TransportProtocolOption(tcp.ProtocolNumber, &algorithm); err != nil {
+		t.Fatal(err)
+	}
+	if algorithm != "reno" {
+		t.Fatalf("packet exit TCP algorithm = %q, want Reno", algorithm)
+	}
+}
 func TestProbeLocalTCPObservationIsAuthenticatedAndOptIn(t *testing.T) {
 	mux := setupProbeLocalConsoleTest(t)
 	response := doProbeLocalRequest(t, mux, http.MethodGet, "/local/api/virtual_router/debug?tcp=1", nil)

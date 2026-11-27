@@ -110,6 +110,10 @@ static SSL *start_at(const char *host,const char *ip,int port,const char *pin,co
     if(connect(sock,(struct sockaddr *)&address,address_len) && errno!=EINPROGRESS)goto fail;
     ctx=SSL_CTX_new(TLS_client_method());if(!ctx)goto fail;
     SSL_CTX_set_min_proto_version(ctx,TLS1_2_VERSION);SSL_CTX_set_options(ctx,SSL_OP_NO_COMPRESSION);
+    /* The router uses software crypto. Offering ChaCha first lets a relay
+       select it while keeping the stock TLS 1.3 suite set and TLS 1.2 fallback. */
+    if(relay&&SSL_CTX_set_ciphersuites(ctx,
+        "TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256")!=1)goto fail;
     if(*pin)SSL_CTX_set_verify(ctx,SSL_VERIFY_NONE,NULL);
     else {
         SSL_CTX_set_verify(ctx,SSL_VERIFY_PEER,NULL);

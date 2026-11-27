@@ -23,6 +23,7 @@ with tempfile.TemporaryDirectory(prefix='chvr-relay-tls-') as directory:
     pin = hashlib.sha256(der).hexdigest()
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(root / 'trusted.crt', root / 'trusted.key')
+    context.options &= ~ssl.OP_CIPHER_SERVER_PREFERENCE
     observed = []
     expected_sni = None
 
@@ -75,6 +76,8 @@ with tempfile.TemporaryDirectory(prefix='chvr-relay-tls-') as directory:
                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=7)
                 assert result.returncode == (0 if accepted else 2), (mode, host, result)
                 assert observed == [expected_sni], (mode, host, observed, expected_sni)
+                if accepted and mode == 'relay':
+                    assert 'TLS_CHACHA20_POLY1305_SHA256' in result.stdout, result
                 print('PASS:', mode, host, 'SNI=' + str(expected_sni),
                       'accepted' if accepted else 'identity rejected')
         finally:

@@ -54,6 +54,7 @@ json_object *vr_observe_report(vr_engine *e,uint64_t now)
         vr_link *l=&e->links[i];if(!l->ssl||l->fd<0)continue;
         json_object *v=json_object_new_object();json_object_object_add(v,"peer",json_object_new_string(l->peer));json_object_object_add(v,"slot",json_object_new_int(l->slot));
         json_object_object_add(v,"tx_bytes",json_object_new_int64((int64_t)l->tx));json_object_object_add(v,"rx_bytes",json_object_new_int64((int64_t)l->rx));
+        json_object_object_add(v,"tls_cipher",json_object_new_string(SSL_get_cipher_name(l->ssl)));
         json_object_object_add(v,"tcp_info",vr_socket_tcp_info(l->fd));json_object_array_add(carriers,v);
     }
     json_object_object_add(r,"carriers",carriers);json_object_object_add(r,"carrier_snapshot_at_ms",json_object_new_int64((int64_t)now));return r;

@@ -20,5 +20,5 @@ int main(int argc,char **argv)
     if(!ssl){assert(fd==-1);puts("rejected");return 2;}
     assert(fd>=0);
     if(iface&&*iface){char bound[16]={0};socklen_t len=sizeof(bound);assert(!getsockopt(fd,SOL_SOCKET,SO_BINDTODEVICE,bound,&len)&&!strcmp(bound,iface));}
-    SSL_free(ssl);close(fd);puts("accepted");return 0;
+    printf("accepted %s\n",SSL_get_cipher_name(ssl));SSL_free(ssl);close(fd);return 0;
 }
