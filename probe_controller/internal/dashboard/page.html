@@ -1949,13 +1949,13 @@
 
         function renderProbeLatencySection(item, key) {
             const network = Array.isArray(item.network) ? item.network : [];
-            const jumpBtn = '<button class="chart-jump-btn" type="button" data-jump-node="' + escapeHTML(key) + '">延迟曲线 ↗</button>';
             if (!network.length) {
                 return '<div class="section-box">'
-                    + '<div class="section-head"><span class="section-title">过去24小时网络状态</span>' + jumpBtn + '</div>'
-                    + '<div class="empty-hint">暂未分配网络延迟监测任务</div>'
+                    + '<div class="section-head"><span class="section-title">24h 网络状态</span></div>'
+                    + '<div class="empty-hint">暂未分配拨测任务</div>'
                     + '</div>';
             }
+            const jumpBtn = '<button class="chart-jump-btn" type="button" data-jump-node="' + escapeHTML(key) + '">延迟曲线 ↗</button>';
             const nowHourMS = Math.floor(Date.now() / 3600000) * 3600000;
             const nodeHourMap = state.hourly24Map.get(key);
 
@@ -2256,7 +2256,7 @@
                     + '<td>' + latPills + '</td>'
                     + '<td>' + trafficCell + '</td>'
                     + '<td class="mono" title="最后心跳: ' + escapeHTML(formatDateTime(item.last_seen)) + '"><div>' + escapeHTML(formatMachineUptime(item.machine_uptime_seconds)) + '</div><div style="font-size:11px;color:var(--text-muted)">' + escapeHTML(formatRelativeTime(item.last_seen)) + '</div></td>'
-                    + '<td><button class="chart-jump-btn" type="button" data-jump-node="' + escapeHTML(key) + '">曲线 ↗</button></td>'
+                    + '<td>' + (network.length ? '<button class="chart-jump-btn" type="button" data-jump-node="' + escapeHTML(key) + '">曲线 ↗</button>' : '<span style="color:var(--text-muted)">—</span>') + '</td>'
                     + '</tr>';
             }).join('');
 
@@ -2390,12 +2390,12 @@
                 els.networkGrid.innerHTML = '<div class="empty-state">正在加载网络延迟曲线...</div>';
                 return;
             }
-            const sorted = sortedByNodeNo(state.networkItems);
+            const sorted = sortedByNodeNo(state.networkItems).filter((item) => normalizeNetworkSeries(item && item.series).length > 0);
             els.tabNetworkBadge.textContent = String(sorted.length);
             syncNetworkNodeDropdown(sorted);
 
             if (!sorted.length) {
-                els.networkGrid.innerHTML = '<div class="empty-state">暂无网络监测曲线数据<small>请确认主控已配置并启用网络监测任务</small></div>';
+                els.networkGrid.innerHTML = '<div class="empty-state">暂无拨测曲线数据<small>仅展示已配置并启用拨测任务的探针节点</small></div>';
                 return;
             }
 

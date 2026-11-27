@@ -240,3 +240,47 @@ func TestDashboardNetworkHour24ScaleReturnsPast24HoursHourly(t *testing.T) {
 		t.Fatalf("unexpected current hourly bucket[1]: %+v", pts[1])
 	}
 }
+
+func TestDashboardNetworkSkipsProbesWithoutEnabledMonitorTasks(t *testing.T) {
+	restore := SetProbeNodesAndNetworkMonitorTasksForTest(
+		map[int]string{1: "probe-with-task", 2: "probe-without-task"},
+		map[string]string{"a": "电信", "c": "已停用"},
+	)
+	t.Cleanup(restore)
+	t.Cleanup(SetProbeNetworkMonitorResultStorePathForTest(filepath.Join(t.TempDir(), "results")))
+	for i := range ProbeStore.data.NetworkMonitorTasks {
+		task := &ProbeStore.data.NetworkMonitorTasks[i]
+		if task.ID == "c" {
+			task.Enabled = false
+		}
+	}
+	sampleAt := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	if err := AppendProbeNetworkMonitorResultForTest("1", "a", sampleAt, 20, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := AppendProbeNetworkMonitorResultForTest("1", "c", sampleAt, 30, 0); err != nil {
+		t.Fatal(err)
+	}
+	// Node 2 has old historical data on disk but no assigned enabled monitor task.
+	if err := AppendProbeNetworkMonitorResultForTest("2", "a", sampleAt, 40, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	rr := httptest.NewRecorder()
+	dashboardNetworkHandler(rr, httptest.NewRequest(http.MethodGet, "/dashboard/network?scale=minute", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		Items []dashboardPublicNetworkProbeItem `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Items) != 1 || payload.Items[0].NodeNo != 1 {
+		t.Fatalf("expected only node 1 with enabled task, got %+v", payload.Items)
+	}
+	if len(payload.Items[0].Series) != 1 || payload.Items[0].Series[0].TaskID != "a" {
+		t.Fatalf("expected only enabled task a on node 1, got %+v", payload.Items[0].Series)
+	}
+}

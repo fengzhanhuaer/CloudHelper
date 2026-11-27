@@ -1,10 +1,13 @@
 #define _GNU_SOURCE
 #include "platform.h"
 #include <arpa/inet.h>
+#include <errno.h>
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <inttypes.h>
+#include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/sysinfo.h>
 
@@ -54,8 +57,39 @@ static int counter(const char *root,const char *iface,const char *key,uint64_t *
     char path[512];if(snprintf(path,sizeof(path),"%s/%s/statistics/%s_bytes",root,iface,key)>=(int)sizeof(path))return -1;
     FILE *f=fopen(path,"r");if(!f)return -1;char tail;int ok=fscanf(f,"%" SCNu64 " %c",value,&tail)==1;fclose(f);return ok?0:-1;
 }
+int vr_cpu_sample(const char *stat_path,vr_cpu_sampler *s,double *percent)
+{
+    if(!stat_path||!s)return -1;
+    FILE *f=fopen(stat_path,"r");if(!f)return -1;
+    char line[512];char *ok=fgets(line,sizeof(line),f);fclose(f);
+    if(!ok||strncmp(line,"cpu",3)||(line[3]!=' '&&line[3]!='\t'))return -1;
+    uint64_t vals[16];size_t count=0;const char *p=line+3;
+    while(*p&&count<16) {
+        while(*p==' '||*p=='\t')p++;
+        if(!*p||*p=='\r'||*p=='\n')break;
+        char *end=NULL;errno=0;unsigned long long v=strtoull(p,&end,10);
+        if(errno||end==p||(*end&&*end!=' '&&*end!='\t'&&*end!='\r'&&*end!='\n'))return -1;
+        vals[count++]=(uint64_t)v;p=end;
+    }
+    if(count<4)return -1;
+    uint64_t total=0;for(size_t i=0;i<count;i++)total+=vals[i];
+    uint64_t idle=vals[3]+(count>4?vals[4]:0);
+    if(!s->has_prev){s->total=total;s->idle=idle;s->has_prev=1;return 1;}
+    if(total<=s->total||idle<s->idle){if(total<s->total||idle<s->idle){s->total=total;s->idle=idle;}return 1;}
+    uint64_t dt=total-s->total,di=idle-s->idle;s->total=total;s->idle=idle;
+    if(di>dt)return 1;
+    double pct=(double)(dt-di)*100.0/(double)dt;
+    if(pct<0.0)pct=0.0;
+    if(pct>100.0)pct=100.0;
+    pct=(double)((int)(pct*10.0+0.5))/10.0;
+    if(percent)*percent=pct;
+    return 0;
+}
+
 json_object *vr_probe_report(const vr_config *c,const vr_addresses *a,const char *net_root)
 {
+    static pthread_mutex_t cpu_mu=PTHREAD_MUTEX_INITIALIZER;
+    static vr_cpu_sampler cpu_state={0};
     json_object *o=json_object_new_object(),*ips=json_object_new_array(),*system=json_object_new_object();
     json_object_object_add(o,"type",json_object_new_string("report"));json_object_object_add(o,"node_id",json_object_new_string(c->node_id));
     json_object_object_add(o,"platform",json_object_new_string("desktop"));json_object_object_add(o,"os",json_object_new_string("linux"));
@@ -70,6 +104,9 @@ json_object *vr_probe_report(const vr_config *c,const vr_addresses *a,const char
     uint64_t rx=0,tx=0;int available=*a->wan&&!counter(net_root,a->wan_if,"rx",&rx)&&!counter(net_root,a->wan_if,"tx",&tx);
     json_object_object_add(system,"network_traffic_available",json_object_new_boolean(available));
     if(available){json_object_object_add(system,"network_rx_bytes",json_object_new_int64((int64_t)rx));json_object_object_add(system,"network_tx_bytes",json_object_new_int64((int64_t)tx));}
+    double cpu_pct=0.0;
+    pthread_mutex_lock(&cpu_mu);int cpu_rc=vr_cpu_sample("/proc/stat",&cpu_state,&cpu_pct);pthread_mutex_unlock(&cpu_mu);
+    if(!cpu_rc)json_object_object_add(system,"cpu_percent",json_object_new_double(cpu_pct));
     struct sysinfo info;if(!sysinfo(&info)) {
         json_object_object_add(o,"machine_uptime_seconds",json_object_new_int64(info.uptime));
         json_object_object_add(system,"memory_total_bytes",json_object_new_int64((int64_t)info.totalram*info.mem_unit));

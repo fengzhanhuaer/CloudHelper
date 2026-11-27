@@ -31,6 +31,22 @@ int main(void)
     assert(json_object_get_boolean(vr_member(system,"network_traffic_available"))&&json_object_get_int64(vr_member(system,"network_rx_bytes"))==123456789012LL&&json_object_get_int64(vr_member(system,"network_tx_bytes"))==9876543210LL);json_object_put(o);
     strcpy(a.wan,a.lan);o=vr_probe_report(&c,&a,root);assert(json_object_array_length(vr_member(o,"ipv4"))==1);json_object_put(o);
     *a.wan=0;o=vr_probe_report(&c,&a,root);assert(json_object_array_length(vr_member(o,"ipv4"))==1&&!json_object_get_boolean(vr_member(vr_member(o,"system"),"network_traffic_available")));json_object_put(o);
+    char stat_path[512];snprintf(stat_path,sizeof(stat_path),"%s/proc_stat",root);
+    vr_cpu_sampler cs={0};double cpu_pct=-1.0;
+    const char *s1="cpu  100 0 50 800 50 0 0 0 0 0\ncpu0 100 0 50 800 50 0 0 0 0 0\n";
+    assert(!vr_atomic_write(stat_path,s1,strlen(s1)));
+    assert(vr_cpu_sample(stat_path,&cs,&cpu_pct)==1);
+    const char *s2="cpu  300 0 100 1500 100 0 0 0 0 0\n";
+    assert(!vr_atomic_write(stat_path,s2,strlen(s2)));
+    assert(vr_cpu_sample(stat_path,&cs,&cpu_pct)==0&&cpu_pct==25.0);
+    assert(vr_cpu_sample(stat_path,&cs,&cpu_pct)==1);
+    const char *s3="cpu  1300 0 100 1500 100 0 0 0 0 0\n";
+    assert(!vr_atomic_write(stat_path,s3,strlen(s3)));
+    assert(vr_cpu_sample(stat_path,&cs,&cpu_pct)==0&&cpu_pct==100.0);
+    const char *s_bad="badline 1 2 3 4\n";
+    assert(!vr_atomic_write(stat_path,s_bad,strlen(s_bad)));
+    assert(vr_cpu_sample(stat_path,&cs,&cpu_pct)==-1);
+    unlink(stat_path);
     unlink(path);snprintf(path,sizeof(path),"%s/wan0/statistics/rx_bytes",root);unlink(path);snprintf(path,sizeof(path),"%s/wan0/statistics",root);rmdir(path);snprintf(path,sizeof(path),"%s/wan0",root);rmdir(path);rmdir(root);
-    puts("PASS: gateway validation/persistence/ACL, WAN/LAN reporting and WAN-only 64-bit traffic counters");return 0;
+    puts("PASS: gateway validation/persistence/ACL, WAN/LAN reporting, CPU sampling and WAN-only 64-bit traffic counters");return 0;
 }

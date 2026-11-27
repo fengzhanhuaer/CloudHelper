@@ -453,6 +453,7 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 	}
 	metaMap := map[string]nodeMeta{}
 	taskNameMap := map[string]string{}
+	allowedTaskIDsByNode := map[string]map[string]struct{}{}
 	if ProbeStore != nil {
 		ProbeStore.mu.RLock()
 		for _, node := range loadProbeNodesLocked() {
@@ -473,6 +474,19 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 				continue
 			}
 			taskNameMap[taskID] = normalizeProbeNetworkMonitorTaskName(task.Name)
+			if !task.Enabled {
+				continue
+			}
+			for _, id := range task.NodeIDs {
+				normalizedNodeID := normalizeProbeNodeID(id)
+				if normalizedNodeID == "" {
+					continue
+				}
+				if allowedTaskIDsByNode[normalizedNodeID] == nil {
+					allowedTaskIDsByNode[normalizedNodeID] = map[string]struct{}{}
+				}
+				allowedTaskIDsByNode[normalizedNodeID][taskID] = struct{}{}
+			}
 		}
 		ProbeStore.mu.RUnlock()
 	}
@@ -485,6 +499,10 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 	for _, nodeID := range listProbeNetworkMonitorResultNodeIDs() {
 		meta, ok := metaMap[nodeID]
 		if !ok {
+			continue
+		}
+		allowedTasks := allowedTaskIDsByNode[nodeID]
+		if len(allowedTasks) == 0 {
 			continue
 		}
 		nodeNo := 0
@@ -517,6 +535,9 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 		appendPoint := func(taskID string, point dashboardNetworkWeightedPoint) {
 			if taskID == "" {
 				taskID = "default"
+			}
+			if _, allowed := allowedTasks[taskID]; !allowed {
+				return
 			}
 			if _, exists := acc.points[taskID]; !exists {
 				acc.points[taskID] = []dashboardNetworkWeightedPoint{}
