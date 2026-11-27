@@ -59,7 +59,8 @@ static void tick(vr_engine *e)
     /* Certificate parsing/curl can leave a thread-local OpenSSL error. A
        nonblocking WANT_READ/WANT_WRITE must not misclassify that old error. */
     ERR_put_error(ERR_LIB_PEM,0,PEM_R_NO_START_LINE,__FILE__,__LINE__);
-    for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl)vr_link_poll(&e->links[i],fds[i].revents);
+    vr_links_close_failed(e->links,e->link_count,fds);
+    vr_links_poll(e->links,e->link_count,fds);
     if(count)vr_tcp_poll(e,fds+e->link_count);
     vr_measure_tick(e);
 }

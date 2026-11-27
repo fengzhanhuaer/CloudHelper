@@ -21,6 +21,9 @@ static vr_ws_decoder ws;
 static vr_decoder decoder;
 static unsigned ssl_error=SSL_ERROR_WANT_WRITE;
 static int real_tls;
+static SSL *busy_reader;
+static unsigned busy_reads, frames_before_read;
+int __real_SSL_read(SSL *ssl,void *p,int n);
 int __real_SSL_write(SSL *ssl,const void *p,int n);
 int __real_SSL_get_error(const SSL *ssl,int result);
 
@@ -36,6 +39,18 @@ static int receive_frame(const vr_frame *f,void *arg)
 }
 static int receive_ws(int opcode,const uint8_t *p,size_t n,void *arg)
 {(void)arg;if(opcode==2)return vr_decoder_feed(&decoder,p,n,receive_frame,NULL);assert(opcode==9||opcode==10);return 0;}
+
+int __wrap_SSL_read(SSL *ssl,void *p,int n)
+{
+    if (ssl != busy_reader) return __real_SSL_read(ssl,p,n);
+    if (!busy_reads) frames_before_read = frames;
+    busy_reads++;
+    /* A slow receive batch on another slot. Each read returns a WS pong. */
+    assert(n >= 2);
+    memcpy(p, "\x8a\x00", 2);
+    usleep(4000);
+    return 2;
+}
 
 int __wrap_SSL_write(SSL *ssl,const void *p,int n)
 {
@@ -65,10 +80,52 @@ static void reset(vr_link *l,SSL_CTX *ctx)
     memset(&ws,0,sizeof(ws));memset(&decoder,0,sizeof(decoder));ws.expect_mask=1;
     frames=calls=want=0;retry_bytes=NULL;retry_n=0;ssl_error=SSL_ERROR_WANT_WRITE;
 }
+static void poll_one(vr_link *l, short events)
+{
+    struct pollfd fd = {l->fd, POLLIN | (l->write_events ? l->write_events : POLLOUT), events};
+    vr_links_close_failed(l, 1, &fd);
+    vr_links_poll(l, 1, &fd);
+}
+
 static void drain(vr_link *l)
 {
-    unsigned loops=0;while(l->used&&loops++<4096)vr_link_poll(l,POLLOUT|POLLIN);
+    unsigned loops=0;while(l->used&&loops++<4096)poll_one(l,POLLOUT|POLLIN);
     assert(!l->used&&!l->tx_memory&&!l->writing&&!l->write_pending);
+}
+
+static void test_poll_dispatch(SSL_CTX *ctx)
+{
+    vr_link *links = calloc(2,sizeof(*links));
+    assert(links);
+    for (size_t i=0; i<2; i++) {
+        links[i].fd = -1;
+        reset(&links[i],ctx);
+    }
+    busy_reader = links[0].ssl;
+    /* Neither fd requested writes when poll started. TUN supplies work on
+       the second carrier immediately after the first becomes readable. */
+    struct pollfd fds[] = {{-1,POLLIN,POLLIN},{-1,POLLIN,0}};
+    assert(!enqueue(&links[1],1,1,5,52));
+    vr_links_poll(links,2,fds);
+    assert(frames_before_read == 1 && busy_reads == 1 && !links[1].used);
+
+    /* The first speculative write hits backpressure. Other receive work
+       proceeds, and only a subsequent writable event may retry the write. */
+    assert(!enqueue(&links[1],1,1,6,52));
+    want=1;
+    vr_links_poll(links,2,fds);
+    unsigned blocked_calls=calls;
+    assert(links[1].write_events==POLLOUT && busy_reads==2);
+    fds[1].events |= POLLOUT;
+    vr_links_poll(links,2,fds);
+    assert(calls==blocked_calls && busy_reads==3);
+    fds[1].revents=POLLOUT;
+    vr_links_poll(links,2,fds);
+    assert(frames==2 && seqs[0]==5 && seqs[1]==6 && busy_reads==4);
+    busy_reader=NULL;
+    for (size_t i=0; i<2; i++) vr_link_close(&links[i],"");
+    free(links);
+    puts("PASS: new TUN output sent before busy TLS input in the same poll, backpressure and RX fairness retained");
 }
 
 typedef struct {SSL_CTX *ctx;int listener;} tls_peer;
@@ -105,11 +162,11 @@ static void test_real_tls(const char *certfile,const char *keyfile)
     l->ssl=vr_tls_connect_at("127.0.0.1","127.0.0.1",ntohs(address.sin_port),pin,NULL,&l->fd,vr_millis()+5000);assert(l->ssl);
     int small=4096;assert(!setsockopt(l->fd,SOL_SOCKET,SO_SNDBUF,&small,sizeof(small)));
     for(unsigned i=0;i<3;i++)assert(!enqueue(l,1,1,i,60000));
-    vr_link_poll(l,POLLOUT);assert(l->used);assert(!enqueue(l,2,1,99,64));
+    poll_one(l,POLLOUT);assert(l->used);assert(!enqueue(l,2,1,99,64));
     uint64_t deadline=vr_millis()+10000;
     while(l->used&&vr_millis()<deadline) {
         struct pollfd fd={l->fd,(short)(POLLIN|(l->write_events?l->write_events:POLLOUT)),0};
-        assert(poll(&fd,1,20)>=0);vr_link_poll(l,fd.revents);assert(l->ssl);
+        assert(poll(&fd,1,20)>=0);poll_one(l,fd.revents);assert(l->ssl);
     }
     assert(!l->used&&!l->tx_memory);pthread_join(thread,NULL);
     assert(frames==4&&mains[0]==1&&mains[3]==1);unsigned business=0,control=0;
@@ -122,6 +179,7 @@ int main(int argc,char **argv)
 {
     if(argc==3){test_real_tls(argv[1],argv[2]);return 0;}assert(argc==1);
     SSL_CTX *ctx=SSL_CTX_new(TLS_method());assert(ctx);
+    test_poll_dispatch(ctx);
     vr_link *l=calloc(1,sizeof(*l));assert(l);l->fd=-1;reset(l,ctx);
     /* Filling business/bulk must leave capacity for ping and pong. */
     unsigned count=0;while(!enqueue(l,1,1,count%256,2048))count++;
@@ -147,15 +205,15 @@ int main(int argc,char **argv)
     /* WANT_WRITE: same pointer, length and bytes on every retry, even after
        a high priority frame arrives. Complete the current WS frame first. */
     reset(l,ctx);assert(!enqueue(l,8,3,1,60000));assert(!enqueue(l,8,4,2,64));
-    want=2;vr_link_poll(l,POLLOUT);assert(l->writing&&l->write_pending);
-    assert(!enqueue(l,3,1,3,64));vr_link_poll(l,POLLOUT);assert(!frames);
+    want=2;poll_one(l,POLLOUT);assert(l->writing&&l->write_pending);
+    assert(!enqueue(l,3,1,3,64));poll_one(l,POLLOUT);assert(!frames);
     drain(l);assert(frames==3&&mains[0]==8&&subs[0]==3&&mains[1]==3&&subs[2]==4);
 
     /* WANT_READ must not spin on a writable socket or change retry data. */
     reset(l,ctx);assert(!enqueue(l,1,1,1,2048));want=1;ssl_error=SSL_ERROR_WANT_READ;
-    vr_link_poll(l,POLLOUT);assert(l->write_events==POLLIN);unsigned before=calls;
-    vr_link_poll(l,POLLOUT);assert(calls==before);
-    vr_link_poll(l,POLLIN);assert(!l->used&&frames==1);
+    poll_one(l,POLLOUT);assert(l->write_events==POLLIN);unsigned before=calls;
+    poll_one(l,POLLOUT);assert(calls==before);
+    poll_one(l,POLLIN);assert(!l->used&&frames==1);
 
     /* Tiny frames cannot allocate unbounded list metadata. Bulk also has its
        own cap so a speed test cannot consume the entire business budget. */
@@ -176,7 +234,7 @@ int main(int argc,char **argv)
     reset(l,ctx);assert(vr_link_queue(l,2,"",SIZE_MAX)<0);
 
     /* Cleanup includes a frame held by a failed SSL_write. */
-    assert(!enqueue(l,1,1,0,2048));want=1;vr_link_poll(l,POLLOUT);assert(l->writing);
+    assert(!enqueue(l,1,1,0,2048));want=1;poll_one(l,POLLOUT);assert(l->writing);
     reset(l,ctx);vr_link_close(l,"");SSL_CTX_free(ctx);free(l);
     puts("PASS: bounded priority queues, control reserve, fair bulk, intact main=8/speed order and immutable TLS WANT retries");return 0;
 }

@@ -213,11 +213,13 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
         fds[2]=(struct pollfd){e->wan,POLLIN,0};fds[3]=(struct pollfd){e->dns_udp,POLLIN,0};fds[4]=(struct pollfd){e->dns_tcp,POLLIN,0};
         fds[5]=(struct pollfd){e->carrier6,POLLIN,0};
         for(size_t i=0;i<e->link_count;i++)fds[6+i]=(struct pollfd){e->links[i].fd,(short)(POLLIN|(e->links[i].used?(e->links[i].write_events?e->links[i].write_events:POLLOUT):0)),0};
-        int pending=0;for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl&&SSL_pending(e->links[i].ssl))pending=1;
+        int pending=0;for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl&&e->links[i].write_events!=POLLIN&&SSL_pending(e->links[i].ssl))pending=1;
         size_t tcp_count=vr_tcp_pollfds(e,fds+6+e->link_count);
         int result=poll(fds,6+e->link_count+tcp_count,pending?0:50);if(result<0&&errno==EINTR)continue;if(result<0){strcpy(e->error,"network poll failed");break;}
-        for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl)vr_link_poll(&e->links[i],fds[6+i].revents);
+        /* Remove failed slots before TUN selects a carrier for new packets. */
+        vr_links_close_failed(e->links,e->link_count,fds+6);
         if(fds[0].revents&POLLIN)vr_tun_drain(e);
+        vr_links_poll(e->links,e->link_count,fds+6);
         for(size_t i=1;i<=2;i++)if(!pending_policy&&(fds[i].revents&POLLIN)){int fd=accept4(fds[i].fd,NULL,NULL,SOCK_CLOEXEC);if(fd>=0)vr_link_accept(e,fd);}
         if(!pending_policy&&(fds[5].revents&POLLIN)){int fd=accept4(fds[5].fd,NULL,NULL,SOCK_CLOEXEC);if(fd>=0)vr_link_accept(e,fd);}
         if(fds[3].revents&POLLIN)vr_dns_accept(e,0);

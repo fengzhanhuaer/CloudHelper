@@ -582,47 +582,77 @@ static int ws_received(int opcode,const uint8_t *bytes,size_t n,void *arg)
     return 0;
 }
 
-void vr_link_poll(vr_link *l,short events)
+static void link_read(vr_link *l)
 {
-    if(events&(POLLERR|POLLHUP|POLLNVAL)){vr_link_close(l,"connection closed");return;}
-    /* WANT_READ from SSL_write must consume its own TLS handshake input first.
-       Keep reading on WANT_WRITE: two saturated peers must still drain RX. */
-    if(l->write_events!=POLLIN&&((events&POLLIN)||SSL_pending(l->ssl))) {
-        /* Drain a bounded batch. Reading one record per 50 ms poll can leave
-           decrypted records stranded in OpenSSL and stall a remote download. */
-        for(unsigned batch=0;batch<16;batch++) {
-            ERR_clear_error();errno=0;
-            uint8_t bytes[16384];int n=SSL_read(l->ssl,bytes,sizeof(bytes));
-            if(n>0){l->rx+=(unsigned)n;l->last_rx=vr_millis();*l->error=0;
-                if(vr_ws_feed(&l->ws,bytes,(size_t)n,ws_received,l)){
-                    char detail[sizeof(l->error)];
-                    if(*l->error)snprintf(detail,sizeof(detail),"%s",l->error);
-                    else snprintf(detail,sizeof(detail),"WebSocket invalid (opcode %d, mask %d, header %02x/%02x)",l->ws.opcode,l->ws.expect_mask,l->ws.header[0],l->ws.header[1]);
-                    vr_link_close(l,detail);return;}}
-            else {int error=SSL_get_error(l->ssl,n);if(error!=SSL_ERROR_WANT_READ&&error!=SSL_ERROR_WANT_WRITE){char detail[96];vr_tls_error(detail,sizeof(detail),"receive",error);vr_link_close(l,detail);return;}break;}
+    /* Drain a bounded batch. Reading one record per 50 ms poll can leave
+       decrypted records stranded in OpenSSL and stall a remote download. */
+    uint64_t start=vr_millis();
+    for(unsigned batch=0;batch<16;batch++) {
+        ERR_clear_error();errno=0;
+        uint8_t bytes[16384];int n=SSL_read(l->ssl,bytes,sizeof(bytes));
+        if(n>0){l->rx+=(unsigned)n;l->last_rx=vr_millis();*l->error=0;
+            if(vr_ws_feed(&l->ws,bytes,(size_t)n,ws_received,l)){
+                char detail[sizeof(l->error)];
+                if(*l->error)snprintf(detail,sizeof(detail),"%s",l->error);
+                else snprintf(detail,sizeof(detail),"WebSocket invalid (opcode %d, mask %d, header %02x/%02x)",l->ws.opcode,l->ws.expect_mask,l->ws.header[0],l->ws.header[1]);
+                vr_link_close(l,detail);return;}}
+        else {int error=SSL_get_error(l->ssl,n);if(error!=SSL_ERROR_WANT_READ&&error!=SSL_ERROR_WANT_WRITE){char detail[96];vr_tls_error(detail,sizeof(detail),"receive",error);vr_link_close(l,detail);return;}break;}
+        if(vr_millis()-start>=2)break;
+    }
+}
+
+static void link_write(vr_link *l)
+{
+    /* Bound work across peers; only preempt between whole WS frames. */
+    size_t budget=4*VR_TX_WRITE_MAX;
+    for(unsigned batch=0;batch<32&&budget&&l->used;batch++) {
+        vr_tx_frame *f=next_write(l);if(!f)break;
+        size_t n=l->write_pending;
+        if(!n){n=f->length-l->write_offset;if(n>VR_TX_WRITE_MAX)n=VR_TX_WRITE_MAX;l->write_pending=n;}
+        ERR_clear_error();errno=0;int sent=SSL_write(l->ssl,f->bytes+l->write_offset,(int)n);
+        if(sent>0) {
+            l->used-=(size_t)sent;l->tx_bytes[f->lane]-=(size_t)sent;
+            l->write_offset+=(size_t)sent;l->write_pending=0;l->write_events=0;l->tx+=(unsigned)sent;
+            budget=(size_t)sent<budget?budget-(size_t)sent:0;
+            if(l->write_offset==f->length)write_done(l);
+        } else {
+            int error=SSL_get_error(l->ssl,sent);
+            if(error==SSL_ERROR_WANT_READ)l->write_events=POLLIN;
+            else if(error==SSL_ERROR_WANT_WRITE)l->write_events=POLLOUT;
+            else {char detail[96];vr_tls_error(detail,sizeof(detail),"send",error);vr_link_close(l,detail);}
+            break;
         }
     }
-    if(l->used && (events&(l->write_events?l->write_events:POLLOUT))) {
-        /* Bound work across peers; only preempt between whole WS frames. */
-        size_t budget=4*VR_TX_WRITE_MAX;
-        for(unsigned batch=0;batch<32&&budget&&l->used;batch++) {
-            vr_tx_frame *f=next_write(l);if(!f)break;
-            size_t n=l->write_pending;
-            if(!n){n=f->length-l->write_offset;if(n>VR_TX_WRITE_MAX)n=VR_TX_WRITE_MAX;l->write_pending=n;}
-            ERR_clear_error();errno=0;int sent=SSL_write(l->ssl,f->bytes+l->write_offset,(int)n);
-            if(sent>0) {
-                l->used-=(size_t)sent;l->tx_bytes[f->lane]-=(size_t)sent;
-                l->write_offset+=(size_t)sent;l->write_pending=0;l->write_events=0;l->tx+=(unsigned)sent;
-                budget=(size_t)sent<budget?budget-(size_t)sent:0;
-                if(l->write_offset==f->length)write_done(l);
-            } else {
-                int error=SSL_get_error(l->ssl,sent);
-                if(error==SSL_ERROR_WANT_READ)l->write_events=POLLIN;
-                else if(error==SSL_ERROR_WANT_WRITE)l->write_events=POLLOUT;
-                else {char detail[96];vr_tls_error(detail,sizeof(detail),"send",error);vr_link_close(l,detail);}
-                break;
-            }
-        }
+}
+
+void vr_links_close_failed(vr_link *links, size_t count, const struct pollfd *fds)
+{
+    for (size_t i = 0; i < count; i++) {
+        if (links[i].ssl && (fds[i].revents & (POLLERR | POLLHUP | POLLNVAL)))
+            vr_link_close(&links[i], "connection closed");
+    }
+}
+
+void vr_links_poll(vr_link *links, size_t count, const struct pollfd *fds)
+{
+    /* The TUN batch can enqueue onto a previously empty carrier after poll.
+       Give that carrier one nonblocking write before processing incoming TLS. */
+    for (size_t i = 0; i < count; i++) {
+        vr_link *l = &links[i];
+        if (!l->ssl) continue;
+        short interest = l->write_events ? l->write_events : POLLOUT;
+        int newly_queued = !l->write_events && !(fds[i].events & POLLOUT);
+        if (l->used && (newly_queued || (fds[i].revents & interest)))
+            link_write(l);
+    }
+
+    /* Each readable carrier gets a turn even if another writer hit EAGAIN.
+       A write waiting for TLS handshake input owns that read readiness. */
+    for (size_t i = 0; i < count; i++) {
+        vr_link *l = &links[i];
+        if (l->ssl && l->write_events != POLLIN &&
+            ((fds[i].revents & POLLIN) || SSL_pending(l->ssl)))
+            link_read(l);
     }
 }
 
