@@ -11,9 +11,10 @@ python3 tests/test_tls_connect.py
 make VERSION="$build_version" bin/native/test-transport
 python3 tests/test_transport.py
 make VERSION="$build_version" all test bin/native/test-platform-command bin/native/test-addresses bin/native/test-telemetry bin/native/test-cache bin/native/test-upgrade bin/native/test-httpd-profile bin/native/test-httpd-access bin/native/httpd-fixture bin/native/test-carrier bin/native/test-measure
-make VERSION="$build_version" bin/native/test-path-selection bin/native/test-network-monitor bin/native/test-dns-filter
+make VERSION="$build_version" bin/native/test-path-selection bin/native/test-network-monitor bin/native/test-dns-filter bin/native/test-external-speed
 bin/native/test-dns-filter
 bin/native/test-path-selection
+bin/native/test-external-speed
 bin/native/test-network-monitor
 make VERSION="$build_version" bin/native/test-camouflage
 python3 tests/test_camouflage.py

@@ -117,3 +117,14 @@ Go Probe 与安卓已有 main=1 IP 帧及通用出口；插件存在 TUN 转发�
 
 - Windows 交叉编译共享测速测试程序并在 WSL 原生执行成功：任务取消/并发、读取窗口、公开地址校验、端口保留、完整 TCP 数据面 HTTPS 全部通过；Linux amd64/arm64 router 最终构建通过。
 - 当前状态：本地验收完成，待发布构建；下一步唯一动作：提交并推送当前已暂存的 34 个文件。
+
+
+### 首次发布失败与修复
+
+- 提交 bfd65d8bf；首次 run 46006670594，目标版本 v0.4.137。
+- 主控、Windows/Linux Probe、Linux router 已构建成功；插件作业失败，日志确认 test-carrier 链接 src/measure.c 后缺 vr_external_tick/start。生产主程序本身已编译成功。
+- DEF-001：新模块的测试目标依赖不完整；补齐 test-carrier、test-platform、test-path-selection 的实际 external_speed.c 链接，并将新的有界测速回归加入现有 CI native 检查。工作流文件不变。
+- 下一步唯一动作：本地编译全部受影响测试目标，验证后提交修复重发。
+
+- DEF-001 复测通过：三个受影响测试目标全部链接成功；path-selection 与 external-speed 用例通过。首次 run 最终为 failure，未创建可用 release。
+- 修复提交范围仅 router_plugin/Makefile、router_plugin/tools/build-ci.sh、任务账本；不改生产功能代码与工作流文件。

@@ -53,8 +53,8 @@ $(BUILD)/test-logs: $(CORE) tests/test_logs.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_logs.c $(LDFLAGS) $(LDLIBS) -o $@
 $(BUILD)/test-dataplane: $(CORE) src/dataplane.c src/mapping.c tests/test_dataplane.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/dataplane.c src/mapping.c tests/test_dataplane.c $(LDFLAGS) -Wl,--wrap=vr_controller_call -Wl,--wrap=vr_resolve4 $(LDLIBS) -o $@
-$(BUILD)/test-platform: $(CORE) src/dataplane.c src/mapping.c src/platform.c src/tcp_proxy.c src/address_update.c tests/test_platform.c $(wildcard include/*.h) | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/dataplane.c src/mapping.c src/platform.c src/tcp_proxy.c src/address_update.c tests/test_platform.c $(LDFLAGS) -Wl,--wrap=posix_spawnp $(LDLIBS) -o $@
+$(BUILD)/test-platform: $(CORE) src/dataplane.c src/mapping.c src/platform.c src/tcp_proxy.c src/address_update.c src/external_speed.c tests/test_platform.c $(wildcard include/*.h) | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/dataplane.c src/mapping.c src/platform.c src/tcp_proxy.c src/address_update.c src/external_speed.c tests/test_platform.c $(LDFLAGS) -Wl,--wrap=posix_spawnp $(LDLIBS) -o $@
 
 $(BUILD)/cloudhelper-router-plugin $(BUILD)/test-platform $(BUILD)/test-platform-command $(BUILD)/test-addresses $(BUILD)/test-control $(BUILD)/test-carrier $(BUILD)/test-policy-update $(BUILD)/test-routes $(BUILD)/test-upgrade $(BUILD)/test-controller-link: src/platform_address.h
 $(BUILD)/test-dns: $(CORE) src/dns_service.c tests/test_dns_service.c $(wildcard include/*.h) | $(BUILD)
@@ -67,8 +67,8 @@ $(BUILD)/test-control: $(CORE) src/control.c src/network_monitor.c src/upgrade.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/control.c src/network_monitor.c src/upgrade.c src/policy_update.c src/carrier.c src/mapping.c src/platform.c tests/test_control.c $(LDFLAGS) -Wl,--wrap=vr_resolve_config4_all -Wl,--wrap=vr_resolve_transport -Wl,--wrap=curl_easy_perform $(LDLIBS) -o $@
 $(BUILD)/test-certificate: $(CORE) tests/test_certificate.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_certificate.c $(LDFLAGS) -Wl,--wrap=vr_resolve_config4_all $(LDLIBS) -o $@
-$(BUILD)/test-carrier: $(CORE) src/carrier.c src/measure.c src/platform.c src/policy_update.c src/mapping.c src/tcp_proxy.c tests/test_carrier.c $(wildcard include/*.h) | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/carrier.c src/measure.c src/platform.c src/policy_update.c src/mapping.c src/tcp_proxy.c tests/test_carrier.c $(LDFLAGS) $(LDLIBS) -o $@
+$(BUILD)/test-carrier: $(CORE) src/carrier.c src/measure.c src/platform.c src/policy_update.c src/mapping.c src/tcp_proxy.c src/external_speed.c tests/test_carrier.c $(wildcard include/*.h) | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/carrier.c src/measure.c src/platform.c src/policy_update.c src/mapping.c src/tcp_proxy.c src/external_speed.c tests/test_carrier.c $(LDFLAGS) $(LDLIBS) -o $@
 $(BUILD)/test-tx: $(CORE) src/carrier.c tests/test_tx.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/carrier.c tests/test_tx.c $(LDFLAGS) -Wl,--wrap=SSL_write -Wl,--wrap=SSL_get_error $(LDLIBS) -o $@
 $(BUILD)/test-measure: $(CORE) src/measure.c tests/test_measure.c $(wildcard include/*.h) | $(BUILD)
@@ -104,8 +104,8 @@ $(BUILD)/test-dns-system: $(CORE) tests/test_dns_system.c $(wildcard include/*.h
 
 $(BUILD)/test-network-monitor: $(CORE) src/network_monitor.c tests/test_network_monitor.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/network_monitor.c tests/test_network_monitor.c $(LDFLAGS) $(LDLIBS) -o $@
-$(BUILD)/test-path-selection: $(CORE) src/carrier.c src/measure.c tests/test_path_selection.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/carrier.c src/measure.c tests/test_path_selection.c $(LDFLAGS) $(LDLIBS) -o $@
+$(BUILD)/test-path-selection: $(CORE) src/carrier.c src/measure.c src/external_speed.c tests/test_path_selection.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/carrier.c src/measure.c src/external_speed.c tests/test_path_selection.c $(LDFLAGS) $(LDLIBS) -o $@
 
 $(BUILD)/test-external-speed: $(CORE) tests/test_external_speed.c src/external_speed.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -fdata-sections $(CORE) tests/test_external_speed.c $(LDFLAGS) $(LDLIBS) -o $@
