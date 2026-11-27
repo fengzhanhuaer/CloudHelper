@@ -6,9 +6,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 static uint8_t carried[1500];static size_t carried_len;
+static uint64_t drain_clock;
+static unsigned drain_forwarded, packet_cost_ms;
+uint64_t __real_vr_millis(void);
+uint64_t __wrap_vr_millis(void)
+{
+    return drain_clock ? drain_clock : __real_vr_millis();
+}
 static int resolved_requests,controller_requests,external_fixture;
 int __wrap_vr_resolve4(const char *domain,const char *upstream,const char *iface,char out[16])
 {(void)upstream;(void)iface;assert(!strcmp(domain,"local.example"));resolved_requests++;strcpy(out,"203.0.113.5");return 0;}
@@ -31,7 +39,14 @@ int vr_packet_path(vr_engine *e,const char *target,const uint8_t *packet,size_t 
 {(void)packet;(void)length;return vr_path(e,target,path,n);}
 
 int vr_send(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],size_t n,const void *b,size_t len)
-{(void)e;(void)path;assert(main==1&&sub==1&&n==2&&len<=sizeof(carried));memcpy(carried,b,len);carried_len=len;return 0;}
+{
+    (void)e;(void)path;assert(main==1&&sub==1&&n==2&&len<=sizeof(carried));memcpy(carried,b,len);carried_len=len;
+    if (drain_clock) {
+        assert(carried[5] == drain_forwarded++);
+        drain_clock += packet_cost_ms;
+    }
+    return 0;
+}
 
 static vr_engine *engine(const char *id,const char *ip,int pipes[2])
 {
@@ -69,9 +84,41 @@ static void test_fake_dns_blacklist(void)
     puts("PASS: cached Fake IP blacklist blocks TCP/UDP before established reuse, removes locally, no controller or DNS lookups");
 }
 
+static void test_tun_drain(void)
+{
+    int pipe_fds[2], pair[2];
+    vr_engine *e = engine("7", "198.18.0.7", pipe_fds);
+    assert(!socketpair(AF_UNIX, SOCK_DGRAM | SOCK_NONBLOCK, 0, pair));
+    e->tun = pair[0];
+    uint8_t ack[40] = {0x45,0,0,40,0,0,0x40,0,64,6};
+    ack[32] = 0x50;
+    ack[33] = 0x10;
+    tcp_checksums(ack);
+    assert(!vr_packet_rewrite(ack,sizeof(ack),inet_addr("198.18.0.7"),inet_addr("198.18.0.8"),40001,443));
+    for (unsigned i = 0; i < 20; i++) {
+        ack[5] = (uint8_t)i;
+        tcp_checksums(ack);
+        assert(write(pair[1], ack, sizeof(ack)) == sizeof(ack));
+    }
+    drain_clock = 100;
+    vr_tun_drain(e);
+    assert(drain_forwarded == 16);
+    packet_cost_ms = 2;
+    vr_tun_drain(e);
+    assert(drain_forwarded == 18);
+    packet_cost_ms = 0;
+    vr_tun_drain(e);
+    vr_tun_drain(e);
+    assert(drain_forwarded == 20);
+    drain_clock = 0;
+    close(pair[0]);close(pair[1]);close(pipe_fds[0]);close(pipe_fds[1]);
+    json_object_put(e->policy);pthread_mutex_destroy(&e->mutex);free(e);
+}
+
 int main(void)
 {
     test_fake_dns_blacklist();
+    test_tun_drain();
     {
         int pipes[2];vr_engine *e=engine("7","198.18.0.7",pipes);
         uint8_t packet[40]={0x45,0,0,40,0,0,0x40,0,64,6};packet[32]=0x50;packet[33]=2;tcp_checksums(packet);

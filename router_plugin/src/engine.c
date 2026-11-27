@@ -215,7 +215,7 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
         size_t tcp_count=vr_tcp_pollfds(e,fds+6+e->link_count);
         int result=poll(fds,6+e->link_count+tcp_count,pending?0:50);if(result<0&&errno==EINTR)continue;if(result<0){strcpy(e->error,"network poll failed");break;}
         for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl)vr_link_poll(&e->links[i],fds[6+i].revents);
-        if(fds[0].revents&POLLIN){uint8_t packet[2048];ssize_t n=read(e->tun,packet,sizeof(packet));if(n>0)vr_outgoing(e,packet,(size_t)n);}
+        if(fds[0].revents&POLLIN)vr_tun_drain(e);
         for(size_t i=1;i<=2;i++)if(!pending_policy&&(fds[i].revents&POLLIN)){int fd=accept4(fds[i].fd,NULL,NULL,SOCK_CLOEXEC);if(fd>=0)vr_link_accept(e,fd);}
         if(!pending_policy&&(fds[5].revents&POLLIN)){int fd=accept4(fds[5].fd,NULL,NULL,SOCK_CLOEXEC);if(fd>=0)vr_link_accept(e,fd);}
         if(fds[3].revents&POLLIN)vr_dns_accept(e,0);

@@ -52,7 +52,7 @@ $(BUILD)/test-exits: $(CORE) $(RUNTIME) tests/test_exits.c $(wildcard include/*.
 $(BUILD)/test-logs: $(CORE) tests/test_logs.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_logs.c $(LDFLAGS) $(LDLIBS) -o $@
 $(BUILD)/test-dataplane: $(CORE) src/dataplane.c src/mapping.c tests/test_dataplane.c $(wildcard include/*.h) | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/dataplane.c src/mapping.c tests/test_dataplane.c $(LDFLAGS) -Wl,--wrap=vr_controller_call -Wl,--wrap=vr_resolve4 $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/dataplane.c src/mapping.c tests/test_dataplane.c $(LDFLAGS) -Wl,--wrap=vr_controller_call -Wl,--wrap=vr_resolve4 -Wl,--wrap=vr_millis $(LDLIBS) -o $@
 $(BUILD)/test-platform: $(CORE) src/dataplane.c src/mapping.c src/platform.c src/tcp_proxy.c src/address_update.c src/external_speed.c tests/test_platform.c $(wildcard include/*.h) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/dataplane.c src/mapping.c src/platform.c src/tcp_proxy.c src/address_update.c src/external_speed.c tests/test_platform.c $(LDFLAGS) -Wl,--wrap=posix_spawnp $(LDLIBS) -o $@
 

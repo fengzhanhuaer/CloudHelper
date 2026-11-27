@@ -149,6 +149,7 @@ void vr_mapping_dns_refresh(vr_engine *e);
 /* Caller holds engine mutex. Local-only mappings still follow current rules. */
 vr_decision vr_mapping_decision(vr_engine *e,const vr_mapping *mapping);
 void vr_outgoing(vr_engine *e,uint8_t *bytes,size_t n);
+void vr_tun_drain(vr_engine *e);
 int vr_dataplane_start(vr_engine *e);
 void vr_dataplane_tick(vr_engine *e);
 void vr_dataplane_stop(vr_engine *e);

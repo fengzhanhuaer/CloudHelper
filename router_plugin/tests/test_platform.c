@@ -122,7 +122,7 @@ int main(int argc,char **argv)
         if(toggle_tls) {toggle_tls=0;e->config.tls_sni_enabled=!e->config.tls_sni_enabled;assert(!vr_platform_tls(&e->addresses,e->cidr,e->config.tls_sni_enabled));puts(e->config.tls_sni_enabled?"TLS_ON":"TLS_OFF");fflush(stdout);}
         struct pollfd p[2+VR_TCP_POLL_MAX]={{e->tun,POLLIN,0},{carrier,POLLIN,0}};size_t count=vr_tcp_pollfds(e,p+2);if(poll(p,2+count,50)<0)continue;
         uint8_t b[2048];ssize_t n;
-        if(p[0].revents&POLLIN){n=read(e->tun,b,sizeof(b));if(n>0)vr_outgoing(e,b,(size_t)n);}
+        if(p[0].revents&POLLIN)vr_tun_drain(e);
         if(p[1].revents&POLLIN){peer_len=sizeof(peer);n=recvfrom(carrier,b,sizeof(b),0,(struct sockaddr *)&peer,&peer_len);if(n>1){char path[VR_PATH_MAX][129]={{"7"},{"8"}};if(b[0]!=7)strcpy(path[0],"9");vr_frame f={1,1,NULL,b+1,0,(size_t)n-1};vr_incoming(e,&f,path,2);}}
         if(count)vr_tcp_poll(e,p+2);
     }
