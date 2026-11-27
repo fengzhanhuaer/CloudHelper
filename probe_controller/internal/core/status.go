@@ -438,8 +438,12 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 	} else if scale == "day" {
 		window = 180 * 24 * time.Hour
 	}
-	windowStart := now.Add(-window)
-	windowStart = truncateDashboardNetworkTime(windowStart, scale)
+	var windowStart time.Time
+	if scale == "hour24" {
+		windowStart = now.Truncate(time.Hour).Add(-23 * time.Hour)
+	} else {
+		windowStart = truncateDashboardNetworkTime(now.Add(-window), scale)
+	}
 
 	type nodeMeta struct {
 		no        int
@@ -570,7 +574,7 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 				})
 			}
 		}
-		if scale == "hour" || scale == "day" {
+		if scale == "hour" || scale == "hour24" || scale == "day" {
 			appendArchived(history.Hourly)
 		}
 		if scale == "day" {
@@ -728,6 +732,8 @@ func normalizeDashboardNetworkScale(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "minute", "minutes", "min":
 		return "minute"
+	case "hour24", "24h":
+		return "hour24"
 	case "hour", "hours":
 		return "hour"
 	case "day", "days":
@@ -792,7 +798,7 @@ func truncateDashboardNetworkTime(ts time.Time, scale string) time.Time {
 	switch normalizeDashboardNetworkScale(scale) {
 	case "day":
 		return time.Date(ts.Year(), ts.Month(), ts.Day(), 0, 0, 0, 0, time.UTC)
-	case "hour":
+	case "hour", "hour24":
 		return ts.Truncate(time.Hour)
 	default:
 		return ts.Truncate(time.Minute)

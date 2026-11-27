@@ -30,7 +30,10 @@ func TestDashboardPageHandlerETagAndGzip(t *testing.T) {
 		"/dashboard/status",
 		"/dashboard/probes",
 		"/dashboard/network",
-		"latencyQuality",
+		"networkHealthStatus",
+		"drawLossBars",
+		"computeTaskLatencyBaseline",
+		"scale=hour24",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("dashboard HTML missing %q", want)

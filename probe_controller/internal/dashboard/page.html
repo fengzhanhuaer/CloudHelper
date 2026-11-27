@@ -667,27 +667,124 @@
         .latency-list {
             display: flex;
             flex-direction: column;
-            gap: 6px;
-        }
-        .latency-row {
-            display: grid;
-            grid-template-columns: minmax(76px, 1.15fr) minmax(44px, 0.8fr) auto auto auto;
-            align-items: center;
             gap: 8px;
-            padding: 5px 7px;
-            border-radius: 7px;
+        }
+        .latency-task-block {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            padding: 7px 9px;
+            border-radius: 8px;
             background: rgba(15, 23, 36, 0.65);
             border: 1px solid rgba(148, 163, 184, 0.08);
             font-size: 12px;
         }
-        .latency-row.stale {
-            opacity: 0.66;
+        .latency-task-block.stale {
+            opacity: 0.72;
+        }
+        .latency-task-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            min-width: 0;
         }
         .latency-task {
             display: flex;
             align-items: center;
             gap: 6px;
             min-width: 0;
+        }
+        .latency-task-meta {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            font-size: 10.5px;
+            color: var(--text-muted);
+            white-space: nowrap;
+            flex: 0 0 auto;
+        }
+        .hour24-line {
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            min-width: 0;
+        }
+        .hour24-strip {
+            flex: 1 1 auto;
+            min-width: 120px;
+            display: grid;
+            grid-template-columns: repeat(24, minmax(0, 1fr));
+            gap: 2px;
+            height: 15px;
+            align-items: stretch;
+        }
+        .hour24-cell {
+            border-radius: 3px;
+            background: rgba(148, 163, 184, 0.14);
+            cursor: default;
+            transition: transform 0.1s ease, filter 0.1s ease;
+        }
+        .hour24-cell:hover {
+            transform: scaleY(1.22);
+            filter: brightness(1.18);
+        }
+        .latency-realtime {
+            flex: 0 0 auto;
+            display: inline-flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 5px;
+            white-space: nowrap;
+        }
+        .hour24-legend {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 4px 10px;
+            padding-top: 2px;
+            font-size: 10.5px;
+            color: var(--text-muted);
+        }
+        .hour24-legend-items {
+            display: inline-flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+        }
+        .hour24-legend-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .hour24-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 2px;
+            display: inline-block;
+        }
+        .hour-tooltip {
+            position: fixed;
+            top: 0;
+            left: 0;
+            z-index: 60;
+            pointer-events: none;
+            opacity: 0;
+            max-width: 280px;
+            padding: 8px 10px;
+            border-radius: 8px;
+            background: rgba(9, 14, 24, 0.96);
+            border: 1px solid rgba(148, 163, 184, 0.3);
+            box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
+            backdrop-filter: blur(8px);
+            font-size: 11.5px;
+            line-height: 1.45;
+            color: var(--text-primary);
+            transition: opacity 0.08s ease;
+        }
+        .hour-tooltip.visible {
+            opacity: 1;
         }
         .q-dot {
             width: 7px;
@@ -704,23 +801,12 @@
             color: var(--text-primary);
             font-weight: 500;
         }
-        .latency-bar-track {
-            height: 5px;
-            border-radius: 999px;
-            background: rgba(148, 163, 184, 0.12);
-            overflow: hidden;
-        }
-        .latency-bar-fill {
-            height: 100%;
-            border-radius: 999px;
-            background: var(--q-color, var(--text-muted));
-        }
         .latency-val {
             font-weight: 700;
-            color: var(--q-color, var(--text-secondary));
+            color: var(--val-color, var(--text-primary));
             text-align: right;
             white-space: nowrap;
-            min-width: 56px;
+            min-width: 52px;
         }
         .loss-badge {
             font-size: 11px;
@@ -1110,17 +1196,44 @@
             gap: 6px;
         }
         .legend-line {
-            width: 14px;
-            height: 2px;
-            background: var(--accent);
-            border-radius: 2px;
+            width: 16px;
+            height: 0;
+            border-top: 2px solid var(--text-primary);
         }
         .legend-bar {
             width: 10px;
             height: 10px;
             border-radius: 2px;
-            background: rgba(248, 113, 113, 0.45);
-            border: 1px solid rgba(248, 113, 113, 0.75);
+            background: rgba(148, 163, 184, 0.38);
+            border-top: 2px solid var(--text-primary);
+        }
+        .legend-task {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 2px 7px;
+            border-radius: 6px;
+            background: rgba(15, 23, 36, 0.72);
+            border: 1px solid rgba(148, 163, 184, 0.14);
+            color: var(--text-primary);
+            cursor: pointer;
+            font-size: 11.5px;
+            font-family: var(--sans);
+            transition: opacity 0.15s ease, border-color 0.15s ease;
+        }
+        .legend-task:hover {
+            border-color: var(--border-strong);
+        }
+        .legend-task.hidden {
+            opacity: 0.4;
+            text-decoration: line-through;
+        }
+        .legend-swatch {
+            width: 8px;
+            height: 8px;
+            border-radius: 2px;
+            background: var(--series-color, var(--accent));
+            flex: 0 0 auto;
         }
         .empty-state {
             background: var(--bg-card);
@@ -1165,10 +1278,18 @@
             .probe-metrics {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
             }
-            .latency-row {
-                grid-template-columns: minmax(70px, 1fr) auto auto;
+            .hour24-line {
+                flex-wrap: wrap;
+                gap: 6px;
             }
-            .latency-bar-track,
+            .hour24-strip {
+                width: 100%;
+                flex-basis: 100%;
+            }
+            .latency-realtime {
+                width: 100%;
+                justify-content: flex-end;
+            }
             .fresh-tag {
                 display: none;
             }
@@ -1313,7 +1434,7 @@
                             <button class="seg-btn scale-button" type="button" data-scale="hour">30天 · 小时</button>
                             <button class="seg-btn scale-button" type="button" data-scale="day">180天 · 天</button>
                         </div>
-                        <button id="toggle-smooth" class="btn active" type="button" title="平滑曲线与面积填充">平滑曲线</button>
+                        <button id="toggle-smooth" class="btn active" type="button" title="切换平滑曲线或折线">平滑曲线</button>
                         <button id="toggle-spike-clamp" class="btn" type="button" title="按 P98 自动限制极端毛刺，避免压扁正常延迟波动">过滤毛刺</button>
                     </div>
                 </div>
@@ -1323,6 +1444,7 @@
             </section>
         </div>
     </div>
+    <div id="hour-block-tooltip" class="hour-tooltip" role="tooltip"></div>
 
     <script>
         const els = {
@@ -1355,7 +1477,8 @@
             networkSearchClear: document.getElementById('network-search-clear'),
             networkGrid: document.getElementById('network-grid'),
             toggleSmooth: document.getElementById('toggle-smooth'),
-            toggleSpikeClamp: document.getElementById('toggle-spike-clamp')
+            toggleSpikeClamp: document.getElementById('toggle-spike-clamp'),
+            hourTooltip: document.getElementById('hour-block-tooltip')
         };
 
         const seriesColors = [
@@ -1373,6 +1496,8 @@
             probes: [],
             probesLoaded: false,
             probeOnlineMap: new Map(),
+            hourly24Map: new Map(),
+            hourly24ReqSeq: 0,
             networkScale: 'minute',
             networkLoaded: false,
             networkItems: [],
@@ -1547,25 +1672,90 @@
             return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= maximum ? value : null;
         }
 
-        // Mainstream latency grading (similar to Nezha / Komari / ServerStatus)
-        function latencyQuality(latencyMS, lossPercent, stale, available) {
-            if (!available) return { color: '#64748b', label: '待采样', barPct: 0 };
+        // Distance-neutral health status: judge by reachability, freshness, and packet loss rather than arbitrary RTT thresholds.
+        function networkHealthStatus(latencyMS, lossPercent, stale, available) {
+            if (!available) return { dotColor: '#64748b', valueColor: '#8b9bb0', label: '待采样' };
             const lat = networkMetricValue(latencyMS);
             const loss = networkMetricValue(lossPercent, 100);
-            if (stale) {
-                const bar = lat == null ? (loss === 100 ? 100 : 0) : Math.min(100, Math.max(8, (lat / 350) * 100));
-                return { color: '#64748b', label: '已过期', barPct: bar };
+            if (stale) return { dotColor: '#64748b', valueColor: '#8b9bb0', label: '已过期' };
+            if (lat == null && loss != null && loss >= 100) return { dotColor: '#f87171', valueColor: '#fca5a5', label: '超时' };
+            if ((loss != null && loss >= 20) || lat == null) return { dotColor: '#f87171', valueColor: '#fca5a5', label: '丢包高' };
+            if (loss != null && loss > 0) return { dotColor: '#facc15', valueColor: '#fde047', label: '有丢包' };
+            return { dotColor: '#34d399', valueColor: '#e6edf3', label: '正常' };
+        }
+
+        // Estimate physical-distance reference RTT from node geo locations when 24h baseline is sparse.
+        function geoDistanceBaselineMS(locations) {
+            const text = formatLocations(locations).join(' ').toLowerCase();
+            if (!text) return 80;
+            if (/内网|局域网|本地|lan|local/.test(text)) return 15;
+            if (/香港|澳门|台湾|日本|东京|大阪|韩国|首尔|新加坡|马来|泰国|越南|菲律宾|印尼|hong kong|taiwan|japan|tokyo|korea|singapore/.test(text)) return 68;
+            if (/美国|洛杉矶|圣何塞|西雅图|纽约|达拉斯|芝加哥|硅谷|加拿大|德国|法兰克福|英国|伦敦|法国|巴黎|荷兰|阿姆斯特丹|俄罗斯|澳大利亚|悉尼|欧洲|芬兰|瑞典|瑞士|波兰|意大利|西班牙|巴西|印度|united states|usa|canada|germany|frankfurt|uk|london|france|netherlands|australia|europe|russia/.test(text)) return 170;
+            if (/中国|北京|上海|广州|深圳|杭州|南京|成都|重庆|武汉|西安|天津|苏州|厦门|福州|青岛|济南|郑州|长沙|沈阳|大连|哈尔滨|合肥|宁波|无锡|东莞|佛山|广东|浙江|江苏|四川|福建|山东|河南|湖北|湖南|陕西|辽宁|河北|安徽|江西|云南|贵州|广西|山西|吉林|黑龙江|内蒙古|新疆|甘肃|海南|宁夏|青海|西藏|china/.test(text)) return 38;
+            return 80;
+        }
+
+        // Compute distance-aware latency baseline: prefer task's own 24h low-load P20 floor (captures true node->target distance),
+        // falling back to geo-location distance reference when fewer than 3 hourly samples exist.
+        function computeTaskLatencyBaseline(locations, hourlyLatencies, realtimeLatency) {
+            const samples = Array.isArray(hourlyLatencies)
+                ? hourlyLatencies.filter((v) => typeof v === 'number' && Number.isFinite(v) && v > 0).sort((a, b) => a - b)
+                : [];
+            if (samples.length >= 3) {
+                const idx = Math.floor((samples.length - 1) * 0.2);
+                return { baselineMS: Math.max(5, samples[idx]), source: '24h基线' };
             }
-            if ((loss != null && loss >= 20) || lat == null) {
-                return { color: '#f87171', label: loss === 100 ? '超时' : '丢包高', barPct: 100 };
+            const geoRef = geoDistanceBaselineMS(locations);
+            const probeLat = networkMetricValue(realtimeLatency);
+            const minObs = samples.length ? samples[0] : (probeLat != null && probeLat > 0 ? probeLat : null);
+            if (minObs != null && minObs < geoRef * 0.6) {
+                return { baselineMS: Math.max(5, minObs), source: '近期参考' };
             }
-            const barPct = Math.min(100, Math.max(8, (Math.log10(lat + 10) / Math.log10(410)) * 100));
-            if (loss != null && loss >= 5) return { color: '#fb923c', label: '有丢包', barPct };
-            if (lat < 50) return { color: '#34d399', label: '极佳', barPct };
-            if (lat < 120) return { color: '#38bdf8', label: '良好', barPct };
-            if (lat < 220) return { color: '#facc15', label: '一般', barPct };
-            if (lat < 350) return { color: '#fb923c', label: '偏高', barPct };
-            return { color: '#f87171', label: '高延迟', barPct };
+            return { baselineMS: geoRef, source: '距离参考' };
+        }
+
+        // Classify one hourly bucket relative to distance/baseline latency and packet loss.
+        function classifyHourlyBlock(bucket, baselineMS) {
+            if (!bucket || (bucket.latency == null && bucket.loss == null)) {
+                return { level: 'empty', color: 'rgba(148, 163, 184, 0.14)', label: '无数据', deltaPct: null };
+            }
+            const lat = bucket.latency;
+            const loss = bucket.loss;
+            const base = Math.max(5, Number(baselineMS) || 80);
+            const deltaMS = lat != null ? (lat - base) : null;
+            const deltaPct = lat != null ? ((lat - base) / base) * 100 : null;
+
+            if (loss != null && loss >= 100 && lat == null) {
+                return { level: 'bad', color: '#f87171', label: '全部超时', deltaPct };
+            }
+            if ((loss != null && loss >= 15) || lat == null) {
+                return { level: 'bad', color: '#f87171', label: '丢包严重', deltaPct };
+            }
+            if (lat >= base * 1.9 && deltaMS >= 50) {
+                return { level: 'bad', color: '#f87171', label: '延迟剧增', deltaPct };
+            }
+            if (loss != null && loss >= 5) {
+                return { level: 'high', color: '#fb923c', label: '中度丢包', deltaPct };
+            }
+            if (lat >= base * 1.45 && deltaMS >= 25) {
+                return { level: 'high', color: '#fb923c', label: '延迟明显上升', deltaPct };
+            }
+            if (loss != null && loss > 0) {
+                return { level: 'warn', color: '#facc15', label: '轻微丢包', deltaPct };
+            }
+            if (lat >= base * 1.22 && deltaMS >= 12) {
+                return { level: 'warn', color: '#facc15', label: '延迟小幅上升', deltaPct };
+            }
+            return { level: 'good', color: '#34d399', label: '正常', deltaPct };
+        }
+
+        function formatHourRange(hourStartMS) {
+            const start = new Date(hourStartMS);
+            const end = new Date(hourStartMS + 3600 * 1000);
+            const day = start.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
+            const sh = start.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+            const eh = end.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+            return day + ' ' + sh + '–' + eh;
         }
 
         function formatLatencyDisplay(latencyMS, lossPercent, available) {
@@ -1709,14 +1899,13 @@
 
             if (latCount > 0) {
                 const avgLat = latSum / latCount;
-                const q = latencyQuality(avgLat, 0, false, true);
                 els.kpiLatency.textContent = avgLat.toFixed(1) + ' ms';
-                els.kpiLatency.style.color = q.color;
-                els.kpiLatencyGrade.textContent = q.label;
-                els.kpiLatencyGrade.style.color = q.color;
+                els.kpiLatency.style.color = '#fff';
+                els.kpiLatencyGrade.textContent = alertTasks > 0 ? (alertTasks + ' 项丢包') : '无丢包';
+                els.kpiLatencyGrade.style.color = alertTasks > 0 ? 'var(--warn)' : 'var(--success)';
                 els.kpiLatencySub.textContent = alertTasks > 0
-                    ? ('有效任务 ' + latCount + ' 项 · ' + alertTasks + ' 项存在丢包')
-                    : ('有效监测任务 ' + latCount + ' 项 · 全部无丢包');
+                    ? ('有效任务 ' + latCount + ' 项 · ' + alertTasks + ' 项存在丢包/超时')
+                    : ('有效监测任务 ' + latCount + ' 项 · 全部连通正常');
             } else {
                 els.kpiLatency.textContent = '—';
                 els.kpiLatency.style.color = '#fff';
@@ -1763,43 +1952,97 @@
             const jumpBtn = '<button class="chart-jump-btn" type="button" data-jump-node="' + escapeHTML(key) + '">延迟曲线 ↗</button>';
             if (!network.length) {
                 return '<div class="section-box">'
-                    + '<div class="section-head"><span class="section-title">网络延迟</span>' + jumpBtn + '</div>'
+                    + '<div class="section-head"><span class="section-title">过去24小时网络状态</span>' + jumpBtn + '</div>'
                     + '<div class="empty-hint">暂未分配网络延迟监测任务</div>'
                     + '</div>';
             }
+            const nowHourMS = Math.floor(Date.now() / 3600000) * 3600000;
+            const nodeHourMap = state.hourly24Map.get(key);
+
             const rows = network.map((entry) => {
                 const stale = !item.online || entry.stale;
-                const q = latencyQuality(entry.latency_avg_ms, entry.loss_percent, stale, entry.available);
+                const h = networkHealthStatus(entry.latency_avg_ms, entry.loss_percent, stale, entry.available);
                 const latText = formatLatencyDisplay(entry.latency_avg_ms, entry.loss_percent, entry.available);
                 const loss = networkMetricValue(entry.loss_percent, 100);
                 let lossHTML = '<span class="loss-badge muted mono">—</span>';
                 if (entry.available && loss != null) {
                     if (loss === 0) {
-                        lossHTML = '<span class="loss-badge ok mono" title="本轮无丢包">0%</span>';
-                    } else if (loss < 20) {
-                        lossHTML = '<span class="loss-badge warn mono" title="本轮丢包率">丢包 ' + loss.toFixed(1) + '%</span>';
+                        lossHTML = '<span class="loss-badge ok mono" title="实时无丢包">0%</span>';
+                    } else if (loss < 15) {
+                        lossHTML = '<span class="loss-badge warn mono" title="实时丢包率">' + loss.toFixed(1) + '%</span>';
                     } else {
-                        lossHTML = '<span class="loss-badge bad mono" title="严重丢包">丢包 ' + (loss >= 100 ? '100%' : loss.toFixed(1) + '%') + '</span>';
+                        lossHTML = '<span class="loss-badge bad mono" title="严重丢包">' + (loss >= 100 ? '100%' : loss.toFixed(1) + '%') + '</span>';
                     }
                 }
                 const freshLabel = !entry.available
                     ? '待采样'
                     : (stale ? (item.online ? '已过期' : '离线前') : formatRelativeTime(entry.timestamp));
-                const fullTitle = (entry.task_name || entry.task_id || '网络监测')
-                    + ' · ' + (entry.available ? (latText + ' / 丢包 ' + (loss == null ? '—' : loss.toFixed(1) + '%')) : '等待监测')
-                    + (entry.timestamp ? (' · ' + formatDateTime(entry.timestamp)) : '');
-                return '<div class="latency-row' + (stale ? ' stale' : '') + '" style="--q-color:' + q.color + '" title="' + escapeHTML(fullTitle) + '">'
-                    + '<div class="latency-task"><span class="q-dot"></span><span class="latency-task-name">' + escapeHTML(entry.task_name || entry.task_id || '网络监测') + '</span></div>'
-                    + '<div class="latency-bar-track"><div class="latency-bar-fill" style="width:' + q.barPct.toFixed(0) + '%"></div></div>'
+
+                const taskBuckets = (nodeHourMap && nodeHourMap.get(entry.task_id)) || null;
+                const slotData = [];
+                const validLatencies = [];
+                for (let offset = 23; offset >= 0; offset -= 1) {
+                    const slotTs = nowHourMS - offset * 3600000;
+                    let bucket = taskBuckets ? taskBuckets.get(slotTs) : null;
+                    if (!bucket && offset === 0 && entry.available && !stale) {
+                        const rtTs = Date.parse(entry.timestamp);
+                        if (!Number.isFinite(rtTs) || Math.floor(rtTs / 3600000) * 3600000 === slotTs) {
+                            bucket = {
+                                latency: networkMetricValue(entry.latency_avg_ms),
+                                loss: networkMetricValue(entry.loss_percent, 100)
+                            };
+                        }
+                    }
+                    if (bucket && bucket.latency != null) validLatencies.push(bucket.latency);
+                    slotData.push({ ts: slotTs, bucket });
+                }
+
+                const baseInfo = computeTaskLatencyBaseline(item.locations, validLatencies, entry.latency_avg_ms);
+                const taskDisplayName = entry.task_name || entry.task_id || '网络监测';
+                const cellsHTML = slotData.map(({ ts, bucket }) => {
+                    const cls = classifyHourlyBlock(bucket, baseInfo.baselineMS);
+                    const hourLabel = formatHourRange(ts);
+                    let tipText = taskDisplayName + ' · ' + hourLabel + '\n状态: ' + cls.label;
+                    if (bucket && (bucket.latency != null || bucket.loss != null)) {
+                        const bLat = formatLatencyDisplay(bucket.latency, bucket.loss, true);
+                        const bLoss = bucket.loss == null ? '—' : (bucket.loss.toFixed(1) + '%');
+                        const deltaStr = cls.deltaPct != null
+                            ? (' (' + (cls.deltaPct >= 0 ? '+' : '') + cls.deltaPct.toFixed(0) + '%)')
+                            : '';
+                        tipText += '\n延迟: ' + bLat + deltaStr + ' · 丢包: ' + bLoss
+                            + '\n参考: ' + baseInfo.baselineMS.toFixed(0) + ' ms (' + baseInfo.source + ')';
+                    }
+                    return '<span class="hour24-cell" style="background:' + cls.color + '" data-h-tip="' + escapeHTML(tipText) + '"></span>';
+                }).join('');
+
+                return '<div class="latency-task-block' + (stale ? ' stale' : '') + '" style="--q-color:' + h.dotColor + ';--val-color:' + h.valueColor + '">'
+                    + '<div class="latency-task-head">'
+                    + '<div class="latency-task"><span class="q-dot"></span><span class="latency-task-name" title="' + escapeHTML(taskDisplayName) + '">' + escapeHTML(taskDisplayName) + '</span></div>'
+                    + '<div class="latency-task-meta mono"><span title="' + escapeHTML(baseInfo.source) + '">基准 ' + baseInfo.baselineMS.toFixed(0) + 'ms</span><span class="fresh-tag' + (stale && entry.available ? ' warn' : '') + '" title="' + escapeHTML(formatDateTime(entry.timestamp)) + '">' + escapeHTML(freshLabel) + '</span></div>'
+                    + '</div>'
+                    + '<div class="hour24-line">'
+                    + '<div class="hour24-strip" aria-label="过去24小时按小时网络状态">' + cellsHTML + '</div>'
+                    + '<div class="latency-realtime" title="实时监测值">'
                     + '<span class="latency-val mono">' + escapeHTML(latText) + '</span>'
                     + lossHTML
-                    + '<span class="fresh-tag' + (stale && entry.available ? ' warn' : '') + ' mono">' + escapeHTML(freshLabel) + '</span>'
+                    + '</div>'
+                    + '</div>'
                     + '</div>';
             }).join('');
 
-            return '<div class="section-box" aria-label="探针网络延迟与丢包">'
-                + '<div class="section-head"><span class="section-title">网络延迟 <span class="mono" style="color:var(--text-muted)">(' + network.length + ')</span></span>' + jumpBtn + '</div>'
+            return '<div class="section-box" aria-label="过去24小时按小时网络状态与实时延迟">'
+                + '<div class="section-head"><span class="section-title">24h 网络状态 <span class="mono" style="color:var(--text-muted)">(' + network.length + ')</span></span>' + jumpBtn + '</div>'
                 + '<div class="latency-list">' + rows + '</div>'
+                + '<div class="hour24-legend">'
+                + '<span class="mono">24h前 → 现在</span>'
+                + '<span class="hour24-legend-items">'
+                + '<span class="hour24-legend-item"><span class="hour24-dot" style="background:#34d399"></span>正常</span>'
+                + '<span class="hour24-legend-item"><span class="hour24-dot" style="background:#facc15"></span>波动</span>'
+                + '<span class="hour24-legend-item"><span class="hour24-dot" style="background:#fb923c"></span>延迟升/丢包</span>'
+                + '<span class="hour24-legend-item"><span class="hour24-dot" style="background:#f87171"></span>高丢包/超时</span>'
+                + '<span class="hour24-legend-item"><span class="hour24-dot" style="background:rgba(148,163,184,0.22)"></span>无数据</span>'
+                + '</span>'
+                + '</div>'
                 + '</div>';
         }
 
@@ -1983,16 +2226,16 @@
                 const latPills = network.length
                     ? '<div class="pill-wrap">' + network.map((entry) => {
                         const stale = !item.online || entry.stale;
-                        const q = latencyQuality(entry.latency_avg_ms, entry.loss_percent, stale, entry.available);
+                        const h = networkHealthStatus(entry.latency_avg_ms, entry.loss_percent, stale, entry.available);
                         const latText = formatLatencyDisplay(entry.latency_avg_ms, entry.loss_percent, entry.available);
                         const loss = networkMetricValue(entry.loss_percent, 100);
                         const lossSuffix = entry.available && loss != null && loss > 0
                             ? ' <span style="color:' + (loss >= 20 ? '#fca5a5' : '#fde047') + '">(' + loss.toFixed(0) + '%丢)</span>'
                             : '';
-                        return '<span class="lat-pill' + (stale ? ' stale' : '') + '" style="--q-color:' + q.color + '">'
+                        return '<span class="lat-pill' + (stale ? ' stale' : '') + '" style="--q-color:' + h.dotColor + '">'
                             + '<span class="q-dot"></span>'
                             + '<span>' + escapeHTML(entry.task_name || entry.task_id) + '</span>'
-                            + '<strong class="mono" style="color:' + q.color + '">' + escapeHTML(latText) + '</strong>'
+                            + '<strong class="mono" style="color:' + h.valueColor + '">' + escapeHTML(latText) + '</strong>'
                             + lossSuffix
                             + '</span>';
                     }).join('') + '</div>'
@@ -2203,7 +2446,7 @@
                     const hidden = hiddenSet.has(entry.task_id);
                     const latestLat = stats.latest ? stats.latest.latency : null;
                     const latestLoss = stats.latest ? stats.latest.loss : null;
-                    const q = latencyQuality(latestLat, latestLoss, false, stats.latest != null);
+                    const h = networkHealthStatus(latestLat, latestLoss, false, stats.latest != null);
                     const latText = formatLatencyDisplay(latestLat, latestLoss, stats.latest != null);
                     const avgText = stats.avgLat != null ? (stats.avgLat.toFixed(1) + 'ms') : '—';
                     const rangeText = (stats.minLat != null && stats.maxLat != null)
@@ -2212,11 +2455,11 @@
                     const lossText = stats.avgLoss != null ? (stats.avgLoss.toFixed(1) + '%') : '—';
 
                     return '<button type="button" class="series-chip' + (hidden ? ' hidden' : '') + '"'
-                        + ' style="--series-color:' + entry.color + ';--q-color:' + q.color + '"'
+                        + ' style="--series-color:' + entry.color + ';--q-color:' + h.valueColor + '"'
                         + ' data-node-key="' + escapeHTML(key) + '" data-task-id="' + escapeHTML(entry.task_id) + '"'
                         + ' title="单击隐藏/显示曲线，双击独显此监测任务">'
                         + '<div class="series-chip-top">'
-                        + '<span class="series-chip-name">' + escapeHTML(entry.task_name) + '</span>'
+                        + '<span class="series-chip-name" style="color:' + entry.color + '">' + escapeHTML(entry.task_name) + '</span>'
                         + '<span class="series-chip-latest mono">' + escapeHTML(latText) + '</span>'
                         + '</div>'
                         + '<div class="series-chip-stats mono">'
@@ -2227,6 +2470,17 @@
                         + '</button>';
                 }).join('');
 
+                const taskLegendHTML = series.map((entry) => {
+                    const hidden = hiddenSet.has(entry.task_id);
+                    return '<button type="button" class="legend-task' + (hidden ? ' hidden' : '') + '"'
+                        + ' style="--series-color:' + entry.color + '"'
+                        + ' data-node-key="' + escapeHTML(key) + '" data-task-id="' + escapeHTML(entry.task_id) + '"'
+                        + ' title="单击隐藏/显示，双击独显">'
+                        + '<span class="legend-swatch"></span>'
+                        + '<span>' + escapeHTML(entry.task_name) + '</span>'
+                        + '</button>';
+                }).join('');
+
                 const highlightClass = state.highlightNodeKey && state.highlightNodeKey === key ? ' highlight' : '';
                 return '<article class="network-card' + highlightClass + '" data-network-card="' + escapeHTML(key) + '">'
                     + '<div class="network-head">'
@@ -2234,7 +2488,7 @@
                     + '<div class="network-title-row">' + dotHTML + '<div class="network-title">' + escapeHTML(name) + '</div>' + (nodeNo > 0 ? '<span class="node-no-tag mono">#' + nodeNo + '</span>' : '') + '</div>'
                     + metaRow
                     + '</div>'
-                    + '<div class="network-hint">单击任务胶囊开关曲线 · 双击独显 · 悬停查看详情</div>'
+                    + '<div class="network-hint">同色实线为延迟 · 同色柱图为丢包 · 单击开关 / 双击独显</div>'
                     + '</div>'
                     + '<div class="series-strip">' + stripHTML + '</div>'
                     + '<div class="chart-stage" data-chart-stage="' + idx + '">'
@@ -2243,8 +2497,9 @@
                     + '</div>'
                     + '<div class="chart-legend">'
                     + '<div class="legend-items">'
-                    + '<span class="legend-key"><span class="legend-line"></span>延迟曲线 (左轴 ms)</span>'
-                    + '<span class="legend-key"><span class="legend-bar"></span>丢包柱状 (右轴 %)</span>'
+                    + '<span class="legend-key"><span class="legend-line"></span>实线：延迟 (左轴 ms)</span>'
+                    + '<span class="legend-key"><span class="legend-bar"></span>柱图：丢包 (右轴 %，同色归属)</span>'
+                    + taskLegendHTML
                     + '</div>'
                     + '<span class="mono" id="network-scale-note-' + idx + '"></span>'
                     + '</div>'
@@ -2342,38 +2597,18 @@
 
             drawAxes(ctx, ratio, width, height, padL, padR, padT, padB, plotW, plotH, latencyMax, lossMax, minTime, maxTime);
 
-            // 1) Draw packet-loss vertical bars first (subtle & unmistakable)
-            const barWidth = Math.max(2 * ratio, Math.min(8 * ratio, plotW / Math.max(40, allTimestamps.length)));
-            visibleSeries.forEach((entry) => {
-                ctx.fillStyle = 'rgba(248, 113, 113, 0.34)';
-                ctx.strokeStyle = 'rgba(248, 113, 113, 0.72)';
-                ctx.lineWidth = 1 * ratio;
-                entry.points.forEach((p) => {
-                    if (p.loss == null || p.loss <= 0) return;
-                    const x = xOf(p.ts);
-                    const y = lossY(p.loss);
-                    const h = Math.max(3 * ratio, (padT + plotH) - y);
-                    const topY = (padT + plotH) - h;
-                    ctx.fillRect(x - barWidth / 2, topY, barWidth, h);
-                    if (p.loss >= 100) {
-                        ctx.beginPath();
-                        ctx.moveTo(x - barWidth / 2, topY);
-                        ctx.lineTo(x + barWidth / 2, topY);
-                        ctx.stroke();
-                    }
-                });
-            });
+            // 1) Draw per-task same-color packet-loss vertical bars (grouped side-by-side so tasks stay distinguishable)
+            const barMetrics = drawLossBars(ctx, visibleSeries, allTimestamps.length, xOf, lossY, padT + plotH, plotW, ratio);
 
-            // 2) Draw latency curves (+ soft area fill when <= 3 visible series)
-            const showFill = visibleSeries.length <= 3;
+            // 2) Draw crisp solid latency lines on top with NO area fill to avoid occluding curves or loss bars
             visibleSeries.forEach((entry) => {
-                drawLatencySeries(ctx, entry, xOf, latencyY, padT + plotH, ratio, showFill);
+                drawLatencySeries(ctx, entry, xOf, latencyY, ratio);
             });
 
             inst.baseCanvas = base;
             inst.layout = {
                 ratio, width, height, padL, padR, padT, padB, plotW, plotH,
-                minTime, maxTime, latencyMax, xOf, latencyY, visibleSeries, allTimestamps
+                minTime, maxTime, latencyMax, xOf, latencyY, lossY, barMetrics, visibleSeries, allTimestamps
             };
 
             const mainCtx = canvas.getContext('2d');
@@ -2410,7 +2645,7 @@
                 ctx.fillText(latStr, padL - 8 * ratio, y);
 
                 ctx.textAlign = 'left';
-                ctx.fillStyle = 'rgba(248, 113, 113, 0.72)';
+                ctx.fillStyle = 'rgba(148, 163, 184, 0.78)';
                 ctx.fillText(Math.round(lossMax * frac) + '%', width - padR + 8 * ratio, y);
             }
 
@@ -2444,7 +2679,7 @@
             return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
         }
 
-        function drawLatencySeries(ctx, entry, xOf, yOf, baselineY, ratio, showFill) {
+        function drawLatencySeries(ctx, entry, xOf, yOf, ratio) {
             // Split contiguous non-null segments
             const segments = [];
             let current = [];
@@ -2481,42 +2716,57 @@
                     return;
                 }
 
-                const tracePath = () => {
-                    ctx.beginPath();
-                    ctx.moveTo(seg[0].x, seg[0].y);
-                    if (state.smoothCurve && seg.length >= 3) {
-                        for (let i = 0; i < seg.length - 1; i += 1) {
-                            const p0 = seg[i];
-                            const p1 = seg[i + 1];
-                            const cx = (p0.x + p1.x) / 2;
-                            ctx.bezierCurveTo(cx, p0.y, cx, p1.y, p1.x, p1.y);
-                        }
-                    } else {
-                        for (let i = 1; i < seg.length; i += 1) {
-                            ctx.lineTo(seg[i].x, seg[i].y);
-                        }
+                ctx.beginPath();
+                ctx.moveTo(seg[0].x, seg[0].y);
+                if (state.smoothCurve && seg.length >= 3) {
+                    for (let i = 0; i < seg.length - 1; i += 1) {
+                        const p0 = seg[i];
+                        const p1 = seg[i + 1];
+                        const cx = (p0.x + p1.x) / 2;
+                        ctx.bezierCurveTo(cx, p0.y, cx, p1.y, p1.x, p1.y);
                     }
-                };
-
-                if (showFill) {
-                    tracePath();
-                    ctx.lineTo(seg[seg.length - 1].x, baselineY);
-                    ctx.lineTo(seg[0].x, baselineY);
-                    ctx.closePath();
-                    const grad = ctx.createLinearGradient(0, baselineY - 220 * ratio, 0, baselineY);
-                    grad.addColorStop(0, hexToRgba(entry.color, 0.22));
-                    grad.addColorStop(1, hexToRgba(entry.color, 0.0));
-                    ctx.fillStyle = grad;
-                    ctx.fill();
+                } else {
+                    for (let i = 1; i < seg.length; i += 1) {
+                        ctx.lineTo(seg[i].x, seg[i].y);
+                    }
                 }
-
-                tracePath();
                 ctx.strokeStyle = entry.color;
-                ctx.lineWidth = 1.85 * ratio;
+                ctx.lineWidth = 1.95 * ratio;
                 ctx.stroke();
             });
 
             ctx.restore();
+        }
+
+        function drawLossBars(ctx, visibleSeries, timestampCount, xOf, yOf, baselineY, plotW, ratio) {
+            const count = Math.max(1, visibleSeries.length);
+            const slotW = Math.max(4 * ratio, Math.min(18 * ratio, plotW / Math.max(36, timestampCount)));
+            const gap = count > 1 ? 1 * ratio : 0;
+            const barW = Math.max(2 * ratio, (slotW - gap * (count - 1)) / count);
+            const groupW = barW * count + gap * (count - 1);
+
+            ctx.save();
+            visibleSeries.forEach((entry, sIdx) => {
+                const offsetX = -groupW / 2 + sIdx * (barW + gap);
+                ctx.fillStyle = hexToRgba(entry.color, 0.36);
+                ctx.strokeStyle = entry.color;
+                ctx.lineWidth = 1.5 * ratio;
+
+                entry.points.forEach((p) => {
+                    if (p.loss == null || p.loss <= 0) return;
+                    const x = xOf(p.ts) + offsetX;
+                    const y = yOf(p.loss);
+                    const h = Math.max(3 * ratio, baselineY - y);
+                    const topY = baselineY - h;
+                    ctx.fillRect(x, topY, barW, h);
+                    ctx.beginPath();
+                    ctx.moveTo(x, topY);
+                    ctx.lineTo(x + barW, topY);
+                    ctx.stroke();
+                });
+            });
+            ctx.restore();
+            return { barW, gap, groupW };
         }
 
         function findNearestPoint(points, targetTs, toleranceMS) {
@@ -2598,7 +2848,7 @@
                 ctx.setLineDash([]);
 
                 const rows = [];
-                L.visibleSeries.forEach((entry) => {
+                L.visibleSeries.forEach((entry, sIdx) => {
                     const pt = findNearestPoint(entry.points, snapTs, tolerance);
                     if (!pt) return;
                     if (pt.latency != null) {
@@ -2611,14 +2861,26 @@
                         ctx.strokeStyle = entry.color;
                         ctx.stroke();
                     }
-                    const q = latencyQuality(pt.latency, pt.loss, false, true);
+                    if (pt.loss != null && pt.loss > 0 && L.barMetrics) {
+                        const bm = L.barMetrics;
+                        const bx = snapX - bm.groupW / 2 + sIdx * (bm.barW + bm.gap);
+                        const ly = L.lossY(pt.loss);
+                        const h = Math.max(3 * L.ratio, (L.padT + L.plotH) - ly);
+                        const topY = (L.padT + L.plotH) - h;
+                        ctx.fillStyle = hexToRgba(entry.color, 0.72);
+                        ctx.fillRect(bx, topY, bm.barW, h);
+                        ctx.strokeStyle = '#ffffff';
+                        ctx.lineWidth = 1.2 * L.ratio;
+                        ctx.strokeRect(bx, topY, bm.barW, h);
+                    }
+                    const h = networkHealthStatus(pt.latency, pt.loss, false, true);
                     const latStr = formatLatencyDisplay(pt.latency, pt.loss, true);
-                    const lossStr = pt.loss == null ? '—' : (pt.loss.toFixed(1) + '%');
-                    const lossColor = pt.loss == null ? 'var(--text-muted)' : (pt.loss >= 20 ? '#fca5a5' : (pt.loss > 0 ? '#fde047' : '#86efac'));
+                    const lossStr = pt.loss == null ? '—' : ('丢包 ' + pt.loss.toFixed(1) + '%');
+                    const lossColor = pt.loss == null ? 'var(--text-muted)' : (pt.loss >= 15 ? '#fca5a5' : (pt.loss > 0 ? '#fde047' : 'var(--text-secondary)'));
                     rows.push('<div class="tt-row">'
                         + '<span class="tt-dot" style="background:' + entry.color + '"></span>'
-                        + '<span class="tt-name">' + escapeHTML(entry.task_name) + '</span>'
-                        + '<span class="tt-lat mono" style="color:' + q.color + '">' + escapeHTML(latStr) + '</span>'
+                        + '<span class="tt-name" style="color:' + entry.color + '">' + escapeHTML(entry.task_name) + '</span>'
+                        + '<span class="tt-lat mono" style="color:' + h.valueColor + '">' + escapeHTML(latStr) + '</span>'
                         + '<span class="tt-loss mono" style="color:' + lossColor + '">' + lossStr + '</span>'
                         + '</div>');
                 });
@@ -2878,27 +3140,35 @@
             state.chartInstances.forEach((inst) => drawInteractiveChart(inst));
         });
 
-        // Series toggle (single click) & solo (double click)
+        // Series toggle (single click) & solo (double click) for both top summary chips and bottom legend tasks
+        function syncCardSeriesToggleUI(card, hiddenSet) {
+            if (!card) return;
+            card.querySelectorAll('.series-chip, .legend-task').forEach((el) => {
+                el.classList.toggle('hidden', hiddenSet.has(el.getAttribute('data-task-id')));
+            });
+        }
+
         let chipClickTimer = null;
         els.networkGrid.addEventListener('click', (e) => {
-            const chip = e.target.closest('.series-chip');
+            const chip = e.target.closest('.series-chip, .legend-task');
             if (!chip) return;
             const nodeKey = chip.getAttribute('data-node-key');
             const taskId = chip.getAttribute('data-task-id');
+            const card = chip.closest('.network-card');
             if (chipClickTimer) clearTimeout(chipClickTimer);
             chipClickTimer = setTimeout(() => {
                 chipClickTimer = null;
                 const hiddenSet = getHiddenSet(nodeKey);
                 if (hiddenSet.has(taskId)) hiddenSet.delete(taskId);
                 else hiddenSet.add(taskId);
-                chip.classList.toggle('hidden', hiddenSet.has(taskId));
+                syncCardSeriesToggleUI(card, hiddenSet);
                 const inst = state.chartInstances.get(nodeKey);
                 if (inst) drawInteractiveChart(inst);
             }, 170);
         });
 
         els.networkGrid.addEventListener('dblclick', (e) => {
-            const chip = e.target.closest('.series-chip');
+            const chip = e.target.closest('.series-chip, .legend-task');
             if (!chip) return;
             if (chipClickTimer) {
                 clearTimeout(chipClickTimer);
@@ -2917,14 +3187,94 @@
                     if (id !== taskId) hiddenSet.add(id);
                 });
             }
-            const card = chip.closest('.network-card');
-            if (card) {
-                card.querySelectorAll('.series-chip').forEach((el) => {
-                    el.classList.toggle('hidden', hiddenSet.has(el.getAttribute('data-task-id')));
-                });
-            }
+            syncCardSeriesToggleUI(chip.closest('.network-card'), hiddenSet);
             drawInteractiveChart(inst);
         });
+
+        async function fetchNetworkHourly24() {
+            const reqID = ++state.hourly24ReqSeq;
+            try {
+                const res = await fetch('/dashboard/network?scale=hour24');
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json();
+                if (reqID !== state.hourly24ReqSeq) return;
+                const nextMap = new Map();
+                const items = Array.isArray(data.items) ? data.items : [];
+                items.forEach((item, idx) => {
+                    const key = nodeKeyOf(item, idx);
+                    const taskMap = new Map();
+                    (Array.isArray(item.series) ? item.series : []).forEach((s) => {
+                        const tid = String((s && s.task_id) || '');
+                        if (!tid) return;
+                        const hourMap = new Map();
+                        (Array.isArray(s.points) ? s.points : []).forEach((p) => {
+                            if (!p) return;
+                            const ts = Date.parse(p.timestamp);
+                            if (!Number.isFinite(ts)) return;
+                            const hourTs = Math.floor(ts / 3600000) * 3600000;
+                            hourMap.set(hourTs, {
+                                latency: networkMetricValue(p.latency_avg_ms),
+                                loss: networkMetricValue(p.loss_percent, 100),
+                                ok: Boolean(p.ok)
+                            });
+                        });
+                        taskMap.set(tid, hourMap);
+                    });
+                    nextMap.set(key, taskMap);
+                });
+                state.hourly24Map = nextMap;
+                if (state.activeTab === 'probe-status' && state.probesLoaded) {
+                    renderProbesView();
+                }
+            } catch (_) {
+                // keep previous 24h cache
+            }
+        }
+
+        function showHourTooltip(cell, clientX, clientY) {
+            if (!els.hourTooltip || !cell) return;
+            const raw = cell.getAttribute('data-h-tip');
+            if (!raw) return;
+            const lines = raw.split('\n');
+            els.hourTooltip.innerHTML = lines.map((line, idx) => {
+                if (idx === 0) return '<div style="font-weight:600;color:#fff;margin-bottom:2px">' + escapeHTML(line) + '</div>';
+                return '<div class="mono" style="color:var(--text-secondary)">' + escapeHTML(line) + '</div>';
+            }).join('');
+            els.hourTooltip.classList.add('visible');
+            const w = els.hourTooltip.offsetWidth || 220;
+            const h = els.hourTooltip.offsetHeight || 68;
+            let left = clientX + 12;
+            if (left + w > window.innerWidth - 10) left = clientX - w - 12;
+            if (left < 8) left = 8;
+            let top = clientY - h - 10;
+            if (top < 8) top = clientY + 14;
+            if (top + h > window.innerHeight - 8) top = Math.max(8, window.innerHeight - h - 8);
+            els.hourTooltip.style.transform = 'translate(' + Math.round(left) + 'px,' + Math.round(top) + 'px)';
+        }
+
+        function hideHourTooltip() {
+            if (els.hourTooltip) els.hourTooltip.classList.remove('visible');
+        }
+
+        els.probeContainer.addEventListener('mouseover', (e) => {
+            const cell = e.target.closest('.hour24-cell');
+            if (cell) showHourTooltip(cell, e.clientX, e.clientY);
+        });
+        els.probeContainer.addEventListener('mousemove', (e) => {
+            const cell = e.target.closest('.hour24-cell');
+            if (cell) showHourTooltip(cell, e.clientX, e.clientY);
+            else hideHourTooltip();
+        });
+        els.probeContainer.addEventListener('mouseleave', hideHourTooltip);
+        els.probeContainer.addEventListener('touchstart', (e) => {
+            const cell = e.target.closest('.hour24-cell');
+            if (cell && e.touches && e.touches[0]) {
+                showHourTooltip(cell, e.touches[0].clientX, e.touches[0].clientY);
+            } else {
+                hideHourTooltip();
+            }
+        }, { passive: true });
+        document.addEventListener('scroll', hideHourTooltip, true);
 
         els.toggleAutoRefresh.addEventListener('click', () => {
             state.autoRefresh = !state.autoRefresh;
@@ -2933,8 +3283,12 @@
             updateLiveIndicator();
             if (state.autoRefresh && !document.hidden) {
                 fetchStatus();
-                if (state.activeTab === 'probe-status') fetchProbes();
-                else fetchNetwork(false);
+                if (state.activeTab === 'probe-status') {
+                    fetchProbes();
+                    fetchNetworkHourly24();
+                } else {
+                    fetchNetwork(false);
+                }
             }
         });
 
@@ -2942,8 +3296,11 @@
             els.manualRefresh.classList.add('loading');
             try {
                 await fetchStatus();
-                if (state.activeTab === 'probe-status') await fetchProbes();
-                else await fetchNetwork(false);
+                if (state.activeTab === 'probe-status') {
+                    await Promise.all([fetchProbes(), fetchNetworkHourly24()]);
+                } else {
+                    await fetchNetwork(false);
+                }
             } finally {
                 els.manualRefresh.classList.remove('loading');
             }
@@ -2951,6 +3308,7 @@
 
         let resizeTimer = null;
         window.addEventListener('resize', () => {
+            hideHourTooltip();
             if (state.activeTab !== 'network-status') return;
             if (resizeTimer) clearTimeout(resizeTimer);
             resizeTimer = setTimeout(() => {
@@ -2961,14 +3319,19 @@
         document.addEventListener('visibilitychange', () => {
             if (!document.hidden && state.autoRefresh) {
                 fetchStatus();
-                if (state.activeTab === 'probe-status') fetchProbes();
-                else if (state.networkLoaded) fetchNetwork(false);
+                if (state.activeTab === 'probe-status') {
+                    fetchProbes();
+                    fetchNetworkHourly24();
+                } else if (state.networkLoaded) {
+                    fetchNetwork(false);
+                }
             }
         });
 
         // Initial load & smart polling
         fetchStatus();
         fetchProbes();
+        fetchNetworkHourly24();
 
         setInterval(() => {
             if (document.hidden || !state.autoRefresh) return;
@@ -2979,6 +3342,11 @@
             if (document.hidden || !state.autoRefresh || state.activeTab !== 'probe-status') return;
             fetchProbes();
         }, 5000);
+
+        setInterval(() => {
+            if (document.hidden || !state.autoRefresh || state.activeTab !== 'probe-status') return;
+            fetchNetworkHourly24();
+        }, 60000);
 
         setInterval(() => {
             if (document.hidden || !state.autoRefresh || state.activeTab !== 'network-status' || !state.networkLoaded) return;

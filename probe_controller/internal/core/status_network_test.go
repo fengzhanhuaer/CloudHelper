@@ -192,3 +192,51 @@ func TestDashboardJSONEndpointsSupportETag304(t *testing.T) {
 		t.Fatalf("expected 304 on /dashboard/network with matching ETag, got %d", rrNet2.Code)
 	}
 }
+
+func TestDashboardNetworkHour24ScaleReturnsPast24HoursHourly(t *testing.T) {
+	restore := SetProbeNodesAndNetworkMonitorTasksForTest(map[int]string{1: "probe-24h"}, map[string]string{"a": "电信"})
+	t.Cleanup(restore)
+	t.Cleanup(SetProbeNetworkMonitorResultStorePathForTest(filepath.Join(t.TempDir(), "results")))
+	now := time.Now().UTC().Truncate(time.Hour)
+	if err := AppendProbeNetworkMonitorResultForTest("1", "a", now.Add(-26*time.Hour).Format(time.RFC3339), 50, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := AppendProbeNetworkMonitorResultForTest("1", "a", now.Add(-3*time.Hour).Add(10*time.Minute).Format(time.RFC3339), 20, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := AppendProbeNetworkMonitorResultForTest("1", "a", now.Add(-3*time.Hour).Add(30*time.Minute).Format(time.RFC3339), 30, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := AppendProbeNetworkMonitorResultForTest("1", "a", now.Add(5*time.Minute).Format(time.RFC3339), 25, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	rr := httptest.NewRecorder()
+	dashboardNetworkHandler(rr, httptest.NewRequest(http.MethodGet, "/dashboard/network?scale=hour24", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var payload struct {
+		Scale string                            `json:"scale"`
+		Items []dashboardPublicNetworkProbeItem `json:"items"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Scale != "hour24" {
+		t.Fatalf("scale=%q want hour24", payload.Scale)
+	}
+	if len(payload.Items) != 1 || len(payload.Items[0].Series) != 1 {
+		t.Fatalf("unexpected items: %+v", payload.Items)
+	}
+	pts := payload.Items[0].Series[0].Points
+	if len(pts) != 2 {
+		t.Fatalf("expected 2 hourly buckets within 24h (excluding 26h old), got %d: %+v", len(pts), pts)
+	}
+	if pts[0].LatencyAvgMS != 25 || pts[0].LossPercent != 5 {
+		t.Fatalf("unexpected aggregated hourly bucket[0]: %+v", pts[0])
+	}
+	if pts[1].LatencyAvgMS != 25 || pts[1].LossPercent != 0 {
+		t.Fatalf("unexpected current hourly bucket[1]: %+v", pts[1])
+	}
+}
