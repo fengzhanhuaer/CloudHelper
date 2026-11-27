@@ -1,18 +1,115 @@
 package core
 
 import (
+	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"math"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cloudhelper/probe_controller/internal/dashboard"
 )
 
 var serverStartTime time.Time
+
+type dashboardRenderedJSON struct {
+	body []byte
+	etag string
+}
+
+type dashboardFlightCall struct {
+	wg  sync.WaitGroup
+	res dashboardRenderedJSON
+}
+
+var dashboardFlight = struct {
+	mu    sync.Mutex
+	calls map[string]*dashboardFlightCall
+}{
+	calls: map[string]*dashboardFlightCall{},
+}
+
+func renderDashboardSnapshotCoalesced(key string, build func() interface{}) dashboardRenderedJSON {
+	dashboardFlight.mu.Lock()
+	if existing, ok := dashboardFlight.calls[key]; ok {
+		dashboardFlight.mu.Unlock()
+		existing.wg.Wait()
+		return existing.res
+	}
+	call := &dashboardFlightCall{}
+	call.wg.Add(1)
+	dashboardFlight.calls[key] = call
+	dashboardFlight.mu.Unlock()
+
+	defer func() {
+		dashboardFlight.mu.Lock()
+		delete(dashboardFlight.calls, key)
+		dashboardFlight.mu.Unlock()
+		call.wg.Done()
+	}()
+
+	raw, err := json.Marshal(build())
+	if err != nil {
+		raw = []byte("{}")
+	}
+	sum := sha256.Sum256(raw)
+	call.res = dashboardRenderedJSON{
+		body: raw,
+		etag: `W/"` + hex.EncodeToString(sum[:16]) + `"`,
+	}
+	return call.res
+}
+
+func dashboardETagMatches(headerValue, currentETag string) bool {
+	if strings.TrimSpace(headerValue) == "" || currentETag == "" {
+		return false
+	}
+	normalize := func(tag string) string {
+		tag = strings.TrimSpace(tag)
+		tag = strings.TrimPrefix(tag, "W/")
+		tag = strings.TrimPrefix(tag, "w/")
+		return strings.TrimSpace(tag)
+	}
+	target := normalize(currentETag)
+	for _, candidate := range strings.Split(headerValue, ",") {
+		trimmed := strings.TrimSpace(candidate)
+		if trimmed == "*" || normalize(trimmed) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func writeDashboardJSONSnapshot(w http.ResponseWriter, r *http.Request, snapshot dashboardRenderedJSON) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Vary", "Accept-Encoding")
+	if snapshot.etag != "" {
+		w.Header().Set("ETag", snapshot.etag)
+		if dashboardETagMatches(r.Header.Get("If-None-Match"), snapshot.etag) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
+	if strings.Contains(strings.ToLower(r.Header.Get("Accept-Encoding")), "gzip") && len(snapshot.body) >= 512 {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.WriteHeader(http.StatusOK)
+		gz, err := gzip.NewWriterLevel(w, gzip.BestSpeed)
+		if err == nil {
+			_, _ = gz.Write(snapshot.body)
+			_ = gz.Close()
+			return
+		}
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(snapshot.body)
+}
 
 func PingHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -31,6 +128,7 @@ func dashboardStatusHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, statusPayload())
 }
 
@@ -44,10 +142,12 @@ func dashboardProbesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items := publicDashboardProbeMetrics()
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"items": items,
+	snapshot := renderDashboardSnapshotCoalesced("probes", func() interface{} {
+		return map[string]interface{}{
+			"items": publicDashboardProbeMetrics(),
+		}
 	})
+	writeDashboardJSONSnapshot(w, r, snapshot)
 }
 
 func dashboardNetworkHandler(w http.ResponseWriter, r *http.Request) {
@@ -61,11 +161,13 @@ func dashboardNetworkHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	scale := normalizeDashboardNetworkScale(r.URL.Query().Get("scale"))
-	items := publicDashboardNetworkMetrics(scale)
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"scale": scale,
-		"items": items,
+	snapshot := renderDashboardSnapshotCoalesced("network:"+scale, func() interface{} {
+		return map[string]interface{}{
+			"scale": scale,
+			"items": publicDashboardNetworkMetrics(scale),
+		}
 	})
+	writeDashboardJSONSnapshot(w, r, snapshot)
 }
 
 type dashboardPublicProbeItem struct {
@@ -159,6 +261,8 @@ func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
 		ProbeStore.mu.RUnlock()
 	}
 
+	now := time.Now().UTC()
+	tasksByNode := indexEnabledDashboardNetworkTasks(networkTasks)
 	out := make([]dashboardPublicProbeItem, 0, len(runtimes))
 	for _, rt := range runtimes {
 		normalizedID := normalizeProbeNodeID(rt.NodeID)
@@ -166,10 +270,8 @@ func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
 		if !ok {
 			continue
 		}
-		nodeNo := 0
-		nodeName := ""
-		nodeNo = meta.no
-		nodeName = meta.name
+		nodeNo := meta.no
+		nodeName := meta.name
 		if nodeNo <= 0 {
 			if n, err := strconv.Atoi(normalizedID); err == nil && n > 0 {
 				nodeNo = n
@@ -178,9 +280,9 @@ func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
 		machineUptimeSeconds := normalizeProbeMachineUptimeSeconds(rt.MachineUptimeSeconds)
 		machineBootTime := ""
 		if machineUptimeSeconds > 0 {
-			machineBootTime = time.Now().Add(-time.Duration(machineUptimeSeconds) * time.Second).UTC().Format(time.RFC3339)
+			machineBootTime = now.Add(-time.Duration(machineUptimeSeconds) * time.Second).Format(time.RFC3339)
 		}
-		traffic, trafficErr := loadProbeTrafficUsage(normalizedID, meta.trafficStartDay, time.Now().UTC())
+		traffic, trafficErr := loadProbeTrafficUsage(normalizedID, meta.trafficStartDay, now)
 		if trafficErr != nil {
 			logControllerWarnf("failed to load probe traffic: node=%s err=%v", normalizedID, trafficErr)
 			traffic = probeTrafficUsage{StartDay: meta.trafficStartDay}
@@ -197,7 +299,7 @@ func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
 			MachineBootTime:      machineBootTime,
 			Traffic:              traffic,
 			System:               rt.System,
-			Network:              dashboardProbeNetwork(normalizedID, networkTasks, rt.Online, time.Now().UTC()),
+			Network:              dashboardProbeNetworkFromIndexedTasks(normalizedID, tasksByNode[normalizedID], rt.Online, now),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -219,24 +321,61 @@ func publicDashboardProbeMetrics() []dashboardPublicProbeItem {
 	return out
 }
 
+func indexEnabledDashboardNetworkTasks(tasks []probeNetworkMonitorTaskRecord) map[string][]probeNetworkMonitorTaskRecord {
+	indexed := make(map[string][]probeNetworkMonitorTaskRecord)
+	for _, task := range tasks {
+		if !task.Enabled {
+			continue
+		}
+		seen := make(map[string]struct{}, len(task.NodeIDs))
+		for _, id := range task.NodeIDs {
+			normalized := normalizeProbeNodeID(id)
+			if normalized == "" {
+				continue
+			}
+			if _, dup := seen[normalized]; dup {
+				continue
+			}
+			seen[normalized] = struct{}{}
+			indexed[normalized] = append(indexed[normalized], task)
+		}
+	}
+	return indexed
+}
+
 func dashboardProbeNetwork(nodeID string, tasks []probeNetworkMonitorTaskRecord, online bool, now time.Time) []dashboardPublicProbeNetwork {
-	out := []dashboardPublicProbeNetwork{}
+	matched := make([]probeNetworkMonitorTaskRecord, 0, len(tasks))
 	for _, task := range tasks {
 		if !task.Enabled {
 			continue
 		}
 		for _, id := range task.NodeIDs {
 			if normalizeProbeNodeID(id) == nodeID {
-				out = append(out, dashboardPublicProbeNetwork{
-					TaskID: task.ID, TaskName: normalizeProbeNetworkMonitorTaskName(task.Name),
-					LatencyAvgMS: -1, LossPercent: -1,
-				})
+				matched = append(matched, task)
 				break
 			}
 		}
 	}
-	if len(out) == 0 {
-		return out
+	return dashboardProbeNetworkFromIndexedTasks(nodeID, matched, online, now)
+}
+
+func dashboardProbeNetworkFromIndexedTasks(nodeID string, matched []probeNetworkMonitorTaskRecord, online bool, now time.Time) []dashboardPublicProbeNetwork {
+	if len(matched) == 0 {
+		return []dashboardPublicProbeNetwork{}
+	}
+	out := make([]dashboardPublicProbeNetwork, 0, len(matched))
+	windows := make(map[string]time.Duration, len(matched))
+	for _, task := range matched {
+		name := normalizeProbeNetworkMonitorTaskName(task.Name)
+		if name == "" {
+			name = task.ID
+		}
+		out = append(out, dashboardPublicProbeNetwork{
+			TaskID: task.ID, TaskName: name,
+			LatencyAvgMS: -1, LossPercent: -1,
+		})
+		windows[task.ID] = time.Duration(2*normalizeProbeNetworkMonitorCycleSec(task.CycleSec))*time.Second +
+			time.Duration(normalizeProbeNetworkMonitorCount(task.Count)*normalizeProbeNetworkMonitorTimeoutMS(task.TimeoutMS))*time.Millisecond
 	}
 	latest := map[string]probeNetworkMonitorResultRecord{}
 	for _, result := range loadProbeNetworkMonitorLatestResultsForNode(nodeID) {
@@ -247,9 +386,6 @@ func dashboardProbeNetwork(nodeID string, tasks []probeNetworkMonitorTaskRecord,
 	}
 	for i := range out {
 		item := &out[i]
-		if item.TaskName == "" {
-			item.TaskName = item.TaskID
-		}
 		result, exists := latest[item.TaskID]
 		if !exists {
 			continue
@@ -261,13 +397,8 @@ func dashboardProbeNetwork(nodeID string, tasks []probeNetworkMonitorTaskRecord,
 		item.LatencyAvgMS, item.LossPercent = summarizeDashboardNetworkResult(result.Results)
 		item.Available = item.LatencyAvgMS >= 0 || item.LossPercent >= 0
 		item.Timestamp = ts.Format(time.RFC3339)
-		for _, task := range tasks {
-			if task.ID == item.TaskID {
-				window := time.Duration(2*normalizeProbeNetworkMonitorCycleSec(task.CycleSec))*time.Second +
-					time.Duration(normalizeProbeNetworkMonitorCount(task.Count)*normalizeProbeNetworkMonitorTimeoutMS(task.TimeoutMS))*time.Millisecond
-				item.Stale = !online || now.Sub(ts) > window
-				break
-			}
+		if window, ok := windows[item.TaskID]; ok {
+			item.Stale = !online || now.Sub(ts) > window
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -403,9 +534,11 @@ func publicDashboardNetworkMetrics(scale string) []dashboardPublicNetworkProbeIt
 			}
 			if nodeNo <= 0 && result.NodeNo > 0 {
 				nodeNo = result.NodeNo
+				acc.item.NodeNo = nodeNo
 			}
 			if nodeName == "" {
 				nodeName = strings.TrimSpace(result.NodeName)
+				acc.item.NodeName = nodeName
 			}
 			taskID, _ := dashboardNetworkTaskIdentity(result, taskNameMap)
 			weighted := dashboardNetworkWeightedPoint{Timestamp: ts.UTC().Format(time.RFC3339), ResultCount: 1}

@@ -143,3 +143,52 @@ func TestDashboardProbeNetworkFreshnessAndLegacyStore(t *testing.T) {
 		t.Fatalf("other node must not inherit tasks: %+v", got)
 	}
 }
+
+func TestDashboardJSONEndpointsSupportETag304(t *testing.T) {
+	restore := SetProbeNodesAndNetworkMonitorTasksForTest(map[int]string{1: "probe-etag"}, map[string]string{"a": "电信"})
+	t.Cleanup(restore)
+	t.Cleanup(SetProbeNetworkMonitorResultStorePathForTest(filepath.Join(t.TempDir(), "results")))
+	t.Cleanup(setProbeTrafficStoreDirForTest(t.TempDir()))
+	ResetProbeRuntimeStoreForTest()
+	t.Cleanup(ResetProbeRuntimeStoreForTest)
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := AppendProbeNetworkMonitorResultForTest("1", "a", now.Add(-time.Minute).Format(time.RFC3339), 18.5, 0); err != nil {
+		t.Fatal(err)
+	}
+	UpdateProbeRuntimeReportForTest("1", 120)
+
+	rr1 := httptest.NewRecorder()
+	dashboardProbesHandler(rr1, httptest.NewRequest(http.MethodGet, "/dashboard/probes", nil))
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("probes status=%d", rr1.Code)
+	}
+	etag := rr1.Header().Get("ETag")
+	if etag == "" {
+		t.Fatalf("expected ETag on /dashboard/probes")
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/dashboard/probes", nil)
+	req2.Header.Set("If-None-Match", etag)
+	rr2 := httptest.NewRecorder()
+	dashboardProbesHandler(rr2, req2)
+	if rr2.Code != http.StatusNotModified {
+		t.Fatalf("expected 304 on /dashboard/probes with matching ETag, got %d", rr2.Code)
+	}
+
+	rrNet1 := httptest.NewRecorder()
+	dashboardNetworkHandler(rrNet1, httptest.NewRequest(http.MethodGet, "/dashboard/network?scale=minute", nil))
+	if rrNet1.Code != http.StatusOK {
+		t.Fatalf("network status=%d", rrNet1.Code)
+	}
+	netETag := rrNet1.Header().Get("ETag")
+	if netETag == "" {
+		t.Fatalf("expected ETag on /dashboard/network")
+	}
+	reqNet2 := httptest.NewRequest(http.MethodGet, "/dashboard/network?scale=minute", nil)
+	reqNet2.Header.Set("If-None-Match", netETag)
+	rrNet2 := httptest.NewRecorder()
+	dashboardNetworkHandler(rrNet2, reqNet2)
+	if rrNet2.Code != http.StatusNotModified {
+		t.Fatalf("expected 304 on /dashboard/network with matching ETag, got %d", rrNet2.Code)
+	}
+}
