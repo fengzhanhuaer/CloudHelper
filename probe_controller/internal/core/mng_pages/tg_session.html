@@ -3,509 +3,681 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>CloudHelper TG 会话</title>
+  <title>CloudHelper TG 对话</title>
   <style>
     :root {
       color-scheme: dark;
-      --bg: #0b1018;
-      --surface: #111925;
-      --surface-raised: #172231;
-      --surface-hover: #1c2a3c;
-      --border: #26364a;
-      --border-soft: #1d2a3a;
-      --text: #eef5fc;
-      --muted: #8fa5bc;
-      --accent: #2aabee;
-      --accent-strong: #168dcc;
-      --success: #5fd19b;
-      --danger: #ff7f87;
-      --warning: #f5bd68;
+      --bg: #070b12;
+      --surface: #0d1421;
+      --surface-2: #111b2b;
+      --surface-hover: rgba(30, 44, 68, 0.78);
+      --border: rgba(148, 163, 184, 0.16);
+      --border-strong: rgba(148, 163, 184, 0.3);
+      --text: #e6edf3;
+      --sub: #94a3b8;
+      --muted: #64748b;
+      --accent: #38bdf8;
+      --accent-soft: rgba(56, 189, 248, 0.15);
+      --ok: #34d399;
+      --warn: #facc15;
+      --err: #f87171;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     }
     * { box-sizing: border-box; }
-    body {
+    html, body {
       margin: 0;
-      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
-      background: #0e1621;
-      color: var(--text);
-      min-height: 100vh;
+      padding: 0;
+      height: 100%;
       overflow: hidden;
-    }
-    .wrap {
-      width: 100vw;
-      height: 100vh;
-      margin: 0;
-      background: #0e1621;
-    }
-    .topbar { display: none; }
-    h1 { margin: 0; font-size: 24px; }
-    .sub { margin: 6px 0 0; color: #9fc2ff; font-size: 13px; }
-    .btn {
-      min-width: 108px;
-      border: 1px solid var(--border);
-      background: var(--surface-raised);
+      font-family: var(--sans);
+      background: var(--bg);
       color: var(--text);
-      border-radius: 6px;
-      height: 36px;
-      padding: 0 12px;
-      cursor: pointer;
+      -webkit-font-smoothing: antialiased;
     }
-    .btn.primary {
-      border-color: var(--accent);
-      background: var(--accent-strong);
+    .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
     }
-    .btn:disabled { opacity: .58; cursor: not-allowed; }
-    .btn:hover:enabled { filter: brightness(1.06); }
-    .status {
+
+    /* Toast */
+    .toast-host {
       position: fixed;
-      z-index: 20;
-      top: 14px;
-      right: 18px;
-      max-width: min(440px, calc(100vw - 36px));
-      border: 1px solid var(--border);
-      background: #172231;
-      box-shadow: 0 12px 30px rgba(0, 0, 0, .34);
-      border-radius: 7px;
-      padding: 9px 12px;
-      font-size: 13px;
-      line-height: 1.45;
-      min-height: 38px;
-      white-space: pre-wrap;
-      word-break: break-word;
-      margin: 0;
-    }
-    .status:empty { display: none; }
-    .status.ok { border-color: #327659; color: #a4e7c7; }
-    .status.err { border-color: #91484f; color: #ffb2b7; }
-    .status.warn { border-color: #8c6a37; color: #f8d69d; }
-    .content-actions {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-      align-items: center;
-    }
-    .content-block {
-      height: 100%;
-      min-height: 0;
-      overflow: hidden;
-    }
-    .identity-card {
-      height: 100%;
-      min-height: 0;
-      overflow: hidden;
-    }
-    .title-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      flex-wrap: wrap;
-      margin-bottom: 12px;
-    }
-    .title-row h2 { margin: 0; font-size: 22px; }
-    .tg-account-basic-row {
-      display: grid;
-      grid-template-columns: 120px 1fr;
-      gap: 10px;
-      align-items: center;
-      padding: 10px 0;
-      border-top: 1px solid rgba(150, 185, 240, 0.12);
-    }
-    .tg-account-basic-label { color: #8eaed6; font-size: 13px; }
-    .tg-account-basic-value { color: #eef6ff; word-break: break-word; }
-    .tg-account-summary-line {
-      border: 1px solid rgba(150, 185, 240, 0.14);
-      border-radius: 10px;
-      padding: 12px;
-      color: #a9c7f3;
-      background: rgba(255, 255, 255, 0.03);
-    }
-    .tg-session-toolbar {
-      display: grid;
-      gap: 8px;
-    }
-    .tg-session-toolbar label {
-      display: grid;
-      gap: 6px;
-      color: #9fc2ff;
-      font-size: 12px;
-    }
-    .input,
-    .tg-session-toolbar input,
-    .tg-session-toolbar select {
-      width: 100%;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      background: #0d141e;
-      color: var(--text);
-      min-height: 34px;
-      padding: 8px 10px;
-      outline: none;
-    }
-    .tg-session-summary {
-      color: var(--muted);
-      font-size: 12px;
-      margin: 7px 0 11px;
-    }
-    .tg-chat-shell {
-      display: grid;
-      grid-template-columns: 340px minmax(0, 1fr);
-      overflow: hidden;
-      height: 100%;
-      min-height: 0;
-      background: var(--surface);
-    }
-    .tg-chat-sidebar {
-      border-right: 1px solid var(--border);
-      min-width: 0;
+      top: 12px;
+      right: 14px;
+      z-index: 50;
       display: flex;
       flex-direction: column;
-      background: #111b27;
+      gap: 6px;
+      max-width: min(400px, calc(100vw - 28px));
+      pointer-events: none;
+    }
+    .toast {
+      pointer-events: auto;
+      padding: 8px 12px;
+      border-radius: 9px;
+      border: 1px solid var(--border-strong);
+      background: rgba(12, 19, 32, 0.96);
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.48);
+      font-size: 12.5px;
+      line-height: 1.4;
+      color: var(--text);
+      word-break: break-word;
+    }
+    .toast.ok { border-color: rgba(52, 211, 153, 0.45); color: #a7f3d0; }
+    .toast.warn { border-color: rgba(250, 204, 21, 0.45); color: #fde047; }
+    .toast.err { border-color: rgba(248, 113, 113, 0.5); color: #fecaca; }
+
+    /* Buttons & Inputs */
+    .btn {
+      appearance: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      border: 1px solid var(--border);
+      background: rgba(15, 23, 38, 0.85);
+      color: var(--text);
+      border-radius: 7px;
+      height: 32px;
+      padding: 0 10px;
+      font-size: 12px;
+      font-weight: 500;
+      font-family: var(--sans);
+      cursor: pointer;
+      white-space: nowrap;
+      text-decoration: none;
+      transition: background 0.14s ease, border-color 0.14s ease;
+    }
+    .btn:hover:enabled, a.btn:hover {
+      background: var(--surface-hover);
+      border-color: var(--border-strong);
+    }
+    .btn:disabled { opacity: 0.48; cursor: not-allowed; }
+    .btn.primary {
+      border-color: rgba(56, 189, 248, 0.5);
+      background: linear-gradient(180deg, rgba(37, 99, 235, 0.92), rgba(29, 78, 216, 0.95));
+      color: #fff;
+    }
+    .btn.primary:hover:enabled { filter: brightness(1.08); }
+    .btn.icon {
+      width: 32px;
+      min-width: 32px;
+      padding: 0;
+      font-size: 15px;
+    }
+    .input, select.input {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(7, 11, 18, 0.9);
+      color: var(--text);
+      padding: 7px 10px;
+      font-size: 13px;
+      font-family: var(--sans);
+      outline: none;
+      transition: border-color 0.14s ease;
+    }
+    .input:focus, select.input:focus {
+      border-color: rgba(56, 189, 248, 0.6);
+    }
+    select.input option { background: #0d1522; color: var(--text); }
+
+    /* Shell */
+    .shell {
+      width: 100%;
+      height: 100vh;
+      height: 100dvh;
+      display: grid;
+      grid-template-columns: 330px minmax(0, 1fr);
+      background: var(--surface);
       overflow: hidden;
     }
-    .tg-chat-sidebar-head,
-    .tg-chat-main-head,
-    .tg-chat-composer {
-      padding: 14px;
-      border-bottom: 1px solid var(--border);
+    .empty-screen {
+      grid-column: 1 / -1;
+      display: grid;
+      place-items: center;
+      padding: 28px;
+      text-align: center;
+      color: var(--sub);
+      font-size: 14px;
     }
-    .tg-chat-main-head {
+    .empty-screen a { color: var(--accent); text-decoration: none; margin-top: 10px; display: inline-block; }
+
+    /* Left Sidebar */
+    .sidebar {
+      border-right: 1px solid var(--border);
+      background: var(--surface-2);
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      overflow: hidden;
+    }
+    .sidebar-head {
+      padding: 12px 12px 10px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      flex-shrink: 0;
+    }
+    .sidebar-top {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 10px;
-      min-height: 68px;
-      background: #121b28;
+      gap: 8px;
     }
-    .tg-chat-title {
-      font-size: 16px;
+    .account-picker {
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+    .account-title {
+      font-size: 14px;
       font-weight: 700;
-      color: var(--text);
-      word-break: break-word;
+      color: #fff;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
-    .tg-chat-subtitle {
-      margin-top: 4px;
-      color: var(--muted);
-      font-size: 12px;
-      word-break: break-word;
+    .account-sub {
+      font-size: 11.5px;
+      color: var(--sub);
+      margin-top: 2px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
-    .tg-chat-list {
-      flex: 1;
-      overflow: auto;
-      min-height: 0;
-      padding: 0;
+    .search-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
     }
-    .tg-chat-item {
-      width: 100%;
+    .search-wrap input {
+      padding-right: 28px;
+      height: 33px;
+      font-size: 12.5px;
+    }
+    .search-clear {
+      position: absolute;
+      right: 6px;
       border: 0;
-      border-radius: 0;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 15px;
+      padding: 2px 4px;
+      display: none;
+    }
+    .search-clear.visible { display: inline-flex; }
+    .search-clear:hover { color: #fff; }
+    .type-tabs {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 4px;
+    }
+    .type-tab {
+      appearance: none;
+      border: 1px solid var(--border);
+      background: rgba(8, 13, 22, 0.65);
+      color: var(--sub);
+      border-radius: 6px;
+      padding: 4px 4px;
+      font-size: 11.5px;
+      font-family: var(--sans);
+      cursor: pointer;
+      text-align: center;
+      white-space: nowrap;
+      transition: all 0.14s ease;
+    }
+    .type-tab:hover { color: var(--text); }
+    .type-tab.active {
+      background: var(--accent-soft);
+      border-color: rgba(56, 189, 248, 0.45);
+      color: #fff;
+      font-weight: 600;
+    }
+    .chat-list {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .chat-item {
+      appearance: none;
+      width: 100%;
+      border: 1px solid transparent;
+      border-radius: 8px;
       background: transparent;
       color: var(--text);
-      padding: 9px 12px;
+      padding: 8px 9px;
       display: grid;
-      grid-template-columns: 38px 1fr;
+      grid-template-columns: 38px minmax(0, 1fr);
       gap: 10px;
       align-items: center;
       text-align: left;
+      font-family: var(--sans);
       cursor: pointer;
+      transition: background 0.12s ease, border-color 0.12s ease;
     }
-    .tg-chat-item:hover { background: var(--surface-hover); }
-    .tg-chat-item.active { background: #2b5278; }
-    .tg-chat-avatar {
+    .chat-item:hover { background: var(--surface-hover); }
+    .chat-item.active {
+      background: rgba(56, 189, 248, 0.16);
+      border-color: rgba(56, 189, 248, 0.42);
+    }
+    .avatar {
       width: 38px;
       height: 38px;
       border-radius: 50%;
       display: grid;
       place-items: center;
-      background: var(--avatar-color, #35678d);
       color: #fff;
       font-weight: 700;
+      font-size: 14px;
+      background: var(--av, #2563eb);
+      flex: 0 0 auto;
     }
-    .tg-chat-item-title,
-    .tg-chat-item-sub {
+    .chat-item-body { min-width: 0; }
+    .chat-item-title {
+      font-size: 13.5px;
+      font-weight: 600;
+      color: #fff;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .tg-chat-item-title { font-size: 14px; font-weight: 650; }
-    .tg-chat-item-sub { margin-top: 3px; color: var(--muted); font-size: 12px; }
-    .tg-chat-main {
+    .chat-item-sub {
+      margin-top: 2px;
+      font-size: 11.5px;
+      color: var(--sub);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* Main Chat Area */
+    .main {
       min-width: 0;
       height: 100%;
       display: grid;
       grid-template-rows: auto minmax(0, 1fr) auto;
-      min-height: 0;
       overflow: hidden;
+      background: var(--bg);
     }
-    .tg-chat-messages {
-      overflow: auto;
-      padding: 18px clamp(14px, 3vw, 42px);
-      min-height: 0;
-      background-color: #0e1621;
-      background-image: radial-gradient(rgba(130, 159, 187, .055) 1px, transparent 1px);
-      background-size: 20px 20px;
-    }
-    .tg-chat-empty {
-      color: var(--muted);
-      padding: 48px 16px;
-      text-align: center;
-    }
-    .tg-message-row {
-      display: flex;
-      justify-content: flex-start;
-      width: 100%;
-      margin: 5px 0;
-    }
-    .tg-message-row.out { justify-content: flex-end; }
-    .tg-message-row.service { justify-content: center; }
-    .tg-message-bubble {
-      display: flex;
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 4px;
-      max-width: min(680px, 78%);
-      flex: 0 1 auto;
-      border: 1px solid #2a3b4e;
-      border-radius: 8px;
-      background: #182534;
-      padding: 9px 11px 7px;
-      word-break: break-word;
-      line-height: 1.32;
-    }
-    .tg-message-row.out .tg-message-bubble {
-      background: #175f87;
-      border-color: #247da9;
-    }
-    .tg-message-row.service .tg-message-bubble {
-      max-width: min(620px, 90%);
-      background: #17202b;
-      color: var(--muted);
-      text-align: center;
-      align-items: center;
-    }
-    .tg-message-sender {
-      color: #9fc2ff;
-      font-size: 12px;
-      margin: 0;
-      font-weight: 650;
-    }
-    .tg-message-text {
-      white-space: pre-wrap;
-      width: 100%;
-      overflow-wrap: anywhere;
-    }
-    .tg-message-text a {
-      color: #8ec5ff;
-      text-decoration: underline;
-    }
-    .tg-message-text code { padding: 1px 4px; border-radius: 3px; background: rgba(0, 0, 0, .25); font-family: Consolas, monospace; }
-    .tg-message-text pre { margin: 5px 0 0; padding: 8px 10px; overflow: auto; border-left: 3px solid var(--accent); background: rgba(0, 0, 0, .25); white-space: pre-wrap; font-family: Consolas, monospace; }
-    .tg-message-text .spoiler { padding: 0 3px; border-radius: 2px; background: #42505f; color: transparent; cursor: pointer; }
-    .tg-message-text .spoiler:hover { color: inherit; }
-    .tg-web-preview {
-      width: 100%;
-      margin-top: 5px;
-      padding-left: 9px;
-      border-left: 3px solid #62d58b;
-      color: inherit;
-      text-decoration: none;
-    }
-    .tg-web-preview-inner {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 10px;
-      align-items: center;
-    }
-    .tg-web-preview-copy { min-width: 0; }
-    .tg-web-preview-site { color: #62d58b; font-size: 12px; font-weight: 650; }
-    .tg-web-preview-title { margin-top: 2px; color: var(--text); font-size: 13px; font-weight: 650; line-height: 1.35; }
-    .tg-web-preview-description {
-      margin-top: 2px;
-      color: var(--text);
-      font-size: 12px;
-      line-height: 1.35;
-      display: -webkit-box;
-      -webkit-box-orient: vertical;
-      -webkit-line-clamp: 3;
-      overflow: hidden;
-    }
-    .tg-web-preview-image {
-      width: 82px;
-      height: 72px;
-      border-radius: 4px;
-      object-fit: cover;
-      background: rgba(0, 0, 0, .22);
-    }
-    .tg-web-preview:hover .tg-web-preview-title { text-decoration: underline; }
-    .tg-message-media-wrap {
-      display: inline-block;
-      margin-top: 8px;
-      max-width: min(320px, 100%);
-    }
-    .tg-message-media {
-      display: block;
-      max-width: 100%;
-      border-radius: 6px;
-      background: rgba(0, 0, 0, 0.18);
-    }
-    .tg-message-meta {
-      color: rgba(220, 234, 255, 0.62);
-      font-size: 11px;
-      margin-top: 0;
-      text-align: right;
-      align-self: flex-end;
-    }
-    .tg-chat-composer {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 10px;
-      align-items: end;
-      border-bottom: 0;
-      border-top: 1px solid var(--border);
-      background: #121b28;
-      position: relative;
-      z-index: 2;
-      min-height: 70px;
-      flex-shrink: 0;
-    }
-    .tg-chat-composer textarea {
-      min-height: 42px;
-      max-height: 140px;
-      resize: none;
-      line-height: 1.45;
-    }
-    .tg-message-day {
-      width: max-content;
-      max-width: 90%;
-      margin: 14px auto 10px;
-      padding: 4px 9px;
-      border-radius: 10px;
-      background: rgba(24, 37, 52, .92);
-      color: var(--muted);
-      font-size: 11px;
-      text-align: center;
-    }
-    .tg-sidebar-title-row, .tg-chat-heading-row, .tg-composer-meta {
+    .main-head {
+      padding: 10px 14px;
+      min-height: 60px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 10px;
     }
-    .tg-sidebar-actions { display: flex; gap: 6px; }
-    .icon-btn {
-      width: 34px;
-      min-width: 34px;
-      height: 34px;
-      padding: 0;
-      display: grid;
-      place-items: center;
-      font-size: 17px;
+    .main-head-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      flex: 1 1 auto;
     }
-    .tg-chat-context { min-width: 0; }
-    .tg-composer-wrap { min-width: 0; }
-    .tg-composer-meta { margin-top: 5px; color: var(--muted); font-size: 11px; }
-    .tg-back-link { color: #9ad9fb; text-decoration: none; font-size: 12px; white-space: nowrap; }
-    .tg-back-link:hover { text-decoration: underline; }
-    .tg-send-btn { min-width: 76px; height: 42px; }
-    .tg-mobile-back { display: none; }
-    .tg-session-toolbar label { position: relative; }
-    .tg-session-toolbar label span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
-    .tg-account-summary-line { margin: auto; max-width: 560px; }
-    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-    @media (max-width: 760px) {
-      body { overflow: hidden; }
-      .wrap { height: 100dvh; min-height: 0; }
-      .tg-account-basic-row { grid-template-columns: 1fr; }
-      .tg-chat-shell { grid-template-columns: 1fr; }
-      .tg-chat-sidebar {
-        border-right: 0;
-      }
-      .tg-chat-shell { height: 100%; }
-      .tg-chat-list { max-height: none; min-height: 0; }
-      .tg-chat-main { display: none; height: 100%; min-height: 0; }
-      .tg-chat-shell.chat-open .tg-chat-sidebar { display: none; }
-      .tg-chat-shell.chat-open .tg-chat-main { display: grid; }
-      .tg-chat-main-head { align-items: center; padding: 10px; }
-      .tg-mobile-back { display: grid; margin-right: 2px; }
-      .tg-chat-context { flex: 1; }
-      .tg-message-row { margin: 5px 0; }
-      .tg-message-bubble { max-width: 88%; }
-      .tg-message-row.service .tg-message-bubble { max-width: 96%; }
-      .tg-chat-messages { min-height: 0; max-height: none; padding: 14px 9px; }
-      .tg-chat-composer { grid-template-columns: 1fr auto; padding: 9px; }
-      .tg-composer-meta { display: none; }
-      .tg-send-btn { width: auto; min-width: 64px; }
-      .status { top: 10px; right: 10px; }
+    .mobile-back { display: none; }
+    .chat-context { min-width: 0; }
+    .chat-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: #fff;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .chat-sub {
+      margin-top: 2px;
+      font-size: 11.5px;
+      color: var(--sub);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .ws-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      color: var(--sub);
+    }
+    .ws-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+    .ws-pill.open .ws-dot { background: var(--ok); box-shadow: 0 0 6px rgba(52, 211, 153, 0.65); }
+    .ws-pill.open { color: #6ee7b7; }
+    .ws-pill.connecting .ws-dot { background: var(--warn); }
+    .ws-pill.error .ws-dot { background: var(--err); }
+    .main-head-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    /* Message Feed */
+    .messages {
+      min-height: 0;
+      overflow-y: auto;
+      padding: 14px clamp(12px, 3vw, 34px);
+      background-color: #090f19;
+      background-image: radial-gradient(rgba(148, 163, 184, 0.06) 1px, transparent 1px);
+      background-size: 22px 22px;
+      display: flex;
+      flex-direction: column;
+    }
+    .load-older-bar {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 10px;
+    }
+    .chat-empty {
+      margin: auto;
+      padding: 36px 16px;
+      text-align: center;
+      color: var(--sub);
+      font-size: 13px;
+    }
+    .day-divider {
+      width: max-content;
+      margin: 12px auto 8px;
+      padding: 3px 10px;
+      border-radius: 999px;
+      background: rgba(20, 31, 49, 0.92);
+      border: 1px solid var(--border);
+      color: var(--sub);
+      font-size: 11px;
+    }
+    .msg-row {
+      display: flex;
+      justify-content: flex-start;
+      margin: 4px 0;
+    }
+    .msg-row.out { justify-content: flex-end; }
+    .msg-row.service { justify-content: center; }
+    .msg-bubble {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 4px;
+      max-width: min(680px, 80%);
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: 11px;
+      background: #142033;
+      padding: 8px 11px 6px;
+      line-height: 1.44;
+      font-size: 13.5px;
+      word-break: break-word;
+    }
+    .msg-row.out .msg-bubble {
+      background: #134e6f;
+      border-color: rgba(56, 189, 248, 0.34);
+    }
+    .msg-row.service .msg-bubble {
+      max-width: min(600px, 92%);
+      background: rgba(20, 31, 49, 0.78);
+      color: var(--sub);
+      font-size: 12px;
+      text-align: center;
+      align-items: center;
+      padding: 5px 12px;
+    }
+    .msg-sender {
+      color: #7dd3fc;
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .msg-text {
+      white-space: pre-wrap;
+      width: 100%;
+      overflow-wrap: anywhere;
+    }
+    .msg-text a { color: #93c5fd; text-decoration: underline; }
+    .msg-text code {
+      padding: 1px 5px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.28);
+      font-family: var(--mono);
+      font-size: 12.5px;
+    }
+    .msg-text pre {
+      margin: 5px 0 0;
+      padding: 8px 10px;
+      overflow-x: auto;
+      border-left: 3px solid var(--accent);
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.32);
+      white-space: pre-wrap;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+    .msg-text .spoiler {
+      padding: 0 4px;
+      border-radius: 3px;
+      background: #334155;
+      color: transparent;
+      cursor: pointer;
+    }
+    .msg-text .spoiler:hover,
+    .msg-text .spoiler.revealed { color: inherit; background: rgba(51, 65, 85, 0.45); }
+    .web-preview {
+      width: 100%;
+      margin-top: 4px;
+      padding: 4px 0 4px 9px;
+      border-left: 3px solid var(--ok);
+      color: inherit;
+      text-decoration: none;
+    }
+    .web-preview-inner {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+    }
+    .web-preview-site { color: var(--ok); font-size: 11.5px; font-weight: 650; }
+    .web-preview-title { margin-top: 2px; font-size: 13px; font-weight: 650; color: #fff; }
+    .web-preview-desc {
+      margin-top: 2px;
+      font-size: 12px;
+      color: var(--sub);
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 3;
+      overflow: hidden;
+    }
+    .web-preview-img {
+      width: 76px;
+      height: 68px;
+      border-radius: 5px;
+      object-fit: cover;
+      background: rgba(0, 0, 0, 0.25);
+    }
+    .media-wrap {
+      display: inline-block;
+      margin-top: 6px;
+      max-width: min(320px, 100%);
+    }
+    .media-el {
+      display: block;
+      max-width: 100%;
+      border-radius: 7px;
+      background: rgba(0, 0, 0, 0.2);
+    }
+    .msg-meta {
+      align-self: flex-end;
+      font-size: 11px;
+      color: rgba(226, 232, 240, 0.58);
+    }
+
+    /* Composer */
+    .composer {
+      padding: 10px 14px;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: end;
+    }
+    .composer textarea {
+      min-height: 40px;
+      max-height: 140px;
+      resize: none;
+      line-height: 1.45;
+    }
+    .composer-meta {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 4px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .send-btn {
+      height: 40px;
+      min-width: 74px;
+      font-size: 13px;
+    }
+
+    @media (max-width: 780px) {
+      .shell { grid-template-columns: 1fr; }
+      .main { display: none; }
+      .shell.chat-open .sidebar { display: none; }
+      .shell.chat-open .main { display: grid; }
+      .mobile-back { display: inline-flex; }
+      .msg-bubble { max-width: 90%; }
+      .composer-meta { display: none; }
     }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="topbar">
-      <div>
-        <h1>TG会话</h1>
-        <p class="sub">独立窗口展示当前 TG 账号的会话、消息与发送入口。</p>
+  <div class="sr-only">独立窗口展示当前 TG 账号的会话、消息与发送入口。</div>
+  <div id="toast-host" class="toast-host" aria-live="polite"></div>
+
+  <div id="shell" class="shell">
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <div class="sidebar-top">
+          <div class="account-picker" id="account-picker-box">
+            <div class="account-title" id="account-title">TG 对话</div>
+            <div class="account-sub mono" id="account-sub">加载中...</div>
+          </div>
+          <div style="display:flex;gap:5px;flex-shrink:0">
+            <a id="btn-back-tg" class="btn icon" href="/mng/tg" title="返回 TG 助手" aria-label="返回 TG 助手">‹</a>
+            <button id="btn-popout" class="btn icon" type="button" title="在独立窗口打开" aria-label="独立窗口打开" style="display:none">↗</button>
+            <button id="btn-refresh-targets" class="btn icon" type="button" title="从 Telegram 刷新会话列表" aria-label="刷新会话">↻</button>
+          </div>
+        </div>
+        <div class="search-wrap">
+          <input id="chat-search" class="input" type="text" placeholder="搜索会话名称、@username 或 ID..." autocomplete="off">
+          <button id="chat-search-clear" class="search-clear" type="button" aria-label="清除搜索">&times;</button>
+        </div>
+        <div class="type-tabs" role="tablist" aria-label="会话类型筛选">
+          <button class="type-tab active" type="button" data-type="all">全部 <span id="cnt-all" class="mono">0</span></button>
+          <button class="type-tab" type="button" data-type="user">私聊 <span id="cnt-user" class="mono">0</span></button>
+          <button class="type-tab" type="button" data-type="chat">群组 <span id="cnt-chat" class="mono">0</span></button>
+          <button class="type-tab" type="button" data-type="channel">频道 <span id="cnt-channel" class="mono">0</span></button>
+        </div>
       </div>
-    </div>
-    <div id="status-box" class="status">初始化中...</div>
-    <div class="content-block">
-      <div id="tg-session-card" class="identity-card"></div>
-    </div>
+      <div id="chat-list" class="chat-list">
+        <div class="chat-empty">正在加载会话...</div>
+      </div>
+    </aside>
+
+    <section class="main">
+      <header class="main-head">
+        <div class="main-head-left">
+          <button id="btn-mobile-back" class="btn icon mobile-back" type="button" aria-label="返回会话列表">‹</button>
+          <div class="chat-context">
+            <div id="chat-title" class="chat-title">请选择左侧会话</div>
+            <div class="chat-sub">
+              <span id="chat-subtitle" class="mono">—</span>
+              <span id="ws-pill" class="ws-pill"><span class="ws-dot"></span><span id="ws-text">未连接</span></span>
+            </div>
+          </div>
+        </div>
+        <div class="main-head-actions">
+          <button id="btn-reload-messages" class="btn" type="button" disabled>刷新消息</button>
+          <button id="btn-pick-schedule" class="btn" type="button" disabled title="将此会话设为定时发送目标">设为定时对象</button>
+        </div>
+      </header>
+
+      <div id="chat-messages" class="messages">
+        <div class="chat-empty">请在左侧选择一个会话查看消息</div>
+      </div>
+
+      <footer class="composer">
+        <div style="min-width:0">
+          <textarea id="msg-input" class="input" rows="1" maxlength="4096" placeholder="请先选择会话" disabled></textarea>
+          <div class="composer-meta">
+            <span>Enter 发送 · Shift + Enter 换行</span>
+            <span id="msg-count" class="mono">0 / 4096</span>
+          </div>
+        </div>
+        <button id="btn-send" class="btn primary send-btn" type="button" disabled>发送</button>
+      </footer>
+    </section>
   </div>
 
   <script>
+    const params = new URLSearchParams(window.location.search);
+    const isEmbed = params.get('embed') === '1';
+
     const state = {
-      loading: false,
-      sessionLoading: false,
-      sessionSending: false,
-      status: '初始化中...',
-      statusLevel: '',
       accounts: [],
-      selectedAccountID: '',
-      activeLoggedInAccountID: '',
-      requestedAccountID: '',
-      accountSessions: {},
+      accountID: String(params.get('account_id') || '').trim(),
+      targets: [],
+      selectedTargetID: '',
+      search: '',
+      typeFilter: 'all',
+      messages: [],
+      loadingTargets: false,
+      loadingMessages: false,
+      loadingOlder: false,
+      hasMoreOlder: true,
+      sending: false,
+      ws: null,
+      wsState: 'idle',
+      wsReconnectTimer: null,
+      wsGen: 0,
     };
-    const SESSION_REFRESH_INTERVAL_MS = 4000;
-    let sessionRefreshTimer = null;
-    let statusDismissTimer = null;
 
-    function qs(id) {
-      return document.getElementById(id);
-    }
-
-    function setStatus(message, level) {
-      if (statusDismissTimer) {
-        window.clearTimeout(statusDismissTimer);
-        statusDismissTimer = null;
-      }
-      state.status = String(message || '');
-      state.statusLevel = String(level || '');
-      renderStatus();
-      if (level === 'ok') {
-        statusDismissTimer = window.setTimeout(() => {
-          state.status = '';
-          state.statusLevel = '';
-          renderStatus();
-          statusDismissTimer = null;
-        }, 2200);
-      }
-    }
-
-    function renderStatus() {
-      const box = qs('status-box');
-      box.textContent = state.status;
-      box.className = 'status';
-      if (state.statusLevel) box.classList.add(state.statusLevel);
-    }
+    const qs = (id) => document.getElementById(id);
 
     function escapeHTML(value) {
-      return String(value || '').replace(/[&<>"\x27]/g, (ch) => {
-        if (ch === '&') return '&' + 'amp;';
-        if (ch === '<') return '&' + 'lt;';
-        if (ch === '>') return '&' + 'gt;';
-        if (ch === '"') return '&' + 'quot;';
-        return '&' + '#39;';
-      });
+      return String(value == null ? '' : value).replace(/[&<>"']/g, (ch) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+      })[ch]);
+    }
+
+    function showToast(message, level = 'info') {
+      const host = qs('toast-host');
+      if (!host) return;
+      const el = document.createElement('div');
+      el.className = 'toast' + (level && level !== 'info' ? ' ' + level : '');
+      el.textContent = String(message || '');
+      host.appendChild(el);
+      while (host.children.length > 3) host.firstElementChild.remove();
+      window.setTimeout(() => { if (el.parentNode) el.remove(); }, level === 'err' ? 4500 : 2400);
     }
 
     async function requestJSON(url, options = {}) {
@@ -520,250 +692,173 @@
     }
 
     function getLoggedInAccounts() {
-      return state.accounts.filter((item) => item && item.authorized);
+      return state.accounts.filter((a) => a && a.authorized);
     }
 
-    function getActiveLoggedInAccount() {
-      return getLoggedInAccounts().find((item) => item.id === state.activeLoggedInAccountID) || null;
+    function getCurrentAccount() {
+      return getLoggedInAccounts().find((a) => a.id === state.accountID) || null;
     }
 
-    function getSessionAccount() {
-      const requested = String(state.requestedAccountID || '').trim();
-      if (requested) {
-        return state.accounts.find((item) => item && item.authorized && item.id === requested) || null;
-      }
-      return getActiveLoggedInAccount();
-    }
-
-    function createAccountSessionState() {
-      return {
-        sessionLoading: false,
-        sessionSending: false,
-        targetList: [],
-        selectedSessionTarget: '',
-        sessionMessages: [],
-        sessionWS: null,
-        mobileListOpen: false,
-        draft: {
-          sessionSearch: '',
-          sessionType: 'all',
-          sessionMessage: '',
-        },
-      };
-    }
-
-    function getAccountSessionState(accountID) {
-      const key = String(accountID || '').trim() || '__none__';
-      if (!state.accountSessions[key]) {
-        state.accountSessions[key] = createAccountSessionState();
-      }
-      return state.accountSessions[key];
-    }
-
-    function getCurrentSessionState() {
-      const active = getSessionAccount();
-      return getAccountSessionState(active && active.id);
-    }
-
-    function getRequestedAccountID() {
-      try {
-        return String(new URLSearchParams(window.location.search).get('account_id') || '').trim();
-      } catch (error) {
-        return '';
-      }
-    }
-
-    function syncSelectedAccounts() {
-      if (state.accounts.length === 0) {
-        state.selectedAccountID = '';
-        state.activeLoggedInAccountID = '';
-        return;
-      }
-      if (!state.accounts.some((item) => item.id === state.selectedAccountID)) {
-        state.selectedAccountID = state.accounts[0].id;
-      }
-      const loggedIn = getLoggedInAccounts();
-      if (loggedIn.length === 0) {
-        state.activeLoggedInAccountID = '';
-        return;
-      }
-      if (state.requestedAccountID) {
-        if (loggedIn.some((item) => item.id === state.requestedAccountID)) {
-          state.activeLoggedInAccountID = state.requestedAccountID;
-          state.selectedAccountID = state.requestedAccountID;
-        } else {
-          state.activeLoggedInAccountID = '';
-          state.selectedAccountID = state.requestedAccountID;
-        }
-        return;
-      }
-      if (!loggedIn.some((item) => item.id === state.activeLoggedInAccountID)) {
-        state.activeLoggedInAccountID = loggedIn[0].id;
-      }
-    }
-
-    function closeSessionWS(accountID) {
-      const session = accountID ? getAccountSessionState(accountID) : getCurrentSessionState();
-      const ws = session.sessionWS;
-      session.sessionWS = null;
-      if (ws) {
-        try { ws.close(); } catch (_) {}
-      }
-    }
-
-    function formatDateTime(raw) {
-      const value = String(raw || '').trim();
-      if (!value) return '-';
-      const dt = new Date(value);
-      if (Number.isNaN(dt.getTime())) return value;
-      return dt.toLocaleString();
-    }
-
-    function formatMessageTime(raw) {
-      const dt = new Date(String(raw || ''));
-      if (Number.isNaN(dt.getTime())) return '';
-      return dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    }
-
-    function formatMessageDay(raw) {
-      const dt = new Date(String(raw || ''));
-      if (Number.isNaN(dt.getTime())) return '';
-      const today = new Date();
-      const yesterday = new Date(today);
-      yesterday.setDate(today.getDate() - 1);
-      const key = (value) => `${value.getFullYear()}-${value.getMonth()}-${value.getDate()}`;
-      if (key(dt) === key(today)) return '今天';
-      if (key(dt) === key(yesterday)) return '昨天';
-      return dt.toLocaleDateString();
+    function getSelectedTarget() {
+      return state.targets.find((t) => t && t.id === state.selectedTargetID) || null;
     }
 
     function avatarColor(value) {
-      const colors = ['#3f7cac', '#4c8b75', '#8968a8', '#a06b54', '#4d82a8', '#8a7350'];
+      const colors = ['#0284c7', '#059669', '#7c3aed', '#d97706', '#2563eb', '#db2777'];
       let hash = 0;
       const text = String(value || '');
       for (let i = 0; i < text.length; i += 1) hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
       return colors[Math.abs(hash) % colors.length];
     }
 
-    function formatTGSessionType(type) {
-      const value = String(type || '').trim();
-      if (value === 'user') return '私聊';
-      if (value === 'chat') return '群组';
-      if (value === 'channel') return '频道';
-      return value || '-';
+    function formatType(type) {
+      if (type === 'user') return '私聊';
+      if (type === 'chat') return '群组';
+      if (type === 'channel') return '频道';
+      return type || '-';
     }
 
-    function formatSessionSubtitle(item) {
-      if (!item) return '';
-      const bits = [formatTGSessionType(item.type), item.id || ''];
-      if (item.username) bits.push('@' + item.username);
-      return bits.filter(Boolean).join(' · ');
+    function formatSubtitle(item) {
+      if (!item) return '—';
+      const parts = [formatType(item.type), item.id || ''];
+      if (item.username) parts.push('@' + item.username);
+      return parts.filter(Boolean).join(' · ');
     }
 
-    function sessionMessagesFingerprint(messages) {
+    function formatTime(raw) {
+      const dt = new Date(String(raw || ''));
+      if (Number.isNaN(dt.getTime())) return '';
+      return dt.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+    }
+
+    function formatDay(raw) {
+      const dt = new Date(String(raw || ''));
+      if (Number.isNaN(dt.getTime())) return '';
+      const today = new Date();
+      const yesterday = new Date(today);
+      yesterday.setDate(today.getDate() - 1);
+      const key = (d) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+      if (key(dt) === key(today)) return '今天';
+      if (key(dt) === key(yesterday)) return '昨天';
+      return dt.toLocaleDateString('zh-CN');
+    }
+
+    function messagesFingerprint(messages) {
       return (Array.isArray(messages) ? messages : []).map((msg) => {
-        const id = Number(msg && msg.id || 0);
-        const date = String(msg && msg.date || '');
-        const out = msg && msg.out ? '1' : '0';
-        const service = msg && msg.service ? '1' : '0';
-        const text = String(msg && msg.text || '');
-        const mediaType = String(msg && msg.media_type || '');
-        const mediaPath = String(msg && msg.media_path || '');
-        const formats = JSON.stringify(msg && msg.formats || []);
-        const webPreview = JSON.stringify(msg && msg.web_preview || null);
-        return [id, date, out, service, text, mediaType, mediaPath, formats, webPreview].join(':');
+        if (!msg) return '';
+        return [
+          Number(msg.id || 0),
+          String(msg.date || ''),
+          msg.out ? '1' : '0',
+          msg.service ? '1' : '0',
+          String(msg.text || ''),
+          String(msg.media_type || ''),
+          String(msg.media_path || ''),
+          JSON.stringify(msg.formats || []),
+          JSON.stringify(msg.web_preview || null),
+        ].join(':');
       }).join('|');
     }
 
-    function getSessionWSURL(accountID, targetID) {
+    function setWSStatus(status, text) {
+      state.wsState = status;
+      const pill = qs('ws-pill');
+      const label = qs('ws-text');
+      if (pill) pill.className = 'ws-pill ' + status;
+      if (label) label.textContent = text;
+    }
+
+    function closeWS() {
+      state.wsGen += 1;
+      if (state.wsReconnectTimer) {
+        window.clearTimeout(state.wsReconnectTimer);
+        state.wsReconnectTimer = null;
+      }
+      if (state.ws) {
+        const prev = state.ws;
+        state.ws = null;
+        try { prev.onclose = null; prev.onerror = null; prev.onmessage = null; prev.close(); } catch (_) {}
+      }
+      setWSStatus('idle', '未连接');
+    }
+
+    function connectWS() {
+      const acc = getCurrentAccount();
+      const targetID = state.selectedTargetID;
+      if (!acc || !targetID || !window.WebSocket || document.hidden) return;
+      closeWS();
+
+      const gen = state.wsGen;
       const url = new URL(window.location.href);
       url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
       url.pathname = '/mng/api/tg/session/ws';
-      url.search = new URLSearchParams({
-        account_id: accountID,
-        target: targetID,
-      }).toString();
-      return url.toString();
-    }
+      url.search = new URLSearchParams({ account_id: acc.id, target: targetID }).toString();
 
-    function getFilteredSessionTargets(session) {
-      const bucket = session || getCurrentSessionState();
-      const keyword = String(bucket.draft.sessionSearch || '').trim().toLowerCase();
-      const type = String(bucket.draft.sessionType || 'all').trim();
-      let list = Array.isArray(bucket.targetList) ? bucket.targetList.slice() : [];
-      if (type !== 'all') {
-        list = list.filter((item) => String(item && item.type || '').trim() === type);
+      setWSStatus('connecting', '连接中...');
+      try {
+        const ws = new WebSocket(url.toString());
+        state.ws = ws;
+        ws.onopen = () => {
+          if (gen !== state.wsGen) return;
+          setWSStatus('open', '实时同步');
+        };
+        ws.onmessage = (event) => {
+          if (gen !== state.wsGen) return;
+          let payload = null;
+          try { payload = JSON.parse(event.data); } catch (_) { return; }
+          if (!payload || payload.account_id !== acc.id || payload.target !== targetID) return;
+          if (payload.type === 'session.snapshot' && Array.isArray(payload.messages)) {
+            mergeIncomingMessages(payload.messages);
+          } else if (payload.type === 'session.error') {
+            setWSStatus('error', '推送异常');
+            showToast(`实时推送异常：${payload.error || 'unknown error'}`, 'warn');
+          }
+        };
+        ws.onerror = () => {
+          if (gen !== state.wsGen) return;
+          setWSStatus('error', '连接异常');
+        };
+        ws.onclose = () => {
+          if (gen !== state.wsGen) return;
+          state.ws = null;
+          setWSStatus('connecting', '重连中...');
+          state.wsReconnectTimer = window.setTimeout(() => {
+            if (gen === state.wsGen && !document.hidden) connectWS();
+          }, 2500);
+        };
+      } catch (_) {
+        setWSStatus('error', '无法连接');
       }
-      if (keyword) {
-        list = list.filter((item) => {
-          const id = String(item && item.id || '').toLowerCase();
-          const name = String(item && item.name || '').toLowerCase();
-          const username = String(item && item.username || '').toLowerCase();
-          const kind = String(item && item.type || '').toLowerCase();
-          return id.includes(keyword) || name.includes(keyword) || username.includes(keyword) || kind.includes(keyword);
-        });
-      }
-      return list;
     }
 
-    function getSelectedSessionTarget(session) {
-      const bucket = session || getCurrentSessionState();
-      const id = String(bucket.selectedSessionTarget || '').trim();
-      if (!id) return null;
-      return (Array.isArray(bucket.targetList) ? bucket.targetList : []).find((item) => item && item.id === id) || null;
+    function mergeIncomingMessages(snapshot) {
+      // Preserve older loaded messages while merging latest 50 snapshot messages cleanly
+      const map = new Map();
+      state.messages.forEach((m) => { if (m && m.id) map.set(Number(m.id), m); });
+      snapshot.forEach((m) => { if (m && m.id) map.set(Number(m.id), m); });
+      const merged = Array.from(map.values()).sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
+      if (messagesFingerprint(merged) === messagesFingerprint(state.messages)) return;
+
+      const box = qs('chat-messages');
+      const nearBottom = !box || (box.scrollHeight - box.scrollTop - box.clientHeight) <= 48;
+      const prevTop = box ? box.scrollTop : 0;
+
+      state.messages = merged;
+      promoteTargetToTop(state.selectedTargetID);
+      renderChatList();
+      renderMessages({ scrollToBottom: nearBottom, preserveTop: nearBottom ? null : prevTop });
     }
 
-    function promoteTGSessionTarget(session, targetID) {
-      const bucket = session || getCurrentSessionState();
-      const id = String(targetID || '').trim();
-      if (!id || !Array.isArray(bucket.targetList) || bucket.targetList.length === 0) return;
-      const index = bucket.targetList.findIndex((item) => item && item.id === id);
-      if (index <= 0) return;
-      const next = bucket.targetList.slice();
-      const [item] = next.splice(index, 1);
+    function promoteTargetToTop(targetID) {
+      const idx = state.targets.findIndex((t) => t && t.id === targetID);
+      if (idx <= 0) return;
+      const next = state.targets.slice();
+      const [item] = next.splice(idx, 1);
       next.unshift(item);
-      bucket.targetList = next;
+      state.targets = next;
     }
 
-    function renderTGMessageMedia(msg) {
-      if (!msg) return '';
-      const mediaType = String(msg.media_type || '').trim();
-      const mediaURL = String(msg.media_url || '').trim();
-      if (!mediaType || !mediaURL) return '';
-      const label = mediaType === 'sticker' ? '贴纸' : mediaType === 'custom_emoji' ? '自定义表情' : mediaType === 'video' ? '视频' : mediaType === 'photo' ? '图片' : '文件';
-      if (mediaType === 'video') {
-        return `<a class="tg-message-media-wrap" href="${escapeHTML(mediaURL)}" target="_blank" rel="noreferrer"><video class="tg-message-media" src="${escapeHTML(mediaURL)}" controls preload="metadata"></video></a>`;
-      }
-      return `<a class="tg-message-media-wrap" href="${escapeHTML(mediaURL)}" target="_blank" rel="noreferrer"><img class="tg-message-media" src="${escapeHTML(mediaURL)}" alt="${escapeHTML(label)}"></a>`;
-    }
-
-    function renderTGWebPreview(msg) {
-      const preview = msg && msg.web_preview;
-      if (!preview) return '';
-      const url = String(preview.url || '').trim();
-      if (!/^https?:\/\//i.test(url)) return '';
-      const site = String(preview.site_name || preview.display_url || '').trim();
-      const title = String(preview.title || '').trim();
-      const description = String(preview.description || '').trim();
-      const imageURL = String(preview.image_url || '').trim();
-      if (!site && !title && !description && !imageURL) return '';
-      const image = imageURL
-        ? `<img class="tg-web-preview-image" src="${escapeHTML(imageURL)}" alt="" loading="lazy" onerror="this.remove()">`
-        : '';
-      return `
-        <a class="tg-web-preview" href="${escapeHTML(url)}" target="_blank" rel="noreferrer">
-          <span class="tg-web-preview-inner">
-            <span class="tg-web-preview-copy">
-              ${site ? `<span class="tg-web-preview-site">${escapeHTML(site)}</span>` : ''}
-              ${title ? `<span class="tg-web-preview-title">${escapeHTML(title)}</span>` : ''}
-              ${description ? `<span class="tg-web-preview-description">${escapeHTML(description)}</span>` : ''}
-            </span>
-            ${image}
-          </span>
-        </a>
-      `;
-    }
-
+    /* ================= Rich Message Rendering ================= */
     function renderMessageText(text, formats) {
       const source = String(text || '');
       const entities = Array.isArray(formats) ? formats.filter((item) => item && Number(item.length) > 0) : [];
@@ -774,24 +869,24 @@
         units.forEach((char) => { utf16Offsets.push(offset); offset += char.length; });
         utf16Offsets.push(offset);
         const toIndex = (utf16) => {
-          const value = Math.max(0, Number(utf16) || 0);
-          let index = 0;
-          while (index < utf16Offsets.length - 1 && utf16Offsets[index] < value) index += 1;
-          return index;
+          const val = Math.max(0, Number(utf16) || 0);
+          let i = 0;
+          while (i < utf16Offsets.length - 1 && utf16Offsets[i] < val) i += 1;
+          return i;
         };
-        const wrapText = (html, entity, rawText) => {
-          const type = String(entity.type || '');
-          if (type === 'bold') return `<strong>${html}</strong>`;
-          if (type === 'italic') return `<em>${html}</em>`;
-          if (type === 'underline') return `<u>${html}</u>`;
-          if (type === 'strike') return `<s>${html}</s>`;
-          if (type === 'code') return `<code>${html}</code>`;
-          if (type === 'pre') return `<pre>${html}</pre>`;
-          if (type === 'spoiler') return `<span class="spoiler" tabindex="0">${html}</span>`;
-          if (type === 'url') {
+        const wrap = (html, entity, rawText) => {
+          const t = String(entity.type || '');
+          if (t === 'bold') return `<strong>${html}</strong>`;
+          if (t === 'italic') return `<em>${html}</em>`;
+          if (t === 'underline') return `<u>${html}</u>`;
+          if (t === 'strike') return `<s>${html}</s>`;
+          if (t === 'code') return `<code>${html}</code>`;
+          if (t === 'pre') return `<pre>${html}</pre>`;
+          if (t === 'spoiler') return `<span class="spoiler" tabindex="0">${html}</span>`;
+          if (t === 'url') {
             const href = String(entity.url || rawText);
             if (!/^https?:\/\//i.test(href)) return html;
-            return `<a href="${escapeHTML(href)}" target="_blank" rel="noreferrer">${html}</a>`;
+            return `<a href="${escapeHTML(href)}" target="_blank" rel="noopener noreferrer">${html}</a>`;
           }
           return html;
         };
@@ -811,476 +906,516 @@
           const start = points[i];
           const end = points[i + 1];
           const rawText = units.slice(start, end).join('');
-          let segment = escapeHTML(rawText);
+          let seg = escapeHTML(rawText);
           normalized
-            .filter((entity) => entity.start <= start && entity.end >= end)
+            .filter((e) => e.start <= start && e.end >= end)
             .sort((a, b) => (b.end - b.start) - (a.end - a.start))
-            .forEach((entity) => { segment = wrapText(segment, entity, rawText); });
-          html += segment;
+            .forEach((e) => { seg = wrap(seg, e, rawText); });
+          html += seg;
         }
         return html;
       }
+
       const parts = [];
       const pattern = /(https?:\/\/[^\s<>"']+)/gi;
       let lastIndex = 0;
       let match = null;
       while ((match = pattern.exec(source)) !== null) {
-        const index = match.index;
-        if (index > lastIndex) {
-          parts.push(escapeHTML(source.slice(lastIndex, index)));
-        }
+        if (match.index > lastIndex) parts.push(escapeHTML(source.slice(lastIndex, match.index)));
         const url = match[0];
-        parts.push(`<a href="${escapeHTML(url)}" target="_blank" rel="noreferrer">${escapeHTML(url)}</a>`);
-        lastIndex = index + url.length;
+        parts.push(`<a href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(url)}</a>`);
+        lastIndex = match.index + url.length;
       }
-      if (lastIndex < source.length) {
-        parts.push(escapeHTML(source.slice(lastIndex)));
-      }
+      if (lastIndex < source.length) parts.push(escapeHTML(source.slice(lastIndex)));
       return parts.join('');
     }
 
-    function renderSessionMessages(session) {
-      const bucket = session || getCurrentSessionState();
-      if (bucket.sessionLoading && bucket.sessionMessages.length === 0) {
-        return '<div class="tg-chat-empty">消息加载中...</div>';
+    function renderMedia(msg) {
+      if (!msg) return '';
+      const mediaType = String(msg.media_type || '').trim();
+      const mediaURL = String(msg.media_url || '').trim();
+      if (!mediaType || !mediaURL) return '';
+      const label = mediaType === 'sticker' ? '贴纸' : mediaType === 'custom_emoji' ? '自定义表情' : mediaType === 'video' ? '视频' : mediaType === 'photo' ? '图片' : '文件';
+      if (mediaType === 'video') {
+        return `<a class="media-wrap" href="${escapeHTML(mediaURL)}" target="_blank" rel="noopener noreferrer"><video class="media-el" src="${escapeHTML(mediaURL)}" controls preload="metadata"></video></a>`;
       }
-      if (!bucket.selectedSessionTarget) {
-        return '<div class="tg-chat-empty">请选择一个会话</div>';
+      return `<a class="media-wrap" href="${escapeHTML(mediaURL)}" target="_blank" rel="noopener noreferrer"><img class="media-el" src="${escapeHTML(mediaURL)}" alt="${escapeHTML(label)}" loading="lazy"></a>`;
+    }
+
+    function renderWebPreview(msg) {
+      const p = msg && msg.web_preview;
+      if (!p) return '';
+      const url = String(p.url || '').trim();
+      if (!/^https?:\/\//i.test(url)) return '';
+      const site = String(p.site_name || p.display_url || '').trim();
+      const title = String(p.title || '').trim();
+      const desc = String(p.description || '').trim();
+      const img = String(p.image_url || '').trim();
+      if (!site && !title && !desc && !img) return '';
+      return `
+        <a class="web-preview" href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer">
+          <span class="web-preview-inner">
+            <span style="min-width:0">
+              ${site ? `<div class="web-preview-site">${escapeHTML(site)}</div>` : ''}
+              ${title ? `<div class="web-preview-title">${escapeHTML(title)}</div>` : ''}
+              ${desc ? `<div class="web-preview-desc">${escapeHTML(desc)}</div>` : ''}
+            </span>
+            ${img ? `<img class="web-preview-img" src="${escapeHTML(img)}" alt="" loading="lazy" onerror="this.remove()">` : ''}
+          </span>
+        </a>
+      `;
+    }
+
+    /* ================= Incremental DOM Renderers ================= */
+    function renderAccountHeader() {
+      const box = qs('account-picker-box');
+      const acc = getCurrentAccount();
+      const authed = getLoggedInAccounts();
+
+      if (isEmbed) {
+        qs('btn-back-tg').style.display = 'none';
+        qs('btn-popout').style.display = 'inline-flex';
       }
-      if (bucket.sessionMessages.length === 0) {
-        return '<div class="tg-chat-empty">暂无消息</div>';
+
+      if (!acc) {
+        box.innerHTML = '<div class="account-title">未登录 TG 账号</div><div class="account-sub">请先在 TG 助手完成登录</div>';
+        return;
       }
-      let previousDay = '';
-      return bucket.sessionMessages.map((msg) => {
-        const out = !!(msg && msg.out);
-        const service = !!(msg && msg.service);
-        const rowClass = 'tg-message-row' + (out ? ' out' : '') + (service ? ' service' : '');
-        const sender = !out && !service && msg.sender_name ? `<div class="tg-message-sender">${escapeHTML(msg.sender_name)}</div>` : '';
-        const day = formatMessageDay(msg && msg.date || '');
-        const dayDivider = day && day !== previousDay ? `<div class="tg-message-day">${escapeHTML(day)}</div>` : '';
-        previousDay = day;
+
+      if (!isEmbed && authed.length > 1) {
+        box.innerHTML = `
+          <select id="account-switcher" class="input" style="height:32px;padding:4px 8px;font-size:12.5px" aria-label="切换 TG 账号">
+            ${authed.map((item) => `<option value="${escapeHTML(item.id)}" ${item.id === acc.id ? 'selected' : ''}>${escapeHTML(item.label || item.phone)} (${escapeHTML(item.phone || '')})</option>`).join('')}
+          </select>
+        `;
+        qs('account-switcher').addEventListener('change', (e) => {
+          const nextID = String(e.target.value || '').trim();
+          if (!nextID || nextID === state.accountID) return;
+          switchAccount(nextID);
+        });
+      } else {
+        box.innerHTML = `
+          <div class="account-title">${escapeHTML(acc.label || acc.self_display_name || 'TG 对话')}</div>
+          <div class="account-sub mono">${escapeHTML(acc.phone || acc.id)}</div>
+        `;
+      }
+    }
+
+    function renderChatList() {
+      const listEl = qs('chat-list');
+      const counts = { all: state.targets.length, user: 0, chat: 0, channel: 0 };
+      state.targets.forEach((t) => {
+        const kind = String(t && t.type || '').trim();
+        if (counts[kind] !== undefined) counts[kind] += 1;
+      });
+      qs('cnt-all').textContent = String(counts.all);
+      qs('cnt-user').textContent = String(counts.user);
+      qs('cnt-chat').textContent = String(counts.chat);
+      qs('cnt-channel').textContent = String(counts.channel);
+
+      const kw = state.search.trim().toLowerCase();
+      const filtered = state.targets.filter((item) => {
+        if (state.typeFilter !== 'all' && String(item.type || '') !== state.typeFilter) return false;
+        if (!kw) return true;
+        const hay = `${item.name || ''} ${item.username || ''} ${item.id || ''} ${formatType(item.type)}`.toLowerCase();
+        return hay.includes(kw);
+      });
+
+      if (state.loadingTargets && state.targets.length === 0) {
+        listEl.innerHTML = '<div class="chat-empty">正在加载会话列表...</div>';
+        return;
+      }
+      if (filtered.length === 0) {
+        listEl.innerHTML = `<div class="chat-empty">${state.targets.length === 0 ? '暂无会话，点击右上角 ↻ 刷新' : '没有匹配的会话'}</div>`;
+        return;
+      }
+
+      listEl.innerHTML = filtered.map((item) => {
+        const id = String(item.id || '');
+        const title = String(item.name || id || '-').trim();
+        const initial = title ? title.slice(0, 1).toUpperCase() : '#';
+        const active = id === state.selectedTargetID ? ' active' : '';
+        const sub = `${formatType(item.type)}${item.username ? ' · @' + item.username : ''}`;
         return `
-          ${dayDivider}
-          <div class="${rowClass}">
-            <div class="tg-message-bubble">
-              ${sender}
-              <div class="tg-message-text">${renderMessageText(msg && msg.text || '', msg && msg.formats)}</div>
-              ${renderTGWebPreview(msg)}
-              ${renderTGMessageMedia(msg)}
-              <div class="tg-message-meta">${escapeHTML(formatMessageTime(msg && msg.date || ''))}</div>
+          <button type="button" class="chat-item${active}" data-open-target="${escapeHTML(id)}">
+            <div class="avatar" style="--av:${avatarColor(id)}">${escapeHTML(initial)}</div>
+            <div class="chat-item-body">
+              <div class="chat-item-title">${escapeHTML(title)}</div>
+              <div class="chat-item-sub">${escapeHTML(sub)}</div>
             </div>
-          </div>
+          </button>
         `;
       }).join('');
     }
 
-    function scrollSessionMessagesToBottom() {
-      const box = qs('tg-chat-messages');
-      if (!box) return;
-      box.scrollTop = box.scrollHeight;
+    function renderChatHeaderAndComposer() {
+      const target = getSelectedTarget();
+      const hasTarget = !!target;
+      qs('chat-title').textContent = target ? String(target.name || target.id) : '请选择左侧会话';
+      qs('chat-subtitle').textContent = formatSubtitle(target);
+      qs('btn-reload-messages').disabled = !hasTarget || state.loadingMessages;
+      qs('btn-pick-schedule').disabled = !hasTarget;
+
+      const input = qs('msg-input');
+      input.disabled = !hasTarget || state.sending;
+      input.placeholder = hasTarget ? `发送消息给 ${target.name || target.id}...` : '请先选择会话';
+      updateSendButtonState();
     }
 
-    function renderTGSessionPanel(options = {}) {
-      const host = qs('tg-session-card');
-      if (!host) return;
-      const preserveScroll = options.preserveScroll === true;
-      const previousBox = preserveScroll ? qs('tg-chat-messages') : null;
-      const previousScrollTop = previousBox ? previousBox.scrollTop : 0;
-      const wasNearBottom = previousBox ? (previousBox.scrollHeight - previousBox.scrollTop - previousBox.clientHeight) <= 24 : true;
-      const focusSearch = options.focusSearch === true;
-      const searchCursor = Number(options.searchCursor || 0);
-      const active = getSessionAccount();
-      if (!active) {
-        const emptyMessage = state.requestedAccountID
-          ? '当前选中的 TG 账号未登录或不存在，请在「TG助手」重新选择账号。'
-          : '请先在「TG助手」中登录并选择一个账号。';
-        host.innerHTML = `
-          <div class="tg-account-summary-line">${escapeHTML(emptyMessage)}</div>
-        `;
-        bindTGSessionEvents();
+    function updateSendButtonState() {
+      const input = qs('msg-input');
+      const text = input ? input.value : '';
+      qs('msg-count').textContent = `${text.length} / 4096`;
+      qs('btn-send').disabled = !state.selectedTargetID || state.sending || !text.trim();
+      qs('btn-send').textContent = state.sending ? '发送中' : '发送';
+    }
+
+    function renderMessages(options = {}) {
+      const box = qs('chat-messages');
+      if (!state.selectedTargetID) {
+        box.innerHTML = '<div class="chat-empty">请在左侧选择一个会话查看消息</div>';
         return;
       }
-      const session = getAccountSessionState(active.id);
-      const filtered = getFilteredSessionTargets(session);
-      if (!session.selectedSessionTarget && filtered.length > 0) {
-        session.selectedSessionTarget = filtered[0].id || '';
+      if (state.loadingMessages && state.messages.length === 0) {
+        box.innerHTML = '<div class="chat-empty">正在加载消息...</div>';
+        return;
       }
-      const selected = getSelectedSessionTarget(session);
-      let sessionItems = '';
-      if (filtered.length === 0) {
-        sessionItems = '<div class="tg-chat-empty">暂无匹配会话</div>';
-      } else {
-        sessionItems = filtered.map((item) => {
-          const username = String(item && item.username || '').trim();
-          const itemID = String(item && item.id || '').trim();
-          const title = String(item && item.name || itemID || '-').trim();
-          const initial = title ? title.slice(0, 1).toUpperCase() : '#';
-          const activeClass = itemID === session.selectedSessionTarget ? ' active' : '';
-          return `
-            <button class="tg-chat-item${activeClass}" data-action="open-session-target" data-target-id="${escapeHTML(itemID)}" type="button" aria-pressed="${itemID === session.selectedSessionTarget ? 'true' : 'false'}">
-              <div class="tg-chat-avatar" style="--avatar-color:${escapeHTML(avatarColor(itemID))}">${escapeHTML(initial)}</div>
-              <div>
-                <div class="tg-chat-item-title">${escapeHTML(title)}</div>
-                <div class="tg-chat-item-sub">${escapeHTML(formatTGSessionType(item && item.type))}${username ? ` · @${escapeHTML(username)}` : ''}</div>
-              </div>
-            </button>
-          `;
-        }).join('');
+      if (state.messages.length === 0) {
+        box.innerHTML = '<div class="chat-empty">该会话暂无消息</div>';
+        return;
       }
-      const messages = renderSessionMessages(session);
-      const selectedTitle = selected ? String(selected.name || selected.id || '-') : '请选择会话';
-      const selectedSubtitle = selected ? formatSessionSubtitle(selected) : '选择左侧会话';
-      host.innerHTML = `
-        <div class="tg-chat-shell${selected && !session.mobileListOpen ? ' chat-open' : ''}">
-          <aside class="tg-chat-sidebar">
-            <div class="tg-chat-sidebar-head">
-              <div class="tg-sidebar-title-row">
-                <div>
-                  <div class="tg-chat-title">${escapeHTML(active.label || 'TG 会话')}</div>
-                  <div class="tg-chat-subtitle">${escapeHTML(active.phone)}</div>
-                </div>
-                <div class="tg-sidebar-actions">
-                  <a class="btn icon-btn" href="/mng/tg" title="返回 TG 助手" aria-label="返回 TG 助手">‹</a>
-                  <button class="btn icon-btn" data-action="refresh-session-targets" type="button" title="刷新会话" aria-label="刷新会话" ${session.sessionLoading ? 'disabled' : ''}>↻</button>
-                </div>
-              </div>
-              <div class="tg-session-toolbar" style="margin-bottom:0">
-                <label><span>搜索会话</span>
-                  <input id="tg-session-search" class="input" value="${escapeHTML(session.draft.sessionSearch)}" placeholder="搜索" autocomplete="off">
-                </label>
-              </div>
-            </div>
-            <div class="tg-chat-list">${sessionItems}</div>
-          </aside>
-          <section class="tg-chat-main">
-            <div class="tg-chat-main-head">
-              <button class="btn icon-btn tg-mobile-back" data-action="close-mobile-chat" type="button" title="返回会话列表" aria-label="返回会话列表">‹</button>
-              <div class="tg-chat-context">
-                <div class="tg-chat-title">${escapeHTML(selectedTitle)}</div>
-                <div class="tg-chat-subtitle">${escapeHTML(selectedSubtitle)}</div>
-              </div>
-            </div>
-            <div id="tg-chat-messages" class="tg-chat-messages">${messages}</div>
-            <div class="tg-chat-composer">
-              <div class="tg-composer-wrap">
-                <textarea id="tg-session-message" class="input" rows="1" maxlength="4096" placeholder="${selected ? '输入消息...' : '请先选择会话'}" ${!selected || session.sessionSending ? 'disabled' : ''}>${escapeHTML(session.draft.sessionMessage)}</textarea>
-                <div class="tg-composer-meta"><span>Enter 发送，Shift + Enter 换行</span><span id="tg-message-count">${String(session.draft.sessionMessage || '').length} / 4096</span></div>
-              </div>
-              <button class="btn primary tg-send-btn" data-action="send-session-message" type="button" ${!selected || session.sessionSending || !String(session.draft.sessionMessage || '').trim() ? 'disabled' : ''}>${session.sessionSending ? '发送中...' : '发送'}</button>
-            </div>
-          </section>
-        </div>
-      `;
-      bindTGSessionEvents();
-      if (focusSearch) {
-        const nextSearch = qs('tg-session-search');
-        if (nextSearch) {
-          nextSearch.focus();
-          nextSearch.setSelectionRange(searchCursor, searchCursor);
-        }
-      }
-      if (preserveScroll && previousBox) {
-        const box = qs('tg-chat-messages');
-        if (box) {
-          box.scrollTop = wasNearBottom ? box.scrollHeight : previousScrollTop;
-        }
-      } else {
-        scrollSessionMessagesToBottom();
+
+      const olderBtn = state.hasMoreOlder
+        ? `<div class="load-older-bar"><button class="btn" data-action="load-older" type="button" ${state.loadingOlder ? 'disabled' : ''}>${state.loadingOlder ? '加载中...' : '加载更早消息'}</button></div>`
+        : '';
+
+      let prevDay = '';
+      const rows = state.messages.map((msg) => {
+        const out = !!(msg && msg.out);
+        const service = !!(msg && msg.service);
+        const cls = 'msg-row' + (out ? ' out' : '') + (service ? ' service' : '');
+        const sender = !out && !service && msg.sender_name
+          ? `<div class="msg-sender">${escapeHTML(msg.sender_name)}</div>`
+          : '';
+        const day = formatDay(msg && msg.date);
+        const divider = day && day !== prevDay ? `<div class="day-divider">${escapeHTML(day)}</div>` : '';
+        prevDay = day;
+        return `${divider}<div class="${cls}"><div class="msg-bubble">${sender}<div class="msg-text">${renderMessageText(msg && msg.text, msg && msg.formats)}</div>${renderWebPreview(msg)}${renderMedia(msg)}<div class="msg-meta mono">${escapeHTML(formatTime(msg && msg.date))}</div></div></div>`;
+      }).join('');
+
+      box.innerHTML = olderBtn + rows;
+
+      if (options.scrollToBottom) {
+        box.scrollTop = box.scrollHeight;
+      } else if (typeof options.preserveTop === 'number') {
+        box.scrollTop = options.preserveTop;
       }
     }
 
-    function bindTGSessionEvents() {
-      const active = getSessionAccount();
-      const session = active ? getAccountSessionState(active.id) : getCurrentSessionState();
-      const search = qs('tg-session-search');
-      if (search) {
-        const applySearch = () => {
-          session.draft.sessionSearch = String(search.value || '');
-          renderTGSessionPanel({ focusSearch: true, searchCursor: search.selectionStart || 0 });
-        };
-        search.addEventListener('input', applySearch);
-      }
-      document.querySelectorAll('[data-action="close-mobile-chat"]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          session.mobileListOpen = true;
-          renderTGSessionPanel();
-        });
-      });
-      document.querySelectorAll('[data-action="refresh-session-targets"]').forEach((btn) => {
-        btn.addEventListener('click', () => loadTargets(active && active.id).catch((err) => setStatus(`刷新会话失败：${err.message || err}`, 'err')));
-      });
-      document.querySelectorAll('[data-action="open-session-target"]').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const targetID = String(btn.getAttribute('data-target-id') || '').trim();
-          if (!targetID) return;
-          if (targetID === session.selectedSessionTarget) {
-            session.mobileListOpen = false;
-            renderTGSessionPanel();
-            return;
-          }
-          closeSessionWS(active && active.id);
-          session.selectedSessionTarget = targetID;
-          session.mobileListOpen = false;
-          session.sessionMessages = [];
-          renderTGSessionPanel();
-          loadSessionMessages({ silent: true }).catch((err) => setStatus(`加载会话消息失败：${err.message || err}`, 'err'));
-          connectSessionWS();
-        });
-      });
-      const composer = qs('tg-session-message');
-      if (composer) {
-        const resizeComposer = () => {
-          composer.style.height = 'auto';
-          composer.style.height = `${Math.min(composer.scrollHeight, 140)}px`;
-        };
-        resizeComposer();
-        composer.addEventListener('input', () => {
-          session.draft.sessionMessage = composer.value;
-          resizeComposer();
-          const count = qs('tg-message-count');
-          if (count) count.textContent = `${composer.value.length} / 4096`;
-          const sendBtn = document.querySelector('[data-action="send-session-message"]');
-          if (sendBtn) sendBtn.disabled = !session.selectedSessionTarget || session.sessionSending || !String(session.draft.sessionMessage || '').trim();
-        });
-        composer.addEventListener('keydown', (event) => {
-          if (event.key === 'Enter' && !event.shiftKey) {
-            event.preventDefault();
-            sendSessionMessage().catch((err) => setStatus(`发送消息失败：${err.message || err}`, 'err'));
-          }
-        });
-      }
-      document.querySelectorAll('[data-action="send-session-message"]').forEach((btn) => {
-        btn.addEventListener('click', () => sendSessionMessage().catch((err) => setStatus(`发送消息失败：${err.message || err}`, 'err')));
-      });
+    /* ================= Data Actions ================= */
+    async function switchAccount(accountID) {
+      closeWS();
+      state.accountID = accountID;
+      state.targets = [];
+      state.selectedTargetID = '';
+      state.messages = [];
+      state.hasMoreOlder = true;
+      qs('shell').classList.remove('chat-open');
+      renderAccountHeader();
+      renderChatList();
+      renderChatHeaderAndComposer();
+      renderMessages();
+      await loadTargets(false);
     }
 
-    async function ensureSession() {
-      const payload = await requestJSON('/mng/api/session');
-      if (!payload.authenticated) {
-        location.href = '/mng';
-        return false;
-      }
-      return true;
-    }
-
-    async function loadAccounts(options = {}) {
-      const silent = options.silent === true;
-      if (!silent) {
-        state.loading = true;
-        setStatus('正在加载 TG 账号列表...');
-        renderTGSessionPanel();
-      }
+    async function loadTargets(forceRefresh) {
+      const acc = getCurrentAccount();
+      if (!acc) return;
+      state.loadingTargets = true;
+      qs('btn-refresh-targets').disabled = true;
+      renderChatList();
       try {
-        const payload = await requestJSON('/mng/api/tg/accounts/list');
-        state.accounts = Array.isArray(payload.accounts) ? payload.accounts : [];
-        syncSelectedAccounts();
-        renderTGSessionPanel();
-        const active = getSessionAccount();
-        const session = active ? getAccountSessionState(active.id) : null;
-        if (active && session && session.targetList.length === 0) {
-          await loadTargets(active.id, { silent: true });
-        }
-        if (!silent) {
-          setStatus(state.accounts.length > 0 ? `已加载 TG 账号（${state.accounts.length} 个）` : '暂无 TG 账号，请先添加', 'ok');
-        }
-      } catch (error) {
-        if (!silent) setStatus(`加载 TG 账号失败：${error.message || error}`, 'err');
-      } finally {
-        if (!silent) {
-          state.loading = false;
-          renderTGSessionPanel();
-        }
-      }
-    }
-
-    async function loadTargets(accountID, options = {}) {
-      const normalizedAccountID = String(accountID || '').trim();
-      if (!normalizedAccountID) return;
-      const silent = options.silent === true;
-      const session = getAccountSessionState(normalizedAccountID);
-      if (!silent) setStatus('正在加载会话对象列表...');
-      try {
-        let payload = await requestJSON('/mng/api/tg/targets/list', {
+        const endpoint = forceRefresh ? '/mng/api/tg/targets/refresh' : '/mng/api/tg/targets/list';
+        let payload = await requestJSON(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ account_id: normalizedAccountID }),
+          body: JSON.stringify({ account_id: acc.id }),
         });
-        if (!Array.isArray(payload.targets) || payload.targets.length === 0) {
+        if (!forceRefresh && (!Array.isArray(payload.targets) || payload.targets.length === 0)) {
           payload = await requestJSON('/mng/api/tg/targets/refresh', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ account_id: normalizedAccountID }),
+            body: JSON.stringify({ account_id: acc.id }),
           });
         }
-        session.targetList = Array.isArray(payload.targets) ? payload.targets : [];
-        if (!session.targetList.some((item) => item.id === session.selectedSessionTarget)) {
-          session.selectedSessionTarget = session.targetList.length > 0 ? session.targetList[0].id : '';
-          session.sessionMessages = [];
+        state.targets = Array.isArray(payload.targets) ? payload.targets : [];
+        if (forceRefresh) showToast(`已同步 ${state.targets.length} 个会话`, 'ok');
+
+        if (state.selectedTargetID && !state.targets.some((t) => t.id === state.selectedTargetID)) {
+          state.selectedTargetID = '';
+          state.messages = [];
+          closeWS();
         }
-        renderTGSessionPanel();
-        if (session.selectedSessionTarget && session.sessionMessages.length === 0) {
-          loadSessionMessages({ silent: true }).catch((err) => setStatus(`加载会话消息失败：${err.message || err}`, 'err'));
+        if (!state.selectedTargetID && state.targets.length > 0 && window.innerWidth > 780) {
+          openTarget(state.targets[0].id);
+        } else {
+          renderChatList();
+          renderChatHeaderAndComposer();
         }
-        if (!silent) setStatus(`已加载会话对象（${session.targetList.length} 个）`, 'ok');
-      } catch (error) {
-        if (!silent) setStatus(`加载会话对象失败：${error.message || error}`, 'err');
+      } catch (err) {
+        showToast(`加载会话列表失败：${err.message || err}`, 'err');
+      } finally {
+        state.loadingTargets = false;
+        qs('btn-refresh-targets').disabled = false;
+        renderChatList();
       }
     }
 
-    async function loadSessionMessages(options = {}) {
-      const active = getSessionAccount();
-      const session = active ? getAccountSessionState(active.id) : getCurrentSessionState();
-      const targetID = String(session.selectedSessionTarget || '').trim();
-      if (!active || !targetID) return;
-      const accountID = active.id;
-      const silent = options.silent === true;
-      const background = options.background === true;
-      const preserveScroll = options.preserveScroll === true;
-      const beforeFingerprint = sessionMessagesFingerprint(session.sessionMessages);
-      if (!background) {
-        session.sessionLoading = true;
-        renderTGSessionPanel();
-        if (!silent) setStatus('正在加载会话消息...');
+    function openTarget(targetID) {
+      if (!targetID) return;
+      if (targetID === state.selectedTargetID) {
+        qs('shell').classList.add('chat-open');
+        return;
       }
+      closeWS();
+      state.selectedTargetID = targetID;
+      state.messages = [];
+      state.hasMoreOlder = true;
+      qs('shell').classList.add('chat-open');
+      renderChatList();
+      renderChatHeaderAndComposer();
+      renderMessages();
+      loadMessages(true);
+      connectWS();
+    }
+
+    async function loadMessages(scrollBottom) {
+      const acc = getCurrentAccount();
+      const targetID = state.selectedTargetID;
+      if (!acc || !targetID) return;
+      state.loadingMessages = true;
+      renderChatHeaderAndComposer();
+      if (state.messages.length === 0) renderMessages();
       try {
         const payload = await requestJSON('/mng/api/tg/session/messages', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ account_id: accountID, target: targetID, limit: 50 }),
+          body: JSON.stringify({ account_id: acc.id, target: targetID, limit: 50 }),
         });
-        const current = getSessionAccount();
-        const currentSession = getAccountSessionState(accountID);
-        if (!current || current.id !== accountID || currentSession.selectedSessionTarget !== targetID) return;
-        const nextMessages = Array.isArray(payload.messages) ? payload.messages : [];
-        const nextFingerprint = sessionMessagesFingerprint(nextMessages);
-        if (nextFingerprint !== beforeFingerprint) {
-          currentSession.sessionMessages = nextMessages;
-          renderTGSessionPanel(background ? { preserveScroll } : {});
-        } else if (!background) {
-          renderTGSessionPanel();
-        }
-        if (!silent && !background) setStatus(`已加载会话消息（${currentSession.sessionMessages.length} 条）`, 'ok');
+        if (state.accountID !== acc.id || state.selectedTargetID !== targetID) return;
+        const next = Array.isArray(payload.messages) ? payload.messages : [];
+        state.messages = next;
+        state.hasMoreOlder = next.length >= 20;
+        renderMessages({ scrollToBottom: scrollBottom });
+      } catch (err) {
+        showToast(`加载消息失败：${err.message || err}`, 'err');
       } finally {
-        if (!background) {
-          session.sessionLoading = false;
-          renderTGSessionPanel();
-        }
+        state.loadingMessages = false;
+        renderChatHeaderAndComposer();
       }
     }
 
-    async function sendSessionMessage() {
-      const active = getSessionAccount();
-      const session = active ? getAccountSessionState(active.id) : getCurrentSessionState();
-      const targetID = String(session.selectedSessionTarget || '').trim();
-      const message = String(session.draft.sessionMessage || '').trim();
-      if (!active || !targetID || !message || session.sessionSending) return;
-      const accountID = active.id;
-      session.sessionSending = true;
-      renderTGSessionPanel();
+    async function loadOlderMessages() {
+      const acc = getCurrentAccount();
+      const targetID = state.selectedTargetID;
+      if (!acc || !targetID || state.loadingOlder || state.messages.length === 0) return;
+      const oldestID = state.messages.reduce((min, m) => {
+        const id = Number(m && m.id || 0);
+        return id > 0 && (min <= 0 || id < min) ? id : min;
+      }, 0);
+      if (oldestID <= 0) return;
+
+      const box = qs('chat-messages');
+      const prevHeight = box ? box.scrollHeight : 0;
+      const prevTop = box ? box.scrollTop : 0;
+
+      state.loadingOlder = true;
+      renderMessages({ preserveTop: prevTop });
+      try {
+        const payload = await requestJSON('/mng/api/tg/session/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: acc.id, target: targetID, limit: 50, offset_id: oldestID }),
+        });
+        if (state.accountID !== acc.id || state.selectedTargetID !== targetID) return;
+        const older = Array.isArray(payload.messages) ? payload.messages : [];
+        if (older.length === 0) {
+          state.hasMoreOlder = false;
+          showToast('已到最早的消息记录', 'info');
+        } else {
+          const seen = new Set(state.messages.map((m) => Number(m && m.id || 0)));
+          const added = older.filter((m) => !seen.has(Number(m && m.id || 0)));
+          state.messages = added.concat(state.messages).sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
+          if (added.length === 0) state.hasMoreOlder = false;
+        }
+        renderMessages();
+        if (box) {
+          const delta = box.scrollHeight - prevHeight;
+          box.scrollTop = Math.max(0, prevTop + delta);
+        }
+      } catch (err) {
+        showToast(`加载更早消息失败：${err.message || err}`, 'err');
+      } finally {
+        state.loadingOlder = false;
+        const btn = qs('chat-messages').querySelector('[data-action="load-older"]');
+        if (btn) { btn.disabled = false; btn.textContent = '加载更早消息'; }
+      }
+    }
+
+    async function sendMessage() {
+      const acc = getCurrentAccount();
+      const targetID = state.selectedTargetID;
+      const input = qs('msg-input');
+      const message = String(input.value || '').trim();
+      if (!acc || !targetID || !message || state.sending) return;
+
+      state.sending = true;
+      renderChatHeaderAndComposer();
       try {
         const payload = await requestJSON('/mng/api/tg/session/send', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ account_id: accountID, target: targetID, message }),
+          body: JSON.stringify({ account_id: acc.id, target: targetID, message }),
         });
-        const current = getSessionAccount();
-        const currentSession = getAccountSessionState(accountID);
-        if (!current || current.id !== accountID || currentSession.selectedSessionTarget !== targetID) return;
-        if (payload.message) currentSession.sessionMessages = currentSession.sessionMessages.concat([payload.message]);
-        currentSession.draft.sessionMessage = '';
-        renderTGSessionPanel();
-        setStatus('消息已发送', 'ok');
+        if (state.accountID !== acc.id || state.selectedTargetID !== targetID) return;
+        if (payload.message) {
+          const exists = state.messages.some((m) => Number(m && m.id) === Number(payload.message.id));
+          if (!exists) state.messages = state.messages.concat([payload.message]);
+        }
+        input.value = '';
+        input.style.height = 'auto';
+        promoteTargetToTop(targetID);
+        renderChatList();
+        renderMessages({ scrollToBottom: true });
+      } catch (err) {
+        showToast(`发送失败：${err.message || err}`, 'err');
       } finally {
-        session.sessionSending = false;
-        renderTGSessionPanel();
+        state.sending = false;
+        renderChatHeaderAndComposer();
+        input.focus();
       }
     }
 
-    function startSessionAutoRefresh() {
-      if (sessionRefreshTimer) return;
-      const refresh = () => {
-        if (document.hidden) return;
-        connectSessionWS();
-      };
-      sessionRefreshTimer = window.setInterval(refresh, SESSION_REFRESH_INTERVAL_MS);
-      document.addEventListener('visibilitychange', refresh);
-      window.addEventListener('beforeunload', () => {
-        if (sessionRefreshTimer) {
-          window.clearInterval(sessionRefreshTimer);
-          sessionRefreshTimer = null;
-        }
-      });
-    }
-
-    function connectSessionWS() {
-      const active = getSessionAccount();
-      const session = active ? getAccountSessionState(active.id) : getCurrentSessionState();
-      const targetID = String(session.selectedSessionTarget || '').trim();
-      if (!active || !targetID || !window.WebSocket) return false;
-      if (session.sessionWS && session.sessionWS.readyState === WebSocket.OPEN) {
-        return true;
+    function pickCurrentTargetForSchedule() {
+      const acc = getCurrentAccount();
+      const targetID = state.selectedTargetID;
+      if (!acc || !targetID) return;
+      if (isEmbed && window.parent && window.parent !== window) {
+        window.parent.postMessage({
+          type: 'tg.pickScheduleTarget',
+          accountID: acc.id,
+          targetID,
+        }, window.location.origin);
+        return;
       }
       try {
-        const ws = new WebSocket(getSessionWSURL(active.id, targetID));
-        session.sessionWS = ws;
-        ws.onopen = () => {};
-        ws.onmessage = (event) => {
-          let payload = null;
-          try {
-            payload = JSON.parse(event.data);
-          } catch (_) {
-            return;
-          }
-          if (!payload || payload.account_id !== active.id || payload.target !== targetID) return;
-          if (payload.type === 'session.snapshot' && Array.isArray(payload.messages)) {
-            const nextFingerprint = sessionMessagesFingerprint(payload.messages);
-            const currentSession = getAccountSessionState(active.id);
-            if (currentSession.selectedSessionTarget !== targetID) return;
-            if (nextFingerprint !== sessionMessagesFingerprint(currentSession.sessionMessages)) {
-              currentSession.sessionMessages = payload.messages;
-              promoteTGSessionTarget(currentSession, targetID);
-              syncCurrentSessionMirror(active.id);
-              renderTGSessionPanel({ preserveScroll: true });
-            }
-          } else if (payload.type === 'session.error') {
-            setStatus(`实时连接已断开：${payload.error || 'unknown error'}`, 'warn');
-          }
-        };
-        ws.onerror = () => {
-          setStatus('TG 会话实时连接异常，已尝试回退', 'warn');
-        };
-        ws.onclose = () => {
-          if (session.sessionWS === ws) session.sessionWS = null;
-          window.setTimeout(() => {
-            if (document.hidden) return;
-            connectSessionWS();
-          }, 1200);
-        };
-        return true;
-      } catch (_) {
-        return false;
-      }
+        window.sessionStorage.setItem('cloudhelper_tg_schedule_target', targetID);
+      } catch (_) {}
+      window.location.href = '/mng/tg';
+    }
+
+    /* ================= Events ================= */
+    function bindEvents() {
+      const search = qs('chat-search');
+      const clearBtn = qs('chat-search-clear');
+      search.addEventListener('input', () => {
+        state.search = search.value;
+        clearBtn.classList.toggle('visible', state.search.length > 0);
+        renderChatList();
+      });
+      clearBtn.addEventListener('click', () => {
+        state.search = '';
+        search.value = '';
+        clearBtn.classList.remove('visible');
+        renderChatList();
+        search.focus();
+      });
+
+      document.querySelectorAll('.type-tab').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          state.typeFilter = btn.getAttribute('data-type') || 'all';
+          document.querySelectorAll('.type-tab').forEach((b) => b.classList.toggle('active', b === btn));
+          renderChatList();
+        });
+      });
+
+      qs('chat-list').addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-open-target]');
+        if (btn) openTarget(btn.getAttribute('data-open-target'));
+      });
+
+      qs('btn-refresh-targets').addEventListener('click', () => loadTargets(true));
+      qs('btn-reload-messages').addEventListener('click', () => loadMessages(true));
+      qs('btn-pick-schedule').addEventListener('click', pickCurrentTargetForSchedule);
+      qs('btn-mobile-back').addEventListener('click', () => qs('shell').classList.remove('chat-open'));
+      qs('btn-popout').addEventListener('click', () => {
+        const url = `${window.location.origin}/mng/tg/session?account_id=${encodeURIComponent(state.accountID)}`;
+        window.open(url, `cloudhelper_tg_sessions_${state.accountID}`, 'noopener,noreferrer,width=1280,height=860');
+      });
+
+      qs('chat-messages').addEventListener('click', (e) => {
+        const olderBtn = e.target.closest('[data-action="load-older"]');
+        if (olderBtn) { loadOlderMessages(); return; }
+        const spoiler = e.target.closest('.spoiler');
+        if (spoiler) spoiler.classList.toggle('revealed');
+      });
+
+      const input = qs('msg-input');
+      input.addEventListener('input', () => {
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, 140) + 'px';
+        updateSendButtonState();
+      });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+          e.preventDefault();
+          sendMessage();
+        }
+      });
+      qs('btn-send').addEventListener('click', sendMessage);
+
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+          closeWS();
+        } else if (state.selectedTargetID) {
+          connectWS();
+        }
+      });
+      window.addEventListener('beforeunload', closeWS);
     }
 
     async function bootstrap() {
-      state.requestedAccountID = getRequestedAccountID();
-      renderStatus();
-      renderTGSessionPanel();
-      const ok = await ensureSession().catch(() => false);
-      if (!ok) {
-        location.href = '/mng';
+      bindEvents();
+      try {
+        const sess = await requestJSON('/mng/api/session');
+        if (!sess.authenticated) {
+          if (!isEmbed) window.location.href = '/mng';
+          return;
+        }
+      } catch (_) {
+        if (!isEmbed) window.location.href = '/mng';
         return;
       }
-      await loadAccounts({ silent: true });
-      startSessionAutoRefresh();
-      connectSessionWS();
-      setStatus('TG 会话窗口初始化完成', 'ok');
-      renderTGSessionPanel();
+
+      try {
+        const payload = await requestJSON('/mng/api/tg/accounts/list');
+        state.accounts = Array.isArray(payload.accounts) ? payload.accounts : [];
+        const authed = getLoggedInAccounts();
+        if (!state.accountID || !authed.some((a) => a.id === state.accountID)) {
+          state.accountID = authed.length > 0 ? authed[0].id : '';
+        }
+        renderAccountHeader();
+        if (!getCurrentAccount()) {
+          qs('shell').innerHTML = '<div class="empty-screen"><div>当前没有已登录的 TG 账号，请先在 TG 助手完成登录。' + (isEmbed ? '' : '<br><a href="/mng/tg">返回 TG 助手</a>') + '</div></div>';
+          return;
+        }
+        await loadTargets(false);
+      } catch (err) {
+        showToast(`初始化失败：${err.message || err}`, 'err');
+      }
     }
 
-    bootstrap().catch((err) => {
-      setStatus(`初始化失败：${err && err.message ? err.message : err}`, 'err');
-    });
+    bootstrap();
   </script>
 </body>
 </html>
