@@ -23,7 +23,8 @@ int vr_ws_encode(int opcode,int mask,const void *bytes,size_t n,uint8_t *out,siz
     if(header==10){for(unsigned i=0;i<8;i++)out[2+i]=(uint8_t)((uint64_t)n>>(56-8*i));}
     if(mask && RAND_bytes(out+header,4)!=1)return -1;
     const uint8_t *p=bytes;
-    for(size_t i=0;i<n;i++)out[header+(mask?4:0)+i]=(uint8_t)(p[i]^(mask?out[header+(i&3)]:0));
+    if(mask)for(size_t i=0;i<n;i++)out[header+4+i]=(uint8_t)(p[i]^out[header+(i&3)]);
+    else if(n)memcpy(out+header,p,n);
     *length=total;return 0;
 }
 
@@ -61,9 +62,13 @@ int vr_ws_feed(vr_ws_decoder *d,const void *bytes,size_t n,vr_ws_handler fn,void
         size_t k=d->payload_length-d->payload_used;if(k>n)k=n;
         if(k>4096)k=4096;
         uint8_t chunk[4096];
-        for(size_t i=0;i<k;i++)chunk[i]=(uint8_t)(p[i]^(d->expect_mask?d->mask[(d->payload_used+i)&3]:0));
-        if(d->opcode>=8){if(k)memcpy(d->control+d->payload_used,chunk,k);}
-        else if(k && fn(2,chunk,k,arg))return -1;
+        const uint8_t *payload=p;
+        if(d->expect_mask) {
+            for(size_t i=0;i<k;i++)chunk[i]=(uint8_t)(p[i]^d->mask[(d->payload_used+i)&3]);
+            payload=chunk;
+        }
+        if(d->opcode>=8){if(k)memcpy(d->control+d->payload_used,payload,k);}
+        else if(k && fn(2,payload,k,arg))return -1;
         p+=k;n-=k;d->payload_used+=k;
         if(d->payload_used==d->payload_length) {
             if(d->opcode>=8){if(d->opcode==8 && d->payload_length==1)return -1;if(fn(d->opcode,d->control,d->payload_length,arg))return -1;}

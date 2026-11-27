@@ -281,6 +281,12 @@ static void test_packet(void)
         assert(vr_packet_parse(b,n-1,&p)<0);b[n-1]^=1;assert(vr_packet_parse(b,n,&p)<0);b[n-1]^=1;
         assert(!vr_packet_rewrite(b,n,src.s_addr,dst.s_addr,20000,53));assert(!memcmp(b,expected,n));
         assert(!vr_packet_parse(b,n,&p)&&p.sport==20000&&p.src==src.s_addr&&p.dst==dst.s_addr);
+        if(i==1) {
+            assert(hex_bytes(original[i],b)==n);
+            b[26]=b[27]=0;
+            assert(!vr_packet_rewrite(b,n,src.s_addr,dst.s_addr,20000,53));
+            assert(!memcmp(b,expected,n));
+        }
     }
 }
 

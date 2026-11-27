@@ -4,11 +4,19 @@
 static uint16_t u16(const uint8_t *p){return (uint16_t)((p[0]<<8)|p[1]);}
 static void p16(uint8_t *p,uint16_t v){p[0]=(uint8_t)(v>>8);p[1]=(uint8_t)v;}
 
+static uint32_t replace_word(uint32_t sum,uint16_t before,uint16_t after)
+{return sum+(uint16_t)~before+after;}
+
+static uint16_t finish_checksum(uint32_t sum)
+{
+    while(sum>>16)sum=(sum&65535)+(sum>>16);
+    return (uint16_t)~sum;
+}
+
 static uint16_t transport_checksum(const uint8_t *b,size_t ihl,size_t n)
 {
     uint32_t sum=(uint16_t)~vr_checksum(b+12,8);sum+=b[9];sum+=(uint16_t)(n-ihl);sum+=(uint16_t)~vr_checksum(b+ihl,n-ihl);
-    while(sum>>16)sum=(sum&65535)+(sum>>16);
-    return (uint16_t)~sum;
+    return finish_checksum(sum);
 }
 
 int vr_packet_parse(const uint8_t *b,size_t n,vr_packet *p)
@@ -38,10 +46,37 @@ int vr_packet_rewrite_parsed(uint8_t *b,size_t n,const vr_packet *parsed,uint32_
 {
     if(!parsed||parsed->length!=n||parsed->ihl<20||parsed->ihl>n||
        (parsed->protocol!=1&&parsed->protocol!=6&&parsed->protocol!=17)||n-parsed->ihl<(parsed->protocol==6?20u:8u))return -1;
-    vr_packet p=*parsed;
-    memcpy(b+12,&src,4);memcpy(b+16,&dst,4);p16(b+10,0);p16(b+10,vr_checksum(b,p.ihl));
-    uint8_t *t=b+p.ihl;size_t len=n-p.ihl;
-    if(p.protocol==1){p16(t+4,sport);p16(t+2,0);p16(t+2,vr_checksum(t,len));return 0;}
-    p16(t,sport);p16(t+2,dport);size_t off=p.protocol==6?16:6;p16(t+off,0);
-    uint16_t checksum=transport_checksum(b,p.ihl,n);if(!checksum&&p.protocol==17)checksum=65535;p16(t+off,checksum);return 0;
+    /* The caller validated both checksums. Apply the one's-complement delta
+       for the modified words so the payload is not traversed again. */
+    uint8_t addresses[8];
+    memcpy(addresses,&src,4);memcpy(addresses+4,&dst,4);
+    uint32_t delta=0;
+    for(size_t i=0;i<sizeof(addresses);i+=2)delta=replace_word(delta,u16(b+12+i),u16(addresses+i));
+    p16(b+10,finish_checksum((uint16_t)~u16(b+10)+delta));
+    memcpy(b+12,addresses,sizeof(addresses));
+
+    uint8_t *t=b+parsed->ihl;
+    if(parsed->protocol==1) {
+        p16(t+2,finish_checksum(replace_word((uint16_t)~u16(t+2),u16(t+4),sport)));
+        p16(t+4,sport);
+        return 0;
+    }
+    size_t off=parsed->protocol==6?16:6;
+    uint16_t old=u16(t+off);
+    if(!old&&parsed->protocol==17) {
+        /* IPv4 UDP may arrive with the checksum omitted. Keep generating
+           the checksum on NAT egress as the previous full rewrite did. */
+        p16(t,sport);p16(t+2,dport);
+        uint16_t checksum=transport_checksum(b,parsed->ihl,n);
+        p16(t+off,checksum?checksum:65535);
+        return 0;
+    }
+    uint32_t sum=(uint16_t)~old+delta;
+    sum=replace_word(sum,u16(t),sport);
+    sum=replace_word(sum,u16(t+2),dport);
+    uint16_t checksum=finish_checksum(sum);
+    if(!checksum&&parsed->protocol==17)checksum=65535;
+    p16(t+off,checksum);
+    p16(t,sport);p16(t+2,dport);
+    return 0;
 }

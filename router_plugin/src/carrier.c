@@ -16,11 +16,14 @@
 #include <openssl/err.h>
 
 enum { TX_CONTROL,TX_BUSINESS,TX_BULK };
+enum { TX_SMALL_PACKET = 128, TX_BATCH_BYTES = 1024, TX_BATCH_FRAMES = 8 };
 struct vr_tx_frame {
     vr_tx_frame *next;
     size_t length;
+    size_t capacity;
     uint64_t enqueued;
     unsigned lane;
+    unsigned count;
     size_t frame_bytes;
     uint8_t bytes[];
 };
@@ -73,19 +76,22 @@ static vr_tx_frame *next_write(vr_link *l)
     vr_tx_frame *f=l->tx_head[lane];if(!f)return NULL;
     l->tx_head[lane]=f->next;if(!l->tx_head[lane])l->tx_tail[lane]=NULL;
     uint64_t now=vr_millis(),since=f->enqueued>l->tx_stats_reset_at?f->enqueued:l->tx_stats_reset_at,wait=now>=since?now-since:0;
-    l->tx_wait_samples++;l->tx_wait_total_ms+=wait;if(wait>l->tx_wait_max_ms)l->tx_wait_max_ms=wait;
+    l->tx_wait_samples+=f->count;l->tx_wait_total_ms+=wait*f->count;if(wait>l->tx_wait_max_ms)l->tx_wait_max_ms=wait;
     f->next=NULL;l->writing=f;
-    if(lane==TX_BUSINESS&&l->business_since_bulk<8)l->business_since_bulk++;
+    if(lane==TX_BUSINESS&&l->business_since_bulk<8) {
+        l->business_since_bulk+=f->count;
+        if(l->business_since_bulk>8)l->business_since_bulk=8;
+    }
     if(lane==TX_BULK)l->business_since_bulk=0;
     return f;
 }
 
 static void write_done(vr_link *l)
 {
-    vr_tx_frame *f=l->writing;size_t memory=sizeof(*f)+f->length;
+    vr_tx_frame *f=l->writing;size_t memory=sizeof(*f)+f->capacity;
     l->tx_memory-=memory;l->tx_memory_class[f->lane]-=memory;
-    l->tx_dequeued++;
-    if(f->frame_bytes&&l->write_offset==f->length){l->frames_sent++;l->frame_bytes_sent+=f->frame_bytes;}
+    l->tx_dequeued+=f->count;
+    if(f->frame_bytes&&l->write_offset==f->length){l->frames_sent+=f->count;l->frame_bytes_sent+=f->frame_bytes;}
     free(f);l->writing=NULL;l->write_offset=0;
     if(!l->tx_memory&&l->tx_backlog_since){uint64_t span=vr_millis()-l->tx_backlog_since;if(span>l->tx_backlog_peak_ms)l->tx_backlog_peak_ms=span;l->tx_backlog_since=0;}
 }
@@ -519,7 +525,29 @@ int vr_link_queue(vr_link *l,int opcode,const void *bytes,size_t n)
     if(!l->ssl||n>VR_TX_CAP-sizeof(vr_tx_frame)-14)return -1;
     unsigned lane=(unsigned)queue_class(opcode,bytes,n);
     size_t header=(n<126?2:n<=65535?4:10)+(l->client?4:0);
-    size_t length=n+header,memory=sizeof(vr_tx_frame)+length;
+    size_t length=n+header;
+    const uint8_t *wire=bytes;
+    int small_packet=opcode==2&&lane==TX_BUSINESS&&n>=12&&length<=TX_SMALL_PACKET&&
+        wire[0]==0x56&&wire[1]==0x52&&wire[2]==0&&wire[3]==1&&wire[4]==0&&wire[5]==1;
+    if(small_packet&&!l->tx_head[TX_CONTROL]&&!l->tx_head[TX_BULK]) {
+        vr_tx_frame *tail=l->tx_tail[lane];
+        /* Only an inactive tail may grow. A dequeued SSL_write retry owns
+           its buffer until OpenSSL consumes it. No timer delays a lone packet. */
+        if(tail&&tail->capacity==TX_BATCH_BYTES&&tail->count<TX_BATCH_FRAMES&&length<=tail->capacity-tail->length) {
+            size_t written;
+            if(vr_ws_encode(opcode,l->client,bytes,n,tail->bytes+tail->length,tail->capacity-tail->length,&written))return -1;
+            tail->length+=written;tail->frame_bytes+=n;tail->count++;
+            l->used+=written;l->tx_bytes[lane]+=written;l->tx_enqueued++;
+            if(l->used>l->tx_peak)l->tx_peak=l->used;
+            return 0;
+        }
+    }
+    size_t capacity=length;
+    if(small_packet&&!l->tx_head[TX_CONTROL]&&!l->tx_head[TX_BULK]&&
+       sizeof(vr_tx_frame)+TX_BATCH_BYTES<=VR_TX_CAP-l->tx_memory&&
+       sizeof(vr_tx_frame)+TX_BATCH_BYTES<=VR_TX_CAP-VR_TX_CONTROL_RESERVE-l->tx_memory_class[TX_BUSINESS])
+        capacity=TX_BATCH_BYTES;
+    size_t memory=sizeof(vr_tx_frame)+capacity;
     if(memory>VR_TX_CAP-l->tx_memory){l->tx_full++;return -1;}
     if(lane==TX_CONTROL) {
         if(memory>VR_TX_CONTROL_CAP-l->tx_memory_class[lane]){l->tx_full++;return -1;}
@@ -530,7 +558,7 @@ int vr_link_queue(vr_link *l,int opcode,const void *bytes,size_t n)
     }
     vr_tx_frame *f=malloc(memory);if(!f)return -1;
     if(vr_ws_encode(opcode,l->client,bytes,n,f->bytes,length,&length)){free(f);return -1;}
-    f->next=NULL;f->length=length;f->lane=lane;f->enqueued=vr_millis();
+    f->next=NULL;f->length=length;f->capacity=capacity;f->lane=lane;f->count=1;f->enqueued=vr_millis();
     f->frame_bytes=opcode==2?n:0;
     if(l->tx_tail[lane])l->tx_tail[lane]->next=f;else l->tx_head[lane]=f;
     l->tx_tail[lane]=f;l->used+=length;l->tx_bytes[lane]+=length;

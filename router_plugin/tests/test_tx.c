@@ -202,6 +202,16 @@ int main(int argc,char **argv)
     }
     assert(business==24&&bulk==4);
 
+    /* Ready packet frames share a TLS write without delaying a lone frame.
+       A retry retains its bytes even if a priority frame arrives. */
+    reset(l,ctx);
+    for(unsigned i=0;i<8;i++)assert(!enqueue(l,1,1,i,52));
+    want=1;poll_one(l,POLLOUT);
+    assert(calls==1&&!frames);
+    assert(!enqueue(l,2,1,9,64));drain(l);
+    assert(calls==3&&frames==9&&mains[8]==2);
+    for(unsigned i=0;i<8;i++)assert(mains[i]==1&&seqs[i]==i);
+
     /* WANT_WRITE: same pointer, length and bytes on every retry, even after
        a high priority frame arrives. Complete the current WS frame first. */
     reset(l,ctx);assert(!enqueue(l,8,3,1,60000));assert(!enqueue(l,8,4,2,64));
