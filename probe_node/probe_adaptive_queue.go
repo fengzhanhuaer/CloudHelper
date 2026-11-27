@@ -199,16 +199,20 @@ func (q *probeAdaptiveQueue[T]) PushUntil(value T, deadline time.Time, stop <-ch
 	if q == nil {
 		return io.ErrClosedPipe
 	}
+	retrying := false
 	for {
+		if retrying {
+			q.mu.Lock()
+			q.retryEvents++
+			q.mu.Unlock()
+		}
 		if q.TryPush(value) {
 			return nil
 		}
 		if q.IsClosed() {
 			return io.ErrClosedPipe
 		}
-		q.mu.Lock()
-		q.retryEvents++
-		q.mu.Unlock()
+		retrying = true
 		if !deadline.IsZero() {
 			wait := time.Until(deadline)
 			if wait <= 0 {

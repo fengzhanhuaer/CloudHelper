@@ -18,7 +18,7 @@ func TestProbeAdaptiveQueueObservesTimingRetriesAndDrops(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 	s := q.adaptiveQueueSnapshot(time.Now())
-	if s.Dropped == nil || *s.Dropped != 1 || s.RetryEvents == nil || *s.RetryEvents < 1 || s.BacklogMS < 1 || s.OldestWaitUS < 1000 {
+	if s.Dropped == nil || *s.Dropped != 1 || s.RetryEvents == nil || *s.RetryEvents != 0 || s.BacklogMS < 1 || s.OldestWaitUS < 1000 {
 		t.Fatalf("snapshot=%+v", s)
 	}
 	q.TryPop()
@@ -40,7 +40,7 @@ func TestProbeAdaptiveQueueSuccessfulRetryIsNotDropped(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- q.PushUntil(2, time.Now().Add(time.Second), nil) }()
 	deadline := time.Now().Add(time.Second)
-	for *q.adaptiveQueueSnapshot(time.Now()).RetryEvents == 0 {
+	for q.adaptiveQueueSnapshot(time.Now()).FullEvents == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("producer did not wait")
 		}
