@@ -167,6 +167,8 @@ func runTGAssistantSessionPushClient(parent context.Context, accountID string, s
 		if !status.Authorized {
 			return errors.New("tg session is not authorized for requested account")
 		}
+		syncTGAssistantAccountIdentityIfChanged(accountID, status)
+		applyTGAssistantIdentityFromStatus(&account, status)
 		appendTGAssistantHistory("session.push", accountID, true, "connected")
 		for {
 			select {
@@ -237,6 +239,10 @@ func sendTGAssistantSessionMessageWithClient(ctx context.Context, client *telegr
 	if !status.Authorized {
 		return tgAssistantSessionMessage{}, errors.New("tg session is not authorized for requested account")
 	}
+	syncTGAssistantAccountIdentityIfChanged(account.ID, status)
+	applyTGAssistantIdentityFromStatus(&account, status)
+	result.SenderID = fmt.Sprintf("user:%d", account.SelfUserID)
+	result.SenderName = firstNonEmptyString(account.SelfDisplayName, account.SelfUsername, account.Label, account.Phone)
 	peer, err := resolveTGAssistantInputPeer(ctx, client, account.ID, target)
 	if err != nil {
 		return tgAssistantSessionMessage{}, err

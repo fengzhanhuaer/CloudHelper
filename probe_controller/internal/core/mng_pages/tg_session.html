@@ -985,7 +985,7 @@
       if (!isEmbed && authed.length > 1) {
         box.innerHTML = `
           <select id="account-switcher" class="input" style="height:32px;padding:4px 8px;font-size:12.5px" aria-label="切换 TG 账号">
-            ${authed.map((item) => `<option value="${escapeHTML(item.id)}" ${item.id === acc.id ? 'selected' : ''}>${escapeHTML(item.label || item.phone)} (${escapeHTML(item.phone || '')})</option>`).join('')}
+            ${authed.map((item) => `<option value="${escapeHTML(item.id)}" ${item.id === acc.id ? 'selected' : ''}>${escapeHTML(item.label || item.self_phone || item.phone)} (${escapeHTML(item.self_phone || item.phone || '')})</option>`).join('')}
           </select>
         `;
         qs('account-switcher').addEventListener('change', (e) => {
@@ -996,7 +996,7 @@
       } else {
         box.innerHTML = `
           <div class="account-title">${escapeHTML(acc.label || acc.self_display_name || 'TG 对话')}</div>
-          <div class="account-sub mono">${escapeHTML(acc.phone || acc.id)}</div>
+          <div class="account-sub mono">${escapeHTML(acc.self_phone || acc.phone || acc.id)}</div>
         `;
       }
     }

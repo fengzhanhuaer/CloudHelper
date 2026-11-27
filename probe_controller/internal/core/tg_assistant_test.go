@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	tgauth "github.com/gotd/td/telegram/auth"
 	"github.com/gotd/td/tg"
 )
 
@@ -149,5 +150,127 @@ func TestFilterTGAssistantTargetsKeepsAllWhenArchiveFlagWouldHideEverything(t *t
 	filtered := filterTGAssistantTargets(targets)
 	if len(filtered) != len(targets) {
 		t.Fatalf("filtered=%d, want %d", len(filtered), len(targets))
+	}
+}
+
+func TestApplyTGAssistantIdentitySyncsChangedPhoneAndDefaultLabel(t *testing.T) {
+	rec := tgAssistantAccountRecord{
+		ID:    "acct-1",
+		Label: "+8613800001111",
+		Phone: "+8613800001111",
+	}
+	status := &tgauth.Status{
+		Authorized: true,
+		User: &tg.User{
+			ID:        42,
+			Username:  "alice",
+			FirstName: "Alice",
+			Phone:     "8613900002222",
+		},
+	}
+
+	applyTGAssistantIdentityFromStatus(&rec, status)
+
+	if rec.SelfPhone != "+8613900002222" {
+		t.Fatalf("SelfPhone=%q, want +8613900002222", rec.SelfPhone)
+	}
+	if rec.Phone != "+8613900002222" {
+		t.Fatalf("Phone=%q, want +8613900002222", rec.Phone)
+	}
+	if rec.Label != "+8613900002222" {
+		t.Fatalf("Label=%q, want +8613900002222", rec.Label)
+	}
+}
+
+func TestApplyTGAssistantIdentityPreservesCustomLabelOnPhoneChange(t *testing.T) {
+	rec := tgAssistantAccountRecord{
+		ID:    "acct-2",
+		Label: "主力账号",
+		Phone: "+8613800001111",
+	}
+	status := &tgauth.Status{
+		Authorized: true,
+		User: &tg.User{
+			ID:    43,
+			Phone: "8613900003333",
+		},
+	}
+
+	applyTGAssistantIdentityFromStatus(&rec, status)
+
+	if rec.Phone != "+8613900003333" || rec.SelfPhone != "+8613900003333" {
+		t.Fatalf("Phone=%q SelfPhone=%q, want +8613900003333", rec.Phone, rec.SelfPhone)
+	}
+	if rec.Label != "主力账号" {
+		t.Fatalf("custom Label=%q should be preserved", rec.Label)
+	}
+}
+
+func TestNormalizeAndViewHealStalePhoneFromSelfPhone(t *testing.T) {
+	records := normalizeTGAssistantAccountRecords([]tgAssistantAccountRecord{
+		{
+			ID:        "acct-3",
+			Label:     "+8613800001111",
+			Phone:     "+8613800001111",
+			SelfPhone: "8613900004444",
+		},
+	})
+	if len(records) != 1 {
+		t.Fatalf("records=%d, want 1", len(records))
+	}
+	if records[0].Phone != "+8613900004444" || records[0].SelfPhone != "+8613900004444" || records[0].Label != "+8613900004444" {
+		t.Fatalf("unexpected normalized record: %+v", records[0])
+	}
+
+	view := buildTGAssistantAccountView(tgAssistantAccountRecord{
+		ID:        "acct-4",
+		Label:     "+8613800001111",
+		Phone:     "+8613800001111",
+		SelfPhone: "8613900005555",
+	}, 12345)
+	if view.Phone != "+8613900005555" || view.SelfPhone != "+8613900005555" || view.Label != "+8613900005555" {
+		t.Fatalf("unexpected view: %+v", view)
+	}
+}
+
+func TestSyncTGAssistantAccountIdentityIfChangedPersistsNewPhone(t *testing.T) {
+	chdirTemp(t)
+	origStore := TGAssistantStore
+	t.Cleanup(func() { TGAssistantStore = origStore })
+
+	storePath := filepath.Join(t.TempDir(), "tg.json")
+	TGAssistantStore = &tgAssistantStore{
+		path: storePath,
+		data: tgAssistantStoreData{
+			Accounts: []tgAssistantAccountRecord{
+				{
+					ID:         "acct-sync",
+					Label:      "+8613800001111",
+					Phone:      "+8613800001111",
+					Authorized: true,
+				},
+			},
+		},
+	}
+
+	syncTGAssistantAccountIdentityIfChanged("acct-sync", &tgauth.Status{
+		Authorized: true,
+		User: &tg.User{
+			ID:        99,
+			Username:  "bob",
+			FirstName: "Bob",
+			Phone:     "8613900006666",
+		},
+	})
+
+	accounts := listTGAssistantAccounts()
+	if len(accounts) != 1 {
+		t.Fatalf("accounts=%d, want 1", len(accounts))
+	}
+	if accounts[0].Phone != "+8613900006666" || accounts[0].SelfPhone != "+8613900006666" || accounts[0].Label != "+8613900006666" {
+		t.Fatalf("unexpected synced account: %+v", accounts[0])
+	}
+	if _, err := os.Stat(storePath); err != nil {
+		t.Fatalf("expected store file to be persisted: %v", err)
 	}
 }

@@ -560,7 +560,7 @@ func addTGAssistantAccount(req tgAssistantAddAccountRequest) (tgAssistantAccount
 	records := loadTGAssistantAccountsLocked()
 	apiID, _ := loadTGAssistantAPIKeyLocked()
 	for _, existing := range records {
-		if existing.Phone == record.Phone {
+		if sameTGPhone(existing.Phone, record.Phone) {
 			TGAssistantStore.mu.Unlock()
 			return tgAssistantAccount{}, fmt.Errorf("account already exists for phone=%s", record.Phone)
 		}
@@ -875,8 +875,9 @@ func loginTGAssistantAccountBySessionToken(req tgAssistantSessionTokenLoginReque
 	record.Authorized = true
 	record.LastError = "authorized"
 	applyTGAssistantIdentityFromStatus(&record, status)
-	if phone := normalizeTGPhone(record.SelfPhone); phone != "" {
+	if phone := formatTGPhoneE164(record.SelfPhone); phone != "" {
 		record.Phone = phone
+		record.SelfPhone = phone
 	} else if record.SelfUserID > 0 {
 		record.Phone = strconv.FormatInt(record.SelfUserID, 10)
 	}
@@ -890,7 +891,7 @@ func loginTGAssistantAccountBySessionToken(req tgAssistantSessionTokenLoginReque
 			existingIndex = i
 			break
 		}
-		if strings.TrimSpace(record.Phone) != "" && normalizeTGPhone(item.Phone) == normalizeTGPhone(record.Phone) {
+		if sameTGPhone(item.Phone, record.Phone) {
 			existingIndex = i
 			break
 		}
@@ -898,6 +899,8 @@ func loginTGAssistantAccountBySessionToken(req tgAssistantSessionTokenLoginReque
 
 	if existingIndex >= 0 {
 		existing := records[existingIndex]
+		oldPhone := existing.Phone
+		oldSelfPhone := existing.SelfPhone
 		existingSessionPath := tgAssistantSessionPath(existing.ID)
 		if err := os.MkdirAll(filepath.Dir(existingSessionPath), 0o755); err != nil {
 			_ = os.Remove(sessionPath)
@@ -916,11 +919,12 @@ func loginTGAssistantAccountBySessionToken(req tgAssistantSessionTokenLoginReque
 		existing.SelfUsername = record.SelfUsername
 		existing.SelfDisplayName = record.SelfDisplayName
 		existing.SelfPhone = record.SelfPhone
-		if strings.TrimSpace(record.Phone) != "" {
-			existing.Phone = record.Phone
-		}
 		if strings.TrimSpace(req.Label) != "" {
 			existing.Label = strings.TrimSpace(req.Label)
+		}
+		syncTGAssistantPhoneFromSelf(&existing, oldPhone, oldSelfPhone)
+		if strings.TrimSpace(existing.SelfPhone) == "" && strings.TrimSpace(record.Phone) != "" {
+			existing.Phone = record.Phone
 		}
 		records[existingIndex] = existing
 		record = existing
@@ -1394,6 +1398,8 @@ func listTGAssistantSessionMessages(req tgAssistantSessionMessagesRequest) ([]tg
 		if !status.Authorized {
 			return errors.New("tg session is not authorized for requested account")
 		}
+		syncTGAssistantAccountIdentityIfChanged(accountID, status)
+		applyTGAssistantIdentityFromStatus(&account, status)
 
 		peer, err := resolveTGAssistantInputPeer(ctx, client, accountID, target)
 		if err != nil {
@@ -1632,6 +1638,7 @@ func executeTGAssistantScheduleSendTask(ctx context.Context, accountID, taskID, 
 		if !status.Authorized {
 			return errors.New("tg session is not authorized for requested account")
 		}
+		syncTGAssistantAccountIdentityIfChanged(accountID, status)
 
 		peer, err := resolveTGAssistantInputPeer(inner, client, accountID, task.Target)
 		if err != nil {
@@ -2472,6 +2479,7 @@ func refreshTGAssistantTargets(req tgAssistantAccountIDRequest) ([]tgAssistantTa
 		if !status.Authorized {
 			return errors.New("tg session is not authorized for requested account")
 		}
+		syncTGAssistantAccountIdentityIfChanged(accountID, status)
 
 		dialogs, chats, users, err := fetchTGAssistantDialogs(ctx, client.API(), tgAssistantAllFoldersID)
 		if err != nil {
@@ -2606,10 +2614,14 @@ func applyTGAssistantIdentityFromStatus(record *tgAssistantAccountRecord, status
 		return
 	}
 
+	oldPhone := record.Phone
+	oldSelfPhone := record.SelfPhone
+
 	user := status.User
 	record.SelfUserID = user.ID
 	record.SelfUsername = strings.TrimSpace(user.Username)
-	record.SelfPhone = strings.TrimSpace(user.Phone)
+	record.SelfPhone = formatTGPhoneE164(user.Phone)
+	syncTGAssistantPhoneFromSelf(record, oldPhone, oldSelfPhone)
 
 	fullName := strings.TrimSpace(strings.TrimSpace(user.FirstName) + " " + strings.TrimSpace(user.LastName))
 	if fullName == "" {
@@ -2619,6 +2631,66 @@ func applyTGAssistantIdentityFromStatus(record *tgAssistantAccountRecord, status
 		fullName = record.SelfPhone
 	}
 	record.SelfDisplayName = fullName
+}
+
+func syncTGAssistantPhoneFromSelf(record *tgAssistantAccountRecord, oldPhone string, oldSelfPhone string) {
+	if record == nil {
+		return
+	}
+	syncedPhone := formatTGPhoneE164(record.SelfPhone)
+	if syncedPhone == "" {
+		return
+	}
+	record.SelfPhone = syncedPhone
+	if record.Phone != syncedPhone {
+		if strings.TrimSpace(record.Label) == "" ||
+			sameTGPhone(record.Label, oldPhone) ||
+			sameTGPhone(record.Label, oldSelfPhone) ||
+			sameTGPhone(record.Label, record.Phone) {
+			record.Label = syncedPhone
+		}
+		record.Phone = syncedPhone
+	} else if strings.TrimSpace(record.Label) == "" {
+		record.Label = syncedPhone
+	}
+}
+
+func syncTGAssistantAccountIdentityIfChanged(accountID string, status *tgauth.Status) {
+	if TGAssistantStore == nil || status == nil || !status.Authorized || status.User == nil {
+		return
+	}
+	normalizedID := strings.TrimSpace(accountID)
+	if normalizedID == "" {
+		return
+	}
+
+	changed := false
+	TGAssistantStore.mu.Lock()
+	records := loadTGAssistantAccountsLocked()
+	index := indexTGAssistantAccountByID(records, normalizedID)
+	if index >= 0 {
+		before := records[index]
+		updated := before
+		applyTGAssistantIdentityFromStatus(&updated, status)
+		if updated.Phone != before.Phone ||
+			updated.Label != before.Label ||
+			updated.SelfUserID != before.SelfUserID ||
+			updated.SelfUsername != before.SelfUsername ||
+			updated.SelfDisplayName != before.SelfDisplayName ||
+			updated.SelfPhone != before.SelfPhone {
+			updated.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+			records[index] = updated
+			TGAssistantStore.data.Accounts = records
+			changed = true
+		}
+	}
+	TGAssistantStore.mu.Unlock()
+
+	if changed {
+		if err := TGAssistantStore.Save(); err != nil {
+			log.Printf("tg assistant identity sync save failed (account=%s): %v", normalizedID, err)
+		}
+	}
 }
 
 func clearTGAssistantIdentityFields(record *tgAssistantAccountRecord) {
@@ -2647,6 +2719,7 @@ func buildTGAssistantAccountViews(records []tgAssistantAccountRecord, sharedAPII
 }
 
 func buildTGAssistantAccountView(record tgAssistantAccountRecord, sharedAPIID int) tgAssistantAccount {
+	syncTGAssistantPhoneFromSelf(&record, record.Phone, record.SelfPhone)
 	view := tgAssistantAccount{
 		ID:              record.ID,
 		Label:           record.Label,
@@ -2871,7 +2944,10 @@ func normalizeTGAssistantAccountRecords(records []tgAssistantAccountRecord) []tg
 		}
 		item.SelfUsername = strings.TrimSpace(item.SelfUsername)
 		item.SelfDisplayName = strings.TrimSpace(item.SelfDisplayName)
-		item.SelfPhone = normalizeTGPhone(item.SelfPhone)
+		oldPhone := item.Phone
+		oldSelfPhone := item.SelfPhone
+		item.SelfPhone = formatTGPhoneE164(item.SelfPhone)
+		syncTGAssistantPhoneFromSelf(&item, oldPhone, oldSelfPhone)
 		if item.Label == "" {
 			item.Label = item.Phone
 		}
@@ -3616,6 +3692,23 @@ func normalizeTGPhone(raw string) string {
 		}
 	}
 	return builder.String()
+}
+
+func formatTGPhoneE164(raw string) string {
+	normalized := normalizeTGPhone(raw)
+	if normalized == "" {
+		return ""
+	}
+	if strings.HasPrefix(normalized, "+") {
+		return normalized
+	}
+	return "+" + normalized
+}
+
+func sameTGPhone(a, b string) bool {
+	na := strings.TrimPrefix(normalizeTGPhone(a), "+")
+	nb := strings.TrimPrefix(normalizeTGPhone(b), "+")
+	return na != "" && na == nb
 }
 
 func randomTGAssistantScheduleDelaySeconds(delayMin int, delayMax int) int {

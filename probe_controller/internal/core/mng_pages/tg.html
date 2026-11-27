@@ -1343,7 +1343,8 @@
       const notifyAccountID = state.notify.overview && state.notify.overview.settings ? state.notify.overview.settings.notify_account_id : '';
       listEl.innerHTML = state.accounts.map((item) => {
         const active = item.id === state.selectedAccountID ? ' active' : '';
-        const name = String(item.label || item.self_display_name || item.phone || item.id).trim();
+        const phone = String(item.self_phone || item.phone || '').trim();
+        const name = String(item.label || item.self_display_name || phone || item.id).trim();
         const initial = name ? name.slice(0, 1).toUpperCase() : 'T';
         const statusBadge = item.authorized
           ? '<span class="badge ok">已登录</span>'
@@ -1351,7 +1352,7 @@
         const notifyBadge = notifyAccountID && notifyAccountID === item.id
           ? '<span class="badge info">通知号</span>'
           : '';
-        const sub = item.self_username ? `${item.phone || ''} · @${item.self_username}` : (item.phone || item.id);
+        const sub = item.self_username ? `${phone} · @${item.self_username}` : (phone || item.id);
         return `
           <button type="button" class="account-item${active}" data-action="select-account" data-account-id="${escapeHTML(item.id)}">
             <div class="avatar" style="--av-bg:${avatarGradient(item.id)}">${escapeHTML(initial)}</div>
@@ -1416,12 +1417,13 @@
         return;
       }
 
-      const name = String(account.label || account.self_display_name || account.phone || account.id).trim();
+      const phone = String(account.self_phone || account.phone || '').trim();
+      const name = String(account.label || account.self_display_name || phone || account.id).trim();
       const initial = name ? name.slice(0, 1).toUpperCase() : 'T';
       const statusBadge = account.authorized
         ? '<span class="badge ok">已登录</span>'
         : (account.pending_code ? '<span class="badge warn">等待验证码</span>' : '<span class="badge muted">未登录</span>');
-      const subParts = [account.phone || ''];
+      const subParts = [phone];
       if (account.self_display_name) subParts.push(account.self_display_name);
       if (account.self_username) subParts.push('@' + account.self_username);
 
@@ -1664,7 +1666,7 @@
       return `
         <div class="info-kv-grid">
           <div class="kv-tile"><div class="kv-label">账号备注</div><div class="kv-value">${escapeHTML(account.label || '-')}</div></div>
-          <div class="kv-tile"><div class="kv-label">手机号</div><div class="kv-value mono">${escapeHTML(account.phone || '-')}</div></div>
+          <div class="kv-tile"><div class="kv-label">手机号</div><div class="kv-value mono">${escapeHTML(account.self_phone || account.phone || '-')}</div></div>
           <div class="kv-tile"><div class="kv-label">Telegram 显示名</div><div class="kv-value">${escapeHTML(account.self_display_name || '-')}</div></div>
           <div class="kv-tile"><div class="kv-label">用户名</div><div class="kv-value mono">${account.self_username ? '@' + escapeHTML(account.self_username) : '-'}</div></div>
           <div class="kv-tile"><div class="kv-label">最近登录时间</div><div class="kv-value mono">${escapeHTML(formatDateTime(account.last_login_at))}</div></div>
@@ -1736,7 +1738,7 @@
               <label class="field-label" for="notify-account-select">主控通知账号</label>
               <select id="notify-account-select" class="input" ${busy ? 'disabled' : ''}>
                 <option value="">未选择</option>
-                ${authed.map((item) => `<option value="${escapeHTML(item.id)}" ${item.id === settings.notify_account_id ? 'selected' : ''}>${escapeHTML(item.label || item.id)} (${escapeHTML(item.phone || '')})</option>`).join('')}
+                ${authed.map((item) => `<option value="${escapeHTML(item.id)}" ${item.id === settings.notify_account_id ? 'selected' : ''}>${escapeHTML(item.label || item.id)} (${escapeHTML(item.self_phone || item.phone || '')})</option>`).join('')}
               </select>
               <div class="field-hint">仅展示已登录授权的账号；请确保该账号已配置 BOT API Key。</div>
             </div>
