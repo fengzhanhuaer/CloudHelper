@@ -525,7 +525,7 @@ int vr_send(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],
 int vr_send_json(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],size_t n,json_object *m)
 {const char *s=json_object_to_json_string_ext(m,JSON_C_TO_STRING_PLAIN);return vr_send(e,main,sub,path,n,s,strlen(s));}
 
-int vr_link_receive(const vr_frame *f,void *arg)
+static int link_receive_impl(const vr_frame *f,void *arg)
 {
     vr_link *l=arg;vr_engine *e=l->engine;char path[VR_PATH_MAX][129];size_t count,at;
     const char *rejected=NULL;
@@ -559,6 +559,9 @@ drop:;
     char event[240];snprintf(event,sizeof(event),"Peer %.32s dropped frame %u/%u: %s",l->peer,f->main,f->sub,rejected);
     vr_service_log(e->service,"link",event);return 0;
 }
+
+int vr_link_receive(const vr_frame *f,void *arg)
+{vr_link *l=arg;uint64_t t=vr_observe_begin(l->engine,VR_OBS_FRAME_RX);int rc=link_receive_impl(f,arg);vr_observe_end(l->engine,VR_OBS_FRAME_RX,t,0,0);return rc;}
 
 static int ws_received(int opcode,const uint8_t *bytes,size_t n,void *arg)
 {

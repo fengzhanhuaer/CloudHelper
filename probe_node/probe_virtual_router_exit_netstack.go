@@ -515,10 +515,11 @@ func (n *probeVirtualRouterExitNetstack) handleTCPForwarder(req *tcp.ForwarderRe
 	}
 	req.Complete(false)
 	inbound := gonet.NewTCPConn(&wq, ep)
+	release := probeExitTCPObservation.register(ep, net.JoinHostPort(id.RemoteAddress.String(), strconv.Itoa(int(id.RemotePort))), net.JoinHostPort(id.LocalAddress.String(), strconv.Itoa(int(id.LocalPort))))
 	if n.gateway {
-		go relayProbeGatewayTCP(inbound, id.LocalAddress, id.LocalPort)
+		go func() { defer release(); relayProbeGatewayTCP(inbound, id.LocalAddress, id.LocalPort) }()
 	} else {
-		go relayProbeVirtualRouterExitTCP(inbound, id.LocalAddress, id.LocalPort)
+		go func() { defer release(); relayProbeVirtualRouterExitTCP(inbound, id.LocalAddress, id.LocalPort) }()
 	}
 }
 
@@ -539,7 +540,7 @@ func relayProbeVirtualRouterExitTCP(inbound net.Conn, localAddress tcpip.Address
 	tuneProbeVirtualRouterExitTCPConn(outbound)
 	log.Printf("probe virtual router fake ip tcp exit open ok: target=%s remote=%s", target.Address(), outbound.RemoteAddr())
 	recordProbeVirtualRouterFakeIPExitHit(entry.Domain)
-	go relayProbeVirtualRouterExitTCPConns(inbound, outbound)
+	relayProbeVirtualRouterExitTCPConns(inbound, outbound)
 }
 
 func tuneProbeVirtualRouterExitTCPConn(conn net.Conn) {

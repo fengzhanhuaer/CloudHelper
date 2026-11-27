@@ -2414,6 +2414,9 @@ func probeLocalVirtualRouterDebugHandler(w http.ResponseWriter, r *http.Request)
 		"updated_at": time.Now().UTC().Format(time.RFC3339Nano),
 		"status":     probeLocalVirtualRouterStatusPayload(),
 	}
+	if r.URL.Query().Get("tcp") == "1" {
+		payload["tcp_connections"] = probeExitTCPObservation.snapshot()
+	}
 	if r.URL.Query().Get("goroutines") == "1" {
 		var buf bytes.Buffer
 		if profile := runtimepprof.Lookup("goroutine"); profile != nil {

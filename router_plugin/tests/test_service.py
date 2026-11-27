@@ -50,6 +50,13 @@ def main(binary):
             response = request(sock, {"action": "status"})
             assert response['version']==subprocess.check_output([binary,'--version'],universal_newlines=True).split()[1]
             assert response["ok"] and not response["config"]["enabled"]
+            stamp=config.stat().st_mtime_ns
+            assert not request(sock,{"action":"observe","csrf":"invalid","duration_sec":10})["ok"]
+            assert not request(sock,{"action":"observe","csrf":response["csrf"],"duration_sec":61})["ok"]
+            assert request(sock,{"action":"observe","csrf":response["csrf"],"duration_sec":10})["ok"]
+            assert request(sock,{"action":"observe","csrf":response["csrf"],"duration_sec":0})["ok"]
+            assert config.stat().st_mtime_ns==stamp,"observations must not write JFFS"
+
             assert response["config"]["port"] == 12040
             assert not response["config"]["allow_wan"]
             assert not response["config"]["tls_sni_enabled"]

@@ -4,6 +4,7 @@
 #include "transport.h"
 #include "platform.h"
 #include "packet.h"
+#include "observe.h"
 #include "network_monitor.h"
 #include <netinet/in.h>
 #include <poll.h>
@@ -61,6 +62,7 @@ typedef struct {int tcp;size_t n;uint8_t query[4096];struct sockaddr_in source;s
 typedef struct {char id[129],path[VR_PATH_MAX][129];size_t count;uint64_t first,last,bytes,frames,limit,deadline;json_object *message;} vr_speed_rx;
 struct vr_engine {
     vr_service *service;vr_config config;unsigned generation;
+    vr_observation observation;
     vr_addresses addresses;
     json_object *snapshot,*policy,*next_policy;
     unsigned policy_revision;
@@ -100,6 +102,8 @@ struct vr_engine {
     char speed_path[VR_PATH_MAX][129],measure_id[49];size_t speed_count;
     uint64_t speed_started,speed_bytes,speed_limit,speed_duration,measure_started,measure_timeout;
 };
+
+static inline uint64_t vr_observe_begin(vr_engine *e,unsigned stage){return e->observation.active?vr_observe_sample(e,stage):0;}
 
 /* Workers use a value snapshot: address refresh never mutates their arguments. */
 static inline vr_addresses vr_engine_addresses(vr_engine *e)

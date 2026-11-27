@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <netinet/tcp.h>
 #include <unistd.h>
 
 #ifndef IP_FREEBIND
@@ -23,7 +24,7 @@ struct vr_external_state {
     char node[129],iface[16],own[16],real[16],fake[16];
     uint32_t source,destination,resolved;uint16_t port;
     int done,stop,fd,active;uint64_t start,first,last,bytes,published;
-    long status;CURL *curl;
+    long status;CURL *curl;uint8_t tcp_info[256];size_t tcp_info_length;uint64_t tcp_info_at;
 };
 static int cancelled(struct vr_external_state *x)
 {
@@ -32,6 +33,7 @@ static int cancelled(struct vr_external_state *x)
 }
 static void publish(struct vr_external_state *x,int running,const char *error,int stopped)
 {
+    if(x->fd>=0){socklen_t length=sizeof(x->tcp_info);if(!getsockopt(x->fd,IPPROTO_TCP,TCP_INFO,x->tcp_info,&length)){x->tcp_info_length=length<=sizeof(x->tcp_info)?length:sizeof(x->tcp_info);x->tcp_info_at=vr_millis();}}
     vr_service *s=x->engine->service;json_object *job=json_object_new_object(),*r=json_object_new_object();
     uint64_t elapsed=x->last>x->first?x->last-x->first:x->bytes?1:0;
     double mbps=elapsed?(double)x->bytes*8/(double)elapsed/1000:0;
@@ -47,6 +49,8 @@ static void publish(struct vr_external_state *x,int running,const char *error,in
     json_object_object_add(r,"total_ms",json_object_new_int64((int64_t)(vr_millis()-x->start)));
     json_object_object_add(r,"mbps",json_object_new_double(mbps));
     json_object_object_add(r,"mb_per_second",json_object_new_double(mbps/8));
+    json_object_object_add(r,"tcp_info",vr_tcp_info_decode(x->tcp_info,x->tcp_info_length));
+    json_object_object_add(r,"tcp_info_age_ms",x->tcp_info_at?json_object_new_int64((int64_t)(vr_millis()-x->tcp_info_at)):NULL);
     json_object_object_add(r,"http_status",json_object_new_int((int)x->status));
     if(error)json_object_object_add(r,"error",json_object_new_string(error));
     json_object_object_add(job,"result",r);pthread_mutex_lock(&s->mutex);json_object_put(s->measurement);s->measurement=job;pthread_mutex_unlock(&s->mutex);

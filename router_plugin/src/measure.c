@@ -142,6 +142,7 @@ void vr_measure_tick(vr_engine *e)
     }
     vr_service *s=e->service;char node[129]={0},kind[16]={0};
     pthread_mutex_lock(&s->mutex);if(*s->measure_node){strcpy(node,s->measure_node);strcpy(kind,s->measure_kind);*s->measure_node=0;}pthread_mutex_unlock(&s->mutex);
+    if(*node){vr_observe_request(s,30);e->observation.next_check=0;vr_observe_refresh(e,now);}
     if(*node && !strcmp(kind,"external")){
         if(vr_external_start(e,node)){
             json_object *r=json_object_new_object();json_object_object_add(r,"mode",json_object_new_string(!strcmp(node,"direct")?"direct":"node"));

@@ -8,7 +8,9 @@
 
 static void inject(vr_engine *e,const void *b,size_t n)
 {
+    uint64_t observed=vr_observe_begin(e,VR_OBS_TUN_WRITE);
     ssize_t written=write(e->tun,b,n);
+    vr_observe_end(e,VR_OBS_TUN_WRITE,observed,0,written==(ssize_t)n);
     if(written!=(ssize_t)n)snprintf(e->error,sizeof(e->error),"TUN receive queue unavailable");
 }
 
@@ -76,12 +78,13 @@ static void remember(vr_nat *f,const uint8_t *bytes,size_t n,const char *target)
 
 static vr_nat *nat_reverse(vr_engine *e,const vr_packet *p)
 {
+    uint64_t observed=vr_observe_begin(e,VR_OBS_NAT_REVERSE);
     uint64_t now=vr_millis();
     for(size_t i=0;i<VR_NAT_MAX;i++) {
         vr_nat *f=&e->flows[i];vr_packet *w=&f->wire;
-        if(f->used && now-f->used<=120000 && p->protocol==w->protocol && p->src==w->dst && p->dst==w->src && p->sport==w->dport && p->dport==w->sport){f->used=now;return f;}
+        if(f->used && now-f->used<=120000 && p->protocol==w->protocol && p->src==w->dst && p->dst==w->src && p->sport==w->dport && p->dport==w->sport){f->used=now;vr_observe_end(e,VR_OBS_NAT_REVERSE,observed,i+1,1);return f;}
     }
-    return NULL;
+    vr_observe_end(e,VR_OBS_NAT_REVERSE,observed,VR_NAT_MAX,0);return NULL;
 }
 
 static int relay(vr_engine *e,const char *target,uint8_t *b,size_t n)
@@ -189,7 +192,7 @@ void vr_dataplane_stop(vr_engine *e)
     vr_mapping_flush(e,1);
 }
 
-void vr_outgoing(vr_engine *e,uint8_t *b,size_t n)
+static void outgoing_impl(vr_engine *e,uint8_t *b,size_t n)
 {
     vr_packet p;if(vr_packet_parse(b,n,&p))return;
     vr_nat *reverse=nat_reverse(e,&p);
@@ -205,9 +208,10 @@ void vr_outgoing(vr_engine *e,uint8_t *b,size_t n)
     if((p.protocol==6||p.protocol==17)&&e->config.dns_filter.block_doh) {
         char ip[16];struct in_addr address={p.dst};inet_ntop(AF_INET,&address,ip,sizeof(ip));
         if(fake_ip(e,ip)) {
+            uint64_t observed=vr_observe_begin(e,VR_OBS_DNS_BLACKLIST);size_t scanned=VR_MAPPING_MAX;
             int blocked=0;pthread_mutex_lock(&e->mutex);
-            for(size_t i=0;i<VR_MAPPING_MAX;i++)if(e->mappings[i].dns_blocked&&!strcmp(e->mappings[i].ip,ip)){blocked=1;break;}
-            pthread_mutex_unlock(&e->mutex);if(blocked)return;
+            for(size_t i=0;i<VR_MAPPING_MAX;i++)if(e->mappings[i].dns_blocked&&!strcmp(e->mappings[i].ip,ip)){blocked=1;scanned=i+1;break;}
+            pthread_mutex_unlock(&e->mutex);vr_observe_end(e,VR_OBS_DNS_BLACKLIST,observed,scanned,blocked);if(blocked)return;
         }
     }
     vr_nat *active=established(e,&p,b,n,1);
@@ -260,7 +264,7 @@ void vr_outgoing(vr_engine *e,uint8_t *b,size_t n)
     }
 }
 
-void vr_incoming(vr_engine *e,const vr_frame *frame,char path[VR_PATH_MAX][129],size_t count)
+static void incoming_impl(vr_engine *e,const vr_frame *frame,char path[VR_PATH_MAX][129],size_t count)
 {
     if(count<2 || count>VR_PATH_MAX || strcmp(path[count-1],e->config.node_id) || frame->sub!=1 || frame->data_len>1500)return;
     uint8_t b[1500];memcpy(b,frame->data,frame->data_len);vr_packet p;if(vr_packet_parse(b,frame->data_len,&p))return;
@@ -312,3 +316,8 @@ void vr_incoming(vr_engine *e,const vr_frame *frame,char path[VR_PATH_MAX][129],
     if(f)remember(f,b,frame->data_len,"");
     if(f&&!vr_packet_rewrite(b,frame->data_len,f->wire.src,f->wire.dst,f->wire.sport,f->wire.dport))inject(e,b,frame->data_len);
 }
+
+void vr_outgoing(vr_engine *e,uint8_t *b,size_t n)
+{uint64_t t=vr_observe_begin(e,VR_OBS_PACKET_OUT);outgoing_impl(e,b,n);vr_observe_end(e,VR_OBS_PACKET_OUT,t,0,0);}
+void vr_incoming(vr_engine *e,const vr_frame *f,char path[VR_PATH_MAX][129],size_t n)
+{uint64_t t=vr_observe_begin(e,VR_OBS_PACKET_IN);incoming_impl(e,f,path,n);vr_observe_end(e,VR_OBS_PACKET_IN,t,0,0);}

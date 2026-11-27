@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "service.h"
+#include "observe.h"
 #include "platform.h"
 #include "transport.h"
 #include "upgrade.h"
@@ -143,6 +144,12 @@ json_object *vr_service_dispatch(vr_service *s,json_object *request)
         json_object_object_add(status,"gateway_enabled",json_object_new_boolean(c.gateway.enabled));
         json_object_object_add(status,"ready",json_object_new_boolean(0));json_object_put(s->status);s->status=status;
         pthread_cond_broadcast(&s->changed);pthread_mutex_unlock(&s->mutex);OPENSSL_cleanse(&c,sizeof(c));
+        return status_reply(s);
+    }
+    if(!strcmp(action,"observe")) {
+        json_object *duration=vr_member(request,"duration_sec");int seconds=json_object_get_int(duration);
+        if(!duration||!json_object_is_type(duration,json_type_int)||seconds<0||seconds>60)return error_reply("duration_sec must be 0..60");
+        if(vr_observe_request(s,(unsigned)seconds))return error_reply("invalid observation duration");
         return status_reply(s);
     }
     if(!strcmp(action,"measure_stop")) {

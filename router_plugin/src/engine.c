@@ -12,6 +12,7 @@ static void status(vr_engine *e,int ready)
 {
     vr_telemetry_publish(e);
     json_object *o=json_object_new_object(),*links=vr_links_status(e),*nodes=json_object_new_array();
+    json_object_object_add(o,"observation",vr_observe_report(e,vr_millis()));
     json_object_object_add(o,"enabled",json_object_new_boolean(e->config.enabled));
     json_object_object_add(o,"gateway_enabled",json_object_new_boolean(e->config.gateway.enabled));
     json_object_object_add(o,"ready",json_object_new_boolean(ready));
@@ -165,6 +166,7 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
     vr_address_watch address_watch={0};
     while(!vr_service_stopped(service,generation)) {
         uint64_t now=vr_millis();
+        vr_observe_refresh(e,now);
         if(now>=carrier6_checked) {
             int same=e->carrier6>=0&&!strcmp(e->carrier6_iface,e->addresses.wan_if);
             int listener=same?e->carrier6:*e->addresses.wan_if?vr_bind6_carrier(e->config.port,e->addresses.wan_if):-1;
