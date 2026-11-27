@@ -99,19 +99,20 @@ type mobileVRouteFrameControlEnvelope struct {
 }
 
 type mobileVRouteForwardPlan struct {
-	LocalNode    string
-	ExitNode     string
-	Path         []string
-	NextNode     string
-	Config       mobileVRouteConfig
-	Rule         mobileVRouteTopology
-	RouteID      string
-	RelayHost    string
-	RelayPort    int
-	BridgeRole   string
-	Layer        string
-	CarrierSlot  int
-	CarrierCount int
+	pathCheckedAt time.Time
+	LocalNode     string
+	ExitNode      string
+	Path          []string
+	NextNode      string
+	Config        mobileVRouteConfig
+	Rule          mobileVRouteTopology
+	RouteID       string
+	RelayHost     string
+	RelayPort     int
+	BridgeRole    string
+	Layer         string
+	CarrierSlot   int
+	CarrierCount  int
 }
 
 type mobileVRouteCarrier struct {
@@ -162,9 +163,12 @@ type mobileVRouteCarrierWorker struct {
 }
 
 type mobileVRouteCarrierFlowBinding struct {
-	Path       []string
-	CarrierKey string
-	LastSeen   time.Time
+	carrierCreated   int64
+	configGeneration uint64
+	pathCheckedAt    time.Time
+	Path             []string
+	CarrierKey       string
+	LastSeen         time.Time
 }
 
 type mobileVRouteNegotiatedConn struct {
@@ -316,19 +320,20 @@ func mobileVRouteHandleVPNPacket(configDir string, packet []byte, writeBack func
 	if route.Direct || strings.TrimSpace(route.SelectedRouteID) == "" {
 		return false, nil
 	}
-	if mobileVRouteRouteIsLocalExit(configDir, route.SelectedRouteID) {
-		return false, nil
-	}
-	plan, err := buildMobileVRouteForwardPlan(configDir, route.SelectedRouteID)
+	config, err := mobilePacketRouteConfig(configDir)
 	if err != nil {
 		recordMobileVRouteConnectionFailure("route_plan_failed", targetAddr, route.SelectedRouteID, route.Group, "", err)
-		logAndroidVPNDiagnostic("takeover_plan_error_"+route.SelectedRouteID, "error", "vroute takeover plan failed: target="+targetAddr+" route="+route.SelectedRouteID+" err="+err.Error(), 2*time.Second)
 		return true, err
 	}
+	exitNode := mobileVRouteProbeExitNodeFromRouteID(route.SelectedRouteID)
+	if exitNode != "" && exitNode == config.LocalNodeID {
+		return false, nil
+	}
+	plan := mobileVRouteForwardPlan{Config: config, LocalNode: config.LocalNodeID, ExitNode: exitNode}
 	forwardPacket, tunSourceIP, err := mobileVRouteRewriteTUNPacketForForward(packet, plan)
 	if err != nil {
-		recordMobileVRouteConnectionFailure("source_route_rewrite_failed", targetAddr, plan.RouteID, route.Group, "", err)
-		logAndroidVPNDiagnostic("takeover_source_route_error_"+plan.RouteID, "error", "vroute takeover source-route rewrite failed: route="+plan.RouteID+" err="+err.Error(), 2*time.Second)
+		recordMobileVRouteConnectionFailure("source_route_rewrite_failed", targetAddr, route.SelectedRouteID, route.Group, "", err)
+		logAndroidVPNDiagnostic("takeover_source_route_error_"+route.SelectedRouteID, "error", "vroute takeover source-route rewrite failed: route="+route.SelectedRouteID+" err="+err.Error(), 2*time.Second)
 		return true, err
 	}
 	carrierWriteBack := func(reply []byte) error {
@@ -341,7 +346,12 @@ func mobileVRouteHandleVPNPacket(configDir string, packet []byte, writeBack func
 		}
 		return writeBack(restored)
 	}
-	plan = pinMobileVRouteFlowPlan(plan, forwardPacket)
+	plan, err = mobileVRoutePacketPlan(plan, forwardPacket, route.SelectedRouteID)
+	if err != nil {
+		recordMobileVRouteConnectionFailure("route_plan_failed", targetAddr, route.SelectedRouteID, route.Group, "", err)
+		logAndroidVPNDiagnostic("takeover_plan_error_"+route.SelectedRouteID, "error", "vroute takeover plan failed: target="+targetAddr+" route="+route.SelectedRouteID+" err="+err.Error(), 2*time.Second)
+		return true, err
+	}
 	frame, err := buildMobileVRouteIPFrame(forwardPacket, plan.Path)
 	if err != nil {
 		return true, err
@@ -393,6 +403,10 @@ func buildMobileVRouteForwardPlan(configDir string, routeID string) (mobileVRout
 	if err != nil {
 		return mobileVRouteForwardPlan{}, err
 	}
+	return mobileVRoutePlanFromConfig(config, routeID)
+}
+
+func mobileVRoutePlanFromConfig(config mobileVRouteConfig, routeID string) (mobileVRouteForwardPlan, error) {
 	localNode := normalizeMobileRouteNodeID(config.LocalNodeID)
 	exitNode := mobileVRouteProbeExitNodeFromRouteID(routeID)
 	if localNode == "" {
@@ -548,7 +562,16 @@ func selectMobileVRouteCarrier(plan mobileVRouteForwardPlan, frame mobileVRouteF
 			hash := mobileVRoutePacketFlowHash(frame.Data, 2166136261)
 			bindingKey := mobileVRouteBindingKey(plan, hash)
 			if binding, ok := mobileVRouteCarrierState.flowBindings[bindingKey]; ok {
-				if carrier := mobileVRouteCarrierState.items[binding.CarrierKey]; carrier != nil && carrier.plan.NextNode == plan.NextNode && now.Sub(binding.LastSeen) <= mobileVRouteCarrierFlowBindingTTL {
+				if carrier := mobileVRouteCarrierState.items[binding.CarrierKey]; carrier != nil && carrier.plan.NextNode == plan.NextNode && mobileVRouteCarrierBaseKey(carrier.plan) == baseKey && now.Sub(binding.LastSeen) <= mobileVRouteCarrierFlowBindingTTL {
+					if !plan.pathCheckedAt.IsZero() {
+						binding.carrierCreated = carrier.createdUnixNS
+						binding.configGeneration = plan.Config.generation
+						if carrier.plan.Rule != plan.Rule {
+							binding.configGeneration = 0
+						}
+						binding.pathCheckedAt = plan.pathCheckedAt
+						binding.Path = append([]string(nil), plan.Path...)
+					}
 					binding.LastSeen = now
 					mobileVRouteCarrierState.flowBindings[bindingKey] = binding
 					selected = carrier
@@ -558,7 +581,11 @@ func selectMobileVRouteCarrier(plan mobileVRouteForwardPlan, frame mobileVRouteF
 				delete(mobileVRouteCarrierState.flowBindings, bindingKey)
 			}
 			selected = active[int(hash%uint32(len(active)))]
-			mobileVRouteCarrierState.flowBindings[bindingKey] = mobileVRouteCarrierFlowBinding{CarrierKey: selected.key, Path: append([]string(nil), plan.Path...), LastSeen: now}
+			generation := plan.Config.generation
+			if selected.plan.Rule != plan.Rule {
+				generation = 0
+			}
+			mobileVRouteCarrierState.flowBindings[bindingKey] = mobileVRouteCarrierFlowBinding{carrierCreated: selected.createdUnixNS, configGeneration: generation, pathCheckedAt: plan.pathCheckedAt, CarrierKey: selected.key, Path: append([]string(nil), plan.Path...), LastSeen: now}
 			pruneMobileVRouteCarrierFlowBindingsLocked(now)
 		}
 		mobileVRouteCarrierState.mu.Unlock()
@@ -1288,18 +1315,6 @@ func closeMobileVRouteCarriers() {
 	for _, item := range items {
 		item.close()
 	}
-}
-
-func mobileVRouteRouteIsLocalExit(configDir string, routeID string) bool {
-	exitNode := mobileVRouteProbeExitNodeFromRouteID(routeID)
-	if exitNode == "" {
-		return false
-	}
-	config, err := loadMobileVRouteConfig(configDir)
-	if err != nil {
-		return false
-	}
-	return exitNode == normalizeMobileRouteNodeID(config.LocalNodeID)
 }
 
 func mobileVRouteRuntimeStatusPayload(configDir string) map[string]any {

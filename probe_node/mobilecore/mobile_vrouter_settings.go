@@ -150,7 +150,12 @@ func persistMobileVRouteExitChoices(configDir string, choices map[string]string)
 	if err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(configDir, ".route-exits-*")
+	return writeMobileRouteFile(filepath.Join(configDir, "mobile_vroute_settings.json"), raw)
+}
+
+// Publish the file and invalidate packet readers as one operation.
+func writeMobileRouteFile(path string, raw []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".mobile-route-*")
 	if err != nil {
 		return err
 	}
@@ -168,7 +173,13 @@ func persistMobileVRouteExitChoices(configDir string, choices map[string]string)
 	if err != nil {
 		return err
 	}
-	return os.Rename(f.Name(), filepath.Join(configDir, "mobile_vroute_settings.json"))
+	packetRouteCache.Lock()
+	defer packetRouteCache.Unlock()
+	if err := os.Rename(f.Name(), path); err != nil {
+		return err
+	}
+	packetRouteCache.dir = ""
+	return nil
 }
 
 func requestMobileVRouteSettings(controllerURL string, nodeID string, nodeSecret string, method string, payload any) (mobileVRouteSettingsResponse, error) {

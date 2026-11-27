@@ -164,6 +164,8 @@ type mobileVRouteConfigCacheFile struct {
 }
 
 type mobileVRouteConfig struct {
+	// Set only on immutable packet-path snapshots, never serialized.
+	generation     uint64
 	LocalExitNodes map[string]string       `json:"-"`
 	LocalNodeID    string                  `json:"local_node_id,omitempty"`
 	Enabled        bool                    `json:"enabled"`
@@ -295,7 +297,42 @@ func persistMobileVRouteConfig(configDir string, config mobileVRouteConfig) erro
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 		Item:      sanitizeMobileVRouteConfig(config),
 	}
-	return writeJSONFile(path, payload)
+	raw, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeMobileRouteFile(path, append(raw, '\n'))
+}
+
+// The Android service has one active config directory. Keep only the current
+// snapshot; cold reads and both configuration writers share this lock.
+var packetRouteCache struct {
+	sync.Mutex
+	dir      string
+	loadedAt time.Time
+	config   mobileVRouteConfig
+}
+
+func mobilePacketRouteConfig(configDir string) (mobileVRouteConfig, error) {
+	normalized := normalizeMobileConfigDir(configDir)
+	if normalized == "" {
+		return mobileVRouteConfig{}, errors.New("config dir is required")
+	}
+	dir := filepath.Clean(normalized)
+	packetRouteCache.Lock()
+	defer packetRouteCache.Unlock()
+	// Also pick up files restored outside the service. Normal settings saves
+	// invalidate immediately.
+	if packetRouteCache.dir == dir && time.Since(packetRouteCache.loadedAt) < 30*time.Second {
+		return packetRouteCache.config, nil
+	}
+	config, err := loadMobileVRouteConfig(dir)
+	if err == nil {
+		config.generation = packetRouteCache.config.generation + 1
+		packetRouteCache.dir, packetRouteCache.config = dir, config
+		packetRouteCache.loadedAt = time.Now()
+	}
+	return config, err
 }
 
 func loadMobileVRouteConfig(configDir string) (mobileVRouteConfig, error) {
@@ -408,7 +445,7 @@ func decideMobileVRouteForTarget(configDir string, targetAddr string) (mobileVRo
 	if host == "" || strings.TrimSpace(port) == "" {
 		return mobileVRouteDecision{}, false, errors.New("invalid target address")
 	}
-	config, err := loadMobileVRouteConfig(configDir)
+	config, err := mobilePacketRouteConfig(configDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return mobileVRouteDecision{}, false, nil

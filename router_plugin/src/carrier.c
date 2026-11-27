@@ -400,6 +400,13 @@ int vr_path(vr_engine *e,const char *target,char path[VR_PATH_MAX][129],size_t *
         if(!strcmp(id,target))s.goal=(int)i;
     }
     if(s.start<0||s.goal<0||s.start==s.goal)return -1;
+    /* A live, enabled one-hop edge always wins under hops-first routing. */
+    if(connected(e,target)&&adjacent(e,e->config.node_id,target)) {
+        s.length=2;s.current[0]=(uint8_t)s.start;s.current[1]=(uint8_t)s.goal;
+        path_candidate(&s);
+        if(vr_copy(path[0],129,e->config.node_id)||vr_copy(path[1],129,target))return -1;
+        *n=2;return 0;
+    }
     int queue[256];size_t head=0,tail=0;queue[tail++]=s.goal;s.dist[s.goal]=0;
     while(head<tail) {
         int at=queue[head++];if(at==s.start||s.dist[at]>=VR_PATH_HOPS)continue;

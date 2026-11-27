@@ -299,6 +299,34 @@ func mobileVRouteBindingKey(plan mobileVRouteForwardPlan, hash uint32) string {
 	return plan.LocalNode + "|" + plan.ExitNode + "|" + strconv.FormatUint(uint64(hash), 10)
 }
 
+func mobileVRoutePacketPlan(base mobileVRouteForwardPlan, packet []byte, routeID string) (mobileVRouteForwardPlan, error) {
+	key := mobileVRouteBindingKey(base, mobileVRoutePacketFlowHash(packet, 2166136261))
+	now := time.Now()
+	mobileVRouteCarrierState.mu.Lock()
+	binding, bound := mobileVRouteCarrierState.flowBindings[key]
+	carrier := mobileVRouteCarrierState.items[binding.CarrierKey]
+	mobileVRouteCarrierState.mu.Unlock()
+
+	// Revisit active flows periodically so background RTT probes keep running.
+	// A new flow, a new config snapshot or a lost carrier forces a fresh plan.
+	if bound && carrier != nil && base.Config.generation != 0 &&
+		binding.carrierCreated == carrier.createdUnixNS && binding.configGeneration == base.Config.generation && now.Sub(binding.pathCheckedAt) < time.Second &&
+		len(binding.Path) >= 2 && binding.Path[0] == base.LocalNode &&
+		binding.Path[1] == carrier.plan.NextNode && binding.Path[len(binding.Path)-1] == base.ExitNode {
+		plan := carrier.plan
+		plan.Config, plan.Path, plan.ExitNode = base.Config, binding.Path, base.ExitNode
+		plan.pathCheckedAt = time.Time{}
+		return plan, nil
+	}
+	plan, err := mobileVRoutePlanFromConfig(base.Config, routeID)
+	if err != nil {
+		return mobileVRouteForwardPlan{}, err
+	}
+	plan = pinMobileVRouteFlowPlan(plan, packet)
+	plan.pathCheckedAt = now
+	return plan, nil
+}
+
 // A latency update affects new flows. Established raw TUN flows retain both
 // their source path and their carrier until that carrier/edge disappears.
 func pinMobileVRouteFlowPlan(plan mobileVRouteForwardPlan, packet []byte) mobileVRouteForwardPlan {
@@ -324,6 +352,9 @@ func pinMobileVRouteFlowPlan(plan mobileVRouteForwardPlan, packet []byte) mobile
 	}
 	for _, r := range plan.Config.TopologyRules {
 		if r.Enabled && mobileVRouteRuntimeRouteID(r) == carrier.plan.RouteID {
+			if plan.Config.generation != 0 && (r != carrier.plan.Rule || carrier.plan.NextNode != binding.Path[1]) {
+				return plan
+			}
 			pinned := carrier.plan
 			pinned.Config = plan.Config
 			pinned.Path = append([]string(nil), binding.Path...)

@@ -52,6 +52,8 @@ static int fake_ip(vr_engine *e,const char *ip)
 static int same(const vr_packet *a,const vr_packet *b)
 {return a->src==b->src&&a->dst==b->dst&&a->sport==b->sport&&a->dport==b->dport&&a->protocol==b->protocol;}
 
+enum { nat_port_base = 20000 };
+
 static vr_nat *nat_forward(vr_engine *e,const vr_packet *p,int entry,uint32_t source,uint32_t destination)
 {
     uint64_t now=vr_millis();vr_nat *free_slot=NULL;
@@ -64,7 +66,7 @@ static vr_nat *nat_forward(vr_engine *e,const vr_packet *p,int entry,uint32_t so
     memset(free_slot,0,sizeof(*free_slot));
     free_slot->original=*p;free_slot->wire=*p;free_slot->entry=entry;free_slot->used=now;
     free_slot->wire.src=source;free_slot->wire.dst=destination;
-    free_slot->wire.sport=(uint16_t)(20000+(free_slot-e->flows));
+    free_slot->wire.sport=(uint16_t)(nat_port_base+(free_slot-e->flows));
     if(p->protocol==1)free_slot->wire.dport=free_slot->wire.sport;
     return free_slot;
 }
@@ -95,12 +97,14 @@ static void remember(vr_nat *f,const uint8_t *bytes,size_t n,const char *target)
 static vr_nat *nat_reverse(vr_engine *e,const vr_packet *p)
 {
     uint64_t observed=vr_observe_begin(e,VR_OBS_NAT_REVERSE);
-    uint64_t now=vr_millis();
-    for(size_t i=0;i<VR_NAT_MAX;i++) {
-        vr_nat *f=&e->flows[i];vr_packet *w=&f->wire;
-        if(f->used && now-f->used<=120000 && p->protocol==w->protocol && p->src==w->dst && p->dst==w->src && p->sport==w->dport && p->dport==w->sport){f->used=now;vr_observe_end(e,VR_OBS_NAT_REVERSE,observed,i+1,1);return f;}
+    /* nat_forward encodes the slot in the translated port (ICMP identifier). */
+    int slot=(int)p->dport-nat_port_base;
+    if(slot>=0 && slot<VR_NAT_MAX) {
+        uint64_t now=vr_millis();
+        vr_nat *f=&e->flows[slot];vr_packet *w=&f->wire;
+        if(f->used && now-f->used<=120000 && p->protocol==w->protocol && p->src==w->dst && p->dst==w->src && p->sport==w->dport && p->dport==w->sport){f->used=now;vr_observe_end(e,VR_OBS_NAT_REVERSE,observed,1,1);return f;}
     }
-    vr_observe_end(e,VR_OBS_NAT_REVERSE,observed,VR_NAT_MAX,0);return NULL;
+    vr_observe_end(e,VR_OBS_NAT_REVERSE,observed,slot>=0 && slot<VR_NAT_MAX,0);return NULL;
 }
 
 static int relay(vr_engine *e,const char *target,uint8_t *b,size_t n)
