@@ -145,6 +145,10 @@ object MobileCoreBridge {
         )
     }
 
+    fun vRouteExternalSpeed(action: String, nodeID: String): String {
+        return callString("vRouteExternalSpeed", arrayOf(String::class.java, String::class.java), arrayOf(action, nodeID))
+    }
+
     fun vRouteSpeedTest(targetNodeID: String): String {
         return callString(
             methodName = "vRouteSpeedTest",

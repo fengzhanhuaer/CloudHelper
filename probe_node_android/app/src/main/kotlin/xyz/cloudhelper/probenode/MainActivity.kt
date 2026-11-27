@@ -353,6 +353,11 @@ class MainActivity : Activity() {
         }
 
         @JavascriptInterface
+        fun externalSpeed(action: String, nodeID: String): String {
+            return MobileCoreBridge.vRouteExternalSpeed(action, nodeID)
+        }
+
+        @JavascriptInterface
         fun vrouteSpeedTest(targetNodeID: String): String {
             AndroidLogStore.add("route", "vroute speed test requested: target=$targetNodeID")
             thread(name = "cloudhelper-android-vroute-speed") {

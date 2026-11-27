@@ -104,6 +104,7 @@ void vr_measure_frame(vr_engine *e,vr_link *l,const vr_frame *f,char path[VR_PAT
 
 void vr_measure_tick(vr_engine *e)
 {
+    vr_external_tick(e);
     uint64_t now=vr_millis();
     /* Like the existing Go receiver, finish on the receive window even when
        the sender's final frame is delayed behind queued bulk traffic. */
@@ -141,7 +142,13 @@ void vr_measure_tick(vr_engine *e)
     }
     vr_service *s=e->service;char node[129]={0},kind[16]={0};
     pthread_mutex_lock(&s->mutex);if(*s->measure_node){strcpy(node,s->measure_node);strcpy(kind,s->measure_kind);*s->measure_node=0;}pthread_mutex_unlock(&s->mutex);
-    if(*node) {
+    if(*node && !strcmp(kind,"external")){
+        if(vr_external_start(e,node)){
+            json_object *r=json_object_new_object();json_object_object_add(r,"mode",json_object_new_string(!strcmp(node,"direct")?"direct":"node"));
+            json_object_object_add(r,"node_id",json_object_new_string(!strcmp(node,"direct")?"":node));complete(e,r,"external measurement has no available path or is busy");json_object_put(r);
+        }
+    }
+    else if(*node) {
         char path[VR_PATH_MAX][129]={{0}};size_t n;
         if(vr_path(e,node,path,&n)||e->speed_send||vr_random_hex(e->measure_id,24)){complete(e,NULL,"target has no available path or measurement busy");}
         else {
@@ -177,6 +184,7 @@ void vr_measure_tick(vr_engine *e)
 
 void vr_measure_stop(vr_engine *e)
 {
+    vr_external_stop(e);
     pthread_mutex_lock(&e->service->mutex);int running=json_object_get_boolean(vr_member(e->service->measurement,"running"));pthread_mutex_unlock(&e->service->mutex);
     if(running)complete(e,NULL,"service stopped or configuration changed");
 }

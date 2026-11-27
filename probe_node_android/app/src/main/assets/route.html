@@ -51,6 +51,12 @@
           <div id="vrouteRTTResult" class="inline-feedback" aria-live="polite"></div>
           <div id="vrouteSpeedResult" class="inline-feedback" aria-live="polite"></div>
         </div>
+        <div class="vroute-rtt-tools">
+          <h3>外部下载测速</h3><p>Cloudflare HTTPS 下载，单连接，最多 10 秒或 64 MiB。不修改路由规则。</p>
+          <label for="externalSpeedNode">测速路径</label>
+          <div class="vroute-rtt-actions"><select id="externalSpeedNode"><option value="">直连</option></select><button id="externalSpeedStart" class="command secondary">开始外部测速</button><button id="externalSpeedStop" class="command secondary" disabled>停止</button></div>
+          <div id="externalSpeedResult" class="inline-feedback" aria-live="polite">尚未测速</div>
+        </div>
         <div id="vrouteExitNodes" class="vroute-list"></div>
         <div id="vrouteCarriers" class="vroute-list"></div>
         <div id="vrouteCapabilities" class="vroute-capabilities"></div>

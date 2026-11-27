@@ -219,6 +219,13 @@ void vr_outgoing(vr_engine *e,uint8_t *b,size_t n)
     }
     char dest[16],target[129];struct in_addr a={p.dst};inet_ntop(AF_INET,&a,dest,sizeof(dest));
     struct in_addr own;inet_pton(AF_INET,e->own_ip,&own);
+    uint32_t external_real;
+    if(vr_external_target(e,&p,&external_real,target)) {
+        vr_nat *f=nat_forward(e,&p,1,own.s_addr,external_real);if(!f)return;
+        remember(f,b,n,target);
+        if(!vr_packet_rewrite(b,n,f->wire.src,f->wire.dst,f->wire.sport,f->wire.dport))relay(e,target,b,n);
+        return;
+    }
     if(!node_for_ip(e,p.dst,target)) {
         if(p.src==own.s_addr){relay(e,target,b,n);
         return;}

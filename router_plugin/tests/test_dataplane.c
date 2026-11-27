@@ -9,7 +9,7 @@
 #include <unistd.h>
 
 static uint8_t carried[1500];static size_t carried_len;
-static int resolved_requests,controller_requests;
+static int resolved_requests,controller_requests,external_fixture;
 int __wrap_vr_resolve4(const char *domain,const char *upstream,const char *iface,char out[16])
 {(void)upstream;(void)iface;assert(!strcmp(domain,"local.example"));resolved_requests++;strcpy(out,"203.0.113.5");return 0;}
 static void tcp_checksums(uint8_t b[40])
@@ -72,6 +72,22 @@ static void test_fake_dns_blacklist(void)
 int main(void)
 {
     test_fake_dns_blacklist();
+    {
+        int pipes[2];vr_engine *e=engine("7","198.18.0.7",pipes);
+        uint8_t packet[40]={0x45,0,0,40,0,0,0x40,0,64,6};packet[32]=0x50;packet[33]=2;tcp_checksums(packet);
+        assert(!vr_packet_rewrite(packet,sizeof(packet),inet_addr("198.18.0.7"),inet_addr("198.19.255.254"),40001,443));
+        external_fixture=1;carried_len=0;vr_outgoing(e,packet,sizeof(packet));assert(carried_len==sizeof(packet));
+        vr_packet wire;assert(!vr_packet_parse(carried,carried_len,&wire));assert(wire.dst==inet_addr("1.1.1.1"));
+        assert(!strcmp(e->flows[0].target,"8"));
+        assert(!vr_packet_rewrite(carried,carried_len,wire.dst,wire.src,wire.dport,wire.sport));
+        carried[33]=0x12;tcp_checksums(carried);
+        char path[VR_PATH_MAX][129]={{"8"},{"7"}};vr_frame reply={1,1,NULL,carried,0,carried_len};vr_incoming(e,&reply,path,2);
+        assert(read(pipes[0],packet,sizeof(packet))==sizeof(packet));vr_packet restored;assert(!vr_packet_parse(packet,sizeof(packet),&restored));
+        assert(restored.src==inet_addr("198.19.255.254")&&restored.dst==inet_addr("198.18.0.7")&&restored.dport==40001);
+        external_fixture=0;close(pipes[0]);close(pipes[1]);json_object_put(e->policy);pthread_mutex_destroy(&e->mutex);free(e);
+        puts("PASS: selected external exit rewrites destination and restores exact TCP reply");
+    }
+
     int entry_pipe[2],exit_pipe[2];vr_engine *entry=engine("7","198.18.0.7",entry_pipe),*exit=engine("8","198.18.0.8",exit_pipe);
     const char *hex="450000210001400040117f98c0a83464c6120014ad9c0035000d52fd68656c6c6f";
     uint8_t packet[1500];size_t len=strlen(hex)/2;for(size_t i=0;i<len;i++){unsigned b;assert(sscanf(hex+2*i,"%2x",&b)==1);packet[i]=(uint8_t)b;}
@@ -216,3 +232,5 @@ int main(void)
     json_object_put(entry->policy);json_object_put(exit->policy);pthread_mutex_destroy(&entry->mutex);pthread_mutex_destroy(&exit->mutex);free(entry);free(exit);
     puts("PASS: LAN fake-IP NAT round trip, spoof rejection, bounded asynchronous mapping resolution");return 0;
 }
+
+int vr_external_target(vr_engine *e,const vr_packet *p,uint32_t *real,char node[129]){(void)e;if(!external_fixture||p->src!=inet_addr("198.18.0.7")||p->dst!=inet_addr("198.19.255.254")||p->sport!=40001||p->dport!=443||p->protocol!=6)return 0;*real=inet_addr("1.1.1.1");strcpy(node,"8");return 1;}

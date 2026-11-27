@@ -1805,6 +1805,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/virtual_router/route_test", probeLocalVirtualRouterRouteTestHandler)
 	mux.HandleFunc("/local/api/virtual_router/route_test/curl", probeLocalVirtualRouterRouteTestCurlHandler)
 	mux.HandleFunc("/local/api/virtual_router/route_test/speed", probeLocalVirtualRouterRouteTestSpeedHandler)
+	mux.HandleFunc("/local/api/virtual_router/external_speed", probeLocalExternalSpeedHandler)
 	mux.HandleFunc("/local/api/virtual_router/diagnostic", probeLocalVirtualRouterDiagnosticHandler)
 	mux.HandleFunc("/local/api/system/upgrade", probeLocalSystemUpgradeHandler)
 	mux.HandleFunc("/local/api/system/upgrade/check", probeLocalSystemUpgradeCheckHandler)

@@ -7001,6 +7001,9 @@ func handleProbeVirtualRouterIPFrame(runtime *probeVirtualRouterRuntime, link *p
 	if len(path) == 0 {
 		path = currentProbeVirtualRouterPathToIP(dstIP)
 	}
+	if feedProbeExternalPacket(packet, path) {
+		return nil
+	}
 	if handleProbeGatewayPacket(runtime, link, packet, path) {
 		return nil
 	}

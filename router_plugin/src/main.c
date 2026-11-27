@@ -145,17 +145,24 @@ json_object *vr_service_dispatch(vr_service *s,json_object *request)
         pthread_cond_broadcast(&s->changed);pthread_mutex_unlock(&s->mutex);OPENSSL_cleanse(&c,sizeof(c));
         return status_reply(s);
     }
+    if(!strcmp(action,"measure_stop")) {
+        pthread_mutex_lock(&s->mutex);if(!strcmp(vr_string(s->measurement,"kind"),"external"))s->measure_cancel=1;pthread_mutex_unlock(&s->mutex);return status_reply(s);
+    }
     if(!strcmp(action,"measure")) {
         const char *node=vr_string(request,"node"),*kind=vr_string(request,"kind");
-        if(!*node || strlen(node)>128 || (strcmp(kind,"ping") && strcmp(kind,"upload") && strcmp(kind,"download")))return error_reply("invalid measurement request");
+        if(!*node || strlen(node)>128 || (strcmp(kind,"ping") && strcmp(kind,"upload") && strcmp(kind,"download") && strcmp(kind,"external")))return error_reply("invalid measurement request");
         pthread_mutex_lock(&s->mutex);
         if(!json_object_get_boolean(vr_member(s->status,"ready")) || *s->measure_node || json_object_get_boolean(vr_member(s->measurement,"running"))) {
             pthread_mutex_unlock(&s->mutex);return error_reply("service not ready or measurement busy");
         }
-        strcpy(s->measure_node,node);strcpy(s->measure_kind,kind);
+        s->measure_cancel=0;strcpy(s->measure_node,node);strcpy(s->measure_kind,kind);
         json_object_put(s->measurement);s->measurement=json_object_new_object();
         json_object_object_add(s->measurement,"running",json_object_new_boolean(1));
         json_object_object_add(s->measurement,"kind",json_object_new_string(kind));
+        if(!strcmp(kind,"external")) {
+            json_object *r=json_object_new_object();json_object_object_add(r,"mode",json_object_new_string(!strcmp(node,"direct")?"direct":"node"));
+            json_object_object_add(r,"node_id",json_object_new_string(!strcmp(node,"direct")?"":node));json_object_object_add(s->measurement,"result",r);
+        }
         pthread_mutex_unlock(&s->mutex);return status_reply(s);
     }
     return error_reply("unknown action");

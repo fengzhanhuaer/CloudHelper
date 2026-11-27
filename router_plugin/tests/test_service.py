@@ -44,6 +44,8 @@ def main(binary):
         secret = "test-only-not-a-live-node-key"
         config.write_text(json.dumps({"exit_overrides":{"fixture-rule":"8"}}))
         proc = start(binary, config, sock)
+        assert not request(sock,{"action":"measure_stop","csrf":"invalid"})["ok"]
+        assert not request(sock,{"action":"measure","kind":"external","node":"direct","csrf":"invalid"})["ok"]
         try:
             response = request(sock, {"action": "status"})
             assert response['version']==subprocess.check_output([binary,'--version'],universal_newlines=True).split()[1]

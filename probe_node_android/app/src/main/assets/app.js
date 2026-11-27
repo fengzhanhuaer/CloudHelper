@@ -720,6 +720,9 @@ function vroutePathLabel(path) {
 }
 
 function renderVRouteRTTTargets(config) {
+  const external = byId("externalSpeedNode");
+  if(external){const selected=external.value;external.replaceChildren(new Option("直连",""));(config.probe_items||[]).filter(n=>String(n.node_id)!==String(config.local_node_id)).forEach(n=>external.add(new Option(n.display_name||n.node_id,n.node_id)));if([...external.options].some(o=>o.value===selected))external.value=selected;}
+
   const select = byId("vrouteRTTTarget");
   if (!select) {
     return;
@@ -2047,3 +2050,17 @@ function handleBootFailure(error) {
   } catch (_) {
   }
 }
+
+let externalSpeedTimer;
+function externalSpeedRequest(action="status") {
+  clearTimeout(externalSpeedTimer);
+  let r;
+  try { r=JSON.parse(window.CloudHelper.externalSpeed(action,byId("externalSpeedNode").value)||"{}"); }
+  catch(error){byId("externalSpeedResult").textContent="测速状态读取失败："+error.message;byId("externalSpeedStart").disabled=false;byId("externalSpeedStop").disabled=false;byId("externalSpeedNode").disabled=false;return;}
+  const result=r.result||{};
+  byId("externalSpeedStart").disabled=!!result.running;byId("externalSpeedStop").disabled=!result.running;byId("externalSpeedNode").disabled=!!result.running;
+  byId("externalSpeedResult").textContent=(result.mode==="node"?"经节点 "+result.node_id:"直连")+" · "+(result.running?"测速中":result.cancelled?"已停止":result.ok?"已完成":result.error?"失败":"尚未测速")+(result.bytes?" · "+Number(result.mbps||0).toFixed(2)+" Mbps / "+Number(result.mb_per_second||0).toFixed(2)+" MB/s · "+(result.bytes/1048576).toFixed(2)+" MiB":"")+(result.path&&result.path.length?" · "+result.path.join(" → "):"")+(r.error||result.error?" · "+(r.error||result.error):"");
+  if(result.running)externalSpeedTimer=setTimeout(()=>externalSpeedRequest(),800);
+}
+if(byId("externalSpeedStart")){byId("externalSpeedStart").onclick=()=>externalSpeedRequest("start");byId("externalSpeedStop").onclick=()=>externalSpeedRequest("stop");externalSpeedRequest();}
+window.addEventListener("beforeunload",()=>clearTimeout(externalSpeedTimer));

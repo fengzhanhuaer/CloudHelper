@@ -937,6 +937,9 @@ func (c *mobileVRouteCarrier) handleIncomingFrame(frame mobileVRouteFrame) error
 		return c.respondToDebugLogFrame(frame, path)
 	}
 	if frame.MainType == mobileVRouteFrameMainTypeIP && frame.SubType == mobileVRouteIPSubTypeIPv4 && len(frame.Data) > 0 {
+		if feedMobileExternalPacket(frame.Data, path) {
+			return nil
+		}
 		select {
 		case c.rx <- frame:
 		case <-c.done:

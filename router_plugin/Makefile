@@ -9,7 +9,7 @@ CFLAGS += -std=c99 -Wall -Wextra -Werror -Wformat=2 -fstack-protector-strong -ff
 LDLIBS += -lcurl -lssl -lcrypto -ljson-c -lpthread
 LDFLAGS += $(DEP_LDFLAGS) -Wl,--gc-sections -Wl,-z,relro,-z,now
 CORE = src/log.c src/ip_blacklist.c src/camouflage.c src/cache.c src/gateway.c src/report.c src/telemetry.c src/common.c src/config.c src/wire.c src/dns.c src/dns_upstream.c src/transport_dns.c src/policy.c src/auth.c src/controller.c src/controller_link.c src/websocket.c src/tls.c src/packet.c src/tls_sniff.c
-RUNTIME = src/main.c src/upgrade.c src/engine.c src/address_update.c src/policy_update.c src/carrier.c src/dataplane.c src/mapping.c src/platform.c src/dns_service.c src/dns_filter.c src/measure.c src/control.c src/network_monitor.c src/tcp_proxy.c
+RUNTIME = src/main.c src/upgrade.c src/engine.c src/address_update.c src/policy_update.c src/carrier.c src/dataplane.c src/mapping.c src/platform.c src/dns_service.c src/dns_filter.c src/measure.c src/control.c src/network_monitor.c src/tcp_proxy.c src/external_speed.c
 .PHONY: all test clean FORCE
 FORCE:
 $(BUILD)/build-version.h: FORCE | $(BUILD)
@@ -106,3 +106,6 @@ $(BUILD)/test-network-monitor: $(CORE) src/network_monitor.c tests/test_network_
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/network_monitor.c tests/test_network_monitor.c $(LDFLAGS) $(LDLIBS) -o $@
 $(BUILD)/test-path-selection: $(CORE) src/carrier.c src/measure.c tests/test_path_selection.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/carrier.c src/measure.c tests/test_path_selection.c $(LDFLAGS) $(LDLIBS) -o $@
+
+$(BUILD)/test-external-speed: $(CORE) tests/test_external_speed.c src/external_speed.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -fdata-sections $(CORE) tests/test_external_speed.c $(LDFLAGS) $(LDLIBS) -o $@

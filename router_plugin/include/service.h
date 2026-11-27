@@ -21,7 +21,7 @@ typedef struct {
     pthread_t upgrade_thread;
     int upgrade_joinable;
     unsigned pending_generation;
-    char measure_node[129],measure_kind[16];
+    char measure_node[129],measure_kind[16];int measure_cancel;
     vr_log_entry logs[VR_LOG_MAX];size_t log_head,log_count;
     vr_auth_ip auth_ips[VR_AUTH_IP_MAX];
     unsigned auth_ips_revision,auth_ips_saved;
