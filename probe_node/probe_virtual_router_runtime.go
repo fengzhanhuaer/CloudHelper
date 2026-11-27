@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cloudhelper/probe_node/internal/tcpwindow"
 	"github.com/gorilla/websocket"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -512,7 +513,7 @@ func startProbeVirtualRouterRelayServer(rt *probeVirtualRouterRuntime) error {
 		log.Printf("probe virtual router relay reused: route=%s listen=%s routes=%d", cfg.routeID, listenAddr, len(existing.routeIDs))
 		return nil
 	}
-	listenConfig := net.ListenConfig{KeepAlive: probeRouteRelayTCPKeepAlivePeriod}
+	listenConfig := net.ListenConfig{Control: tcpwindow.Control, KeepAlive: probeRouteRelayTCPKeepAlivePeriod}
 	tcpListener, err := listenConfig.Listen(context.Background(), "tcp", listenAddr)
 	if err != nil {
 		probeVirtualRouterRelayServerState.mu.Unlock()
@@ -786,8 +787,8 @@ func handleProbeVirtualRouterBridgeRelayWebSocket(rt *probeVirtualRouterRuntime,
 		log.Printf("probe virtual router websocket relay upgrade failed: route=%s remote=%s err=%v", rt.cfg.routeID, r.RemoteAddr, err)
 		return
 	}
-	defer ws.Close()
-	conn := newWebSocketNetConn(ws)
+	conn := tcpwindow.Carrier(startWebSocketNetConn(ws), ws.UnderlyingConn())
+	defer conn.Close()
 	sessionID := rt.nextBridgeSessionID("vrouter-carrier")
 	runProbeVirtualRouterPhysicalCarrier(rt, slot, conn, sessionID, strings.TrimSpace(r.RemoteAddr))
 }

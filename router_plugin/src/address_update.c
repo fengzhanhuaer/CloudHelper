@@ -10,10 +10,10 @@ int vr_addresses_apply(vr_engine *e,const vr_addresses *next)
     int move_wan=e->config.allow_wan&&strcmp(old.wan,next->wan)!=0;
     /* Prepare every replacement before touching current listeners or rules. */
     if(move_lan) {
-        lan=vr_bind4(next->lan,e->config.port,1);if(lan<0)goto fail;
-        if(vr_tcp_listener_active(e)) {sniff=vr_bind4(next->lan,1054,1);if(sniff<0)goto fail;}
+        lan=vr_bind4_windowed(next->lan,e->config.port);if(lan<0)goto fail;
+        if(vr_tcp_listener_active(e)) {sniff=vr_bind4_windowed(next->lan,1054);if(sniff<0)goto fail;}
     }
-    if(move_wan&&*next->wan) {wan=vr_bind4(next->wan,e->config.port,1);if(wan<0)goto fail;}
+    if(move_wan&&*next->wan) {wan=vr_bind4_windowed(next->wan,e->config.port);if(wan<0)goto fail;}
     if(vr_platform_readdress(&e->config,&old,next,e->cidr))goto fail;
     pthread_mutex_lock(&e->mutex);e->addresses=*next;pthread_mutex_unlock(&e->mutex);
     if(move_lan) {int fd=e->lan;e->lan=lan;lan=-1;if(fd>=0)close(fd);}

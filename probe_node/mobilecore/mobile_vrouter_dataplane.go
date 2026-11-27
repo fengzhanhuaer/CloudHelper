@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cloudhelper/probe_node/internal/tcpwindow"
 	"github.com/gorilla/websocket"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -1492,7 +1493,7 @@ func dialMobileVRouteWebSocketCarrierCandidate(plan mobileVRouteForwardPlan, hea
 			if dialNetwork == "" {
 				dialNetwork = network
 			}
-			netDialer := &net.Dialer{Timeout: mobileVRouteCarrierDialTimeout}
+			netDialer := &net.Dialer{Timeout: mobileVRouteCarrierDialTimeout, KeepAlive: mobileRelayTCPKeepAlivePeriod, Control: tcpwindow.Control}
 			return netDialer.DialContext(ctx, dialNetwork, dialHostPort)
 		},
 	}
@@ -1511,7 +1512,7 @@ func dialMobileVRouteWebSocketCarrierCandidate(plan mobileVRouteForwardPlan, hea
 		return nil, err
 	}
 	multiCarrier := resp != nil && strings.TrimSpace(resp.Header.Get(mobileVRouteCodexMultiCarrierHeader)) == "1"
-	return &mobileVRouteNegotiatedConn{Conn: newWebSocketNetConn(ws), multiCarrier: multiCarrier}, nil
+	return &mobileVRouteNegotiatedConn{Conn: tcpwindow.Carrier(startWebSocketNetConn(ws), ws.UnderlyingConn()), multiCarrier: multiCarrier}, nil
 }
 
 func dialMobileVRouteH3Carrier(plan mobileVRouteForwardPlan) (net.Conn, error) {
@@ -1639,9 +1640,9 @@ func dialMobileVRouteH3CarrierCandidate(plan mobileVRouteForwardPlan, candidate 
 func mobileVRouteQUICConfig() *quic.Config {
 	return &quic.Config{
 		InitialStreamReceiveWindow:     512 * 1024,
-		MaxStreamReceiveWindow:         4 * 1024 * 1024,
+		MaxStreamReceiveWindow:         tcpwindow.Payload,
 		InitialConnectionReceiveWindow: 1024 * 1024,
-		MaxConnectionReceiveWindow:     8 * 1024 * 1024,
+		MaxConnectionReceiveWindow:     2 * tcpwindow.Payload,
 		EnableDatagrams:                true,
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"sync"
 
+	"github.com/cloudhelper/probe_node/internal/tcpwindow"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
@@ -42,6 +43,10 @@ func NewPacketConn(ctx context.Context, local, remote string, send func([]byte) 
 		return nil, errors.New("invalid test destination IPv4")
 	}
 	s := stack.New(stack.Options{NetworkProtocols: []stack.NetworkProtocolFactory{ipv4.NewProtocol}, TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol}})
+	if err := tcpwindow.ConfigureStack(s); err != nil {
+		s.Destroy()
+		return nil, err
+	}
 	link := channel.New(256, 1400, "")
 	if err := s.CreateNIC(1, link); err != nil {
 		s.Destroy()

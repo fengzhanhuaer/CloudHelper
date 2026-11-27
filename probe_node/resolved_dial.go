@@ -14,12 +14,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cloudhelper/probe_node/internal/tcpwindow"
 	"github.com/gorilla/websocket"
 )
 
 const probeResolvedDialDefaultTimeout = 15 * time.Second
 
 type probeResolvedURLDialTarget struct {
+	carrier          bool
 	OriginalEndpoint string
 	DialEndpoint     string
 	DialEndpoints    []string
@@ -137,6 +139,9 @@ func newProbeResolvedConnectionDialContext(target probeResolvedURLDialTarget, ti
 					}
 				}
 				dialer := applyProbeRouteEgressDialer(&net.Dialer{Timeout: normalizeProbeResolvedDialTimeout(timeout), KeepAlive: 30 * time.Second})
+				if target.carrier {
+					dialer.Control = tcpwindow.Control
+				}
 				conn, err := dialer.DialContext(dialCtx, probeRouteEgressDialNetwork(network, endpoint), endpoint)
 				if err == nil && tlsConfig != nil {
 					config := tlsConfig.Clone()

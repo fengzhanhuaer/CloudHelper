@@ -16,8 +16,8 @@ int vr_platform_tls_cache(const char *ip,int add)
 {assert(*ip);if(cache_fail)return -1;if(add)cache_adds++;else cache_deletes++;return 0;}
 int vr_path(vr_engine *e,const char *target,char path[VR_PATH_MAX][129],size_t *n)
 {(void)e;(void)path;(void)n;assert(!strcmp(target,"8"));path_calls++;return -1;}
-int vr_bind4(const char *ip,int port,int tcp)
-{(void)ip;(void)port;(void)tcp;return -1;}
+int vr_bind4_windowed(const char *ip,int port)
+{(void)ip;(void)port;return -1;}
 int vr_send(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],size_t n,const void *data,size_t len)
 {(void)e;(void)path;(void)n;(void)data;assert(main==8&&sub==3&&len>16);remote_data++;return 0;}
 int vr_send_json(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],size_t n,json_object *o)

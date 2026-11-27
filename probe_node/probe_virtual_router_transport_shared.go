@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cloudhelper/probe_node/internal/tcpwindow"
 	"github.com/quic-go/quic-go"
 )
 
@@ -172,9 +173,9 @@ const (
 	probeRouteRelayUDPSocketBufferBytes        = 4 * 1024 * 1024
 	probeRouteRelayTCPKeepAlivePeriod          = 30 * time.Second
 	probeRouteRelayQUICInitialStreamWindow     = 512 * 1024
-	probeRouteRelayQUICMaxStreamWindow         = 4 * 1024 * 1024
+	probeRouteRelayQUICMaxStreamWindow         = tcpwindow.Payload
 	probeRouteRelayQUICInitialConnectionWindow = 1024 * 1024
-	probeRouteRelayQUICMaxConnectionWindow     = 8 * 1024 * 1024
+	probeRouteRelayQUICMaxConnectionWindow     = 2 * tcpwindow.Payload
 	probeRouteRelayQUICMaxIncomingStreams      = 1024
 	probeRouteRelayQUICDatagramMaxPayloadBytes = 1200
 	probeRouteRelayQUICKeepAlivePeriod         = 15 * time.Second

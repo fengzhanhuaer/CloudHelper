@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cloudhelper/probe_node/internal/tcpwindow"
 	"github.com/gorilla/websocket"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
@@ -1177,12 +1178,8 @@ func openProbeRouteRelayWebSocketNetConn(routeID string, secret string, relayHos
 					log.Printf("probe route relay websocket direct bypass failed: target=%s err=%v", strings.TrimSpace(dialHostPort), err)
 				}
 			}
-			netDialer := applyProbeRouteEgressDialer(&net.Dialer{Timeout: probeRouteRelayDialTimeout})
-			conn, err := netDialer.DialContext(ctx, probeRouteEgressDialNetwork(network, dialHostPort), dialHostPort)
-			if err == nil {
-				tuneProbeRouteNetConn(conn)
-			}
-			return conn, err
+			netDialer := applyProbeRouteEgressDialer(&net.Dialer{Timeout: probeRouteRelayDialTimeout, KeepAlive: probeRouteRelayTCPKeepAlivePeriod, Control: tcpwindow.Control})
+			return netDialer.DialContext(ctx, probeRouteEgressDialNetwork(network, dialHostPort), dialHostPort)
 		},
 	}
 	tlsConfig, err := newProbeRouteRelayTLSConfig(routeID, relayHostHeader, tls.VersionTLS12, nil)
@@ -1192,13 +1189,12 @@ func openProbeRouteRelayWebSocketNetConn(routeID string, secret string, relayHos
 	dialer.TLSClientConfig = tlsConfig
 	// Race only TCP/TLS establishment. Send the authenticated WS upgrade once,
 	// on the winner, so losing addresses cannot register duplicate carrier slots.
-	target := probeResolvedURLDialTarget{OriginalEndpoint: net.JoinHostPort(relayHostHeader, strconv.Itoa(relayPort)), DialEndpoint: dialHostPort, DialEndpoints: probeRouteRelayDialEndpoints(context.Background(), relayHost, relayDialHost, relayPort)}
+	target := probeResolvedURLDialTarget{carrier: true, OriginalEndpoint: net.JoinHostPort(relayHostHeader, strconv.Itoa(relayPort)), DialEndpoint: dialHostPort, DialEndpoints: probeRouteRelayDialEndpoints(context.Background(), relayHost, relayDialHost, relayPort)}
 	var connectedHost string
 	dialer.NetDialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		conn, err := newProbeResolvedConnectionDialContext(target, openTimeout, tlsConfig)(ctx, network, addr)
 		if err == nil {
 			connectedHost, _, _ = net.SplitHostPort(conn.RemoteAddr().String())
-			tuneProbeRouteNetConn(conn)
 		}
 		return conn, err
 	}
@@ -1224,7 +1220,7 @@ func openProbeRouteRelayWebSocketNetConn(routeID string, secret string, relayHos
 	if response != nil {
 		responseHeader = response.Header
 	}
-	return wrapProbeVirtualRouterNegotiatedConn(newWebSocketNetConn(ws), connToken, responseHeader), nil
+	return wrapProbeVirtualRouterNegotiatedConn(tcpwindow.Carrier(startWebSocketNetConn(ws), ws.UnderlyingConn()), connToken, responseHeader), nil
 }
 
 func openProbeRouteRelayHTTP3WebSocketNetConn(routeID string, secret string, relayHost string, relayPort int, bridgeRole string, relayMode string, connToken string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool) (net.Conn, error) {

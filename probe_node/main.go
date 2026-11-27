@@ -1248,6 +1248,12 @@ type webSocketWriteResult struct {
 
 func newWebSocketNetConn(ws *websocket.Conn) net.Conn {
 	configureProbeRouteWebSocketConn(ws)
+	return startWebSocketNetConn(ws)
+}
+
+// Carrier sockets have already negotiated their window during the TCP handshake.
+func startWebSocketNetConn(ws *websocket.Conn) net.Conn {
+	ws.EnableWriteCompression(false)
 	conn := &webSocketNetConn{
 		ws:           ws,
 		writeCh:      make(chan *webSocketWriteRequest, probeRouteRelayWebSocketWriteQueueDepth),

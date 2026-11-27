@@ -140,8 +140,9 @@ static int prepare(vr_engine *e)
         if(vr_links_add(e,r))return -1;
     }
     if(vr_service_stopped(e->service,e->generation))return -1;
-    e->lan=vr_bind4(e->addresses.lan,e->config.port,1);
-    if(e->config.allow_wan&&*e->addresses.wan)e->wan=vr_bind4(e->addresses.wan,e->config.port,1);
+    if(vr_platform_window_start())vr_service_log(e->service,"service","Using system TCP window scale ceiling");
+    e->lan=vr_bind4_windowed(e->addresses.lan,e->config.port);
+    if(e->config.allow_wan&&*e->addresses.wan)e->wan=vr_bind4_windowed(e->addresses.wan,e->config.port);
     if(e->lan<0||(e->config.allow_wan&&*e->addresses.wan&&e->wan<0)){strcpy(e->error,"carrier address or port unavailable");return -1;}
     e->tun=vr_platform_start(&e->config,&e->addresses,e->own_ip,e->cidr);
     if(e->tun<0){strcpy(e->error,"TUN/routing/firewall initialization failed");return -1;}e->platform_started=1;
@@ -201,6 +202,7 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
         vr_dataplane_tick(e);
         for(size_t i=0;i<e->link_count;i++) {
             vr_link *l=&e->links[i];
+            if(l->ssl)vr_tcp_windows_tick(&l->windows,l->fd,now,l->rx,l->tx);
             if(l->ssl && (l->auth_expires<=time(NULL)||now-l->last_rx>90000))vr_link_close(l,"link authorization or idle timeout");
             if(l->ssl&&now-l->keepalive_at>=20000) {
                 if(!vr_link_queue(l,9,"",0))l->keepalive_at=now;
@@ -264,6 +266,7 @@ done:
     if(e->wan>=0)close(e->wan);
     if(e->carrier6>=0)close(e->carrier6);
     vr_platform_carrier6_stop();
+    vr_platform_window_stop();
     if(e->platform_started)vr_platform_stop(e->cidr);
     if(e->tun>=0)close(e->tun);
     for(size_t i=0;i<4;i++)json_object_put(e->receives[i].message);

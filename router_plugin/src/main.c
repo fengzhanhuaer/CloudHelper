@@ -227,6 +227,7 @@ int vr_service_run(const char *config_path,const char *socket_path,int cleanup)
     /* After a crash, clear only our DNS marker and firewall chains. Holding the
        instance lock prevents cleanup from interfering with an active service. */
     vr_platform_stop(NULL);
+    vr_platform_window_stop();
     if(cleanup){rc=0;goto done;}
     if(invalid_config || vr_config_save(&s.config,config_path) || vr_random_hex(s.csrf,24)){fprintf(stderr,"configuration or random initialization failed\n");goto done;}
     if(vr_service_ip_load(&s))vr_service_log(&s,"service","Automatic IP blacklist could not be read; manual list retained");

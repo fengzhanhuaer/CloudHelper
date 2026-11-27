@@ -41,7 +41,7 @@ int vr_send(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],
 {assert(main==8);if(e==entry&&sub==1){json_object *o=vr_json_parse(data,n);strcpy(opened_id,vr_string(o,"session_id"));json_object_put(o);}vr_frame f={main,sub,NULL,data,0,n};vr_tcp_frame(e==entry?exit_node:entry,&f,path,count);return 0;}
 int vr_send_json(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],size_t count,json_object *o)
 {const char *s=json_object_to_json_string_ext(o,JSON_C_TO_STRING_PLAIN);return vr_send(e,main,sub,path,count,s,strlen(s));}
-int vr_bind4(const char *ip,int port,int tcp){(void)ip;(void)port;(void)tcp;return -1;}
+int vr_bind4_windowed(const char *ip,int port){(void)ip;(void)port;return -1;}
 static void tick(vr_engine *e)
 {struct pollfd fds[VR_TCP_POLL_MAX];size_t n=vr_tcp_pollfds(e,fds);if(n){assert(poll(fds,n,1)>=0);vr_tcp_poll(e,fds);}}
 static size_t hello(uint8_t out[1024],const char *name)

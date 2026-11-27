@@ -1432,8 +1432,8 @@ func TestMobileVRouteCarrierBuffersAreBounded(t *testing.T) {
 		t.Fatalf("unexpected queue capacities: ip=%d control=%d rx=%d", cap(carrier.tx), cap(carrier.txControl), cap(carrier.rx))
 	}
 	quicConfig := mobileVRouteQUICConfig()
-	if quicConfig.MaxStreamReceiveWindow > 4*1024*1024 || quicConfig.MaxConnectionReceiveWindow > 8*1024*1024 {
-		t.Fatalf("mobile h3 receive windows are too large: stream=%d connection=%d", quicConfig.MaxStreamReceiveWindow, quicConfig.MaxConnectionReceiveWindow)
+	if quicConfig.InitialStreamReceiveWindow >= quicConfig.MaxStreamReceiveWindow || quicConfig.MaxStreamReceiveWindow != 18_750_000 || quicConfig.MaxConnectionReceiveWindow != 37_500_000 {
+		t.Fatalf("unexpected mobile h3 receive windows: stream=%d connection=%d", quicConfig.MaxStreamReceiveWindow, quicConfig.MaxConnectionReceiveWindow)
 	}
 }
 

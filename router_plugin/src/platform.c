@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "platform.h"
+#include "tcp_window.h"
 #include "transport.h"
 #include <arpa/inet.h>
 #include <errno.h>
@@ -197,20 +198,81 @@ int vr_addresses_check(vr_address_watch *watch,const vr_addresses *current,vr_ad
     return confirmed?2:1;
 }
 
-int vr_bind4(const char *ip,int port,int tcp)
+/* Older Asuswrt kernels negotiate window scaling from the system ceilings.
+   Raising rmem_max allows an explicit socket request without increasing the
+   default buffer or tcp_rmem autotuning range for other processes. */
+static const char *window_marker = "/var/run/cloudhelper-router/rmem-max.previous";
+
+static int read_ceiling(const char *path)
+{
+    FILE *file = fopen(path, "r");
+    if (!file) return -1;
+    int value;
+    int ok = fscanf(file, "%d", &value) == 1;
+    fclose(file);
+    return ok && value > 0 ? value : -1;
+}
+
+static int write_ceiling(int value)
+{
+    int fd = open("/proc/sys/net/core/rmem_max", O_WRONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    char text[32];
+    int size = snprintf(text, sizeof(text), "%d\n", value);
+    int ok = write(fd, text, (size_t)size) == size;
+    close(fd);
+    return ok ? 0 : -1;
+}
+
+int vr_platform_window_start(void)
+{
+    int value = read_ceiling("/proc/sys/net/core/rmem_max");
+    if (value < 0) return -1;
+    if (value >= VR_TCP_TARGET_WINDOW) return 0;
+    FILE *file = fopen("/proc/sys/net/ipv4/tcp_rmem", "r");
+    int maximum = 0;
+    if (file) {
+        if (fscanf(file, "%*d %*d %d", &maximum) != 1) maximum = 0;
+        fclose(file);
+    }
+    if (maximum >= VR_TCP_TARGET_WINDOW) return 0;
+    char text[32];
+    int size = snprintf(text, sizeof(text), "%d\n", value);
+    if (vr_atomic_write(window_marker, text, (size_t)size)) return -1;
+    return write_ceiling(VR_TCP_TARGET_WINDOW);
+}
+
+void vr_platform_window_stop(void)
+{
+    int previous = read_ceiling(window_marker);
+    if (previous <= 0) return;
+    int current = read_ceiling("/proc/sys/net/core/rmem_max");
+    if (current < 0 || (current == VR_TCP_TARGET_WINDOW && write_ceiling(previous))) return;
+    unlink(window_marker);
+}
+
+static int bind4_socket(const char *ip,int port,int tcp,int windowed)
 {
     struct sockaddr_in sa={0};sa.sin_family=AF_INET;sa.sin_port=htons((uint16_t)port);
     if(!ipv4(ip)||port<1||port>65535||inet_pton(AF_INET,ip,&sa.sin_addr)!=1)return -1;
     int fd=socket(AF_INET,(tcp?SOCK_STREAM:SOCK_DGRAM)|SOCK_CLOEXEC|SOCK_NONBLOCK,0);if(fd<0)return -1;
+    if(windowed)vr_tcp_prepare_receive_window(fd);
     int yes=1;setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof(yes));
     if(bind(fd,(struct sockaddr *)&sa,sizeof(sa))||(tcp&&listen(fd,8))){close(fd);return -1;}return fd;
 }
+
+int vr_bind4(const char *ip,int port,int tcp)
+{return bind4_socket(ip,port,tcp,0);}
+
+int vr_bind4_windowed(const char *ip,int port)
+{return bind4_socket(ip,port,1,1);}
 
 int vr_bind6_carrier(int port,const char *iface)
 {
     if(port<1||port>65535)return -1;
     struct sockaddr_in6 sa={0};sa.sin6_family=AF_INET6;sa.sin6_port=htons((uint16_t)port);
     int fd=socket(AF_INET6,SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK,0);if(fd<0)return -1;
+    vr_tcp_prepare_receive_window(fd);
     int yes=1;
     if(iface&&*iface&&setsockopt(fd,SOL_SOCKET,SO_BINDTODEVICE,iface,strlen(iface)+1)){close(fd);return -1;}
     if(setsockopt(fd,IPPROTO_IPV6,IPV6_V6ONLY,&yes,sizeof(yes))||setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&yes,sizeof(yes))||
@@ -478,6 +540,7 @@ static json_object *exit_route_view(json_object *policy,const vr_exit_overrides 
     if(!policy)return NULL;
     json_object *view=json_object_new_object(),*rules=json_object_new_array(),*source=vr_member(policy,"route_rules");
     json_object_object_add(view,"route_rules",rules);
+    if(!json_object_is_type(source,json_type_array))return view;
     for(size_t i=0;i<(size_t)json_object_array_length(source);i++) {
         json_object *rule=json_object_array_get_idx(source,i);int reject=0;
         if(!strcmp(vr_string(rule,"action"),"direct"))for(size_t j=0;choices&&j<choices->count;j++)

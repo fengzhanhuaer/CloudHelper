@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cloudhelper/probe_node/internal/tcpwindow"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
@@ -37,9 +38,8 @@ const (
 	// write while preserving per-flow packet order.
 	probeVirtualRouterExitNetstackOutputShardQueuePackets   = 512
 	probeVirtualRouterExitNetstackOutputShardInitialPackets = 32
-	probeVirtualRouterExitNetstackTCPBufferMin              = 64 << 10
-	probeVirtualRouterExitNetstackTCPBufferDefault          = 4 << 20
-	probeVirtualRouterExitNetstackTCPBufferMax              = 16 << 20
+	probeVirtualRouterExitNetstackTCPBufferDefault          = tcpwindow.InitialBuffer
+	probeVirtualRouterExitNetstackTCPBufferMax              = tcpwindow.MaxBuffer
 	probeVirtualRouterExitTCPRelayCopyBufferBytes           = 64 << 10
 	probeVirtualRouterExitDialTimeout                       = 12 * time.Second
 	probeVirtualRouterExitUDPIdleTimeout                    = 90 * time.Second
@@ -292,27 +292,7 @@ func configureProbeVirtualRouterExitNetstackTCP(gStack *stack.Stack) error {
 	if err := tcpipErrorToError(gStack.SetTransportProtocolOption(tcp.ProtocolNumber, &sack)); err != nil {
 		return fmt.Errorf("set tcp sack: %w", err)
 	}
-	moderateReceive := tcpip.TCPModerateReceiveBufferOption(true)
-	if err := tcpipErrorToError(gStack.SetTransportProtocolOption(tcp.ProtocolNumber, &moderateReceive)); err != nil {
-		return fmt.Errorf("set tcp receive moderation: %w", err)
-	}
-	sendBuffer := tcpip.TCPSendBufferSizeRangeOption{
-		Min:     probeVirtualRouterExitNetstackTCPBufferMin,
-		Default: probeVirtualRouterExitNetstackTCPBufferDefault,
-		Max:     probeVirtualRouterExitNetstackTCPBufferMax,
-	}
-	if err := tcpipErrorToError(gStack.SetTransportProtocolOption(tcp.ProtocolNumber, &sendBuffer)); err != nil {
-		return fmt.Errorf("set tcp send buffer: %w", err)
-	}
-	receiveBuffer := tcpip.TCPReceiveBufferSizeRangeOption{
-		Min:     probeVirtualRouterExitNetstackTCPBufferMin,
-		Default: probeVirtualRouterExitNetstackTCPBufferDefault,
-		Max:     probeVirtualRouterExitNetstackTCPBufferMax,
-	}
-	if err := tcpipErrorToError(gStack.SetTransportProtocolOption(tcp.ProtocolNumber, &receiveBuffer)); err != nil {
-		return fmt.Errorf("set tcp receive buffer: %w", err)
-	}
-	return nil
+	return tcpwindow.ConfigureStack(gStack)
 }
 
 func makeProbeVirtualRouterExitNetstackOutputDispatchShards() []*probeAdaptiveQueue[probeVirtualRouterExitNetstackOutputPacket] {
@@ -514,7 +494,7 @@ func (n *probeVirtualRouterExitNetstack) handleTCPForwarder(req *tcp.ForwarderRe
 		return
 	}
 	req.Complete(false)
-	inbound := gonet.NewTCPConn(&wq, ep)
+	inbound := tcpwindow.Endpoint(gonet.NewTCPConn(&wq, ep), ep)
 	release := probeExitTCPObservation.register(ep, net.JoinHostPort(id.RemoteAddress.String(), strconv.Itoa(int(id.RemotePort))), net.JoinHostPort(id.LocalAddress.String(), strconv.Itoa(int(id.LocalPort))))
 	if n.gateway {
 		go func() { defer release(); relayProbeGatewayTCP(inbound, id.LocalAddress, id.LocalPort) }()
@@ -536,22 +516,12 @@ func relayProbeVirtualRouterExitTCP(inbound net.Conn, localAddress tcpip.Address
 		_ = inbound.Close()
 		return
 	}
-	tuneProbeVirtualRouterExitTCPConn(inbound)
-	tuneProbeVirtualRouterExitTCPConn(outbound)
+	if tcpConn, ok := outbound.(*net.TCPConn); ok {
+		_ = tcpConn.SetNoDelay(true)
+	}
 	log.Printf("probe virtual router fake ip tcp exit open ok: target=%s remote=%s", target.Address(), outbound.RemoteAddr())
 	recordProbeVirtualRouterFakeIPExitHit(entry.Domain)
 	relayProbeVirtualRouterExitTCPConns(inbound, outbound)
-}
-
-func tuneProbeVirtualRouterExitTCPConn(conn net.Conn) {
-	if conn == nil {
-		return
-	}
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		_ = tcpConn.SetNoDelay(true)
-		_ = tcpConn.SetReadBuffer(probeVirtualRouterExitNetstackTCPBufferDefault)
-		_ = tcpConn.SetWriteBuffer(probeVirtualRouterExitNetstackTCPBufferDefault)
-	}
 }
 
 func (n *probeVirtualRouterExitNetstack) handleUDPForwarder(req *udp.ForwarderRequest) {

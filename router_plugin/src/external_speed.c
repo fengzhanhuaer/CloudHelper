@@ -24,6 +24,7 @@ struct vr_external_state {
     char node[129],iface[16],own[16],real[16],fake[16];
     uint32_t source,destination,resolved;uint16_t port;
     int done,stop,fd,active;uint64_t start,first,last,bytes,published;
+    vr_tcp_windows windows;
     long status;CURL *curl;uint8_t tcp_info[256];size_t tcp_info_length;uint64_t tcp_info_at;
 };
 static int cancelled(struct vr_external_state *x)
@@ -61,9 +62,13 @@ static size_t receive_data(char *data,size_t size,size_t count,void *opaque)
     curl_easy_getinfo(x->curl,CURLINFO_RESPONSE_CODE,&x->status);
     if(x->status!=200||cancelled(x))return 0;
     uint64_t now=vr_millis();if(x->first&&now-x->first>=EXTERNAL_MS)return 0;
-    if(!x->first)x->first=now;
+    if(!x->first){
+        x->first=now;
+        if(*x->node&&x->fd>=0)vr_tcp_windows_start(&x->windows,x->fd,now,0,0);
+    }
     x->last=now;
     uint64_t remaining=EXTERNAL_BYTES-x->bytes;x->bytes+=n>remaining?remaining:n;
+    if(*x->node&&x->fd>=0)vr_tcp_windows_tick(&x->windows,x->fd,now,x->bytes,0);
     if(now-x->published>=250){publish(x,1,NULL,0);x->published=now;}
     return x->bytes>=EXTERNAL_BYTES?0:n;
 }
@@ -77,6 +82,7 @@ static curl_socket_t open_socket(void *opaque,curlsocktype purpose,struct curl_s
     (void)purpose;struct vr_external_state *x=opaque;
     if(address->family!=AF_INET||address->socktype!=SOCK_STREAM)return CURL_SOCKET_BAD;
     int fd=socket(AF_INET,SOCK_STREAM|SOCK_CLOEXEC,0);if(fd<0)return CURL_SOCKET_BAD;
+    if(*x->node)vr_tcp_prepare_receive_window(fd);
     int on=1;struct sockaddr_in local={.sin_family=AF_INET,.sin_addr={x->source}};
     /* FREEBIND permits bind(), while TRANSPARENT also permits routing packets
        whose source is the unassigned virtual IP. Both are socket-local. */

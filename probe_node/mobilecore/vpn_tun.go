@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cloudhelper/probe_node/internal/tcpwindow"
 	"github.com/cloudhelper/probe_node/internal/tlssniff"
 	"golang.org/x/net/dns/dnsmessage"
 	"gvisor.dev/gvisor/pkg/buffer"
@@ -36,7 +37,7 @@ const (
 	vpnNICID            = tcpip.NICID(1)
 	vpnQueueSize        = 4096
 	vpnMTU              = 1500
-	vpnTCPWindow        = 1024
+	vpnTCPWindow        = tcpwindow.InitialBuffer
 	vpnTCPInFlight      = 512
 	vpnRelayIdle        = 5 * time.Minute
 	vpnUDPRelayTimeout  = 30 * time.Second
@@ -582,6 +583,10 @@ func newandroidVPNDataPlane(tun *os.File) (*androidVPNDataPlane, error) {
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol},
 	})
+	if err := tcpwindow.ConfigureStack(gStack); err != nil {
+		gStack.Destroy()
+		return nil, err
+	}
 	linkEP := channel.New(vpnQueueSize, vpnMTU, "")
 	if err := tcpipErrToError(gStack.CreateNIC(vpnNICID, linkEP)); err != nil {
 		gStack.Destroy()
@@ -791,7 +796,7 @@ func (n *androidVPNDataPlane) handleTCPForwarder(req *tcp.ForwarderRequest) {
 		return
 	}
 	req.Complete(false)
-	inbound := gonet.NewTCPConn(&wq, ep)
+	inbound := tcpwindow.Endpoint(gonet.NewTCPConn(&wq, ep), ep)
 	if isAndroidVPNDNSTarget(targetAddr) {
 		go serveAndroidVPNTCPDNS(inbound, targetAddr)
 		return

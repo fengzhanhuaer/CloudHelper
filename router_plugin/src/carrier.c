@@ -795,6 +795,7 @@ void vr_handshakes_poll(vr_engine *e,int finish)
             if(result->ssl) {
                 vr_link_close(l,"");l->ssl=result->ssl;l->fd=result->fd;l->client=result->client;
                 carrier_socket(l->fd);
+                vr_tcp_windows_start(&l->windows,l->fd,vr_millis(),l->rx,l->tx);
                 l->ws.expect_mask=result->ws.expect_mask;l->last_rx=result->last_rx;l->auth_expires=result->auth_expires;
                 l->multi_carrier=result->multi_carrier;l->keepalive_at=vr_millis();l->connected_at=l->keepalive_at;l->session=++e->carrier_session;l->opens++;*l->error=0;
                 if(!l->slot&&!l->multi_carrier)for(size_t k=0;k<e->link_count;k++)

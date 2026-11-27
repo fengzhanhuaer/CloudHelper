@@ -21,6 +21,8 @@ typedef struct {
     size_t slot;
     int read_eof[2],write_shutdown[2];
     uint64_t born,active;
+    vr_tcp_windows windows[2];
+    uint64_t received[2],sent[2];
     uint8_t id[16];char hex[33],ip[16],domain[254];int port;
     char path[VR_PATH_MAX][129];size_t count;
     uint8_t *buffer[2];size_t length[2],capacity[2];
@@ -163,6 +165,7 @@ static int connect_ip(tcp_session *s)
     struct sockaddr_in dst={0};dst.sin_family=AF_INET;dst.sin_port=htons((uint16_t)s->port);
     if(inet_pton(AF_INET,s->ip,&dst.sin_addr)!=1)return -1;
     s->up=socket(AF_INET,SOCK_STREAM|SOCK_NONBLOCK|SOCK_CLOEXEC,0);if(s->up<0)return -1;
+    vr_tcp_prepare_receive_window(s->up);
     int rc=connect(s->up,(struct sockaddr *)&dst,sizeof(dst));if(rc&&errno!=EINPROGRESS)return -1;
     s->phase=2;return 0;
 }
@@ -196,7 +199,7 @@ int vr_tcp_start(vr_engine *e)
 {
     if(!e->tcp) {tcp_session *s=allocate(e);if(!s)return -1;drop(e,s,0);}
     if(e->tcp->listener>=0)return 0;
-    e->tcp->listener=vr_bind4(e->addresses.lan,1054,1);
+    e->tcp->listener=vr_bind4_windowed(e->addresses.lan,1054);
     return e->tcp->listener<0?-1:0;
 }
 int vr_tcp_listener_active(vr_engine *e)
@@ -260,6 +263,7 @@ int vr_tcp_attach(vr_engine *e,int fd,const char *ip,int port)
     if(!public_ip(ip)||port<1||port>65535||vr_copy(s->ip,sizeof(s->ip),ip)){drop(e,s,0);return -1;}
     s->fd=fd;s->port=port;
     if(fcntl(fd,F_SETFL,fcntl(fd,F_GETFL,0)|O_NONBLOCK)<0){s->fd=-1;drop(e,s,0);return -1;}
+    vr_tcp_windows_start(&s->windows[0],fd,vr_millis(),0,0);
     cache_tick(e);
     struct in_addr target;inet_pton(AF_INET,ip,&target);
     if(port==443&&e->config.tls_sni_enabled)for(size_t i=0;i<TCP_CACHE_MAX;i++) {
@@ -333,30 +337,37 @@ void vr_tcp_poll(vr_engine *e,struct pollfd *fds)
         if(s->phase==2&&(b&(POLLOUT|POLLHUP))) {
             int error=0;socklen_t n=sizeof(error);
             if(getsockopt(s->up,SOL_SOCKET,SO_ERROR,&error,&n)||error){if(s->exit_role)result(e,s,0);drop(e,s,1);continue;}
+            vr_tcp_windows_start(&s->windows[1],s->up,now,0,0);
             s->phase=3;if(s->exit_role)result(e,s,1);
         }
         if(a&POLLOUT) {
             size_t before=s->length[1];
             if(write_buffer(s->fd,s->buffer[1],&s->length[1])){drop(e,s,1);continue;}
-            if(s->length[1]!=before)s->active=now;
+            s->sent[0]+=before-s->length[1];
+            if(before!=s->length[1])s->active=now;
         }
         if(s->phase==3&&(b&POLLOUT)) {
             size_t before=s->length[0];
             if(write_buffer(s->up,s->buffer[0],&s->length[0])){drop(e,s,1);continue;}
-            if(s->length[0]!=before)s->active=now;
+            s->sent[1]+=before-s->length[0];
+            if(before!=s->length[0])s->active=now;
         }
         if((a&(POLLIN|POLLHUP))&&!s->closing&&!s->read_eof[0]) {
             size_t before=s->length[0];int rc=read_buffer(s->fd,s,0);
             if(rc<0){drop(e,s,1);continue;}
             if(rc>0){s->read_eof[0]=1;if(s->remote)s->closing=1;}
-            if(s->length[0]!=before)s->active=now;
+            s->received[0]+=s->length[0]-before;
+            if(before!=s->length[0])s->active=now;
         }
         if(s->phase==3&&(b&(POLLIN|POLLHUP))&&!s->closing&&!s->read_eof[1]) {
             size_t before=s->length[1];int rc=read_buffer(s->up,s,1);
             if(rc<0){drop(e,s,1);continue;}
             if(rc>0){s->read_eof[1]=1;if(s->remote)s->closing=1;}
-            if(s->length[1]!=before)s->active=now;
+            s->received[1]+=s->length[1]-before;
+            if(before!=s->length[1])s->active=now;
         }
+        if(s->fd>=0)vr_tcp_windows_tick(&s->windows[0],s->fd,now,s->received[0],s->sent[0]);
+        if(s->up>=0&&s->phase==3)vr_tcp_windows_tick(&s->windows[1],s->up,now,s->received[1],s->sent[1]);
         if(!s->phase&&(s->read_eof[0]||vr_tls_server_name(s->buffer[0],s->length[0],s->domain)||now-s->born>=2000))decide(e,s);
         if(e->tcp->sessions[i]!=s)continue;
         if(s->remote&&(s->read_eof[0]||s->read_eof[1]))s->closing=1;

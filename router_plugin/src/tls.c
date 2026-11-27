@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "transport.h"
+#include "tcp_window.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -91,7 +92,7 @@ int vr_tls_pinned(X509 *cert,const char *pin)
     return strcasecmp(text,pin)?-1:0;
 }
 
-static SSL *start_at(const char *host,const char *ip,int port,const char *pin,const char *iface,int *fd,int send_sni)
+static SSL *start_at(const char *host,const char *ip,int port,const char *pin,const char *iface,int *fd,int relay)
 {
     *fd=-1;if(port<1||port>65535)return NULL;
     struct sockaddr_storage address={0};socklen_t address_len;struct sockaddr_in *v4=(struct sockaddr_in *)&address;struct sockaddr_in6 *v6=(struct sockaddr_in6 *)&address;
@@ -99,6 +100,7 @@ static SSL *start_at(const char *host,const char *ip,int port,const char *pin,co
     else if(inet_pton(AF_INET6,ip,&v6->sin6_addr)==1){v6->sin6_family=AF_INET6;v6->sin6_port=htons((uint16_t)port);address_len=sizeof(*v6);}
     else return NULL;
     int sock=socket(address.ss_family,SOCK_STREAM|SOCK_CLOEXEC|SOCK_NONBLOCK,0);if(sock<0)return NULL;
+    if(relay)vr_tcp_prepare_receive_window(sock);
     SSL_CTX *ctx=NULL;SSL *ssl=NULL;
     if(address.ss_family==AF_INET6&&iface&&!*iface)goto fail;
     int yes=1;if(setsockopt(sock,IPPROTO_TCP,TCP_NODELAY,&yes,sizeof(yes)))goto fail;
@@ -120,7 +122,7 @@ static SSL *start_at(const char *host,const char *ip,int port,const char *pin,co
     ssl=SSL_new(ctx);if(!ssl)goto fail;SSL_CTX_free(ctx);ctx=NULL;
     SSL_set_fd(ssl,sock);
     unsigned char numeric[16];int literal=inet_pton(AF_INET,host,numeric)==1||inet_pton(AF_INET6,host,numeric)==1;
-    if(send_sni && !literal && SSL_set_tlsext_host_name(ssl,host)!=1)goto fail;
+    if((!relay||!strncasecmp(host,"api_copilot_",12)) && !literal && SSL_set_tlsext_host_name(ssl,host)!=1)goto fail;
     if(!*pin) {
         if(literal){if(X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(ssl),host)!=1)goto fail;}
         else if(SSL_set1_host(ssl,host)!=1)goto fail;
@@ -131,14 +133,14 @@ fail:SSL_free(ssl);SSL_CTX_free(ctx);close(sock);return NULL;
 
 SSL *vr_tls_connect_at(const char *host,const char *ip,int port,const char *pin,const char *iface,int *fd,uint64_t deadline)
 {
-    SSL *ssl=start_at(host,ip,port,pin,iface,fd,1);if(!ssl)return NULL;
+    SSL *ssl=start_at(host,ip,port,pin,iface,fd,0);if(!ssl)return NULL;
     if(!wait_fd(*fd,POLLOUT,deadline)&&!handshake(ssl,1,deadline)) {
         X509 *cert=SSL_get_peer_certificate(ssl);int bad=*pin?vr_tls_pinned(cert,pin):0;X509_free(cert);if(!bad)return ssl;
     }
     SSL_free(ssl);close(*fd);*fd=-1;return NULL;
 }
 
-static SSL *connect_resolved(const char *host,int port,const char *pin,const vr_config *config,const char *iface,int *fd,uint64_t deadline,int send_sni)
+static SSL *connect_resolved(const char *host,int port,const char *pin,const vr_config *config,const char *iface,int *fd,uint64_t deadline,int relay)
 {
     uint64_t now=vr_millis(),budget=deadline>now?deadline-now:0;
     char addresses[4][46];*fd=-1;int count=vr_resolve_transport(host,config,iface,addresses);
@@ -152,7 +154,7 @@ static SSL *connect_resolved(const char *host,int port,const char *pin,const vr_
     while((now=vr_millis())<end&&!winner) {
         int live=0;for(int i=0;i<next;i++)if(attempts[i])live++;
         if(next<count&&(now>=launch||!live)) {
-            attempts[next]=start_at(host,addresses[next],port,pin,iface,&polls[next].fd,send_sni);next++;launch=now+250;
+            attempts[next]=start_at(host,addresses[next],port,pin,iface,&polls[next].fd,relay);next++;launch=now+250;
         }
         live=0;for(int i=0;i<next;i++)if(attempts[i])live++;
         if(!live&&next==count)break;
@@ -175,15 +177,14 @@ static SSL *connect_resolved(const char *host,int port,const char *pin,const vr_
 }
 
 SSL *vr_tls_connect(const char *host,int port,const char *pin,const vr_config *config,const char *iface,int *fd,uint64_t deadline)
-{return connect_resolved(host,port,pin,config,iface,fd,deadline,1);}
+{return connect_resolved(host,port,pin,config,iface,fd,deadline,0);}
 
 SSL *vr_tls_connect_relay(const char *host,int port,const char *pin,const vr_config *config,const char *iface,int *fd,uint64_t deadline)
 {
     /* Match Probe ordinary relays: no domain SNI. Cloudflare Copilot entry
        points need SNI to select the service. Certificate identity checks and
        the carrier's private HMAC/ticket authentication remain independent. */
-    int send_sni=!strncasecmp(host,"api_copilot_",12);
-    return connect_resolved(host,port,pin,config,iface,fd,deadline,send_sni);
+    return connect_resolved(host,port,pin,config,iface,fd,deadline,1);
 }
 
 int vr_http_header(SSL *ssl,char *header,size_t cap,uint64_t deadline)

@@ -45,8 +45,11 @@ $(BUILD)/test-core: $(CORE) tests/test_core.c include/chvr.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) tests/test_core.c $(LDFLAGS) $(LDLIBS) -o $@
 $(BUILD)/test-camouflage: $(CORE) src/platform.c tests/test_camouflage.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/platform.c tests/test_camouflage.c $(LDFLAGS) $(LDLIBS) -o $@
-test: $(BUILD)/test-core
+$(BUILD)/test-tcp-window: tests/test_tcp_window.c include/tcp_window.h $(BUILD)/build-version.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LDFLAGS) -o $@
+test: $(BUILD)/test-core $(BUILD)/test-tcp-window
 	$(BUILD)/test-core
+	$(BUILD)/test-tcp-window
 $(BUILD)/test-exits: $(CORE) $(RUNTIME) tests/test_exits.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) $(filter-out src/main.c,$(RUNTIME)) tests/test_exits.c $(LDFLAGS) $(LDLIBS) -o $@
 $(BUILD)/test-logs: $(CORE) tests/test_logs.c $(wildcard include/*.h) | $(BUILD)

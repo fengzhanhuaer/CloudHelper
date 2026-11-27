@@ -2,6 +2,7 @@
 #define CHVR_ENGINE_H
 #include "service.h"
 #include "transport.h"
+#include "tcp_window.h"
 #include "platform.h"
 #include "packet.h"
 #include "observe.h"
@@ -27,6 +28,7 @@ typedef struct {
     json_object *rule;
     char route[33],peer[129],error[96],ping_id[49];
     SSL *ssl;
+    vr_tcp_windows windows;
     int fd,client,slot,multi_carrier;
     uint64_t retry,rx,tx,last_rx,ping_time,rtt,keepalive_at,session;
     uint64_t connected_at,tx_enqueued,tx_dequeued,tx_full;
