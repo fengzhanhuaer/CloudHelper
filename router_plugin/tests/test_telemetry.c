@@ -27,6 +27,9 @@ int main(int argc,char **argv)
     }
     vr_telemetry_publish(e);json_object *before=json_object_get(e->telemetry),*rows=vr_member(before,"relay_status"),*items=vr_member(vr_member(before,"virtual_router_buffers"),"items");
     assert(json_object_array_length(rows)==VR_LINK_MAX&&json_object_array_length(items)==VR_CARRIER_MAX*2);
+    json_object *tx=json_object_array_get_idx(items,0),*rx=json_object_array_get_idx(items,1);
+    assert(!strcmp(vr_string(tx,"unit"),"bytes")&&json_object_get_boolean(vr_member(tx,"timing_supported")));
+    assert(!vr_member(tx,"dropped")&&!vr_member(tx,"retry_events")&&!vr_member(rx,"timing_supported"));
     assert(strlen(json_object_to_json_string_ext(before,JSON_C_TO_STRING_PLAIN))>16384);
     assert(strlen(json_object_to_json_string_ext(before,JSON_C_TO_STRING_PLAIN))<256*1024);
     assert(json_object_array_length(vr_member(json_object_array_get_idx(rows,0),"bridge_sessions"))==3);

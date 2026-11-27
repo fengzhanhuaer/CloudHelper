@@ -232,6 +232,7 @@ func handleProbeVRouteProxyTCPData(payload []byte) error {
 	case <-session.done:
 		return nil
 	default:
+		session.inbound.RecordDrop()
 		err := errors.New("vroute proxy tcp inbound queue is full")
 		session.close(true, err)
 		return err

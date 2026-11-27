@@ -25,6 +25,14 @@ struct vr_tx_frame {
     uint8_t bytes[];
 };
 
+uint64_t vr_link_oldest_wait_ms(vr_link *l,uint64_t now)
+{
+    uint64_t oldest=l->writing?l->writing->enqueued:0;
+    for(unsigned lane=0;lane<3;lane++)if(l->tx_head[lane]&&(!oldest||l->tx_head[lane]->enqueued<oldest))oldest=l->tx_head[lane]->enqueued;
+    if(oldest&&oldest<l->tx_stats_reset_at)oldest=l->tx_stats_reset_at;
+    return oldest&&now>=oldest?now-oldest:0;
+}
+
 /* Since Linux 3.12; vendor headers can predate the running router kernel. */
 #ifndef TCP_NOTSENT_LOWAT
 #define TCP_NOTSENT_LOWAT 25
@@ -64,6 +72,8 @@ static vr_tx_frame *next_write(vr_link *l)
     }
     vr_tx_frame *f=l->tx_head[lane];if(!f)return NULL;
     l->tx_head[lane]=f->next;if(!l->tx_head[lane])l->tx_tail[lane]=NULL;
+    uint64_t now=vr_millis(),since=f->enqueued>l->tx_stats_reset_at?f->enqueued:l->tx_stats_reset_at,wait=now>=since?now-since:0;
+    l->tx_wait_samples++;l->tx_wait_total_ms+=wait;if(wait>l->tx_wait_max_ms)l->tx_wait_max_ms=wait;
     f->next=NULL;l->writing=f;
     if(lane==TX_BUSINESS&&l->business_since_bulk<8)l->business_since_bulk++;
     if(lane==TX_BULK)l->business_since_bulk=0;
@@ -77,6 +87,7 @@ static void write_done(vr_link *l)
     l->tx_dequeued++;
     if(f->frame_bytes&&l->write_offset==f->length){l->frames_sent++;l->frame_bytes_sent+=f->frame_bytes;}
     free(f);l->writing=NULL;l->write_offset=0;
+    if(!l->tx_memory&&l->tx_backlog_since){uint64_t span=vr_millis()-l->tx_backlog_since;if(span>l->tx_backlog_peak_ms)l->tx_backlog_peak_ms=span;l->tx_backlog_since=0;}
 }
 
 static int connected(vr_engine *e,const char *peer)
@@ -423,6 +434,7 @@ int vr_packet_path(vr_engine *e,const char *target,const uint8_t *packet,size_t 
 
 void vr_link_close(vr_link *l,const char *error)
 {
+    if(l->tx_backlog_since){uint64_t span=vr_millis()-l->tx_backlog_since;if(span>l->tx_backlog_peak_ms)l->tx_backlog_peak_ms=span;l->tx_backlog_since=0;}
     if(l->ssl&&*error){char event[240];snprintf(event,sizeof(event),"Peer %.32s slot %d disconnected: %.96s",l->peer,l->slot,error);vr_service_log(l->engine->service,"link",event);}
     SSL_free(l->ssl);l->ssl=NULL;if(l->fd>=0)close(l->fd);l->fd=-1;
     if(l->writing)write_done(l);
@@ -457,6 +469,7 @@ int vr_link_queue(vr_link *l,int opcode,const void *bytes,size_t n)
     f->frame_bytes=opcode==2?n:0;
     if(l->tx_tail[lane])l->tx_tail[lane]->next=f;else l->tx_head[lane]=f;
     l->tx_tail[lane]=f;l->used+=length;l->tx_bytes[lane]+=length;
+    if(!l->tx_memory)l->tx_backlog_since=f->enqueued;
     l->tx_memory+=memory;l->tx_memory_class[lane]+=memory;l->tx_enqueued++;
     if(l->used>l->tx_peak)l->tx_peak=l->used;
     if(l->tx_memory>l->tx_memory_peak)l->tx_memory_peak=l->tx_memory;

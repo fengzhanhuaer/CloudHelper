@@ -304,6 +304,7 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) handleInboundPayload(payload
 			return
 		default:
 		}
+		r.inboundCh.RecordDrop()
 		logProbeWarnf("probe local linux tun inbound packet drop: dev=%s reason=handler_queue_full depth=%d capacity=%d limit=%d", r.dev, r.inboundCh.Len(), r.inboundCh.Capacity(), r.inboundCh.MaxCapacity())
 	}
 }
@@ -333,6 +334,7 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) inboundDispatchWorker() {
 					return
 				default:
 				}
+				shard.RecordDrop()
 				logProbeWarnf("probe local linux tun inbound packet drop: dev=%s reason=dispatch_queue_full shard=%d depth=%d capacity=%d limit=%d", r.dev, shardID, shard.Len(), shard.Capacity(), shard.MaxCapacity())
 			}
 		}
@@ -523,6 +525,7 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) WritePacket(packet []byte) e
 	case <-r.stopCh:
 		return io.ErrClosedPipe
 	default:
+		r.outboundCh.RecordDrop()
 		r.txDropped.Add(1)
 		return fmt.Errorf("probe local linux tun outbound queue full: dev=%s depth=%d capacity=%d limit=%d", r.dev, r.outboundCh.Len(), r.outboundCh.Capacity(), r.outboundCh.MaxCapacity())
 	}

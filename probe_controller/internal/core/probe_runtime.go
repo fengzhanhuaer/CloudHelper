@@ -55,23 +55,33 @@ func probeCapacityUsedPercent(used, total uint64) float64 {
 }
 
 type probeAdaptiveQueueSnapshot struct {
-	ID                    string `json:"id"`
-	Stage                 string `json:"stage"`
-	Direction             string `json:"direction,omitempty"`
-	RouteID               string `json:"route_id,omitempty"`
-	CarrierSlot           *int   `json:"carrier_slot,omitempty"`
-	Shard                 *int   `json:"shard,omitempty"`
-	Depth                 int    `json:"depth"`
-	AllocatedCapacity     int    `json:"allocated_capacity"`
-	MaxCapacity           int    `json:"max_capacity"`
-	PeakDepth             int    `json:"peak_depth"`
-	PeakAllocatedCapacity int    `json:"peak_allocated_capacity"`
-	Enqueued              uint64 `json:"enqueued"`
-	Dequeued              uint64 `json:"dequeued"`
-	FullEvents            uint64 `json:"full_events"`
-	GrowEvents            uint64 `json:"grow_events"`
-	ShrinkEvents          uint64 `json:"shrink_events"`
-	StatsStartedAt        string `json:"stats_started_at"`
+	Unit                  string  `json:"unit,omitempty"`
+	TimingSupported       bool    `json:"timing_supported,omitempty"`
+	Dropped               *uint64 `json:"dropped,omitempty"`
+	RetryEvents           *uint64 `json:"retry_events,omitempty"`
+	WaitSamples           uint64  `json:"wait_samples,omitempty"`
+	WaitTotalUS           uint64  `json:"wait_total_us,omitempty"`
+	WaitMaxUS             uint64  `json:"wait_max_us,omitempty"`
+	OldestWaitUS          uint64  `json:"oldest_wait_us,omitempty"`
+	BacklogMS             uint64  `json:"backlog_ms,omitempty"`
+	PeakBacklogMS         uint64  `json:"peak_backlog_ms,omitempty"`
+	ID                    string  `json:"id"`
+	Stage                 string  `json:"stage"`
+	Direction             string  `json:"direction,omitempty"`
+	RouteID               string  `json:"route_id,omitempty"`
+	CarrierSlot           *int    `json:"carrier_slot,omitempty"`
+	Shard                 *int    `json:"shard,omitempty"`
+	Depth                 int     `json:"depth"`
+	AllocatedCapacity     int     `json:"allocated_capacity"`
+	MaxCapacity           int     `json:"max_capacity"`
+	PeakDepth             int     `json:"peak_depth"`
+	PeakAllocatedCapacity int     `json:"peak_allocated_capacity"`
+	Enqueued              uint64  `json:"enqueued"`
+	Dequeued              uint64  `json:"dequeued"`
+	FullEvents            uint64  `json:"full_events"`
+	GrowEvents            uint64  `json:"grow_events"`
+	ShrinkEvents          uint64  `json:"shrink_events"`
+	StatsStartedAt        string  `json:"stats_started_at"`
 }
 
 type probeVirtualRouterBufferReport struct {
@@ -405,6 +415,7 @@ func updateProbeRuntimeReportWithPlatformAndBuffers(nodeID string, ipv4 []string
 	current.MachineUptimeSeconds = normalizeProbeMachineUptimeSeconds(machineUptimeSeconds)
 	current.RelayStatus = cloneProbeRelayStatusItems(relayStatus)
 	current.VirtualRouterBuffers = normalizeProbeVirtualRouterBufferReport(buffers)
+	probeBufferHistory.observe(nodeID, current.VirtualRouterBuffers)
 	probeRuntimeStore.data[nodeID] = current
 	probeRuntimeStore.mu.Unlock()
 
@@ -427,6 +438,12 @@ func normalizeProbeVirtualRouterBufferReport(input probeVirtualRouterBufferRepor
 		item.Direction = strings.TrimSpace(item.Direction)
 		item.RouteID = strings.TrimSpace(item.RouteID)
 		item.StatsStartedAt = strings.TrimSpace(item.StatsStartedAt)
+		if item.Unit != "items" && item.Unit != "bytes" {
+			item.Unit = "items"
+			if strings.HasSuffix(item.Stage, "_bytes") {
+				item.Unit = "bytes"
+			}
+		}
 		if item.ID == "" || item.Stage == "" || item.Depth < 0 || item.AllocatedCapacity < 0 || item.MaxCapacity < 0 || item.Depth > item.MaxCapacity || item.AllocatedCapacity > item.MaxCapacity {
 			continue
 		}
@@ -451,6 +468,9 @@ func ResetProbeRuntimeStoreForTest() {
 	probeRuntimeStore.mu.Lock()
 	probeRuntimeStore.data = make(map[string]probeRuntimeStatus)
 	probeRuntimeStore.mu.Unlock()
+	probeBufferHistory.mu.Lock()
+	probeBufferHistory.nodes = make(map[string]map[string]probeBufferQueueHistory)
+	probeBufferHistory.mu.Unlock()
 }
 
 func UpdateProbeRuntimeReportForTest(nodeID string, machineUptimeSeconds int64) {

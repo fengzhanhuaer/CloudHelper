@@ -8,6 +8,54 @@ import (
 	"time"
 )
 
+func TestProbeAdaptiveQueueObservesTimingRetriesAndDrops(t *testing.T) {
+	q := newProbeAdaptiveQueue[int](probeAdaptiveQueueOptions{InitialCapacity: 1, MaxCapacity: 1})
+	defer q.Close()
+	if !q.TryPush(1) {
+		t.Fatal("initial push")
+	}
+	if err := q.PushUntil(2, time.Now().Add(5*time.Millisecond), nil); !errors.Is(err, errProbeAdaptiveQueueFull) {
+		t.Fatalf("err=%v", err)
+	}
+	s := q.adaptiveQueueSnapshot(time.Now())
+	if s.Dropped == nil || *s.Dropped != 1 || s.RetryEvents == nil || *s.RetryEvents < 1 || s.BacklogMS < 1 || s.OldestWaitUS < 1000 {
+		t.Fatalf("snapshot=%+v", s)
+	}
+	q.TryPop()
+	s = q.adaptiveQueueSnapshot(time.Now())
+	if s.WaitSamples != 1 || s.WaitMaxUS < 1000 || s.BacklogMS != 0 {
+		t.Fatalf("timing=%+v", s)
+	}
+	q.resetAdaptiveQueueStats(time.Now())
+	s = q.adaptiveQueueSnapshot(time.Now())
+	if *s.Dropped != 0 || *s.RetryEvents != 0 || s.WaitSamples != 0 || s.WaitMaxUS != 0 {
+		t.Fatalf("reset=%+v", s)
+	}
+}
+
+func TestProbeAdaptiveQueueSuccessfulRetryIsNotDropped(t *testing.T) {
+	q := newProbeAdaptiveQueue[int](probeAdaptiveQueueOptions{InitialCapacity: 1, MaxCapacity: 1})
+	defer q.Close()
+	q.TryPush(1)
+	done := make(chan error, 1)
+	go func() { done <- q.PushUntil(2, time.Now().Add(time.Second), nil) }()
+	deadline := time.Now().Add(time.Second)
+	for *q.adaptiveQueueSnapshot(time.Now()).RetryEvents == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("producer did not wait")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	q.TryPop()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	s := q.adaptiveQueueSnapshot(time.Now())
+	if *s.RetryEvents == 0 || *s.Dropped != 0 || s.FullEvents == 0 {
+		t.Fatalf("retry reported as a drop: %+v", s)
+	}
+}
+
 func TestProbeAdaptiveQueueGrowsToHardLimitAndPreservesOrder(t *testing.T) {
 	queue := newProbeAdaptiveQueue[int](probeAdaptiveQueueOptions{
 		ID:              "test.adaptive.grow",

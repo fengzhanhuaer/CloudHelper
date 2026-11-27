@@ -439,6 +439,7 @@ func (n *probeVirtualRouterExitNetstack) enqueueOutputPacket(ctx context.Context
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
+		shard.RecordDrop()
 		return fmt.Errorf("%w: shard=%d depth=%d capacity=%d limit=%d", errProbeVirtualRouterExitNetstackOutputQueueFull, shardID, shard.Len(), shard.Capacity(), shard.MaxCapacity())
 	}
 }

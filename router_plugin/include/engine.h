@@ -29,6 +29,7 @@ typedef struct {
     int fd,client,slot,multi_carrier;
     uint64_t retry,rx,tx,last_rx,ping_time,rtt,keepalive_at,session;
     uint64_t connected_at,tx_enqueued,tx_dequeued,tx_full;
+    uint64_t tx_wait_samples,tx_wait_total_ms,tx_wait_max_ms,tx_backlog_since,tx_backlog_peak_ms,tx_stats_reset_at;
     uint64_t opens,frames_sent,frame_bytes_sent,frames_received,frame_bytes_received;
     size_t tx_peak,tx_memory_peak,rx_peak;
     time_t auth_expires;
@@ -113,6 +114,7 @@ int vr_send_json(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][
 int vr_link_send_json(vr_link *link,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],size_t n,json_object *message);
 void vr_link_close(vr_link *l,const char *error);
 int vr_link_queue(vr_link *l,int opcode,const void *bytes,size_t n);
+uint64_t vr_link_oldest_wait_ms(vr_link *l,uint64_t now);
 void vr_link_dial(vr_link *l);
 int vr_carrier_count(json_object *rule);
 int vr_carrier_slot(const char *header);

@@ -464,9 +464,10 @@
 		  </div>
 		  <span id="vr-buffers-summary" class="summary-pill small">暂无状态</span>
 		</div>
+		<p class="small muted">近期队列满增量按探针采集时间计算；主控启动或统计重置后需积累样本。队列满包含重试，不能视为丢包。入队丢弃按各队列计数，不代表端到端丢包率。</p>
 		<div class="table-shell">
 		  <table>
-			<thead><tr><th>探针</th><th>缓冲区</th><th>链路</th><th>当前</th><th>容量</th><th>峰值</th><th>事件</th><th>统计时间</th></tr></thead>
+			<thead><tr><th>探针 / 上报时间</th><th>缓冲区</th><th>链路</th><th>当前</th><th>容量</th><th>峰值</th><th>队列满增量</th><th>累计事件</th><th>排队 / 积压</th><th>统计起始时间</th></tr></thead>
 			<tbody id="vr-buffers-body"></tbody>
 		  </table>
 		</div>
@@ -1368,27 +1369,39 @@
 	  const rows = [];
 	  probes.forEach((probe) => {
 		const buffers = probe && probe.buffers ? probe.buffers : {};
-		const items = Array.isArray(buffers.items) ? buffers.items : [];
+		const items = (Array.isArray(buffers.items) ? buffers.items : []).slice().sort((a,b) => Number(b.depth || 0) - Number(a.depth || 0) || Number(b.full_events || 0) - Number(a.full_events || 0));
+		const age = probe.report_age_seconds == null ? NaN : Number(probe.report_age_seconds);
+		const stale = !probe.online || !Number.isFinite(age) || age > 120;
+		const freshness = !Number.isFinite(age) ? '上报时间未知' : `${Math.floor(age)} 秒前${stale ? ' · 数据已过期' : ''}`;
 		if (!items.length) {
-		  rows.push(`<tr><td><div>${escapeHTML(nodeLabel(probe.node_id))}</div><div class="small muted">${probe.online ? '在线' : '离线'} · ${escapeHTML(probe.version || '-')}</div></td><td colspan="7" class="muted">尚未收到缓冲状态</td></tr>`);
+		  rows.push(`<tr><td><div>${escapeHTML(nodeLabel(probe.node_id))}</div><div class="small muted">${probe.online ? '在线' : '离线'} · ${escapeHTML(probe.version || '-')}</div></td><td colspan="9" class="muted">尚未收到缓冲状态</td></tr>`);
 		  return;
 		}
 		items.forEach((item, index) => {
 		  const location = [item.route_id ? `route ${item.route_id}` : '', item.carrier_slot !== undefined ? `slot ${item.carrier_slot}` : '', item.shard !== undefined ? `shard ${item.shard}` : ''].filter(Boolean).join(' · ') || '-';
-		  const events = `满 ${Number(item.full_events || 0)} · 扩 ${Number(item.grow_events || 0)} · 缩 ${Number(item.shrink_events || 0)}`;
+		  const events = `队列满 ${Number(item.full_events || 0)} · 扩 ${Number(item.grow_events || 0)} · 缩 ${Number(item.shrink_events || 0)}`;
+		  const count = value => value == null ? '未支持' : String(Number(value));
+		  const recent = (probe.recent || {})[item.id] || {};
+		  const delta = (value,span) => stale ? '数据过期' : value == null ? '样本不足' : `${Number(value)}（${Number(span)}秒）`;
+		  const isBytes = item.unit === 'bytes' || String(item.stage || '').endsWith('_bytes');
+		  const amount = value => isBytes ? formatBytes(Number(value || 0)) : `${Number(value || 0)} 项`;
+		  const ms = us => (Number(us || 0) / 1000).toFixed(2) + ' ms';
+		  const timing = !item.timing_supported ? '未支持' : `平均 ${item.wait_samples ? ms(Number(item.wait_total_us || 0) / Number(item.wait_samples)) : '暂无样本'} · 最大 ${ms(item.wait_max_us)}<div class="muted">最老 ${ms(item.oldest_wait_us)} · 连续 ${Number(item.backlog_ms || 0)} ms · 最长连续 ${Number(item.peak_backlog_ms || 0)} ms</div>`;
 		  rows.push(`<tr>
-			<td>${index === 0 ? `<div>${escapeHTML(nodeLabel(probe.node_id))}</div><div class="small muted">${probe.online ? '在线' : '离线'} · ${escapeHTML(probe.version || '-')}</div><div class="small muted">上报 ${escapeHTML(buffers.collected_at || probe.last_seen || '-')}</div>` : ''}</td>
+			<td>${index === 0 ? `<div>${escapeHTML(nodeLabel(probe.node_id))}</div><div class="small muted">${probe.online ? '在线' : '离线'} · ${escapeHTML(probe.version || '-')}</div><div class="small muted">上报 ${escapeHTML(buffers.collected_at || probe.last_seen || '-')}</div><div class="small ${stale ? 'error' : 'muted'}">${escapeHTML(freshness)}</div>` : ''}</td>
 			<td><div>${escapeHTML(item.stage || '-')}</div><div class="small muted mono">${escapeHTML(item.id || '-')}</div></td>
 			<td class="small mono">${escapeHTML(location)}</td>
-			<td>${Number(item.depth || 0)}</td>
-			<td>${Number(item.allocated_capacity || 0)} / ${Number(item.max_capacity || 0)}</td>
-			<td>${Number(item.peak_depth || 0)} / ${Number(item.peak_allocated_capacity || 0)}</td>
-			<td class="small">${escapeHTML(events)}<div class="muted">入 ${Number(item.enqueued || 0)} · 出 ${Number(item.dequeued || 0)}</div></td>
+			<td>${amount(item.depth)}${stale ? '<div class="small muted">历史采样</div>' : ''}</td>
+			<td>${amount(item.allocated_capacity)} / ${amount(item.max_capacity)}</td>
+			<td>${amount(item.peak_depth)} / ${amount(item.peak_allocated_capacity)}</td>
+			<td class="small">近1分钟 ${delta(recent.full_1m,recent.window_1s)}<div>近5分钟 ${delta(recent.full_5m,recent.window_5s)}</div></td>
+			<td class="small">${escapeHTML(events)}<div>重试 ${count(item.retry_events)} · 入队丢弃 ${count(item.dropped)}</div><div class="muted">入 ${Number(item.enqueued || 0)} · 出 ${Number(item.dequeued || 0)}</div></td>
+			<td class="small">${timing}</td>
 			<td class="small mono">${escapeHTML(item.stats_started_at || buffers.stats_started_at || '-')}</td>
 		  </tr>`);
 		});
 	  });
-	  body.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="8" class="muted">暂无探针缓冲状态。</td></tr>';
+	  body.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="10" class="muted">暂无探针缓冲状态。</td></tr>';
 	  const queueCount = probes.reduce((sum, probe) => sum + (Array.isArray(probe && probe.buffers && probe.buffers.items) ? probe.buffers.items.length : 0), 0);
 	  summary.textContent = `${probes.length} 个探针 · ${queueCount} 个缓冲区`;
 	}

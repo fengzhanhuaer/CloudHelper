@@ -28,23 +28,33 @@ type probeAdaptiveQueueOptions struct {
 }
 
 type probeAdaptiveQueueSnapshot struct {
-	ID                    string `json:"id"`
-	Stage                 string `json:"stage"`
-	Direction             string `json:"direction,omitempty"`
-	RouteID               string `json:"route_id,omitempty"`
-	CarrierSlot           *int   `json:"carrier_slot,omitempty"`
-	Shard                 *int   `json:"shard,omitempty"`
-	Depth                 int    `json:"depth"`
-	AllocatedCapacity     int    `json:"allocated_capacity"`
-	MaxCapacity           int    `json:"max_capacity"`
-	PeakDepth             int    `json:"peak_depth"`
-	PeakAllocatedCapacity int    `json:"peak_allocated_capacity"`
-	Enqueued              uint64 `json:"enqueued"`
-	Dequeued              uint64 `json:"dequeued"`
-	FullEvents            uint64 `json:"full_events"`
-	GrowEvents            uint64 `json:"grow_events"`
-	ShrinkEvents          uint64 `json:"shrink_events"`
-	StatsStartedAt        string `json:"stats_started_at"`
+	Unit                  string  `json:"unit,omitempty"`
+	TimingSupported       bool    `json:"timing_supported,omitempty"`
+	Dropped               *uint64 `json:"dropped,omitempty"`
+	RetryEvents           *uint64 `json:"retry_events,omitempty"`
+	WaitSamples           uint64  `json:"wait_samples,omitempty"`
+	WaitTotalUS           uint64  `json:"wait_total_us,omitempty"`
+	WaitMaxUS             uint64  `json:"wait_max_us,omitempty"`
+	OldestWaitUS          uint64  `json:"oldest_wait_us,omitempty"`
+	BacklogMS             uint64  `json:"backlog_ms,omitempty"`
+	PeakBacklogMS         uint64  `json:"peak_backlog_ms,omitempty"`
+	ID                    string  `json:"id"`
+	Stage                 string  `json:"stage"`
+	Direction             string  `json:"direction,omitempty"`
+	RouteID               string  `json:"route_id,omitempty"`
+	CarrierSlot           *int    `json:"carrier_slot,omitempty"`
+	Shard                 *int    `json:"shard,omitempty"`
+	Depth                 int     `json:"depth"`
+	AllocatedCapacity     int     `json:"allocated_capacity"`
+	MaxCapacity           int     `json:"max_capacity"`
+	PeakDepth             int     `json:"peak_depth"`
+	PeakAllocatedCapacity int     `json:"peak_allocated_capacity"`
+	Enqueued              uint64  `json:"enqueued"`
+	Dequeued              uint64  `json:"dequeued"`
+	FullEvents            uint64  `json:"full_events"`
+	GrowEvents            uint64  `json:"grow_events"`
+	ShrinkEvents          uint64  `json:"shrink_events"`
+	StatsStartedAt        string  `json:"stats_started_at"`
 }
 
 type probeVirtualRouterBufferReport struct {
@@ -70,8 +80,19 @@ var probeVirtualRouterBufferRegistry = struct {
 type probeAdaptiveQueue[T any] struct {
 	options probeAdaptiveQueueOptions
 
-	mu       sync.Mutex
-	buffer   []T
+	mu        sync.Mutex
+	buffer    []T
+	queuedAt  []int64 // Monotonic nanoseconds relative to clockBase; 8 bytes per allocated slot.
+	clockBase time.Time
+	busySince time.Time
+	peakBusy  time.Duration
+
+	waitSamples uint64
+	waitTotalUS uint64
+	waitMaxUS   uint64
+	dropped     uint64
+	retryEvents uint64
+
 	head     int
 	size     int
 	closed   bool
@@ -108,6 +129,8 @@ func newProbeAdaptiveQueue[T any](options probeAdaptiveQueueOptions) *probeAdapt
 	queue := &probeAdaptiveQueue[T]{
 		options:               options,
 		buffer:                make([]T, options.InitialCapacity),
+		queuedAt:              make([]int64, options.InitialCapacity),
+		clockBase:             now,
 		peakAllocatedCapacity: options.InitialCapacity,
 		statsStartedAt:        now,
 		ready:                 make(chan struct{}, 1),
@@ -118,7 +141,8 @@ func newProbeAdaptiveQueue[T any](options probeAdaptiveQueueOptions) *probeAdapt
 		if probeVirtualRouterBufferRegistry.startedAt.IsZero() {
 			probeVirtualRouterBufferRegistry.startedAt = now
 		}
-		queue.statsStartedAt = probeVirtualRouterBufferRegistry.startedAt
+		// Recreating the same queue ID must not inherit the old counter epoch.
+		queue.statsStartedAt = now
 		probeVirtualRouterBufferRegistry.items[options.ID] = queue
 		probeVirtualRouterBufferRegistry.mu.Unlock()
 	}
@@ -155,12 +179,17 @@ func (q *probeAdaptiveQueue[T]) TryPush(value T) bool {
 	}
 	index := (q.head + q.size) % len(q.buffer)
 	q.buffer[index] = value
+	now := time.Now()
+	q.queuedAt[index] = now.Sub(q.clockBase).Nanoseconds()
+	if q.size == 0 {
+		q.busySince = now
+	}
 	q.size++
 	q.enqueued++
 	if q.size > q.peakDepth {
 		q.peakDepth = q.size
 	}
-	q.updateLowWaterLocked(time.Now())
+	q.updateLowWaterLocked(now)
 	q.mu.Unlock()
 	signalProbeAdaptiveQueue(q.ready)
 	return true
@@ -177,9 +206,13 @@ func (q *probeAdaptiveQueue[T]) PushUntil(value T, deadline time.Time, stop <-ch
 		if q.IsClosed() {
 			return io.ErrClosedPipe
 		}
+		q.mu.Lock()
+		q.retryEvents++
+		q.mu.Unlock()
 		if !deadline.IsZero() {
 			wait := time.Until(deadline)
 			if wait <= 0 {
+				q.RecordDrop()
 				return errProbeAdaptiveQueueFull
 			}
 			timer := time.NewTimer(wait)
@@ -190,6 +223,7 @@ func (q *probeAdaptiveQueue[T]) PushUntil(value T, deadline time.Time, stop <-ch
 				stopProbeAdaptiveQueueTimer(timer)
 				return io.ErrClosedPipe
 			case <-timer.C:
+				q.RecordDrop()
 				return errProbeAdaptiveQueueFull
 			}
 			continue
@@ -213,12 +247,23 @@ func (q *probeAdaptiveQueue[T]) TryPop() (T, bool) {
 		return zero, false
 	}
 	value := q.buffer[q.head]
+	now := time.Now()
+	us := uint64(max(0, (now.Sub(q.clockBase).Nanoseconds()-q.queuedAt[q.head])/1000))
+	q.waitSamples++
+	q.waitTotalUS += us
+	if us > q.waitMaxUS {
+		q.waitMaxUS = us
+	}
+	q.queuedAt[q.head] = 0
 	q.buffer[q.head] = zero
 	q.head = (q.head + 1) % len(q.buffer)
 	q.size--
+	if q.size == 0 {
+		q.endBusyLocked(now)
+	}
 	q.dequeued++
 	remaining := q.size
-	q.updateLowWaterLocked(time.Now())
+	q.updateLowWaterLocked(now)
 	q.mu.Unlock()
 	if remaining > 0 {
 		signalProbeAdaptiveQueue(q.ready)
@@ -405,10 +450,13 @@ func (q *probeAdaptiveQueue[T]) resizeLocked(capacity int) {
 		return
 	}
 	next := make([]T, capacity)
+	times := make([]int64, capacity)
 	for i := 0; i < q.size; i++ {
 		next[i] = q.buffer[(q.head+i)%len(q.buffer)]
+		times[i] = q.queuedAt[(q.head+i)%len(q.buffer)]
 	}
 	q.buffer = next
+	q.queuedAt = times
 	q.head = 0
 }
 
@@ -450,6 +498,9 @@ func (q *probeAdaptiveQueue[T]) adaptiveQueueSnapshot(now time.Time) probeAdapti
 	q.mu.Lock()
 	q.maybeShrinkLocked(now)
 	snapshot := probeAdaptiveQueueSnapshot{
+		Unit: "items", TimingSupported: true, Dropped: new(uint64), RetryEvents: new(uint64),
+		WaitSamples: q.waitSamples, WaitTotalUS: q.waitTotalUS, WaitMaxUS: q.waitMaxUS,
+		PeakBacklogMS:         uint64(max(0, q.peakBusy.Milliseconds())),
 		ID:                    q.options.ID,
 		Stage:                 q.options.Stage,
 		Direction:             q.options.Direction,
@@ -464,7 +515,18 @@ func (q *probeAdaptiveQueue[T]) adaptiveQueueSnapshot(now time.Time) probeAdapti
 		FullEvents:            q.fullEvents,
 		GrowEvents:            q.growEvents,
 		ShrinkEvents:          q.shrinkEvents,
-		StatsStartedAt:        q.statsStartedAt.UTC().Format(time.RFC3339),
+		StatsStartedAt:        q.statsStartedAt.UTC().Format(time.RFC3339Nano),
+	}
+	*snapshot.Dropped = q.dropped
+	*snapshot.RetryEvents = q.retryEvents
+	if q.size > 0 {
+		snapshot.OldestWaitUS = uint64(max(0, (now.Sub(q.clockBase).Nanoseconds()-q.queuedAt[q.head])/1000))
+		if !q.busySince.IsZero() {
+			snapshot.BacklogMS = uint64(max(0, now.Sub(q.busySince).Milliseconds()))
+		}
+		if snapshot.BacklogMS > snapshot.PeakBacklogMS {
+			snapshot.PeakBacklogMS = snapshot.BacklogMS
+		}
 	}
 	if q.options.HasCarrierSlot {
 		value := q.options.CarrierSlot
@@ -488,11 +550,42 @@ func (q *probeAdaptiveQueue[T]) resetAdaptiveQueueStats(now time.Time) {
 	q.enqueued = 0
 	q.dequeued = 0
 	q.fullEvents = 0
+	q.waitSamples = 0
+	q.waitTotalUS = 0
+	q.waitMaxUS = 0
+	q.dropped = 0
+	q.retryEvents = 0
+	q.peakBusy = 0
+	if q.size > 0 {
+		q.busySince = now
+		for i := 0; i < q.size; i++ {
+			q.queuedAt[(q.head+i)%len(q.buffer)] = now.Sub(q.clockBase).Nanoseconds()
+		}
+	}
 	q.growEvents = 0
 	q.shrinkEvents = 0
 	q.statsStartedAt = now
 	q.lowSince = time.Time{}
 	q.mu.Unlock()
+}
+
+// RecordDrop counts a terminal admission failure. FullEvents alone includes
+// retries and must never be interpreted as a lost-packet counter.
+func (q *probeAdaptiveQueue[T]) RecordDrop() {
+	if q == nil {
+		return
+	}
+	q.mu.Lock()
+	q.dropped++
+	q.mu.Unlock()
+}
+func (q *probeAdaptiveQueue[T]) endBusyLocked(now time.Time) {
+	if !q.busySince.IsZero() {
+		if d := now.Sub(q.busySince); d > q.peakBusy {
+			q.peakBusy = d
+		}
+	}
+	q.busySince = time.Time{}
 }
 
 func snapshotProbeVirtualRouterBuffers() probeVirtualRouterBufferReport {

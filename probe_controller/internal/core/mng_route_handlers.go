@@ -187,18 +187,26 @@ func mngRouteVirtualRouterStatusHandler(w http.ResponseWriter, r *http.Request) 
 }
 
 type mngVirtualRouterBufferStatus struct {
-	NodeID   string                         `json:"node_id"`
-	Online   bool                           `json:"online"`
-	LastSeen string                         `json:"last_seen,omitempty"`
-	Version  string                         `json:"version,omitempty"`
-	Buffers  probeVirtualRouterBufferReport `json:"buffers"`
+	Recent           map[string]probeBufferRecent   `json:"recent"`
+	ReportAgeSeconds *float64                       `json:"report_age_seconds"`
+	NodeID           string                         `json:"node_id"`
+	Online           bool                           `json:"online"`
+	LastSeen         string                         `json:"last_seen,omitempty"`
+	Version          string                         `json:"version,omitempty"`
+	Buffers          probeVirtualRouterBufferReport `json:"buffers"`
 }
 
 func listMngVirtualRouterBufferStatuses() []mngVirtualRouterBufferStatus {
 	runtimes := listProbeRuntimes()
 	out := make([]mngVirtualRouterBufferStatus, 0, len(runtimes))
 	for _, runtime := range runtimes {
+		var age *float64
+		if at, err := time.Parse(time.RFC3339Nano, runtime.VirtualRouterBuffers.CollectedAt); err == nil {
+			seconds := max(0, time.Since(at).Seconds())
+			age = &seconds
+		}
 		out = append(out, mngVirtualRouterBufferStatus{
+			Recent: probeBufferHistory.recent(runtime.NodeID, runtime.VirtualRouterBuffers, time.Now()), ReportAgeSeconds: age,
 			NodeID:   normalizeProbeNodeID(runtime.NodeID),
 			Online:   runtime.Online,
 			LastSeen: strings.TrimSpace(runtime.LastSeen),

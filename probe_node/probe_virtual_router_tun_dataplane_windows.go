@@ -479,6 +479,7 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) handleInboundPayload(payload []by
 			return
 		default:
 		}
+		r.inboundCh.RecordDrop()
 		if r.logf != nil {
 			r.logf("probe local tun inbound packet drop: reason=handler_queue_full depth=%d capacity=%d limit=%d", r.inboundCh.Len(), r.inboundCh.Capacity(), r.inboundCh.MaxCapacity())
 		}
@@ -510,6 +511,7 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) inboundDispatchWorker() {
 					return
 				default:
 				}
+				shard.RecordDrop()
 				if r.logf != nil {
 					r.logf("probe local tun inbound packet drop: reason=dispatch_queue_full shard=%d depth=%d capacity=%d limit=%d", shardID, shard.Len(), shard.Capacity(), shard.MaxCapacity())
 				}
@@ -755,6 +757,7 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) WritePacket(packet []byte) error 
 		return errors.New("probe virtual router tun data plane is not running")
 	default:
 		releaseProbeVirtualRouterTUNOutboundPacket(outbound)
+		r.outboundCh.RecordDrop()
 		r.txDropped.Add(1)
 		return fmt.Errorf("probe virtual router tun outbound queue full: depth=%d capacity=%d limit=%d", r.outboundCh.Len(), r.outboundCh.Capacity(), r.outboundCh.MaxCapacity())
 	}

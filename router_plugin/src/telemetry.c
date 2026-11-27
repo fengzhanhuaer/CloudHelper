@@ -23,6 +23,14 @@ static void buffer(json_object *items,vr_engine *e,vr_link *l,const char *stage,
     str(o,"route_id",l->route);str(o,"direction",!strcmp(stage,"carrier_tx_bytes")?"tx":"rx");
     num(o,"carrier_slot",(unsigned)l->slot);num(o,"depth",depth);num(o,"allocated_capacity",allocated);num(o,"max_capacity",cap);
     num(o,"peak_depth",peak);num(o,"peak_allocated_capacity",peak_alloc);str(o,"stats_started_at",e->stats_started_at);
+    str(o,"unit","bytes");
+    if(!strcmp(stage,"carrier_tx_bytes")){
+        uint64_t now=vr_millis(),busy=l->tx_backlog_since&&now>=l->tx_backlog_since?now-l->tx_backlog_since:0;
+        json_object_object_add(o,"timing_supported",json_object_new_boolean(1));
+        num(o,"wait_samples",l->tx_wait_samples);num(o,"wait_total_us",l->tx_wait_total_ms*1000);num(o,"wait_max_us",l->tx_wait_max_ms*1000);
+        num(o,"oldest_wait_us",vr_link_oldest_wait_ms(l,now)*1000);num(o,"backlog_ms",busy);
+        num(o,"peak_backlog_ms",busy>l->tx_backlog_peak_ms?busy:l->tx_backlog_peak_ms);
+    }
     if(!strcmp(stage,"carrier_tx_bytes")){num(o,"enqueued",l->tx_enqueued);num(o,"dequeued",l->tx_dequeued);num(o,"full_events",l->tx_full);}
     json_object_array_add(items,o);
 }
@@ -56,7 +64,8 @@ void vr_telemetry_publish(vr_engine *e)
         uint64_t opens=0,sent=0,received=0,sent_bytes=0,received_bytes=0;
         for(size_t j=i;j<e->link_count&&j<i+VR_CARRIER_SLOTS;j++) {
             vr_link *l=&e->links[j];if(!l->rule||l->slot>=vr_carrier_count(base->rule))continue;
-            if(reset){l->tx_peak=l->used;l->tx_memory_peak=l->tx_memory;l->decoder.peak=l->rx_peak=l->decoder.used;l->tx_enqueued=l->tx_dequeued=l->tx_full=0;}
+            if(reset){l->tx_peak=l->used;l->tx_memory_peak=l->tx_memory;l->decoder.peak=l->rx_peak=l->decoder.used;l->tx_enqueued=l->tx_dequeued=l->tx_full=0;
+                l->tx_wait_samples=l->tx_wait_total_ms=l->tx_wait_max_ms=l->tx_backlog_peak_ms=0;l->tx_stats_reset_at=vr_millis();l->tx_backlog_since=l->tx_memory?l->tx_stats_reset_at:0;}
             if(l->decoder.peak>l->rx_peak)l->rx_peak=l->decoder.peak;
             buffer(items,e,l,"carrier_tx_bytes",l->used,l->tx_memory,VR_TX_CAP,l->tx_peak,l->tx_memory_peak);
             buffer(items,e,l,"carrier_rx_bytes",l->decoder.used,sizeof(l->decoder.bytes),sizeof(l->decoder.bytes),l->rx_peak,sizeof(l->decoder.bytes));

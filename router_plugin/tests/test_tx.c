@@ -129,6 +129,8 @@ int main(int argc,char **argv)
     assert(!enqueue(l,2,1,201,64)&&!vr_link_queue(l,9,"keepalive",9));
     assert(enqueue(l,1,1,0,2048)<0);drain(l);
     assert(frames==count+1&&mains[0]==2);
+    assert(l->tx_wait_samples==count+2&&!l->tx_backlog_since);
+    assert(vr_link_oldest_wait_ms(l,vr_millis())==0);
     for(unsigned i=1;i<frames;i++)assert(mains[i]==1&&seqs[i]==(i-1)%256);
 
     /* Weighted fairness and per-class FIFO (including speed finish). */

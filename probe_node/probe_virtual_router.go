@@ -4725,6 +4725,7 @@ func (s *probeVirtualRouterFrameLink) enqueueProbeVirtualRouterFrame(input probe
 	default:
 	}
 	depth, capacity, _, _, _, _, _, _ := s.txQueueSnapshot()
+	queue.RecordDrop()
 	return fmt.Errorf("virtual router tx queue full: key=%s queue=%s depth=%d capacity=%d limit=%d total_depth=%d total_capacity=%d", strings.TrimSpace(s.key), queueName, queue.Len(), queue.Capacity(), queue.MaxCapacity(), depth, capacity)
 }
 
@@ -5134,6 +5135,7 @@ func (s *probeVirtualRouterFrameLink) enqueueRXFrame(frame probeVirtualRouterFra
 	case <-s.done:
 		return io.ErrClosedPipe
 	default:
+		s.rx.RecordDrop()
 		return fmt.Errorf("virtual router rx queue full: key=%s depth=%d capacity=%d limit=%d", strings.TrimSpace(s.key), s.rx.Len(), s.rx.Capacity(), s.rx.MaxCapacity())
 	}
 }
@@ -5202,6 +5204,7 @@ func (s *probeVirtualRouterFrameLink) enqueueRXDispatchFrame(frame probeVirtualR
 	case <-s.done:
 		return io.ErrClosedPipe
 	default:
+		shard.RecordDrop()
 		return fmt.Errorf("virtual router rx dispatch queue full: key=%s shard=%d depth=%d capacity=%d limit=%d", strings.TrimSpace(s.key), shardID, shard.Len(), shard.Capacity(), shard.MaxCapacity())
 	}
 }
