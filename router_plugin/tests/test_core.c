@@ -24,6 +24,16 @@ static int frame_received(const vr_frame *f,void *arg)
 
 static void test_wire(void)
 {
+    const uint8_t golden[]={0,'P',1,0,0,2,0,2,'2','6',0,2,'2','7'};
+    char binary_path[VR_PATH_MAX][129]={{"26"},{"27"}},decoded_path[VR_PATH_MAX][129];uint8_t encoded_path[128];size_t encoded_len,count;
+    assert(!vr_path_binary(binary_path,2,encoded_path,sizeof(encoded_path),&encoded_len));
+    assert(encoded_len==sizeof(golden)&&!memcmp(encoded_path,golden,sizeof(golden)));
+    vr_frame binary_frame={1,1,golden,NULL,sizeof(golden),0};
+    assert(!vr_frame_path(&binary_frame,decoded_path,&count)&&count==2&&!strcmp(decoded_path[1],"27"));
+    for(size_t i=0;i<sizeof(golden);i++){binary_frame.control_len=i;assert(vr_frame_path(&binary_frame,decoded_path,&count)<0);}
+    binary_frame.control=encoded_path;binary_frame.control_len=sizeof(golden);
+    for(size_t i=0;i<8;i++){memcpy(encoded_path,golden,sizeof(golden));encoded_path[i]=255;assert(vr_frame_path(&binary_frame,decoded_path,&count)<0);}
+    memcpy(encoded_path,golden,sizeof(golden));encoded_path[sizeof(golden)]=0;binary_frame.control_len=sizeof(golden)+1;assert(vr_frame_path(&binary_frame,decoded_path,&count)<0);
     uint8_t wire[256];size_t n;
     const char *control="{\"path\":[\"1\",\"2\"]}";
     vr_frame f={1,0,(const uint8_t *)control,(const uint8_t *)"abc",strlen(control),3};
@@ -41,7 +51,7 @@ static void test_wire(void)
     wire[n-1]^=1;memset(&d,0,sizeof(d));assert(vr_decoder_feed(&d,wire,n,frame_received,NULL)<0);
     wire[6]=0xff;wire[7]=0xff;memset(&d,0,sizeof(d));assert(vr_decoder_feed(&d,wire,12,frame_received,NULL)<0);
     f.control=(const uint8_t *)"{\"path\":[\"1\",\"1\"]}";f.control_len=strlen((const char *)f.control);
-    char path[VR_PATH_MAX][129];size_t count;assert(vr_frame_path(&f,path,&count)<0);
+    char path[VR_PATH_MAX][129];assert(vr_frame_path(&f,path,&count)<0);
 }
 
 static const uint8_t dns_query[]={0x12,0x34,1,0,0,1,0,0,0,0,0,0,7,'e','x','a','m','p','l','e',3,'c','o','m',0,0,1,0,1};

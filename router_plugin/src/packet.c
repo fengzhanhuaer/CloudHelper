@@ -31,6 +31,14 @@ int vr_packet_parse(const uint8_t *b,size_t n,vr_packet *p)
 int vr_packet_rewrite(uint8_t *b,size_t n,uint32_t src,uint32_t dst,uint16_t sport,uint16_t dport)
 {
     vr_packet p;if(vr_packet_parse(b,n,&p))return -1;
+    return vr_packet_rewrite_parsed(b,n,&p,src,dst,sport,dport);
+}
+
+int vr_packet_rewrite_parsed(uint8_t *b,size_t n,const vr_packet *parsed,uint32_t src,uint32_t dst,uint16_t sport,uint16_t dport)
+{
+    if(!parsed||parsed->length!=n||parsed->ihl<20||parsed->ihl>n||
+       (parsed->protocol!=1&&parsed->protocol!=6&&parsed->protocol!=17)||n-parsed->ihl<(parsed->protocol==6?20u:8u))return -1;
+    vr_packet p=*parsed;
     memcpy(b+12,&src,4);memcpy(b+16,&dst,4);p16(b+10,0);p16(b+10,vr_checksum(b,p.ihl));
     uint8_t *t=b+p.ihl;size_t len=n-p.ihl;
     if(p.protocol==1){p16(t+4,sport);p16(t+2,0);p16(t+2,vr_checksum(t,len));return 0;}

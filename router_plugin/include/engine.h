@@ -29,7 +29,7 @@ typedef struct {
     char route[33],peer[129],error[96],ping_id[49];
     SSL *ssl;
     vr_tcp_windows windows;
-    int fd,client,slot,multi_carrier;
+    int fd,client,slot,multi_carrier,binary_path;
     uint64_t retry,rx,tx,last_rx,ping_time,rtt,keepalive_at,session;
     uint64_t connected_at,tx_enqueued,tx_dequeued,tx_full;
     uint64_t tx_wait_samples,tx_wait_total_ms,tx_wait_max_ms,tx_backlog_since,tx_backlog_peak_ms,tx_stats_reset_at;
@@ -49,6 +49,12 @@ typedef struct {
 } vr_link;
 typedef struct {vr_engine *engine;pthread_t thread;int started,done,fd,index;vr_link *result;} vr_handshake;
 typedef struct {uint32_t hash;int link;uint64_t session,used;unsigned revision;uint8_t nodes[VR_PATH_HOPS+1],count;} vr_flow_binding;
+/* Bounded hot packet paths, only after full owner/path authorization. */
+#define VR_PACKET_CACHE_MAX 16
+typedef struct {
+    uint8_t key[13],nodes[VR_PATH_HOPS+1],count,control[128];
+    size_t control_len;int link,binding;unsigned revision;uint32_t hash;uint64_t session;
+} vr_packet_cache;
 
 #define VR_PATH_RTT_MAX 64
 /* Node indexes are valid only within policy_revision; no strings or JFFS writes. */
@@ -74,6 +80,7 @@ struct vr_engine {
     SSL_CTX *tls;
     vr_link links[VR_CARRIER_MAX];size_t link_count;
     vr_flow_binding bindings[VR_NAT_MAX];uint64_t carrier_session;
+    vr_packet_cache packet_cache[VR_PACKET_CACHE_MAX];
     vr_path_rtt path_rtt[VR_PATH_RTT_MAX];unsigned paths_revision;uint64_t path_probe_at;
     vr_handshake handshakes[2];
     pthread_t control_thread;int control_started,control_stop,controller_connected,refresh;

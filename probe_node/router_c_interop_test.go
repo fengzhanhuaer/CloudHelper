@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"github.com/cloudhelper/probe_node/internal/routewire"
 	"github.com/gorilla/websocket"
 	"io"
 	"net"
@@ -195,7 +196,8 @@ func testRouterCCarrier(t *testing.T, binary string, serverMode, legacy bool) {
 						continue
 					}
 					msg, _ := json.Marshal(map[string]interface{}{"request_id": fmt.Sprintf("slot-fixture-%d", slot), "source_node_id": "8", "target_node_id": "7"})
-					if carrier.tx.TryPush(probeVirtualRouterFrame{MainType: 2, SubType: 1, Control: []byte(`{"path":["8","7"]}`), Data: msg}) {
+					control, _ := routewire.MarshalPath([]string{"8", "7"})
+					if carrier.tx.TryPush(probeVirtualRouterFrame{MainType: 2, SubType: 1, Control: control, Data: msg}) {
 						seen[carrier] = true
 					}
 				}

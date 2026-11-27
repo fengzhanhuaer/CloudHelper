@@ -50,9 +50,50 @@ int vr_decoder_feed(vr_decoder *d, const void *bytes, size_t n, vr_frame_handler
     return 0;
 }
 
+static int path_utf8(const uint8_t *p,size_t n)
+{
+    for(size_t i=0;i<n;) {
+        unsigned c=p[i++],extra=0,min=0;if(!c)return 0;if(c<128)continue;
+        if(c>=0xc2&&c<=0xdf){extra=1;min=0x80;c&=31;}
+        else if(c>=0xe0&&c<=0xef){extra=2;min=0x800;c&=15;}
+        else if(c>=0xf0&&c<=0xf4){extra=3;min=0x10000;c&=7;}else return 0;
+        if(extra>n-i)return 0;
+        while(extra--){unsigned b=p[i++];if((b&0xc0)!=0x80)return 0;c=(c<<6)|(b&63);}
+        if(c<min||c>0x10ffff||(c>=0xd800&&c<=0xdfff))return 0;
+    }
+    return 1;
+}
+
+int vr_path_binary(char path[VR_PATH_MAX][129],size_t count,uint8_t *out,size_t cap,size_t *length)
+{
+    if(count<2||count>VR_PATH_MAX||cap<6)return -1;
+    out[0]=0;out[1]='P';out[2]=1;out[3]=0;put16(out+4,(uint16_t)count);size_t at=6;
+    for(size_t i=0;i<count;i++) {
+        const char *end=memchr(path[i],0,129);if(!end)return -1;
+        size_t n=(size_t)(end-path[i]);if(!n||n>128||!path_utf8((uint8_t *)path[i],n)||cap-at<n+2)return -1;
+        for(size_t j=0;j<i;j++)if(!strcmp(path[i],path[j]))return -1;
+        put16(out+at,(uint16_t)n);at+=2;memcpy(out+at,path[i],n);at+=n;
+    }
+    *length=at;return 0;
+}
+
 int vr_frame_path(const vr_frame *f, char path[VR_PATH_MAX][129], size_t *n)
 {
     memset(path,0,VR_PATH_MAX*129);
+    if(f->control_len&&f->control[0]==0) {
+        const uint8_t *b=f->control;size_t len=f->control_len,at=6;
+        if(len<6||b[1]!='P'||b[2]!=1||b[3]!=0)return -1;
+        size_t count=get16(b+4);if(count<2||count>VR_PATH_MAX)return -1;
+        for(size_t i=0;i<count;i++) {
+            if(len-at<2)return -1;
+            size_t size=get16(b+at);at+=2;
+            if(!size||size>128||size>len-at||!path_utf8(b+at,size))return -1;
+            memcpy(path[i],b+at,size);at+=size;
+            for(size_t j=0;j<i;j++)if(!strcmp(path[i],path[j]))return -1;
+        }
+        if(at!=len)return -1;
+        *n=count;return 0;
+    }
     json_object *o=vr_json_parse(f->control,f->control_len),*a=vr_member(o,"path");
     int rc=-1;
     if(!a || !json_object_is_type(a,json_type_array))goto done;

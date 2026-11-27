@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/cloudhelper/probe_node/internal/routewire"
 	"io"
 	"net"
 	"net/http"
@@ -152,6 +153,7 @@ type mobileVRouteCarrier struct {
 	rx              chan mobileVRouteFrame
 	done            chan struct{}
 	multiCarrier    bool
+	binaryPath      bool
 	rttMS           atomic.Int64
 	rttAt           atomic.Int64
 }
@@ -175,6 +177,7 @@ type mobileVRouteCarrierFlowBinding struct {
 type mobileVRouteNegotiatedConn struct {
 	net.Conn
 	multiCarrier bool
+	binaryPath   bool
 }
 
 var mobileVRouteCarrierState = struct {
@@ -683,6 +686,7 @@ func newMobileVRouteCarrier(key string, plan mobileVRouteForwardPlan, conn net.C
 	}
 	if negotiated, ok := conn.(*mobileVRouteNegotiatedConn); ok {
 		carrier.multiCarrier = negotiated.multiCarrier
+		carrier.binaryPath = negotiated.binaryPath
 	}
 	return carrier
 }
@@ -749,7 +753,7 @@ func (c *mobileVRouteCarrier) runTXWorker() {
 			frames = append(frames, next)
 			batchBytes += mobileVRouteFrameEnvelopeHeaderSize + len(next.Control) + len(next.Data)
 		}
-		payload, err := encodeMobileVRouteFrames(frames)
+		payload, err := encodeMobileVRouteFramesForPeer(frames, c.binaryPath)
 		if err == nil && mobileVRouteFrameWriteTimeout > 0 {
 			_ = c.conn.SetWriteDeadline(time.Now().Add(mobileVRouteFrameWriteTimeout))
 		}
@@ -907,7 +911,13 @@ func (c *mobileVRouteCarrier) handleIncomingFrame(frame mobileVRouteFrame) error
 		return io.ErrClosedPipe
 	}
 	control := mobileVRouteFrameControlEnvelope{}
-	if err := json.Unmarshal(frame.Control, &control); err != nil {
+	if routewire.IsBinary(frame.Control) {
+		path, err := routewire.ParsePath(frame.Control)
+		if err != nil {
+			return err
+		}
+		control.Path = path
+	} else if err := json.Unmarshal(frame.Control, &control); err != nil {
 		return err
 	}
 	path := mobileVRouteCleanPath(control.Path)
@@ -1453,6 +1463,7 @@ func dialMobileVRouteWebSocketCarrier(plan mobileVRouteForwardPlan) (net.Conn, e
 	header.Set(mobileVRouteCodexRelayModeHeader, mobileVRouteRelayModeBridge)
 	header.Set(mobileVRouteCodexRelayRoleHeader, plan.BridgeRole)
 	header.Set(mobileVRouteCodexCarrierSlotHeader, strconv.Itoa(plan.CarrierSlot))
+	header.Set(routewire.Header, "1")
 	if err := applyMobileVRouteSecretAuthHeaders(header, plan.RouteID, plan.Rule.Secret, plan.Rule.AuthTicket, plan.LocalNode, http.MethodGet, mobileVRouteRelayAPIPath, plan.BridgeRole); err != nil {
 		return nil, err
 	}
@@ -1512,7 +1523,7 @@ func dialMobileVRouteWebSocketCarrierCandidate(plan mobileVRouteForwardPlan, hea
 		return nil, err
 	}
 	multiCarrier := resp != nil && strings.TrimSpace(resp.Header.Get(mobileVRouteCodexMultiCarrierHeader)) == "1"
-	return &mobileVRouteNegotiatedConn{Conn: tcpwindow.Carrier(startWebSocketNetConn(ws), ws.UnderlyingConn()), multiCarrier: multiCarrier}, nil
+	return &mobileVRouteNegotiatedConn{Conn: tcpwindow.Carrier(startWebSocketNetConn(ws), ws.UnderlyingConn()), multiCarrier: multiCarrier, binaryPath: resp != nil && strings.TrimSpace(resp.Header.Get(routewire.Header)) == "1"}, nil
 }
 
 func dialMobileVRouteH3Carrier(plan mobileVRouteForwardPlan) (net.Conn, error) {
@@ -1588,6 +1599,7 @@ func dialMobileVRouteH3CarrierCandidate(plan mobileVRouteForwardPlan, candidate 
 	request.Header.Set(mobileVRouteCodexRelayModeHeader, mobileVRouteRelayModeBridge)
 	request.Header.Set(mobileVRouteCodexRelayRoleHeader, plan.BridgeRole)
 	request.Header.Set(mobileVRouteCodexCarrierSlotHeader, strconv.Itoa(plan.CarrierSlot))
+	request.Header.Set(routewire.Header, "1")
 	if err := applyMobileVRouteSecretAuthHeaders(request.Header, plan.RouteID, plan.Rule.Secret, plan.Rule.AuthTicket, plan.LocalNode, http.MethodConnect, mobileVRouteRelayAPIPath, plan.BridgeRole); err != nil {
 		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
 		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
@@ -1634,7 +1646,7 @@ func dialMobileVRouteH3CarrierCandidate(plan mobileVRouteForwardPlan, candidate 
 			return closeErr
 		},
 	}
-	return &mobileVRouteNegotiatedConn{Conn: conn, multiCarrier: strings.TrimSpace(response.Header.Get(mobileVRouteCodexMultiCarrierHeader)) == "1"}, nil
+	return &mobileVRouteNegotiatedConn{Conn: conn, multiCarrier: strings.TrimSpace(response.Header.Get(mobileVRouteCodexMultiCarrierHeader)) == "1", binaryPath: strings.TrimSpace(response.Header.Get(routewire.Header)) == "1"}, nil
 }
 
 func mobileVRouteQUICConfig() *quic.Config {
@@ -1872,7 +1884,7 @@ func buildMobileVRouteIPFrame(packet []byte, path []string) (mobileVRouteFrame, 
 	if err := validateMobileVRoutePath(cleanPath); err != nil {
 		return mobileVRouteFrame{}, err
 	}
-	control, err := json.Marshal(mobileVRouteFrameControlEnvelope{Path: cleanPath})
+	control, err := routewire.MarshalPath(cleanPath)
 	if err != nil {
 		return mobileVRouteFrame{}, err
 	}
@@ -1910,12 +1922,21 @@ func encodeMobileVRouteFrame(frame mobileVRouteFrame) ([]byte, error) {
 }
 
 func encodeMobileVRouteFrames(frames []mobileVRouteFrame) ([]byte, error) {
+	return encodeMobileVRouteFramesForPeer(frames, false)
+}
+
+func encodeMobileVRouteFramesForPeer(frames []mobileVRouteFrame, binaryPath bool) ([]byte, error) {
 	if len(frames) == 0 {
 		return nil, nil
 	}
 	totalBytes := 0
 	encoded := make([][]byte, 0, len(frames))
 	for _, frame := range frames {
+		control, err := routewire.ForPeer(frame.Control, binaryPath)
+		if err != nil {
+			return nil, err
+		}
+		frame.Control = control
 		payload, err := encodeMobileVRouteFrame(frame)
 		if err != nil {
 			return nil, err

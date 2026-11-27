@@ -102,6 +102,7 @@ uint16_t vr_checksum(const void *bytes, size_t n);
 int vr_frame_encode(const vr_frame *frame, uint8_t *dst, size_t cap, size_t *n);
 int vr_decoder_feed(vr_decoder *d, const void *bytes, size_t n, vr_frame_handler fn, void *arg);
 int vr_frame_path(const vr_frame *frame, char path[VR_PATH_MAX][129], size_t *n);
+int vr_path_binary(char path[VR_PATH_MAX][129],size_t count,uint8_t *out,size_t cap,size_t *length);
 
 int vr_dns_question(const uint8_t *wire, size_t n, vr_question *q);
 int vr_dns_reply(const uint8_t *query, size_t qn, uint8_t *out, size_t cap,

@@ -148,6 +148,7 @@ static int same_connection(vr_engine *e,vr_link *l,json_object *r,json_object *p
 
 void vr_links_reconcile(vr_engine *e,json_object *policy)
 {
+    memset(e->packet_cache,0,sizeof(e->packet_cache));
     /* Keep fixed array positions: flow affinity and queued TLS writes point at
        these slots. No handshake may be borrowing the rules at this boundary. */
     for(size_t base=0;base<e->link_count;base+=VR_CARRIER_SLOTS) {
@@ -263,6 +264,54 @@ static int flow_hash(const vr_frame *f,uint32_t *hash)
     *hash=hash_bytes(2166136261u,(const uint8_t *)id,32);return 1;
 }
 
+static int packet_identity(const uint8_t *p,size_t n,uint8_t key[13])
+{
+    if(n<20||p[0]>>4!=4||(p[9]!=6&&p[9]!=17))return 0;
+    size_t ihl=(p[0]&15u)*4u,total=((size_t)p[2]<<8)|p[3];
+    if(ihl<20||total!=n||n<ihl+(p[9]==6?20u:8u))return 0;
+    key[0]=p[9];memcpy(key+1,p+12,8);memcpy(key+9,p+ihl,4);return 1;
+}
+
+static vr_packet_cache *packet_cache_find(vr_engine *e,const uint8_t *p,size_t n)
+{
+    uint8_t key[13];if(!packet_identity(p,n,key))return NULL;
+    vr_packet_cache *c=&e->packet_cache[packet_hash(p,n)%VR_PACKET_CACHE_MAX];
+    if(!c->control_len||memcmp(c->key,key,sizeof(key)))return NULL;
+    if(p[9]==6&&(p[(p[0]&15u)*4u+13]&2)){c->control_len=0;return NULL;}
+    if(c->revision!=e->policy_revision||c->count<2||c->count>VR_PATH_HOPS+1||c->link<0||(size_t)c->link>=e->link_count)return NULL;
+    vr_link *l=&e->links[c->link];if(!l->ssl||l->session!=c->session)return NULL;
+    if(c->binding>=0&&c->binding<VR_NAT_MAX) {
+        vr_flow_binding *b=&e->bindings[c->binding];
+        if(b->hash==c->hash&&b->session==c->session&&b->link==c->link)b->used=vr_millis();
+    }
+    return c;
+}
+
+static int packet_cache_path(vr_engine *e,vr_packet_cache *c,char path[VR_PATH_MAX][129],size_t n)
+{
+    if(c->count!=n)return 0;
+    json_object *nodes=vr_member(e->policy,"probe_ips");
+    for(size_t i=0;i<n;i++)if(strcmp(path[i],vr_string(json_object_array_get_idx(nodes,c->nodes[i]),"node_id")))return 0;
+    return 1;
+}
+
+static void packet_cache_store(vr_engine *e,vr_link *l,const vr_frame *f,char path[VR_PATH_MAX][129],size_t n)
+{
+    uint8_t key[13];if(n<2||n>VR_PATH_HOPS+1||strcmp(path[0],e->config.node_id)||f->control_len>128||!packet_identity(f->data,f->data_len,key))return;
+    if(f->data[9]==6&&(f->data[(f->data[0]&15u)*4u+13]&2))return;
+    vr_packet_cache next={0};json_object *nodes=vr_member(e->policy,"probe_ips");
+    for(size_t i=0;i<n;i++) {
+        size_t j;for(j=0;j<(size_t)json_object_array_length(nodes)&&j<256;j++)if(!strcmp(path[i],vr_string(json_object_array_get_idx(nodes,j),"node_id")))break;
+        if(j>=256||j>=(size_t)json_object_array_length(nodes))return;
+        next.nodes[i]=(uint8_t)j;
+    }
+    memcpy(next.key,key,sizeof(key));memcpy(next.control,f->control,f->control_len);next.control_len=f->control_len;
+    next.count=(uint8_t)n;next.link=(int)(l-e->links);next.session=l->session;next.revision=e->policy_revision;
+    next.hash=packet_hash(f->data,f->data_len);next.binding=-1;
+    for(size_t i=0;i<VR_NAT_MAX;i++)if(e->bindings[i].used&&e->bindings[i].hash==next.hash&&e->bindings[i].link==next.link&&e->bindings[i].session==next.session){next.binding=(int)i;break;}
+    e->packet_cache[next.hash%VR_PACKET_CACHE_MAX]=next;
+}
+
 static int owner_matches(vr_link *l,const char *user)
 {return !user || !strcmp(vr_string(l->rule,"user_id"),user);}
 
@@ -295,7 +344,7 @@ static vr_link *carrier_select_for_user(vr_engine *e,const char *peer,const vr_f
     vr_link *active[VR_CARRIER_SLOTS];size_t count=0;
     for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl&&!strcmp(best->route,e->links[i].route)&&owner_matches(&e->links[i],user)&&count<VR_CARRIER_SLOTS)active[count++]=&e->links[i];
     if(!flow)return active[0];
-    vr_link *chosen=active[hash%count];oldest->hash=hash;oldest->link=(int)(chosen-e->links);
+    vr_link *chosen=active[hash%count];oldest->count=0;oldest->hash=hash;oldest->link=(int)(chosen-e->links);
     oldest->session=chosen->session;oldest->used=vr_millis();return chosen;
 }
 
@@ -427,6 +476,11 @@ int vr_path(vr_engine *e,const char *target,char path[VR_PATH_MAX][129],size_t *
 int vr_packet_path(vr_engine *e,const char *target,const uint8_t *packet,size_t length,char path[VR_PATH_MAX][129],size_t *n)
 {
     uint32_t hash=packet_hash(packet,length);json_object *nodes=vr_member(e->policy,"probe_ips");
+    vr_packet_cache *cached=packet_cache_find(e,packet,length);
+    if(cached&&!strcmp(target,vr_string(json_object_array_get_idx(nodes,cached->nodes[cached->count-1]),"node_id"))) {
+        for(size_t i=0;i<cached->count;i++)vr_copy(path[i],129,vr_string(json_object_array_get_idx(nodes,cached->nodes[i]),"node_id"));
+        *n=cached->count;return 0;
+    }
     for(size_t i=0;i<VR_NAT_MAX;i++) {
         vr_flow_binding *b=&e->bindings[i];
         if(!b->used||b->hash!=hash||b->revision!=e->policy_revision||b->count<2||b->count>VR_PATH_HOPS+1||b->link<0||(size_t)b->link>=e->link_count)continue;
@@ -441,6 +495,10 @@ int vr_packet_path(vr_engine *e,const char *target,const uint8_t *packet,size_t 
 
 void vr_link_close(vr_link *l,const char *error)
 {
+    if(l->engine)for(size_t i=0;i<VR_PACKET_CACHE_MAX;i++) {
+        vr_packet_cache *c=&l->engine->packet_cache[i];
+        if(c->control_len&&c->link>=0&&(size_t)c->link<l->engine->link_count&& &l->engine->links[c->link]==l)c->control_len=0;
+    }
     if(l->tx_backlog_since){uint64_t span=vr_millis()-l->tx_backlog_since;if(span>l->tx_backlog_peak_ms)l->tx_backlog_peak_ms=span;l->tx_backlog_since=0;}
     if(l->ssl&&*error){char event[240];snprintf(event,sizeof(event),"Peer %.32s slot %d disconnected: %.96s",l->peer,l->slot,error);vr_service_log(l->engine->service,"link",event);}
     SSL_free(l->ssl);l->ssl=NULL;if(l->fd>=0)close(l->fd);l->fd=-1;
@@ -507,19 +565,46 @@ static int send_frame(vr_engine *e,const vr_frame *f,char path[VR_PATH_MAX][129]
     size_t at;for(at=0;at<n;at++)if(!strcmp(path[at],e->config.node_id))break;
     if(at+1>=n)return -1;
     vr_link *l=user?carrier_select_for_user(e,path[at+1],f,user):path_carrier_select(e,path[at+1],f,path,n);
+    /* A mixed-version relay translates only its path control, never payload. */
+    if(l&&!l->binary_path&&f->control_len&&f->control[0]==0) {
+        json_object *o=json_object_new_object(),*a=json_object_new_array();
+        for(size_t i=0;i<n;i++)json_object_array_add(a,json_object_new_string(path[i]));
+        json_object_object_add(o,"path",a);const char *control=json_object_to_json_string_ext(o,JSON_C_TO_STRING_PLAIN);
+        vr_frame legacy=*f;legacy.control=(const uint8_t *)control;legacy.control_len=strlen(control);
+        int rc=link_frame(l,&legacy);json_object_put(o);return rc;
+    }
     return link_frame(l,f);
 }
 
 int vr_send(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],size_t n,const void *data,size_t length)
 {
-    json_object *o=json_object_new_object(),*a=json_object_new_array();
-    for(size_t i=0;i<n;i++)json_object_array_add(a,json_object_new_string(path[i]));
-    json_object_object_add(o,"path",a);
-    const char *control=json_object_to_json_string_ext(o,JSON_C_TO_STRING_PLAIN);
-    vr_frame f={main,sub,(const uint8_t *)control,data,strlen(control),length};int rc=send_frame(e,&f,path,n,NULL);
+    if(n<2||n>VR_PATH_MAX)return -1;
+    vr_frame f={main,sub,NULL,data,0,length};
+    if(main==1&&sub==1) {
+        vr_packet_cache *c=packet_cache_find(e,data,length);
+        if(c&&packet_cache_path(e,c,path,n)) {
+            f.control=c->control;f.control_len=c->control_len;
+            return link_frame(&e->links[c->link],&f);
+        }
+    }
+    size_t at;for(at=0;at<n;at++)if(!strcmp(path[at],e->config.node_id))break;
+    if(at+1>=n)return -1;
+    vr_link *selected=path_carrier_select(e,path[at+1],&f,path,n);if(!selected)return -1;
+    json_object *o=NULL;uint8_t binary[6+VR_PATH_MAX*130];
+    if(selected->binary_path) {
+        if(vr_path_binary(path,n,binary,sizeof(binary),&f.control_len))return -1;
+        f.control=binary;
+    } else {
+        o=json_object_new_object();json_object *a=json_object_new_array();
+        for(size_t i=0;i<n;i++)json_object_array_add(a,json_object_new_string(path[i]));
+        json_object_object_add(o,"path",a);
+        const char *control=json_object_to_json_string_ext(o,JSON_C_TO_STRING_PLAIN);f.control=(const uint8_t *)control;f.control_len=strlen(control);
+    }
+    int rc=link_frame(selected,&f);
+    if(!rc&&main==1&&sub==1)packet_cache_store(e,selected,&f,path,n);
     if(!rc&&main==1&&n<=VR_PATH_HOPS+1&&!strcmp(path[0],e->config.node_id)) {
         uint32_t hash=packet_hash(data,length);json_object *nodes=vr_member(e->policy,"probe_ips");
-        for(size_t i=0;i<VR_NAT_MAX;i++)if(e->bindings[i].used&&e->bindings[i].hash==hash&&e->bindings[i].link>=0&&(size_t)e->bindings[i].link<e->link_count&&!strcmp(e->links[e->bindings[i].link].peer,path[1])) {
+        for(size_t i=0;i<VR_NAT_MAX;i++)if(e->bindings[i].used&&e->bindings[i].hash==hash&&e->bindings[i].link==(int)(selected-e->links)&&e->bindings[i].session==selected->session) {
             vr_flow_binding *b=&e->bindings[i];b->count=0;b->revision=e->policy_revision;int valid=1;
             for(size_t k=0;k<n;k++){size_t j;for(j=0;j<(size_t)json_object_array_length(nodes);j++)if(!strcmp(path[k],vr_string(json_object_array_get_idx(nodes,j),"node_id")))break;if(j>=256||j>=(size_t)json_object_array_length(nodes)){valid=0;break;}b->nodes[k]=(uint8_t)j;}
             if(valid)b->count=(uint8_t)n;
@@ -542,7 +627,7 @@ static int link_receive_impl(const vr_frame *f,void *arg)
     }
     /* Probe Node permits an omitted/empty path and uses this carrier's ingress
        path. Malformed JSON and explicit invalid paths still fail closed. */
-    json_object *control=f->control_len?vr_json_parse(f->control,f->control_len):NULL;
+    json_object *control=f->control_len&&f->control[0]!=0?vr_json_parse(f->control,f->control_len):NULL;
     json_object *a=vr_member(control,"path");
     int fallback=(!f->control_len || (control && json_object_is_type(control,json_type_object) &&
         (!a || json_object_is_type(a,json_type_null) || (json_object_is_type(a,json_type_array)&&!json_object_array_length(a)))));
@@ -722,10 +807,10 @@ static vr_link *accept_blocking(vr_engine *e,int fd)
     vr_service_ip_result(e->service,&ip,!auth,vr_millis());
     if(auth){reason="HMAC or route ticket rejected";goto fail;}
     reason="WebSocket response failed";
-    char reply[256];int n=snprintf(reply,sizeof(reply),"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nX-Codex-VRouter-Multi-Carrier: 1\r\nSec-WebSocket-Accept: %s\r\n\r\n",accept);
+    char reply[320];int n=snprintf(reply,sizeof(reply),"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nX-Codex-VRouter-Multi-Carrier: 1\r\nX-Codex-VRouter-Binary-Path: 1\r\nSec-WebSocket-Accept: %s\r\n\r\n",accept);
     if(vr_tls_io(ssl,1,reply,(size_t)n,deadline))goto fail;
     vr_link *result=calloc(1,sizeof(*result));if(!result)goto fail;
-    result->engine=e;result->rule=l->rule;result->slot=slot;result->multi_carrier=1;strcpy(result->route,l->route);strcpy(result->peer,l->peer);
+    result->engine=e;result->rule=l->rule;result->slot=slot;result->multi_carrier=1;result->binary_path=header_equals(header,"X-Codex-VRouter-Binary-Path","1");strcpy(result->route,l->route);strcpy(result->peer,l->peer);
     result->ssl=ssl;result->fd=fd;result->client=0;result->ws.expect_mask=1;result->last_rx=vr_millis();result->auth_expires=expiry;free(header);return result;
 fail:;
     pthread_mutex_lock(&e->mutex);uint64_t now=vr_millis();int report=!e->auth_reject_log||now-e->auth_reject_log>=10000;
@@ -754,10 +839,11 @@ static void dial_blocking(vr_link *l)
     snprintf(text,sizeof(text),"%s\n%s\nGET\n%s\n%s\nto_next",l->route,nonce,VR_RELAY_PATH,e->config.node_id);
     if(vr_hmac(vr_string(r,"secret"),text,mac))goto fail;
     char endpoint[280];if(vr_hostport(host,port,endpoint,sizeof(endpoint)))goto fail;
-    int len=snprintf(request,16384,"GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: %s\r\nAuthorization: Bearer %s\r\nX-Codex-Route-Id: %s\r\nX-Codex-Api-Version: 2025-03-22\r\nX-Codex-Auth-Mode: secret_hmac\r\nX-Codex-Relay-Mode: bridge\r\nX-Codex-Relay-Role: to_next\r\nX-Codex-Source-Node-Id: %s\r\nX-Codex-User-Auth-Ticket: %s\r\nX-Codex-VRouter-Carrier-Slot: %d\r\nX-Codex-Mac: %s\r\n\r\n",VR_RELAY_PATH,endpoint,ws_key,nonce,l->route,e->config.node_id,vr_string(r,"auth_ticket"),l->slot,mac);
+    int len=snprintf(request,16384,"GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: %s\r\nAuthorization: Bearer %s\r\nX-Codex-Route-Id: %s\r\nX-Codex-Api-Version: 2025-03-22\r\nX-Codex-Auth-Mode: secret_hmac\r\nX-Codex-Relay-Mode: bridge\r\nX-Codex-Relay-Role: to_next\r\nX-Codex-Source-Node-Id: %s\r\nX-Codex-User-Auth-Ticket: %s\r\nX-Codex-VRouter-Carrier-Slot: %d\r\nX-Codex-VRouter-Binary-Path: 1\r\nX-Codex-Mac: %s\r\n\r\n",VR_RELAY_PATH,endpoint,ws_key,nonce,l->route,e->config.node_id,vr_string(r,"auth_ticket"),l->slot,mac);
     if(len<0||len>=16384 || vr_tls_io(ssl,1,request,(size_t)len,deadline) || vr_http_header(ssl,response,4096,deadline) || strncmp(response,"HTTP/1.1 101 ",13) ||
         !header_equals(response,"Upgrade","websocket") || !vr_http_token(response,"Connection","Upgrade") || !vr_http_field(response,"Sec-WebSocket-Accept",actual,sizeof(actual)) || strcmp(actual,accept))goto fail;
     l->multi_carrier=header_equals(response,"X-Codex-VRouter-Multi-Carrier","1");
+    l->binary_path=header_equals(response,"X-Codex-VRouter-Binary-Path","1");
     if(l->slot&&!l->multi_carrier)goto fail;
     l->ssl=ssl;l->fd=fd;l->client=1;l->ws.expect_mask=0;l->last_rx=vr_millis();l->auth_expires=expires;*l->error=0;free(request);free(response);
     snprintf(event,sizeof(event),"Peer %.32s slot %d %.120s:%d connected",l->peer,l->slot,host,port);vr_service_log(e->service,"link",event);return;
@@ -827,7 +913,7 @@ void vr_handshakes_poll(vr_engine *e,int finish)
                 carrier_socket(l->fd);
                 vr_tcp_windows_start(&l->windows,l->fd,vr_millis(),l->rx,l->tx);
                 l->ws.expect_mask=result->ws.expect_mask;l->last_rx=result->last_rx;l->auth_expires=result->auth_expires;
-                l->multi_carrier=result->multi_carrier;l->keepalive_at=vr_millis();l->connected_at=l->keepalive_at;l->session=++e->carrier_session;l->opens++;*l->error=0;
+                l->multi_carrier=result->multi_carrier;l->binary_path=result->binary_path;l->keepalive_at=vr_millis();l->connected_at=l->keepalive_at;l->session=++e->carrier_session;l->opens++;*l->error=0;
                 if(!l->slot&&!l->multi_carrier)for(size_t k=0;k<e->link_count;k++)
                     if(e->links[k].slot&&!strcmp(e->links[k].route,l->route))vr_link_close(&e->links[k],"");
                 result->ssl=NULL;result->fd=-1;

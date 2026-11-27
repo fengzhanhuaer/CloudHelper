@@ -6103,7 +6103,10 @@ func TestProbeVirtualRouterWireFrameWriteDeadlineRefreshesAfterProgress(t *testi
 	if err != nil {
 		t.Fatalf("build ip frame failed: %v", err)
 	}
-	payload, err := encodeProbeVirtualRouterFrame(frame)
+	// A writer with no negotiated capability must receive the legacy path.
+	expected := frame
+	expected.Control = []byte(`{"path":["1","2"]}`)
+	payload, err := encodeProbeVirtualRouterFrame(expected)
 	if err != nil {
 		t.Fatalf("encode frame failed: %v", err)
 	}

@@ -174,6 +174,7 @@ int main(int argc,char **argv)
     while(active(e)!=expected&&vr_millis()<deadline)tick(e);
     if(!l->ssl)fprintf(stderr,"carrier: %s\n",l->error);
     assert(l->ssl&&active(e)==expected);
+    for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl)assert(e->links[i].binary_path==(expected>1));
     deadline=vr_millis()+5000;while(received_slots!=(unsigned)((1<<expected)-1)&&vr_millis()<deadline)tick(e);
     assert(received_slots==(unsigned)((1<<expected)-1));
     puts("PASS: Probe VR frames received on every physical slot");fflush(stdout);

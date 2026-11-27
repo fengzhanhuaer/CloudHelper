@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/cloudhelper/probe_node/internal/routewire"
 	"log"
 	"net"
 	"net/http"
@@ -782,6 +783,7 @@ func handleProbeVirtualRouterBridgeRelayWebSocket(rt *probeVirtualRouterRuntime,
 	}
 	responseHeader := http.Header{}
 	responseHeader.Set(probeRouteCodexMultiCarrierHeader, "1")
+	responseHeader.Set(routewire.Header, "1")
 	ws, err := upgrader.Upgrade(w, r, responseHeader)
 	if err != nil {
 		log.Printf("probe virtual router websocket relay upgrade failed: route=%s remote=%s err=%v", rt.cfg.routeID, r.RemoteAddr, err)
@@ -790,7 +792,7 @@ func handleProbeVirtualRouterBridgeRelayWebSocket(rt *probeVirtualRouterRuntime,
 	conn := tcpwindow.Carrier(startWebSocketNetConn(ws), ws.UnderlyingConn())
 	defer conn.Close()
 	sessionID := rt.nextBridgeSessionID("vrouter-carrier")
-	runProbeVirtualRouterPhysicalCarrier(rt, slot, conn, sessionID, strings.TrimSpace(r.RemoteAddr))
+	runProbeVirtualRouterPhysicalCarrier(rt, slot, &probeVirtualRouterNegotiatedConn{Conn: conn, multiCarrier: true, binaryPath: strings.TrimSpace(r.Header.Get(routewire.Header)) == "1"}, sessionID, strings.TrimSpace(r.RemoteAddr))
 }
 
 func handleProbeVirtualRouterBridgeRelayH3(rt *probeVirtualRouterRuntime, bridgeRole string, w http.ResponseWriter, r *http.Request) {
@@ -804,6 +806,7 @@ func handleProbeVirtualRouterBridgeRelayH3(rt *probeVirtualRouterRuntime, bridge
 		return
 	}
 	w.Header().Set(probeRouteCodexMultiCarrierHeader, "1")
+	w.Header().Set(routewire.Header, "1")
 	conn, ok := probeVirtualRouterConnFromH3(w, r, "probe-vrouter-h3-bridge")
 	if !ok {
 		log.Printf("probe virtual router h3 relay stream unavailable: route=%s remote=%s proto=%s", rt.cfg.routeID, r.RemoteAddr, r.Proto)
@@ -812,7 +815,7 @@ func handleProbeVirtualRouterBridgeRelayH3(rt *probeVirtualRouterRuntime, bridge
 	}
 	defer conn.Close()
 	sessionID := rt.nextBridgeSessionID("vrouter-carrier")
-	runProbeVirtualRouterPhysicalCarrier(rt, slot, conn, sessionID, strings.TrimSpace(r.RemoteAddr))
+	runProbeVirtualRouterPhysicalCarrier(rt, slot, &probeVirtualRouterNegotiatedConn{Conn: conn, multiCarrier: true, binaryPath: strings.TrimSpace(r.Header.Get(routewire.Header)) == "1"}, sessionID, strings.TrimSpace(r.RemoteAddr))
 }
 
 func probeVirtualRouterCarrierSlotFromRequest(r *http.Request) (int, error) {

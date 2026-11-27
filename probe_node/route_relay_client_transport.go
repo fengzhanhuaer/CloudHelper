@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/cloudhelper/probe_node/internal/routewire"
 	"io"
 	"log"
 	"net"
@@ -1107,6 +1108,11 @@ func openProbeRouteRelayNetConnWithResolvedHostModeAndToken(routeID string, secr
 type probeVirtualRouterNegotiatedConn struct {
 	net.Conn
 	multiCarrier bool
+	binaryPath   bool
+}
+
+func (c *probeVirtualRouterNegotiatedConn) BinaryPathSupported() bool {
+	return c != nil && c.binaryPath
 }
 
 func probeVirtualRouterCarrierSlotFromConnToken(connToken string) (int, bool) {
@@ -1137,6 +1143,7 @@ func wrapProbeVirtualRouterNegotiatedConn(conn net.Conn, connToken string, respo
 	return &probeVirtualRouterNegotiatedConn{
 		Conn:         conn,
 		multiCarrier: strings.TrimSpace(response.Get(probeRouteCodexMultiCarrierHeader)) == "1",
+		binaryPath:   strings.TrimSpace(response.Get(routewire.Header)) == "1",
 	}
 }
 
@@ -1163,6 +1170,7 @@ func openProbeRouteRelayWebSocketNetConn(routeID string, secret string, relayHos
 	}
 	if slot, ok := probeVirtualRouterCarrierSlotFromConnToken(connToken); ok {
 		header.Set(probeRouteCodexCarrierSlotHeader, strconv.Itoa(slot))
+		header.Set(routewire.Header, "1")
 	}
 
 	dialHostPort := net.JoinHostPort(relayDialHost, strconv.Itoa(relayPort))
@@ -1323,6 +1331,7 @@ func openProbeRouteRelayHTTP3WebSocketNetConn(routeID string, secret string, rel
 	}
 	if slot, ok := probeVirtualRouterCarrierSlotFromConnToken(connToken); ok {
 		request.Header.Set(probeRouteCodexCarrierSlotHeader, strconv.Itoa(slot))
+		request.Header.Set(routewire.Header, "1")
 	}
 	if strings.TrimSpace(relayHostHeader) != "" {
 		request.Host = strings.TrimSpace(relayHostHeader)

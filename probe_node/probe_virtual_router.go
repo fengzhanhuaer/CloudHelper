@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/cloudhelper/probe_node/internal/routewire"
 	"io"
 	"log"
 	"net"
@@ -3145,6 +3146,9 @@ func marshalProbeVirtualRouterFrameControl(path []string, trace []probeVirtualRo
 		}
 		cleanTrace = append(cleanTrace, clean)
 	}
+	if len(cleanTrace) == 0 && len(cleanPath) >= 2 && len(cleanPath) <= routewire.MaxNodes {
+		return routewire.MarshalPath(cleanPath)
+	}
 	payload, err := json.Marshal(probeVirtualRouterFrameControlEnvelope{
 		Path:  cleanPath,
 		Trace: cleanTrace,
@@ -3278,7 +3282,13 @@ func probeVirtualRouterFrameChecksum(headerPrefix []byte, controlPayload []byte,
 func probeVirtualRouterFrameControl(frame probeVirtualRouterFrame, fallbackPath []string) (probeVirtualRouterFrameControlEnvelope, error) {
 	control := probeVirtualRouterFrameControlEnvelope{}
 	if len(frame.Control) > 0 {
-		if err := json.Unmarshal(frame.Control, &control); err != nil {
+		if routewire.IsBinary(frame.Control) {
+			path, err := routewire.ParsePath(frame.Control)
+			if err != nil {
+				return control, err
+			}
+			control.Path = path
+		} else if err := json.Unmarshal(frame.Control, &control); err != nil {
 			return probeVirtualRouterFrameControlEnvelope{}, fmt.Errorf("invalid virtual router frame control: %w", err)
 		}
 	}
@@ -3292,7 +3302,13 @@ func setProbeVirtualRouterFrameControl(frame *probeVirtualRouterFrame, control p
 	if frame == nil {
 		return errors.New("virtual router frame is nil")
 	}
-	payload, err := json.Marshal(control)
+	var payload []byte
+	var err error
+	if len(control.Trace) == 0 && len(control.Path) >= 2 && len(control.Path) <= routewire.MaxNodes {
+		payload, err = routewire.MarshalPath(control.Path)
+	} else {
+		payload, err = json.Marshal(control)
+	}
 	if err != nil {
 		return err
 	}
@@ -3478,7 +3494,14 @@ func writeProbeVirtualRouterWireFramesRaw(writer io.Writer, frames []probeVirtua
 	}
 	totalBytes := 0
 	encoded := make([][]byte, 0, len(frames))
+	capable, _ := writer.(interface{ BinaryPathSupported() bool })
+	binaryPath := capable != nil && capable.BinaryPathSupported()
 	for _, frame := range frames {
+		control, err := routewire.ForPeer(frame.Control, binaryPath)
+		if err != nil {
+			return err
+		}
+		frame.Control = control
 		payload, err := encodeProbeVirtualRouterFrame(frame)
 		if err != nil {
 			return err

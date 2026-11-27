@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/cloudhelper/probe_node/internal/routewire"
 	"io"
 	"net"
 	"net/http"
@@ -1673,10 +1674,11 @@ func TestMobileVRouteFrameRoundTrip(t *testing.T) {
 	if !bytes.Equal(decoded.Data, packet) {
 		t.Fatalf("decoded packet mismatch")
 	}
-	var control mobileVRouteFrameControlEnvelope
-	if err := json.Unmarshal(decoded.Control, &control); err != nil {
-		t.Fatalf("unmarshal control failed: %v", err)
+	path, err := routewire.ParsePath(decoded.Control)
+	if err != nil {
+		t.Fatal(err)
 	}
+	control := mobileVRouteFrameControlEnvelope{Path: path}
 	if got, want := strings.Join(control.Path, ">"), "9>17"; got != want {
 		t.Fatalf("control path=%s, want %s", got, want)
 	}

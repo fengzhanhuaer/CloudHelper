@@ -5,6 +5,56 @@
 #include <string.h>
 
 static unsigned delivered;
+static unsigned json_objects;
+static uint8_t last_wire[512];static size_t last_wire_length;
+json_object *__real_json_object_new_object(void);
+json_object *__wrap_json_object_new_object(void)
+{json_objects++;return __real_json_object_new_object();}
+int __real_vr_ws_encode(int,int,const void *,size_t,uint8_t *,size_t,size_t *);
+int __wrap_vr_ws_encode(int opcode,int mask,const void *bytes,size_t n,uint8_t *out,size_t cap,size_t *length)
+{
+    if(opcode==2&&n<=sizeof(last_wire)){memcpy(last_wire,bytes,n);last_wire_length=n;}
+    return __real_vr_ws_encode(opcode,mask,bytes,n,out,cap,length);
+}
+
+static void test_packet_reuse(int binary)
+{
+    vr_engine *e=calloc(1,sizeof(*e));assert(e);vr_service s={0};e->service=&s;
+    pthread_mutex_init(&s.mutex,NULL);strcpy(e->config.node_id,"1");
+    const char *text="{\"probe_ips\":[{\"node_id\":\"1\"},{\"node_id\":\"2\"},{\"node_id\":\"3\"}],\"topology_rules\":["
+        "{\"enabled\":true,\"from_node_id\":\"1\",\"to_node_id\":\"2\",\"user_id\":\"A\"},"
+        "{\"enabled\":true,\"from_node_id\":\"2\",\"to_node_id\":\"3\",\"user_id\":\"A\"}]}";
+    e->policy=vr_json_parse(text,strlen(text));assert(e->policy);
+    json_object *rules=vr_member(e->policy,"topology_rules");
+    SSL_CTX *ctx=SSL_CTX_new(TLS_method());assert(ctx);vr_link *l=&e->links[0];e->link_count=1;
+    l->engine=e;l->fd=-1;l->ssl=SSL_new(ctx);assert(l->ssl);l->session=1;l->binary_path=binary;l->rule=json_object_array_get_idx(rules,0);
+    strcpy(l->peer,"2");strcpy(l->route,"same-route");
+    uint8_t packet[40]={0x45,0,0,40,0,0,0,0,64,6,0,0,10,0,0,1,10,0,0,2,3,232,1,187};packet[32]=0x50;packet[33]=0x10;
+    char path[VR_PATH_MAX][129]={{"1"},{"2"},{"3"}};size_t count;
+    assert(!vr_send(e,1,1,path,3,packet,sizeof(packet)));
+    assert(last_wire[12]==(binary?0:'{'));
+    unsigned allocations=json_objects;packet[27]++;
+    assert(!vr_packet_path(e,"3",packet,sizeof(packet),path,&count)&&count==3);
+    assert(!vr_send(e,1,1,path,count,packet,sizeof(packet)));
+    assert(json_objects==allocations); /* No JSON allocation per established ACK. */
+    assert(last_wire_length>=sizeof(packet)&&!memcmp(last_wire+last_wire_length-sizeof(packet),packet,sizeof(packet)));
+    /* A changed explicit path cannot borrow the cached authorization. */
+    strcpy(path[2],"9");size_t queued=l->used;
+    assert(vr_send(e,1,1,path,3,packet,sizeof(packet))<0&&queued==l->used);strcpy(path[2],"3");
+    /* Reconnected slots must go through authorization again. */
+    allocations=json_objects;l->session++;
+    assert(!vr_send(e,1,1,path,3,packet,sizeof(packet)));if(!binary)assert(json_objects>allocations);
+    /* Publication revokes a removed downstream edge immediately. */
+    json_object *edge=json_object_array_get_idx(rules,1);e->policy_revision++;
+    json_object_object_add(edge,"enabled",json_object_new_boolean(0));queued=l->used;
+    assert(vr_send(e,1,1,path,3,packet,sizeof(packet))<0&&queued==l->used);
+    json_object_object_add(edge,"enabled",json_object_new_boolean(1));e->policy_revision++;
+    assert(!vr_send(e,1,1,path,3,packet,sizeof(packet)));
+    /* TCP stream frames and other subtypes never use the packet fast path. */
+    allocations=json_objects;assert(!vr_send(e,1,2,path,3,packet,sizeof(packet)));if(!binary)assert(json_objects>allocations);
+    vr_link_close(l,"");assert(vr_send(e,1,1,path,3,packet,sizeof(packet))<0);
+    json_object_put(e->policy);pthread_mutex_destroy(&s.mutex);SSL_CTX_free(ctx);free(e);
+}
 void vr_link_frame(vr_link *l,const vr_frame *f,char path[VR_PATH_MAX][129],size_t n)
 {delivered++;vr_measure_frame(l->engine,l,f,path,n);}
 static void expect(vr_engine *e,const char *middle,size_t length)
@@ -73,6 +123,7 @@ static void test_owner_authorization(void)
 }
 int main(void)
 {
+    test_packet_reuse(0);test_packet_reuse(1);
     test_owner_authorization();
     vr_engine *e=calloc(1,sizeof(*e));assert(e);vr_service s={0};e->service=&s;pthread_mutex_init(&s.mutex,NULL);strcpy(e->config.node_id,"1");
     const char *text="{\"probe_ips\":[{\"node_id\":\"1\"},{\"node_id\":\"3\"},{\"node_id\":\"2\"},{\"node_id\":\"4\"}],\"topology_rules\":[{\"enabled\":true,\"from_node_id\":\"1\",\"to_node_id\":\"2\"},{\"enabled\":true,\"from_node_id\":\"1\",\"to_node_id\":\"3\"},{\"enabled\":true,\"from_node_id\":\"2\",\"to_node_id\":\"4\"},{\"enabled\":true,\"from_node_id\":\"3\",\"to_node_id\":\"4\"},{\"enabled\":true,\"from_node_id\":\"1\",\"to_node_id\":\"4\"}]}";
