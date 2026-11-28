@@ -5796,9 +5796,11 @@ func TestSnapshotProbeVirtualRouterExitNetstackAggregatesOutputQueues(t *testing
 
 	shards := makeProbeVirtualRouterExitNetstackOutputDispatchShards()
 	if !shards[0].TryPush(probeVirtualRouterExitNetstackOutputPacket{payload: []byte{0x45}}) ||
+		!shards[1].TryPush(probeVirtualRouterExitNetstackOutputPacket{payload: []byte{0x45}}) ||
 		!shards[1].TryPush(probeVirtualRouterExitNetstackOutputPacket{payload: []byte{0x45}}) {
 		t.Fatal("output queues should accept test packets")
 	}
+	shards[1].TryPop()
 	runner := &probeVirtualRouterExitNetstack{outputDispatch: shards}
 	runner.outputEnqueued.Store(3)
 	runner.outputForwarded.Store(2)
@@ -5818,8 +5820,31 @@ func TestSnapshotProbeVirtualRouterExitNetstackAggregatesOutputQueues(t *testing
 	if snapshot.OutputShards != len(shards) || snapshot.OutputQueueDepth != 2 || snapshot.OutputQueueCapacity != len(shards)*probeVirtualRouterExitNetstackOutputShardInitialPackets {
 		t.Fatalf("unexpected output queue snapshot: %+v", snapshot)
 	}
+	if snapshot.OutputShardPeakDepth != 2 || snapshot.OutputShardCapacityLimit != probeVirtualRouterExitNetstackOutputShardQueuePackets {
+		t.Fatalf("unexpected output shard watermarks: %+v", snapshot)
+	}
 	if snapshot.OutputEnqueued != 3 || snapshot.OutputForwarded != 2 || snapshot.OutputDropped != 1 || snapshot.OutputQueueFull != 1 {
 		t.Fatalf("unexpected output counters: %+v", snapshot)
+	}
+}
+
+func TestProbeVirtualRouterExitNetstackOutputWaitIsBounded(t *testing.T) {
+	queue := newProbeAdaptiveQueue[probeVirtualRouterExitNetstackOutputPacket](probeAdaptiveQueueOptions{InitialCapacity: 1, MaxCapacity: 1})
+	runner := &probeVirtualRouterExitNetstack{outputDispatch: []*probeAdaptiveQueue[probeVirtualRouterExitNetstackOutputPacket]{queue}}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	path := []string{"27", "26"}
+	if err := runner.enqueueOutputPacket(ctx, []byte{0x45}, "198.18.0.15", path); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.enqueueOutputPacket(ctx, []byte{0x46}, "198.18.0.15", path); !errors.Is(err, errProbeVirtualRouterExitNetstackOutputQueueFull) {
+		t.Fatalf("full output shard error = %v", err)
+	}
+	if runner.outputQueueWaits.Load() != 1 || runner.outputQueueRecovered.Load() != 0 {
+		t.Fatalf("unexpected retry counters: %d waits, %d recovered", runner.outputQueueWaits.Load(), runner.outputQueueRecovered.Load())
+	}
+	if item, ok := queue.TryPop(); !ok || len(item.payload) != 1 || item.payload[0] != 0x45 {
+		t.Fatalf("queue overflow replaced an older packet: %+v", item)
 	}
 }
 

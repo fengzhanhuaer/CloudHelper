@@ -397,6 +397,12 @@ func (q *probeAdaptiveQueue[T]) MaxCapacity() int {
 	return q.options.MaxCapacity
 }
 
+func (q *probeAdaptiveQueue[T]) watermarks() (depth, capacity, peak int) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.size, len(q.buffer), q.peakDepth
+}
+
 func (q *probeAdaptiveQueue[T]) IsClosed() bool {
 	if q == nil {
 		return true

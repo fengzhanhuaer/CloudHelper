@@ -38,6 +38,7 @@ const (
 	// write while preserving per-flow packet order.
 	probeVirtualRouterExitNetstackOutputShardQueuePackets   = 512
 	probeVirtualRouterExitNetstackOutputShardInitialPackets = 32
+	probeVirtualRouterExitNetstackOutputWait                = 2 * time.Millisecond
 	probeVirtualRouterExitNetstackTCPBufferDefault          = tcpwindow.InitialBuffer
 	probeVirtualRouterExitNetstackTCPBufferMax              = tcpwindow.MaxBuffer
 	probeVirtualRouterExitTCPRelayCopyBufferBytes           = 64 << 10
@@ -47,18 +48,20 @@ const (
 )
 
 type probeVirtualRouterExitNetstack struct {
-	gateway         bool
-	stack           *stack.Stack
-	linkEP          *channel.Endpoint
-	outputDispatch  []*probeAdaptiveQueue[probeVirtualRouterExitNetstackOutputPacket]
-	cancel          context.CancelFunc
-	doneCh          chan struct{}
-	closeOnce       sync.Once
-	closed          atomic.Bool
-	outputEnqueued  atomic.Uint64
-	outputForwarded atomic.Uint64
-	outputDropped   atomic.Uint64
-	outputQueueFull atomic.Uint64
+	gateway              bool
+	stack                *stack.Stack
+	linkEP               *channel.Endpoint
+	outputDispatch       []*probeAdaptiveQueue[probeVirtualRouterExitNetstackOutputPacket]
+	cancel               context.CancelFunc
+	doneCh               chan struct{}
+	closeOnce            sync.Once
+	closed               atomic.Bool
+	outputEnqueued       atomic.Uint64
+	outputForwarded      atomic.Uint64
+	outputDropped        atomic.Uint64
+	outputQueueFull      atomic.Uint64
+	outputQueueWaits     atomic.Uint64
+	outputQueueRecovered atomic.Uint64
 }
 
 type probeVirtualRouterExitNetstackOutputPacket struct {
@@ -68,18 +71,22 @@ type probeVirtualRouterExitNetstackOutputPacket struct {
 }
 
 type probeVirtualRouterExitNetstackSnapshot struct {
-	Running             bool
-	MTU                 int
-	OutputShards        int
-	OutputQueueDepth    int
-	OutputQueueCapacity int
-	OutputEnqueued      uint64
-	OutputForwarded     uint64
-	OutputDropped       uint64
-	OutputQueueFull     uint64
-	TCPNoDelay          bool
-	TCPBufferDefault    int
-	TCPBufferMax        int
+	Running                  bool
+	MTU                      int
+	OutputShards             int
+	OutputQueueDepth         int
+	OutputQueueCapacity      int
+	OutputShardPeakDepth     int
+	OutputShardCapacityLimit int
+	OutputEnqueued           uint64
+	OutputForwarded          uint64
+	OutputDropped            uint64
+	OutputQueueFull          uint64
+	OutputQueueWaits         uint64
+	OutputQueueRecovered     uint64
+	TCPNoDelay               bool
+	TCPBufferDefault         int
+	TCPBufferMax             int
 }
 
 var probeVirtualRouterExitNetstackState = struct {
@@ -334,13 +341,18 @@ func snapshotProbeVirtualRouterExitNetstack() probeVirtualRouterExitNetstackSnap
 		if shard == nil {
 			continue
 		}
-		snapshot.OutputQueueDepth += shard.Len()
-		snapshot.OutputQueueCapacity += shard.Capacity()
+		depth, capacity, peak := shard.watermarks()
+		snapshot.OutputQueueDepth += depth
+		snapshot.OutputQueueCapacity += capacity
+		snapshot.OutputShardPeakDepth = max(snapshot.OutputShardPeakDepth, peak)
+		snapshot.OutputShardCapacityLimit = max(snapshot.OutputShardCapacityLimit, shard.MaxCapacity())
 	}
 	snapshot.OutputEnqueued = runner.outputEnqueued.Load()
 	snapshot.OutputForwarded = runner.outputForwarded.Load()
 	snapshot.OutputDropped = runner.outputDropped.Load()
 	snapshot.OutputQueueFull = runner.outputQueueFull.Load()
+	snapshot.OutputQueueWaits = runner.outputQueueWaits.Load()
+	snapshot.OutputQueueRecovered = runner.outputQueueRecovered.Load()
 	return snapshot
 }
 
@@ -397,6 +409,7 @@ func (n *probeVirtualRouterExitNetstack) outputLoop(ctx context.Context) {
 	}
 }
 
+// The caller transfers ownership of the packet's byte slice.
 func (n *probeVirtualRouterExitNetstack) enqueueOutputPacket(ctx context.Context, payload []byte, dstIP string, path []string) error {
 	if n == nil || n.closed.Load() {
 		return io.ErrClosedPipe
@@ -411,21 +424,26 @@ func (n *probeVirtualRouterExitNetstack) enqueueOutputPacket(ctx context.Context
 	shardID := probeVirtualRouterPacketDispatchShard(payload, len(n.outputDispatch))
 	shard := n.outputDispatch[shardID]
 	item := probeVirtualRouterExitNetstackOutputPacket{
-		payload: append([]byte(nil), payload...),
+		payload: payload,
 		dstIP:   strings.TrimSpace(dstIP),
 		path:    append([]string(nil), path...),
 	}
-	if shard.TryPush(item) {
-		n.outputEnqueued.Add(1)
-		return nil
+	if !shard.TryPush(item) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// Absorb a short burst without holding up the other shards indefinitely.
+		n.outputQueueWaits.Add(1)
+		if err := shard.PushUntil(item, time.Now().Add(probeVirtualRouterExitNetstackOutputWait), ctx.Done()); err != nil {
+			if errors.Is(err, errProbeAdaptiveQueueFull) {
+				return fmt.Errorf("%w: shard=%d depth=%d capacity=%d limit=%d", errProbeVirtualRouterExitNetstackOutputQueueFull, shardID, shard.Len(), shard.Capacity(), shard.MaxCapacity())
+			}
+			return err
+		}
+		n.outputQueueRecovered.Add(1)
 	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-		shard.RecordDrop()
-		return fmt.Errorf("%w: shard=%d depth=%d capacity=%d limit=%d", errProbeVirtualRouterExitNetstackOutputQueueFull, shardID, shard.Len(), shard.Capacity(), shard.MaxCapacity())
-	}
+	n.outputEnqueued.Add(1)
+	return nil
 }
 
 func (n *probeVirtualRouterExitNetstack) outputForwardWorker(ctx context.Context, shardID int, shard *probeAdaptiveQueue[probeVirtualRouterExitNetstackOutputPacket]) {
