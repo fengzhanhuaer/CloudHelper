@@ -1035,7 +1035,7 @@ func TestProbeVirtualRouterPacketPathUsesCurrentRuleExitForStaleFakeIPEntry(t *t
 	if got := currentProbeVirtualRouterPathForPacket(packet, "198.18.4.68"); !reflect.DeepEqual(got, []string{"9", "19", "1"}) {
 		t.Fatalf("packet path=%v, want [9 19 1]", got)
 	}
-	item := buildProbeVirtualRouterRecentPacket("tun_rx", "forward", nil, packet, []string{"9", "19", "1"}, false, nil)
+	item := buildProbeVirtualRouterRecentPacket(captureProbeVirtualRouterRecentPacket("tun_rx", "forward", nil, packet, []string{"9", "19", "1"}, false, nil))
 	if !item.FakeIP || item.FakeIPDomain != "chatgpt.com" || item.FakeIPExitNode != "1" {
 		t.Fatalf("recent packet fake ip metadata should use current rule exit: %+v", item)
 	}
@@ -4885,19 +4885,33 @@ func TestProbeVirtualRouterParseTCPUDPLogInfo(t *testing.T) {
 	}
 }
 
-func TestProbeVirtualRouterRecentPacketIncludesChecksumSummary(t *testing.T) {
+func TestProbeVirtualRouterRecentPacketCapturesChecksumOnDemand(t *testing.T) {
 	resetProbeVirtualRouterStateForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 
 	packet := buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.18", "198.18.0.21", 49152, 8080)
+	packet = append(packet, make([]byte, 1460)...)
+	binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)))
+	binary.BigEndian.PutUint16(packet[10:12], 0)
+	binary.BigEndian.PutUint16(packet[10:12], probeVirtualRouterChecksum(packet[:20]))
 	setProbeVirtualRouterTestTCPChecksum(packet)
 	recordProbeVirtualRouterRecentPacket("frame_rx", "deliver", nil, packet, []string{"19", "16"}, true, nil)
 	items := snapshotProbeVirtualRouterRecentPackets()
 	if len(items) != 1 {
 		t.Fatalf("recent packets=%d, want 1", len(items))
 	}
-	if !strings.Contains(items[0].Detail, "ip_checksum=ok") || !strings.Contains(items[0].Detail, "tcp_checksum=ok") {
-		t.Fatalf("unexpected checksum detail: %+v", items[0])
+	if items[0].Detail != "" || items[0].SourcePort != 49152 || items[0].DestinationPort != 8080 || items[0].Length != len(packet) {
+		t.Fatalf("expected a full-length TCP summary without checksum detail by default: %+v", items[0])
+	}
+	probeVirtualRouterChecksumCaptureUntil.Store(time.Now().Add(time.Second).UnixNano())
+	t.Cleanup(func() { probeVirtualRouterChecksumCaptureUntil.Store(0) })
+	event := captureProbeVirtualRouterRecentPacket("frame_rx", "deliver", nil, packet, nil, true, nil)
+	if event.headerLen != 34 || event.checksum != "ip_checksum=ok tcp_checksum=ok" {
+		t.Fatalf("header bytes=%d checksum=%q", event.headerLen, event.checksum)
+	}
+	probeVirtualRouterChecksumCaptureUntil.Store(time.Now().Add(-time.Second).UnixNano())
+	if event := captureProbeVirtualRouterRecentPacket("frame_rx", "deliver", nil, packet, nil, true, nil); event.checksum != "" {
+		t.Fatalf("checksum capture expired, detail=%q", event.checksum)
 	}
 }
 

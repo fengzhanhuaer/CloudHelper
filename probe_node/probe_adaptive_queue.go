@@ -61,6 +61,7 @@ type probeVirtualRouterBufferReport struct {
 	StatsStartedAt string                       `json:"stats_started_at"`
 	CollectedAt    string                       `json:"collected_at"`
 	Items          []probeAdaptiveQueueSnapshot `json:"items"`
+	CarrierPayload probeQueueByteBudgetSnapshot `json:"carrier_payload"`
 }
 
 type probeAdaptiveQueueObservable interface {
@@ -78,7 +79,9 @@ var probeVirtualRouterBufferRegistry = struct {
 }
 
 type probeAdaptiveQueue[T any] struct {
-	options probeAdaptiveQueueOptions
+	accounting  probeAdaptiveQueueByteAccounting[T]
+	queuedBytes int // Protected by mu.
+	options     probeAdaptiveQueueOptions
 
 	mu        sync.Mutex
 	buffer    []T
@@ -111,7 +114,7 @@ type probeAdaptiveQueue[T any] struct {
 	space chan struct{}
 }
 
-func newProbeAdaptiveQueue[T any](options probeAdaptiveQueueOptions) *probeAdaptiveQueue[T] {
+func newProbeAdaptiveQueue[T any](options probeAdaptiveQueueOptions, accounting ...probeAdaptiveQueueByteAccounting[T]) *probeAdaptiveQueue[T] {
 	options.ID = strings.TrimSpace(options.ID)
 	options.Stage = strings.TrimSpace(options.Stage)
 	options.Direction = strings.TrimSpace(options.Direction)
@@ -135,6 +138,9 @@ func newProbeAdaptiveQueue[T any](options probeAdaptiveQueueOptions) *probeAdapt
 		statsStartedAt:        now,
 		ready:                 make(chan struct{}, 1),
 		space:                 make(chan struct{}, 1),
+	}
+	if len(accounting) > 0 {
+		queue.accounting = accounting[0]
 	}
 	if options.ID != "" {
 		probeVirtualRouterBufferRegistry.mu.Lock()
@@ -164,18 +170,36 @@ func (q *probeAdaptiveQueue[T]) SpaceReady() <-chan struct{} {
 }
 
 func (q *probeAdaptiveQueue[T]) TryPush(value T) bool {
+	pushed, _ := q.tryPush(value, false)
+	return pushed
+}
+
+func (q *probeAdaptiveQueue[T]) tryPush(value T, waitForBudget bool) (bool, <-chan struct{}) {
 	if q == nil {
-		return false
+		return false, nil
 	}
 	q.mu.Lock()
 	if q.closed {
 		q.mu.Unlock()
-		return false
+		return false, nil
 	}
-	if q.size == len(q.buffer) && !q.growLocked() {
+	if q.size >= q.options.MaxCapacity {
 		q.fullEvents++
 		q.mu.Unlock()
-		return false
+		return false, nil
+	}
+	if a := q.accounting; a.budget != nil {
+		weight, priority := a.measure(value)
+		reserved, available := a.budget.tryReserve(weight, priority, waitForBudget)
+		if !reserved {
+			q.fullEvents++
+			q.mu.Unlock()
+			return false, available
+		}
+		q.queuedBytes += weight
+	}
+	if q.size == len(q.buffer) {
+		q.growLocked()
 	}
 	index := (q.head + q.size) % len(q.buffer)
 	q.buffer[index] = value
@@ -192,13 +216,15 @@ func (q *probeAdaptiveQueue[T]) TryPush(value T) bool {
 	q.updateLowWaterLocked(now)
 	q.mu.Unlock()
 	signalProbeAdaptiveQueue(q.ready)
-	return true
+	return true, nil
 }
 
 func (q *probeAdaptiveQueue[T]) PushUntil(value T, deadline time.Time, stop <-chan struct{}) error {
 	if q == nil {
 		return io.ErrClosedPipe
 	}
+	var timer *time.Timer
+	var timeout <-chan time.Time
 	retrying := false
 	for {
 		if retrying {
@@ -206,36 +232,32 @@ func (q *probeAdaptiveQueue[T]) PushUntil(value T, deadline time.Time, stop <-ch
 			q.retryEvents++
 			q.mu.Unlock()
 		}
-		if q.TryPush(value) {
+		pushed, budgetSpace := q.tryPush(value, true)
+		if pushed {
 			return nil
 		}
 		if q.IsClosed() {
 			return io.ErrClosedPipe
 		}
 		retrying = true
-		if !deadline.IsZero() {
+		if !deadline.IsZero() && timer == nil {
 			wait := time.Until(deadline)
 			if wait <= 0 {
 				q.RecordDrop()
 				return errProbeAdaptiveQueueFull
 			}
-			timer := time.NewTimer(wait)
-			select {
-			case <-q.space:
-				stopProbeAdaptiveQueueTimer(timer)
-			case <-stop:
-				stopProbeAdaptiveQueueTimer(timer)
-				return io.ErrClosedPipe
-			case <-timer.C:
-				q.RecordDrop()
-				return errProbeAdaptiveQueueFull
-			}
-			continue
+			timer = time.NewTimer(wait)
+			timeout = timer.C
+			defer stopProbeAdaptiveQueueTimer(timer)
 		}
 		select {
 		case <-q.space:
+		case <-budgetSpace:
 		case <-stop:
 			return io.ErrClosedPipe
+		case <-timeout:
+			q.RecordDrop()
+			return errProbeAdaptiveQueueFull
 		}
 	}
 }
@@ -260,6 +282,11 @@ func (q *probeAdaptiveQueue[T]) TryPop() (T, bool) {
 	}
 	q.queuedAt[q.head] = 0
 	q.buffer[q.head] = zero
+	if a := q.accounting; a.budget != nil {
+		weight, _ := a.measure(value)
+		q.queuedBytes -= weight
+		a.budget.release(weight)
+	}
 	q.head = (q.head + 1) % len(q.buffer)
 	q.size--
 	if q.size == 0 {
@@ -380,6 +407,15 @@ func (q *probeAdaptiveQueue[T]) Len() int {
 	return value
 }
 
+func (q *probeAdaptiveQueue[T]) payloadBytes() int {
+	if q == nil {
+		return 0
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.queuedBytes
+}
+
 func (q *probeAdaptiveQueue[T]) Capacity() int {
 	if q == nil {
 		return 0
@@ -423,6 +459,14 @@ func (q *probeAdaptiveQueue[T]) Close() {
 		return
 	}
 	q.closed = true
+	if q.accounting.budget != nil && q.size != 0 {
+		// A stopped carrier or exit will no longer consume these entries.
+		clear(q.buffer)
+		clear(q.queuedAt)
+		q.head, q.size = 0, 0
+		q.accounting.budget.release(q.queuedBytes)
+		q.queuedBytes = 0
+	}
 	q.mu.Unlock()
 	signalProbeAdaptiveQueue(q.ready)
 	signalProbeAdaptiveQueue(q.space)
@@ -611,6 +655,7 @@ func snapshotProbeVirtualRouterBuffers() probeVirtualRouterBufferReport {
 		StatsStartedAt: startedAt.UTC().Format(time.RFC3339),
 		CollectedAt:    now.UTC().Format(time.RFC3339),
 		Items:          make([]probeAdaptiveQueueSnapshot, 0, len(items)),
+		CarrierPayload: probeVirtualRouterCarrierBudget.snapshot(),
 	}
 	for _, item := range items {
 		snapshot := item.adaptiveQueueSnapshot(now)
@@ -639,6 +684,7 @@ func resetProbeVirtualRouterBufferStats() probeVirtualRouterBufferReport {
 	for _, item := range items {
 		item.resetAdaptiveQueueStats(now)
 	}
+	probeVirtualRouterCarrierBudget.resetPeak()
 	return snapshotProbeVirtualRouterBuffers()
 }
 

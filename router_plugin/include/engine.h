@@ -12,6 +12,7 @@
 
 #define VR_TX_CAP (256u*1024u)
 #define VR_TX_TOTAL_CAP (8u*1024u*1024u)
+#define VR_TX_REUSE_CAP (128u*1024u)
 #define VR_TX_TOTAL_CONTROL_RESERVE (256u*1024u)
 #define VR_TX_CONTROL_RESERVE (32u*1024u)
 #define VR_TX_CONTROL_CAP (96u*1024u)
@@ -36,15 +37,17 @@ typedef struct {
     uint64_t connected_at,tx_enqueued,tx_dequeued,tx_full;
     uint64_t tx_wait_samples,tx_wait_total_ms,tx_wait_max_ms,tx_backlog_since,tx_backlog_peak_ms,tx_stats_reset_at;
     uint64_t opens,frames_sent,frame_bytes_sent,frames_received,frame_bytes_received;
-    uint64_t tun_pressure_at,tun_pressure_reports;
+    uint64_t tun_pressure_at,tun_pressure_reports,peer_pressure_at;
     size_t tx_peak,tx_memory_peak,rx_peak;
     time_t auth_expires;
-    vr_decoder decoder;
+    vr_decoder *decoder;
     /* Invalidated on every policy publication, including removed path edges. */
     uint8_t ingress_control[1024];char ingress_path[VR_PATH_HOPS+1][129];
     size_t ingress_length,ingress_count,ingress_at;
     /* Immutable frames, including SSL_write WANT retries; memory is bounded. */
     vr_tx_frame *tx_head[3],*tx_tail[3],*writing;
+    vr_tx_frame *tx_spare[2];
+    unsigned tx_spare_count[2];
     size_t used,tx_memory,tx_memory_class[3],tx_bytes[3],write_offset,write_pending;
     unsigned business_since_bulk,next_flow_slot;
     short write_events;
@@ -81,7 +84,8 @@ struct vr_engine {
     uint64_t auth_reject_log;
     char own_ip[16],cidr[64],error[256];
     SSL_CTX *tls;
-    vr_link links[VR_CARRIER_MAX];size_t link_count,tx_queue_memory,tx_queue_peak;
+    vr_link links[VR_CARRIER_MAX];size_t link_count,tx_queue_memory,rx_queue_memory,tx_spare_memory,tx_queue_peak;
+    uint64_t tx_reused;
     vr_flow_binding bindings[VR_NAT_MAX];uint64_t carrier_session;
     vr_packet_cache packet_cache[VR_PACKET_CACHE_MAX];
     vr_path_rtt path_rtt[VR_PATH_RTT_MAX];unsigned paths_revision;uint64_t path_probe_at;

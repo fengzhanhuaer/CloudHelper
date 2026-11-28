@@ -92,21 +92,58 @@ static void drain(vr_link *l)
 static void test_shared_send_budget(SSL_CTX *ctx)
 {
     vr_engine *e=calloc(1,sizeof(*e));assert(e);
-    size_t total=0;
+    e->link_count=VR_CARRIER_MAX;
     for(size_t i=0;i<VR_CARRIER_MAX;i++) {
         vr_link *l=&e->links[i];l->engine=e;l->fd=-1;reset(l,ctx);
-        while(!enqueue(l,1,1,5,32u*1024u)){}
-        total+=l->tx_memory;
+        l->decoder=calloc(1,sizeof(*l->decoder));assert(l->decoder);e->rx_queue_memory+=sizeof(*l->decoder);
     }
-    assert(total<=8u*1024u*1024u&&total>7u*1024u*1024u);
+    for(size_t i=0;i<VR_CARRIER_MAX;i++)while(!enqueue(&e->links[i],1,1,5,32u*1024u)){}
+    size_t total=e->tx_queue_memory+e->rx_queue_memory+e->tx_spare_memory;
+    assert(total<=8u*1024u*1024u&&total>7u*1024u*1024u&&e->tx_queue_peak<=8u*1024u*1024u);
+    printf("PASS: carrier RX and TX share %zu of %u bytes with %u slots\n",total,VR_TX_TOTAL_CAP,VR_CARRIER_MAX);
     vr_link *idle=&e->links[VR_CARRIER_MAX-1];
     assert(!idle->tx_memory&&!vr_link_keepalive(idle,VR_KEEPALIVE_PING));
     vr_link_close(&e->links[0],"");
     assert(!enqueue(idle,1,1,6,32u*1024u));
     drain(idle);
     for(size_t i=0;i<VR_CARRIER_MAX;i++)vr_link_close(&e->links[i],"");
-    assert(!e->tx_queue_memory);
+    assert(!e->tx_queue_memory&&!e->rx_queue_memory&&!e->tx_spare_memory);
     free(e);
+}
+
+static void test_transit_pressure_and_reuse(SSL_CTX *ctx)
+{
+    vr_engine *e=calloc(1,sizeof(*e));assert(e);strcpy(e->config.node_id,"26");
+    e->policy=json_tokener_parse("{\"topology_rules\":["
+        "{\"id\":\"vrouter-up\",\"enabled\":true,\"from_node_id\":\"27\",\"to_node_id\":\"26\"},"
+        "{\"id\":\"vrouter-down\",\"enabled\":true,\"from_node_id\":\"26\",\"to_node_id\":\"16\"}]}");
+    json_object *rules=vr_member(e->policy,"topology_rules");
+    for(size_t i=0;i<2;i++)assert(!vr_links_add(e,json_object_array_get_idx(rules,i)));
+    vr_link *up=&e->links[0],*down=&e->links[VR_CARRIER_SLOTS];reset(up,ctx);reset(down,ctx);
+    const char *path="{\"path\":[\"27\",\"26\",\"16\"]}";
+    uint8_t packet[1500]={0x45,0,5,220,0,0,0,0,64,6};
+    vr_frame frame={1,1,(const uint8_t *)path,packet,strlen(path),sizeof(packet)};
+    /* The fixtures decode TLS output independently here. Unit scope is queue
+       admission, allocated bytes and the authenticated transit dispatcher. */
+    assert(!vr_link_receive(&frame,up)&&down->used&&!up->tun_pressure_reports);
+    vr_link_close(down,"");reset(down,ctx);
+    while(!enqueue(down,1,1,5,16u*1024u)){}
+    assert(!vr_link_receive(&frame,up)&&up->tun_pressure_reports==1);
+    assert(!vr_link_receive(&frame,up)&&up->tun_pressure_reports==1);
+    vr_link_close(down,"");reset(down,ctx);
+    up->tun_pressure_at=0;
+    const char *report="{\"request_id\":\"tun-pressure-v1\",\"tun_pressure_v1\":true}";
+    const char *reverse="{\"path\":[\"16\",\"26\"]}";
+    vr_frame hint={2,2,(const uint8_t *)reverse,(const uint8_t *)report,strlen(reverse),strlen(report)};
+    assert(!vr_link_receive(&hint,down)&&down->peer_pressure_at);
+    assert(!vr_link_receive(&frame,up)&&up->tun_pressure_reports==2);
+    vr_link_close(down,"");reset(down,ctx);
+    for(unsigned i=0;i<8;i++){assert(!enqueue(down,1,1,5,sizeof(packet)));drain(down);}
+    assert(e->tx_reused==7&&e->tx_spare_memory<=VR_TX_REUSE_CAP);
+    for(size_t i=0;i<e->link_count;i++)vr_link_close(&e->links[i],"");
+    assert(!e->tx_queue_memory&&!e->tx_spare_memory);
+    json_object_put(e->policy);free(e);
+    puts("PASS: authenticated multi-hop pressure and reusable carrier buffers");
 }
 
 static void test_tun_pressure_report(SSL_CTX *ctx)
@@ -139,6 +176,7 @@ static void test_poll_dispatch(SSL_CTX *ctx)
     assert(!enqueue(&links[1],1,1,5,52));
     vr_links_poll(links,2,fds);
     assert(frames_before_read == 1 && busy_reads == 1 && !links[1].used);
+    assert(links[0].decoder&&engine->rx_queue_memory==sizeof(vr_decoder));
 
     /* The first speculative write hits backpressure. Other receive work
        proceeds, and only a subsequent writable event may retry the write. */
@@ -155,6 +193,7 @@ static void test_poll_dispatch(SSL_CTX *ctx)
     assert(frames==2 && seqs[0]==5 && seqs[1]==6 && busy_reads==4);
     busy_reader=NULL;
     for (size_t i=0; i<2; i++) vr_link_close(&links[i],"");
+    assert(!engine->rx_queue_memory&&!engine->tx_spare_memory);
     free(engine);free(links);
     puts("PASS: new TUN output sent before busy TLS input in the same poll, backpressure and RX fairness retained");
 }
@@ -247,6 +286,7 @@ int main(int argc,char **argv)
     SSL_CTX *ctx=SSL_CTX_new(TLS_method());assert(ctx);
     test_tun_pressure_report(ctx);
     test_shared_send_budget(ctx);
+    test_transit_pressure_and_reuse(ctx);
     test_poll_dispatch(ctx);
     vr_link *l=calloc(1,sizeof(*l));assert(l);l->fd=-1;reset(l,ctx);
     /* Filling business/bulk must leave capacity for ping and pong. */

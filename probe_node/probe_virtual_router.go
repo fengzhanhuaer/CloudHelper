@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -26,6 +27,8 @@ const (
 	probeVirtualRouterDefaultServicePort  = 12040
 	probeVirtualRouterRecentPacketLimit   = 256
 	probeVirtualRouterRecentPacketQueue   = 4096
+	probeVirtualRouterRecentPacketHeader  = 80 // Maximum IPv4 header plus minimum TCP header.
+	probeVirtualRouterChecksumCaptureTTL  = 15 * time.Second
 	probeVirtualRouterRecentConnectionTTL = 5 * time.Minute
 	probeVirtualRouterRecentPruneInterval = time.Second
 	probeVirtualRouterRecentFlushTimeout  = 2 * time.Second
@@ -343,12 +346,17 @@ type probeVirtualRouterRecentPacketEvent struct {
 	routeID    string
 	localNode  string
 	peerNode   string
-	packet     []byte
+	header     [probeVirtualRouterRecentPacketHeader]byte
+	headerLen  uint8
+	length     int
+	checksum   string
 	path       []string
 	localMatch bool
 	errorText  string
 	barrier    chan struct{}
 }
+
+var probeVirtualRouterChecksumCaptureUntil atomic.Int64
 
 type probeVirtualRouterRecentConnection struct {
 	Kind            string   `json:"kind,omitempty"`
@@ -1360,12 +1368,38 @@ func recordProbeVirtualRouterRecentPacket(source string, action string, runtime 
 		recordProbeVirtualRouterRecentPacketMonitorDrop(len(queue), cap(queue))
 		return
 	}
+	event := captureProbeVirtualRouterRecentPacket(source, action, runtime, packet, path, localMatch, err)
+	select {
+	case queue <- event:
+	default:
+		recordProbeVirtualRouterRecentPacketMonitorDrop(len(queue), cap(queue))
+	}
+}
+
+func captureProbeVirtualRouterRecentPacket(source string, action string, runtime *probeVirtualRouterRuntime, packet []byte, path []string, localMatch bool, err error) probeVirtualRouterRecentPacketEvent {
 	event := probeVirtualRouterRecentPacketEvent{
 		source:     strings.TrimSpace(source),
 		action:     strings.TrimSpace(action),
-		packet:     append([]byte(nil), packet...),
-		path:       append([]string(nil), path...),
+		length:     len(packet),
+		path:       cleanProbeVirtualRouterPath(path),
 		localMatch: localMatch,
+	}
+	// Retain only the bytes read by the metadata parsers. In particular, do
+	// not keep TCP payloads on the observation queue after forwarding a packet.
+	headerLen := min(len(packet), 20)
+	if headerLen == 20 && packet[0]>>4 == 4 {
+		ihl := int(packet[0]&0x0f) * 4
+		if ihl >= 20 && (packet[9] == 1 || packet[9] == 6 || packet[9] == 17) {
+			transportLen := 8
+			if packet[9] == 6 {
+				transportLen = 14 // Includes the TCP flags byte.
+			}
+			headerLen = min(len(packet), ihl+transportLen)
+		}
+	}
+	event.headerLen = uint8(copy(event.header[:], packet[:headerLen]))
+	if until := probeVirtualRouterChecksumCaptureUntil.Load(); until != 0 && time.Now().UnixNano() < until {
+		event.checksum = probeVirtualRouterPacketChecksumSummary(packet)
 	}
 	if runtime != nil {
 		event.routeID = probeVirtualRouterRuntimeLogRouteID(runtime)
@@ -1378,11 +1412,7 @@ func recordProbeVirtualRouterRecentPacket(source string, action string, runtime 
 	if err != nil {
 		event.errorText = strings.TrimSpace(err.Error())
 	}
-	select {
-	case queue <- event:
-	default:
-		recordProbeVirtualRouterRecentPacketMonitorDrop(len(queue), cap(queue))
-	}
+	return event
 }
 
 func ensureProbeVirtualRouterRecentPacketRecorder() chan probeVirtualRouterRecentPacketEvent {
@@ -1404,14 +1434,7 @@ func runProbeVirtualRouterRecentPacketRecorder(queue <-chan probeVirtualRouterRe
 }
 
 func storeProbeVirtualRouterRecentPacket(event probeVirtualRouterRecentPacketEvent) {
-	var eventErr error
-	if event.errorText != "" {
-		eventErr = errors.New(event.errorText)
-	}
-	item := buildProbeVirtualRouterRecentPacket(event.source, event.action, nil, event.packet, event.path, event.localMatch, eventErr)
-	item.RouteID = event.routeID
-	item.LocalNodeID = event.localNode
-	item.PeerNodeID = event.peerNode
+	item := buildProbeVirtualRouterRecentPacket(event)
 	if strings.TrimSpace(item.SourceIP) == "" && strings.TrimSpace(item.DestinationIP) == "" {
 		return
 	}
@@ -1471,36 +1494,29 @@ func flushProbeVirtualRouterRecentPacketEvents() {
 	}
 }
 
-func buildProbeVirtualRouterRecentPacket(source string, action string, runtime *probeVirtualRouterRuntime, packet []byte, path []string, localMatch bool, err error) probeVirtualRouterRecentPacket {
-	cleanPath := cleanProbeVirtualRouterPath(path)
+func buildProbeVirtualRouterRecentPacket(event probeVirtualRouterRecentPacketEvent) probeVirtualRouterRecentPacket {
+	packet := event.header[:event.headerLen]
 	item := probeVirtualRouterRecentPacket{
-		Source:     strings.TrimSpace(source),
-		Action:     strings.TrimSpace(action),
-		RouteID:    probeVirtualRouterRuntimeLogRouteID(runtime),
-		LocalMatch: localMatch,
-		Length:     len(packet),
-		Path:       cleanPath,
-		PathText:   strings.Join(cleanPath, ">"),
+		Source:      event.source,
+		Action:      event.action,
+		RouteID:     event.routeID,
+		LocalNodeID: event.localNode,
+		PeerNodeID:  event.peerNode,
+		LocalMatch:  event.localMatch,
+		Length:      event.length,
+		Path:        event.path,
+		PathText:    strings.Join(event.path, ">"),
+		Error:       event.errorText,
 	}
-	if runtime != nil {
-		item.LocalNodeID = currentProbeVirtualRouterLocalNodeIDForRuntime(runtime)
-		item.PeerNodeID = normalizeProbeRouteNodeID(runtime.cfg.peerNodeID)
-	}
-	if item.LocalNodeID == "" {
-		item.LocalNodeID = currentProbeVirtualRouterLocalNodeID()
-	}
-	if err != nil {
-		item.Error = strings.TrimSpace(err.Error())
-	}
-	if info, ok := probeVirtualRouterParseTCPUDPLogInfo(packet); ok {
+	if info, ok := parseProbeVirtualRouterTCPUDPHeader(packet, event.length); ok {
 		item.Protocol = strings.ToUpper(strings.TrimSpace(info.Protocol))
 		item.SourceIP = info.SourceIP
 		item.DestinationIP = info.DestinationIP
 		item.SourcePort = info.SourcePort
 		item.DestinationPort = info.DestinationPort
 		item.TCPFlags = info.TCPFlags
-		item.Detail = probeVirtualRouterPacketChecksumSummary(packet)
-	} else if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
+		item.Detail = event.checksum
+	} else if info, ok := parseProbeVirtualRouterICMPEchoHeader(packet, event.length); ok {
 		item.Protocol = "ICMP"
 		item.SourceIP = info.SourceIP
 		item.DestinationIP = info.DestinationIP
@@ -3165,18 +3181,31 @@ func marshalProbeVirtualRouterFrameControl(path []string, trace []probeVirtualRo
 	return payload, nil
 }
 
-func encodeProbeVirtualRouterFrame(frame probeVirtualRouterFrame) ([]byte, error) {
+func probeVirtualRouterFrameWireSize(frame probeVirtualRouterFrame) (int, error) {
 	controlLen := len(frame.Control)
 	dataLen := len(frame.Data)
 	if controlLen > probeVirtualRouterFrameMaxControlBytes {
-		return nil, fmt.Errorf("virtual router frame control is too large: %d", controlLen)
+		return 0, fmt.Errorf("virtual router frame control is too large: %d", controlLen)
 	}
 	if dataLen > probeVirtualRouterFrameMaxDataBytes {
-		return nil, fmt.Errorf("virtual router frame data is too large: %d", dataLen)
+		return 0, fmt.Errorf("virtual router frame data is too large: %d", dataLen)
 	}
-	frameLen := probeVirtualRouterFrameEnvelopeHeaderSize + controlLen + dataLen
+	return probeVirtualRouterFrameEnvelopeHeaderSize + controlLen + dataLen, nil
+}
 
-	out := make([]byte, frameLen)
+func encodeProbeVirtualRouterFrame(frame probeVirtualRouterFrame) ([]byte, error) {
+	size, err := probeVirtualRouterFrameWireSize(frame)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, size)
+	putProbeVirtualRouterWireFrame(out, frame)
+	return out, nil
+}
+
+func putProbeVirtualRouterWireFrame(out []byte, frame probeVirtualRouterFrame) {
+	controlLen := len(frame.Control)
+	dataLen := len(frame.Data)
 	binary.BigEndian.PutUint16(out[0:2], probeVirtualRouterFrameEnvelopeMagic)
 	binary.BigEndian.PutUint16(out[2:4], frame.MainType)
 	binary.BigEndian.PutUint16(out[4:6], frame.SubType)
@@ -3187,7 +3216,6 @@ func encodeProbeVirtualRouterFrame(frame probeVirtualRouterFrame) ([]byte, error
 	copy(out[offset+controlLen:], frame.Data)
 	checksum := probeVirtualRouterFrameChecksum(out[:10], frame.Control, frame.Data)
 	binary.BigEndian.PutUint16(out[10:12], checksum)
-	return out, nil
 }
 
 func unmarshalProbeVirtualRouterFrameEnvelope(payload []byte) (probeVirtualRouterFrame, error) {
@@ -3473,18 +3501,7 @@ func writeProbeVirtualRouterIPFrame(link *probeVirtualRouterFrameLink, packet []
 	if err != nil {
 		return err
 	}
-	return link.EnqueueProbeVirtualRouterFrame(frame)
-}
-
-func writeProbeVirtualRouterIPFrameUntil(link *probeVirtualRouterFrameLink, packet []byte, path []string, trace []probeVirtualRouterFrameTraceHop, deadline time.Time) error {
-	if link == nil {
-		return errors.New("virtual router frame link is nil")
-	}
-	frame, err := buildProbeVirtualRouterIPFrame(packet, path, trace)
-	if err != nil {
-		return err
-	}
-	return link.EnqueueProbeVirtualRouterFrameUntil(frame, deadline)
+	return link.enqueueOwnedProbeVirtualRouterFrame(frame, time.Time{})
 }
 
 func writeProbeVirtualRouterWireFrameRaw(writer io.Writer, frame probeVirtualRouterFrame) error {
@@ -3496,25 +3513,36 @@ func writeProbeVirtualRouterWireFramesRaw(writer io.Writer, frames []probeVirtua
 		return nil
 	}
 	totalBytes := 0
-	encoded := make([][]byte, 0, len(frames))
 	capable, _ := writer.(interface{ BinaryPathSupported() bool })
 	binaryPath := capable != nil && capable.BinaryPathSupported()
-	for _, frame := range frames {
-		control, err := routewire.ForPeer(frame.Control, binaryPath)
+	var converted []probeVirtualRouterFrame
+	for i, frame := range frames {
+		if !binaryPath && routewire.IsBinary(frame.Control) {
+			control, err := routewire.ForPeer(frame.Control, false)
+			if err != nil {
+				return err
+			}
+			if converted == nil {
+				converted = slices.Clone(frames)
+			}
+			frame.Control = control
+			converted[i] = frame
+		}
+		size, err := probeVirtualRouterFrameWireSize(frame)
 		if err != nil {
 			return err
 		}
-		frame.Control = control
-		payload, err := encodeProbeVirtualRouterFrame(frame)
-		if err != nil {
-			return err
-		}
-		encoded = append(encoded, payload)
-		totalBytes += len(payload)
+		totalBytes += size
 	}
-	payload := make([]byte, 0, totalBytes)
-	for _, framePayload := range encoded {
-		payload = append(payload, framePayload...)
+	if converted != nil {
+		frames = converted
+	}
+	payload := make([]byte, totalBytes)
+	offset := 0
+	for _, frame := range frames {
+		size := probeVirtualRouterFrameEnvelopeHeaderSize + len(frame.Control) + len(frame.Data)
+		putProbeVirtualRouterWireFrame(payload[offset:offset+size], frame)
+		offset += size
 	}
 	if deadlineWriter, ok := writer.(interface{ SetWriteDeadline(time.Time) error }); ok && probeVirtualRouterFrameWriteTimeout > 0 {
 		defer func() {
@@ -4403,7 +4431,7 @@ func probeVirtualRouterPingPongDirection(rt *probeVirtualRouterRuntime, directio
 func makeProbeVirtualRouterFrameLinkRXDispatchShards(key string, routeID string) []*probeAdaptiveQueue[probeVirtualRouterFrame] {
 	shards := make([]*probeAdaptiveQueue[probeVirtualRouterFrame], 0, probeVirtualRouterFrameLinkRXDispatchShards)
 	for i := 0; i < probeVirtualRouterFrameLinkRXDispatchShards; i++ {
-		shards = append(shards, newProbeAdaptiveQueue[probeVirtualRouterFrame](probeAdaptiveQueueOptions{
+		shards = append(shards, newProbeVirtualRouterFrameQueue(probeAdaptiveQueueOptions{
 			ID:              fmt.Sprintf("frame_link.%s.rx.dispatch.%d", strings.TrimSpace(key), i),
 			Stage:           "frame_link_rx_dispatch",
 			Direction:       "rx",
@@ -4427,7 +4455,7 @@ func newProbeVirtualRouterFrameLink(key string, runtime *probeVirtualRouterRunti
 		requestPath: append([]string(nil), requestPath...),
 		openedAt:    now,
 		lastUsed:    now,
-		tx: newProbeAdaptiveQueue[probeVirtualRouterFrame](probeAdaptiveQueueOptions{
+		tx: newProbeVirtualRouterFrameQueue(probeAdaptiveQueueOptions{
 			ID:              "frame_link." + cleanKey + ".tx.business",
 			Stage:           "frame_link_tx_business",
 			Direction:       "tx",
@@ -4435,7 +4463,7 @@ func newProbeVirtualRouterFrameLink(key string, runtime *probeVirtualRouterRunti
 			InitialCapacity: probeVirtualRouterFrameLinkTXInitialFrames,
 			MaxCapacity:     probeVirtualRouterFrameLinkTXBufferFrames,
 		}),
-		txControl: newProbeAdaptiveQueue[probeVirtualRouterFrame](probeAdaptiveQueueOptions{
+		txControl: newProbeVirtualRouterFrameQueue(probeAdaptiveQueueOptions{
 			ID:              "frame_link." + cleanKey + ".tx.control",
 			Stage:           "frame_link_tx_control",
 			Direction:       "tx",
@@ -4443,7 +4471,7 @@ func newProbeVirtualRouterFrameLink(key string, runtime *probeVirtualRouterRunti
 			InitialCapacity: probeVirtualRouterFrameLinkTXControlInitialFrames,
 			MaxCapacity:     probeVirtualRouterFrameLinkTXControlBufferFrames,
 		}),
-		txBulk: newProbeAdaptiveQueue[probeVirtualRouterFrame](probeAdaptiveQueueOptions{
+		txBulk: newProbeVirtualRouterFrameQueue(probeAdaptiveQueueOptions{
 			ID:              "frame_link." + cleanKey + ".tx.bulk",
 			Stage:           "frame_link_tx_bulk",
 			Direction:       "tx",
@@ -4451,7 +4479,7 @@ func newProbeVirtualRouterFrameLink(key string, runtime *probeVirtualRouterRunti
 			InitialCapacity: probeVirtualRouterFrameLinkTXBulkInitialFrames,
 			MaxCapacity:     probeVirtualRouterFrameLinkTXBulkBufferFrames,
 		}),
-		rx: newProbeAdaptiveQueue[probeVirtualRouterFrame](probeAdaptiveQueueOptions{
+		rx: newProbeVirtualRouterFrameQueue(probeAdaptiveQueueOptions{
 			ID:              "frame_link." + cleanKey + ".rx.entry",
 			Stage:           "frame_link_rx_entry",
 			Direction:       "rx",
@@ -4493,7 +4521,7 @@ func newProbeVirtualRouterPhysicalCarrier(link *probeVirtualRouterFrameLink, slo
 		lastReadAt:  now,
 		lastWriteAt: now,
 		done:        make(chan struct{}),
-		tx: newProbeAdaptiveQueue[probeVirtualRouterFrame](probeAdaptiveQueueOptions{
+		tx: newProbeVirtualRouterFrameQueue(probeAdaptiveQueueOptions{
 			ID:              fmt.Sprintf("frame_link.%s.carrier.%d.tx", key, slot),
 			Stage:           "carrier_tx",
 			Direction:       "tx",
@@ -4705,11 +4733,15 @@ func (s *probeVirtualRouterFrameLink) enqueueProbeVirtualRouterFrame(input probe
 	if s == nil {
 		return io.ErrClosedPipe
 	}
-	frame := probeVirtualRouterFrame{
-		MainType: input.MainType,
-		SubType:  input.SubType,
-		Control:  append([]byte(nil), input.Control...),
-		Data:     append([]byte(nil), input.Data...),
+	input.Control = slices.Clone(input.Control)
+	input.Data = slices.Clone(input.Data)
+	return s.enqueueOwnedProbeVirtualRouterFrame(input, deadline)
+}
+
+// The caller owns both slices and must treat them as immutable after enqueue.
+func (s *probeVirtualRouterFrameLink) enqueueOwnedProbeVirtualRouterFrame(frame probeVirtualRouterFrame, deadline time.Time) error {
+	if s == nil {
+		return io.ErrClosedPipe
 	}
 	queue, queueName := s.txQueueForFrame(frame)
 	if queue == nil || s.done == nil {
@@ -4956,31 +4988,43 @@ func (s *probeVirtualRouterFrameLink) txQueueForFrame(frame probeVirtualRouterFr
 	if s == nil {
 		return nil, ""
 	}
+	name := probeVirtualRouterTXQueueName(frame)
+	switch name {
+	case "control":
+		return s.txControl, name
+	case "bulk":
+		return s.txBulk, name
+	default:
+		return s.tx, name
+	}
+}
+
+func probeVirtualRouterTXQueueName(frame probeVirtualRouterFrame) string {
 	switch frame.MainType {
 	case routewire.KeepaliveMain,
 		probeVirtualRouterFrameMainTypePingPong,
 		probeVirtualRouterFrameMainTypePathRTT,
 		probeVirtualRouterFrameMainTypeRouteTest,
 		probeVirtualRouterFrameMainTypeFakeIPVerify:
-		return s.txControl, "control"
+		return "control"
 	case probeVirtualRouterFrameMainTypeSpeed:
-		return s.txBulk, "bulk"
+		return "bulk"
 	case probeVirtualRouterFrameMainTypeDebugLog:
 		if frame.SubType == probeVirtualRouterDebugLogSubTypeQuery {
-			return s.txControl, "control"
+			return "control"
 		}
-		return s.txBulk, "bulk"
+		return "bulk"
 	case probeVirtualRouterFrameMainTypeProxy:
 		switch frame.SubType {
 		case probeVirtualRouterProxySubTypeTCPData,
 			probeVirtualRouterProxySubTypeUDPRequest,
 			probeVirtualRouterProxySubTypeUDPResponse:
-			return s.tx, "business"
+			return "business"
 		default:
-			return s.txControl, "control"
+			return "control"
 		}
 	default:
-		return s.tx, "business"
+		return "business"
 	}
 }
 
@@ -5170,17 +5214,14 @@ func (s *probeVirtualRouterFrameLink) enqueueRXFrame(frame probeVirtualRouterFra
 	if s.rx == nil || s.done == nil {
 		return io.ErrClosedPipe
 	}
-	if s.rx.TryPush(frame) {
+	// Give the consumer a chance to release capacity while carrier reads pause.
+	if err := s.rx.PushUntil(frame, time.Now().Add(probeVirtualRouterFrameLinkRXEnqueueWait), s.done); err == nil {
 		s.touch()
 		return nil
-	}
-	select {
-	case <-s.done:
+	} else if errors.Is(err, io.ErrClosedPipe) {
 		return io.ErrClosedPipe
-	default:
-		s.rx.RecordDrop()
-		return fmt.Errorf("virtual router rx queue full: key=%s depth=%d capacity=%d limit=%d", strings.TrimSpace(s.key), s.rx.Len(), s.rx.Capacity(), s.rx.MaxCapacity())
 	}
+	return fmt.Errorf("virtual router rx queue full: key=%s depth=%d capacity=%d limit=%d", strings.TrimSpace(s.key), s.rx.Len(), s.rx.Capacity(), s.rx.MaxCapacity())
 }
 
 func (s *probeVirtualRouterFrameLink) runRXDispatchWorker() {
@@ -5885,7 +5926,7 @@ func handleProbeVirtualRouterBusinessFrame(runtime *probeVirtualRouterRuntime, l
 	case mainType == probeVirtualRouterFrameMainTypePingPong && subType == probeVirtualRouterPingPongSubTypePing:
 		return handleProbeVirtualRouterControlPing(runtime, link, msg)
 	case mainType == probeVirtualRouterFrameMainTypePingPong && subType == probeVirtualRouterPingPongSubTypePong:
-		if msg.TUNPressureV1 && msg.RequestID == "tun-pressure-v1" {
+		if msg.TUNPressureV1 && msg.RequestID == probePeerPressureRequestID {
 			runtime.recordPeerTUNPressure(time.Now(), framePath)
 			return nil
 		}
@@ -5983,7 +6024,7 @@ func handleProbeVirtualRouterControlPing(runtime *probeVirtualRouterRuntime, lin
 	if err != nil {
 		return err
 	}
-	return link.EnqueueProbeVirtualRouterFrame(frame)
+	return link.enqueueOwnedProbeVirtualRouterFrame(frame, time.Time{})
 }
 
 func handleProbeVirtualRouterControlPathRTTQuery(runtime *probeVirtualRouterRuntime, msg probeVirtualRouterControlProbePayload) error {
@@ -6808,7 +6849,7 @@ func enqueueProbeVirtualRouterBusinessFrame(link *probeVirtualRouterFrameLink, m
 	if err != nil {
 		return err
 	}
-	return link.EnqueueProbeVirtualRouterFrame(frame)
+	return link.enqueueOwnedProbeVirtualRouterFrame(frame, time.Time{})
 }
 
 func enqueueProbeVirtualRouterBusinessFrameUntil(link *probeVirtualRouterFrameLink, mainType uint16, subType uint16, payload []byte, path []string, deadline time.Time) error {
@@ -6821,7 +6862,7 @@ func enqueueProbeVirtualRouterBusinessFrameUntil(link *probeVirtualRouterFrameLi
 	}
 	queue, _ := link.txQueueForFrame(frame)
 	if queue == nil || link.done == nil {
-		return link.EnqueueProbeVirtualRouterFrame(frame)
+		return link.enqueueOwnedProbeVirtualRouterFrame(frame, time.Time{})
 	}
 	if time.Until(deadline) <= 0 {
 		return os.ErrDeadlineExceeded
@@ -7157,7 +7198,7 @@ func handleProbeVirtualRouterIPFrame(runtime *probeVirtualRouterRuntime, link *p
 		recordProbeVirtualRouterRecentPacket("frame_rx", "drop", runtime, packet, path, false, err)
 		return err
 	}
-	if err := forwardProbeVirtualRouterPacketAlongPath(packet, dstIP, path, trace); err != nil {
+	if err := forwardProbeVirtualRouterPacket(packet, dstIP, path, trace, link, false); err != nil {
 		if info, ok := probeVirtualRouterParseICMPEchoLogInfo(packet); ok {
 			log.Printf("probe virtual router icmp frame forward failed: route=%s runtime_node=%s kind=%s src=%s dst=%s id=%d seq=%d path=%s err=%v", probeVirtualRouterRuntimeLogRouteID(runtime), currentProbeVirtualRouterLocalNodeIDForRuntime(runtime), info.Kind, info.SourceIP, info.DestinationIP, info.ID, info.Sequence, strings.Join(path, ">"), err)
 		}
@@ -7238,6 +7279,10 @@ func normalizeProbeVirtualRouterLocalTUNPacketChecksums(packet []byte) {
 }
 
 func forwardProbeVirtualRouterPacketAlongPath(packet []byte, dstIP string, path []string, trace []probeVirtualRouterFrameTraceHop) error {
+	return forwardProbeVirtualRouterPacket(packet, dstIP, path, trace, nil, false)
+}
+
+func forwardProbeVirtualRouterPacket(packet []byte, dstIP string, path []string, trace []probeVirtualRouterFrameTraceHop, ingress *probeVirtualRouterFrameLink, packetOwned bool) error {
 	localNodeID := currentProbeVirtualRouterLocalNodeID()
 	if localNodeID == "" && len(path) > 0 {
 		localNodeID = normalizeProbeRouteNodeID(path[0])
@@ -7263,7 +7308,20 @@ func forwardProbeVirtualRouterPacketAlongPath(packet []byte, dstIP string, path 
 	if err != nil {
 		return err
 	}
-	if err := writeProbeVirtualRouterIPFrameUntil(link, packet, path, trace, time.Now().Add(probeVirtualRouterFrameLinkTXEnqueueWait)); err != nil {
+	if len(packet) == 0 {
+		return errors.New("virtual router ip frame payload is empty")
+	}
+	control, err := marshalProbeVirtualRouterFrameControl(path, trace)
+	if err != nil {
+		return err
+	}
+	frame := probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeIP, SubType: probeVirtualRouterIPSubTypeIPv4, Control: control, Data: packet}
+	if !packetOwned {
+		frame.Data = slices.Clone(packet)
+	}
+	now := time.Now()
+	reportProbeVirtualRouterRelayPressure(ingress, link, packet, now)
+	if err := link.enqueueOwnedProbeVirtualRouterFrame(frame, now.Add(probeVirtualRouterFrameLinkTXEnqueueWait)); err != nil {
 		recordProbeVirtualRouterRuntimeOpenError(rt.cfg.routeID, err)
 		if !isProbeVirtualRouterClosedLinkError(err) {
 			return err
@@ -7273,7 +7331,7 @@ func forwardProbeVirtualRouterPacketAlongPath(packet []byte, dstIP string, path 
 			recordProbeVirtualRouterRuntimeOpenError(rt.cfg.routeID, err)
 			return err
 		}
-		if err := writeProbeVirtualRouterIPFrameUntil(link, packet, path, trace, time.Now().Add(probeVirtualRouterFrameLinkTXEnqueueWait)); err != nil {
+		if err := link.enqueueOwnedProbeVirtualRouterFrame(frame, time.Now().Add(probeVirtualRouterFrameLinkTXEnqueueWait)); err != nil {
 			recordProbeVirtualRouterRuntimeOpenError(rt.cfg.routeID, err)
 			return err
 		}
@@ -8289,6 +8347,10 @@ func probeVirtualRouterIPv4Source(packet []byte) string {
 }
 
 func probeVirtualRouterParseICMPEchoLogInfo(packet []byte) (probeVirtualRouterICMPEchoLogInfo, bool) {
+	return parseProbeVirtualRouterICMPEchoHeader(packet, len(packet))
+}
+
+func parseProbeVirtualRouterICMPEchoHeader(packet []byte, packetLength int) (probeVirtualRouterICMPEchoLogInfo, bool) {
 	if len(packet) < 28 || packet[0]>>4 != 4 {
 		return probeVirtualRouterICMPEchoLogInfo{}, false
 	}
@@ -8297,13 +8359,13 @@ func probeVirtualRouterParseICMPEchoLogInfo(packet []byte) (probeVirtualRouterIC
 		return probeVirtualRouterICMPEchoLogInfo{}, false
 	}
 	totalLen := int(binary.BigEndian.Uint16(packet[2:4]))
-	if totalLen <= 0 || totalLen > len(packet) || totalLen < ihl+8 {
+	if totalLen > packetLength || totalLen < ihl+8 {
 		return probeVirtualRouterICMPEchoLogInfo{}, false
 	}
 	if packet[9] != 1 {
 		return probeVirtualRouterICMPEchoLogInfo{}, false
 	}
-	icmp := packet[ihl:totalLen]
+	icmp := packet[ihl : ihl+8]
 	kind := ""
 	switch {
 	case icmp[0] == 8 && icmp[1] == 0:
@@ -8323,6 +8385,10 @@ func probeVirtualRouterParseICMPEchoLogInfo(packet []byte) (probeVirtualRouterIC
 }
 
 func probeVirtualRouterParseTCPUDPLogInfo(packet []byte) (probeVirtualRouterTransportLogInfo, bool) {
+	return parseProbeVirtualRouterTCPUDPHeader(packet, len(packet))
+}
+
+func parseProbeVirtualRouterTCPUDPHeader(packet []byte, packetLength int) (probeVirtualRouterTransportLogInfo, bool) {
 	if len(packet) < 28 || packet[0]>>4 != 4 {
 		return probeVirtualRouterTransportLogInfo{}, false
 	}
@@ -8331,7 +8397,7 @@ func probeVirtualRouterParseTCPUDPLogInfo(packet []byte) (probeVirtualRouterTran
 		return probeVirtualRouterTransportLogInfo{}, false
 	}
 	totalLen := int(binary.BigEndian.Uint16(packet[2:4]))
-	if totalLen <= 0 || totalLen > len(packet) || totalLen < ihl+8 {
+	if totalLen > packetLength || totalLen < ihl+8 {
 		return probeVirtualRouterTransportLogInfo{}, false
 	}
 	protocol := ""
@@ -8343,7 +8409,7 @@ func probeVirtualRouterParseTCPUDPLogInfo(packet []byte) (probeVirtualRouterTran
 	default:
 		return probeVirtualRouterTransportLogInfo{}, false
 	}
-	transport := packet[ihl:totalLen]
+	transport := packet[ihl:min(totalLen, len(packet))]
 	info := probeVirtualRouterTransportLogInfo{
 		Protocol:        protocol,
 		SourceIP:        net.IPv4(packet[12], packet[13], packet[14], packet[15]).String(),

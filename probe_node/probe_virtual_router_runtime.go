@@ -45,6 +45,7 @@ const (
 	probeVirtualRouterFrameLinkTXEnqueueWait                = 750 * time.Millisecond
 	probeVirtualRouterFrameLinkRXBufferFrames               = 4096
 	probeVirtualRouterFrameLinkRXInitialFrames              = 256
+	probeVirtualRouterFrameLinkRXEnqueueWait                = 25 * time.Millisecond
 	probeVirtualRouterFrameLinkRXDispatchShards             = 8
 	probeVirtualRouterFrameLinkRXDispatchShardBufferFrames  = 1024
 	probeVirtualRouterFrameLinkRXDispatchShardInitialFrames = 64
@@ -107,6 +108,8 @@ type probeVirtualRouterRelayServer struct {
 }
 
 type probeVirtualRouterFrameLink struct {
+	relayPressureSampleAt atomic.Int64
+
 	key               string
 	runtime           *probeVirtualRouterRuntime
 	carrier           *probeVirtualRouterPhysicalCarrier

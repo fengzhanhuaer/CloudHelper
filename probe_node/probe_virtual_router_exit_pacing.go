@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"io"
 	"net"
 	"sync"
@@ -14,17 +15,19 @@ import (
 )
 
 const (
-	probeExitPacingInitial   = 4_000_000
-	probeExitPacingMinimum   = 500_000
-	probeExitPacingMaximum   = tcpwindow.BitsPerSecond / 8
-	probeExitPacingGrowth    = 100 * time.Millisecond
-	probeExitPacingBackoff   = 20 * time.Millisecond
-	probeExitPacingBatch     = 64 << 10
-	probeExitPacingQueueHigh = 64
-	probeExitPeerReportGap   = 150 * time.Millisecond
-	probeExitPeerReportTTL   = 450 * time.Millisecond
-	probeExitPeerBatch       = 16 << 10
-	probeExitPeerRecovery    = 2 * time.Second
+	probeExitPacingInitial      = 4_000_000
+	probeExitPacingMinimum      = 500_000
+	probeExitPacingMaximum      = tcpwindow.BitsPerSecond / 8
+	probeExitPacingGrowth       = 100 * time.Millisecond
+	probeExitPacingBackoff      = 20 * time.Millisecond
+	probeExitPacingBatch        = 64 << 10
+	probeExitPacingQueueHigh    = 64
+	probeExitPeerReportGap      = 150 * time.Millisecond
+	probeExitPeerReportTTL      = 450 * time.Millisecond
+	probeExitPeerBatch          = 16 << 10
+	probeExitPeerRecovery       = 2 * time.Second
+	probeRelayPressureSampleGap = 150 * time.Millisecond
+	probePeerPressureRequestID  = "tun-pressure-v1"
 )
 
 var probeExitNodeLimiter = newProbeExitNodeLimiter()
@@ -51,9 +54,57 @@ func (rt *probeVirtualRouterRuntime) recordPeerTUNPressure(now time.Time, path [
 	}
 }
 
-func (p *probeExitTCPPacer) applyPeerPressure(now time.Time, report int64) bool {
+func (link *probeVirtualRouterFrameLink) relayDownstreamPressure(now time.Time) bool {
+	if link.runtime != nil && probePeerPressureFresh(now, link.runtime.peerTUNPressure.Load()) {
+		return true
+	}
+	// Convert the frame limit to a nominal full-packet byte ceiling, and use
+	// real bytes rather than count so small packets alone do not throttle TCP.
+	aboveHighWater := func(queue *probeAdaptiveQueue[probeVirtualRouterFrame]) bool {
+		limit := queue.MaxCapacity() * probeVirtualRouterExitNetstackMTU
+		return limit > 0 && queue.payloadBytes() >= limit*3/4
+	}
+	if aboveHighWater(link.tx) {
+		return true
+	}
+	link.mu.Lock()
+	defer link.mu.Unlock()
+	for _, carrier := range link.carriers {
+		if carrier != nil && aboveHighWater(carrier.tx) {
+			return true
+		}
+	}
+	return false
+}
+
+func reportProbeVirtualRouterRelayPressure(ingress, downstream *probeVirtualRouterFrameLink, packet []byte, now time.Time) {
+	if ingress == nil || ingress.runtime == nil || downstream == nil || len(packet) < 512 || packet[0]>>4 != 4 || packet[9] != 6 {
+		return
+	}
+	sample := now.UnixNano()
+	previous := ingress.relayPressureSampleAt.Load()
+	if previous != 0 && sample-previous < int64(probeRelayPressureSampleGap) || !ingress.relayPressureSampleAt.CompareAndSwap(previous, sample) {
+		return
+	}
+	if !downstream.relayDownstreamPressure(now) {
+		return
+	}
+	// Each relay originates an adjacent-path hint. The receiver still validates
+	// the authenticated neighbor before applying it to that carrier's flows.
+	cfg := ingress.runtime.cfg
+	payload, err := json.Marshal(probeVirtualRouterControlProbePayload{RequestID: probePeerPressureRequestID, TUNPressureV1: true})
+	if err == nil {
+		_ = enqueueProbeVirtualRouterBusinessFrame(ingress, probeVirtualRouterFrameMainTypePingPong, probeVirtualRouterPingPongSubTypePong, payload, []string{cfg.localNodeID, cfg.peerNodeID})
+	}
+}
+
+func probePeerPressureFresh(now time.Time, report int64) bool {
 	elapsed := now.UnixNano() - report
-	if report <= 0 || elapsed < 0 || elapsed >= int64(probeExitPeerReportTTL) {
+	return report > 0 && elapsed >= 0 && elapsed < int64(probeExitPeerReportTTL)
+}
+
+func (p *probeExitTCPPacer) applyPeerPressure(now time.Time, report int64) bool {
+	if !probePeerPressureFresh(now, report) {
 		return false
 	}
 	if report > p.lastPeerReport {
@@ -128,8 +179,8 @@ func (n *probeVirtualRouterExitNetstack) paceTCPReply(conn net.Conn, id stack.Tr
 	shard := probeVirtualRouterPacketDispatchShard(packet[:], len(n.outputDispatch))
 	var peer *probeVirtualRouterRuntime
 	path := currentProbeVirtualRouterPathForPacket(packet[:], id.RemoteAddress.String())
-	if len(path) == 2 {
-		peer, _ = probeVirtualRouterRuntimeForAdjacentNode(path[1])
+	if next := probeVirtualRouterNextHopInPath(path, currentProbeVirtualRouterLocalNodeID()); next != "" {
+		peer, _ = probeVirtualRouterRuntimeForAdjacentNode(next)
 	}
 	return &probeExitPacedConn{Conn: conn, netstack: n, shard: n.outputDispatch[shard], peer: peer, closed: make(chan struct{})}
 }

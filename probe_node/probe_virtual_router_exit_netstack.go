@@ -325,6 +325,11 @@ func makeProbeVirtualRouterExitNetstackOutputDispatchShards() []*probeAdaptiveQu
 			HasShard:        true,
 			InitialCapacity: probeVirtualRouterExitNetstackOutputShardInitialPackets,
 			MaxCapacity:     probeVirtualRouterExitNetstackOutputShardQueuePackets,
+		}, probeAdaptiveQueueByteAccounting[probeVirtualRouterExitNetstackOutputPacket]{
+			budget: &probeVirtualRouterCarrierBudget,
+			measure: func(packet probeVirtualRouterExitNetstackOutputPacket) (int, bool) {
+				return len(packet.payload), false
+			},
 		}))
 	}
 	return shards
@@ -394,9 +399,17 @@ func (n *probeVirtualRouterExitNetstack) outputLoop(ctx context.Context) {
 			}
 			continue
 		}
-		view := packet.ToView()
-		payload := append([]byte(nil), view.AsSlice()...)
-		view.Release()
+		payload := make([]byte, 0, packet.Size())
+		views, offset := packet.AsViewList()
+		for view := views.Front(); view != nil; view = view.Next() {
+			data := view.AsSlice()
+			if offset >= len(data) {
+				offset -= len(data)
+				continue
+			}
+			payload = append(payload, data[offset:]...)
+			offset = 0
+		}
 		packet.DecRef()
 		if len(payload) == 0 {
 			continue
@@ -478,7 +491,7 @@ func (n *probeVirtualRouterExitNetstack) outputForwardWorker(ctx context.Context
 }
 
 func forwardProbeVirtualRouterExitNetstackPacket(payload []byte, dstIP string, path []string) error {
-	if err := forwardProbeVirtualRouterPacketAlongPath(payload, dstIP, path, nil); err != nil {
+	if err := forwardProbeVirtualRouterPacket(payload, dstIP, path, nil, nil, true); err != nil {
 		log.Printf("probe virtual router fake ip exit response forward failed: dst=%s path=%s err=%v", dstIP, strings.Join(path, ">"), err)
 		return err
 	}
@@ -960,7 +973,13 @@ func probeVirtualRouterExitIPCandidates(ips []string) []string {
 	return out
 }
 
+var probeVirtualRouterExitActiveTCPRelays atomic.Int64
+
 func relayProbeVirtualRouterExitTCPConns(inbound net.Conn, outbound net.Conn) {
+	probeVirtualRouterExitActiveTCPRelays.Add(1)
+	defer probeVirtualRouterExitActiveTCPRelays.Add(-1)
+	defer inbound.Close()
+	defer outbound.Close()
 	done := make(chan error, 2)
 	go func() {
 		done <- pipeProbeVirtualRouterExitConnHalf(outbound, inbound)
@@ -968,18 +987,15 @@ func relayProbeVirtualRouterExitTCPConns(inbound net.Conn, outbound net.Conn) {
 	go func() {
 		done <- pipeProbeVirtualRouterExitConnHalf(inbound, outbound)
 	}()
-	firstErr := <-done
-	if firstErr != nil && !isProbeVirtualRouterClosedLinkError(firstErr) {
-		_ = inbound.Close()
-		_ = outbound.Close()
+	// io.CopyBuffer returns nil on EOF. Any error requires a full close to
+	// interrupt the other direction, which may still be blocked on a read.
+	if <-done != nil {
 		return
 	}
 	secondErr := <-done
 	if secondErr != nil && !isProbeVirtualRouterClosedLinkError(secondErr) {
 		log.Printf("probe virtual router fake ip tcp relay closed with error: err=%v", secondErr)
 	}
-	_ = inbound.Close()
-	_ = outbound.Close()
 }
 
 func pipeProbeVirtualRouterExitConnHalf(dst net.Conn, src net.Conn) error {

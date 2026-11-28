@@ -64,11 +64,12 @@ void vr_telemetry_publish(vr_engine *e)
         uint64_t opens=0,sent=0,received=0,sent_bytes=0,received_bytes=0;
         for(size_t j=i;j<e->link_count&&j<i+VR_CARRIER_SLOTS;j++) {
             vr_link *l=&e->links[j];if(!l->rule)continue;
-            if(reset){l->tx_peak=l->used;l->tx_memory_peak=l->tx_memory;l->decoder.peak=l->rx_peak=l->decoder.used;l->tx_enqueued=l->tx_dequeued=l->tx_full=0;
+            size_t rx_used=l->decoder?l->decoder->used:0;
+            if(reset){l->tx_peak=l->used;l->tx_memory_peak=l->tx_memory;l->rx_peak=rx_used;if(l->decoder)l->decoder->peak=rx_used;l->tx_enqueued=l->tx_dequeued=l->tx_full=0;
                 l->tx_wait_samples=l->tx_wait_total_ms=l->tx_wait_max_ms=l->tx_backlog_peak_ms=0;l->tx_stats_reset_at=vr_millis();l->tx_backlog_since=l->tx_memory?l->tx_stats_reset_at:0;}
-            if(l->decoder.peak>l->rx_peak)l->rx_peak=l->decoder.peak;
+            if(l->decoder&&l->decoder->peak>l->rx_peak)l->rx_peak=l->decoder->peak;
             buffer(items,e,l,"carrier_tx_bytes",l->used,l->tx_memory,VR_TX_CAP,l->tx_peak,l->tx_memory_peak);
-            buffer(items,e,l,"carrier_rx_bytes",l->decoder.used,sizeof(l->decoder.bytes),sizeof(l->decoder.bytes),l->rx_peak,sizeof(l->decoder.bytes));
+            buffer(items,e,l,"carrier_rx_bytes",rx_used,l->decoder?sizeof(l->decoder->bytes):0,VR_FRAME_MAX,l->rx_peak,l->decoder?sizeof(l->decoder->bytes):0);
             opens+=l->opens;sent+=l->frames_sent;received+=l->frames_received;sent_bytes+=l->frame_bytes_sent;received_bytes+=l->frame_bytes_received;
             if(!l->ssl)continue;
             active++;if(l->client)upstream++;else downstream++;

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"testing"
 	"time"
 )
@@ -32,6 +33,69 @@ func TestProbeExitPacerRespondsToDownstream(t *testing.T) {
 	p.recordSend(now.Add(10*time.Second), queued)
 	if wait := p.wait(now.Add(10 * time.Second)); wait <= 0 || wait > time.Second {
 		t.Fatalf("first write after idle did not limit the next burst: %s", wait)
+	}
+}
+
+func TestProbeRelayReportsDownstreamQueuedBytesToUpstream(t *testing.T) {
+	upRuntime := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{localNodeID: "26", peerNodeID: "27"}}
+	downRuntime := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{localNodeID: "26", peerNodeID: "16"}}
+	up := newProbeVirtualRouterFrameLink("relay-26-up", upRuntime, nil, nil)
+	a, b := net.Pipe()
+	defer b.Close()
+	down := newProbeVirtualRouterFrameLink("relay-26-down", downRuntime, a, nil)
+	defer stopProbeVirtualRouterFrameLink(up)
+	defer stopProbeVirtualRouterFrameLink(down)
+	packet := make([]byte, 1500)
+	packet[0], packet[9] = 0x45, 6
+	now := time.Unix(100, 0)
+	reportProbeVirtualRouterRelayPressure(up, down, packet, now)
+	if up.txControl.Len() != 0 {
+		t.Fatal("empty downstream sent a pressure report")
+	}
+	for range probeVirtualRouterCarrierTXBufferFrames {
+		if !down.carrier.tx.TryPush(probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeIP, Data: make([]byte, 40)}) {
+			t.Fatal("could not populate downstream queue with small packets")
+		}
+	}
+	now = now.Add(probeRelayPressureSampleGap)
+	reportProbeVirtualRouterRelayPressure(up, down, packet, now)
+	if up.txControl.Len() != 0 {
+		t.Fatal("small packets exceeded the pressure threshold by count only")
+	}
+	down.carrier.tx.Drain(nil)
+	for range probeVirtualRouterCarrierTXBufferFrames * 3 / 4 {
+		if !down.carrier.tx.TryPush(probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeIP, Data: packet}) {
+			t.Fatal("could not fill the downstream carrier")
+		}
+	}
+	now = now.Add(probeRelayPressureSampleGap)
+	reportProbeVirtualRouterRelayPressure(up, down, packet, now)
+	frame, ok := up.txControl.TryPop()
+	if !ok {
+		t.Fatal("congested downstream did not send a report")
+	}
+	control, err := probeVirtualRouterFrameControl(frame, nil)
+	if err != nil || len(control.Path) != 2 || control.Path[0] != "26" || control.Path[1] != "27" {
+		t.Fatalf("expected authenticated adjacent path: %+v err=%v", control, err)
+	}
+	exit := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{localNodeID: "27", peerNodeID: "26"}}
+	if err := handleProbeVirtualRouterBusinessFrame(exit, nil, frame.MainType, frame.SubType, frame.Data, control.Path); err != nil || exit.peerTUNPressure.Load() == 0 {
+		t.Fatalf("exit did not record pressure from node 26: %v", err)
+	}
+	reportProbeVirtualRouterRelayPressure(up, down, packet, now.Add(time.Millisecond))
+	if up.txControl.Len() != 0 {
+		t.Fatal("duplicate pressure reports were not rate-limited")
+	}
+	down.carrier.tx.Drain(nil)
+	now = now.Add(probeRelayPressureSampleGap)
+	reportProbeVirtualRouterRelayPressure(up, down, packet, now)
+	if up.txControl.Len() != 0 {
+		t.Fatal("the relay kept reporting after the downstream queue drained")
+	}
+	downRuntime.recordPeerTUNPressure(now, []string{"16", "26"})
+	reportProbeVirtualRouterRelayPressure(up, down, packet, now.Add(probeRelayPressureSampleGap))
+	if up.txControl.Len() != 1 {
+		t.Fatal("the relay did not propagate a fresh report from the next hop")
 	}
 }
 

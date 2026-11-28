@@ -15,7 +15,8 @@
 static unsigned frames;
 static int frame_received(const vr_frame *f,void *arg)
 {
-    (void)arg;char path[VR_PATH_MAX][129];size_t n;
+    if(arg)assert(f->data==arg);
+    char path[VR_PATH_MAX][129];size_t n;
     assert(f->main==1 && f->sub==0 && f->data_len==3);
     assert(!memcmp(f->data,"abc",3));
     assert(!vr_frame_path(f,path,&n) && n==2 && !strcmp(path[0],"1") && !strcmp(path[1],"2"));
@@ -39,6 +40,8 @@ static void test_wire(void)
     vr_frame f={1,0,(const uint8_t *)control,(const uint8_t *)"abc",strlen(control),3};
     assert(!vr_frame_encode(&f,wire,sizeof(wire),&n));
     assert(wire[0]==0x56 && wire[1]==0x52 && !vr_checksum(wire,n));
+    vr_decoder complete={0};frames=0;
+    assert(!vr_decoder_feed(&complete,wire,n,frame_received,wire+12+f.control_len)&&frames==1&&!complete.used);
     for(size_t split=0;split<=n;split++) {
         vr_decoder d={0};frames=0;
         assert(!vr_decoder_feed(&d,wire,split,frame_received,NULL));

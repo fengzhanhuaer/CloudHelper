@@ -215,6 +215,19 @@ func TestProbeLocalVirtualRouterPacketsHandlerReturnsRecentPackets(t *testing.T)
 	if first["source_ip"] != "198.18.0.18" || first["destination_ip"] != "198.18.0.21" {
 		t.Fatalf("unexpected packet tuple=%+v", first)
 	}
+	if payload["checksum_capture_until"] != "" {
+		t.Fatal("a regular refresh enabled checksum capture")
+	}
+	t.Cleanup(func() { probeVirtualRouterChecksumCaptureUntil.Store(0) })
+	const capturePath = "/local/api/virtual_router/packets/checksum_capture"
+	denied := doProbeLocalRequest(t, mux, http.MethodPost, capturePath, nil)
+	if denied.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous checksum capture status=%d", denied.Code)
+	}
+	started := doProbeLocalRequest(t, mux, http.MethodPost, capturePath, nil, sessionCookie)
+	if started.Code != http.StatusOK || decodeProbeLocalJSON(t, started)["checksum_capture_until"] == "" {
+		t.Fatalf("checksum capture did not start: %s", started.Body.String())
+	}
 }
 
 func TestProbeLocalVirtualRouterConnectionsHandlerReturnsRecentConnections(t *testing.T) {

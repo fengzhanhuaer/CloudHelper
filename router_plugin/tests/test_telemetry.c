@@ -22,7 +22,7 @@ int main(int argc,char **argv)
             /* Snapshot code only checks whether TLS is present; no TLS I/O. */
             if(slot==0)l->ssl=(SSL *)1;else strcpy(l->error,"fixture disconnected");
             l->used=128;l->tx_memory=256;l->tx_peak=1024;l->tx_memory_peak=1152;l->tx_enqueued=10;l->tx_dequeued=8;l->tx_full=2;
-            l->decoder.used=5;l->decoder.peak=256;
+            if(l->ssl){l->decoder=calloc(1,sizeof(*l->decoder));assert(l->decoder);l->decoder->used=5;l->decoder->peak=256;}
         }
     }
     vr_telemetry_publish(e);json_object *before=json_object_get(e->telemetry),*rows=vr_member(before,"relay_status"),*items=vr_member(vr_member(before,"virtual_router_buffers"),"items");
@@ -49,6 +49,7 @@ int main(int argc,char **argv)
     vr_addresses a={0};strcpy(a.lan,"192.168.52.1");strcpy(a.wan,"8.8.8.8");json_object *report=vr_probe_report(&e->config,&a,"/nonexistent");
     vr_report_addresses(report,"8.8.8.8","");assert(json_object_array_length(vr_member(report,"ipv4"))==2);
     vr_report_addresses(report,"1.1.1.1","");assert(json_object_array_length(vr_member(report,"ipv4"))==3);
+    for(size_t i=0;i<e->link_count;i++)free(e->links[i].decoder);
     json_object_put(report);json_object_put(before);json_object_put(e->telemetry);json_object_put(rules);pthread_mutex_destroy(&e->mutex);free(e);
     puts("PASS: router telemetry at maximum carrier capacity, immutable snapshots, live queue reset and public-IP validation");return 0;
 }

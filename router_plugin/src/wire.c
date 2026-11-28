@@ -25,10 +25,30 @@ int vr_frame_encode(const vr_frame *f, uint8_t *dst, size_t cap, size_t *n)
     put16(dst+10,vr_checksum(dst,len));*n=len;return 0;
 }
 
+static int decode_frame(const uint8_t *p,size_t n,vr_frame_handler fn,void *arg)
+{
+    if(vr_checksum(p,n)!=0)return -5;
+    size_t control=get16(p+6);
+    vr_frame f={get16(p+2),get16(p+4),p+12,p+12+control,control,get16(p+8)};
+    return fn(&f,arg);
+}
+
 int vr_decoder_feed(vr_decoder *d, const void *bytes, size_t n, vr_frame_handler fn, void *arg)
 {
     const uint8_t *p=bytes;
     while(n) {
+        /* Complete frames can borrow the current TLS read buffer for the
+           duration of the callback. Only fragments need the decoder buffer. */
+        if(!d->used&&n>=12) {
+            if(get16(p)!=0x5652)return -3;
+            size_t control=get16(p+6);if(control>VR_CONTROL_MAX)return -4;
+            size_t length=12u+control+get16(p+8);
+            if(length<=n) {
+                if(length>d->peak)d->peak=length;
+                int rc=decode_frame(p,length,fn,arg);if(rc)return rc;
+                p+=length;n-=length;continue;
+            }
+        }
         if(!d->needed)d->needed=12;
         if(d->needed>sizeof(d->bytes) || d->used>d->needed)return -2;
         size_t k=d->needed-d->used;if(k>n)k=n;
@@ -41,10 +61,7 @@ int vr_decoder_feed(vr_decoder *d, const void *bytes, size_t n, vr_frame_handler
             d->needed=12u+get16(d->bytes+6)+get16(d->bytes+8);
             if(d->used<d->needed)continue;
         }
-        if(vr_checksum(d->bytes,d->needed)!=0)return -5;
-        vr_frame f={get16(d->bytes+2),get16(d->bytes+4),d->bytes+12,
-            d->bytes+12+get16(d->bytes+6),get16(d->bytes+6),get16(d->bytes+8)};
-        int rc=fn(&f,arg);d->used=0;d->needed=12;
+        int rc=decode_frame(d->bytes,d->needed,fn,arg);d->used=0;d->needed=12;
         if(rc)return rc;
     }
     return 0;

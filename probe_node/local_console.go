@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/metrics"
 	runtimepprof "runtime/pprof"
 	"sort"
 	"strconv"
@@ -1798,6 +1799,7 @@ func registerProbeLocalConsoleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/local/api/virtual_router/status", probeLocalVirtualRouterStatusHandler)
 	mux.HandleFunc("/local/api/virtual_router/buffers", probeLocalVirtualRouterBuffersHandler)
 	mux.HandleFunc("/local/api/virtual_router/packets", probeLocalVirtualRouterPacketsHandler)
+	mux.HandleFunc("/local/api/virtual_router/packets/checksum_capture", probeLocalVirtualRouterChecksumCaptureHandler)
 	mux.HandleFunc("/local/api/virtual_router/connections", probeLocalVirtualRouterConnectionsHandler)
 	mux.HandleFunc("/local/api/virtual_router/domain_observations", probeLocalVirtualRouterDomainObservationsHandler)
 	mux.HandleFunc("/local/api/virtual_router/debug", probeLocalVirtualRouterDebugHandler)
@@ -2418,6 +2420,23 @@ func probeLocalVirtualRouterDebugHandler(w http.ResponseWriter, r *http.Request)
 	if r.URL.Query().Get("tcp") == "1" {
 		payload["tcp_connections"] = probeExitTCPObservation.snapshot()
 	}
+	if r.URL.Query().Get("memory") == "1" {
+		samples := []metrics.Sample{
+			{Name: "/gc/heap/live:bytes"},
+			{Name: "/memory/classes/heap/objects:bytes"},
+			{Name: "/memory/classes/heap/free:bytes"},
+			{Name: "/memory/classes/heap/released:bytes"},
+		}
+		metrics.Read(samples)
+		payload["memory"] = map[string]any{
+			"live_heap_bytes":        samples[0].Value.Uint64(),
+			"heap_objects_bytes":     samples[1].Value.Uint64(),
+			"heap_free_bytes":        samples[2].Value.Uint64(),
+			"heap_released_bytes":    samples[3].Value.Uint64(),
+			"carrier_payload":        probeVirtualRouterCarrierBudget.snapshot(),
+			"active_exit_tcp_relays": probeVirtualRouterExitActiveTCPRelays.Load(),
+		}
+	}
 	if r.URL.Query().Get("goroutines") == "1" {
 		var buf bytes.Buffer
 		if profile := runtimepprof.Lookup("goroutine"); profile != nil {
@@ -2933,11 +2952,29 @@ func probeLocalVirtualRouterPacketsHandler(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	items := snapshotProbeVirtualRouterRecentPackets()
+	var captureUntil string
+	if deadline := probeVirtualRouterChecksumCaptureUntil.Load(); deadline > time.Now().UnixNano() {
+		captureUntil = time.Unix(0, deadline).UTC().Format(time.RFC3339Nano)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items":    items,
-		"count":    len(items),
-		"capacity": probeVirtualRouterRecentPacketLimit,
+		"items":                  items,
+		"count":                  len(items),
+		"capacity":               probeVirtualRouterRecentPacketLimit,
+		"checksum_capture_until": captureUntil,
 	})
+}
+
+func probeLocalVirtualRouterChecksumCaptureHandler(w http.ResponseWriter, r *http.Request) {
+	if _, ok := requireProbeLocalSession(w, r); !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	deadline := time.Now().Add(probeVirtualRouterChecksumCaptureTTL)
+	probeVirtualRouterChecksumCaptureUntil.Store(deadline.UnixNano())
+	writeJSON(w, http.StatusOK, map[string]any{"checksum_capture_until": deadline.UTC().Format(time.RFC3339Nano)})
 }
 
 func probeLocalVirtualRouterConnectionsHandler(w http.ResponseWriter, r *http.Request) {

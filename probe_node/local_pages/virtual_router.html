@@ -715,6 +715,7 @@
           <div class="packet-actions">
             <button id="packetRefreshBtn" class="secondary">刷新</button>
             <button id="packetAutoRefreshBtn" class="secondary">暂停刷新</button>
+            <button id="packetChecksumBtn" class="secondary">采集校验和（15 秒）</button>
             <span id="packetSummary" class="packet-summary">-</span>
           </div>
         </div>
@@ -2190,6 +2191,8 @@
     async function loadPackets() {
       const data = await requestJSON('/local/api/virtual_router/packets', { method: 'GET' });
       packetSnapshot = data || { items: [] };
+      const capturing = Boolean(data && data.checksum_capture_until);
+      document.getElementById('packetChecksumBtn').textContent = capturing ? '延长校验和采集（15 秒）' : '采集校验和（15 秒）';
       renderPackets(data || {});
       return data || {};
     }
@@ -2629,6 +2632,11 @@
     });
     document.getElementById('packetRefreshBtn').addEventListener('click', () => {
       loadPackets().then(() => setMessage('最近报文已刷新', 'success')).catch((err) => setMessage('读取最近报文失败：' + err.message, 'error'));
+    });
+    document.getElementById('packetChecksumBtn').addEventListener('click', () => {
+      requestJSON('/local/api/virtual_router/packets/checksum_capture', { method: 'POST' })
+        .then(() => loadPackets()).then(() => setMessage('接下来 15 秒记录新报文的校验和', 'success'))
+        .catch((err) => setMessage('启动采集失败：' + err.message, 'error'));
     });
     document.getElementById('packetAutoRefreshBtn').addEventListener('click', () => {
       packetAutoRefreshPaused = !packetAutoRefreshPaused;

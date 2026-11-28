@@ -16,7 +16,7 @@
 #include <openssl/err.h>
 
 enum { TX_CONTROL,TX_BUSINESS,TX_BULK };
-enum { TX_SMALL_PACKET = 128, TX_BATCH_BYTES = 1024, TX_BATCH_FRAMES = 8 };
+enum { TX_SMALL_PACKET = 128, TX_BATCH_BYTES = 1024, TX_BATCH_FRAMES = 8, TX_PACKET_BYTES = 1664 };
 struct vr_tx_frame {
     vr_tx_frame *next;
     size_t length;
@@ -52,16 +52,54 @@ static void carrier_socket(int fd)
     (void)setsockopt(fd,IPPROTO_TCP,TCP_NOTSENT_LOWAT,&low,sizeof(low));
 }
 
-static int queue_class(const void *bytes,size_t n)
+static unsigned queue_class(unsigned type,unsigned sub)
 {
-    const uint8_t *p=bytes;
-    if(n<12||p[0]!=0x56||p[1]!=0x52)return TX_BUSINESS;
-    unsigned type=((unsigned)p[2]<<8)|p[3],sub=((unsigned)p[4]<<8)|p[5];
     if(type==VR_KEEPALIVE_MAIN||type==2||type==3||type==5||type==6||(type==7&&sub==1))return TX_CONTROL;
     if(type==4||type==7)return TX_BULK;
     /* Keep main=8 lifecycle messages with data: close/result must not overtake
        data/open in this implementation's wire FIFO. */
     return TX_BUSINESS;
+}
+
+static int tx_spare_class(size_t capacity)
+{return capacity==TX_BATCH_BYTES?0:capacity==TX_PACKET_BYTES?1:-1;}
+
+static size_t carrier_allocated(const vr_engine *e)
+{return e->tx_queue_memory+e->rx_queue_memory+e->tx_spare_memory;}
+
+static void carrier_peak(vr_engine *e)
+{
+    size_t total=carrier_allocated(e);
+    if(total>e->tx_queue_peak)e->tx_queue_peak=total;
+}
+
+static void free_tx_spares(vr_link *l)
+{
+    for(size_t kind=0;kind<2;kind++) {
+        vr_tx_frame *f=l->tx_spare[kind];
+        while(f){vr_tx_frame *next=f->next;l->engine->tx_spare_memory-=sizeof(*f)+f->capacity;free(f);f=next;}
+        l->tx_spare[kind]=NULL;l->tx_spare_count[kind]=0;
+    }
+}
+
+static void carrier_reclaim_spares(vr_engine *e,vr_link *l,size_t needed,size_t limit)
+{
+    if(!e->tx_spare_memory||carrier_allocated(e)+needed<=limit)return;
+    free_tx_spares(l);
+    for(size_t i=0;i<e->link_count&&carrier_allocated(e)+needed>limit;i++)free_tx_spares(&e->links[i]);
+}
+
+static int ensure_carrier_decoder(vr_link *l)
+{
+    if(l->decoder)return 0;
+    vr_engine *e=l->engine;
+    if(e) {
+        carrier_reclaim_spares(e,l,sizeof(vr_decoder),VR_TX_TOTAL_CAP);
+        if(carrier_allocated(e)+sizeof(vr_decoder)>VR_TX_TOTAL_CAP)return -1;
+    }
+    l->decoder=calloc(1,sizeof(*l->decoder));if(!l->decoder)return -1;
+    if(e){e->rx_queue_memory+=sizeof(*l->decoder);carrier_peak(e);}
+    return 0;
 }
 
 static vr_tx_frame *next_write(vr_link *l)
@@ -92,7 +130,11 @@ static void write_done(vr_link *l)
     if(l->engine)l->engine->tx_queue_memory-=memory;
     l->tx_dequeued+=f->count;
     if(f->frame_bytes&&l->write_offset==f->length){l->frames_sent+=f->count;l->frame_bytes_sent+=f->frame_bytes;}
-    free(f);l->writing=NULL;l->write_offset=0;
+    int kind=tx_spare_class(f->capacity);
+    if(l->engine&&kind>=0&&l->tx_spare_count[kind]<8&&l->engine->tx_spare_memory+memory<=VR_TX_REUSE_CAP) {
+        f->next=l->tx_spare[kind];l->tx_spare[kind]=f;l->tx_spare_count[kind]++;l->engine->tx_spare_memory+=memory;
+    } else free(f);
+    l->writing=NULL;l->write_offset=0;
     if(!l->tx_memory&&l->tx_backlog_since){uint64_t span=vr_millis()-l->tx_backlog_since;if(span>l->tx_backlog_peak_ms)l->tx_backlog_peak_ms=span;l->tx_backlog_since=0;}
 }
 
@@ -517,76 +559,94 @@ void vr_link_close(vr_link *l,const char *error)
     if(l->engine&&l->tx_memory)l->engine->tx_queue_memory-=l->tx_memory;
     l->used=l->tx_memory=l->write_offset=l->write_pending=0;l->write_events=0;l->business_since_bulk=0;
     l->retry=vr_millis()+5000;snprintf(l->error,sizeof(l->error),"%s",error);
-    if(l->decoder.peak>l->rx_peak)l->rx_peak=l->decoder.peak;
-    memset(&l->decoder,0,sizeof(l->decoder));
-    l->ingress_count=0;l->rtt=0;l->ping_time=0;l->tun_pressure_at=0;*l->ping_id=0;
+    free_tx_spares(l);
+    if(l->decoder) {
+        if(l->decoder->peak>l->rx_peak)l->rx_peak=l->decoder->peak;
+        if(l->engine)l->engine->rx_queue_memory-=sizeof(*l->decoder);
+        free(l->decoder);l->decoder=NULL;
+    }
+    l->ingress_count=0;l->rtt=0;l->ping_time=0;l->tun_pressure_at=0;l->peer_pressure_at=0;*l->ping_id=0;
 }
 
-int vr_link_queue(vr_link *l,const void *bytes,size_t n)
+static int tx_write_frame(uint8_t *dst,size_t cap,const void *bytes,size_t n,const vr_frame *frame)
 {
-    if(!l->ssl||!n||n>VR_TX_CAP-sizeof(vr_tx_frame))return -1;
-    unsigned lane=(unsigned)queue_class(bytes,n);
-    size_t length=n;
-    const uint8_t *wire=bytes;
-    int small_packet=lane==TX_BUSINESS&&n>=12&&length<=TX_SMALL_PACKET&&
-        wire[0]==0x56&&wire[1]==0x52&&wire[2]==0&&wire[3]==1&&wire[4]==0&&wire[5]==1;
+    if(frame){size_t written;return vr_frame_encode(frame,dst,cap,&written);}
+    memcpy(dst,bytes,n);return 0;
+}
+
+static int tx_queue_frame(vr_link *l,const void *bytes,size_t n,const vr_frame *frame,unsigned lane,int small_packet)
+{
     if(small_packet&&!l->tx_head[TX_CONTROL]&&!l->tx_head[TX_BULK]) {
         vr_tx_frame *tail=l->tx_tail[lane];
         /* Only an inactive tail may grow. A dequeued SSL_write retry owns
            its buffer until OpenSSL consumes it. No timer delays a lone packet. */
-        if(tail&&tail->capacity==TX_BATCH_BYTES&&tail->count<TX_BATCH_FRAMES&&length<=tail->capacity-tail->length) {
-            memcpy(tail->bytes+tail->length,bytes,n);
+        if(tail&&tail->capacity==TX_BATCH_BYTES&&tail->count<TX_BATCH_FRAMES&&n<=tail->capacity-tail->length) {
+            if(tx_write_frame(tail->bytes+tail->length,tail->capacity-tail->length,bytes,n,frame))return -1;
             tail->length+=n;tail->frame_bytes+=n;tail->count++;
             l->used+=n;l->tx_bytes[lane]+=n;l->tx_enqueued++;
             if(l->used>l->tx_peak)l->tx_peak=l->used;
             return 0;
         }
     }
-    size_t capacity=length;
     size_t remaining=VR_TX_CAP-l->tx_memory;
-    if(l->engine) {
-        size_t limit=lane==TX_CONTROL?VR_TX_TOTAL_CAP:VR_TX_TOTAL_CAP-VR_TX_TOTAL_CONTROL_RESERVE;
-        size_t used=l->engine->tx_queue_memory;
-        size_t available=used<limit?limit-used:0;
-        if(available<remaining)remaining=available;
-    }
-    if(small_packet&&!l->tx_head[TX_CONTROL]&&!l->tx_head[TX_BULK]&&
-       sizeof(vr_tx_frame)+TX_BATCH_BYTES<=remaining&&
-       sizeof(vr_tx_frame)+TX_BATCH_BYTES<=VR_TX_CAP-VR_TX_CONTROL_RESERVE-l->tx_memory_class[TX_BUSINESS])
-        capacity=TX_BATCH_BYTES;
-    size_t memory=sizeof(vr_tx_frame)+capacity;
-    if(memory>remaining){l->tx_full++;return -1;}
     if(lane==TX_CONTROL) {
-        if(memory>VR_TX_CONTROL_CAP-l->tx_memory_class[lane]){l->tx_full++;return -1;}
+        size_t room=VR_TX_CONTROL_CAP-l->tx_memory_class[lane];if(room<remaining)remaining=room;
     } else {
-        size_t business=l->tx_memory_class[TX_BUSINESS]+l->tx_memory_class[TX_BULK];
-        if(memory>VR_TX_CAP-VR_TX_CONTROL_RESERVE-business){l->tx_full++;return -1;}
-        if(lane==TX_BULK&&memory>VR_TX_BULK_CAP-l->tx_memory_class[lane]){l->tx_full++;return -1;}
+        size_t room=VR_TX_CAP-VR_TX_CONTROL_RESERVE-l->tx_memory_class[TX_BUSINESS]-l->tx_memory_class[TX_BULK];
+        if(room<remaining)remaining=room;
+        if(lane==TX_BULK){room=VR_TX_BULK_CAP-l->tx_memory_class[lane];if(room<remaining)remaining=room;}
     }
-    vr_tx_frame *f=malloc(memory);if(!f)return -1;
-    memcpy(f->bytes,bytes,n);
-    f->next=NULL;f->length=length;f->capacity=capacity;f->lane=lane;f->count=1;f->enqueued=vr_millis();
+    if(sizeof(vr_tx_frame)+n>remaining){l->tx_full++;return -1;}
+    size_t capacity=n;
+    if(small_packet&&!l->tx_head[TX_CONTROL]&&!l->tx_head[TX_BULK]&&sizeof(vr_tx_frame)+TX_BATCH_BYTES<=remaining)
+        capacity=TX_BATCH_BYTES;
+    else if(lane==TX_BUSINESS&&n>TX_SMALL_PACKET&&n<=TX_PACKET_BYTES&&sizeof(vr_tx_frame)+TX_PACKET_BYTES<=remaining)
+        capacity=TX_PACKET_BYTES;
+    vr_engine *e=l->engine;
+    int kind=tx_spare_class(capacity);
+    size_t memory=sizeof(vr_tx_frame)+capacity;
+    if(e) {
+        size_t limit=lane==TX_CONTROL?VR_TX_TOTAL_CAP:VR_TX_TOTAL_CAP-VR_TX_TOTAL_CONTROL_RESERVE;
+        size_t charge=kind>=0&&l->tx_spare[kind]?0:memory;
+        if(carrier_allocated(e)+charge>limit) {
+            capacity=n;memory=sizeof(vr_tx_frame)+capacity;kind=tx_spare_class(capacity);
+            carrier_reclaim_spares(e,l,memory,limit);
+            charge=kind>=0&&l->tx_spare[kind]?0:memory;
+            if(carrier_allocated(e)+charge>limit){l->tx_full++;return -1;}
+        }
+    }
+    vr_tx_frame *f=kind>=0?l->tx_spare[kind]:NULL;
+    if(f) {
+        l->tx_spare[kind]=f->next;l->tx_spare_count[kind]--;e->tx_spare_memory-=memory;e->tx_reused++;
+    } else f=malloc(memory);
+    if(!f)return -1;
+    if(tx_write_frame(f->bytes,capacity,bytes,n,frame)){free(f);return -1;}
+    f->next=NULL;f->length=n;f->capacity=capacity;f->lane=lane;f->count=1;f->enqueued=vr_millis();
     f->frame_bytes=n;
     if(l->tx_tail[lane])l->tx_tail[lane]->next=f;else l->tx_head[lane]=f;
-    l->tx_tail[lane]=f;l->used+=length;l->tx_bytes[lane]+=length;
+    l->tx_tail[lane]=f;l->used+=n;l->tx_bytes[lane]+=n;
     if(!l->tx_memory)l->tx_backlog_since=f->enqueued;
     l->tx_memory+=memory;l->tx_memory_class[lane]+=memory;l->tx_enqueued++;
-    if(l->engine) {
-        l->engine->tx_queue_memory+=memory;
-        if(l->engine->tx_queue_memory>l->engine->tx_queue_peak)l->engine->tx_queue_peak=l->engine->tx_queue_memory;
-    }
+    if(e){e->tx_queue_memory+=memory;carrier_peak(e);}
     if(l->used>l->tx_peak)l->tx_peak=l->used;
     if(l->tx_memory>l->tx_memory_peak)l->tx_memory_peak=l->tx_memory;
     return 0;
 }
 
+int vr_link_queue(vr_link *l,const void *bytes,size_t n)
+{
+    if(!l->ssl||!n||n>VR_TX_CAP-sizeof(vr_tx_frame))return -1;
+    const uint8_t *wire=bytes;
+    unsigned type=UINT16_MAX,sub=0;
+    if(n>=12&&wire[0]==0x56&&wire[1]==0x52){type=((unsigned)wire[2]<<8)|wire[3];sub=((unsigned)wire[4]<<8)|wire[5];}
+    return tx_queue_frame(l,bytes,n,NULL,queue_class(type,sub),type==1&&sub==1&&n<=TX_SMALL_PACKET);
+}
+
 static int link_frame(vr_link *l,const vr_frame *f)
 {
-    if(!l||!l->ssl)return -1;
-    uint8_t *b=malloc(12+f->control_len+f->data_len);size_t len;if(!b)return -1;
-    int rc=vr_frame_encode(f,b,12+f->control_len+f->data_len,&len);
-    if(!rc)rc=vr_link_queue(l,b,len);
-    free(b);return rc;
+    if(!l||!l->ssl||f->control_len>VR_CONTROL_MAX||f->data_len>VR_DATA_MAX)return -1;
+    size_t n=12+f->control_len+f->data_len;
+    return tx_queue_frame(l,NULL,n,f,queue_class(f->main,f->sub),f->main==1&&f->sub==1&&n<=TX_SMALL_PACKET);
 }
 
 int vr_link_send_json(vr_link *l,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],size_t n,json_object *m)
@@ -614,11 +674,18 @@ void vr_link_report_tun_pressure(vr_link *l,uint64_t now)
     json_object_put(m);
 }
 
-static int send_frame(vr_engine *e,const vr_frame *f,char path[VR_PATH_MAX][129],size_t n,const char *user)
+static int send_frame(vr_engine *e,const vr_frame *f,char path[VR_PATH_MAX][129],size_t n,vr_link *ingress)
 {
     size_t at;for(at=0;at<n;at++)if(!strcmp(path[at],e->config.node_id))break;
     if(at+1>=n)return -1;
-    vr_link *l=user?carrier_select_for_user(e,path[at+1],f,user):path_carrier_select(e,path[at+1],f,path,n);
+    vr_link *l=carrier_select_for_user(e,path[at+1],f,vr_string(ingress->rule,"user_id"));
+    if(l&&f->main==1&&f->sub==1&&f->data_len>=512&&f->data[0]>>4==4&&f->data[9]==6) {
+        uint64_t now=vr_millis();
+        if((!ingress->tun_pressure_at||now-ingress->tun_pressure_at>=250)&&
+           (l->tx_bytes[TX_BUSINESS]>=(VR_TX_CAP-VR_TX_CONTROL_RESERVE)*3/4||
+            (l->peer_pressure_at&&now-l->peer_pressure_at<450)))
+            vr_link_report_tun_pressure(ingress,now);
+    }
     /* A mixed-version relay translates only its path control, never payload. */
     if(l&&!l->binary_path&&f->control_len&&f->control[0]==0) {
         json_object *o=json_object_new_object(),*a=json_object_new_array();
@@ -703,7 +770,17 @@ static int link_receive_impl(const vr_frame *f,void *arg)
     }
 accepted:
     l->frames_received++;l->frame_bytes_received+=12+f->control_len+f->data_len;
-    if(at+1<count){send_frame(e,f,path,count,vr_string(l->rule,"user_id"));return 0;}
+    if(at+1<count){send_frame(e,f,path,count,l);return 0;}
+    /* An authenticated adjacent neighbor's hint is consumed locally. A
+       subsequent transit packet can carry the signal one hop farther. */
+    if(count==2&&f->main==2&&f->sub==2&&f->data_len&&f->data_len<=1024) {
+        json_object *m=vr_json_parse(f->data,f->data_len);
+        int pressure=!strcmp(vr_string(m,"request_id"),"tun-pressure-v1")&&
+            json_object_is_type(vr_member(m,"tun_pressure_v1"),json_type_boolean)&&
+            json_object_get_boolean(vr_member(m,"tun_pressure_v1"));
+        json_object_put(m);
+        if(pressure){l->peer_pressure_at=vr_millis();return 0;}
+    }
     vr_link_frame(l,f,path,count);return 0;
 drop:;
     /* Match Probe Node: reject the business frame, not its healthy carrier. */
@@ -717,13 +794,12 @@ int vr_link_receive(const vr_frame *f,void *arg)
 int vr_link_keepalive(vr_link *l,uint16_t subtype)
 {
     vr_frame frame={VR_KEEPALIVE_MAIN,subtype,NULL,NULL,0,0};
-    uint8_t wire[12];size_t length;
-    if(vr_frame_encode(&frame,wire,sizeof(wire),&length))return -1;
-    return vr_link_queue(l,wire,length);
+    return link_frame(l,&frame);
 }
 
 static void link_read(vr_link *l)
 {
+    if(ensure_carrier_decoder(l))return;
     /* Drain a bounded batch. Reading one record per 50 ms poll can leave
        decrypted records stranded in OpenSSL and stall a remote download. */
     uint64_t start=vr_millis();
@@ -731,7 +807,7 @@ static void link_read(vr_link *l)
         ERR_clear_error();errno=0;
         uint8_t bytes[16384];int n=SSL_read(l->ssl,bytes,sizeof(bytes));
         if(n>0){l->rx+=(unsigned)n;l->last_rx=vr_millis();*l->error=0;
-            int rc=vr_decoder_feed(&l->decoder,bytes,(size_t)n,vr_link_receive,l);
+            int rc=vr_decoder_feed(l->decoder,bytes,(size_t)n,vr_link_receive,l);
             if(rc){char detail[96];snprintf(detail,sizeof(detail),"invalid direct carrier frame (%d)",rc);vr_link_close(l,detail);return;}}
         else {int error=SSL_get_error(l->ssl,n);if(error!=SSL_ERROR_WANT_READ&&error!=SSL_ERROR_WANT_WRITE){char detail[96];vr_tls_error(detail,sizeof(detail),"receive",error);vr_link_close(l,detail);return;}break;}
         if(vr_millis()-start>=2)break;
@@ -951,7 +1027,13 @@ void vr_handshakes_poll(vr_engine *e,int finish)
         if(!finish)for(size_t j=0;j<e->link_count;j++) {
             vr_link *l=&e->links[j];if(strcmp(l->route,result->route)||l->slot!=result->slot)continue;
             if(result->ssl) {
-                vr_link_close(l,"");l->ssl=result->ssl;l->fd=result->fd;l->client=result->client;
+                if(ensure_carrier_decoder(l))break;
+                /* Keep the charged decoder when a new TLS session replaces this slot. */
+                vr_decoder *decoder=l->decoder;l->decoder=NULL;
+                vr_link_close(l,"");l->decoder=decoder;
+                if(decoder->peak>l->rx_peak)l->rx_peak=decoder->peak;
+                decoder->used=decoder->needed=decoder->peak=0;
+                l->ssl=result->ssl;l->fd=result->fd;l->client=result->client;
                 carrier_socket(l->fd);
                 vr_tcp_windows_start(&l->windows,l->fd,vr_millis(),l->rx,l->tx);
                 l->last_rx=result->last_rx;l->auth_expires=result->auth_expires;
