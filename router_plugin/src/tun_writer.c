@@ -6,7 +6,12 @@
 #include <string.h>
 #include <unistd.h>
 
-enum { TUN_QUEUE_PACKETS = 64, TUN_HIGH_WATER = 48, TUN_WRITE_BATCH = 16, TUN_PACKET_BYTES = 2048 };
+enum {
+    TUN_QUEUE_PACKETS = 256,
+    TUN_HIGH_WATER = TUN_QUEUE_PACKETS * 3 / 4,
+    TUN_WRITE_BATCH = 16,
+    TUN_PACKET_BYTES = 2048
+};
 
 typedef struct {
     size_t length;

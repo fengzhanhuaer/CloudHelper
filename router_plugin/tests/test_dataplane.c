@@ -178,6 +178,7 @@ static void test_tun_drain(void)
 
 static void test_tun_writer(void)
 {
+    enum { packets=512 };
     int fds[2];
     vr_engine *e=engine("7","198.18.0.7",fds);
     e->observation.active=1;
@@ -187,9 +188,9 @@ static void test_tun_writer(void)
     assert(!vr_tun_writer_start(e));
     json_object *stats=vr_tun_writer_status(e);
     unsigned capacity=(unsigned)json_object_get_int(vr_member(stats,"capacity_packets"));
-    assert(capacity==64);
+    assert(capacity==256);
     json_object_put(stats);
-    for(unsigned i=0;i<256;i++) {
+    for(unsigned i=0;i<packets;i++) {
         if(i==capacity) {
             stats=vr_tun_writer_status(e);
             assert(json_object_get_int(vr_member(stats,"queued_packets"))==(int)capacity);
@@ -199,17 +200,18 @@ static void test_tun_writer(void)
             pthread_cond_signal(&writer_release);
             pthread_mutex_unlock(&writer_gate);
         }
-        vr_tun_write(e,&i,sizeof(i));
+        int pressure=vr_tun_write(e,&i,sizeof(i));
+        if(i<capacity)assert(pressure==(i>=192));
     }
     vr_tun_writer_flush(e);
     stats=vr_tun_writer_status(e);
-    assert(writer_packets==256);
-    assert(json_object_get_int64(vr_member(stats,"written_packets"))==256);
+    assert(writer_packets==packets);
+    assert(json_object_get_int64(vr_member(stats,"written_packets"))==packets);
     assert(json_object_get_int(vr_member(stats,"peak_packets"))==(int)capacity);
     assert(json_object_get_int(vr_member(stats,"queued_packets"))==0);
     assert(json_object_get_int(vr_member(stats,"write_errors"))==0);
-    assert(e->observation.stages[VR_OBS_TUN_WRITE].calls==256);
-    assert(e->observation.stages[VR_OBS_TUN_WRITE].samples==4);
+    assert(e->observation.stages[VR_OBS_TUN_WRITE].calls==packets);
+    assert(e->observation.stages[VR_OBS_TUN_WRITE].samples==packets/VR_OBSERVE_INTERVAL);
     json_object_put(stats);
     vr_tun_writer_stop(e);
     writer_fixture_fd=-1;
