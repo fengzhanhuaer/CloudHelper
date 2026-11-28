@@ -215,7 +215,10 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
                 sockets[count++]=(vr_tcp_window_socket){&l->windows,l->fd};
             }
             vr_tcp_windows_share(sockets,count,now);
-            vr_tcp_window_budget_tick(e,now);
+            vr_tcp_window_socket external;
+            pthread_mutex_lock(&e->mutex);
+            vr_tcp_window_budget_tick(e,now,vr_external_tcp_window_locked(e,now,&external)?&external:NULL);
+            pthread_mutex_unlock(&e->mutex);
             window_check=now+300;
         }
         for(size_t i=0;i<e->link_count;i++) {

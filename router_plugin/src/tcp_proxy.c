@@ -393,7 +393,7 @@ void vr_tcp_poll(vr_engine *e,struct pollfd *fds)
     }
 }
 
-void vr_tcp_window_budget_tick(vr_engine *e,uint64_t now)
+void vr_tcp_window_budget_tick(vr_engine *e,uint64_t now,const vr_tcp_window_socket *external)
 {
     vr_tcp_window_socket sockets[VR_TCP_POLL_MAX];size_t count=0;
     if(e->tcp)for(size_t i=0;i<TCP_MAX;i++) {
@@ -407,10 +407,8 @@ void vr_tcp_window_budget_tick(vr_engine *e,uint64_t now)
             sockets[count++]=(vr_tcp_window_socket){&s->windows[1],s->up};
         }
     }
-    pthread_mutex_lock(&e->mutex);
-    if(vr_external_tcp_window_locked(e,now,&sockets[count]))count++;
+    if(external)sockets[count++]=*external;
     vr_tcp_windows_share(sockets,count,now);
-    pthread_mutex_unlock(&e->mutex);
 }
 
 void vr_tcp_frame(vr_engine *e,const vr_frame *f,char path[VR_PATH_MAX][129],size_t count)
