@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1133,8 +1134,10 @@ func probeVirtualRouterServicePortForNode(config probeVirtualRouterConfig, nodeI
 }
 
 func currentProbeVirtualRouterFakeIPCIDR() string {
-	config := currentProbeVirtualRouterConfig()
-	if cidr := strings.TrimSpace(config.FakeIPCIDR); cidr != "" {
+	probeVirtualRouterState.mu.RLock()
+	cidr := strings.TrimSpace(probeVirtualRouterState.config.FakeIPCIDR)
+	probeVirtualRouterState.mu.RUnlock()
+	if cidr != "" {
 		return cidr
 	}
 	return probeLocalFakeIPDefaultCIDR
@@ -1192,16 +1195,16 @@ func currentProbeVirtualRouterRouteRuleForIP(ipText string) (probeVirtualRouterR
 	if target == nil {
 		return probeVirtualRouterRouteRule{}, false
 	}
-	config := currentProbeVirtualRouterConfig()
-	for _, rule := range config.RouteRules {
-		action := sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID)
-		if action == "" {
-			continue
-		}
+	// Config updates sanitize and replace this slice. Packet lookups can read it without rebuilding it.
+	probeVirtualRouterState.mu.RLock()
+	rules := probeVirtualRouterState.config.RouteRules
+	probeVirtualRouterState.mu.RUnlock()
+	for _, rule := range rules {
 		for _, entry := range rule.Entries {
 			if probeVirtualRouterRouteRuleEntryMatchesIP(target, entry) {
-				rule.Action = action
+				rule.Action = sanitizeProbeVirtualRouterRouteRuleAction(rule.Action, rule.ExitNodeID)
 				rule.ExitNodeID = normalizeProbeRouteNodeID(rule.ExitNodeID)
+				rule.Entries = slices.Clone(rule.Entries)
 				return effectiveProbeVirtualRouterRouteRule(rule), true
 			}
 		}

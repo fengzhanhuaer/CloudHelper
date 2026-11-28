@@ -39,6 +39,42 @@ func localExitTestRuntime(t *testing.T) {
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 }
 
+func TestProbePacketPolicyLookupsReuseAppliedConfig(t *testing.T) {
+	localExitTestRuntime(t)
+	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
+	config := localExitTestConfig()
+	config.RouteRules = append(config.RouteRules, probeVirtualRouterRouteRule{
+		ID: "exact", Name: "A exact IP", Action: "reject", Entries: []string{"ip:203.0.113.8"},
+	})
+	applyProbeVirtualRouterConfigForNode(config, "1")
+
+	if rule, ok := currentProbeVirtualRouterRouteRuleForIP("203.0.113.8"); !ok || rule.ID != "exact" || rule.Action != "reject" {
+		t.Fatalf("rule precedence changed: %+v, matched=%t", rule, ok)
+	} else {
+		rule.Entries[0] = "ip:203.0.113.99"
+	}
+	if rule, ok := currentProbeVirtualRouterRouteRuleForIP("203.0.113.8"); !ok || rule.ID != "exact" {
+		t.Fatalf("caller mutated the applied rule: %+v, matched=%t", rule, ok)
+	}
+
+	config.FakeIPCIDR = "198.19.0.0/16"
+	config.RouteRules = []probeVirtualRouterRouteRule{{ID: "domain", Name: "Domain", Entries: []string{"domain_suffix:example.com"}}}
+	applyProbeVirtualRouterConfigForNode(config, "1")
+	if cidr := currentProbeVirtualRouterFakeIPCIDR(); cidr != config.FakeIPCIDR {
+		t.Fatalf("lookup used an outdated Fake IP CIDR: %s", cidr)
+	}
+	if _, ok := currentProbeVirtualRouterRouteRuleForIP("203.0.113.8"); ok {
+		t.Fatal("lookup matched a removed rule")
+	}
+	if allocs := testing.AllocsPerRun(100, func() { _ = currentProbeVirtualRouterFakeIPCIDR() }); allocs != 0 {
+		t.Errorf("Fake IP CIDR lookup allocated %.0f objects, want 0", allocs)
+	}
+	// The net.IP passed to the product matcher can allocate once. Route policy must not be copied.
+	if allocs := testing.AllocsPerRun(100, func() { _, _ = currentProbeVirtualRouterRouteRuleForIP("203.0.113.8") }); allocs > 1 {
+		t.Errorf("unmatched IPv4 lookup allocated %.0f objects, want at most 1", allocs)
+	}
+}
+
 func TestProbeLocalExitChoicesPersistWithoutChangingControllerPolicy(t *testing.T) {
 	localExitTestRuntime(t)
 	t.Setenv("PROBE_NODE_DATA_DIR", t.TempDir())
