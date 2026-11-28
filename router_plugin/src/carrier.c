@@ -89,6 +89,7 @@ static void write_done(vr_link *l)
 {
     vr_tx_frame *f=l->writing;size_t memory=sizeof(*f)+f->capacity;
     l->tx_memory-=memory;l->tx_memory_class[f->lane]-=memory;
+    if(l->engine)l->engine->tx_queue_memory-=memory;
     l->tx_dequeued+=f->count;
     if(f->frame_bytes&&l->write_offset==f->length){l->frames_sent+=f->count;l->frame_bytes_sent+=f->frame_bytes;}
     free(f);l->writing=NULL;l->write_offset=0;
@@ -512,6 +513,7 @@ void vr_link_close(vr_link *l,const char *error)
         vr_tx_frame *f=l->tx_head[lane];while(f){vr_tx_frame *next=f->next;free(f);f=next;}
         l->tx_head[lane]=l->tx_tail[lane]=NULL;l->tx_bytes[lane]=l->tx_memory_class[lane]=0;
     }
+    if(l->engine&&l->tx_memory)l->engine->tx_queue_memory-=l->tx_memory;
     l->used=l->tx_memory=l->write_offset=l->write_pending=0;l->write_events=0;l->business_since_bulk=0;
     l->retry=vr_millis()+5000;snprintf(l->error,sizeof(l->error),"%s",error);
     if(l->decoder.peak>l->rx_peak)l->rx_peak=l->decoder.peak;
@@ -540,12 +542,19 @@ int vr_link_queue(vr_link *l,const void *bytes,size_t n)
         }
     }
     size_t capacity=length;
+    size_t remaining=VR_TX_CAP-l->tx_memory;
+    if(l->engine) {
+        size_t limit=lane==TX_CONTROL?VR_TX_TOTAL_CAP:VR_TX_TOTAL_CAP-VR_TX_TOTAL_CONTROL_RESERVE;
+        size_t used=l->engine->tx_queue_memory;
+        size_t available=used<limit?limit-used:0;
+        if(available<remaining)remaining=available;
+    }
     if(small_packet&&!l->tx_head[TX_CONTROL]&&!l->tx_head[TX_BULK]&&
-       sizeof(vr_tx_frame)+TX_BATCH_BYTES<=VR_TX_CAP-l->tx_memory&&
+       sizeof(vr_tx_frame)+TX_BATCH_BYTES<=remaining&&
        sizeof(vr_tx_frame)+TX_BATCH_BYTES<=VR_TX_CAP-VR_TX_CONTROL_RESERVE-l->tx_memory_class[TX_BUSINESS])
         capacity=TX_BATCH_BYTES;
     size_t memory=sizeof(vr_tx_frame)+capacity;
-    if(memory>VR_TX_CAP-l->tx_memory){l->tx_full++;return -1;}
+    if(memory>remaining){l->tx_full++;return -1;}
     if(lane==TX_CONTROL) {
         if(memory>VR_TX_CONTROL_CAP-l->tx_memory_class[lane]){l->tx_full++;return -1;}
     } else {
@@ -561,6 +570,7 @@ int vr_link_queue(vr_link *l,const void *bytes,size_t n)
     l->tx_tail[lane]=f;l->used+=length;l->tx_bytes[lane]+=length;
     if(!l->tx_memory)l->tx_backlog_since=f->enqueued;
     l->tx_memory+=memory;l->tx_memory_class[lane]+=memory;l->tx_enqueued++;
+    if(l->engine)l->engine->tx_queue_memory+=memory;
     if(l->used>l->tx_peak)l->tx_peak=l->used;
     if(l->tx_memory>l->tx_memory_peak)l->tx_memory_peak=l->tx_memory;
     return 0;

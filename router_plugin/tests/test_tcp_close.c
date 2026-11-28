@@ -191,8 +191,31 @@ static void sni_cache(void)
     printf("PASS: 600s idle, 72h IP route cache, %d entries x %zu bytes, immediate cached proxy/reject, eviction and invalidation\n",TCP_CACHE_MAX,sizeof(tcp_sni_cache));
     destroy(&f);pthread_mutex_destroy(&service.mutex);test_now=0;
 }
+static void shared_proxy_buffer(void)
+{
+    fixture f=create();
+    size_t limit=4u*1024u*1024u;
+    for(size_t used=2*TCP_BUFFER;used<limit;used+=2*TCP_BUFFER) {
+        tcp_session *s=allocate(f.e);assert(s);
+        assert(!reserve(s,0,TCP_BUFFER)&&!reserve(s,1,TCP_BUFFER));
+        // A slow reader holds these buffers until its destination can drain.
+        s->length[0]=s->length[1]=TCP_BUFFER;
+    }
+    tcp_session *waiting=allocate(f.e);assert(waiting);
+    int pair[2];assert(!socketpair(AF_UNIX,SOCK_STREAM|SOCK_NONBLOCK,0,pair));
+    waiting->fd=pair[1];waiting->phase=3;
+    assert(send(pair[0],"x",1,MSG_NOSIGNAL)==1);
+    assert(reserve(waiting,0,1));
+    step(&f);
+    assert(waiting->used&&!waiting->length[0]);
+    assert(!reserve(waiting,0,1)&&waiting->capacity[0]==4096);
+    step(&f);
+    assert(waiting->length[0]==1&&waiting->buffer[0][0]=='x');
+    close(pair[0]);destroy(&f);
+}
+
 int main(void)
 {
-    fatal_write(0);fatal_write(1);eof_backpressure();half_close();remote_drain();idle_timeout();sni_cache();
+    fatal_write(0);fatal_write(1);eof_backpressure();half_close();remote_drain();idle_timeout();sni_cache();shared_proxy_buffer();
     puts("PASS: fatal writes reclaimed, EOF/backpressure idle, half-close response intact, remote close drains in order");return 0;
 }

@@ -11,6 +11,8 @@
 #include <poll.h>
 
 #define VR_TX_CAP (256u*1024u)
+#define VR_TX_TOTAL_CAP (8u*1024u*1024u)
+#define VR_TX_TOTAL_CONTROL_RESERVE (256u*1024u)
 #define VR_TX_CONTROL_RESERVE (32u*1024u)
 #define VR_TX_CONTROL_CAP (96u*1024u)
 #define VR_TX_BULK_CAP (96u*1024u)
@@ -78,7 +80,7 @@ struct vr_engine {
     uint64_t auth_reject_log;
     char own_ip[16],cidr[64],error[256];
     SSL_CTX *tls;
-    vr_link links[VR_CARRIER_MAX];size_t link_count;
+    vr_link links[VR_CARRIER_MAX];size_t link_count,tx_queue_memory;
     vr_flow_binding bindings[VR_NAT_MAX];uint64_t carrier_session;
     vr_packet_cache packet_cache[VR_PACKET_CACHE_MAX];
     vr_path_rtt path_rtt[VR_PATH_RTT_MAX];unsigned paths_revision;uint64_t path_probe_at;

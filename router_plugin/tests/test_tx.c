@@ -89,6 +89,26 @@ static void drain(vr_link *l)
     assert(!l->used&&!l->tx_memory&&!l->writing&&!l->write_pending);
 }
 
+static void test_shared_send_budget(SSL_CTX *ctx)
+{
+    vr_engine *e=calloc(1,sizeof(*e));assert(e);
+    size_t total=0;
+    for(size_t i=0;i<VR_CARRIER_MAX;i++) {
+        vr_link *l=&e->links[i];l->engine=e;l->fd=-1;reset(l,ctx);
+        while(!enqueue(l,1,1,5,32u*1024u)){}
+        total+=l->tx_memory;
+    }
+    assert(total<=8u*1024u*1024u&&total>7u*1024u*1024u);
+    vr_link *idle=&e->links[VR_CARRIER_MAX-1];
+    assert(!idle->tx_memory&&!vr_link_keepalive(idle,VR_KEEPALIVE_PING));
+    vr_link_close(&e->links[0],"");
+    assert(!enqueue(idle,1,1,6,32u*1024u));
+    drain(idle);
+    for(size_t i=0;i<VR_CARRIER_MAX;i++)vr_link_close(&e->links[i],"");
+    assert(!e->tx_queue_memory);
+    free(e);
+}
+
 static void test_poll_dispatch(SSL_CTX *ctx)
 {
     vr_link *links = calloc(2,sizeof(*links));
@@ -211,6 +231,7 @@ int main(int argc,char **argv)
 {
     if(argc==3){test_real_tls(argv[1],argv[2]);return 0;}assert(argc==1);
     SSL_CTX *ctx=SSL_CTX_new(TLS_method());assert(ctx);
+    test_shared_send_budget(ctx);
     test_poll_dispatch(ctx);
     vr_link *l=calloc(1,sizeof(*l));assert(l);l->fd=-1;reset(l,ctx);
     /* Filling business/bulk must leave capacity for ping and pong. */

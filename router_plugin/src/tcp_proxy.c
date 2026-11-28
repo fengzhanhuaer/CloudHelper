@@ -12,6 +12,8 @@
 
 #define TCP_MAX VR_TCP_MAX
 #define TCP_BUFFER 65536
+#define TCP_BUFFER_STEP 4096u
+#define TCP_BUFFER_TOTAL (4u*1024u*1024u)
 #define TCP_IDLE_MS 600000u
 #define TCP_CACHE_MAX 4096
 #define TCP_CACHE_TTL_MS (72ull*60*60*1000)
@@ -25,6 +27,7 @@ typedef struct {
     uint64_t received[2],sent[2];
     uint8_t id[16];char hex[33],ip[16],domain[254];int port;
     char path[VR_PATH_MAX][129];size_t count;
+    struct vr_tcp_state *owner;
     uint8_t *buffer[2];size_t length[2],capacity[2];
 } tcp_session;
 typedef struct {int state,ok;char id[33],domain[254],ip[16];} tcp_dns_job;
@@ -34,6 +37,7 @@ typedef struct {uint64_t expires;uint32_t ip;int16_t route;uint8_t direct;} tcp_
 struct vr_tcp_state {
     int listener,started,stop;pthread_t thread;pthread_mutex_t mutex;pthread_cond_t changed;
     tcp_dns_job jobs[8];tcp_session *sessions[TCP_MAX];
+    size_t buffer_bytes; /* Allocated to both directions of all sessions, on the engine thread. */
     tcp_sni_cache cache[TCP_CACHE_MAX];unsigned cache_epoch;uint64_t cache_retry;
 };
 
@@ -41,10 +45,23 @@ static int reserve(tcp_session *s,size_t lane,size_t needed)
 {
     if(needed>TCP_BUFFER)return -1;
     if(needed<=s->capacity[lane])return 0;
-    size_t cap=s->capacity[lane]?s->capacity[lane]:4096;
-    while(cap<needed)cap+=4096;
+    size_t cap=(needed+TCP_BUFFER_STEP-1)/TCP_BUFFER_STEP*TCP_BUFFER_STEP;
+    size_t extra=cap-s->capacity[lane];
+    if(extra>TCP_BUFFER_TOTAL-s->owner->buffer_bytes)return -1;
     uint8_t *p=realloc(s->buffer[lane],cap);if(!p)return -1;
-    s->buffer[lane]=p;s->capacity[lane]=cap;return 0;
+    s->owner->buffer_bytes+=extra;s->buffer[lane]=p;s->capacity[lane]=cap;return 0;
+}
+
+static void release_buffer(tcp_session *s,size_t lane)
+{
+    s->owner->buffer_bytes-=s->capacity[lane];
+    free(s->buffer[lane]);s->buffer[lane]=NULL;s->capacity[lane]=0;
+}
+
+static int buffer_readable(const tcp_session *s,size_t lane)
+{
+    return s->length[lane]<s->capacity[lane]||
+        (s->capacity[lane]<TCP_BUFFER&&s->owner->buffer_bytes<=TCP_BUFFER_TOTAL-TCP_BUFFER_STEP);
 }
 
 static void cache_tick(vr_engine *e)
@@ -148,7 +165,7 @@ static void drop(vr_engine *e,tcp_session *s,int notify)
     if(notify&&s->remote&&s->count>=2) {json_object *o=message(s);vr_send_json(e,8,4,s->path,s->count,o);json_object_put(o);}
     if(s->fd>=0)close(s->fd);
     if(s->up>=0)close(s->up);
-    free(s->buffer[0]);free(s->buffer[1]);
+    release_buffer(s,0);release_buffer(s,1);
     free(s);
 }
 static tcp_session *allocate(vr_engine *e)
@@ -157,7 +174,7 @@ static tcp_session *allocate(vr_engine *e)
         pthread_mutex_init(&e->tcp->mutex,NULL);pthread_cond_init(&e->tcp->changed,NULL);e->tcp->cache_epoch=vr_platform_tls_cache_epoch();}
     for(size_t i=0;i<TCP_MAX;i++)if(!e->tcp->sessions[i]) {
         tcp_session *s=calloc(1,sizeof(*s));if(!s)return NULL;
-        s->slot=i;e->tcp->sessions[i]=s;s->used=1;s->fd=s->up=-1;s->born=s->active=vr_millis();return s;}
+        s->slot=i;s->owner=e->tcp;e->tcp->sessions[i]=s;s->used=1;s->fd=s->up=-1;s->born=s->active=vr_millis();return s;}
     return NULL;
 }
 static int connect_ip(tcp_session *s)
@@ -285,10 +302,10 @@ size_t vr_tcp_pollfds(vr_engine *e,struct pollfd *fds)
     for(size_t i=0;i<TCP_MAX;i++) {
         tcp_session *s=e->tcp->sessions[i];short local=0,up=0;
         if(s) {
-            if(s->length[0]<TCP_BUFFER&&!s->closing&&!s->read_eof[0])local|=POLLIN;
+            if(buffer_readable(s,0)&&!s->closing&&!s->read_eof[0])local|=POLLIN;
             if(s->length[1])local|=POLLOUT;
             if(s->phase==2)up=POLLOUT;
-            if(s->phase==3) {if(s->length[0])up|=POLLOUT;if(s->length[1]<TCP_BUFFER&&!s->closing&&!s->read_eof[1])up|=POLLIN;}
+            if(s->phase==3) {if(s->length[0])up|=POLLOUT;if(buffer_readable(s,1)&&!s->closing&&!s->read_eof[1])up|=POLLIN;}
         }
         /* poll reports HUP even with events=0. While the other end drains,
            omit this descriptor entirely instead of spinning on its old EOF. */
@@ -309,9 +326,8 @@ static int write_buffer(int fd,uint8_t *buffer,size_t *length)
 static int read_buffer(int fd,tcp_session *s,size_t lane)
 {
     size_t *length=&s->length[lane];
-    if(*length==TCP_BUFFER)return 0;
-    size_t needed=*length+4096;if(needed>TCP_BUFFER)needed=TCP_BUFFER;
-    if(reserve(s,lane,needed))return -1;
+    if(!buffer_readable(s,lane))return 0;
+    if(*length==s->capacity[lane]&&reserve(s,lane,*length+TCP_BUFFER_STEP))return -1;
     ssize_t n=recv(fd,s->buffer[lane]+*length,s->capacity[lane]-*length,0);
     if(n<0)return errno==EAGAIN||errno==EWOULDBLOCK||errno==EINTR?0:-1;
     if(n==0)return 1;
@@ -389,7 +405,9 @@ void vr_tcp_poll(vr_engine *e,struct pollfd *fds)
             if(failed){drop(e,s,1);continue;}
             if(s->read_eof[0]&&s->read_eof[1]&&!s->length[0]&&!s->length[1]){drop(e,s,1);continue;}
         }
-        if(s->closing&&!s->length[0]&&!s->length[1])drop(e,s,1);
+        if(s->closing&&!s->length[0]&&!s->length[1]){drop(e,s,1);continue;}
+        for(size_t direction=0;direction<2;direction++)
+            if(!s->length[direction]&&s->capacity[direction]>TCP_BUFFER_STEP)release_buffer(s,direction);
     }
 }
 
