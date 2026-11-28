@@ -6,10 +6,27 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestProbeExternalSpeedSkipsPathWithUnreachableFinalHop(t *testing.T) {
+	primary := []string{"16", "26", "27"}
+	alternate := []string{"16", "4", "27"}
+	var attempted [][]string
+	path, err := probeExternalSpeedReachablePath(context.Background(), [][]string{primary, alternate}, func(_ context.Context, path []string) error {
+		attempted = append(attempted, path)
+		if slices.Equal(path, primary) {
+			return context.DeadlineExceeded
+		}
+		return nil
+	})
+	if err != nil || !slices.Equal(path, alternate) || len(attempted) != 2 {
+		t.Fatalf("path=%v attempted=%v err=%v", path, attempted, err)
+	}
+}
 
 type externalSpeedRoundTrip func(*http.Request) (*http.Response, error)
 

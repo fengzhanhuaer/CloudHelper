@@ -303,6 +303,12 @@ func configureProbeVirtualRouterExitNetstackTCP(gStack *stack.Stack) error {
 	if err := tcpipErrorToError(gStack.SetTransportProtocolOption(tcp.ProtocolNumber, &sack)); err != nil {
 		return fmt.Errorf("set tcp sack: %w", err)
 	}
+	// Keep SACK recovery for overlay drops and let the outer TCP handle wire loss.
+	// RACK scans the inner flight on ACK batches, competing with exit forwarding.
+	recovery := tcpip.TCPRecovery(0)
+	if err := tcpipErrorToError(gStack.SetTransportProtocolOption(tcp.ProtocolNumber, &recovery)); err != nil {
+		return fmt.Errorf("set tcp loss recovery: %w", err)
+	}
 	return tcpwindow.ConfigureStack(gStack)
 }
 
@@ -521,6 +527,7 @@ func (n *probeVirtualRouterExitNetstack) handleTCPForwarder(req *tcp.ForwarderRe
 	if n.gateway {
 		go func() { defer release(); relayProbeGatewayTCP(inbound, id.LocalAddress, id.LocalPort) }()
 	} else {
+		inbound = n.paceTCPReply(inbound, id)
 		go func() { defer release(); relayProbeVirtualRouterExitTCP(inbound, id.LocalAddress, id.LocalPort) }()
 	}
 }

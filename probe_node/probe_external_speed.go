@@ -4,18 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/cloudhelper/probe_node/internal/externalspeed"
+	"fmt"
 	"io"
-	"strings"
-
 	"net"
 	"net/http"
 	"slices"
+	"sort"
 	"strconv"
-
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/cloudhelper/probe_node/internal/externalspeed"
 )
 
 const probeExternalSpeedMaxBytes = externalspeed.MaxBytes
@@ -46,9 +47,28 @@ func probeExternalSpeedFactory(ctx context.Context, node string, targetPort uint
 	}
 	config := currentProbeVirtualRouterConfig()
 	local := currentProbeVirtualRouterLocalNodeID()
-	path := probeVirtualRouterPath(config, local, node)
-	if len(path) < 2 || node == local {
-		return nil, nil, path, errors.New("所选出口没有可用路径")
+	if !config.Enabled || local == "" || node == local {
+		return nil, nil, nil, errors.New("所选出口没有可用路径")
+	}
+	probeVirtualRouterState.mu.RLock()
+	neighbors := probeVirtualRouterCloneNeighborsLocked()
+	probeVirtualRouterState.mu.RUnlock()
+	candidates := probeVirtualRouterCandidatePathsFromNeighbors(neighbors, local, node)
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return probeVirtualRouterPathLess(candidates[i], candidates[j], true)
+	})
+	path, err := probeExternalSpeedReachablePath(ctx, candidates, func(ctx context.Context, path []string) error {
+		response, err := queryProbeVirtualRouterPathRTTControlContext(ctx, path)
+		if err != nil {
+			return err
+		}
+		if !response.OK {
+			return fmt.Errorf("路径探测失败 %s", response.Error)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, nil, path, err
 	}
 	ips, err := resolveProbeLocalDNSRealIPv4sFromUpstreamsWithContext(ctx, "speed.cloudflare.com", probeLocalDNSRouteDecision{})
 	if err != nil {
@@ -84,6 +104,36 @@ func probeExternalSpeedFactory(ctx context.Context, node string, targetPort uint
 		packet.Close()
 	}
 	return externalspeed.Client(packet.DialContext), cleanup, path, nil
+}
+
+func probeExternalSpeedReachablePath(ctx context.Context, candidates [][]string, probe func(context.Context, []string) error) ([]string, error) {
+	const maxAttempts = 3
+	var lastPath []string
+	var lastErr error
+	attempts := 0
+	for _, path := range candidates {
+		if err := ctx.Err(); err != nil {
+			return lastPath, err
+		}
+		if len(path) < 2 || probeVirtualRouterPathShouldAvoid(path) {
+			continue
+		}
+		attempts++
+		attempt, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+		lastErr = probe(attempt, path)
+		cancel()
+		lastPath = path
+		if lastErr == nil {
+			return path, nil
+		}
+		if attempts >= maxAttempts {
+			break
+		}
+	}
+	if lastErr == nil {
+		return nil, errors.New("所选出口没有可用路径")
+	}
+	return lastPath, fmt.Errorf("所选出口的路径探测失败（已尝试 %d 条）: %w", attempts, lastErr)
 }
 
 func probeExternalSpeedClient(targetPort uint16) *http.Client {

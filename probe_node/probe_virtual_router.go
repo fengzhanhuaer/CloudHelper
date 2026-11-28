@@ -6297,6 +6297,10 @@ func forwardProbeVirtualRouterSpeedAlongPath(subType uint16, msg probeVirtualRou
 }
 
 func queryProbeVirtualRouterAdjacentPing(rt *probeVirtualRouterRuntime, direction string, targetNodeID string) (probeVirtualRouterControlProbePayload, error) {
+	return queryProbeVirtualRouterAdjacentPingContext(context.Background(), rt, direction, targetNodeID)
+}
+
+func queryProbeVirtualRouterAdjacentPingContext(ctx context.Context, rt *probeVirtualRouterRuntime, direction string, targetNodeID string) (probeVirtualRouterControlProbePayload, error) {
 	if rt == nil {
 		return probeVirtualRouterControlProbePayload{}, errors.New("runtime is nil")
 	}
@@ -6329,7 +6333,7 @@ func queryProbeVirtualRouterAdjacentPing(rt *probeVirtualRouterRuntime, directio
 	if err := enqueueProbeVirtualRouterBusinessFrame(link, probeVirtualRouterFrameMainTypePingPong, probeVirtualRouterPingPongSubTypePing, payload, path); err != nil {
 		return probeVirtualRouterControlProbePayload{}, err
 	}
-	response, err := waitProbeVirtualRouterControlResponse(waiter, probeVirtualRouterPingPongTimeout)
+	response, err := waitProbeVirtualRouterControlResponseContext(ctx, waiter, probeVirtualRouterPingPongTimeout)
 	if err != nil {
 		return probeVirtualRouterControlProbePayload{}, fmt.Errorf("%w: request_id=%s target=%s direction=%s path=%s %s", err, requestID, targetNodeID, normalizeProbeRouteBridgeRole(direction), strings.Join(path, ">"), probeVirtualRouterFrameLinkDebugState(link))
 	}
@@ -6349,6 +6353,10 @@ func probeVirtualRouterPathLatencyMilliseconds(sentAtUnixNano int64, receivedAtU
 }
 
 func queryProbeVirtualRouterPathRTTControl(path []string) (probeVirtualRouterPathRTTQueryResponse, error) {
+	return queryProbeVirtualRouterPathRTTControlContext(context.Background(), path)
+}
+
+func queryProbeVirtualRouterPathRTTControlContext(ctx context.Context, path []string) (probeVirtualRouterPathRTTQueryResponse, error) {
 	cleanPath := cleanProbeVirtualRouterPath(path)
 	localNodeID := currentProbeVirtualRouterLocalNodeID()
 	if len(cleanPath) < 2 || localNodeID == "" || cleanPath[0] != localNodeID {
@@ -6363,7 +6371,7 @@ func queryProbeVirtualRouterPathRTTControl(path []string) (probeVirtualRouterPat
 		if rt == nil {
 			return probeVirtualRouterPathRTTQueryResponse{}, errors.New("adjacent virtual router rtt runtime is unavailable")
 		}
-		response, err := queryProbeVirtualRouterAdjacentPing(rt, direction, targetNodeID)
+		response, err := queryProbeVirtualRouterAdjacentPingContext(ctx, rt, direction, targetNodeID)
 		if err != nil {
 			return probeVirtualRouterPathRTTQueryResponse{}, err
 		}
@@ -6404,7 +6412,7 @@ func queryProbeVirtualRouterPathRTTControl(path []string) (probeVirtualRouterPat
 	if err := enqueueProbeVirtualRouterBusinessFrame(link, probeVirtualRouterFrameMainTypePathRTT, probeVirtualRouterPathRTTSubTypeQuery, payload, cleanPath); err != nil {
 		return probeVirtualRouterPathRTTQueryResponse{}, err
 	}
-	response, err := waitProbeVirtualRouterControlResponse(waiter, probeVirtualRouterPingPongTimeout)
+	response, err := waitProbeVirtualRouterControlResponseContext(ctx, waiter, probeVirtualRouterPingPongTimeout)
 	if err != nil {
 		return probeVirtualRouterPathRTTQueryResponse{}, err
 	}
@@ -6848,6 +6856,10 @@ func unregisterProbeVirtualRouterControlResponse(requestID string) {
 }
 
 func waitProbeVirtualRouterControlResponse(ch chan probeVirtualRouterControlProbePayload, timeout time.Duration) (probeVirtualRouterControlProbePayload, error) {
+	return waitProbeVirtualRouterControlResponseContext(context.Background(), ch, timeout)
+}
+
+func waitProbeVirtualRouterControlResponseContext(ctx context.Context, ch chan probeVirtualRouterControlProbePayload, timeout time.Duration) (probeVirtualRouterControlProbePayload, error) {
 	if ch == nil {
 		return probeVirtualRouterControlProbePayload{}, errors.New("virtual router control response waiter is nil")
 	}
@@ -6856,6 +6868,8 @@ func waitProbeVirtualRouterControlResponse(ch chan probeVirtualRouterControlProb
 	select {
 	case response := <-ch:
 		return response, nil
+	case <-ctx.Done():
+		return probeVirtualRouterControlProbePayload{}, ctx.Err()
 	case <-timer.C:
 		return probeVirtualRouterControlProbePayload{}, errors.New("virtual router control response timeout")
 	}
