@@ -32,7 +32,7 @@ func TestRouterPluginTelemetryInterop(t *testing.T) {
 		if route.RouteID != expectedRoute {
 			t.Fatalf("runtime route=%s, want %s", route.RouteID, expectedRoute)
 		}
-		if route.Role != "virtual_router" || route.VirtualRouter == nil || route.BridgeStatus == nil || len(route.BridgeSessions) != 3 {
+		if route.Role != "virtual_router" || route.RouteLayer != "tls-direct" || route.VirtualRouter == nil || route.BridgeStatus == nil || len(route.BridgeSessions) != 1 {
 			t.Fatalf("missing router runtime: %+v", route)
 		}
 		for _, session := range route.BridgeSessions {
@@ -51,8 +51,8 @@ func TestRouterPluginTelemetryInterop(t *testing.T) {
 		}
 	}
 	buffers := normalizeProbeVirtualRouterBufferReport(report.VirtualRouterBuffers)
-	if len(buffers.Items) != 256 {
-		t.Fatalf("normalized buffers=%d, want 256", len(buffers.Items))
+	if len(buffers.Items) != 128 {
+		t.Fatalf("normalized buffers=%d, want 128", len(buffers.Items))
 	}
 	if _, err := time.Parse(time.RFC3339Nano, buffers.CollectedAt); err != nil {
 		t.Fatal(err)

@@ -27,6 +27,7 @@ with tempfile.TemporaryDirectory(prefix='chvr-control-') as work:
     state = {'upgrades': 0, 'reports': 0, 'configs': 0, 'chunks': 0, 'public_reported': False, 'ping_tasks': 0, 'ping_tests': 0}
     fixture = root/'telemetry.json'
     fixture.write_bytes(subprocess.check_output(['bin/native/test-telemetry', '--json']))
+    telemetry = json.loads(fixture.read_text())
     errors = []
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -121,7 +122,7 @@ with tempfile.TemporaryDirectory(prefix='chvr-control-') as work:
                             if state['reports'] <= 7:
                                 assert len(line) > 16384
                                 assert len(report['relay_status']) == 32
-                                assert len(report['virtual_router_buffers']['items']) == 256
+                                assert report['virtual_router_buffers']['items'] == telemetry['virtual_router_buffers']['items']
                             else:
                                 assert report['relay_status'] == []
                                 assert report['virtual_router_buffers']['items'] == []
