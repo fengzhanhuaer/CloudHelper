@@ -10,7 +10,8 @@ import (
 )
 
 const (
-	Payload        = 500_000_000 / 8 * 300 / 1_000
+	BitsPerSecond  = 500_000_000
+	Payload        = BitsPerSecond / 8 * 300 / 1_000
 	InitialPayload = 256 << 10
 	InitialBuffer  = 2 * InitialPayload
 	// gVisor accounts for packet overhead at twice cwnd*MSS.

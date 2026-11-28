@@ -5,6 +5,8 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"github.com/cloudhelper/probe_node/internal/tcpwindow"
 )
 
 var errProbeLocalTunnelRouteUnavailable = errors.New("probe local tunnel route action is unavailable; use virtual router route rules")
@@ -165,11 +167,10 @@ func dialProbeLocalRoutedTCP(route probeLocalTunnelRouteDecision) (net.Conn, pro
 	if err := ensureProbeRouteDirectBypass(route.TargetAddr); err != nil {
 		logProbeWarnf("probe local routed tcp direct bypass failed: target=%s err=%v", route.TargetAddr, err)
 	}
-	dialer := applyProbeRouteEgressDialer(&net.Dialer{Timeout: 10 * time.Second})
+	dialer := applyProbeRouteEgressDialer(&net.Dialer{Timeout: 10 * time.Second, Control: tcpwindow.Control})
 	conn, err := dialer.Dial(probeRouteEgressDialNetwork("tcp", route.TargetAddr), strings.TrimSpace(route.TargetAddr))
 	if err != nil {
 		return nil, route, err
 	}
-	tuneProbeRouteNetConn(conn)
-	return conn, route, nil
+	return tcpwindow.Egress(conn), route, nil
 }

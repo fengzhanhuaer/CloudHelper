@@ -9,18 +9,25 @@ import (
 	"time"
 
 	"github.com/cloudhelper/probe_node/internal/tcpwindow"
+	"golang.org/x/time/rate"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
 const (
 	probeExitPacingInitial   = 4_000_000
 	probeExitPacingMinimum   = 500_000
-	probeExitPacingMaximum   = tcpwindow.Payload * 1_000 / 300
+	probeExitPacingMaximum   = tcpwindow.BitsPerSecond / 8
 	probeExitPacingGrowth    = 100 * time.Millisecond
 	probeExitPacingBackoff   = 20 * time.Millisecond
 	probeExitPacingBatch     = 64 << 10
 	probeExitPacingQueueHigh = 64
 )
+
+var probeExitNodeLimiter = newProbeExitNodeLimiter()
+
+func newProbeExitNodeLimiter() *rate.Limiter {
+	return rate.NewLimiter(rate.Limit(probeExitPacingMaximum), probeExitPacingBatch)
+}
 
 type probeExitTCPPacer struct {
 	bytesPerSecond int
@@ -97,23 +104,15 @@ func (c *probeExitPacedConn) Write(data []byte) (int, error) {
 		if pressure {
 			delay = max(delay, 2*time.Millisecond)
 		}
-		if delay > 0 {
-			if c.timer == nil {
-				c.timer = time.NewTimer(delay)
-			} else {
-				c.timer.Reset(delay)
-			}
-			select {
-			case <-c.timer.C:
-			case <-c.closed:
-				c.timer.Stop()
-				return written, net.ErrClosed
-			case <-c.netstack.doneCh:
-				c.timer.Stop()
-				return written, context.Canceled
-			}
+		if err := c.wait(delay); err != nil {
+			return written, err
 		}
 		batch := min(len(data), probeExitPacingBatch, max(16<<10, c.pacer.bytesPerSecond/500))
+		reservation := probeExitNodeLimiter.ReserveN(time.Now(), batch)
+		if err := c.wait(reservation.Delay()); err != nil {
+			reservation.Cancel()
+			return written, err
+		}
 		started := time.Now()
 		n, err := c.Conn.Write(data[:batch])
 		c.writeBlocked = time.Since(started) > probeExitPacingBackoff
@@ -128,6 +127,27 @@ func (c *probeExitPacedConn) Write(data []byte) (int, error) {
 		data = data[n:]
 	}
 	return written, nil
+}
+
+func (c *probeExitPacedConn) wait(delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	if c.timer == nil {
+		c.timer = time.NewTimer(delay)
+	} else {
+		c.timer.Reset(delay)
+	}
+	select {
+	case <-c.timer.C:
+		return nil
+	case <-c.closed:
+		c.timer.Stop()
+		return net.ErrClosed
+	case <-c.netstack.doneCh:
+		c.timer.Stop()
+		return context.Canceled
+	}
 }
 
 func (c *probeExitPacedConn) Close() error {

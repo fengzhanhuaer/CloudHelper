@@ -27,7 +27,7 @@ func TestMeterTracksWritesAndReleasesOnClose(t *testing.T) {
 	writer, reader := net.Pipe()
 	defer reader.Close()
 	growth := make(chan int, 1)
-	m := newMeter(func(rx bool, size int) {
+	m := newMeter(&endpointMeters, func(rx bool, size int) {
 		if !rx && size > InitialPayload {
 			select {
 			case growth <- size:
@@ -47,10 +47,39 @@ func TestMeterTracksWritesAndReleasesOnClose(t *testing.T) {
 		t.Fatal("active write direction did not grow")
 	}
 	c.Close()
-	meters.Lock()
-	defer meters.Unlock()
-	if _, exists := meters.items[m]; exists {
+	endpointMeters.Lock()
+	defer endpointMeters.Unlock()
+	if _, exists := endpointMeters.items[m]; exists {
 		t.Fatal("closed connection remained registered")
+	}
+}
+
+func TestWindowBudgetIsSharedAcrossConnectionsAndDirections(t *testing.T) {
+	now := time.Unix(100, 0)
+	var sum, peak int
+	makeSocket := func() *meter {
+		applied := map[bool]int{}
+		return &meter{
+			rx: direction{limit: InitialPayload},
+			tx: direction{limit: Payload, activeUntil: now.Add(time.Second)},
+			set: func(receive bool, size int) {
+				sum += size - applied[receive]
+				applied[receive] = size
+				peak = max(peak, sum)
+			},
+		}
+	}
+	one, two := makeSocket(), makeSocket()
+	pool := meterPool{items: map[*meter]struct{}{one: {}, two: {}}}
+	pool.applyLocked(now)
+	if sum > Payload || one.tx.applied != two.tx.applied || one.tx.applied < Payload/3 {
+		t.Fatalf("concurrent flows did not share budget: sum=%d tx=%d,%d", sum, one.tx.applied, two.tx.applied)
+	}
+	// Transfer the budget from one busy connection to the other.
+	one.tx.activeUntil = time.Time{}
+	pool.applyLocked(now)
+	if peak > Payload || two.tx.applied < Payload*9/10 || one.tx.applied > InitialPayload {
+		t.Fatalf("busy flow could not reuse idle budget: peak=%d tx=%d,%d", peak, one.tx.applied, two.tx.applied)
 	}
 }
 

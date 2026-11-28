@@ -65,15 +65,25 @@ static size_t receive_data(char *data,size_t size,size_t count,void *opaque)
     curl_easy_getinfo(x->curl,CURLINFO_RESPONSE_CODE,&x->status);
     if(x->status!=200||cancelled(x))return 0;
     uint64_t now=vr_millis();if(x->first&&now-x->first>=EXTERNAL_MS)return 0;
+    pthread_mutex_lock(&x->engine->mutex);
     if(!x->first){
         x->first=now;
         if(*x->node&&x->fd>=0)vr_tcp_windows_start(&x->windows,x->fd,now,0,0);
     }
     x->last=now;
     uint64_t remaining=EXTERNAL_BYTES-x->bytes;x->bytes+=n>remaining?remaining:n;
-    if(*x->node&&x->fd>=0)vr_tcp_windows_tick(&x->windows,x->fd,now,x->bytes,0);
+    pthread_mutex_unlock(&x->engine->mutex);
     if(now-x->published>=250){publish(x,1,NULL,0);x->published=now;}
     return x->bytes>=EXTERNAL_BYTES?0:n;
+}
+
+int vr_external_tcp_window_locked(vr_engine *e,uint64_t now,vr_tcp_window_socket *socket)
+{
+    struct vr_external_state *x=e->external;
+    if(!x||!*x->node||x->fd<0||!x->windows.sampled)return 0;
+    vr_tcp_windows_sample(&x->windows,now,x->bytes,0);
+    *socket=(vr_tcp_window_socket){&x->windows,x->fd};
+    return 1;
 }
 static int progress(void *opaque,curl_off_t total,curl_off_t received,curl_off_t up_total,curl_off_t uploaded)
 {

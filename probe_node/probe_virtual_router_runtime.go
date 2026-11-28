@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/cloudhelper/probe_node/internal/tcpwindow"
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 )
 
@@ -461,6 +462,12 @@ func startProbeVirtualRouterRelayServer(rt *probeVirtualRouterRuntime) error {
 				NextProtos:   []string{http3.NextProtoH3},
 			},
 			QUICConfig: newProbeRouteQUICConfig(0),
+			ConnContext: func(ctx context.Context, conn *quic.Conn) context.Context {
+				if !registerProbeRouteQUICReceiveWindow(conn) {
+					_ = conn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeExcessiveLoad), "receive window budget exhausted")
+				}
+				return ctx
+			},
 		}
 	}
 	probeVirtualRouterRelayServerState.servers[listenAddr] = relay

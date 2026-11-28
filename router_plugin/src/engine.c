@@ -166,7 +166,7 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
     pthread_mutex_init(&e->mutex,NULL);pthread_cond_init(&e->jobs_changed,NULL);
     for(size_t i=0;i<VR_CARRIER_MAX;i++)e->links[i].fd=-1;
     if(prepare(e))goto done;
-    uint64_t published=0,addresses_checked=vr_millis(),sniff_retry=0,firewall_retry=0,carrier6_checked=0,exits_retry=0;
+    uint64_t published=0,addresses_checked=vr_millis(),sniff_retry=0,firewall_retry=0,carrier6_checked=0,exits_retry=0,window_check=0;
     unsigned firewall_failures=0;
     vr_address_watch address_watch={0};
     while(!vr_service_stopped(service,generation)) {
@@ -206,9 +206,20 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
         if(vr_policy_apply_pending(e)==2){strcpy(e->error,"controller interface configuration changed; reloading");break;}
         pthread_mutex_lock(&e->mutex);int pending_policy=e->next_policy!=NULL;pthread_mutex_unlock(&e->mutex);
         vr_dataplane_tick(e);
+        if(now>=window_check) {
+            vr_tcp_window_socket sockets[VR_CARRIER_MAX];size_t count=0;
+            for(size_t i=0;i<e->link_count;i++) {
+                vr_link *l=&e->links[i];
+                if(!l->ssl)continue;
+                vr_tcp_windows_sample(&l->windows,now,l->rx,l->tx);
+                sockets[count++]=(vr_tcp_window_socket){&l->windows,l->fd};
+            }
+            vr_tcp_windows_share(sockets,count,now);
+            vr_tcp_window_budget_tick(e,now);
+            window_check=now+300;
+        }
         for(size_t i=0;i<e->link_count;i++) {
             vr_link *l=&e->links[i];
-            if(l->ssl)vr_tcp_windows_tick(&l->windows,l->fd,now,l->rx,l->tx);
             if(l->ssl && (l->auth_expires<=time(NULL)||now-l->last_rx>90000))vr_link_close(l,"link authorization or idle timeout");
             if(l->ssl&&now-l->keepalive_at>=20000) {
                 if(!vr_link_keepalive(l,VR_KEEPALIVE_PING))l->keepalive_at=now;

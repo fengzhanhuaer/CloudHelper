@@ -4,6 +4,9 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/cloudhelper/probe_node/internal/tcpwindow"
+	"github.com/quic-go/quic-go"
 )
 
 func TestProbeRouteTCPConnTuningShouldLog(t *testing.T) {
@@ -15,6 +18,22 @@ func TestProbeRouteTCPConnTuningShouldLog(t *testing.T) {
 	}
 	if !probeRouteTCPConnTuningShouldLog("ok", errors.New("set buffer failed")) {
 		t.Fatal("socket tuning errors should be logged even when hint is ok")
+	}
+}
+
+func TestProbeQUICConnectionsShareReceiveWindow(t *testing.T) {
+	var pool probeQUICWindowPool
+	one, two, three := new(quic.Conn), new(quic.Conn), new(quic.Conn)
+	initial := uint64(probeRouteRelayQUICInitialConnectionWindow)
+	if !pool.reserve(one, initial, true) || !pool.reserve(two, initial, true) {
+		t.Fatal("connections could not use available initial budget")
+	}
+	if !pool.grow(one, tcpwindow.Payload-2*initial) || pool.grow(two, 1) || pool.reserve(three, initial, true) {
+		t.Fatal("QUIC allowed independent allocation beyond the shared budget")
+	}
+	pool.release(one)
+	if !pool.reserve(three, initial, true) || pool.grow(one, 1) {
+		t.Fatal("budget was not correctly recovered when the connection closed")
 	}
 }
 

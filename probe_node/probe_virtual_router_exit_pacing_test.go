@@ -34,3 +34,14 @@ func TestProbeExitPacerRespondsToDownstream(t *testing.T) {
 		t.Fatalf("first write after idle did not limit the next burst: %s", wait)
 	}
 }
+
+func TestProbeExitFlowsShareOneRateLimit(t *testing.T) {
+	pacer := newProbeExitNodeLimiter()
+	now := time.Unix(100, 0)
+	if !pacer.AllowN(now, probeExitPacingBatch) || pacer.AllowN(now, probeExitPacingBatch) {
+		t.Fatal("concurrent flows had independent burst allowances")
+	}
+	if pacer.AllowN(now.Add(time.Millisecond/2), probeExitPacingBatch) || !pacer.AllowN(now.Add(2*time.Millisecond), probeExitPacingBatch) {
+		t.Fatal("shared budget did not refill at 500 Mbps")
+	}
+}

@@ -997,8 +997,12 @@ func dialVPNDirectTCPWithFlow(route vpnRouteDecision, flowID string) (net.Conn, 
 	if !route.Direct {
 		return nil, errors.New("non-direct tcp packet should be handled by vroute ip data plane")
 	}
-	dialer := net.Dialer{Timeout: mobileRouteConnectTimeout}
-	return dialer.Dial("tcp", route.TargetAddr)
+	dialer := net.Dialer{Timeout: mobileRouteConnectTimeout, Control: tcpwindow.Control}
+	conn, err := dialer.Dial("tcp", route.TargetAddr)
+	if err != nil {
+		return nil, err
+	}
+	return tcpwindow.Egress(conn), nil
 }
 
 func openVPNDirectUDPConn(id stack.TransportEndpointID, targetAddr string) (io.ReadWriteCloser, vpnRouteDecision, string, error) {

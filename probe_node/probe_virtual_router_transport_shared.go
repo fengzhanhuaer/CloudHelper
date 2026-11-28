@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -172,10 +173,10 @@ const (
 	probeRouteRelayTCPSocketBufferBytes        = 4 * 1024 * 1024
 	probeRouteRelayUDPSocketBufferBytes        = 4 * 1024 * 1024
 	probeRouteRelayTCPKeepAlivePeriod          = 30 * time.Second
-	probeRouteRelayQUICInitialStreamWindow     = 512 * 1024
+	probeRouteRelayQUICInitialStreamWindow     = 128 * 1024
 	probeRouteRelayQUICMaxStreamWindow         = tcpwindow.Payload
-	probeRouteRelayQUICInitialConnectionWindow = 1024 * 1024
-	probeRouteRelayQUICMaxConnectionWindow     = 2 * tcpwindow.Payload
+	probeRouteRelayQUICInitialConnectionWindow = 256 * 1024
+	probeRouteRelayQUICMaxConnectionWindow     = tcpwindow.Payload
 	probeRouteRelayQUICMaxIncomingStreams      = 1024
 	probeRouteRelayQUICDatagramMaxPayloadBytes = 1200
 	probeRouteRelayQUICKeepAlivePeriod         = 15 * time.Second
@@ -454,11 +455,57 @@ func newProbeRouteQUICConfig(maxIncomingStreams int64) *quic.Config {
 		MaxStreamReceiveWindow:         probeRouteRelayQUICMaxStreamWindow,
 		InitialConnectionReceiveWindow: probeRouteRelayQUICInitialConnectionWindow,
 		MaxConnectionReceiveWindow:     probeRouteRelayQUICMaxConnectionWindow,
+		AllowConnectionWindowIncrease:  probeRouteQUICWindows.grow,
 		MaxIncomingStreams:             maxIncomingStreams,
 		EnableDatagrams:                true,
 		KeepAlivePeriod:                probeRouteRelayQUICKeepAlivePeriod,
 		MaxIdleTimeout:                 probeRouteRelayQUICMaxIdleTimeout,
 	}
+}
+
+type probeQUICWindowPool struct {
+	mu          sync.Mutex
+	used        uint64
+	connections map[*quic.Conn]uint64
+}
+
+var probeRouteQUICWindows probeQUICWindowPool
+
+func (p *probeQUICWindowPool) reserve(conn *quic.Conn, bytes uint64, opening bool) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	allocated, exists := p.connections[conn]
+	if opening && exists {
+		return true
+	}
+	if (!opening && !exists) || bytes > tcpwindow.Payload-p.used {
+		return false
+	}
+	if p.connections == nil {
+		p.connections = make(map[*quic.Conn]uint64)
+	}
+	p.used += bytes
+	p.connections[conn] = allocated + bytes
+	return true
+}
+
+func (p *probeQUICWindowPool) grow(conn *quic.Conn, bytes uint64) bool {
+	return p.reserve(conn, bytes, false)
+}
+
+func (p *probeQUICWindowPool) release(conn *quic.Conn) {
+	p.mu.Lock()
+	p.used -= p.connections[conn]
+	delete(p.connections, conn)
+	p.mu.Unlock()
+}
+
+func registerProbeRouteQUICReceiveWindow(conn *quic.Conn) bool {
+	if !probeRouteQUICWindows.reserve(conn, probeRouteRelayQUICInitialConnectionWindow, true) {
+		return false
+	}
+	context.AfterFunc(conn.Context(), func() { probeRouteQUICWindows.release(conn) })
+	return true
 }
 
 type probeRouteAuthReplayFile struct {

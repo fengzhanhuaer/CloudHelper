@@ -7,28 +7,42 @@
 static void check_decay(void)
 {
     assert(VR_TCP_TARGET_WINDOW >= 200000 / 8 * 300);
-    vr_tcp_window_lane lane = {.limit = VR_TCP_START_WINDOW};
+    vr_tcp_window_lane lane = {.desired = VR_TCP_START_WINDOW};
     uint64_t bytes = VR_TCP_START_WINDOW / 4;
-    lane.limit = vr_tcp_window_next(&lane, bytes, 300, 300);
-    assert(lane.limit == 2 * VR_TCP_START_WINDOW);
+    lane.desired = vr_tcp_window_next(&lane, bytes, 300, 300);
+    assert(lane.desired == 2 * VR_TCP_START_WINDOW);
     bytes += VR_TCP_TARGET_WINDOW;
-    lane.limit = vr_tcp_window_next(&lane, bytes, 600, 300);
-    assert(lane.limit == VR_TCP_TARGET_WINDOW);
-    assert(vr_tcp_window_next(&lane, bytes, 900, 300) == lane.limit);
-    assert(vr_tcp_window_next(&lane, bytes, 30600, 29700) == lane.limit);
+    lane.desired = vr_tcp_window_next(&lane, bytes, 600, 300);
+    assert(lane.desired == VR_TCP_TARGET_WINDOW);
+    assert(vr_tcp_window_next(&lane, bytes, 900, 300) == lane.desired);
+    assert(vr_tcp_window_next(&lane, bytes, 30600, 29700) == lane.desired);
     bytes += VR_TCP_TARGET_WINDOW;
-    assert(vr_tcp_window_next(&lane, bytes, 30900, 300) == lane.limit);
-    assert(vr_tcp_window_next(&lane, bytes, 31200, 300) == lane.limit);
-    for (uint64_t now = 61200; lane.limit > VR_TCP_START_WINDOW; now += 30000) {
+    assert(vr_tcp_window_next(&lane, bytes, 30900, 300) == lane.desired);
+    assert(vr_tcp_window_next(&lane, bytes, 31200, 300) == lane.desired);
+    for (uint64_t now = 61200; lane.desired > VR_TCP_START_WINDOW; now += 30000) {
         int next = vr_tcp_window_next(&lane, bytes, now, 30000);
-        assert(next == (lane.limit / 2 > VR_TCP_START_WINDOW ? lane.limit / 2 : VR_TCP_START_WINDOW));
-        lane.limit = next;
+        assert(next == (lane.desired / 2 > VR_TCP_START_WINDOW ? lane.desired / 2 : VR_TCP_START_WINDOW));
+        lane.desired = next;
     }
+}
+
+static void check_shared_budget(void)
+{
+    vr_tcp_windows one={.rx={.limit=VR_TCP_START_WINDOW,.desired=VR_TCP_START_WINDOW},
+                        .tx={.limit=VR_TCP_START_WINDOW,.desired=VR_TCP_TARGET_WINDOW,.active_until=1000}};
+    vr_tcp_windows two=one;
+    vr_tcp_window_socket sockets[]={{&one,-1},{&two,-1}};
+    vr_tcp_windows_plan(sockets,2,300);
+    assert(one.tx.target==two.tx.target&&one.tx.target+two.tx.target+one.rx.target+two.rx.target<=VR_TCP_TARGET_WINDOW);
+    one.tx.active_until=0;
+    vr_tcp_windows_plan(sockets,2,301);
+    assert(two.tx.target>VR_TCP_TARGET_WINDOW*9/10&&one.tx.target==VR_TCP_MIN_SHARE);
 }
 
 int main(void)
 {
     check_decay();
+    check_shared_budget();
     int listener = socket(AF_INET, SOCK_STREAM, 0);
     int client = socket(AF_INET, SOCK_STREAM, 0);
     assert(listener >= 0 && client >= 0);
@@ -43,8 +57,11 @@ int main(void)
     assert(server >= 0);
     int core_max = 0, tcp_max = 0, scaling = 0;
     FILE *file = fopen("/proc/sys/net/core/rmem_max", "r");
-    assert(file && fscanf(file, "%d", &core_max) == 1);
-    fclose(file);
+    // Some Linux network namespaces expose only the TCP-specific limits.
+    if (file) {
+        assert(fscanf(file, "%d", &core_max) == 1);
+        fclose(file);
+    }
     file = fopen("/proc/sys/net/ipv4/tcp_rmem", "r");
     assert(file && fscanf(file, "%*d %*d %d", &tcp_max) == 1);
     fclose(file);
@@ -68,8 +85,10 @@ int main(void)
         if (w.rx.limit) {
             assert(getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &budget, &length) == 0);
             assert(budget == 2 * VR_TCP_START_WINDOW);
-            vr_tcp_windows_tick(&w, fd, 300, VR_TCP_TARGET_WINDOW, 0);
-            assert(w.rx.limit == VR_TCP_TARGET_WINDOW && w.tx.limit == VR_TCP_START_WINDOW);
+            vr_tcp_windows_sample(&w,300,VR_TCP_TARGET_WINDOW,0);
+            vr_tcp_window_socket socket={&w,fd};
+            vr_tcp_windows_share(&socket,1,300);
+            assert(w.rx.limit>VR_TCP_TARGET_WINDOW*9/10 && w.rx.limit+w.tx.limit<=VR_TCP_TARGET_WINDOW);
         }
         printf(" established_buffer=%d\n", budget);
     }

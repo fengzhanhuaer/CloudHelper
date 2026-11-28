@@ -746,14 +746,13 @@ func dialProbeVirtualRouterExitTCP(targetAddrs []string) (net.Conn, error) {
 		if err := probeVirtualRouterEnsureDirectBypass(targetAddr); err != nil {
 			logProbeWarnf("probe virtual router fake ip tcp exit direct bypass failed: target=%s err=%v", targetAddr, err)
 		}
-		dialer := applyProbeRouteEgressDialer(&net.Dialer{Timeout: probeVirtualRouterExitDialTimeout})
+		dialer := applyProbeRouteEgressDialer(&net.Dialer{Timeout: probeVirtualRouterExitDialTimeout, Control: tcpwindow.Control})
 		conn, err := dialer.Dial(probeRouteEgressDialNetwork("tcp", targetAddr), targetAddr)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		tuneProbeRouteNetConn(conn)
-		return conn, nil
+		return tcpwindow.Egress(conn), nil
 	}
 	if lastErr != nil {
 		return nil, lastErr

@@ -54,6 +54,11 @@ func dialProbeRouteBoundQUIC(ctx context.Context, dialHostPort string, tlsConf *
 		_ = packetConn.Close()
 		return nil, err
 	}
+	if !registerProbeRouteQUICReceiveWindow(quicConn) {
+		_ = quicConn.CloseWithError(quic.ApplicationErrorCode(http3.ErrCodeExcessiveLoad), "receive window budget exhausted")
+		_ = packetConn.Close()
+		return nil, errors.New("probe relay QUIC receive window budget exhausted")
+	}
 	go func() {
 		<-quicConn.Context().Done()
 		_ = packetConn.Close()

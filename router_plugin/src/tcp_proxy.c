@@ -366,8 +366,6 @@ void vr_tcp_poll(vr_engine *e,struct pollfd *fds)
             s->received[1]+=s->length[1]-before;
             if(before!=s->length[1])s->active=now;
         }
-        if(s->fd>=0)vr_tcp_windows_tick(&s->windows[0],s->fd,now,s->received[0],s->sent[0]);
-        if(s->up>=0&&s->phase==3)vr_tcp_windows_tick(&s->windows[1],s->up,now,s->received[1],s->sent[1]);
         if(!s->phase&&(s->read_eof[0]||vr_tls_server_name(s->buffer[0],s->length[0],s->domain)||now-s->born>=2000))decide(e,s);
         if(e->tcp->sessions[i]!=s)continue;
         if(s->remote&&(s->read_eof[0]||s->read_eof[1]))s->closing=1;
@@ -393,6 +391,26 @@ void vr_tcp_poll(vr_engine *e,struct pollfd *fds)
         }
         if(s->closing&&!s->length[0]&&!s->length[1])drop(e,s,1);
     }
+}
+
+void vr_tcp_window_budget_tick(vr_engine *e,uint64_t now)
+{
+    vr_tcp_window_socket sockets[VR_TCP_POLL_MAX];size_t count=0;
+    if(e->tcp)for(size_t i=0;i<TCP_MAX;i++) {
+        tcp_session *s=e->tcp->sessions[i];if(!s)continue;
+        if(s->fd>=0) {
+            vr_tcp_windows_sample(&s->windows[0],now,s->received[0],s->sent[0]);
+            sockets[count++]=(vr_tcp_window_socket){&s->windows[0],s->fd};
+        }
+        if(s->up>=0&&s->phase==3) {
+            vr_tcp_windows_sample(&s->windows[1],now,s->received[1],s->sent[1]);
+            sockets[count++]=(vr_tcp_window_socket){&s->windows[1],s->up};
+        }
+    }
+    pthread_mutex_lock(&e->mutex);
+    if(vr_external_tcp_window_locked(e,now,&sockets[count]))count++;
+    vr_tcp_windows_share(sockets,count,now);
+    pthread_mutex_unlock(&e->mutex);
 }
 
 void vr_tcp_frame(vr_engine *e,const vr_frame *f,char path[VR_PATH_MAX][129],size_t count)
