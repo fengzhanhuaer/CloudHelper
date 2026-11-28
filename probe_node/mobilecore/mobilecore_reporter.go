@@ -22,17 +22,18 @@ import (
 )
 
 type reportPayload struct {
-	Type        string                            `json:"type"`
-	NodeID      string                            `json:"node_id"`
-	Platform    string                            `json:"platform,omitempty"`
-	OS          string                            `json:"os,omitempty"`
-	Arch        string                            `json:"arch,omitempty"`
-	IPv4        []string                          `json:"ipv4,omitempty"`
-	IPv6        []string                          `json:"ipv6,omitempty"`
-	System      systemStatus                      `json:"system"`
-	Version     string                            `json:"version,omitempty"`
-	RelayStatus []mobileProbeRouteRelayReportItem `json:"relay_status,omitempty"`
-	Timestamp   string                            `json:"timestamp"`
+	Type                 string                            `json:"type"`
+	NodeID               string                            `json:"node_id"`
+	Platform             string                            `json:"platform,omitempty"`
+	OS                   string                            `json:"os,omitempty"`
+	Arch                 string                            `json:"arch,omitempty"`
+	IPv4                 []string                          `json:"ipv4,omitempty"`
+	IPv6                 []string                          `json:"ipv6,omitempty"`
+	System               systemStatus                      `json:"system"`
+	Version              string                            `json:"version,omitempty"`
+	RelayStatus          []mobileProbeRouteRelayReportItem `json:"relay_status,omitempty"`
+	VirtualRouterBuffers *mobileVRouteBufferReport         `json:"virtual_router_buffers,omitempty"`
+	Timestamp            string                            `json:"timestamp"`
 }
 
 type probeAckMessage struct {
@@ -202,17 +203,18 @@ func runSession(cancel <-chan struct{}, wsURL string, nodeID string, nodeSecret 
 func sendReport(stream net.Conn, encoder *json.Encoder, writeMu *sync.Mutex, nodeID string) error {
 	ipv4, ipv6 := collectIPs()
 	payload := reportPayload{
-		Type:        "report",
-		NodeID:      nodeID,
-		Platform:    "android",
-		OS:          "android",
-		Arch:        runtime.GOARCH,
-		IPv4:        ipv4,
-		IPv6:        ipv6,
-		System:      collectSystemStatus(&reportCPUSampler),
-		Version:     currentVersion(),
-		RelayStatus: snapshotMobileVRouteRelayReports(currentAndroidVPNConfigDir()),
-		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		Type:                 "report",
+		NodeID:               nodeID,
+		Platform:             "android",
+		OS:                   "android",
+		Arch:                 runtime.GOARCH,
+		IPv4:                 ipv4,
+		IPv6:                 ipv6,
+		System:               collectSystemStatus(&reportCPUSampler),
+		Version:              currentVersion(),
+		RelayStatus:          snapshotMobileVRouteRelayReports(currentAndroidVPNConfigDir()),
+		VirtualRouterBuffers: snapshotMobileVRouteBuffers(),
+		Timestamp:            time.Now().UTC().Format(time.RFC3339),
 	}
 	if writeMu != nil {
 		writeMu.Lock()

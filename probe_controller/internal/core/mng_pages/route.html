@@ -1364,8 +1364,9 @@
 		const age = probe.report_age_seconds == null ? NaN : Number(probe.report_age_seconds);
 		const stale = !probe.online || !Number.isFinite(age) || age > 120;
 		const freshness = !Number.isFinite(age) ? '上报时间未知' : `${Math.floor(age)} 秒前${stale ? ' · 数据已过期' : ''}`;
+		const netstackTCP = buffers.netstack_tcp_retransmits == null ? '' : `<div class="small muted">虚拟 TCP 重传 ${Number(buffers.netstack_tcp_retransmits)}（当前协议栈）</div>`;
 		if (!items.length) {
-		  rows.push(`<tr><td><div>${escapeHTML(nodeLabel(probe.node_id))}</div><div class="small muted">${probe.online ? '在线' : '离线'} · ${escapeHTML(probe.version || '-')}</div></td><td colspan="9" class="muted">尚未收到缓冲状态</td></tr>`);
+		  rows.push(`<tr><td><div>${escapeHTML(nodeLabel(probe.node_id))}</div><div class="small muted">${probe.online ? '在线' : '离线'} · ${escapeHTML(probe.version || '-')}</div>${netstackTCP}</td><td colspan="9" class="muted">尚未收到缓冲状态</td></tr>`);
 		  return;
 		}
 		items.forEach((item, index) => {
@@ -1379,14 +1380,14 @@
 		  const ms = us => (Number(us || 0) / 1000).toFixed(2) + ' ms';
 		  const timing = !item.timing_supported ? '未支持' : `平均 ${item.wait_samples ? ms(Number(item.wait_total_us || 0) / Number(item.wait_samples)) : '暂无样本'} · 最大 ${ms(item.wait_max_us)}<div class="muted">最老 ${ms(item.oldest_wait_us)} · 连续 ${Number(item.backlog_ms || 0)} ms · 最长连续 ${Number(item.peak_backlog_ms || 0)} ms</div>`;
 		  rows.push(`<tr>
-			<td>${index === 0 ? `<div>${escapeHTML(nodeLabel(probe.node_id))}</div><div class="small muted">${probe.online ? '在线' : '离线'} · ${escapeHTML(probe.version || '-')}</div><div class="small muted">上报 ${escapeHTML(buffers.collected_at || probe.last_seen || '-')}</div><div class="small ${stale ? 'error' : 'muted'}">${escapeHTML(freshness)}</div>` : ''}</td>
+			<td>${index === 0 ? `<div>${escapeHTML(nodeLabel(probe.node_id))}</div><div class="small muted">${probe.online ? '在线' : '离线'} · ${escapeHTML(probe.version || '-')}</div><div class="small muted">上报 ${escapeHTML(buffers.collected_at || probe.last_seen || '-')}</div><div class="small ${stale ? 'error' : 'muted'}">${escapeHTML(freshness)}</div>${netstackTCP}` : ''}</td>
 			<td><div>${escapeHTML(item.stage || '-')}</div><div class="small muted mono">${escapeHTML(item.id || '-')}</div></td>
 			<td class="small mono">${escapeHTML(location)}</td>
 			<td>${amount(item.depth)}${stale ? '<div class="small muted">历史采样</div>' : ''}</td>
 			<td>${amount(item.allocated_capacity)} / ${amount(item.max_capacity)}</td>
 			<td>${amount(item.peak_depth)} / ${amount(item.peak_allocated_capacity)}</td>
 			<td class="small">近1分钟 ${delta(recent.full_1m,recent.window_1s)}<div>近5分钟 ${delta(recent.full_5m,recent.window_5s)}</div></td>
-			<td class="small">${escapeHTML(events)}<div>重试 ${count(item.retry_events)} · 入队丢弃 ${count(item.dropped)}</div><div class="muted">入 ${Number(item.enqueued || 0)} · 出 ${Number(item.dequeued || 0)}</div></td>
+			<td class="small">${escapeHTML(events)}<div>排队重试 ${count(item.retry_events)}${item.retry_recovered == null ? '' : ` · 恢复 ${count(item.retry_recovered)}`} · 丢弃 ${count(item.dropped)}</div>${item.carrier_tcp_retransmits == null ? '' : `<div>承载 TCP 重传 ${count(item.carrier_tcp_retransmits)}（当前连接）</div>`}<div class="muted">入 ${Number(item.enqueued || 0)} · 出 ${Number(item.dequeued || 0)}</div></td>
 			<td class="small">${timing}</td>
 			<td class="small mono">${escapeHTML(item.stats_started_at || buffers.stats_started_at || '-')}</td>
 		  </tr>`);

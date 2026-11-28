@@ -3,13 +3,17 @@ package main
 import (
 	"errors"
 	"io"
+	"net"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/cloudhelper/probe_node/internal/routewire"
 )
 
 const probeAdaptiveQueueDefaultShrinkDelay = 2 * time.Minute
+const probeVirtualRouterQueueBackpressureWait = routewire.DataQueueWait
 
 var errProbeAdaptiveQueueFull = errors.New("adaptive queue reached its hard limit")
 
@@ -20,6 +24,7 @@ type probeAdaptiveQueueOptions struct {
 	RouteID         string
 	CarrierSlot     int
 	HasCarrierSlot  bool
+	CarrierConn     net.Conn
 	Shard           int
 	HasShard        bool
 	InitialCapacity int
@@ -32,6 +37,8 @@ type probeAdaptiveQueueSnapshot struct {
 	TimingSupported       bool    `json:"timing_supported,omitempty"`
 	Dropped               *uint64 `json:"dropped,omitempty"`
 	RetryEvents           *uint64 `json:"retry_events,omitempty"`
+	RetryRecovered        *uint64 `json:"retry_recovered,omitempty"`
+	CarrierTCPRetransmits *uint64 `json:"carrier_tcp_retransmits,omitempty"`
 	WaitSamples           uint64  `json:"wait_samples,omitempty"`
 	WaitTotalUS           uint64  `json:"wait_total_us,omitempty"`
 	WaitMaxUS             uint64  `json:"wait_max_us,omitempty"`
@@ -58,10 +65,11 @@ type probeAdaptiveQueueSnapshot struct {
 }
 
 type probeVirtualRouterBufferReport struct {
-	StatsStartedAt string                       `json:"stats_started_at"`
-	CollectedAt    string                       `json:"collected_at"`
-	Items          []probeAdaptiveQueueSnapshot `json:"items"`
-	CarrierPayload probeQueueByteBudgetSnapshot `json:"carrier_payload"`
+	StatsStartedAt         string                       `json:"stats_started_at"`
+	CollectedAt            string                       `json:"collected_at"`
+	Items                  []probeAdaptiveQueueSnapshot `json:"items"`
+	CarrierPayload         probeQueueByteBudgetSnapshot `json:"carrier_payload"`
+	NetstackTCPRetransmits *uint64                      `json:"netstack_tcp_retransmits,omitempty"`
 }
 
 type probeAdaptiveQueueObservable interface {
@@ -90,11 +98,12 @@ type probeAdaptiveQueue[T any] struct {
 	busySince time.Time
 	peakBusy  time.Duration
 
-	waitSamples uint64
-	waitTotalUS uint64
-	waitMaxUS   uint64
-	dropped     uint64
-	retryEvents uint64
+	waitSamples    uint64
+	waitTotalUS    uint64
+	waitMaxUS      uint64
+	dropped        uint64
+	retryEvents    uint64
+	retryRecovered uint64
 
 	head     int
 	size     int
@@ -227,13 +236,27 @@ func (q *probeAdaptiveQueue[T]) PushUntil(value T, deadline time.Time, stop <-ch
 	var timeout <-chan time.Time
 	retrying := false
 	for {
+		select {
+		case <-stop:
+			return io.ErrClosedPipe
+		default:
+		}
 		if retrying {
+			if !deadline.IsZero() && !time.Now().Before(deadline) {
+				q.RecordDrop()
+				return errProbeAdaptiveQueueFull
+			}
 			q.mu.Lock()
 			q.retryEvents++
 			q.mu.Unlock()
 		}
 		pushed, budgetSpace := q.tryPush(value, true)
 		if pushed {
+			if retrying {
+				q.mu.Lock()
+				q.retryRecovered++
+				q.mu.Unlock()
+			}
 			return nil
 		}
 		if q.IsClosed() {
@@ -573,6 +596,8 @@ func (q *probeAdaptiveQueue[T]) adaptiveQueueSnapshot(now time.Time) probeAdapti
 	}
 	*snapshot.Dropped = q.dropped
 	*snapshot.RetryEvents = q.retryEvents
+	recovered := q.retryRecovered
+	snapshot.RetryRecovered = &recovered
 	if q.size > 0 {
 		snapshot.OldestWaitUS = uint64(max(0, (now.Sub(q.clockBase).Nanoseconds()-q.queuedAt[q.head])/1000))
 		if !q.busySince.IsZero() {
@@ -591,6 +616,7 @@ func (q *probeAdaptiveQueue[T]) adaptiveQueueSnapshot(now time.Time) probeAdapti
 		snapshot.Shard = &value
 	}
 	q.mu.Unlock()
+	snapshot.CarrierTCPRetransmits = routewire.CarrierTCPRetransmits(q.options.CarrierConn)
 	return snapshot
 }
 
@@ -609,6 +635,7 @@ func (q *probeAdaptiveQueue[T]) resetAdaptiveQueueStats(now time.Time) {
 	q.waitMaxUS = 0
 	q.dropped = 0
 	q.retryEvents = 0
+	q.retryRecovered = 0
 	q.peakBusy = 0
 	if q.size > 0 {
 		q.busySince = now
@@ -652,10 +679,11 @@ func snapshotProbeVirtualRouterBuffers() probeVirtualRouterBufferReport {
 	}
 	probeVirtualRouterBufferRegistry.mu.Unlock()
 	report := probeVirtualRouterBufferReport{
-		StatsStartedAt: startedAt.UTC().Format(time.RFC3339),
-		CollectedAt:    now.UTC().Format(time.RFC3339),
-		Items:          make([]probeAdaptiveQueueSnapshot, 0, len(items)),
-		CarrierPayload: probeVirtualRouterCarrierBudget.snapshot(),
+		StatsStartedAt:         startedAt.UTC().Format(time.RFC3339),
+		CollectedAt:            now.UTC().Format(time.RFC3339),
+		Items:                  make([]probeAdaptiveQueueSnapshot, 0, len(items)),
+		CarrierPayload:         probeVirtualRouterCarrierBudget.snapshot(),
+		NetstackTCPRetransmits: probeVirtualRouterExitTCPRetransmits(),
 	}
 	for _, item := range items {
 		snapshot := item.adaptiveQueueSnapshot(now)

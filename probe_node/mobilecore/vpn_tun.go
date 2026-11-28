@@ -31,6 +31,7 @@ import (
 	"gvisor.dev/gvisor/pkg/waiter"
 
 	"github.com/cloudhelper/probe_node/internal/dnsupstream"
+	"github.com/cloudhelper/probe_node/internal/routewire"
 )
 
 const (
@@ -46,7 +47,7 @@ const (
 	vpnDNSPersistDelay  = 10 * time.Second
 	vpnDNSReadTimeout   = 20 * time.Second
 	vpnDNSLookupTimeout = 5 * time.Second
-	vpnTunWriteTimeout  = 5 * time.Second
+	vpnTunWriteTimeout  = routewire.DataQueueWait
 	vpnDNSCacheFileName = "android_vpn_dns_cache.json"
 )
 

@@ -4528,6 +4528,7 @@ func newProbeVirtualRouterPhysicalCarrier(link *probeVirtualRouterFrameLink, slo
 			RouteID:         routeID,
 			CarrierSlot:     slot,
 			HasCarrierSlot:  true,
+			CarrierConn:     conn,
 			InitialCapacity: probeVirtualRouterCarrierTXInitialFrames,
 			MaxCapacity:     probeVirtualRouterCarrierTXBufferFrames,
 		}),
@@ -4811,7 +4812,7 @@ func (s *probeVirtualRouterFrameLink) runTXWorker() {
 		if token.tx == nil {
 			err = io.ErrClosedPipe
 		} else {
-			err = token.tx.PushUntil(frame, time.Now().Add(probeVirtualRouterFrameLinkTXEnqueueWait), token.done)
+			err = token.tx.PushUntil(frame, time.Now().Add(probeVirtualRouterQueueBackpressureWait), token.done)
 		}
 		if err != nil {
 			recordProbeVirtualRouterTXFrameFailure(s, frame, err)
@@ -5215,7 +5216,7 @@ func (s *probeVirtualRouterFrameLink) enqueueRXFrame(frame probeVirtualRouterFra
 		return io.ErrClosedPipe
 	}
 	// Give the consumer a chance to release capacity while carrier reads pause.
-	if err := s.rx.PushUntil(frame, time.Now().Add(probeVirtualRouterFrameLinkRXEnqueueWait), s.done); err == nil {
+	if err := s.rx.PushUntil(frame, time.Now().Add(probeVirtualRouterQueueBackpressureWait), s.done); err == nil {
 		s.touch()
 		return nil
 	} else if errors.Is(err, io.ErrClosedPipe) {
@@ -5281,16 +5282,12 @@ func (s *probeVirtualRouterFrameLink) enqueueRXDispatchFrame(frame probeVirtualR
 	}
 	shardID := probeVirtualRouterFrameRXDispatchShard(frame, len(shards))
 	shard := shards[shardID]
-	if shard.TryPush(frame) {
+	if err := shard.PushUntil(frame, time.Now().Add(probeVirtualRouterQueueBackpressureWait), s.done); err == nil {
 		return nil
-	}
-	select {
-	case <-s.done:
+	} else if errors.Is(err, io.ErrClosedPipe) {
 		return io.ErrClosedPipe
-	default:
-		shard.RecordDrop()
-		return fmt.Errorf("virtual router rx dispatch queue full: key=%s shard=%d depth=%d capacity=%d limit=%d", strings.TrimSpace(s.key), shardID, shard.Len(), shard.Capacity(), shard.MaxCapacity())
 	}
+	return fmt.Errorf("virtual router rx dispatch queue full: key=%s shard=%d depth=%d capacity=%d limit=%d", strings.TrimSpace(s.key), shardID, shard.Len(), shard.Capacity(), shard.MaxCapacity())
 }
 
 func (s *probeVirtualRouterFrameLink) runRXDispatchShardWorker(shardID int, shard *probeAdaptiveQueue[probeVirtualRouterFrame]) {
@@ -7235,6 +7232,9 @@ func writeProbeVirtualRouterLocalTUNPacket(packet []byte) error {
 		return nil
 	} else {
 		firstErr := err
+		if errors.Is(firstErr, errProbeAdaptiveQueueFull) || errors.Is(firstErr, io.ErrShortWrite) || errors.Is(firstErr, os.ErrDeadlineExceeded) {
+			return firstErr
+		}
 		if startErr := startProbeVirtualRouterTUNDataPlane(); startErr != nil {
 			return fmt.Errorf("write local tun packet failed: %w; restart data plane failed: %v", firstErr, startErr)
 		}
@@ -7321,7 +7321,8 @@ func forwardProbeVirtualRouterPacket(packet []byte, dstIP string, path []string,
 	}
 	now := time.Now()
 	reportProbeVirtualRouterRelayPressure(ingress, link, packet, now)
-	if err := link.enqueueOwnedProbeVirtualRouterFrame(frame, now.Add(probeVirtualRouterFrameLinkTXEnqueueWait)); err != nil {
+	deadline := now.Add(probeVirtualRouterQueueBackpressureWait)
+	if err := link.enqueueOwnedProbeVirtualRouterFrame(frame, deadline); err != nil {
 		recordProbeVirtualRouterRuntimeOpenError(rt.cfg.routeID, err)
 		if !isProbeVirtualRouterClosedLinkError(err) {
 			return err
@@ -7331,7 +7332,10 @@ func forwardProbeVirtualRouterPacket(packet []byte, dstIP string, path []string,
 			recordProbeVirtualRouterRuntimeOpenError(rt.cfg.routeID, err)
 			return err
 		}
-		if err := link.enqueueOwnedProbeVirtualRouterFrame(frame, time.Now().Add(probeVirtualRouterFrameLinkTXEnqueueWait)); err != nil {
+		if !time.Now().Before(deadline) {
+			return errProbeAdaptiveQueueFull
+		}
+		if err := link.enqueueOwnedProbeVirtualRouterFrame(frame, deadline); err != nil {
 			recordProbeVirtualRouterRuntimeOpenError(rt.cfg.routeID, err)
 			return err
 		}

@@ -23,7 +23,7 @@ const (
 	probeLocalLinuxTUNInboundDispatchShards  = 8
 	probeLocalLinuxTUNOutboundQueueFrames    = 4096
 	probeLocalLinuxTUNOutboundInitialFrames  = 256
-	probeLocalLinuxTUNWriteTimeout           = 500 * time.Millisecond
+	probeLocalLinuxTUNWriteTimeout           = probeVirtualRouterQueueBackpressureWait
 	probeLocalLinuxTUNWritePollTimeoutMS     = 50
 	probeLocalLinuxTUNSlowWriteThreshold     = 10 * time.Millisecond
 	probeLocalLinuxTUNAbnormalWriteThreshold = 100 * time.Millisecond
@@ -282,10 +282,9 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) readLoop() {
 		if n <= 0 {
 			continue
 		}
-		packet := append([]byte(nil), buf[:n]...)
 		r.rxPackets.Add(1)
 		r.rxBytes.Add(uint64(n))
-		r.handleInboundPayload(packet)
+		r.handleInboundPayload(buf[:n])
 	}
 }
 
@@ -298,13 +297,7 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) handleInboundPayload(payload
 		go handleProbeVirtualRouterTUNInboundPacket(packet)
 		return
 	}
-	if !r.inboundCh.TryPush(packet) {
-		select {
-		case <-r.stopCh:
-			return
-		default:
-		}
-		r.inboundCh.RecordDrop()
+	if err := r.inboundCh.PushUntil(packet, time.Now().Add(probeVirtualRouterQueueBackpressureWait), r.stopCh); errors.Is(err, errProbeAdaptiveQueueFull) {
 		logProbeWarnf("probe local linux tun inbound packet drop: dev=%s reason=handler_queue_full depth=%d capacity=%d limit=%d", r.dev, r.inboundCh.Len(), r.inboundCh.Capacity(), r.inboundCh.MaxCapacity())
 	}
 }
@@ -328,13 +321,9 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) inboundDispatchWorker() {
 			}
 			shardID := probeVirtualRouterPacketDispatchShard(packet, len(r.inboundDispatch))
 			shard := r.inboundDispatch[shardID]
-			if !shard.TryPush(packet) {
-				select {
-				case <-r.stopCh:
-					return
-				default:
-				}
-				shard.RecordDrop()
+			if err := shard.PushUntil(packet, time.Now().Add(probeVirtualRouterQueueBackpressureWait), r.stopCh); errors.Is(err, io.ErrClosedPipe) {
+				return
+			} else if err != nil {
 				logProbeWarnf("probe local linux tun inbound packet drop: dev=%s reason=dispatch_queue_full shard=%d depth=%d capacity=%d limit=%d", r.dev, shardID, shard.Len(), shard.Capacity(), shard.MaxCapacity())
 			}
 		}
@@ -518,17 +507,13 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) WritePacket(packet []byte) e
 		return r.writePacketDirect(packet)
 	}
 	payload := append([]byte(nil), packet...)
-	if r.outboundCh.TryPush(payload) {
+	if err := r.outboundCh.PushUntil(payload, time.Now().Add(probeVirtualRouterQueueBackpressureWait), r.stopCh); err == nil {
 		return nil
-	}
-	select {
-	case <-r.stopCh:
+	} else if errors.Is(err, io.ErrClosedPipe) {
 		return io.ErrClosedPipe
-	default:
-		r.outboundCh.RecordDrop()
-		r.txDropped.Add(1)
-		return fmt.Errorf("probe local linux tun outbound queue full: dev=%s depth=%d capacity=%d limit=%d", r.dev, r.outboundCh.Len(), r.outboundCh.Capacity(), r.outboundCh.MaxCapacity())
 	}
+	r.txDropped.Add(1)
+	return fmt.Errorf("probe local linux tun outbound queue full: dev=%s depth=%d capacity=%d limit=%d: %w", r.dev, r.outboundCh.Len(), r.outboundCh.Capacity(), r.outboundCh.MaxCapacity(), errProbeAdaptiveQueueFull)
 }
 
 func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) writePacketDirect(packet []byte) error {
@@ -540,11 +525,10 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) writePacketDirect(packet []b
 	}
 	r.writeMu.Lock()
 	defer r.writeMu.Unlock()
-	originalLen := len(packet)
 	fd := int(r.file.Fd())
 	pollFDs := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLOUT}}
 	deadline := time.Now().Add(probeLocalLinuxTUNWriteTimeout)
-	for len(packet) > 0 {
+	for {
 		if r.closed.Load() {
 			return io.ErrClosedPipe
 		}
@@ -552,20 +536,20 @@ func (r *probeVirtualRouterLinuxTUNDataPlaneRunner) writePacketDirect(packet []b
 			return os.ErrDeadlineExceeded
 		}
 		n, err := unix.Write(fd, packet)
-		if err != nil {
-			if errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EINTR) {
-				pollFDs[0].Revents = 0
-				_, _ = unix.Poll(pollFDs, probeLocalLinuxTUNWritePollTimeoutMS)
-				continue
-			}
-			return err
+		if n == len(packet) {
+			break
 		}
-		if n == 0 {
+		if n > 0 || err == nil {
 			return io.ErrShortWrite
 		}
-		packet = packet[n:]
+		if errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EINTR) {
+			pollFDs[0].Revents = 0
+			_, _ = unix.Poll(pollFDs, probeLocalLinuxTUNWritePollTimeoutMS)
+			continue
+		}
+		return err
 	}
 	r.txPackets.Add(1)
-	r.txBytes.Add(uint64(originalLen))
+	r.txBytes.Add(uint64(len(packet)))
 	return nil
 }

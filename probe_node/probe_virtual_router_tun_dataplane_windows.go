@@ -5,6 +5,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -473,13 +474,7 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) handleInboundPayload(payload []by
 		go r.onPacket(packet)
 		return
 	}
-	if !r.inboundCh.TryPush(packet) {
-		select {
-		case <-r.stopCh:
-			return
-		default:
-		}
-		r.inboundCh.RecordDrop()
+	if err := r.inboundCh.PushUntil(packet, time.Now().Add(probeVirtualRouterQueueBackpressureWait), r.stopCh); errors.Is(err, errProbeAdaptiveQueueFull) {
 		if r.logf != nil {
 			r.logf("probe local tun inbound packet drop: reason=handler_queue_full depth=%d capacity=%d limit=%d", r.inboundCh.Len(), r.inboundCh.Capacity(), r.inboundCh.MaxCapacity())
 		}
@@ -505,13 +500,9 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) inboundDispatchWorker() {
 			}
 			shardID := probeVirtualRouterPacketDispatchShard(payload, len(r.inboundDispatch))
 			shard := r.inboundDispatch[shardID]
-			if !shard.TryPush(payload) {
-				select {
-				case <-r.stopCh:
-					return
-				default:
-				}
-				shard.RecordDrop()
+			if err := shard.PushUntil(payload, time.Now().Add(probeVirtualRouterQueueBackpressureWait), r.stopCh); errors.Is(err, io.ErrClosedPipe) {
+				return
+			} else if err != nil {
 				if r.logf != nil {
 					r.logf("probe local tun inbound packet drop: reason=dispatch_queue_full shard=%d depth=%d capacity=%d limit=%d", shardID, shard.Len(), shard.Capacity(), shard.MaxCapacity())
 				}
@@ -748,19 +739,16 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) WritePacket(packet []byte) error 
 		return r.writePacketDirect(packet)
 	}
 	outbound := acquireProbeVirtualRouterTUNOutboundPacket(packet)
-	if r.outboundCh.TryPush(outbound) {
+	err := r.outboundCh.PushUntil(outbound, time.Now().Add(probeVirtualRouterQueueBackpressureWait), r.stopCh)
+	if err == nil {
 		return nil
 	}
-	select {
-	case <-r.stopCh:
-		releaseProbeVirtualRouterTUNOutboundPacket(outbound)
-		return errors.New("probe virtual router tun data plane is not running")
-	default:
-		releaseProbeVirtualRouterTUNOutboundPacket(outbound)
-		r.outboundCh.RecordDrop()
-		r.txDropped.Add(1)
-		return fmt.Errorf("probe virtual router tun outbound queue full: depth=%d capacity=%d limit=%d", r.outboundCh.Len(), r.outboundCh.Capacity(), r.outboundCh.MaxCapacity())
+	releaseProbeVirtualRouterTUNOutboundPacket(outbound)
+	if errors.Is(err, io.ErrClosedPipe) {
+		return err
 	}
+	r.txDropped.Add(1)
+	return fmt.Errorf("probe virtual router tun outbound queue full: depth=%d capacity=%d limit=%d: %w", r.outboundCh.Len(), r.outboundCh.Capacity(), r.outboundCh.MaxCapacity(), err)
 }
 
 func (r *probeVirtualRouterTUNDataPlaneRunner) writePacketDirect(packet []byte) error {
@@ -788,6 +776,23 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) writePacketDirectTimed(packet []b
 	}
 	allocateStartedAt := time.Now()
 	packetPtr, _, allocErr := r.allocateSendPacketProc.Call(r.sessionHandle, uintptr(len(packet)))
+	if packetPtr == 0 && errors.Is(allocErr, windows.ERROR_BUFFER_OVERFLOW) {
+		deadline := time.NewTimer(probeVirtualRouterQueueBackpressureWait)
+		retry := time.NewTicker(2 * time.Millisecond)
+		defer deadline.Stop()
+		defer retry.Stop()
+		for packetPtr == 0 && errors.Is(allocErr, windows.ERROR_BUFFER_OVERFLOW) {
+			select {
+			case <-r.stopCh:
+				return timing, io.ErrClosedPipe
+			case <-deadline.C:
+				timing.allocate = time.Since(allocateStartedAt)
+				return timing, fmt.Errorf("Wintun send ring remains full: %w", errProbeAdaptiveQueueFull)
+			case <-retry.C:
+			}
+			packetPtr, _, allocErr = r.allocateSendPacketProc.Call(r.sessionHandle, uintptr(len(packet)))
+		}
+	}
 	timing.allocate = time.Since(allocateStartedAt)
 	if packetPtr == 0 {
 		if allocErr != nil && !probeLocalTUNIsZeroErrno(allocErr) {
@@ -799,11 +804,10 @@ func (r *probeVirtualRouterTUNDataPlaneRunner) writePacketDirectTimed(packet []b
 	copy(probeLocalTUNUintptrToByteSlice(packetPtr, len(packet)), packet)
 	timing.copy = time.Since(copyStartedAt)
 	sendStartedAt := time.Now()
-	_, _, sendErr := r.sendPacketProc.Call(r.sessionHandle, packetPtr)
+	// The void WintunSendPacket call consumes the allocated buffer. An old
+	// thread-local GetLastError is not a send result or permission to retry.
+	r.sendPacketProc.Call(r.sessionHandle, packetPtr)
 	timing.send = time.Since(sendStartedAt)
-	if sendErr != nil && !probeLocalTUNIsZeroErrno(sendErr) {
-		return timing, fmt.Errorf("WintunSendPacket failed: %w", sendErr)
-	}
 	r.txPackets.Add(1)
 	r.txBytes.Add(uint64(len(packet)))
 	return timing, nil

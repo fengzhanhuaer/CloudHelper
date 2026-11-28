@@ -2,6 +2,7 @@
 #include "engine.h"
 #include <arpa/inet.h>
 #include <assert.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <stdio.h>
@@ -18,7 +19,7 @@ static pthread_t writer_test_thread;
 static pthread_mutex_t writer_gate=PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t writer_release=PTHREAD_COND_INITIALIZER;
 static int writer_released;
-static unsigned writer_packets;
+static unsigned writer_packets, writer_retries;
 ssize_t __real_write(int fd,const void *bytes,size_t n);
 ssize_t __wrap_write(int fd,const void *bytes,size_t n)
 {
@@ -27,7 +28,9 @@ ssize_t __wrap_write(int fd,const void *bytes,size_t n)
     assert(n==sizeof(unsigned));
     unsigned number;
     memcpy(&number,bytes,n);
-    assert(number==writer_packets++);
+    assert(number==writer_packets);
+    if(number==1&&writer_retries<2){writer_retries++;errno=EAGAIN;return -1;}
+    writer_packets++;
     if(number==0) {
         pthread_mutex_lock(&writer_gate);
         while(!writer_released)pthread_cond_wait(&writer_release,&writer_gate);
@@ -206,10 +209,12 @@ static void test_tun_writer(void)
     vr_tun_writer_flush(e);
     stats=vr_tun_writer_status(e);
     assert(writer_packets==packets);
+    assert(writer_retries==2);
     assert(json_object_get_int64(vr_member(stats,"written_packets"))==packets);
     assert(json_object_get_int(vr_member(stats,"peak_packets"))==(int)capacity);
     assert(json_object_get_int(vr_member(stats,"queued_packets"))==0);
     assert(json_object_get_int(vr_member(stats,"write_errors"))==0);
+    assert(json_object_get_int(vr_member(stats,"queue_dropped"))==0);
     assert(e->observation.stages[VR_OBS_TUN_WRITE].calls==packets);
     assert(e->observation.stages[VR_OBS_TUN_WRITE].samples==packets/VR_OBSERVE_INTERVAL);
     json_object_put(stats);

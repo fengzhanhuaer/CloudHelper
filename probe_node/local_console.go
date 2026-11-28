@@ -2579,6 +2579,7 @@ func probeLocalVirtualRouterStatusPayload() map[string]any {
 			"output_shard_capacity_limit": exitNetstack.OutputShardCapacityLimit,
 			"output_queue_waits":          exitNetstack.OutputQueueWaits,
 			"output_queue_recovered":      exitNetstack.OutputQueueRecovered,
+			"output_pacing_pauses":        exitNetstack.OutputPacingPauses,
 			"peer_tun_pressure_applied":   exitNetstack.PeerPressureApplied,
 			"output_enqueued":             exitNetstack.OutputEnqueued,
 			"output_forwarded":            exitNetstack.OutputForwarded,

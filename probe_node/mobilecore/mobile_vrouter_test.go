@@ -1343,6 +1343,33 @@ func TestMobileVRouteCarrierReservesControlQueueAndPrioritizesIt(t *testing.T) {
 	}
 }
 
+func TestMobileVRouteDataQueueWaitsForSpaceOrClose(t *testing.T) {
+	queue := make(chan mobileVRouteFrame, 1)
+	queue <- mobileVRouteFrame{Data: []byte{1}}
+	stop := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		_, err := enqueueMobileVRouteFrame(queue, mobileVRouteFrame{Data: []byte{2}}, stop, true)
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		t.Fatalf("frame was rejected during a temporary stall: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	<-queue
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	close(stop)
+	if _, err := enqueueMobileVRouteFrame(queue, mobileVRouteFrame{Data: []byte{3}}, stop, true); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("closed queue returned %v", err)
+	}
+	if frame := <-queue; frame.Data[0] != 2 || len(queue) != 0 {
+		t.Fatalf("unexpected queued frames: %+v", frame)
+	}
+}
+
 func TestMobileVRouteCarrierTXWorkerBatchesQueuedFrames(t *testing.T) {
 	left, right := net.Pipe()
 	countedLeft := &mobileVRouteWriteCountingConn{Conn: left}

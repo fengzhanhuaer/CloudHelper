@@ -148,7 +148,7 @@ void vr_tun_drain(vr_engine *e)
             tun_read_packet *packet=&reader->packets[(head+processed)%READER_CAPACITY];
             vr_outgoing(e,packet->bytes,packet->length);
             processed++;
-            if(vr_millis()-start>=DRAIN_BUDGET_MS)break;
+            if(vr_carrier_tun_paused(e)||vr_millis()-start>=DRAIN_BUDGET_MS)break;
         }
         pthread_mutex_lock(&reader->mutex);
         if(reader->count==READER_CAPACITY&&processed)pthread_cond_signal(&reader->space);
@@ -168,6 +168,7 @@ void vr_tun_drain(vr_engine *e)
         ssize_t n=read(e->tun,packet,sizeof(packet));
         if(n<=0)break;
         vr_outgoing(e,packet,(size_t)n);
+        if(vr_carrier_tun_paused(e))break;
         if(vr_millis()-start>=DRAIN_BUDGET_MS)break;
     }
 }

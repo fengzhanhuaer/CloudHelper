@@ -15,10 +15,11 @@ static void status(vr_engine *e,int ready)
     json_object_object_add(o,"tun_reader",vr_tun_reader_status(e));
     json_object_object_add(o,"tun_writer",vr_tun_writer_status(e));
     json_object *carrier_queue=json_object_new_object();
-    json_object_object_add(carrier_queue,"allocated_bytes",json_object_new_int64((int64_t)(e->tx_queue_memory+e->rx_queue_memory+e->tx_spare_memory)));
+    json_object_object_add(carrier_queue,"allocated_bytes",json_object_new_int64((int64_t)(e->tx_queue_memory+e->rx_queue_memory+e->tx_spare_memory+e->tx_retry_memory)));
     json_object_object_add(carrier_queue,"tx_allocated_bytes",json_object_new_int64((int64_t)e->tx_queue_memory));
     json_object_object_add(carrier_queue,"rx_allocated_bytes",json_object_new_int64((int64_t)e->rx_queue_memory));
     json_object_object_add(carrier_queue,"reuse_allocated_bytes",json_object_new_int64((int64_t)e->tx_spare_memory));
+    json_object_object_add(carrier_queue,"retry_allocated_bytes",json_object_new_int64((int64_t)e->tx_retry_memory));
     json_object_object_add(carrier_queue,"tx_reused",json_object_new_int64((int64_t)e->tx_reused));
     json_object_object_add(carrier_queue,"peak_bytes",json_object_new_int64((int64_t)e->tx_queue_peak));
     json_object_object_add(carrier_queue,"capacity_bytes",json_object_new_int(VR_TX_TOTAL_CAP));
@@ -241,11 +242,17 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
             }
             if(!l->ssl&&!pending_policy)vr_link_dial(l);
         }
-        struct pollfd fds[6+VR_CARRIER_MAX+VR_TCP_POLL_MAX];fds[0]=(struct pollfd){vr_tun_reader_poll_fd(e),POLLIN,0};fds[1]=(struct pollfd){e->lan,POLLIN,0};
+        struct pollfd fds[6+VR_CARRIER_MAX+VR_TCP_POLL_MAX];fds[0]=(struct pollfd){vr_tun_reader_poll_fd(e),vr_carrier_tun_paused(e)?0:POLLIN,0};fds[1]=(struct pollfd){e->lan,POLLIN,0};
         fds[2]=(struct pollfd){e->wan,POLLIN,0};fds[3]=(struct pollfd){e->dns_udp,POLLIN,0};fds[4]=(struct pollfd){e->dns_tcp,POLLIN,0};
         fds[5]=(struct pollfd){e->carrier6,POLLIN,0};
-        for(size_t i=0;i<e->link_count;i++)fds[6+i]=(struct pollfd){e->links[i].fd,(short)(POLLIN|(e->links[i].used?(e->links[i].write_events?e->links[i].write_events:POLLOUT):0)),0};
-        int pending=0;for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl&&e->links[i].write_events!=POLLIN&&SSL_pending(e->links[i].ssl))pending=1;
+        int pending=0;
+        for(size_t i=0;i<e->link_count;i++) {
+            vr_link *l=&e->links[i];
+            short read_events=vr_link_rx_paused(l)?0:POLLIN;
+            short write_events=l->used?(l->write_events?l->write_events:POLLOUT):0;
+            fds[6+i]=(struct pollfd){l->fd,(short)(read_events|write_events),0};
+            if(read_events&&l->ssl&&l->write_events!=POLLIN&&SSL_pending(l->ssl))pending=1;
+        }
         size_t tcp_count=vr_tcp_pollfds(e,fds+6+e->link_count);
         int result=poll(fds,6+e->link_count+tcp_count,pending?0:50);if(result<0&&errno==EINTR)continue;if(result<0){strcpy(e->error,"network poll failed");break;}
         /* Remove failed slots before TUN selects a carrier for new packets. */

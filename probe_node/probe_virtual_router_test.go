@@ -5845,7 +5845,7 @@ func TestSnapshotProbeVirtualRouterExitNetstackAggregatesOutputQueues(t *testing
 func TestProbeVirtualRouterExitNetstackOutputWaitIsBounded(t *testing.T) {
 	queue := newProbeAdaptiveQueue[probeVirtualRouterExitNetstackOutputPacket](probeAdaptiveQueueOptions{InitialCapacity: 1, MaxCapacity: 1})
 	runner := &probeVirtualRouterExitNetstack{outputDispatch: []*probeAdaptiveQueue[probeVirtualRouterExitNetstackOutputPacket]{queue}}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), probeVirtualRouterQueueBackpressureWait+time.Second)
 	defer cancel()
 	path := []string{"27", "26"}
 	if err := runner.enqueueOutputPacket(ctx, []byte{0x45}, "198.18.0.15", path); err != nil {
@@ -5859,6 +5859,40 @@ func TestProbeVirtualRouterExitNetstackOutputWaitIsBounded(t *testing.T) {
 	}
 	if item, ok := queue.TryPop(); !ok || len(item.payload) != 1 || item.payload[0] != 0x45 {
 		t.Fatalf("queue overflow replaced an older packet: %+v", item)
+	}
+}
+
+func TestProbeVirtualRouterExitOutputRetainsPacketDuringShortStall(t *testing.T) {
+	queue := newProbeAdaptiveQueue[probeVirtualRouterExitNetstackOutputPacket](probeAdaptiveQueueOptions{InitialCapacity: 1, MaxCapacity: 1})
+	runner := &probeVirtualRouterExitNetstack{outputDispatch: []*probeAdaptiveQueue[probeVirtualRouterExitNetstackOutputPacket]{queue}}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	path := []string{"27", "26"}
+	if err := runner.enqueueOutputPacket(ctx, []byte{1}, "198.18.0.15", path); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- runner.enqueueOutputPacket(ctx, []byte{2}, "198.18.0.15", path) }()
+	for runner.outputQueueWaits.Load() == 0 {
+		select {
+		case <-ctx.Done():
+			t.Fatal("second packet never reached the full output queue")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("output dropped a packet before the 700 ms stall ended: %v", err)
+	case <-time.After(700 * time.Millisecond):
+	}
+	if first, ok := queue.TryPop(); !ok || first.payload[0] != 1 {
+		t.Fatalf("first packet was lost or reordered: %+v", first)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if second, ok := queue.TryPop(); !ok || second.payload[0] != 2 || runner.outputQueueRecovered.Load() != 1 {
+		t.Fatalf("second packet did not recover in order: %+v", second)
 	}
 }
 

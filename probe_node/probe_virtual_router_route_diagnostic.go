@@ -660,6 +660,7 @@ func probeVirtualRouterRouteSpeedQueueSnapshot() map[string]any {
 			"output_shard_capacity_limit": exitStats.OutputShardCapacityLimit,
 			"output_queue_waits":          exitStats.OutputQueueWaits,
 			"output_queue_recovered":      exitStats.OutputQueueRecovered,
+			"output_pacing_pauses":        exitStats.OutputPacingPauses,
 			"output_dropped":              exitStats.OutputDropped,
 			"output_queue_full":           exitStats.OutputQueueFull,
 		},

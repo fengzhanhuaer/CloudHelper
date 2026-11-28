@@ -59,6 +59,8 @@ type probeAdaptiveQueueSnapshot struct {
 	TimingSupported       bool    `json:"timing_supported,omitempty"`
 	Dropped               *uint64 `json:"dropped,omitempty"`
 	RetryEvents           *uint64 `json:"retry_events,omitempty"`
+	RetryRecovered        *uint64 `json:"retry_recovered,omitempty"`
+	CarrierTCPRetransmits *uint64 `json:"carrier_tcp_retransmits,omitempty"`
 	WaitSamples           uint64  `json:"wait_samples,omitempty"`
 	WaitTotalUS           uint64  `json:"wait_total_us,omitempty"`
 	WaitMaxUS             uint64  `json:"wait_max_us,omitempty"`
@@ -85,9 +87,10 @@ type probeAdaptiveQueueSnapshot struct {
 }
 
 type probeVirtualRouterBufferReport struct {
-	StatsStartedAt string                       `json:"stats_started_at"`
-	CollectedAt    string                       `json:"collected_at"`
-	Items          []probeAdaptiveQueueSnapshot `json:"items"`
+	StatsStartedAt         string                       `json:"stats_started_at"`
+	CollectedAt            string                       `json:"collected_at"`
+	Items                  []probeAdaptiveQueueSnapshot `json:"items"`
+	NetstackTCPRetransmits *uint64                      `json:"netstack_tcp_retransmits,omitempty"`
 }
 
 type probeRuntimeStatus struct {
@@ -412,9 +415,10 @@ func updateProbeRuntimeReportWithPlatformAndBuffers(nodeID string, ipv4 []string
 
 func normalizeProbeVirtualRouterBufferReport(input probeVirtualRouterBufferReport) probeVirtualRouterBufferReport {
 	out := probeVirtualRouterBufferReport{
-		StatsStartedAt: strings.TrimSpace(input.StatsStartedAt),
-		CollectedAt:    strings.TrimSpace(input.CollectedAt),
-		Items:          make([]probeAdaptiveQueueSnapshot, 0, len(input.Items)),
+		StatsStartedAt:         strings.TrimSpace(input.StatsStartedAt),
+		CollectedAt:            strings.TrimSpace(input.CollectedAt),
+		Items:                  make([]probeAdaptiveQueueSnapshot, 0, len(input.Items)),
+		NetstackTCPRetransmits: input.NetstackTCPRetransmits,
 	}
 	seen := make(map[string]struct{}, len(input.Items))
 	for _, item := range input.Items {

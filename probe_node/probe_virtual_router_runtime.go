@@ -42,10 +42,8 @@ const (
 	probeVirtualRouterFrameLinkTXBusinessQuantum            = 8
 	probeVirtualRouterFrameLinkTXBatchBytes                 = 256 * 1024
 	probeVirtualRouterFrameLinkTXCoalesceWindow             = 200 * time.Microsecond
-	probeVirtualRouterFrameLinkTXEnqueueWait                = 750 * time.Millisecond
 	probeVirtualRouterFrameLinkRXBufferFrames               = 4096
 	probeVirtualRouterFrameLinkRXInitialFrames              = 256
-	probeVirtualRouterFrameLinkRXEnqueueWait                = 25 * time.Millisecond
 	probeVirtualRouterFrameLinkRXDispatchShards             = 8
 	probeVirtualRouterFrameLinkRXDispatchShardBufferFrames  = 1024
 	probeVirtualRouterFrameLinkRXDispatchShardInitialFrames = 64

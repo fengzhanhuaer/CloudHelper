@@ -77,3 +77,12 @@ json_object *vr_socket_tcp_info(int fd)
 {
     uint8_t bytes[256]={0};socklen_t n=sizeof(bytes);if(fd<0||getsockopt(fd,IPPROTO_TCP,TCP_INFO,bytes,&n))return vr_tcp_info_decode(bytes,0);return vr_tcp_info_decode(bytes,n);
 }
+
+int vr_socket_tcp_retransmits(int fd,uint32_t *retransmits)
+{
+    uint8_t bytes[104];socklen_t n=sizeof(bytes);
+    if(fd<0||getsockopt(fd,IPPROTO_TCP,TCP_INFO,bytes,&n)||n<sizeof(bytes))return -1;
+    /* Linux TCP_INFO tcpi_total_retrans. Older vendor headers omit it. */
+    memcpy(retransmits,bytes+100,sizeof(*retransmits));
+    return 0;
+}

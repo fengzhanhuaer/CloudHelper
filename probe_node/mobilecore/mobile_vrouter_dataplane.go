@@ -124,6 +124,8 @@ type mobileVRouteCarrier struct {
 	txIPBytes       atomic.Int64
 	txControlFrames atomic.Int64
 	txDropped       atomic.Int64
+	txWaits         atomic.Uint64
+	txRecovered     atomic.Uint64
 	txLastWriteNS   atomic.Int64
 	txWriteEMANS    atomic.Int64
 	txBatchFrames   atomic.Int64
@@ -136,6 +138,8 @@ type mobileVRouteCarrier struct {
 	tunWriteFrames  atomic.Int64
 	tunWriteBytes   atomic.Int64
 	rxDropped       atomic.Int64
+	rxWaits         atomic.Uint64
+	rxRecovered     atomic.Uint64
 	lastErrorMu     sync.Mutex
 	lastError       string
 	lastErrorUnixNS int64
@@ -619,14 +623,43 @@ func (c *mobileVRouteCarrier) enqueueFrame(frame mobileVRouteFrame) error {
 	if queue == nil || c.done == nil {
 		return io.ErrClosedPipe
 	}
+	waited, err := enqueueMobileVRouteFrame(queue, frame, c.done, queue != c.txControl)
+	if waited {
+		c.txWaits.Add(1)
+		if err == nil {
+			c.txRecovered.Add(1)
+		}
+	}
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		c.txDropped.Add(1)
+		return fmt.Errorf("mobile vroute tx queue full: route=%s queue=%s depth=%d capacity=%d: %w", strings.TrimSpace(c.plan.RouteID), queueName, len(queue), cap(queue), err)
+	}
+	return err
+}
+
+func enqueueMobileVRouteFrame(queue chan<- mobileVRouteFrame, frame mobileVRouteFrame, done <-chan struct{}, wait bool) (bool, error) {
+	select {
+	case <-done:
+		return false, io.ErrClosedPipe
+	default:
+	}
 	select {
 	case queue <- frame:
-		return nil
-	case <-c.done:
-		return io.ErrClosedPipe
+		return false, nil
 	default:
-		c.txDropped.Add(1)
-		return fmt.Errorf("mobile vroute tx queue full: route=%s queue=%s depth=%d capacity=%d", strings.TrimSpace(c.plan.RouteID), queueName, len(queue), cap(queue))
+	}
+	if !wait {
+		return false, os.ErrDeadlineExceeded
+	}
+	timer := time.NewTimer(routewire.DataQueueWait)
+	defer timer.Stop()
+	select {
+	case queue <- frame:
+		return true, nil
+	case <-done:
+		return true, io.ErrClosedPipe
+	case <-timer.C:
+		return true, os.ErrDeadlineExceeded
 	}
 }
 
@@ -894,13 +927,19 @@ func (c *mobileVRouteCarrier) handleIncomingFrame(frame mobileVRouteFrame) error
 		if feedMobileExternalPacket(frame.Data, path) {
 			return nil
 		}
-		select {
-		case c.rx <- frame:
-		case <-c.done:
-			return io.ErrClosedPipe
-		default:
-			c.rxDropped.Add(1)
-			androidLogStore.add("vpn", "warn", "vroute carrier rx queue full: route="+c.plan.RouteID+" depth="+strconv.Itoa(len(c.rx))+" capacity="+strconv.Itoa(cap(c.rx)))
+		waited, err := enqueueMobileVRouteFrame(c.rx, frame, c.done, true)
+		if waited {
+			c.rxWaits.Add(1)
+			if err == nil {
+				c.rxRecovered.Add(1)
+			}
+		}
+		if err != nil {
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				c.rxDropped.Add(1)
+				return fmt.Errorf("mobile vroute rx queue full: route=%s depth=%d capacity=%d: %w", c.plan.RouteID, len(c.rx), cap(c.rx), err)
+			}
+			return err
 		}
 	}
 	return nil

@@ -328,11 +328,14 @@ func TestMngLinkVirtualRouterStatusHandlerPostDispatchesReportOnce(t *testing.T)
 func TestMngVirtualRouterBuffersHandlerStoresReportsAndDispatchesControls(t *testing.T) {
 	clearProbeVirtualRouterTestRuntimes(t)
 	setProbeVirtualRouterTestProbeStore(t, probeConfigData{ProbeNodes: []probeNodeRecord{{NodeNo: 1, NodeName: "node-1"}}})
+	dropped, retries, recovered, carrierRetransmits, netstackRetransmits := uint64(2), uint64(6), uint64(4), uint64(13), uint64(29)
 	updateProbeRuntimeReportWithPlatformAndBuffers("1", nil, nil, probeSystemMetrics{}, "v0.5.0", "linux", "linux", "amd64", 30, nil, probeVirtualRouterBufferReport{
-		StatsStartedAt: "2026-08-29T05:00:00Z",
-		CollectedAt:    "2026-08-29T05:01:00Z",
+		StatsStartedAt:         "2026-08-29T05:00:00Z",
+		CollectedAt:            "2026-08-29T05:01:00Z",
+		NetstackTCPRetransmits: &netstackRetransmits,
 		Items: []probeAdaptiveQueueSnapshot{{
 			ID: "frame_link.route.carrier.0.tx", Stage: "carrier_tx", Depth: 3, AllocatedCapacity: 8, MaxCapacity: 64, PeakDepth: 7, PeakAllocatedCapacity: 8,
+			Dropped: &dropped, RetryEvents: &retries, RetryRecovered: &recovered, CarrierTCPRetransmits: &carrierRetransmits,
 		}},
 	})
 
@@ -350,6 +353,13 @@ func TestMngVirtualRouterBuffersHandlerStoresReportsAndDispatchesControls(t *tes
 	}
 	if len(getPayload.Items) != 1 || len(getPayload.Items[0].Buffers.Items) != 1 || getPayload.Items[0].Buffers.Items[0].PeakDepth != 7 {
 		t.Fatalf("buffer status=%+v", getPayload.Items)
+	}
+	buffers := getPayload.Items[0].Buffers
+	queue := buffers.Items[0]
+	if buffers.NetstackTCPRetransmits == nil || *buffers.NetstackTCPRetransmits != netstackRetransmits ||
+		queue.Dropped == nil || *queue.Dropped != dropped || queue.RetryEvents == nil || *queue.RetryEvents != retries ||
+		queue.RetryRecovered == nil || *queue.RetryRecovered != recovered || queue.CarrierTCPRetransmits == nil || *queue.CarrierTCPRetransmits != carrierRetransmits {
+		t.Fatalf("missing reliability telemetry: %s", getRR.Body.String())
 	}
 
 	for _, test := range []struct {

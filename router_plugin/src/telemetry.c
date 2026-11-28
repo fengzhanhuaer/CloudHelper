@@ -30,8 +30,12 @@ static void buffer(json_object *items,vr_engine *e,vr_link *l,const char *stage,
         num(o,"wait_samples",l->tx_wait_samples);num(o,"wait_total_us",l->tx_wait_total_ms*1000);num(o,"wait_max_us",l->tx_wait_max_ms*1000);
         num(o,"oldest_wait_us",vr_link_oldest_wait_ms(l,now)*1000);num(o,"backlog_ms",busy);
         num(o,"peak_backlog_ms",busy>l->tx_backlog_peak_ms?busy:l->tx_backlog_peak_ms);
+        num(o,"enqueued",l->tx_enqueued);num(o,"dequeued",l->tx_dequeued);num(o,"full_events",l->tx_full);
+        num(o,"retry_bytes",l->tx_retry_bytes);num(o,"retry_events",l->tx_retry_held);
+        num(o,"retry_recovered",l->tx_retry_recovered);num(o,"dropped",l->tx_retry_dropped);
+        uint32_t retransmits;
+        if(l->ssl&&!vr_socket_tcp_retransmits(l->fd,&retransmits))num(o,"carrier_tcp_retransmits",retransmits);
     }
-    if(!strcmp(stage,"carrier_tx_bytes")){num(o,"enqueued",l->tx_enqueued);num(o,"dequeued",l->tx_dequeued);num(o,"full_events",l->tx_full);}
     json_object_array_add(items,o);
 }
 static json_object *state(vr_link *base,int connected,const char *endpoint,const char *now)
@@ -65,7 +69,8 @@ void vr_telemetry_publish(vr_engine *e)
         for(size_t j=i;j<e->link_count&&j<i+VR_CARRIER_SLOTS;j++) {
             vr_link *l=&e->links[j];if(!l->rule)continue;
             size_t rx_used=l->decoder?l->decoder->used:0;
-            if(reset){l->tx_peak=l->used;l->tx_memory_peak=l->tx_memory;l->rx_peak=rx_used;if(l->decoder)l->decoder->peak=rx_used;l->tx_enqueued=l->tx_dequeued=l->tx_full=0;
+            if(reset){l->tx_peak=l->used;l->tx_memory_peak=l->tx_memory;l->rx_peak=rx_used;if(l->decoder)l->decoder->peak=rx_used;l->tx_enqueued=l->tx_dequeued=l->tx_full=l->tx_retry_dropped=0;
+                l->tx_retry_held=l->tx_retry_recovered=0;
                 l->tx_wait_samples=l->tx_wait_total_ms=l->tx_wait_max_ms=l->tx_backlog_peak_ms=0;l->tx_stats_reset_at=vr_millis();l->tx_backlog_since=l->tx_memory?l->tx_stats_reset_at:0;}
             if(l->decoder&&l->decoder->peak>l->rx_peak)l->rx_peak=l->decoder->peak;
             buffer(items,e,l,"carrier_tx_bytes",l->used,l->tx_memory,VR_TX_CAP,l->tx_peak,l->tx_memory_peak);
@@ -103,6 +108,7 @@ void vr_telemetry_publish(vr_engine *e)
         json_object_object_add(bridge,"sessions",json_object_get(sessions));json_object_object_add(row,"bridge_sessions",sessions);json_object_object_add(row,"bridge_status",bridge);
         json_object_array_add(routes,row);
     }
+    vr_tun_writer_buffer_report(e,items,reset);
     json_object_object_add(buf,"items",items);json_object_object_add(root,"virtual_router_buffers",buf);json_object_object_add(root,"relay_status",routes);
     pthread_mutex_lock(&e->mutex);json_object *old=e->telemetry;e->telemetry=root;if(reset)e->telemetry_epoch++;pthread_mutex_unlock(&e->mutex);json_object_put(old);
 }

@@ -22,6 +22,7 @@ int main(int argc,char **argv)
             /* Snapshot code only checks whether TLS is present; no TLS I/O. */
             if(slot==0)l->ssl=(SSL *)1;else strcpy(l->error,"fixture disconnected");
             l->used=128;l->tx_memory=256;l->tx_peak=1024;l->tx_memory_peak=1152;l->tx_enqueued=10;l->tx_dequeued=8;l->tx_full=2;
+            l->tx_retry_held=6;l->tx_retry_recovered=4;l->tx_retry_dropped=2;
             if(l->ssl){l->decoder=calloc(1,sizeof(*l->decoder));assert(l->decoder);l->decoder->used=5;l->decoder->peak=256;}
         }
     }
@@ -29,7 +30,8 @@ int main(int argc,char **argv)
     assert(json_object_array_length(rows)==VR_LINK_MAX&&json_object_array_length(items)==VR_CARRIER_MAX*2);
     json_object *tx=json_object_array_get_idx(items,0),*rx=json_object_array_get_idx(items,1);
     assert(!strcmp(vr_string(tx,"unit"),"bytes")&&json_object_get_boolean(vr_member(tx,"timing_supported")));
-    assert(!vr_member(tx,"dropped")&&!vr_member(tx,"retry_events")&&!vr_member(rx,"timing_supported"));
+    assert(json_object_get_int(vr_member(tx,"dropped"))==2&&json_object_get_int(vr_member(tx,"retry_events"))==6);
+    assert(json_object_get_int(vr_member(tx,"retry_recovered"))==4&&!vr_member(tx,"carrier_tcp_retransmits")&&!vr_member(rx,"timing_supported"));
     assert(strlen(json_object_to_json_string_ext(before,JSON_C_TO_STRING_PLAIN))>16384);
     assert(strlen(json_object_to_json_string_ext(before,JSON_C_TO_STRING_PLAIN))<256*1024);
     assert(json_object_array_length(vr_member(json_object_array_get_idx(rows,0),"bridge_sessions"))==1);

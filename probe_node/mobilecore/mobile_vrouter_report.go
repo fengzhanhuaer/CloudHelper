@@ -12,6 +12,61 @@ import (
 
 const mobileProbeVirtualRouterRuntimeRole = "virtual_router"
 
+type mobileVRouteBufferReport struct {
+	CollectedAt            string                   `json:"collected_at"`
+	Items                  []mobileVRouteBufferItem `json:"items"`
+	NetstackTCPRetransmits *uint64                  `json:"netstack_tcp_retransmits,omitempty"`
+}
+
+type mobileVRouteBufferItem struct {
+	ID                    string  `json:"id"`
+	Stage                 string  `json:"stage"`
+	Direction             string  `json:"direction"`
+	RouteID               string  `json:"route_id"`
+	CarrierSlot           int     `json:"carrier_slot"`
+	Depth                 int     `json:"depth"`
+	AllocatedCapacity     int     `json:"allocated_capacity"`
+	MaxCapacity           int     `json:"max_capacity"`
+	StatsStartedAt        string  `json:"stats_started_at"`
+	Dropped               uint64  `json:"dropped"`
+	RetryEvents           uint64  `json:"retry_events"`
+	RetryRecovered        uint64  `json:"retry_recovered"`
+	CarrierTCPRetransmits *uint64 `json:"carrier_tcp_retransmits,omitempty"`
+}
+
+func snapshotMobileVRouteBuffers() *mobileVRouteBufferReport {
+	report := &mobileVRouteBufferReport{CollectedAt: time.Now().UTC().Format(time.RFC3339)}
+	for routeID, carriers := range snapshotMobileVRouteCarriersByRouteID() {
+		for _, carrier := range carriers {
+			item := mobileVRouteBufferItem{RouteID: routeID, CarrierSlot: carrier.plan.CarrierSlot,
+				StatsStartedAt: mobileVRouteUnixNanoRFC3339(carrier.createdUnixNS)}
+			item.ID, item.Stage, item.Direction = carrier.key+".tx", "carrier_tx", "tx"
+			item.Depth = len(carrier.tx) + len(carrier.txControl)
+			item.AllocatedCapacity = cap(carrier.tx) + cap(carrier.txControl)
+			item.MaxCapacity = item.AllocatedCapacity
+			item.Dropped, item.RetryEvents, item.RetryRecovered = uint64(carrier.txDropped.Load()), carrier.txWaits.Load(), carrier.txRecovered.Load()
+			item.CarrierTCPRetransmits = routewire.CarrierTCPRetransmits(carrier.conn)
+			report.Items = append(report.Items, item)
+			item.ID, item.Stage, item.Direction = carrier.key+".rx", "carrier_rx", "rx"
+			item.Depth, item.AllocatedCapacity, item.MaxCapacity = len(carrier.rx), cap(carrier.rx), cap(carrier.rx)
+			item.Dropped, item.RetryEvents, item.RetryRecovered = uint64(carrier.rxDropped.Load()), carrier.rxWaits.Load(), carrier.rxRecovered.Load()
+			item.CarrierTCPRetransmits = nil
+			report.Items = append(report.Items, item)
+		}
+	}
+	vpnRuntime.mu.Lock()
+	runner := vpnRuntime.stack
+	vpnRuntime.mu.Unlock()
+	if runner != nil && !runner.closed.Load() && runner.stack != nil {
+		retransmits := runner.stack.Stats().TCP.Retransmits.Value()
+		report.NetstackTCPRetransmits = &retransmits
+	}
+	if len(report.Items) == 0 && report.NetstackTCPRetransmits == nil {
+		return nil
+	}
+	return report
+}
+
 type mobileProbeRouteRelayReportItem struct {
 	RouteID        string                                      `json:"route_id"`
 	RouteName      string                                      `json:"route_name,omitempty"`

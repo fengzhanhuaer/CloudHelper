@@ -160,6 +160,39 @@ static void test_tun_pressure_report(SSL_CTX *ctx)
     vr_link_close(l,"");free(e);
 }
 
+static void test_carrier_delays_unqueued_ip_frames(SSL_CTX *ctx)
+{
+    vr_engine *e=calloc(1,sizeof(*e));assert(e);strcpy(e->config.node_id,"26");
+    e->policy=json_tokener_parse("{\"topology_rules\":["
+        "{\"id\":\"vrouter-delay\",\"enabled\":true,\"from_node_id\":\"26\",\"to_node_id\":\"27\"}],\"probe_ips\":[]}");
+    assert(e->policy&&!vr_links_add(e,json_object_array_get_idx(vr_member(e->policy,"topology_rules"),0)));
+    vr_link *l=&e->links[0];reset(l,ctx);
+    unsigned preceding=0;
+    while(!enqueue(l,1,1,5,1500))preceding++;
+    assert(preceding>0);
+    char path[VR_PATH_MAX][129]={{"26"},{"27"}};
+    uint8_t data[1500];memset(data,6,sizeof(data));
+    assert(!vr_send(e,1,1,path,2,data,sizeof(data)));
+    memset(data,7,sizeof(data));
+    assert(!vr_send(e,1,1,path,2,data,sizeof(data)));
+    usleep(700000);
+    assert(vr_carrier_tun_paused(e)&&l->tx_retry_bytes&&l->tx_retry_bytes==e->tx_retry_memory);
+    drain(l);
+    assert(frames==preceding+2&&seqs[preceding]==6&&seqs[preceding+1]==7);
+    assert(!vr_carrier_tun_paused(e)&&!e->tx_retry_memory&&!l->tx_retry_dropped);
+
+    reset(l,ctx);preceding=0;
+    while(!enqueue(l,1,1,5,1500))preceding++;
+    memset(data,6,sizeof(data));
+    assert(!vr_send(e,1,1,path,2,data,sizeof(data)));
+    usleep((VR_QUEUE_WAIT_MS+30)*1000);
+    drain(l);
+    assert(frames==preceding);
+    assert(!e->tx_retry_memory&&l->tx_retry_dropped==1);
+    vr_link_close(l,"");json_object_put(e->policy);free(e);
+    puts("PASS: delayed carrier admission sends exactly once and expires stalled packets");
+}
+
 static void test_poll_dispatch(SSL_CTX *ctx)
 {
     vr_link *links = calloc(2,sizeof(*links));
@@ -285,6 +318,7 @@ int main(int argc,char **argv)
     if(argc==3){test_real_tls(argv[1],argv[2]);return 0;}assert(argc==1);
     SSL_CTX *ctx=SSL_CTX_new(TLS_method());assert(ctx);
     test_tun_pressure_report(ctx);
+    test_carrier_delays_unqueued_ip_frames(ctx);
     test_shared_send_budget(ctx);
     test_transit_pressure_and_reuse(ctx);
     test_poll_dispatch(ctx);

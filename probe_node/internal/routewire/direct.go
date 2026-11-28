@@ -14,6 +14,7 @@ const (
 	DirectUpgrade      = "chvr-tls"
 	DirectTransport    = "tls-direct"
 	DirectCarrierSlots = 2
+	DataQueueWait      = 1200 * time.Millisecond
 )
 
 const (

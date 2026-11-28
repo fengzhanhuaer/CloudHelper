@@ -17,6 +17,7 @@
 
 enum { TX_CONTROL,TX_BUSINESS,TX_BULK };
 enum { TX_SMALL_PACKET = 128, TX_BATCH_BYTES = 1024, TX_BATCH_FRAMES = 8, TX_PACKET_BYTES = 1664 };
+enum { TX_QUEUE_FULL = -2, TX_LINK_RETRY_CAP = 32*1024 };
 struct vr_tx_frame {
     vr_tx_frame *next;
     size_t length;
@@ -65,7 +66,7 @@ static int tx_spare_class(size_t capacity)
 {return capacity==TX_BATCH_BYTES?0:capacity==TX_PACKET_BYTES?1:-1;}
 
 static size_t carrier_allocated(const vr_engine *e)
-{return e->tx_queue_memory+e->rx_queue_memory+e->tx_spare_memory;}
+{return e->tx_queue_memory+e->rx_queue_memory+e->tx_spare_memory+e->tx_retry_memory;}
 
 static void carrier_peak(vr_engine *e)
 {
@@ -542,6 +543,18 @@ int vr_packet_path(vr_engine *e,const char *target,const uint8_t *packet,size_t 
     return vr_path(e,target,path,n);
 }
 
+static vr_tx_frame *pop_retry_frame(vr_link *l)
+{
+    vr_tx_frame *f=l->tx_retry_head;
+    l->tx_retry_head=f->next;
+    if(!l->tx_retry_head)l->tx_retry_tail=NULL;
+    size_t memory=sizeof(*f)+f->capacity;
+    l->tx_retry_bytes-=memory;
+    l->engine->tx_retry_memory-=memory;
+    f->next=NULL;
+    return f;
+}
+
 void vr_link_close(vr_link *l,const char *error)
 {
     if(l->engine)for(size_t i=0;i<VR_PACKET_CACHE_MAX;i++) {
@@ -552,6 +565,8 @@ void vr_link_close(vr_link *l,const char *error)
     if(l->ssl&&*error){char event[240];snprintf(event,sizeof(event),"Peer %.32s slot %d disconnected: %.96s",l->peer,l->slot,error);vr_service_log(l->engine->service,"link",event);}
     SSL_free(l->ssl);l->ssl=NULL;if(l->fd>=0)close(l->fd);l->fd=-1;
     if(l->writing)write_done(l);
+    while(l->tx_retry_head){free(pop_retry_frame(l));l->tx_retry_dropped++;}
+    l->rx_waiting_for=NULL;
     for(unsigned lane=0;lane<3;lane++) {
         vr_tx_frame *f=l->tx_head[lane];while(f){vr_tx_frame *next=f->next;free(f);f=next;}
         l->tx_head[lane]=l->tx_tail[lane]=NULL;l->tx_bytes[lane]=l->tx_memory_class[lane]=0;
@@ -574,6 +589,29 @@ static int tx_write_frame(uint8_t *dst,size_t cap,const void *bytes,size_t n,con
     memcpy(dst,bytes,n);return 0;
 }
 
+static size_t tx_queue_room(const vr_link *l,unsigned lane)
+{
+    size_t remaining=VR_TX_CAP-l->tx_memory;
+    size_t room=lane==TX_CONTROL?VR_TX_CONTROL_CAP-l->tx_memory_class[lane]:
+        VR_TX_CAP-VR_TX_CONTROL_RESERVE-l->tx_memory_class[TX_BUSINESS]-l->tx_memory_class[TX_BULK];
+    if(room<remaining)remaining=room;
+    if(lane==TX_BULK){room=VR_TX_BULK_CAP-l->tx_memory_class[lane];if(room<remaining)remaining=room;}
+    return remaining;
+}
+
+static void tx_queue_append(vr_link *l,vr_tx_frame *f)
+{
+    unsigned lane=f->lane;
+    size_t memory=sizeof(*f)+f->capacity;
+    if(l->tx_tail[lane])l->tx_tail[lane]->next=f;else l->tx_head[lane]=f;
+    l->tx_tail[lane]=f;l->used+=f->length;l->tx_bytes[lane]+=f->length;
+    if(!l->tx_memory)l->tx_backlog_since=f->enqueued;
+    l->tx_memory+=memory;l->tx_memory_class[lane]+=memory;l->tx_enqueued+=f->count;
+    if(l->engine){l->engine->tx_queue_memory+=memory;carrier_peak(l->engine);}
+    if(l->used>l->tx_peak)l->tx_peak=l->used;
+    if(l->tx_memory>l->tx_memory_peak)l->tx_memory_peak=l->tx_memory;
+}
+
 static int tx_queue_frame(vr_link *l,const void *bytes,size_t n,const vr_frame *frame,unsigned lane,int small_packet)
 {
     if(small_packet&&!l->tx_head[TX_CONTROL]&&!l->tx_head[TX_BULK]) {
@@ -588,15 +626,8 @@ static int tx_queue_frame(vr_link *l,const void *bytes,size_t n,const vr_frame *
             return 0;
         }
     }
-    size_t remaining=VR_TX_CAP-l->tx_memory;
-    if(lane==TX_CONTROL) {
-        size_t room=VR_TX_CONTROL_CAP-l->tx_memory_class[lane];if(room<remaining)remaining=room;
-    } else {
-        size_t room=VR_TX_CAP-VR_TX_CONTROL_RESERVE-l->tx_memory_class[TX_BUSINESS]-l->tx_memory_class[TX_BULK];
-        if(room<remaining)remaining=room;
-        if(lane==TX_BULK){room=VR_TX_BULK_CAP-l->tx_memory_class[lane];if(room<remaining)remaining=room;}
-    }
-    if(sizeof(vr_tx_frame)+n>remaining){l->tx_full++;return -1;}
+    size_t remaining=tx_queue_room(l,lane);
+    if(sizeof(vr_tx_frame)+n>remaining){l->tx_full++;return TX_QUEUE_FULL;}
     size_t capacity=n;
     if(small_packet&&!l->tx_head[TX_CONTROL]&&!l->tx_head[TX_BULK]&&sizeof(vr_tx_frame)+TX_BATCH_BYTES<=remaining)
         capacity=TX_BATCH_BYTES;
@@ -606,13 +637,13 @@ static int tx_queue_frame(vr_link *l,const void *bytes,size_t n,const vr_frame *
     int kind=tx_spare_class(capacity);
     size_t memory=sizeof(vr_tx_frame)+capacity;
     if(e) {
-        size_t limit=lane==TX_CONTROL?VR_TX_TOTAL_CAP:VR_TX_TOTAL_CAP-VR_TX_TOTAL_CONTROL_RESERVE;
+        size_t limit=lane==TX_CONTROL?VR_TX_TOTAL_CAP:VR_TX_TOTAL_CAP-VR_TX_TOTAL_CONTROL_RESERVE-VR_TX_RETRY_CAP+e->tx_retry_memory;
         size_t charge=kind>=0&&l->tx_spare[kind]?0:memory;
         if(carrier_allocated(e)+charge>limit) {
             capacity=n;memory=sizeof(vr_tx_frame)+capacity;kind=tx_spare_class(capacity);
             carrier_reclaim_spares(e,l,memory,limit);
             charge=kind>=0&&l->tx_spare[kind]?0:memory;
-            if(carrier_allocated(e)+charge>limit){l->tx_full++;return -1;}
+            if(carrier_allocated(e)+charge>limit){l->tx_full++;return TX_QUEUE_FULL;}
         }
     }
     vr_tx_frame *f=kind>=0?l->tx_spare[kind]:NULL;
@@ -623,14 +654,40 @@ static int tx_queue_frame(vr_link *l,const void *bytes,size_t n,const vr_frame *
     if(tx_write_frame(f->bytes,capacity,bytes,n,frame)){free(f);return -1;}
     f->next=NULL;f->length=n;f->capacity=capacity;f->lane=lane;f->count=1;f->enqueued=vr_millis();
     f->frame_bytes=n;
-    if(l->tx_tail[lane])l->tx_tail[lane]->next=f;else l->tx_head[lane]=f;
-    l->tx_tail[lane]=f;l->used+=n;l->tx_bytes[lane]+=n;
-    if(!l->tx_memory)l->tx_backlog_since=f->enqueued;
-    l->tx_memory+=memory;l->tx_memory_class[lane]+=memory;l->tx_enqueued++;
-    if(e){e->tx_queue_memory+=memory;carrier_peak(e);}
-    if(l->used>l->tx_peak)l->tx_peak=l->used;
-    if(l->tx_memory>l->tx_memory_peak)l->tx_memory_peak=l->tx_memory;
+    tx_queue_append(l,f);
     return 0;
+}
+
+static int defer_ip_frame(vr_link *l,const vr_frame *frame,size_t length)
+{
+    vr_engine *e=l->engine;
+    size_t memory=sizeof(vr_tx_frame)+length;
+    if(l->tx_retry_bytes+memory>TX_LINK_RETRY_CAP||e->tx_retry_memory+memory>VR_TX_RETRY_CAP||
+       carrier_allocated(e)+memory>VR_TX_TOTAL_CAP-VR_TX_TOTAL_CONTROL_RESERVE)goto dropped;
+    vr_tx_frame *f=malloc(memory);
+    if(!f)goto dropped;
+    if(tx_write_frame(f->bytes,length,NULL,length,frame)){free(f);goto dropped;}
+    *f=(vr_tx_frame){.length=length,.capacity=length,.enqueued=vr_millis(),
+        .lane=TX_BUSINESS,.count=1,.frame_bytes=length};
+    if(l->tx_retry_tail)l->tx_retry_tail->next=f;else l->tx_retry_head=f;
+    l->tx_retry_tail=f;l->tx_retry_bytes+=memory;e->tx_retry_memory+=memory;
+    l->tx_retry_held++;
+    carrier_peak(e);
+    return 0;
+dropped:
+    l->tx_retry_dropped++;
+    return -1;
+}
+
+static void promote_retry_frames(vr_link *l,uint64_t now)
+{
+    while(l->tx_retry_head) {
+        vr_tx_frame *f=l->tx_retry_head;
+        if(now-f->enqueued>=VR_QUEUE_WAIT_MS){free(pop_retry_frame(l));l->tx_retry_dropped++;continue;}
+        if(sizeof(*f)+f->capacity>tx_queue_room(l,TX_BUSINESS))break;
+        tx_queue_append(l,pop_retry_frame(l));
+        l->tx_retry_recovered++;
+    }
 }
 
 int vr_link_queue(vr_link *l,const void *bytes,size_t n)
@@ -639,14 +696,18 @@ int vr_link_queue(vr_link *l,const void *bytes,size_t n)
     const uint8_t *wire=bytes;
     unsigned type=UINT16_MAX,sub=0;
     if(n>=12&&wire[0]==0x56&&wire[1]==0x52){type=((unsigned)wire[2]<<8)|wire[3];sub=((unsigned)wire[4]<<8)|wire[5];}
-    return tx_queue_frame(l,bytes,n,NULL,queue_class(type,sub),type==1&&sub==1&&n<=TX_SMALL_PACKET);
+    return tx_queue_frame(l,bytes,n,NULL,queue_class(type,sub),type==1&&sub==1&&n<=TX_SMALL_PACKET)?-1:0;
 }
 
 static int link_frame(vr_link *l,const vr_frame *f)
 {
     if(!l||!l->ssl||f->control_len>VR_CONTROL_MAX||f->data_len>VR_DATA_MAX)return -1;
     size_t n=12+f->control_len+f->data_len;
-    return tx_queue_frame(l,NULL,n,f,queue_class(f->main,f->sub),f->main==1&&f->sub==1&&n<=TX_SMALL_PACKET);
+    int can_wait=l->engine&&f->main==1&&f->sub==1&&f->data_len<=2048;
+    if(can_wait&&l->tx_retry_head)return defer_ip_frame(l,f,n);
+    int rc=tx_queue_frame(l,NULL,n,f,queue_class(f->main,f->sub),f->main==1&&f->sub==1&&n<=TX_SMALL_PACKET);
+    if(can_wait&&rc==TX_QUEUE_FULL)return defer_ip_frame(l,f,n);
+    return rc?-1:0;
 }
 
 int vr_link_send_json(vr_link *l,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],size_t n,json_object *m)
@@ -687,14 +748,23 @@ static int send_frame(vr_engine *e,const vr_frame *f,char path[VR_PATH_MAX][129]
             vr_link_report_tun_pressure(ingress,now);
     }
     /* A mixed-version relay translates only its path control, never payload. */
+    int rc;
     if(l&&!l->binary_path&&f->control_len&&f->control[0]==0) {
         json_object *o=json_object_new_object(),*a=json_object_new_array();
         for(size_t i=0;i<n;i++)json_object_array_add(a,json_object_new_string(path[i]));
         json_object_object_add(o,"path",a);const char *control=json_object_to_json_string_ext(o,JSON_C_TO_STRING_PLAIN);
         vr_frame legacy=*f;legacy.control=(const uint8_t *)control;legacy.control_len=strlen(control);
-        int rc=link_frame(l,&legacy);json_object_put(o);return rc;
-    }
-    return link_frame(l,f);
+        rc=link_frame(l,&legacy);json_object_put(o);
+    } else rc=link_frame(l,f);
+    if(l&&l->tx_retry_head)ingress->rx_waiting_for=l;
+    return rc;
+}
+
+int vr_link_rx_paused(vr_link *l)
+{
+    if(l->rx_waiting_for&&l->rx_waiting_for->tx_retry_head)return 1;
+    l->rx_waiting_for=NULL;
+    return 0;
 }
 
 int vr_send(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],size_t n,const void *data,size_t length)
@@ -705,7 +775,10 @@ int vr_send(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],
         vr_packet_cache *c=packet_cache_find(e,data,length);
         if(c&&packet_cache_path(e,c,path,n)) {
             f.control=c->control;f.control_len=c->control_len;
-            return link_frame(&e->links[c->link],&f);
+            vr_link *l=&e->links[c->link];
+            int rc=link_frame(l,&f);
+            if(l->tx_retry_head)e->tun_waiting_for=l;
+            return rc;
         }
     }
     size_t at;for(at=0;at<n;at++)if(!strcmp(path[at],e->config.node_id))break;
@@ -722,6 +795,7 @@ int vr_send(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],
         const char *control=json_object_to_json_string_ext(o,JSON_C_TO_STRING_PLAIN);f.control=(const uint8_t *)control;f.control_len=strlen(control);
     }
     int rc=link_frame(selected,&f);
+    if(main==1&&sub==1&&selected->tx_retry_head)e->tun_waiting_for=selected;
     if(!rc&&main==1&&sub==1)packet_cache_store(e,selected,&f,path,n);
     if(!rc&&main==1&&n<=VR_PATH_HOPS+1&&!strcmp(path[0],e->config.node_id)) {
         uint32_t hash=packet_hash(data,length);json_object *nodes=vr_member(e->policy,"probe_ips");
@@ -810,7 +884,7 @@ static void link_read(vr_link *l)
             int rc=vr_decoder_feed(l->decoder,bytes,(size_t)n,vr_link_receive,l);
             if(rc){char detail[96];snprintf(detail,sizeof(detail),"invalid direct carrier frame (%d)",rc);vr_link_close(l,detail);return;}}
         else {int error=SSL_get_error(l->ssl,n);if(error!=SSL_ERROR_WANT_READ&&error!=SSL_ERROR_WANT_WRITE){char detail[96];vr_tls_error(detail,sizeof(detail),"receive",error);vr_link_close(l,detail);return;}break;}
-        if(vr_millis()-start>=2)break;
+        if(vr_link_rx_paused(l)||vr_millis()-start>=2)break;
     }
 }
 
@@ -827,7 +901,7 @@ static void link_write(vr_link *l)
             l->used-=(size_t)sent;l->tx_bytes[f->lane]-=(size_t)sent;
             l->write_offset+=(size_t)sent;l->write_pending=0;l->write_events=0;l->tx+=(unsigned)sent;
             budget=(size_t)sent<budget?budget-(size_t)sent:0;
-            if(l->write_offset==f->length)write_done(l);
+            if(l->write_offset==f->length){write_done(l);if(l->tx_retry_head)promote_retry_frames(l,vr_millis());}
         } else {
             int error=SSL_get_error(l->ssl,sent);
             if(error==SSL_ERROR_WANT_READ)l->write_events=POLLIN;
@@ -853,6 +927,7 @@ void vr_links_poll(vr_link *links, size_t count, const struct pollfd *fds)
     for (size_t i = 0; i < count; i++) {
         vr_link *l = &links[i];
         if (!l->ssl) continue;
+        if(l->tx_retry_head)promote_retry_frames(l,vr_millis());
         short interest = l->write_events ? l->write_events : POLLOUT;
         int newly_queued = !l->write_events && !(fds[i].events & POLLOUT);
         if (l->used && (newly_queued || (fds[i].revents & interest)))
@@ -863,7 +938,7 @@ void vr_links_poll(vr_link *links, size_t count, const struct pollfd *fds)
        A write waiting for TLS handshake input owns that read readiness. */
     for (size_t i = 0; i < count; i++) {
         vr_link *l = &links[i];
-        if (l->ssl && l->write_events != POLLIN &&
+        if (l->ssl && l->write_events != POLLIN && !vr_link_rx_paused(l) &&
             ((fds[i].revents & POLLIN) || SSL_pending(l->ssl)))
             link_read(l);
     }

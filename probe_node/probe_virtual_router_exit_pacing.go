@@ -22,6 +22,8 @@ const (
 	probeExitPacingBackoff      = 20 * time.Millisecond
 	probeExitPacingBatch        = 64 << 10
 	probeExitPacingQueueHigh    = 64
+	probeExitPacingQueueLow     = probeExitPacingQueueHigh / 2
+	probeExitPacingDrainPoll    = 5 * time.Millisecond
 	probeExitPeerReportGap      = 150 * time.Millisecond
 	probeExitPeerReportTTL      = 450 * time.Millisecond
 	probeExitPeerBatch          = 16 << 10
@@ -195,7 +197,7 @@ func (c *probeExitPacedConn) Write(data []byte) (int, error) {
 	written := 0
 	for len(data) > 0 {
 		now := time.Now()
-		pressure := c.shard.Len() >= probeExitPacingQueueHigh || c.netstack.linkEP.NumQueued() >= probeExitPacingQueueHigh
+		pressure := c.outputQueueAbove(probeExitPacingQueueHigh - 1)
 		delay := c.pacer.wait(now)
 		busy := delay > 0 || len(data) >= 16<<10
 		lastPeerReport := c.pacer.lastPeerReport
@@ -204,11 +206,25 @@ func (c *probeExitPacedConn) Write(data []byte) (int, error) {
 			c.netstack.peerPressureApplied.Add(1)
 		}
 		c.pacer.update(now, pressure || c.writeBlocked, busy && !peerPressure)
-		if pressure {
-			delay = max(delay, 2*time.Millisecond)
-		}
 		if err := c.wait(delay); err != nil {
 			return written, err
+		}
+		if pressure || c.outputQueueAbove(probeExitPacingQueueHigh-1) {
+			// Leave headroom for packets already inside gVisor. Pause this
+			// connection's producer until its output queues have drained.
+			if c.outputQueueAbove(probeExitPacingQueueLow) {
+				c.netstack.outputPacingPauses.Add(1)
+			}
+			deadline := time.Now().Add(probeVirtualRouterQueueBackpressureWait)
+			for c.outputQueueAbove(probeExitPacingQueueLow) {
+				remaining := time.Until(deadline)
+				if remaining <= 0 {
+					return written, errProbeAdaptiveQueueFull
+				}
+				if err := c.wait(min(remaining, probeExitPacingDrainPoll)); err != nil {
+					return written, err
+				}
+			}
 		}
 		// Limit the scheduling interval to 100 ms even at the minimum rate.
 		batch := min(len(data), probeExitPacingBatch, max(16<<10, c.pacer.bytesPerSecond/500), max(1, c.pacer.bytesPerSecond/10))
@@ -234,6 +250,10 @@ func (c *probeExitPacedConn) Write(data []byte) (int, error) {
 		data = data[n:]
 	}
 	return written, nil
+}
+
+func (c *probeExitPacedConn) outputQueueAbove(limit int) bool {
+	return c.shard.Len() > limit || c.netstack.linkEP.NumQueued() > limit
 }
 
 func (c *probeExitPacedConn) wait(delay time.Duration) error {

@@ -14,6 +14,8 @@
 #define VR_TX_TOTAL_CAP (8u*1024u*1024u)
 #define VR_TX_REUSE_CAP (128u*1024u)
 #define VR_TX_TOTAL_CONTROL_RESERVE (256u*1024u)
+#define VR_TX_RETRY_CAP (128u*1024u)
+#define VR_QUEUE_WAIT_MS 1200u
 #define VR_TX_CONTROL_RESERVE (32u*1024u)
 #define VR_TX_CONTROL_CAP (96u*1024u)
 #define VR_TX_BULK_CAP (96u*1024u)
@@ -26,7 +28,7 @@
 #define VR_SPEED_TIMEOUT_MS (VR_SPEED_DURATION_MS+20000u)
 typedef struct vr_engine vr_engine;
 typedef struct vr_tx_frame vr_tx_frame;
-typedef struct {
+typedef struct vr_link {
     vr_engine *engine;
     json_object *rule;
     char route[33],peer[129],error[96],ping_id[49];
@@ -47,6 +49,10 @@ typedef struct {
     /* Immutable frames, including SSL_write WANT retries; memory is bounded. */
     vr_tx_frame *tx_head[3],*tx_tail[3],*writing;
     vr_tx_frame *tx_spare[2];
+    vr_tx_frame *tx_retry_head,*tx_retry_tail;
+    struct vr_link *rx_waiting_for;
+    size_t tx_retry_bytes;
+    uint64_t tx_retry_held,tx_retry_recovered,tx_retry_dropped;
     unsigned tx_spare_count[2];
     size_t used,tx_memory,tx_memory_class[3],tx_bytes[3],write_offset,write_pending;
     unsigned business_since_bulk,next_flow_slot;
@@ -84,7 +90,8 @@ struct vr_engine {
     uint64_t auth_reject_log;
     char own_ip[16],cidr[64],error[256];
     SSL_CTX *tls;
-    vr_link links[VR_CARRIER_MAX];size_t link_count,tx_queue_memory,rx_queue_memory,tx_spare_memory,tx_queue_peak;
+    vr_link links[VR_CARRIER_MAX];size_t link_count,tx_queue_memory,rx_queue_memory,tx_spare_memory,tx_retry_memory,tx_queue_peak;
+    vr_link *tun_waiting_for;
     uint64_t tx_reused;
     vr_flow_binding bindings[VR_NAT_MAX];uint64_t carrier_session;
     vr_packet_cache packet_cache[VR_PACKET_CACHE_MAX];
@@ -154,6 +161,9 @@ json_object *vr_links_status(vr_engine *e);
 void vr_link_accept(vr_engine *e,int fd);
 void vr_links_close_failed(vr_link *links, size_t count, const struct pollfd *fds);
 void vr_links_poll(vr_link *links, size_t count, const struct pollfd *fds);
+int vr_link_rx_paused(vr_link *link);
+int vr_socket_tcp_retransmits(int fd,uint32_t *retransmits);
+static inline int vr_carrier_tun_paused(const vr_engine *e){return e->tun_waiting_for&&e->tun_waiting_for->tx_retry_head;}
 int vr_link_receive(const vr_frame *frame,void *link);
 void vr_handshakes_poll(vr_engine *e,int finish);
 int vr_control_start(vr_engine *e);
@@ -182,6 +192,7 @@ int vr_tun_writer_start(vr_engine *e);
 int vr_tun_write(vr_engine *e,const void *bytes,size_t length);
 void vr_tun_writer_flush(vr_engine *e);
 json_object *vr_tun_writer_status(vr_engine *e);
+void vr_tun_writer_buffer_report(vr_engine *e,json_object *items,int reset);
 void vr_tun_writer_stop(vr_engine *e);
 int vr_dataplane_start(vr_engine *e);
 void vr_dataplane_tick(vr_engine *e);

@@ -198,6 +198,63 @@ func TestProbeExitPacedConnKeepsWritesSmallAtTenKilobits(t *testing.T) {
 	}
 }
 
+func TestProbeExitPacedConnWaitsForItsOwnBackloggedShard(t *testing.T) {
+	endpoint := channel.New(1, 1500, "")
+	defer endpoint.Close()
+	n := &probeVirtualRouterExitNetstack{linkEP: endpoint, doneCh: make(chan struct{})}
+	newFlow := func() (*probeExitPacedConn, net.Conn) {
+		a, b := net.Pipe()
+		q := newProbeAdaptiveQueue[probeVirtualRouterExitNetstackOutputPacket](probeAdaptiveQueueOptions{
+			InitialCapacity: probeExitPacingQueueHigh, MaxCapacity: probeExitPacingQueueHigh,
+		})
+		c := &probeExitPacedConn{Conn: a, netstack: n, shard: q, closed: make(chan struct{})}
+		t.Cleanup(func() { c.Close(); b.Close() })
+		return c, b
+	}
+	blocked, first := newFlow()
+	healthy, second := newFlow()
+	fill := func() {
+		for blocked.shard.Len() < probeExitPacingQueueHigh {
+			if !blocked.shard.TryPush(probeVirtualRouterExitNetstackOutputPacket{payload: []byte{1}}) {
+				t.Fatal("failed to fill output shard")
+			}
+		}
+	}
+	write := func(c *probeExitPacedConn) <-chan error {
+		done := make(chan error, 1)
+		go func() { _, err := c.Write([]byte{1}); done <- err }()
+		return done
+	}
+	fill()
+	blockedDone := write(blocked)
+	var b [1]byte
+	first.SetReadDeadline(time.Now().Add(15 * time.Millisecond))
+	if _, err := first.Read(b[:]); err == nil {
+		t.Fatal("backlogged flow wrote before the output shard drained")
+	}
+	healthyDone := write(healthy)
+	second.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := second.Read(b[:]); err != nil || <-healthyDone != nil {
+		t.Fatalf("a healthy shard was stalled by the backlogged one: %v", err)
+	}
+	blocked.shard.Drain(nil)
+	first.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := first.Read(b[:]); err != nil || <-blockedDone != nil {
+		t.Fatalf("backlogged flow did not resume: %v", err)
+	}
+	fill()
+	closing := write(blocked)
+	blocked.Close()
+	select {
+	case err := <-closing:
+		if err == nil {
+			t.Fatal("closed connection accepted data")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("closing a flow did not wake the backpressure wait")
+	}
+}
+
 func TestProbeTUNPressureOnlyAppliesToTheAuthenticatedNeighbor(t *testing.T) {
 	now := time.Unix(100, 0)
 	rt := &probeVirtualRouterRuntime{cfg: probeVirtualRouterRuntimeConfig{localNodeID: "27", peerNodeID: "26"}}
