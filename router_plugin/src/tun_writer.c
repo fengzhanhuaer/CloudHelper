@@ -6,7 +6,7 @@
 #include <string.h>
 #include <unistd.h>
 
-enum { TUN_QUEUE_PACKETS = 64, TUN_WRITE_BATCH = 16, TUN_PACKET_BYTES = 2048 };
+enum { TUN_QUEUE_PACKETS = 64, TUN_HIGH_WATER = 48, TUN_WRITE_BATCH = 16, TUN_PACKET_BYTES = 2048 };
 
 typedef struct {
     size_t length;
@@ -104,7 +104,7 @@ free_writer:
     return -1;
 }
 
-void vr_tun_write(vr_engine *e,const void *bytes,size_t length)
+int vr_tun_write(vr_engine *e,const void *bytes,size_t length)
 {
     struct vr_tun_writer *writer=e->tun_writer;
     if(!writer) {
@@ -112,11 +112,11 @@ void vr_tun_write(vr_engine *e,const void *bytes,size_t length)
         int success=write_packet(e->tun,bytes,length);
         vr_observe_end(e,VR_OBS_TUN_WRITE,observed,0,success);
         if(!success)snprintf(e->error,sizeof(e->error),"TUN receive queue unavailable");
-        return;
+        return 0;
     }
     if(length>TUN_PACKET_BYTES) {
         snprintf(e->error,sizeof(e->error),"TUN packet exceeds write buffer");
-        return;
+        return 0;
     }
 
     vr_observation *observation=&e->observation;
@@ -124,6 +124,7 @@ void vr_tun_write(vr_engine *e,const void *bytes,size_t length)
     if(observation->active&&++observation->stages[VR_OBS_TUN_WRITE].calls%VR_OBSERVE_INTERVAL==1)
         generation=observation->generation;
     pthread_mutex_lock(&writer->mutex);
+    int pressure=writer->count>=TUN_HIGH_WATER;
     if(writer->count==TUN_QUEUE_PACKETS) {
         writer->full_events++;
         /* The worker uses the same nonblocking TUN descriptor as the old
@@ -141,6 +142,7 @@ void vr_tun_write(vr_engine *e,const void *bytes,size_t length)
     if(writer->count++==0)pthread_cond_signal(&writer->readable);
     if(writer->count>writer->peak)writer->peak=writer->count;
     pthread_mutex_unlock(&writer->mutex);
+    return pressure;
 }
 
 void vr_tun_writer_flush(vr_engine *e)

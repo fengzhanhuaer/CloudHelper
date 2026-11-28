@@ -62,6 +62,7 @@ type probeVirtualRouterExitNetstack struct {
 	outputQueueFull      atomic.Uint64
 	outputQueueWaits     atomic.Uint64
 	outputQueueRecovered atomic.Uint64
+	peerPressureApplied  atomic.Uint64
 }
 
 type probeVirtualRouterExitNetstackOutputPacket struct {
@@ -84,6 +85,7 @@ type probeVirtualRouterExitNetstackSnapshot struct {
 	OutputQueueFull          uint64
 	OutputQueueWaits         uint64
 	OutputQueueRecovered     uint64
+	PeerPressureApplied      uint64
 	TCPNoDelay               bool
 	TCPBufferDefault         int
 	TCPBufferMax             int
@@ -359,6 +361,7 @@ func snapshotProbeVirtualRouterExitNetstack() probeVirtualRouterExitNetstackSnap
 	snapshot.OutputQueueFull = runner.outputQueueFull.Load()
 	snapshot.OutputQueueWaits = runner.outputQueueWaits.Load()
 	snapshot.OutputQueueRecovered = runner.outputQueueRecovered.Load()
+	snapshot.PeerPressureApplied = runner.peerPressureApplied.Load()
 	return snapshot
 }
 

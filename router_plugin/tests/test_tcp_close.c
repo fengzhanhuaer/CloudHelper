@@ -194,7 +194,7 @@ static void sni_cache(void)
 static void shared_proxy_buffer(void)
 {
     fixture f=create();
-    size_t limit=4u*1024u*1024u;
+    size_t limit=1u*1024u*1024u;
     for(size_t used=2*TCP_BUFFER;used<limit;used+=2*TCP_BUFFER) {
         tcp_session *s=allocate(f.e);assert(s);
         assert(!reserve(s,0,TCP_BUFFER)&&!reserve(s,1,TCP_BUFFER));

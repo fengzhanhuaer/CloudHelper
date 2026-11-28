@@ -13,7 +13,7 @@
 #define TCP_MAX VR_TCP_MAX
 #define TCP_BUFFER 65536
 #define TCP_BUFFER_STEP 4096u
-#define TCP_BUFFER_TOTAL (4u*1024u*1024u)
+#define TCP_BUFFER_TOTAL (1u*1024u*1024u)
 #define TCP_IDLE_MS 600000u
 #define TCP_CACHE_MAX 4096
 #define TCP_CACHE_TTL_MS (72ull*60*60*1000)
@@ -407,7 +407,9 @@ void vr_tcp_poll(vr_engine *e,struct pollfd *fds)
         }
         if(s->closing&&!s->length[0]&&!s->length[1]){drop(e,s,1);continue;}
         for(size_t direction=0;direction<2;direction++)
-            if(!s->length[direction]&&s->capacity[direction]>TCP_BUFFER_STEP)release_buffer(s,direction);
+            if(!s->length[direction]&&s->capacity[direction]&&
+               (s->capacity[direction]>TCP_BUFFER_STEP||s->owner->buffer_bytes>TCP_BUFFER_TOTAL/2))
+                release_buffer(s,direction);
     }
 }
 

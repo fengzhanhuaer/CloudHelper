@@ -260,7 +260,7 @@ static void outgoing_impl(vr_engine *e,uint8_t *b,size_t n)
     }
 }
 
-static void incoming_impl(vr_engine *e,const vr_frame *frame,char path[VR_PATH_MAX][129],size_t count)
+static void incoming_impl(vr_engine *e,const vr_frame *frame,char path[VR_PATH_MAX][129],size_t count,int *pressure)
 {
     if(count<2 || count>VR_PATH_MAX || strcmp(path[count-1],e->config.node_id) || frame->sub!=1 || frame->data_len>1500)return;
     uint8_t b[1500];memcpy(b,frame->data,frame->data_len);vr_packet p;if(vr_packet_parse(b,frame->data_len,&p))return;
@@ -276,7 +276,10 @@ static void incoming_impl(vr_engine *e,const vr_frame *frame,char path[VR_PATH_M
         if(!pinned&&!allowed){vr_decision d=vr_local_exit(&e->config,vr_policy_match(e->policy,"",fake));allowed=d.action==VR_PROXY && !strcmp(d.exit_node,path[0]);}
         if(!allowed)return;
         vr_packet *o=&reverse->original;
-        if(!vr_packet_rewrite_parsed(b,frame->data_len,&p,o->dst,o->src,o->dport,o->sport))vr_tun_write(e,b,frame->data_len);
+        if(!vr_packet_rewrite_parsed(b,frame->data_len,&p,o->dst,o->src,o->dport,o->sport)) {
+            int high=vr_tun_write(e,b,frame->data_len);
+            *pressure=high&&p.protocol==6&&frame->data_len>=512;
+        }
         return;
     }
     char source[129];if(node_for_ip(e,p.src,source)||strcmp(source,path[0]))return;
@@ -315,5 +318,11 @@ static void incoming_impl(vr_engine *e,const vr_frame *frame,char path[VR_PATH_M
 
 void vr_outgoing(vr_engine *e,uint8_t *b,size_t n)
 {uint64_t t=vr_observe_begin(e,VR_OBS_PACKET_OUT);outgoing_impl(e,b,n);vr_observe_end(e,VR_OBS_PACKET_OUT,t,0,0);}
-void vr_incoming(vr_engine *e,const vr_frame *f,char path[VR_PATH_MAX][129],size_t n)
-{uint64_t t=vr_observe_begin(e,VR_OBS_PACKET_IN);incoming_impl(e,f,path,n);vr_observe_end(e,VR_OBS_PACKET_IN,t,0,0);}
+int vr_incoming(vr_engine *e,const vr_frame *f,char path[VR_PATH_MAX][129],size_t n)
+{
+    uint64_t t=vr_observe_begin(e,VR_OBS_PACKET_IN);
+    int pressure=0;
+    incoming_impl(e,f,path,n,&pressure);
+    vr_observe_end(e,VR_OBS_PACKET_IN,t,0,0);
+    return pressure;
+}

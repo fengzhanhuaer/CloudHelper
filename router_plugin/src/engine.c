@@ -14,6 +14,11 @@ static void status(vr_engine *e,int ready)
     json_object *o=json_object_new_object(),*links=vr_links_status(e),*nodes=json_object_new_array();
     json_object_object_add(o,"tun_reader",vr_tun_reader_status(e));
     json_object_object_add(o,"tun_writer",vr_tun_writer_status(e));
+    json_object *carrier_queue=json_object_new_object();
+    json_object_object_add(carrier_queue,"allocated_bytes",json_object_new_int64((int64_t)e->tx_queue_memory));
+    json_object_object_add(carrier_queue,"peak_bytes",json_object_new_int64((int64_t)e->tx_queue_peak));
+    json_object_object_add(carrier_queue,"capacity_bytes",json_object_new_int(VR_TX_TOTAL_CAP));
+    json_object_object_add(o,"carrier_send_queue",carrier_queue);
     json_object_object_add(o,"observation",vr_observe_report(e,vr_millis()));
     json_object_object_add(o,"enabled",json_object_new_boolean(e->config.enabled));
     json_object_object_add(o,"gateway_enabled",json_object_new_boolean(e->config.gateway.enabled));
@@ -54,7 +59,10 @@ static void status(vr_engine *e,int ready)
 
 void vr_link_frame(vr_link *l,const vr_frame *f,char path[VR_PATH_MAX][129],size_t n)
 {
-    if(f->main==1)vr_incoming(l->engine,f,path,n);
+    if(f->main==1) {
+        int pressure=vr_incoming(l->engine,f,path,n);
+        if(n==2&&pressure)vr_link_report_tun_pressure(l,vr_millis());
+    }
     else if(f->main==8)vr_tcp_frame(l->engine,f,path,n);
     else if(f->main>=2&&f->main<=4)vr_measure_frame(l->engine,l,f,path,n);
 }

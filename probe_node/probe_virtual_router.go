@@ -504,6 +504,7 @@ type probeVirtualRouterControlProbePayload struct {
 	OK                bool     `json:"ok,omitempty"`
 	Error             string   `json:"error,omitempty"`
 	Responder         string   `json:"responder,omitempty"`
+	TUNPressureV1     bool     `json:"tun_pressure_v1,omitempty"`
 }
 
 type probeVirtualRouterSpeedTestResultPayload struct {
@@ -5884,6 +5885,10 @@ func handleProbeVirtualRouterBusinessFrame(runtime *probeVirtualRouterRuntime, l
 	case mainType == probeVirtualRouterFrameMainTypePingPong && subType == probeVirtualRouterPingPongSubTypePing:
 		return handleProbeVirtualRouterControlPing(runtime, link, msg)
 	case mainType == probeVirtualRouterFrameMainTypePingPong && subType == probeVirtualRouterPingPongSubTypePong:
+		if msg.TUNPressureV1 && msg.RequestID == "tun-pressure-v1" {
+			runtime.recordPeerTUNPressure(time.Now(), framePath)
+			return nil
+		}
 		completeProbeVirtualRouterControlResponse(msg)
 		return nil
 	case mainType == probeVirtualRouterFrameMainTypePathRTT && subType == probeVirtualRouterPathRTTSubTypeQuery:

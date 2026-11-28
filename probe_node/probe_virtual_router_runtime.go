@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cloudhelper/probe_node/internal/tcpwindow"
@@ -92,6 +93,7 @@ type probeVirtualRouterRuntime struct {
 	bridgeWakeCh    chan struct{}
 	seqMu           sync.Mutex
 	seq             uint32
+	peerTUNPressure atomic.Int64
 }
 
 type probeVirtualRouterRelayServer struct {

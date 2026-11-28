@@ -21,6 +21,9 @@ const (
 	probeExitPacingBackoff   = 20 * time.Millisecond
 	probeExitPacingBatch     = 64 << 10
 	probeExitPacingQueueHigh = 64
+	probeExitPeerReportGap   = 150 * time.Millisecond
+	probeExitPeerReportTTL   = 450 * time.Millisecond
+	probeExitPeerBatch       = 8 << 10
 )
 
 var probeExitNodeLimiter = newProbeExitNodeLimiter()
@@ -34,6 +37,32 @@ type probeExitTCPPacer struct {
 	nextWrite      time.Time
 	nextGrowth     time.Time
 	nextBackoff    time.Time
+	lastPeerReport int64
+}
+
+func (rt *probeVirtualRouterRuntime) recordPeerTUNPressure(now time.Time, path []string) {
+	if rt == nil || len(path) != 2 || path[0] != rt.cfg.peerNodeID || path[1] != rt.cfg.localNodeID {
+		return
+	}
+	previous := rt.peerTUNPressure.Load()
+	if previous == 0 || now.UnixNano()-previous >= int64(probeExitPeerReportGap) {
+		rt.peerTUNPressure.CompareAndSwap(previous, now.UnixNano())
+	}
+}
+
+func (p *probeExitTCPPacer) applyPeerPressure(now time.Time, report int64) bool {
+	elapsed := now.UnixNano() - report
+	if report <= 0 || elapsed < 0 || elapsed >= int64(probeExitPeerReportTTL) {
+		return false
+	}
+	if report > p.lastPeerReport {
+		p.lastPeerReport = report
+		if p.bytesPerSecond > probeExitPacingInitial {
+			p.bytesPerSecond = max(probeExitPacingInitial, p.bytesPerSecond*7/8)
+		}
+		p.nextGrowth = now.Add(probeExitPeerReportTTL)
+	}
+	return true
 }
 
 func (p *probeExitTCPPacer) update(now time.Time, pressured, busy bool) {
@@ -71,6 +100,7 @@ type probeExitPacedConn struct {
 	net.Conn
 	netstack     *probeVirtualRouterExitNetstack
 	shard        *probeAdaptiveQueue[probeVirtualRouterExitNetstackOutputPacket]
+	peer         *probeVirtualRouterRuntime
 	closed       chan struct{}
 	closeOnce    sync.Once
 	pacer        probeExitTCPPacer
@@ -91,7 +121,12 @@ func (n *probeVirtualRouterExitNetstack) paceTCPReply(conn net.Conn, id stack.Tr
 	binary.BigEndian.PutUint16(packet[20:22], id.LocalPort)
 	binary.BigEndian.PutUint16(packet[22:24], id.RemotePort)
 	shard := probeVirtualRouterPacketDispatchShard(packet[:], len(n.outputDispatch))
-	return &probeExitPacedConn{Conn: conn, netstack: n, shard: n.outputDispatch[shard], closed: make(chan struct{})}
+	var peer *probeVirtualRouterRuntime
+	path := currentProbeVirtualRouterPathForPacket(packet[:], id.RemoteAddress.String())
+	if len(path) == 2 {
+		peer, _ = probeVirtualRouterRuntimeForAdjacentNode(path[1])
+	}
+	return &probeExitPacedConn{Conn: conn, netstack: n, shard: n.outputDispatch[shard], peer: peer, closed: make(chan struct{})}
 }
 
 func (c *probeExitPacedConn) Write(data []byte) (int, error) {
@@ -100,7 +135,13 @@ func (c *probeExitPacedConn) Write(data []byte) (int, error) {
 		now := time.Now()
 		pressure := c.shard.Len() >= probeExitPacingQueueHigh || c.netstack.linkEP.NumQueued() >= probeExitPacingQueueHigh
 		delay := c.pacer.wait(now)
-		c.pacer.update(now, pressure || c.writeBlocked, delay > 0 || len(data) >= 16<<10)
+		busy := delay > 0 || len(data) >= 16<<10
+		lastPeerReport := c.pacer.lastPeerReport
+		peerPressure := c.peer != nil && busy && c.pacer.applyPeerPressure(now, c.peer.peerTUNPressure.Load())
+		if c.pacer.lastPeerReport != lastPeerReport {
+			c.netstack.peerPressureApplied.Add(1)
+		}
+		c.pacer.update(now, pressure || c.writeBlocked, busy && !peerPressure)
 		if pressure {
 			delay = max(delay, 2*time.Millisecond)
 		}
@@ -108,6 +149,9 @@ func (c *probeExitPacedConn) Write(data []byte) (int, error) {
 			return written, err
 		}
 		batch := min(len(data), probeExitPacingBatch, max(16<<10, c.pacer.bytesPerSecond/500))
+		if peerPressure {
+			batch = min(batch, probeExitPeerBatch)
+		}
 		reservation := probeExitNodeLimiter.ReserveN(time.Now(), batch)
 		if err := c.wait(reservation.Delay()); err != nil {
 			reservation.Cancel()

@@ -186,10 +186,10 @@ json_object *vr_links_status(vr_engine *e)
     for(size_t i=0;i<e->link_count;i++) {
         vr_link *base=&e->links[i];if(!base->rule||base->slot)continue;
         json_object *row=json_object_new_object(),*slots=json_object_new_array(),*carriers=json_object_new_array();
-        uint64_t tx=0,rx=0,rtt=0;int count=0;const char *error=base->error;
+        uint64_t tx=0,rx=0,rtt=0,pressure_reports=0;int count=0;const char *error=base->error;
         for(size_t j=0;j<e->link_count;j++) {
             vr_link *l=&e->links[j];if(strcmp(l->route,base->route))continue;
-            tx+=l->tx;rx+=l->rx;
+            tx+=l->tx;rx+=l->rx;pressure_reports+=l->tun_pressure_reports;
             if(l->ssl){count++;json_object_array_add(slots,json_object_new_int(l->slot));if(!rtt)rtt=l->rtt;}
             json_object *v=json_object_new_object();
             json_object_object_add(v,"slot",json_object_new_int(l->slot));
@@ -221,6 +221,7 @@ json_object *vr_links_status(vr_engine *e)
         json_object_object_add(row,"tx_bytes",json_object_new_int64((int64_t)tx));
         json_object_object_add(row,"rx_bytes",json_object_new_int64((int64_t)rx));
         json_object_object_add(row,"carrier_count",json_object_new_int(count));
+        json_object_object_add(row,"tun_pressure_reports",json_object_new_int64((int64_t)pressure_reports));
         json_object_object_add(row,"carrier_slots",slots);json_object_object_add(row,"carriers",carriers);
         json_object_array_add(rows,row);
     }
@@ -518,7 +519,7 @@ void vr_link_close(vr_link *l,const char *error)
     l->retry=vr_millis()+5000;snprintf(l->error,sizeof(l->error),"%s",error);
     if(l->decoder.peak>l->rx_peak)l->rx_peak=l->decoder.peak;
     memset(&l->decoder,0,sizeof(l->decoder));
-    l->ingress_count=0;l->rtt=0;l->ping_time=0;*l->ping_id=0;
+    l->ingress_count=0;l->rtt=0;l->ping_time=0;l->tun_pressure_at=0;*l->ping_id=0;
 }
 
 int vr_link_queue(vr_link *l,const void *bytes,size_t n)
@@ -570,7 +571,10 @@ int vr_link_queue(vr_link *l,const void *bytes,size_t n)
     l->tx_tail[lane]=f;l->used+=length;l->tx_bytes[lane]+=length;
     if(!l->tx_memory)l->tx_backlog_since=f->enqueued;
     l->tx_memory+=memory;l->tx_memory_class[lane]+=memory;l->tx_enqueued++;
-    if(l->engine)l->engine->tx_queue_memory+=memory;
+    if(l->engine) {
+        l->engine->tx_queue_memory+=memory;
+        if(l->engine->tx_queue_memory>l->engine->tx_queue_peak)l->engine->tx_queue_peak=l->engine->tx_queue_memory;
+    }
     if(l->used>l->tx_peak)l->tx_peak=l->used;
     if(l->tx_memory>l->tx_memory_peak)l->tx_memory_peak=l->tx_memory;
     return 0;
@@ -593,6 +597,21 @@ int vr_link_send_json(vr_link *l,uint16_t main,uint16_t sub,char path[VR_PATH_MA
     const char *control=json_object_to_json_string_ext(o,JSON_C_TO_STRING_PLAIN),*data=json_object_to_json_string_ext(m,JSON_C_TO_STRING_PLAIN);
     vr_frame f={main,sub,(const uint8_t *)control,(const uint8_t *)data,strlen(control),strlen(data)};
     int rc=link_frame(l,&f);json_object_put(o);return rc;
+}
+
+void vr_link_report_tun_pressure(vr_link *l,uint64_t now)
+{
+    if(l->tun_pressure_at&&now-l->tun_pressure_at<250)return;
+    l->tun_pressure_at=now;
+    char path[VR_PATH_MAX][129]={0};
+    if(vr_copy(path[0],sizeof(path[0]),l->engine->config.node_id)||vr_copy(path[1],sizeof(path[1]),l->peer))return;
+    /* Existing peers ignore this pong because no RTT request owns its ID. */
+    json_object *m=json_object_new_object();
+    if(!m)return;
+    json_object_object_add(m,"request_id",json_object_new_string("tun-pressure-v1"));
+    json_object_object_add(m,"tun_pressure_v1",json_object_new_boolean(1));
+    if(!vr_link_send_json(l,2,2,path,2,m))l->tun_pressure_reports++;
+    json_object_put(m);
 }
 
 static int send_frame(vr_engine *e,const vr_frame *f,char path[VR_PATH_MAX][129],size_t n,const char *user)
