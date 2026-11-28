@@ -18,12 +18,13 @@
 #endif
 #define EXTERNAL_BYTES (64ull*1024*1024)
 #define EXTERNAL_MS 10000u
+#define EXTERNAL_MIN_RATE_MS 500u
 
 struct vr_external_state {
     vr_engine *engine;pthread_t thread;vr_config config;
     char node[129],iface[16],own[16],real[16],fake[16];
     uint32_t source,destination,resolved;uint16_t port;
-    int done,stop,fd,active,http;uint64_t start,first,last,bytes,published;
+    int done,stop,fd,active,http;uint64_t start,first,last,bytes,rate_baseline_bytes,published;
     vr_tcp_windows windows;
     long status;CURL *curl;uint8_t tcp_info[256];size_t tcp_info_length;uint64_t tcp_info_at;
 };
@@ -38,8 +39,9 @@ static void publish(struct vr_external_state *x,int running,const char *error,in
 {
     if(x->fd>=0){socklen_t length=sizeof(x->tcp_info);if(!getsockopt(x->fd,IPPROTO_TCP,TCP_INFO,x->tcp_info,&length)){x->tcp_info_length=length<=sizeof(x->tcp_info)?length:sizeof(x->tcp_info);x->tcp_info_at=vr_millis();}}
     vr_service *s=x->engine->service;json_object *job=json_object_new_object(),*r=json_object_new_object();
-    uint64_t elapsed=x->last>x->first?x->last-x->first:x->bytes?1:0;
-    double mbps=elapsed?(double)x->bytes*8/(double)elapsed/1000:0;
+    uint64_t elapsed=x->last>x->first?x->last-x->first:0;
+    int rate_ready=elapsed>=EXTERNAL_MIN_RATE_MS&&x->bytes>x->rate_baseline_bytes;
+    double mbps=rate_ready?(double)(x->bytes-x->rate_baseline_bytes)*8/(double)elapsed/1000:0;
     json_object_object_add(job,"running",json_object_new_boolean(running));json_object_object_add(job,"kind",json_object_new_string("external"));
     json_object_object_add(r,"ok",json_object_new_boolean(!running&&!error&&x->bytes>0));
     json_object_object_add(r,"cancelled",json_object_new_boolean(stopped));
@@ -51,6 +53,7 @@ static void publish(struct vr_external_state *x,int running,const char *error,in
     json_object_object_add(r,"bytes",json_object_new_int64((int64_t)x->bytes));
     json_object_object_add(r,"duration_ms",json_object_new_int64((int64_t)elapsed));
     json_object_object_add(r,"total_ms",json_object_new_int64((int64_t)(vr_millis()-x->start)));
+    json_object_object_add(r,"rate_ready",json_object_new_boolean(rate_ready));
     json_object_object_add(r,"mbps",json_object_new_double(mbps));
     json_object_object_add(r,"mb_per_second",json_object_new_double(mbps/8));
     json_object_object_add(r,"tcp_info",vr_tcp_info_decode(x->tcp_info,x->tcp_info_length));
@@ -72,6 +75,8 @@ static size_t receive_data(char *data,size_t size,size_t count,void *opaque)
     }
     x->last=now;
     uint64_t remaining=EXTERNAL_BYTES-x->bytes;x->bytes+=n>remaining?remaining:n;
+    /* The first batch may already be buffered when the sample clock starts. */
+    if(now==x->first)x->rate_baseline_bytes=x->bytes;
     pthread_mutex_unlock(&x->engine->mutex);
     if(now-x->published>=250){publish(x,1,NULL,0);x->published=now;}
     return x->bytes>=EXTERNAL_BYTES?0:n;
