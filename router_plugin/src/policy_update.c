@@ -32,6 +32,7 @@ int vr_policy_apply_pending(vr_engine *e)
         pthread_mutex_unlock(&s->mutex);return 2;
     }
     json_object_get(next);pthread_mutex_unlock(&e->mutex);
+    vr_tun_writer_flush(e);
     /* Kernel updates run outside the publication lock; the old policy remains
        active until all additions/removals succeed. Queue producers can only
        replace their pending reference, never the applied engine snapshot. */

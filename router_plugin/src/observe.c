@@ -5,7 +5,7 @@
 #include <sys/socket.h>
 #include <time.h>
 
-static uint64_t nanos(void){struct timespec t;if(clock_gettime(CLOCK_MONOTONIC,&t))return 0;return (uint64_t)t.tv_sec*1000000000u+(uint64_t)t.tv_nsec;}
+uint64_t vr_observe_clock_ns(void){struct timespec t;if(clock_gettime(CLOCK_MONOTONIC,&t))return 0;return (uint64_t)t.tv_sec*1000000000u+(uint64_t)t.tv_nsec;}
 int vr_observe_request(vr_service *s,unsigned seconds)
 {
     if(seconds>60)return -1;
@@ -24,12 +24,13 @@ void vr_observe_refresh(vr_engine *e,uint64_t now)
 uint64_t vr_observe_sample(vr_engine *e,unsigned stage)
 {
     if(stage>=VR_OBS_COUNT)return 0;
-    vr_observe_stage *s=&e->observation.stages[stage];s->calls++;return (s->calls&63u)==1?nanos():0;
+    vr_observe_stage *s=&e->observation.stages[stage];s->calls++;
+    return s->calls%VR_OBSERVE_INTERVAL==1?vr_observe_clock_ns():0;
 }
 void vr_observe_end(vr_engine *e,unsigned stage,uint64_t token,uint64_t steps,int hit)
 {
     if(!token||stage>=VR_OBS_COUNT)return;
-    uint64_t now=nanos();if(now<token)return;vr_observe_stage *s=&e->observation.stages[stage];uint64_t elapsed=now-token;
+    uint64_t now=vr_observe_clock_ns();if(now<token)return;vr_observe_stage *s=&e->observation.stages[stage];uint64_t elapsed=now-token;
     s->samples++;s->total_ns+=elapsed;if(elapsed>s->max_ns)s->max_ns=elapsed;s->scan_steps+=steps;if(hit)s->hits++;
 }
 json_object *vr_observe_report(vr_engine *e,uint64_t now)
@@ -38,7 +39,7 @@ json_object *vr_observe_report(vr_engine *e,uint64_t now)
     static const char *names[]={"packet_in","packet_out","nat_reverse","dns_blacklist","tun_write","frame_rx"};
     json_object *r=json_object_new_object(),*stages=json_object_new_object();
     json_object_object_add(r,"active",json_object_new_boolean(o->active));json_object_object_add(r,"remaining_ms",json_object_new_int64(o->active&&o->until>now?(int64_t)(o->until-now):0));
-    json_object_object_add(r,"sample_every",json_object_new_int(64));
+    json_object_object_add(r,"sample_every",json_object_new_int(VR_OBSERVE_INTERVAL));
     for(unsigned i=0;i<VR_OBS_COUNT;i++){
         vr_observe_stage *s=&o->stages[i];json_object *v=json_object_new_object();
         json_object_object_add(v,"calls",json_object_new_int64((int64_t)s->calls));json_object_object_add(v,"samples",json_object_new_int64((int64_t)s->samples));

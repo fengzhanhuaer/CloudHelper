@@ -12,6 +12,7 @@ static void status(vr_engine *e,int ready)
 {
     vr_telemetry_publish(e);
     json_object *o=json_object_new_object(),*links=vr_links_status(e),*nodes=json_object_new_array();
+    json_object_object_add(o,"tun_writer",vr_tun_writer_status(e));
     json_object_object_add(o,"observation",vr_observe_report(e,vr_millis()));
     json_object_object_add(o,"enabled",json_object_new_boolean(e->config.enabled));
     json_object_object_add(o,"gateway_enabled",json_object_new_boolean(e->config.gateway.enabled));
@@ -149,6 +150,7 @@ static int prepare(vr_engine *e)
     if(e->config.enabled&&e->config.tls_sni_enabled&&vr_tcp_start(e)){strcpy(e->error,"TLS sniff listener unavailable");return -1;}
     if(vr_platform_exit_routes(NULL,e->policy,NULL,&e->config.exit_overrides)){strcpy(e->error,"published route initialization failed");return -1;}
     if(vr_dataplane_start(e)){strcpy(e->error,"mapping resolver initialization failed");return -1;}
+    if(vr_tun_writer_start(e))vr_service_log(e->service,"service","TUN writer thread unavailable; using synchronous writes");
     if(e->config.enabled&&e->config.dns_enabled&&vr_dns_start(e)){strcpy(e->error,"DNS initialization failed");return -1;}
     vr_telemetry_publish(e);
     if(vr_control_start(e)){strcpy(e->error,"controller worker initialization failed");return -1;}
@@ -184,12 +186,14 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
         }
         pthread_mutex_lock(&service->mutex);int sniff=service->config.tls_sni_enabled;vr_exit_overrides exits=service->config.exit_overrides;pthread_mutex_unlock(&service->mutex);
         if(memcmp(&exits,&e->config.exit_overrides,sizeof(exits))&&now>=exits_retry) {
+            vr_tun_writer_flush(e);
             if(!vr_platform_tls_cache_clear()&&(!e->config.enabled||!vr_platform_exit_routes(e->policy,e->policy,&e->config.exit_overrides,&exits))) {
                 pthread_mutex_lock(&e->mutex);e->config.exit_overrides=exits;pthread_mutex_unlock(&e->mutex);
             } else vr_service_log(service,"service","Local exit route update failed; current actions and links retained, retrying");
             exits_retry=now+5000;
         }
         if(sniff!=e->config.tls_sni_enabled&&now>=sniff_retry) {
+            vr_tun_writer_flush(e);
             if(!e->config.enabled||(!(sniff&&vr_tcp_start(e))&&!vr_platform_tls(&e->addresses,e->cidr,sniff))) {
                 e->config.tls_sni_enabled=sniff;vr_service_log(service,"tls",sniff?"SNI enabled for new LAN connections":"SNI disabled for new connections; active streams retained");
             } else vr_service_log(service,"tls","SNI switch failed; current connections retained, retrying");
@@ -232,6 +236,7 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
             int change=vr_addresses_check(&address_watch,&e->addresses,&next,detail,sizeof(detail));
             if(change)vr_service_log(service,"service",detail);
             if(change==2) {
+                vr_tun_writer_flush(e);
                 if(vr_addresses_apply(e,&next))vr_service_log(service,"service","Address refresh deferred; existing connections retained, retrying");
                 else {address_watch.pending=0;vr_service_log(service,"service","LAN/WAN listeners and rules updated; existing connections retained");}
             }
@@ -239,6 +244,7 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
                 vr_service_log(service,"service",detail);
                 if(firewall_failures<2)firewall_failures++;
                 if(firewall_failures>=2&&vr_millis()>=firewall_retry) {
+                    vr_tun_writer_flush(e);
                     if(vr_platform_repair(&e->config,&e->addresses,e->cidr))
                         vr_service_log(service,"service","Firewall repair deferred; existing connections retained, retrying");
                     else {firewall_failures=0;vr_service_log(service,"service","Owned firewall rules reconciled; existing connections retained");}
@@ -251,12 +257,14 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
         }
     }
 done:
+    vr_tun_writer_flush(e);
     vr_dns_filter_stop(e);
     /* Restore ordinary DNS before waiting for controller network deadlines. */
     if(e->platform_started)vr_platform_dns(0);
     vr_control_stop(e);
     vr_measure_stop(e);
     status(e,0);
+    vr_tun_writer_stop(e);
     if(*e->error)vr_service_log(e->service,"service",e->error);
     /* Restore dnsmasq while worker sockets are still open, then join bounded jobs. */
     vr_dns_stop(e);

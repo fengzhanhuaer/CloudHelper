@@ -12,6 +12,28 @@
 static uint8_t carried[1500];static size_t carried_len;
 static uint64_t drain_clock;
 static unsigned drain_forwarded, packet_cost_ms;
+static int writer_fixture_fd=-1;
+static pthread_t writer_test_thread;
+static pthread_mutex_t writer_gate=PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t writer_release=PTHREAD_COND_INITIALIZER;
+static int writer_released;
+static unsigned writer_packets;
+ssize_t __real_write(int fd,const void *bytes,size_t n);
+ssize_t __wrap_write(int fd,const void *bytes,size_t n)
+{
+    if(fd!=writer_fixture_fd)return __real_write(fd,bytes,n);
+    assert(!pthread_equal(pthread_self(),writer_test_thread));
+    assert(n==sizeof(unsigned));
+    unsigned number;
+    memcpy(&number,bytes,n);
+    assert(number==writer_packets++);
+    if(number==0) {
+        pthread_mutex_lock(&writer_gate);
+        while(!writer_released)pthread_cond_wait(&writer_release,&writer_gate);
+        pthread_mutex_unlock(&writer_gate);
+    }
+    return (ssize_t)n;
+}
 uint64_t __real_vr_millis(void);
 uint64_t __wrap_vr_millis(void)
 {
@@ -115,10 +137,52 @@ static void test_tun_drain(void)
     json_object_put(e->policy);pthread_mutex_destroy(&e->mutex);free(e);
 }
 
+static void test_tun_writer(void)
+{
+    int fds[2];
+    vr_engine *e=engine("7","198.18.0.7",fds);
+    e->observation.active=1;
+    e->observation.generation=1;
+    writer_test_thread=pthread_self();
+    writer_fixture_fd=e->tun;
+    assert(!vr_tun_writer_start(e));
+    json_object *stats=vr_tun_writer_status(e);
+    unsigned capacity=(unsigned)json_object_get_int(vr_member(stats,"capacity_packets"));
+    assert(capacity==64);
+    json_object_put(stats);
+    for(unsigned i=0;i<256;i++) {
+        if(i==capacity) {
+            stats=vr_tun_writer_status(e);
+            assert(json_object_get_int(vr_member(stats,"queued_packets"))==(int)capacity);
+            json_object_put(stats);
+            pthread_mutex_lock(&writer_gate);
+            writer_released=1;
+            pthread_cond_signal(&writer_release);
+            pthread_mutex_unlock(&writer_gate);
+        }
+        vr_tun_write(e,&i,sizeof(i));
+    }
+    vr_tun_writer_flush(e);
+    stats=vr_tun_writer_status(e);
+    assert(writer_packets==256);
+    assert(json_object_get_int64(vr_member(stats,"written_packets"))==256);
+    assert(json_object_get_int(vr_member(stats,"peak_packets"))==(int)capacity);
+    assert(json_object_get_int(vr_member(stats,"queued_packets"))==0);
+    assert(json_object_get_int(vr_member(stats,"write_errors"))==0);
+    assert(e->observation.stages[VR_OBS_TUN_WRITE].calls==256);
+    assert(e->observation.stages[VR_OBS_TUN_WRITE].samples==4);
+    json_object_put(stats);
+    vr_tun_writer_stop(e);
+    writer_fixture_fd=-1;
+    close(fds[0]);close(fds[1]);json_object_put(e->policy);pthread_mutex_destroy(&e->mutex);free(e);
+    puts("PASS: TUN worker writes in order, drains bounded backlog, and preserves timing samples");
+}
+
 int main(void)
 {
     test_fake_dns_blacklist();
     test_tun_drain();
+    test_tun_writer();
     {
         int pipes[2];vr_engine *e=engine("7","198.18.0.7",pipes);
         uint8_t packet[40]={0x45,0,0,40,0,0,0x40,0,64,6};packet[32]=0x50;packet[33]=2;tcp_checksums(packet);
