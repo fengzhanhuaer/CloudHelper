@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "engine.h"
+#include <arpa/inet.h>
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -59,6 +60,8 @@ int main(void)
     strcpy(e->config.dns_filter.entries[0],"198.18.7.31");vr_mapping_dns_refresh(e);assert(e->mappings[0].dns_blocked);
     strcpy(e->config.dns_filter.entries[0],"1.2.3.4");vr_mapping_dns_refresh(e);assert(!e->mappings[0].dns_blocked);
     e->mappings[0].resolved=htonl(0x01020304);vr_mapping_dns_update(e,&e->mappings[0]);assert(e->mappings[0].dns_blocked);
+    size_t scanned;
+    assert(vr_mapping_dns_blocked(e,inet_addr("198.18.7.31"),&scanned)&&scanned==1);
     e->config.dns_filter.block_doh=0;vr_mapping_dns_refresh(e);assert(!e->mappings[0].dns_blocked&&e->mapping_dirty==dirty);
     wall+=31;tick+=31000;assert(!vr_mapping_get(e,"example.com",NULL,decision(),&m)&&calls==1);
     e->mappings[0].resolved=1234;assert(!vr_mapping_flush(e,0)&&writes==1);
@@ -66,7 +69,8 @@ int main(void)
     vr_engine *restored=engine(path);assert(count(restored)==1);assert(!vr_mapping_get(restored,"example.com",NULL,decision(),&m));
     assert(!strcmp(m.exit,"24")&&!strcmp(m.rule,"proxy")&&!m.resolved&&calls==1);
     restored->config.dns_filter.block_doh=1;restored->config.dns_filter.count=1;strcpy(restored->config.dns_filter.entries[0],"example.com");vr_mapping_load(restored);
-    assert(restored->mappings[0].dns_blocked&&calls==1);drop(restored);
+    assert(restored->mappings[0].dns_blocked&&calls==1);
+    assert(vr_mapping_dns_blocked(restored,inet_addr("198.18.7.31"),&scanned)&&scanned==1);drop(restored);
     char interrupted[540];snprintf(interrupted,sizeof(interrupted),"%s.aBc123",path);
     FILE *orphan=fopen(interrupted,"w");assert(orphan);fputs("interrupted",orphan);fclose(orphan);
     restored=engine(path);assert(access(interrupted,F_OK)&&count(restored)==1);drop(restored);
@@ -129,6 +133,7 @@ int main(void)
     e->mappings[0].expires=wall;e->config.dns_filter.block_doh=1;e->config.dns_filter.count=1;
     strcpy(e->config.dns_filter.entries[0],"example.com");local_response=0;previous_calls=calls;
     assert(!vr_mapping_get(e,NULL,"198.18.7.31",decision(),&m)&&m.dns_blocked&&calls==previous_calls+1);
+    assert(vr_mapping_dns_blocked(e,inet_addr("198.18.7.31"),&scanned)&&scanned==1);
     for(int i=0;i<64;i++)assert(!vr_mapping_get(e,NULL,"198.18.7.31",decision(),&m)&&m.dns_blocked&&calls==previous_calls+1);
     drop(e);unlink(path);rmdir(dir);
     puts("PASS: TTL, singleflight, retry cooldown, bounded atomic JFFS cache, restart and identity/policy invalidation");return 0;

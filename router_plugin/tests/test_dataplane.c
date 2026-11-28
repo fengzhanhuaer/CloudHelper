@@ -106,6 +106,44 @@ static void test_fake_dns_blacklist(void)
     puts("PASS: cached Fake IP blacklist blocks TCP/UDP before established reuse, removes locally, no controller or DNS lookups");
 }
 
+static void test_fake_dns_blacklist_scan(void)
+{
+    int pipes[2];vr_engine *e=engine("7","198.18.0.7",pipes);
+    vr_mapping blocked=e->mappings[0];
+    strcpy(blocked.domain,"dns.google.com");
+    strcpy(blocked.ip,"198.18.0.21");
+    e->mappings[VR_MAPPING_MAX-2]=blocked;
+    strcpy(blocked.ip,"198.18.0.22");
+    e->mappings[VR_MAPPING_MAX-1]=blocked;
+    e->config.dns_filter.block_doh=1;
+    e->config.dns_filter.count=1;
+    strcpy(e->config.dns_filter.entries[0],"google.com");
+    vr_mapping_dns_refresh(e);
+    e->observation.active=1;
+    uint8_t tcp[40]={0x45,0,0,40,0,0,0x40,0,64,6};
+    tcp[32]=0x50;tcp[33]=2;tcp_checksums(tcp);
+    assert(!vr_packet_rewrite(tcp,sizeof(tcp),inet_addr("192.168.52.100"),inet_addr("198.18.0.20"),49001,443));
+    carried_len=0;vr_outgoing(e,tcp,sizeof(tcp));
+    assert(carried_len==sizeof(tcp));
+    assert(e->observation.stages[VR_OBS_DNS_BLACKLIST].samples==1);
+    assert(e->observation.stages[VR_OBS_DNS_BLACKLIST].scan_steps==2);
+
+    for(size_t i=1;i<VR_DNS_BLOCKED_CACHE_MAX;i++) {
+        snprintf(blocked.ip,sizeof(blocked.ip),"198.18.1.%u",(unsigned)i);
+        e->mappings[i]=blocked;
+    }
+    vr_mapping_dns_refresh(e);
+    size_t scanned;
+    assert(e->dns_blocked_count==129);
+    assert(vr_mapping_dns_blocked(e,inet_addr("198.18.0.22"),&scanned)&&scanned==129);
+    e->config.dns_filter.count=0;
+    vr_mapping_dns_refresh(e);
+    assert(!vr_mapping_dns_blocked(e,inet_addr("198.18.0.22"),&scanned)&&scanned==0);
+
+    close(pipes[0]);close(pipes[1]);json_object_put(e->policy);pthread_mutex_destroy(&e->mutex);free(e);
+    puts("PASS: packet checks only populated blacklist entries and keeps overflow blocked");
+}
+
 static void test_tun_drain(void)
 {
     int pipe_fds[2], pair[2];
@@ -181,6 +219,7 @@ static void test_tun_writer(void)
 int main(void)
 {
     test_fake_dns_blacklist();
+    test_fake_dns_blacklist_scan();
     test_tun_drain();
     test_tun_writer();
     {

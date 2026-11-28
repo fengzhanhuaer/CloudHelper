@@ -218,13 +218,13 @@ static void outgoing_impl(vr_engine *e,uint8_t *b,size_t n)
     /* Cached Fake IPs bypass DNS and SNI. Enforce local DNS blocks before
        established-flow reuse; this reads only a cached flag, never resolves. */
     if((p.protocol==6||p.protocol==17)&&e->config.dns_filter.block_doh) {
-        char ip[16];struct in_addr address={p.dst};inet_ntop(AF_INET,&address,ip,sizeof(ip));
-        if(fake_ip(e,ip)) {
-            uint64_t observed=vr_observe_begin(e,VR_OBS_DNS_BLACKLIST);size_t scanned=VR_MAPPING_MAX;
-            int blocked=0;pthread_mutex_lock(&e->mutex);
-            for(size_t i=0;i<VR_MAPPING_MAX;i++)if(e->mappings[i].dns_blocked&&!strcmp(e->mappings[i].ip,ip)){blocked=1;scanned=i+1;break;}
-            pthread_mutex_unlock(&e->mutex);vr_observe_end(e,VR_OBS_DNS_BLACKLIST,observed,scanned,blocked);if(blocked)return;
+        uint64_t observed=vr_observe_begin(e,VR_OBS_DNS_BLACKLIST);size_t scanned;
+        int blocked=vr_mapping_dns_blocked(e,p.dst,&scanned);
+        if(blocked) {
+            char ip[16];struct in_addr address={p.dst};
+            blocked=inet_ntop(AF_INET,&address,ip,sizeof(ip))&&fake_ip(e,ip);
         }
+        vr_observe_end(e,VR_OBS_DNS_BLACKLIST,observed,scanned,blocked);if(blocked)return;
     }
     vr_nat *active=established(e,&p,b,n,1);
     if(active) {

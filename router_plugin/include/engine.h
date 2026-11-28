@@ -59,6 +59,7 @@ typedef struct {
 /* Node indexes are valid only within policy_revision; no strings or JFFS writes. */
 typedef struct {uint8_t nodes[VR_PATH_HOPS+1],count;char id[49];uint64_t rtt,updated,sent,used;} vr_path_rtt;
 typedef struct {char domain[254],ip[16],rule[129],exit[129];time_t expires;uint64_t used;uint32_t resolved;uint8_t local_exit,dns_blocked;} vr_mapping;
+#define VR_DNS_BLOCKED_CACHE_MAX 128
 #define VR_MAPPING_TTL (48*60*60)
 /* Atomic replacement can temporarily retain both the old and new file. */
 #define VR_MAPPING_FILE_MAX ((1024u*1024u-1u)/2u)
@@ -95,6 +96,9 @@ struct vr_engine {
     char carrier6_iface[16];
     pthread_mutex_t mutex;pthread_cond_t jobs_changed;
     vr_mapping mappings[VR_MAPPING_MAX];
+    uint32_t dns_blocked_ips[VR_DNS_BLOCKED_CACHE_MAX];
+    uint32_t dns_blocked_overflow[(VR_MAPPING_MAX+31)/32];
+    size_t dns_blocked_count;
     vr_mapping_pending mapping_pending[16];
     char mapping_path[512],mapping_scope[65];
     unsigned mapping_dirty;uint64_t mapping_flush_at;
@@ -156,6 +160,7 @@ void vr_mapping_reconcile(vr_engine *e);
 /* Caller holds engine mutex (or startup, before workers). RAM-only flags. */
 void vr_mapping_dns_update(vr_engine *e,vr_mapping *mapping);
 void vr_mapping_dns_refresh(vr_engine *e);
+int vr_mapping_dns_blocked(vr_engine *e,uint32_t ip,size_t *scanned);
 /* Caller holds engine mutex. Local-only mappings still follow current rules. */
 vr_decision vr_mapping_decision(vr_engine *e,const vr_mapping *mapping);
 void vr_outgoing(vr_engine *e,uint8_t *bytes,size_t n);

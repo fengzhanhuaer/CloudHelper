@@ -9,22 +9,72 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-void vr_mapping_dns_update(vr_engine *e,vr_mapping *m)
+static int mapping_dns_matches(vr_engine *e,const vr_mapping *m)
 {
-    const vr_dns_filter *f=&e->config.dns_filter;m->dns_blocked=0;
-    if(!f->block_doh)return;
-    if(vr_dns_filter_domain(f,m->domain)){m->dns_blocked=1;return;}
+    const vr_dns_filter *f=&e->config.dns_filter;
+    if(!f->block_doh||!*m->ip)return 0;
+    if(vr_dns_filter_domain(f,m->domain))return 1;
     for(size_t i=0;i<f->count;i++) {
         vr_ip ip;if(vr_ip_parse(f->entries[i],&ip)||ip.family!=4)continue;
         struct in_addr domain,fake;
         if((inet_pton(AF_INET,m->domain,&domain)==1&&!memcmp(ip.bytes,&domain.s_addr,4))||
            (inet_pton(AF_INET,m->ip,&fake)==1&&!memcmp(ip.bytes,&fake.s_addr,4))||
-           (m->resolved&&!memcmp(ip.bytes,&m->resolved,4))){m->dns_blocked=1;return;}
+           (m->resolved&&!memcmp(ip.bytes,&m->resolved,4)))return 1;
+    }
+    return 0;
+}
+
+/* Mapping mutations hold the engine lock, or run before workers start. */
+static void mapping_dns_reindex(vr_engine *e)
+{
+    e->dns_blocked_count=0;
+    memset(e->dns_blocked_overflow,0,sizeof(e->dns_blocked_overflow));
+    for(size_t i=0;i<VR_MAPPING_MAX;i++) {
+        const vr_mapping *m=&e->mappings[i];struct in_addr ip;
+        if(!m->dns_blocked||inet_pton(AF_INET,m->ip,&ip)!=1)continue;
+        size_t slot=e->dns_blocked_count++;
+        if(slot<VR_DNS_BLOCKED_CACHE_MAX)e->dns_blocked_ips[slot]=ip.s_addr;
+        else e->dns_blocked_overflow[i/32]|=UINT32_C(1)<<(i%32);
     }
 }
+
+void vr_mapping_dns_update(vr_engine *e,vr_mapping *m)
+{
+    int blocked=mapping_dns_matches(e,m);
+    if(blocked==m->dns_blocked)return;
+    m->dns_blocked=blocked;
+    mapping_dns_reindex(e);
+}
+
 void vr_mapping_dns_refresh(vr_engine *e)
 {
-    for(size_t i=0;i<VR_MAPPING_MAX;i++)vr_mapping_dns_update(e,&e->mappings[i]);
+    for(size_t i=0;i<VR_MAPPING_MAX;i++)e->mappings[i].dns_blocked=mapping_dns_matches(e,&e->mappings[i]);
+    mapping_dns_reindex(e);
+}
+
+int vr_mapping_dns_blocked(vr_engine *e,uint32_t ip,size_t *scanned)
+{
+    int blocked=0;*scanned=0;
+    pthread_mutex_lock(&e->mutex);
+    size_t count=e->dns_blocked_count;
+    if(count>VR_DNS_BLOCKED_CACHE_MAX)count=VR_DNS_BLOCKED_CACHE_MAX;
+    for(size_t i=0;i<count;i++) {
+        (*scanned)++;
+        if(e->dns_blocked_ips[i]==ip){blocked=1;break;}
+    }
+    /* Excess matches stay marked in the mapping table. Walk only their
+       slot bits so a busy blacklist never permits a previously blocked IP. */
+    if(!blocked&&e->dns_blocked_count>VR_DNS_BLOCKED_CACHE_MAX) {
+        for(size_t i=0;i<sizeof(e->dns_blocked_overflow)/sizeof(e->dns_blocked_overflow[0])&&!blocked;i++) {
+            for(uint32_t bits=e->dns_blocked_overflow[i];bits;bits&=bits-1) {
+                size_t slot=i*32+(unsigned)__builtin_ctz(bits);
+                struct in_addr address;(*scanned)++;
+                if(inet_pton(AF_INET,e->mappings[slot].ip,&address)==1&&address.s_addr==ip){blocked=1;break;}
+            }
+        }
+    }
+    pthread_mutex_unlock(&e->mutex);
+    return blocked;
 }
 
 static int usable(vr_engine *e,const vr_mapping *m,time_t now)
@@ -84,6 +134,7 @@ void vr_mapping_reconcile(vr_engine *e)
            (vr_policy_needs_ip(e->policy,m->domain)&&!*ip))memset(m,0,sizeof(*m));
         else {strcpy(m->rule,d.rule);strcpy(m->exit,d.exit_node);m->local_exit=0;}
     }
+    mapping_dns_reindex(e);
     (void)scope(e);e->mapping_dirty++;
 }
 
@@ -125,8 +176,9 @@ void vr_mapping_load(vr_engine *e)
         if(expires<=now||expires>(int64_t)now+VR_MAPPING_TTL)continue;
         m.expires=(time_t)expires;if(!usable(e,&m,now))continue;
         /* The snapshot is MRU-first; preserve that order on subsequent saves. */
-        m.used=VR_MAPPING_MAX-i;vr_mapping_dns_update(e,&m);e->mappings[slot++]=m;
+        m.used=VR_MAPPING_MAX-i;m.dns_blocked=mapping_dns_matches(e,&m);e->mappings[slot++]=m;
     }
+    mapping_dns_reindex(e);
     if(slot&&e->service)vr_service_log(e->service,"dns","Restored unexpired fake IP cache including exit nodes");
 done:
     json_object_put(root);
@@ -258,15 +310,23 @@ int vr_mapping_get(vr_engine *e,const char *domain,const char *ip,vr_decision d,
     m.used=vr_millis();pthread_mutex_lock(&e->mutex);size_t target=0;
     if(revision!=e->policy_revision||!usable(e,&m,now)){pthread_mutex_unlock(&e->mutex);goto done;}
     /* One authoritative item replaces both domain and fake-IP collisions. */
+    int blocked_changed=0;
     for(size_t i=0;i<VR_MAPPING_MAX;i++) {
         vr_mapping *old=&e->mappings[i];
-        if(!strcmp(old->domain,m.domain)||!strcmp(old->ip,m.ip))memset(old,0,sizeof(*old));
+        if(!strcmp(old->domain,m.domain)||!strcmp(old->ip,m.ip)){
+            blocked_changed|=old->dns_blocked;
+            memset(old,0,sizeof(*old));
+        }
     }
     for(size_t i=0;i<VR_MAPPING_MAX;i++) {
         if(e->mappings[i].expires<=now){target=i;break;}
         if(e->mappings[i].used<e->mappings[target].used)target=i;
     }
-    vr_mapping_dns_update(e,&m);e->mappings[target]=m;e->mapping_dirty++;pthread_mutex_unlock(&e->mutex);*out=m;rc=0;
+    m.dns_blocked=mapping_dns_matches(e,&m);
+    blocked_changed|=e->mappings[target].dns_blocked|m.dns_blocked;
+    e->mappings[target]=m;
+    if(blocked_changed)mapping_dns_reindex(e);
+    e->mapping_dirty++;pthread_mutex_unlock(&e->mutex);*out=m;rc=0;
 done:
     pthread_mutex_lock(&e->mutex);e->mapping_pending[slot].retry=vr_millis()+(rc?1000:0);e->mapping_pending[slot].busy=0;pthread_mutex_unlock(&e->mutex);
     if(rc&&e->service){char event[240];snprintf(event,sizeof(event),"Fake IP lookup failed: %.160s",*error?error:"invalid authoritative mapping");vr_service_log(e->service,"dns",event);}
