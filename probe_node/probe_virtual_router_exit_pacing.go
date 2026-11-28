@@ -16,7 +16,7 @@ import (
 
 const (
 	probeExitPacingInitial      = 4_000_000
-	probeExitPacingMinimum      = 500_000
+	probeExitPacingMinimum      = 10_000 / 8 // 10 kbps in payload bytes per second.
 	probeExitPacingMaximum      = tcpwindow.BitsPerSecond / 8
 	probeExitPacingGrowth       = 100 * time.Millisecond
 	probeExitPacingBackoff      = 20 * time.Millisecond
@@ -108,9 +108,15 @@ func (p *probeExitTCPPacer) applyPeerPressure(now time.Time, report int64) bool 
 		return false
 	}
 	if report > p.lastPeerReport {
+		floor := probeExitPacingInitial
+		// An isolated hint keeps the normal starting rate. Repeated fresh
+		// reports can slow a busy flow below it when the next hop stays full.
+		if probePeerPressureFresh(time.Unix(0, report), p.lastPeerReport) {
+			floor = probeExitPacingMinimum
+		}
 		p.lastPeerReport = report
-		if p.bytesPerSecond > probeExitPacingInitial {
-			p.bytesPerSecond = max(probeExitPacingInitial, p.bytesPerSecond*15/16)
+		if p.bytesPerSecond > floor {
+			p.bytesPerSecond = max(floor, p.bytesPerSecond*15/16)
 		}
 		p.nextGrowth = now.Add(probeExitPeerReportTTL)
 	}
@@ -204,7 +210,8 @@ func (c *probeExitPacedConn) Write(data []byte) (int, error) {
 		if err := c.wait(delay); err != nil {
 			return written, err
 		}
-		batch := min(len(data), probeExitPacingBatch, max(16<<10, c.pacer.bytesPerSecond/500))
+		// Limit the scheduling interval to 100 ms even at the minimum rate.
+		batch := min(len(data), probeExitPacingBatch, max(16<<10, c.pacer.bytesPerSecond/500), max(1, c.pacer.bytesPerSecond/10))
 		if peerPressure {
 			batch = min(batch, probeExitPeerBatch)
 		}

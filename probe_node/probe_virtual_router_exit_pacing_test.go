@@ -1,9 +1,12 @@
 package main
 
 import (
+	"io"
 	"net"
 	"testing"
 	"time"
+
+	"gvisor.dev/gvisor/pkg/tcpip/link/channel"
 )
 
 func TestProbeExitPacerRespondsToDownstream(t *testing.T) {
@@ -129,6 +132,69 @@ func TestProbeExitPacerAdaptsToFreshPeerReports(t *testing.T) {
 	}
 	if p.bytesPerSecond > reduced*9/8 {
 		t.Fatal("the first recovery step was large enough to recreate a burst")
+	}
+}
+
+func TestProbeExitPacerSustainedPressureUsesTenKilobitFloor(t *testing.T) {
+	const floor = 1250 // 10 kbps expressed as payload bytes per second.
+	now := time.Unix(100, 0)
+	p := probeExitTCPPacer{bytesPerSecond: probeExitPacingInitial}
+	p.applyPeerPressure(now, now.UnixNano())
+	if p.bytesPerSecond != probeExitPacingInitial {
+		t.Fatal("a single report reduced the rate below its starting value")
+	}
+	for range 160 {
+		now = now.Add(250 * time.Millisecond)
+		p.applyPeerPressure(now, now.UnixNano())
+	}
+	if p.bytesPerSecond != floor {
+		t.Fatalf("sustained remote pressure stopped at %d B/s, want %d B/s", p.bytesPerSecond, floor)
+	}
+	p.update(now, true, true)
+	if p.bytesPerSecond != floor {
+		t.Fatalf("local pressure changed the floor to %d B/s", p.bytesPerSecond)
+	}
+	recovery := now.Add(probeExitPeerReportTTL + time.Millisecond)
+	if p.applyPeerPressure(recovery, now.UnixNano()) {
+		t.Fatal("expired pressure still blocks rate recovery")
+	}
+	p.update(recovery, false, true)
+	if p.bytesPerSecond <= floor {
+		t.Fatal("rate did not recover after the pressure stopped")
+	}
+}
+
+func TestProbeExitPacedConnKeepsWritesSmallAtTenKilobits(t *testing.T) {
+	a, b := net.Pipe()
+	defer b.Close()
+	link := channel.New(1, 1500, "")
+	defer link.Close()
+	c := &probeExitPacedConn{
+		Conn:     a,
+		netstack: &probeVirtualRouterExitNetstack{linkEP: link},
+		closed:   make(chan struct{}),
+		pacer:    probeExitTCPPacer{bytesPerSecond: 1250},
+	}
+	defer c.Close()
+	if err := b.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var payload [250]byte
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Write(payload[:])
+		done <- err
+	}()
+	var received [250]byte
+	n, err := b.Read(received[:])
+	if err != nil || n != 125 {
+		t.Fatalf("first write delivered %d bytes, want a 100 ms block of 125 bytes: %v", n, err)
+	}
+	if _, err := io.ReadFull(b, received[n:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 
