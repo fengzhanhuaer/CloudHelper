@@ -23,7 +23,8 @@ const (
 	probeExitPacingQueueHigh = 64
 	probeExitPeerReportGap   = 150 * time.Millisecond
 	probeExitPeerReportTTL   = 450 * time.Millisecond
-	probeExitPeerBatch       = 8 << 10
+	probeExitPeerBatch       = 16 << 10
+	probeExitPeerRecovery    = 2 * time.Second
 )
 
 var probeExitNodeLimiter = newProbeExitNodeLimiter()
@@ -58,7 +59,7 @@ func (p *probeExitTCPPacer) applyPeerPressure(now time.Time, report int64) bool 
 	if report > p.lastPeerReport {
 		p.lastPeerReport = report
 		if p.bytesPerSecond > probeExitPacingInitial {
-			p.bytesPerSecond = max(probeExitPacingInitial, p.bytesPerSecond*7/8)
+			p.bytesPerSecond = max(probeExitPacingInitial, p.bytesPerSecond*15/16)
 		}
 		p.nextGrowth = now.Add(probeExitPeerReportTTL)
 	}
@@ -79,7 +80,11 @@ func (p *probeExitTCPPacer) update(now time.Time, pressured, busy bool) {
 		return
 	}
 	if busy && !now.Before(p.nextGrowth) {
-		p.bytesPerSecond = min(probeExitPacingMaximum, p.bytesPerSecond*3/2)
+		growth := p.bytesPerSecond / 2
+		if p.lastPeerReport > 0 && now.UnixNano()-p.lastPeerReport < int64(probeExitPeerRecovery) {
+			growth = p.bytesPerSecond / 8
+		}
+		p.bytesPerSecond = min(probeExitPacingMaximum, p.bytesPerSecond+growth)
 		p.nextGrowth = now.Add(probeExitPacingGrowth)
 	}
 }

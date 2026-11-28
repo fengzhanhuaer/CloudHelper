@@ -49,8 +49,8 @@ func TestProbeExitFlowsShareOneRateLimit(t *testing.T) {
 func TestProbeExitPacerAdaptsToFreshPeerReports(t *testing.T) {
 	now := time.Unix(100, 0)
 	p := probeExitTCPPacer{bytesPerSecond: 20_000_000}
-	if !p.applyPeerPressure(now, now.UnixNano()) || p.bytesPerSecond >= 20_000_000 {
-		t.Fatal("fresh peer report failed to slow the flow")
+	if !p.applyPeerPressure(now, now.UnixNano()) || p.bytesPerSecond != 18_750_000 {
+		t.Fatal("fresh peer report must make a modest 6.25% rate reduction")
 	}
 	reduced := p.bytesPerSecond
 	if !p.applyPeerPressure(now.Add(50*time.Millisecond), now.UnixNano()) || p.bytesPerSecond != reduced {
@@ -62,6 +62,9 @@ func TestProbeExitPacerAdaptsToFreshPeerReports(t *testing.T) {
 	p.update(now.Add(time.Second), false, true)
 	if p.bytesPerSecond <= reduced {
 		t.Fatal("send rate did not recover after remote congestion ended")
+	}
+	if p.bytesPerSecond > reduced*9/8 {
+		t.Fatal("the first recovery step was large enough to recreate a burst")
 	}
 }
 
