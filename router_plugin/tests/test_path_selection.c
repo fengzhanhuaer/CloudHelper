@@ -10,11 +10,12 @@ static uint8_t last_wire[512];static size_t last_wire_length;
 json_object *__real_json_object_new_object(void);
 json_object *__wrap_json_object_new_object(void)
 {json_objects++;return __real_json_object_new_object();}
-int __real_vr_ws_encode(int,int,const void *,size_t,uint8_t *,size_t,size_t *);
-int __wrap_vr_ws_encode(int opcode,int mask,const void *bytes,size_t n,uint8_t *out,size_t cap,size_t *length)
+int __real_vr_frame_encode(const vr_frame *,uint8_t *,size_t,size_t *);
+int __wrap_vr_frame_encode(const vr_frame *frame,uint8_t *out,size_t cap,size_t *length)
 {
-    if(opcode==2&&n<=sizeof(last_wire)){memcpy(last_wire,bytes,n);last_wire_length=n;}
-    return __real_vr_ws_encode(opcode,mask,bytes,n,out,cap,length);
+    int result=__real_vr_frame_encode(frame,out,cap,length);
+    if(!result&&*length<=sizeof(last_wire)){memcpy(last_wire,out,*length);last_wire_length=*length;}
+    return result;
 }
 
 static void test_packet_reuse(int binary)

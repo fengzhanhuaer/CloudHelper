@@ -15,12 +15,17 @@
 #define VR_FRAME_MAX (12u + VR_CONTROL_MAX + VR_DATA_MAX)
 #define VR_JSON_MAX (2u * 1024u * 1024u)
 #define VR_LINK_MAX 32
-#define VR_CARRIER_SLOTS 4
+#define VR_CARRIER_SLOTS 2
 #define VR_CARRIER_MAX (VR_LINK_MAX * VR_CARRIER_SLOTS)
 #define VR_ROUTE_MAX 2048
 #define VR_MAPPING_MAX 1024
 #define VR_PATH_MAX 16
 #define VR_PATH_HOPS 3
+#define VR_DIRECT_UPGRADE "chvr-tls"
+#define VR_DIRECT_TRANSPORT "tls-direct"
+#define VR_KEEPALIVE_MAIN 0
+#define VR_KEEPALIVE_PING 1
+#define VR_KEEPALIVE_PONG 2
 #define VR_RELAY_PATH "/api/node/route/relay"
 #define VR_GATEWAY_CIDRS 32
 #define VR_GATEWAY_NODES 64

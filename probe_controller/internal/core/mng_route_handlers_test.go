@@ -27,12 +27,12 @@ func TestMngRoutePageAddVirtualRouterRuleRevealsNewRule(t *testing.T) {
 	}
 }
 
-func TestMngRoutePageIncludesMultiCarrierAndBufferControls(t *testing.T) {
+func TestMngRoutePageKeepsBufferControlsWithFixedCarrierSlots(t *testing.T) {
+	if strings.Contains(mngRoutePageHTML, "data-vr-carrier-count") || strings.Contains(mngRoutePageHTML, "carrier_count:") {
+		t.Fatal("route page still configures carrier count")
+	}
 	markers := []string{
-		`data-vr-carrier-count`,
-		`carrier_count: normalizeVirtualRouterCarrierCount`,
-		`[4, 16, 64, 264]`,
-		`carrier_count: 4`,
+
 		`data-tab="buffers"`,
 		`id="btn-vr-buffers-report"`,
 		`id="btn-vr-buffers-reset"`,
@@ -40,7 +40,7 @@ func TestMngRoutePageIncludesMultiCarrierAndBufferControls(t *testing.T) {
 	}
 	for _, marker := range markers {
 		if !strings.Contains(mngRoutePageHTML, marker) {
-			t.Fatalf("route page missing multi-carrier/buffer marker %q", marker)
+			t.Fatalf("route page missing buffer marker %q", marker)
 		}
 	}
 }

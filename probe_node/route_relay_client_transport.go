@@ -333,56 +333,55 @@ func openProbeVirtualRouterBridgeRelayNetConnWithResolvedHost(routeID string, se
 	return openProbeVirtualRouterBridgeRelayNetConnWithResolvedHostAndSlot(routeID, secret, relayHost, relayPort, layer, bridgeRole, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess, 0)
 }
 
-func openProbeVirtualRouterBridgeRelayNetConnWithResolvedHostAndSlot(routeID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool, slot int) (net.Conn, error) {
-	endpointKey := probeRouteRelayProtocolEndpointKey(relayHost, relayPort)
-	if endpointKey == "" {
-		return nil, errors.New("relay endpoint is required")
+func openProbeVirtualRouterBridgeRelayNetConnWithResolvedHostAndSlot(routeID string, secret string, relayHost string, relayPort int, _ string, bridgeRole string, relayDialHost string, relayHostHeader string, openTimeout time.Duration, cacheOnSuccess bool, slot int) (net.Conn, error) {
+	if openTimeout <= 0 {
+		openTimeout = probeRouteRelayDialTimeout + probeRouteRelayResponseReadDeadline
 	}
-	candidates := probeRouteRelayProtocolCandidates(layer)
-	now := time.Now()
-	if preferred := getProbeRouteRelayProtocolPreferred(endpointKey, candidates, now); preferred != "" {
-		candidates = probeRouteRelayProtocolCandidatesPrefer(candidates, preferred)
-	} else {
-		candidates = probeRouteRelayProtocolCandidatesAllowed(endpointKey, candidates, now)
+	targetURL, err := buildProbeRouteRelayURL(relayHostHeader, relayPort, routeID)
+	if err != nil {
+		return nil, err
 	}
-	log.Printf(
-		"probe virtual router relay protocol dial start: route=%s relay=%s layer=%s bridge_role=%s endpoint=%s candidates=%s",
-		strings.TrimSpace(routeID),
-		strings.TrimSpace(relayHost),
-		normalizeProbeRouteRouteLayer(layer),
-		normalizeProbeRouteBridgeRole(bridgeRole),
-		endpointKey,
-		probeRouteRelayJoinProtocols(candidates),
-	)
-	var lastErr error
-	for _, protocol := range candidates {
-		cleanProtocol := normalizeProbeRouteRouteLayer(protocol)
-		if cleanProtocol == "" {
-			continue
-		}
-		result := probeRouteRelayProtocolDialResult{Protocol: cleanProtocol, StartedAt: time.Now()}
-		connToken := fmt.Sprintf("vrouter-carrier-slot-%d", slot)
-		conn, err := openProbeRouteRelayNetConnWithResolvedHostModeAndToken(routeID, secret, relayHost, relayPort, cleanProtocol, bridgeRole, probeRouteRelayModeBridge, connToken, relayDialHost, relayHostHeader, openTimeout, cacheOnSuccess)
-		result.Latency = time.Since(result.StartedAt)
-		if err == nil {
-			result.Conn = conn
-			recordProbeRouteRelayProtocolSuccess(endpointKey, result, "vrouter_direct")
-			recordProbeRouteRelayProtocolSelected(endpointKey, cleanProtocol, "vrouter_direct")
-			log.Printf("probe virtual router relay protocol selected: route=%s endpoint=%s protocol=%s reason=direct latency_ms=%d", strings.TrimSpace(routeID), endpointKey, cleanProtocol, probeDurationMilliseconds(result.Latency))
-			return conn, nil
-		}
-		result.Err = err
-		lastErr = err
-		log.Printf("probe virtual router relay protocol dial failed: route=%s endpoint=%s protocol=%s err=%v", strings.TrimSpace(routeID), endpointKey, cleanProtocol, err)
-		recordProbeRouteRelayProtocolFailure(endpointKey, result, err)
-		if !isProbeRouteRelayProtocolSwitchableError(err) {
-			break
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), openTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	if err != nil {
+		return nil, err
 	}
-	if lastErr == nil {
-		lastErr = errors.New("no relay protocol candidate")
+	req.Header.Set(probeRouteCodexRouteIDHeader, strings.TrimSpace(routeID))
+	req.Header.Set(probeRouteCodexVersionHeader, probeRouteAuthPacketVersion)
+	req.Header.Set(probeRouteCodexRelayModeHeader, probeRouteRelayModeBridge)
+	req.Header.Set(probeRouteCodexRelayRoleHeader, normalizeProbeRouteBridgeRole(bridgeRole))
+	req.Header.Set(probeRouteCodexCarrierSlotHeader, strconv.Itoa(slot))
+	if err := applyProbeRouteSecretAuthHeaders(req.Header, routeID, secret, currentProbeVirtualRouterLocalNodeID(), req.Method, req.URL.Path, bridgeRole); err != nil {
+		return nil, err
 	}
-	return nil, lastErr
+	tlsConfig, err := newProbeRouteRelayTLSConfig(routeID, relayHostHeader, tls.VersionTLS12, []string{"http/1.1"})
+	if err != nil {
+		return nil, err
+	}
+	target := probeResolvedURLDialTarget{
+		carrier:          true,
+		OriginalEndpoint: req.URL.Host,
+		DialEndpoint:     net.JoinHostPort(relayDialHost, strconv.Itoa(relayPort)),
+		DialEndpoints:    probeRouteRelayDialEndpoints(ctx, relayHost, relayDialHost, relayPort),
+	}
+	conn, err := newProbeResolvedConnectionDialContext(target, openTimeout, tlsConfig)(ctx, "tcp", target.OriginalEndpoint)
+	if err != nil {
+		invalidateProbeRouteRelayResolveCacheAfterFailedDial(relayHost, relayDialHost)
+		return nil, wrapProbeRouteRelayDialError(routewire.DirectTransport, relayDialHost, relayPort, err)
+	}
+	// Send the authenticated request only on the winning TLS socket.
+	deadline, _ := ctx.Deadline()
+	stream, err := routewire.OpenDirect(conn, req, deadline)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	if cacheOnSuccess {
+		connectedHost, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+		refreshProbeRouteRelayResolveCacheOnConnectSuccess(relayHost, firstNonEmpty(connectedHost, relayDialHost), relayHostHeader)
+	}
+	return &probeVirtualRouterNegotiatedConn{Conn: tcpwindow.Carrier(stream, conn), multiCarrier: true, binaryPath: true}, nil
 }
 
 func probeRouteRelayProtocolCandidates(layer string) []string {
@@ -980,7 +979,7 @@ func snapshotProbeVirtualRouterRelayReports(now string) []probeRouteRelayReportI
 			Role:         probeVirtualRouterRuntimeRole,
 			ListenHost:   strings.TrimSpace(cfg.listenHost),
 			ListenPort:   cfg.listenPort,
-			RouteLayer:   normalizeProbeRouteRouteLayer(cfg.routeLayer),
+			RouteLayer:   routewire.DirectTransport,
 			NextHost:     nextHost,
 			NextPort:     nextPort,
 			NextNodeID:   nextNodeID,
@@ -989,30 +988,41 @@ func snapshotProbeVirtualRouterRelayReports(now string) []probeRouteRelayReportI
 			PrevDialMode: prevDialMode,
 			UpdatedAt:    now,
 		}
-		if snapshot := snapshotProbeRouteProtocolState(cfg.listenHost, cfg.listenPort); probeRouteRelaySnapshotHasData(snapshot) {
-			item.ListenState = &snapshot
-		}
-		if nextPort > 0 && nextHost != "" {
-			if snapshot := snapshotProbeRouteProtocolState(nextHost, nextPort); probeRouteRelaySnapshotHasData(snapshot) {
-				item.NextState = &snapshot
-			}
-		}
 		if stats := snapshotProbeVirtualRouterRuntimeStats(cfg.routeID); stats != nil {
 			item.VirtualRouter = stats
 		}
 		_, bridgeStatus, _ := snapshotProbeVirtualRouterPingContext(rt, "")
 		item.BridgeStatus = &bridgeStatus
 		item.BridgeSessions = bridgeStatus.Sessions
+		if nextDialMode == probeRouteDialModeForward {
+			item.NextRouteLayer = routewire.DirectTransport
+			if len(bridgeStatus.Sessions) > 0 {
+				item.NextState = &probeRouteRelayProtocolStateSnapshot{
+					Endpoint:         probeRouteRelayProtocolEndpointKey(nextHost, nextPort),
+					SelectedProtocol: routewire.DirectTransport,
+					UpdatedAt:        bridgeStatus.UpdatedAt,
+				}
+			}
+		} else {
+			listenAddr := net.JoinHostPort(cfg.listenHost, strconv.Itoa(cfg.listenPort))
+			probeVirtualRouterRelayServerState.mu.Lock()
+			listener := probeVirtualRouterRelayServerState.servers[listenAddr]
+			listening := false
+			if listener != nil {
+				_, listening = listener.routeIDs[item.RouteID]
+			}
+			probeVirtualRouterRelayServerState.mu.Unlock()
+			if listening {
+				item.ListenState = &probeRouteRelayProtocolStateSnapshot{
+					Endpoint:         listenAddr,
+					ListenerStatuses: []probeRouteRelayListenerStatus{{Protocol: routewire.DirectTransport, Status: "listening", Listen: listenAddr}},
+					UpdatedAt:        now,
+				}
+			}
+		}
 		out = append(out, item)
 	}
 	return out
-}
-
-func probeRouteRelaySnapshotHasData(snapshot probeRouteRelayProtocolStateSnapshot) bool {
-	return strings.TrimSpace(snapshot.Endpoint) != "" ||
-		strings.TrimSpace(snapshot.SelectedProtocol) != "" ||
-		len(snapshot.ProtocolQualities) > 0 ||
-		len(snapshot.ListenerStatuses) > 0
 }
 
 func openProbeRouteRelayNetConnWithLayer(routeID string, secret string, relayHost string, relayPort int, layer string, bridgeRole string, openTimeout time.Duration) probeRouteRelayProtocolDialResult {

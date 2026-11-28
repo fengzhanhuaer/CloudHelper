@@ -531,6 +531,7 @@ function chainIDMatches(value, matchIDs) {
 
 function formatRelayProtocolLabel(protocol) {
   const clean = String(protocol || "").trim().toLowerCase();
+  if (clean === "tls-direct") return "TLS 直传";
   if (clean === "websocket-h3") return "WS-H3";
   if (clean === "websocket") return "WS";
   if (!clean || clean === "auto" || clean === "default" || clean === "http" || clean === "http2" || clean === "h2" || clean === "http3" || clean === "h3") return "默认";
@@ -1047,8 +1048,7 @@ function renderVRouteCapabilities(capabilities) {
   const items = [
     ["IP帧", capabilities.ip_frame],
     ["IPv4", capabilities.ipv4],
-    ["WebSocket", capabilities.websocket_carrier],
-    ["HTTP/3", capabilities.websocket_h3],
+    ["TLS 直传", capabilities.direct_tls_carrier],
     ["主动拨出", capabilities.outbound_dialer],
     ["入站监听", capabilities.inbound_listener],
     ["TUN回写", capabilities.vpn_tun_writeback],
@@ -1083,6 +1083,7 @@ function appendVRouteEmpty(parent, text) {
 
 function vrouteProtocolLabel(value) {
   const text = String(value || "").trim().toLowerCase();
+  if (text === "tls-direct") return "TLS 直传";
   if (!text || text === "default" || text === "auto") return "auto";
   if (["websocket", "ws", "wss", "http", "https", "http2", "h2"].includes(text)) return "http2";
   if (["websocket-h3", "ws-h3", "h3-websocket", "h3-ws", "h3", "http3", "quic"].includes(text)) return "http3";

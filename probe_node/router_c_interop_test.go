@@ -9,16 +9,13 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"github.com/cloudhelper/probe_node/internal/routewire"
-	"github.com/gorilla/websocket"
 	"io"
 	"net"
-	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -36,12 +33,12 @@ func TestRouterCCarrierWithExistingProbe(t *testing.T) {
 	if binary == "" {
 		t.Skip("set CHVR_CARRIER_TEST to the native C test-carrier executable")
 	}
-	t.Run("CClient", func(t *testing.T) { testRouterCCarrier(t, binary, false, false) })
-	t.Run("CServer", func(t *testing.T) { testRouterCCarrier(t, binary, true, false) })
-	t.Run("LegacyServer", func(t *testing.T) { testRouterCCarrier(t, binary, false, true) })
+	t.Run("CClient", func(t *testing.T) { testRouterCCarrier(t, binary, false) })
+	t.Run("CServer", func(t *testing.T) { testRouterCCarrier(t, binary, true) })
+
 }
 
-func testRouterCCarrier(t *testing.T, binary string, serverMode, legacy bool) {
+func testRouterCCarrier(t *testing.T, binary string, serverMode bool) {
 	resetProbeVirtualRouterStateForTest()
 	t.Cleanup(resetProbeVirtualRouterStateForTest)
 	t.Cleanup(func() { closeProbeVirtualRouterFrameLinks("C interoperability test") })
@@ -55,7 +52,7 @@ func testRouterCCarrier(t *testing.T, binary string, serverMode, legacy bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rule := probeVirtualRouterTopologyRule{ID: "router-c-interop", FromNodeID: "7", ToNodeID: "8", Direction: "forward", RouteLayer: "http2", CarrierCount: 4, Secret: "fixture-only-carrier-secret", Enabled: true, UserPublicKey: base64.StdEncoding.EncodeToString(pub)}
+	rule := probeVirtualRouterTopologyRule{ID: "router-c-interop", FromNodeID: "7", ToNodeID: "8", Direction: "forward", RouteLayer: "http2", Secret: "fixture-only-carrier-secret", Enabled: true, UserPublicKey: base64.StdEncoding.EncodeToString(pub)}
 	if serverMode {
 		rule.FromNodeID = "8"
 		rule.ToNodeID = "7"
@@ -77,21 +74,6 @@ func testRouterCCarrier(t *testing.T, binary string, serverMode, legacy bool) {
 	})
 	server := httptest.NewTLSServer(buildProbeVirtualRouterRelayHandler())
 	t.Cleanup(server.Close)
-	if legacy {
-		server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Header.Get(probeRouteCodexCarrierSlotHeader) != "0" {
-				t.Error("legacy peer received extra slot")
-				http.Error(w, "slot", 400)
-				return
-			}
-			ws, err := (&websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}).Upgrade(w, r, nil)
-			if err != nil {
-				return
-			}
-			defer ws.Close()
-			runProbeVirtualRouterPhysicalCarrier(rt, 0, newWebSocketNetConn(ws), "legacy", r.RemoteAddr)
-		})
-	}
 	spki := sha256.Sum256(server.Certificate().RawSubjectPublicKeyInfo)
 	rule.ToTLSSPKISHA256 = hex.EncodeToString(spki[:])
 	rule.ToServiceDomain = "127.0.0.1"
@@ -106,17 +88,6 @@ func testRouterCCarrier(t *testing.T, binary string, serverMode, legacy bool) {
 	data, err := json.Marshal(config)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if legacy {
-		var payload map[string]interface{}
-		if err = json.Unmarshal(data, &payload); err != nil {
-			t.Fatal(err)
-		}
-		payload["test_expected_slots"] = 1
-		data, err = json.Marshal(payload)
-		if err != nil {
-			t.Fatal(err)
-		}
 	}
 	port := 0
 	if serverMode {
@@ -180,7 +151,7 @@ func testRouterCCarrier(t *testing.T, binary string, serverMode, legacy bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, path)
-	// Exercise real Probe carrier TX workers on every new TLS/WS connection,
+	// Exercise real Probe carrier TX workers on every new TLS connection,
 	// including the replacement session, rather than merely counting sockets.
 	var sender sync.WaitGroup
 	sender.Add(1)
@@ -235,7 +206,7 @@ func testRouterCCarrier(t *testing.T, binary string, serverMode, legacy bool) {
 			cmd.Wait()
 			t.Fatalf("C server not ready: %q %v %s", line, err, errors.String())
 		}
-		for _, slot := range []int{4, 263} {
+		for _, slot := range []int{2, 263} {
 			conn, _, err := openProbeVirtualRouterBridgeRelayNetConnWithDomainPolicyForSlot(routeID, rule.Secret, "127.0.0.1", port, "http2", probeRouteBridgeRoleToNext, time.Second, true, slot)
 			if err == nil {
 				conn.Close()
@@ -245,7 +216,7 @@ func testRouterCCarrier(t *testing.T, binary string, serverMode, legacy bool) {
 			}
 		}
 		var workers sync.WaitGroup
-		for slot := 0; slot < 4; slot++ {
+		for slot := range routewire.DirectCarrierSlots {
 			workers.Add(1)
 			go func(slot int) {
 				defer workers.Done()
@@ -278,7 +249,7 @@ func testRouterCCarrier(t *testing.T, binary string, serverMode, legacy bool) {
 		if copyErr != nil || err != nil {
 			t.Fatalf("C server failed: %v %v %s", copyErr, err, errors.String())
 		}
-		checkRouterCCompletion(t, output.String(), false)
+		checkRouterCCompletion(t, output.String())
 		return
 	}
 	out, err := cmd.CombinedOutput()
@@ -286,7 +257,7 @@ func testRouterCCarrier(t *testing.T, binary string, serverMode, legacy bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	checkRouterCCompletion(t, string(out), legacy)
+	checkRouterCCompletion(t, string(out))
 	flowCount := 0
 	for _, line := range strings.Split(string(out), "\n") {
 		if strings.HasPrefix(line, "FLOW ") {
@@ -299,12 +270,9 @@ func testRouterCCarrier(t *testing.T, binary string, serverMode, legacy bool) {
 	}
 }
 
-func checkRouterCCompletion(t *testing.T, output string, legacy bool) {
+func checkRouterCCompletion(t *testing.T, output string) {
 	t.Helper()
-	markers := []string{"PASS: Probe VR frames received on every physical slot", "PASS: C to existing Probe ping", "PASS: C to existing Probe upload", "PASS: C to existing Probe download"}
-	if !legacy {
-		markers = append(markers, "PASS: four carriers, isolated detach and reconnect")
-	}
+	markers := []string{"PASS: Probe VR frames received on every physical slot", "PASS: C to existing Probe ping", "PASS: C to existing Probe upload", "PASS: C to existing Probe download", "PASS: two carriers, isolated detach and reconnect"}
 	for _, marker := range markers {
 		if !strings.Contains(output, marker) {
 			t.Fatalf("C fixture missing completion marker %q", marker)
@@ -318,9 +286,7 @@ func checkRouterCFlow(t *testing.T, line string) {
 	if _, err := fmt.Sscanf(line, "FLOW %d %d", &port, &slot); err != nil {
 		t.Fatal(err)
 	}
-	packet := []byte{0x45, 0, 0, 28, 0, 0, 0, 0, 64, 17, 0, 0, 10, 0, 0, 1, 10, 0, 0, 2, 0, 0, 1, 187, 0, 8, 0, 0}
-	binary.BigEndian.PutUint16(packet[20:22], uint16(port))
-	if want := int(probeVirtualRouterPacketFlowHash(packet, 2166136261) % 4); slot != want {
-		t.Fatalf("C/Probe flow hash differs: port=%d slot=%d want=%d", port, slot, want)
+	if want := (port - 1000) / 2 % routewire.DirectCarrierSlots; slot != want {
+		t.Fatalf("C round-robin: port=%d slot=%d want=%d", port, slot, want)
 	}
 }

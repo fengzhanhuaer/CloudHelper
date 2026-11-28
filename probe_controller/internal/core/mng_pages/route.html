@@ -1333,15 +1333,6 @@
       return 'auto';
     }
 
-    function virtualRouterRouteLayerSelect(rule, idx) {
-      const value = normalizeVirtualRouterRouteLayer(rule && rule.route_layer);
-      return `<select data-vr-route-layer="${idx}">
-        <option value="auto" ${value === 'auto' ? 'selected' : ''}>auto</option>
-        <option value="http2" ${value === 'http2' ? 'selected' : ''}>http2</option>
-        <option value="http3" ${value === 'http3' ? 'selected' : ''}>http3</option>
-      </select>`;
-    }
-
 	async function loadVirtualRouterBuffers(silent) {
 	  const payload = await requestJSON('/mng/api/route/virtual_router/buffers');
 	  state.virtualRouterBuffers = Array.isArray(payload.items) ? payload.items : [];
@@ -1417,18 +1408,6 @@
 	  setStatus(`${action === 'reset' ? '重新统计' : '召唤上报'}已下发：${Number(sync.dispatched || 0)}/${Number(sync.total || 0)}，离线 ${Number(sync.offline || 0)}，失败 ${failed}`, failed > 0 ? 'warn' : 'ok');
 	  window.setTimeout(() => loadVirtualRouterBuffers(true).catch((err) => setStatus(`刷新缓冲状态失败：${err.message || err}`, 'err')), 900);
 	}
-
-    function normalizeVirtualRouterCarrierCount(raw) {
-      const value = Number.parseInt(String(raw || ''), 10);
-      return [4, 16, 64, 264].includes(value) ? value : 4;
-    }
-
-    function virtualRouterCarrierCountSelect(rule, idx) {
-      const value = normalizeVirtualRouterCarrierCount(rule && rule.carrier_count);
-      return `<select data-vr-carrier-count="${idx}">
-        ${[4, 16, 64, 264].map((count) => `<option value="${count}" ${value === count ? 'selected' : ''}>${count}</option>`).join('')}
-      </select>`;
-    }
 
     function virtualRouterSpeedNodeIDs() {
       const ids = new Set();
@@ -1526,8 +1505,7 @@
             <td>
               <div class="endpoint-stack">
                 <div class="endpoint-row"><span class="label">入口探针</span><select data-vr-rule-from="${idx}">${virtualRouterNodeOptions(rule.from_node_id)}</select></div>
-                <div class="endpoint-row"><span class="label">协议</span>${virtualRouterRouteLayerSelect(rule, idx)}</div>
-				<div class="endpoint-row"><span class="label">连接数</span>${virtualRouterCarrierCountSelect(rule, idx)}</div>
+                <div class="endpoint-row"><span class="label">协议</span><span>TLS 直传</span></div>
                 <div class="endpoint-hint">主动连接监听探针，不在本端配置监听。</div>
               </div>
             </td>
@@ -1595,20 +1573,6 @@
           renderVirtualRouter();
         });
       });
-      document.querySelectorAll('[data-vr-route-layer]').forEach((el) => {
-        el.addEventListener('change', () => {
-          const idx = Number.parseInt(el.getAttribute('data-vr-route-layer') || '-1', 10);
-          const rules = state.virtualRouter.topology_rules || [];
-          if (idx >= 0 && idx < rules.length) rules[idx].route_layer = normalizeVirtualRouterRouteLayer(el.value);
-        });
-      });
-	  document.querySelectorAll('[data-vr-carrier-count]').forEach((el) => {
-		el.addEventListener('change', () => {
-		  const idx = Number.parseInt(el.getAttribute('data-vr-carrier-count') || '-1', 10);
-		  const rules = state.virtualRouter.topology_rules || [];
-		  if (idx >= 0 && idx < rules.length) rules[idx].carrier_count = normalizeVirtualRouterCarrierCount(el.value);
-		});
-	  });
       document.querySelectorAll('[data-vr-rule-save]').forEach((el) => {
         el.addEventListener('click', () => {
           const idx = Number.parseInt(el.getAttribute('data-vr-rule-save') || '-1', 10);
@@ -1657,7 +1621,6 @@
         to_service_domain: '',
         to_service_port: 0,
         route_layer: 'auto',
-		carrier_count: 4,
         enabled: true,
       });
       renderVirtualRouter();
@@ -1683,7 +1646,6 @@
         to_service_port: 0,
         to_tls_spki_sha256: String(rule.to_tls_spki_sha256 || '').trim(),
         route_layer: normalizeVirtualRouterRouteLayer(rule.route_layer),
-		carrier_count: normalizeVirtualRouterCarrierCount(rule.carrier_count),
         user_id: String(rule.user_id || '').trim(),
         user_public_key: String(rule.user_public_key || '').trim(),
         secret: String(rule.secret || '').trim(),
@@ -1718,7 +1680,6 @@
         rule.from_service_port = 0;
         rule.to_service_port = 0;
         rule.route_layer = normalizeVirtualRouterRouteLayer(rule.route_layer);
-		rule.carrier_count = normalizeVirtualRouterCarrierCount(rule.carrier_count);
       });
       const result = await requestJSON('/mng/api/route/virtual_router', {
         method: 'POST',

@@ -85,7 +85,7 @@ static void test_tcp_proxy(vr_engine *e)
 
 static void test_hot_update(vr_engine *e,int expected)
 {
-    SSL *ssl[4];int fd[4];uint64_t session[4];
+    SSL *ssl[VR_CARRIER_SLOTS];int fd[VR_CARRIER_SLOTS];uint64_t session[VR_CARRIER_SLOTS];
     for(int i=0;i<expected;i++){ssl[i]=e->links[i].ssl;fd[i]=e->links[i].fd;session[i]=e->links[i].session;}
     for(int revision=0;revision<8;revision++) {
         const char *text=json_object_to_json_string_ext(e->snapshot,JSON_C_TO_STRING_PLAIN);
@@ -107,8 +107,8 @@ static void test_pool(vr_engine *e)
 {
     assert(vr_carrier_slot("GET / HTTP/1.1\r\n\r\n")==0);
     assert(vr_carrier_slot("GET / HTTP/1.1\r\nX-Codex-VRouter-Carrier-Slot: \r\n\r\n")==0);
-    assert(vr_carrier_slot("GET / HTTP/1.1\r\nx-codex-vrouter-carrier-slot: 3\r\n\r\n")==3);
-    const char *invalid[]={"-1","4","264","oops","1oops","99999999999999999999999999999999999999999","0\r\nX-Codex-VRouter-Carrier-Slot: 1"};
+    assert(vr_carrier_slot("GET / HTTP/1.1\r\nx-codex-vrouter-carrier-slot: 1\r\n\r\n")==1);
+    const char *invalid[]={"-1","2","264","oops","1oops","99999999999999999999999999999999999999999","0\r\nX-Codex-VRouter-Carrier-Slot: 1"};
     for(size_t i=0;i<sizeof(invalid)/sizeof(*invalid);i++) {
         char header[256];snprintf(header,sizeof(header),"GET / HTTP/1.1\r\nX-Codex-VRouter-Carrier-Slot: %s\r\n\r\n",invalid[i]);
         assert(vr_carrier_slot(header)<0);
@@ -120,16 +120,16 @@ static void test_pool(vr_engine *e)
     uint8_t packet[28]={0x45,0,0,28,0,0,0,0,64,17,0,0,10,0,0,1,10,0,0,2,0,0,1,187,0,8,0,0};
     uint8_t reverse[28];vr_frame f={1,1,NULL,packet,0,sizeof(packet)};
     unsigned seen=0;vr_link *first=NULL;
-    for(unsigned port=1000;port<1032;port++) {
+    for(unsigned port=1000;port<1064;port+=2) {
         packet[20]=(uint8_t)(port>>8);packet[21]=(uint8_t)port;
-        vr_link *l=vr_carrier_select(e,"8",&f);assert(l);seen|=1u<<l->slot;if(!first)first=l;
+        vr_link *l=vr_carrier_select(e,"8",&f);assert(l&&l->slot==(int)((port-1000)/2%VR_CARRIER_SLOTS));seen|=1u<<l->slot;if(!first)first=l;
         printf("FLOW %u %d\n",port,l->slot);
         memcpy(reverse,packet,sizeof(packet));memcpy(reverse+12,packet+16,4);memcpy(reverse+16,packet+12,4);
         memcpy(reverse+20,packet+22,2);memcpy(reverse+22,packet+20,2);f.data=reverse;
         assert(vr_carrier_select(e,"8",&f)==l);f.data=packet;
     }
-    assert(seen==15);
-    vr_link *selected=vr_carrier_select(e,"8",&f),*other=&e->links[(selected->slot+1)%4];
+    assert(seen==(1u<<VR_CARRIER_SLOTS)-1);
+    vr_link *selected=vr_carrier_select(e,"8",&f),*other=&e->links[(selected->slot+1)%VR_CARRIER_SLOTS];
     uint64_t other_session=other->session;
     vr_link_close(other,"");assert(vr_carrier_select(e,"8",&f)==selected);
     other->ssl=SSL_new(ctx);other->session=++e->carrier_session;assert(other->session!=other_session);
@@ -147,7 +147,7 @@ static void test_pool(vr_engine *e)
     uint8_t data[17]={0x00,0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88,0x99,0xaa,0xbb,0xcc,0xdd,0xee,0xff,1};
     proxy.sub=3;proxy.data=data;proxy.data_len=sizeof(data);assert(vr_carrier_select(e,"8",&proxy)==bound);
     json_object *rows=vr_links_status(e);assert(json_object_array_length(rows)==1);
-    assert(json_object_get_int(vr_member(json_object_array_get_idx(rows,0),"carrier_count"))==4);json_object_put(rows);
+    assert(json_object_get_int(vr_member(json_object_array_get_idx(rows,0),"carrier_count"))==VR_CARRIER_SLOTS);json_object_put(rows);
     for(size_t i=0;i<e->link_count;i++){vr_link_close(&e->links[i],"");e->links[i].retry=0;}
     memset(e->bindings,0,sizeof(e->bindings));SSL_CTX_free(ctx);
     fputs("PASS: flow affinity, symmetric keys, recovery, backpressure and bounded status\n",stderr);
@@ -169,29 +169,25 @@ int main(int argc,char **argv)
         e->lan=vr_bind4("127.0.0.1",json_object_get_int(vr_member(e->policy,"test_port")),1);assert(e->lan>=0);
         puts("READY");fflush(stdout);
     }
-    int expected=json_object_get_int(vr_member(e->policy,"test_expected_slots"));if(!expected)expected=4;
+    int expected=VR_CARRIER_SLOTS;
     uint64_t deadline=vr_millis()+15000;
     while(active(e)!=expected&&vr_millis()<deadline)tick(e);
     if(!l->ssl)fprintf(stderr,"carrier: %s\n",l->error);
     assert(l->ssl&&active(e)==expected);
-    for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl)assert(e->links[i].binary_path==(expected>1));
+    for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl)assert(e->links[i].binary_path);
     deadline=vr_millis()+5000;while(received_slots!=(unsigned)((1<<expected)-1)&&vr_millis()<deadline)tick(e);
     assert(received_slots==(unsigned)((1<<expected)-1));
     puts("PASS: Probe VR frames received on every physical slot");fflush(stdout);
     test_hot_update(e,expected);
     test_tcp_proxy(e);
-    for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl)assert(!vr_link_queue(&e->links[i],9,"slot-alive",10));
+    for(size_t i=0;i<e->link_count;i++)if(e->links[i].ssl)assert(!vr_link_keepalive(&e->links[i],VR_KEEPALIVE_PING));
     deadline=vr_millis()+1000;while(vr_millis()<deadline)tick(e);
-    if(expected==1)assert(active(e)==1); /* No speculative extra dials to legacy peers. */
-    if(expected>1) {
-        uint64_t sessions[4];for(int i=0;i<4;i++)sessions[i]=e->links[i].session;
-        vr_link_close(&e->links[2],"test detach");e->links[2].retry=0;
-        assert(active(e)==3);puts("DETACHED 2");fflush(stdout);
-        deadline=vr_millis()+15000;while(active(e)!=4&&vr_millis()<deadline)tick(e);
-        assert(active(e)==4&&e->links[2].session!=sessions[2]);
-        for(int i=0;i<4;i++)if(i!=2)assert(e->links[i].session==sessions[i]);
-        puts("PASS: four carriers, isolated detach and reconnect");fflush(stdout);
-    }
+    uint64_t primary_session=e->links[0].session, secondary_session=e->links[1].session;
+    vr_link_close(&e->links[1],"test detach");e->links[1].retry=0;
+    assert(active(e)==1);
+    deadline=vr_millis()+15000;while(active(e)!=expected&&vr_millis()<deadline)tick(e);
+    assert(active(e)==expected&&e->links[1].session!=secondary_session&&e->links[0].session==primary_session);
+    puts("PASS: two carriers, isolated detach and reconnect");fflush(stdout);
     int no_delay=0;socklen_t no_delay_length=sizeof(no_delay);
     assert(!getsockopt(l->fd,IPPROTO_TCP,TCP_NODELAY,&no_delay,&no_delay_length)&&no_delay==1);
     /* All native and vendor ABI fixtures run on a Linux kernel supporting

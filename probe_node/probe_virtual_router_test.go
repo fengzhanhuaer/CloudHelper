@@ -3246,11 +3246,9 @@ func TestProbeVirtualRouterTUNPacketDropsFakeIPWhenExitCarrierUnavailable(t *tes
 	if !strings.Contains(item.Error, "fake ip exit unreachable") {
 		t.Fatalf("recent packet error=%q, want fake ip exit unreachable", item.Error)
 	}
-	probeVirtualRouterFrameLinkState.mu.Lock()
-	linkCount := len(probeVirtualRouterFrameLinkState.links)
-	probeVirtualRouterFrameLinkState.mu.Unlock()
-	if linkCount != 0 {
-		t.Fatalf("frame links=%d, want 0 because packet should not be forwarded", linkCount)
+	// The background Fake IP verification may open a link for a control frame.
+	if stats := snapshotProbeVirtualRouterRuntimeStats(rt.cfg.routeID); stats != nil && stats.PacketsForwarded != 0 {
+		t.Fatalf("forwarded %d packets without an exit carrier", stats.PacketsForwarded)
 	}
 }
 
@@ -5892,17 +5890,14 @@ func TestProbeVirtualRouterFrameLinkMultiCarrierKeepsFlowAffinity(t *testing.T) 
 		t.Fatalf("bidirectional flow selected different slots: forward=%d reverse=%d", forwardCarrier.slot, reverseCarrier.slot)
 	}
 
-	seen := map[int]bool{}
-	for port := 40000; port < 40256; port++ {
+	// Even-numbered source ports also rotate, regardless of hash parity.
+	for port := 40000; port < 40008; port += 2 {
 		frame := probeVirtualRouterFrame{MainType: probeVirtualRouterFrameMainTypeIP, SubType: probeVirtualRouterIPSubTypeIPv4, Data: buildProbeVirtualRouterTestTCPPacket(t, "198.18.0.7", "198.18.4.52", uint16(port), 443)}
 		carrier, selectErr := link.selectCarrierForFrame(frame)
-		if selectErr != nil {
-			t.Fatalf("select carrier for port %d: %v", port, selectErr)
+		want := (forwardCarrier.slot + 1 + (port-40000)/2) % 2
+		if selectErr != nil || carrier.slot != want {
+			t.Fatalf("new flow port %d carrier=%v want slot %d err=%v", port, carrier, want, selectErr)
 		}
-		seen[carrier.slot] = true
-	}
-	if !seen[0] || !seen[1] {
-		t.Fatalf("independent flows did not distribute across slots: %v", seen)
 	}
 
 	sessionID := strings.Repeat("ab", probeVRouteProxySessionIDBytes)
@@ -5942,13 +5937,13 @@ func TestProbeVirtualRouterMultiCarrierNegotiationAndSlotValidation(t *testing.T
 	if slot, err := probeVirtualRouterCarrierSlotFromRequest(request); err != nil || slot != 0 {
 		t.Fatalf("legacy request slot=(%d,%v), want (0,nil)", slot, err)
 	}
-	request.Header.Set(probeRouteCodexCarrierSlotHeader, "263")
-	if slot, err := probeVirtualRouterCarrierSlotFromRequest(request); err != nil || slot != 263 {
-		t.Fatalf("multi-carrier request slot=(%d,%v), want (263,nil)", slot, err)
+	request.Header.Set(probeRouteCodexCarrierSlotHeader, "1")
+	if slot, err := probeVirtualRouterCarrierSlotFromRequest(request); err != nil || slot != 1 {
+		t.Fatalf("multi-carrier request slot=(%d,%v), want (1,nil)", slot, err)
 	}
-	request.Header.Set(probeRouteCodexCarrierSlotHeader, "264")
+	request.Header.Set(probeRouteCodexCarrierSlotHeader, "2")
 	if _, err := probeVirtualRouterCarrierSlotFromRequest(request); err == nil {
-		t.Fatal("slot outside 0..263 should be rejected")
+		t.Fatal("slot outside 0..1 should be rejected")
 	}
 
 	left, right := net.Pipe()
@@ -5967,23 +5962,6 @@ func TestProbeVirtualRouterMultiCarrierNegotiationAndSlotValidation(t *testing.T
 		t.Fatal("missing capability response should remain single-carrier")
 	}
 	_ = legacy.Close()
-}
-
-func TestProbeVirtualRouterCarrierCountDefaultsAndAllowedValues(t *testing.T) {
-	for _, test := range []struct {
-		input int
-		want  int
-	}{{0, 4}, {-1, 4}, {1, 4}, {3, 4}, {4, 4}, {16, 16}, {64, 64}, {264, 264}, {265, 4}} {
-		if got := normalizeProbeVirtualRouterCarrierCount(test.input); got != test.want {
-			t.Fatalf("normalize carrier count %d=%d, want %d", test.input, got, test.want)
-		}
-	}
-	rules := sanitizeProbeVirtualRouterTopologyRules([]probeVirtualRouterTopologyRule{{
-		ID: "vr-carriers", FromNodeID: "1", ToNodeID: "2", Direction: "forward", CarrierCount: 64, Enabled: true,
-	}})
-	if len(rules) != 1 || rules[0].CarrierCount != 64 {
-		t.Fatalf("sanitized carrier count was not preserved: %+v", rules)
-	}
 }
 
 func TestProbeVirtualRouterFrameLinkCarrierFailureOnlyRemapsAffectedFlows(t *testing.T) {

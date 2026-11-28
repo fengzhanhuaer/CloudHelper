@@ -49,89 +49,25 @@ func TestAsusNodeKindPersistsAndRejectsGenericInstallAndUpgrade(t *testing.T) {
 	}
 }
 
-func TestAsusEdgesUseTLSWebSocketInBothEndpointSnapshots(t *testing.T) {
+func TestAsusTopologySnapshotDoesNotPublishLegacyCarrierCount(t *testing.T) {
 	setProbeVirtualRouterTestProbeStore(t, probeConfigData{ProbeNodes: []probeNodeRecord{
 		{NodeNo: 1, NodeKind: probeNodeKindNormal},
 		{NodeNo: 2, NodeKind: probeNodeKindAsus56UV2},
-		{NodeNo: 3, NodeKind: probeNodeKindNormal},
 	}})
 	old := ProbeRouteConfigStore
 	t.Cleanup(func() { ProbeRouteConfigStore = old })
-	ProbeRouteConfigStore = &probeRouteConfigStore{data: probeRouteConfigStoreData{VirtualRouter: probeVirtualRouterConfig{
-		Enabled: true, FakeIPCIDR: "198.18.0.0/15",
-		TopologyRules: []probeVirtualRouterTopologyRule{
-			{ID: "in", FromNodeID: "1", ToNodeID: "2", RouteLayer: "http3", CarrierCount: 64, Enabled: true},
-			{ID: "out", FromNodeID: "2", ToNodeID: "3", RouteLayer: "auto", CarrierCount: 16, Enabled: true},
-			{ID: "ordinary", FromNodeID: "1", ToNodeID: "3", RouteLayer: "http3", CarrierCount: 4, Enabled: true},
-		},
-	}}}
-	for _, nodeID := range []string{"1", "2", "3"} {
-		config := buildProbeVirtualRouterConfigForNodeLocked(nodeID)
-		for _, edge := range config.TopologyRules {
-			if edge.ID == "ordinary" {
-				if edge.RouteLayer != "http3" || edge.CarrierCount != 4 {
-					t.Fatal("ordinary edge capabilities changed")
-				}
-			} else if edge.RouteLayer != "http2" || edge.CarrierCount != 1 {
-				t.Fatalf("node %s edge %s requires unsupported transport: %s/%d", nodeID, edge.ID, edge.RouteLayer, edge.CarrierCount)
-			}
+	var config probeVirtualRouterConfig
+	err := json.Unmarshal([]byte(`{"enabled":true,"topology_rules":[{"id":"edge","from_node_id":"1","to_node_id":"2","enabled":true,"carrier_count":64}]}`), &config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ProbeRouteConfigStore = &probeRouteConfigStore{data: probeRouteConfigStoreData{VirtualRouter: config}}
+	for _, nodeID := range []string{"1", "2"} {
+		snapshot := buildProbeVirtualRouterConfigForNodeLocked(nodeID)
+		payload, err := json.Marshal(snapshot)
+		if err != nil || len(snapshot.TopologyRules) != 1 || strings.Contains(string(payload), `"carrier_count"`) {
+			t.Fatalf("node %s snapshot=%s err=%v", nodeID, payload, err)
 		}
-	}
-	stored := ProbeRouteConfigStore.data.VirtualRouter.TopologyRules
-	if stored[0].RouteLayer != "http3" || stored[0].CarrierCount != 64 || stored[1].RouteLayer != "auto" {
-		t.Fatal("capability adaptation mutated stored topology")
-	}
-}
-
-func TestAsusCarrierCapabilitiesApplyToBothEndpointsAndDowngrade(t *testing.T) {
-	setProbeVirtualRouterTestProbeStore(t, probeConfigData{ProbeNodes: []probeNodeRecord{
-		{NodeNo: 921, NodeKind: probeNodeKindNormal},
-		{NodeNo: 922, NodeKind: probeNodeKindAsus56UV2},
-		{NodeNo: 923, NodeKind: probeNodeKindAsus56UV2},
-	}})
-	probeRuntimeStore.mu.Lock()
-	old := probeRuntimeStore.data
-	probeRuntimeStore.data = map[string]probeRuntimeStatus{
-		"921": {BuildKind: probeNodeKindNormal},
-		"922": {BuildKind: probeNodeKindAsus56UV2},
-		"923": {BuildKind: probeNodeKindAsus56UV2},
-	}
-	probeRuntimeStore.mu.Unlock()
-	t.Cleanup(func() { probeRuntimeStore.mu.Lock(); probeRuntimeStore.data = old; probeRuntimeStore.mu.Unlock() })
-	config := probeVirtualRouterConfig{TopologyRules: []probeVirtualRouterTopologyRule{
-		{ID: "normal-asus", FromNodeID: "921", ToNodeID: "922", CarrierCount: 64, RouteLayer: "http3"},
-		{ID: "asus-asus", FromNodeID: "922", ToNodeID: "923", CarrierCount: 16, RouteLayer: "auto"},
-	}}
-	if !updateProbeRuntimeRouterPluginCarriers("922", 4) || updateProbeRuntimeRouterPluginCarriers("922", 4) {
-		t.Fatal("capability changes must sync exactly once")
-	}
-	if updateProbeRuntimeRouterPluginCarriers("921", 4) {
-		t.Fatal("ordinary node claimed ASUS capability")
-	}
-	got := applyProbeRouterTransportCapabilities(config)
-	if got.TopologyRules[0].CarrierCount != 4 || got.TopologyRules[1].CarrierCount != 1 {
-		t.Fatal("mixed capabilities did not use the smaller endpoint limit")
-	}
-	if !updateProbeRuntimeRouterPluginCarriers("923", 4) {
-		t.Fatal("missing new capability")
-	}
-	got = applyProbeRouterTransportCapabilities(config)
-	for _, r := range got.TopologyRules {
-		if r.RouteLayer != "http2" || r.CarrierCount != 4 {
-			t.Fatalf("wrong capability: %+v", r)
-		}
-	}
-	if !updateProbeRuntimeRouterPluginCarriers("922", 0) {
-		t.Fatal("old plugin report must revoke multi-carrier capability")
-	}
-	got = applyProbeRouterTransportCapabilities(config)
-	for _, r := range got.TopologyRules {
-		if r.CarrierCount != 1 {
-			t.Fatal("downgrade did not restore legacy behavior")
-		}
-	}
-	if config.TopologyRules[0].CarrierCount != 64 || config.TopologyRules[1].CarrierCount != 16 || config.TopologyRules[0].RouteLayer != "http3" {
-		t.Fatal("capability filtering mutated stored topology")
 	}
 }
 

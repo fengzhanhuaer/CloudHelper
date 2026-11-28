@@ -91,7 +91,6 @@ type probeVirtualRouterBufferReport struct {
 }
 
 type probeRuntimeStatus struct {
-	RouterPluginCarrierSlots  int                            `json:"router_plugin_carrier_slots,omitempty"`
 	RouterPluginUpgrade       bool                           `json:"router_plugin_upgrade,omitempty"`
 	RouterPluginUpgradeStatus *probeRouterUpgradeStatus      `json:"router_plugin_upgrade_status,omitempty"`
 	GatewayProxy              *probeGatewayProxyConfig       `json:"gateway_proxy,omitempty"`
@@ -114,20 +113,6 @@ type probeRuntimeStatus struct {
 	MachineUptimeSeconds      int64                          `json:"machine_uptime_seconds,omitempty"`
 	RelayStatus               []probeRelayStatusItem         `json:"relay_status,omitempty"`
 	VirtualRouterBuffers      probeVirtualRouterBufferReport `json:"virtual_router_buffers,omitempty"`
-}
-
-func updateProbeRuntimeRouterPluginCarriers(nodeID string, slots int) bool {
-	probeRuntimeStore.mu.Lock()
-	defer probeRuntimeStore.mu.Unlock()
-	current := probeRuntimeStore.data[nodeID]
-	// Four is the bounded ASUS pool; absent/unknown reports retain legacy mode.
-	if current.BuildKind != probeNodeKindAsus56UV2 || slots != 4 {
-		slots = 0
-	}
-	changed := current.RouterPluginCarrierSlots != slots
-	current.RouterPluginCarrierSlots = slots
-	probeRuntimeStore.data[nodeID] = current
-	return changed
 }
 
 func updateProbeRuntimeRouterPluginUpgrade(nodeID string, supported bool) {

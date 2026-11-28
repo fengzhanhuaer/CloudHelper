@@ -689,7 +689,6 @@ func sanitizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopologyR
 			ToServicePort:     toServicePort,
 			ToTLSSPKISHA256:   normalizeProbeRouteTLSSPKI(item.ToTLSSPKISHA256),
 			RouteLayer:        normalizeProbeRouteRouteLayer(item.RouteLayer),
-			CarrierCount:      normalizeProbeVirtualRouterCarrierCount(item.CarrierCount),
 			UserID:            strings.TrimSpace(item.UserID),
 			UserPublicKey:     strings.TrimSpace(item.UserPublicKey),
 			Secret:            strings.TrimSpace(item.Secret),
@@ -4875,7 +4874,8 @@ func (s *probeVirtualRouterFrameLink) selectCarrierForFrame(frame probeVirtualRo
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	active := make([]*probeVirtualRouterPhysicalCarrier, 0, len(s.carriers))
+	var available [probeVirtualRouterCarrierMaxCount]*probeVirtualRouterPhysicalCarrier
+	active := available[:0]
 	for slot := 0; slot < probeVirtualRouterCarrierMaxCount; slot++ {
 		if token := s.carriers[slot]; token != nil && token.conn != nil {
 			active = append(active, token)
@@ -4917,7 +4917,11 @@ func (s *probeVirtualRouterFrameLink) selectCarrierForFrame(frame probeVirtualRo
 			delete(s.flowBindings, oldestKey)
 		}
 	}
-	token := active[int(hash%uint32(len(active)))]
+	token := active[0]
+	if preferred := s.carriers[s.nextFlowSlot]; preferred != nil && preferred.conn != nil {
+		token = preferred
+	}
+	s.nextFlowSlot = (token.slot + 1) % probeVirtualRouterCarrierMaxCount
 	s.flowBindings[hash] = probeVirtualRouterCarrierFlowBinding{Slot: token.slot, LastSeen: now}
 	return token, nil
 }
@@ -5125,8 +5129,19 @@ func (s *probeVirtualRouterFrameLink) runCarrierRXWorker(token *probeVirtualRout
 			s.detachCarrierWithReason(token, "rx_read_error", err)
 			return
 		}
-		frame = appendProbeVirtualRouterWireFrameICMPTrace(frame, s.runtime, s.requestPath, "carrier_rx")
 		token.markRead()
+		if frame.MainType == routewire.KeepaliveMain {
+			if !routewire.ValidKeepalive(frame.SubType, frame.Control, frame.Data) {
+				s.detachCarrierWithReason(token, "rx_protocol_error", errors.New("invalid carrier keepalive"))
+				return
+			}
+			if frame.SubType == routewire.KeepalivePing {
+				token.tx.TryPush(probeVirtualRouterFrame{MainType: routewire.KeepaliveMain, SubType: routewire.KeepalivePong})
+			}
+			s.touch()
+			continue
+		}
+		frame = appendProbeVirtualRouterWireFrameICMPTrace(frame, s.runtime, s.requestPath, "carrier_rx")
 		if shouldHandleProbeVirtualRouterFrameInRXWorker(s.runtime, frame, s.requestPath) {
 			if err := handleProbeVirtualRouterFrame(s.runtime, s, frame, s.requestPath); err != nil {
 				log.Printf("probe virtual router frame rx inline failed: route=%s key=%s slot=%d path=%s err=%v", probeVirtualRouterRuntimeLogRouteID(s.runtime), s.key, token.slot, probeVirtualRouterWireFramePathString(frame, s.requestPath), err)

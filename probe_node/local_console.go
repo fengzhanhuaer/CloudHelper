@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cloudhelper/probe_node/internal/routewire"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -2658,8 +2659,7 @@ func probeLocalVirtualRouterRuntimeStatusPayloads() []map[string]any {
 	out := make([]map[string]any, 0, len(runtimes))
 	for _, rt := range runtimes {
 		cfg := rt.cfg
-		selectedProtocol, selectedProtocolEndpoint := probeLocalVirtualRouterRuntimeSelectedProtocol(cfg)
-		routeLayer := normalizeProbeRouteRouteLayer(cfg.routeLayer)
+		endpoint := probeLocalVirtualRouterRuntimeEndpoint(cfg)
 		item := map[string]any{
 			"route_id":                   strings.TrimSpace(cfg.routeID),
 			"name":                       strings.TrimSpace(cfg.name),
@@ -2674,10 +2674,10 @@ func probeLocalVirtualRouterRuntimeStatusPayloads() []map[string]any {
 			"peer_port":                  cfg.peerPort,
 			"listen_host":                strings.TrimSpace(cfg.listenHost),
 			"listen_port":                cfg.listenPort,
-			"route_layer":                routeLayer,
-			"selected_protocol":          selectedProtocol,
-			"selected_protocol_endpoint": selectedProtocolEndpoint,
-			"protocol_text":              probeLocalVirtualRouterRuntimeProtocolText(routeLayer, selectedProtocol),
+			"route_layer":                routewire.DirectTransport,
+			"selected_protocol":          routewire.DirectTransport,
+			"selected_protocol_endpoint": endpoint,
+			"protocol_text":              routewire.DirectTransport,
 			"dialer":                     cfg.dialer,
 			"bridge_role":                probeLocalVirtualRouterRuntimeBridgeRole(cfg),
 			"frame_link_key":             probeVirtualRouterFrameLinkKey(rt, "", "", nil),
@@ -2693,41 +2693,11 @@ func probeLocalVirtualRouterRuntimeStatusPayloads() []map[string]any {
 	return out
 }
 
-func probeLocalVirtualRouterRuntimeSelectedProtocol(cfg probeVirtualRouterRuntimeConfig) (string, string) {
-	host := strings.TrimSpace(cfg.listenHost)
-	port := cfg.listenPort
+func probeLocalVirtualRouterRuntimeEndpoint(cfg probeVirtualRouterRuntimeConfig) string {
 	if cfg.dialer {
-		host = strings.TrimSpace(cfg.peerHost)
-		port = cfg.peerPort
+		return probeRouteRelayProtocolEndpointKey(cfg.peerHost, cfg.peerPort)
 	}
-	if host == "" || port <= 0 {
-		return "", ""
-	}
-	snapshot := snapshotProbeRouteProtocolState(host, port)
-	rawSelected := strings.TrimSpace(snapshot.SelectedProtocol)
-	if rawSelected == "" {
-		return "", strings.TrimSpace(snapshot.Endpoint)
-	}
-	selected := normalizeProbeRouteRouteLayer(rawSelected)
-	return selected, strings.TrimSpace(snapshot.Endpoint)
-}
-
-func probeLocalVirtualRouterRuntimeProtocolText(routeLayer string, selectedProtocol string) string {
-	configured := normalizeProbeRouteRouteLayer(routeLayer)
-	selected := ""
-	if rawSelected := strings.TrimSpace(selectedProtocol); rawSelected != "" {
-		selected = normalizeProbeRouteRouteLayer(rawSelected)
-	}
-	if configured == "" {
-		configured = "auto"
-	}
-	if selected == "" {
-		return configured
-	}
-	if configured == selected {
-		return selected
-	}
-	return configured + " -> " + selected
+	return probeRouteRelayProtocolEndpointKey(cfg.listenHost, cfg.listenPort)
 }
 
 func probeLocalVirtualRouterRuntimeBridgeRole(cfg probeVirtualRouterRuntimeConfig) string {

@@ -29,7 +29,7 @@ typedef struct {
     char route[33],peer[129],error[96],ping_id[49];
     SSL *ssl;
     vr_tcp_windows windows;
-    int fd,client,slot,multi_carrier,binary_path;
+    int fd,client,slot,binary_path;
     uint64_t retry,rx,tx,last_rx,ping_time,rtt,keepalive_at,session;
     uint64_t connected_at,tx_enqueued,tx_dequeued,tx_full;
     uint64_t tx_wait_samples,tx_wait_total_ms,tx_wait_max_ms,tx_backlog_since,tx_backlog_peak_ms,tx_stats_reset_at;
@@ -37,14 +37,13 @@ typedef struct {
     size_t tx_peak,tx_memory_peak,rx_peak;
     time_t auth_expires;
     vr_decoder decoder;
-    vr_ws_decoder ws;
     /* Invalidated on every policy publication, including removed path edges. */
     uint8_t ingress_control[1024];char ingress_path[VR_PATH_HOPS+1][129];
     size_t ingress_length,ingress_count,ingress_at;
     /* Immutable frames, including SSL_write WANT retries; memory is bounded. */
     vr_tx_frame *tx_head[3],*tx_tail[3],*writing;
     size_t used,tx_memory,tx_memory_class[3],tx_bytes[3],write_offset,write_pending;
-    unsigned business_since_bulk;
+    unsigned business_since_bulk,next_flow_slot;
     short write_events;
 } vr_link;
 typedef struct {vr_engine *engine;pthread_t thread;int started,done,fd,index;vr_link *result;} vr_handshake;
@@ -127,10 +126,10 @@ int vr_send(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],
 int vr_send_json(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],size_t n,json_object *message);
 int vr_link_send_json(vr_link *link,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],size_t n,json_object *message);
 void vr_link_close(vr_link *l,const char *error);
-int vr_link_queue(vr_link *l,int opcode,const void *bytes,size_t n);
+int vr_link_queue(vr_link *l,const void *bytes,size_t n);
+int vr_link_keepalive(vr_link *l,uint16_t subtype);
 uint64_t vr_link_oldest_wait_ms(vr_link *l,uint64_t now);
 void vr_link_dial(vr_link *l);
-int vr_carrier_count(json_object *rule);
 int vr_carrier_slot(const char *header);
 int vr_links_add(vr_engine *e,json_object *rule);
 void vr_links_reconcile(vr_engine *e,json_object *policy);

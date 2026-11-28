@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
+	"github.com/cloudhelper/probe_node/internal/routewire"
 )
 
 func TestMobileIPv6CarrierAuthSlotsAndPayload(t *testing.T) {
@@ -22,28 +22,27 @@ func TestMobileIPv6CarrierAuthSlotsAndPayload(t *testing.T) {
 		nonce := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		mac := buildMobileVRouteHMAC("fixture-secret", "vrouter-ipv6", nonce, r.Method, r.URL.Path, "7", mobileVRouteBridgeRoleToNext)
 		slot, err := strconv.Atoi(r.Header.Get(mobileVRouteCodexCarrierSlotHeader))
-		if err != nil || slot < 0 || slot > 3 || nonce == "" || r.Header.Get(mobileVRouteCodexMACHeader) != mac || r.Header.Get(mobileVRouteCodexAuthTicketHeader) != "fixture-ticket" || r.TLS.ServerName != "" {
+		if !routewire.DirectRequest(r) || err != nil || slot < 0 || slot >= routewire.DirectCarrierSlots || nonce == "" || r.Header.Get(mobileVRouteCodexMACHeader) != mac || r.Header.Get(mobileVRouteCodexAuthTicketHeader) != "fixture-ticket" || r.TLS.ServerName != "" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		ws, err := (&websocket.Upgrader{}).Upgrade(w, r, http.Header{mobileVRouteCodexMultiCarrierHeader: []string{"1"}})
+		conn, _, err := routewire.AcceptDirect(w)
 		if err != nil {
+			t.Error(err)
 			return
 		}
-		defer ws.Close()
-		kind, data, err := ws.ReadMessage()
-		if err == nil {
-			_ = ws.WriteMessage(kind, data)
-		}
+		defer conn.Close()
+		conn.SetDeadline(time.Now().Add(2 * time.Second))
+		_, _ = io.Copy(conn, conn)
 	}))
 	server.Listener.Close()
 	server.Listener = listener
 	server.StartTLS()
 	defer server.Close()
-	plan := mobileVRouteForwardPlan{LocalNode: "7", RouteID: "vrouter-ipv6", RelayHost: "::1", RelayPort: listener.Addr().(*net.TCPAddr).Port, BridgeRole: mobileVRouteBridgeRoleToNext, Rule: mobileVRouteTopology{Secret: "fixture-secret", AuthTicket: "fixture-ticket"}}
-	for slot := range 4 {
+	plan := mobileVRouteForwardPlan{LocalNode: "7", RouteID: "vrouter-ipv6", Layer: "websocket-h3", RelayHost: "::1", RelayPort: listener.Addr().(*net.TCPAddr).Port, BridgeRole: mobileVRouteBridgeRoleToNext, Rule: mobileVRouteTopology{Secret: "fixture-secret", AuthTicket: "fixture-ticket"}}
+	for slot := range routewire.DirectCarrierSlots {
 		plan.CarrierSlot = slot
-		conn, err := dialMobileVRouteWebSocketCarrier(plan)
+		conn, err := dialMobileVRouteCarrier(plan)
 		if err != nil {
 			t.Fatalf("slot %d: %v", slot, err)
 		}

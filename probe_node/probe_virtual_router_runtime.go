@@ -22,8 +22,6 @@ import (
 	"time"
 
 	"github.com/cloudhelper/probe_node/internal/tcpwindow"
-	"github.com/gorilla/websocket"
-	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 )
 
@@ -31,7 +29,7 @@ const (
 	probeVirtualRouterRuntimeRouteIDPrefix = "vrouter-"
 	probeVirtualRouterRuntimeRouteLayer    = "auto"
 	probeVirtualRouterRuntimeRole          = "virtual_router"
-	// Keep several high-latency websocket batches in memory so transient relay
+	// Keep several high-latency carrier batches in memory so transient relay
 	// stalls apply bounded backpressure instead of dropping IP frames at once.
 	probeVirtualRouterFrameLinkTXBufferFrames               = 512
 	probeVirtualRouterFrameLinkTXInitialFrames              = 32
@@ -48,8 +46,7 @@ const (
 	probeVirtualRouterFrameLinkRXDispatchShards             = 8
 	probeVirtualRouterFrameLinkRXDispatchShardBufferFrames  = 1024
 	probeVirtualRouterFrameLinkRXDispatchShardInitialFrames = 64
-	probeVirtualRouterCarrierDefaultCount                   = 4
-	probeVirtualRouterCarrierMaxCount                       = 264
+	probeVirtualRouterCarrierMaxCount                       = routewire.DirectCarrierSlots
 	probeVirtualRouterCarrierTXInitialFrames                = 8
 	probeVirtualRouterCarrierTXBufferFrames                 = 64
 	probeVirtualRouterCarrierFlowBindingTTL                 = 10 * time.Minute
@@ -80,7 +77,6 @@ type probeVirtualRouterRuntimeConfig struct {
 	peerIP        string
 	peerHost      string
 	peerPort      int
-	carrierCount  int
 	dialer        bool
 	identity      nodeIdentity
 	controllerURL string
@@ -107,92 +103,13 @@ type probeVirtualRouterRelayServer struct {
 	closeOnce     sync.Once
 }
 
-type probeVirtualRouterH3Conn struct {
-	stream interface {
-		Read([]byte) (int, error)
-		Write([]byte) (int, error)
-		Close() error
-		CancelRead(quic.StreamErrorCode)
-		CancelWrite(quic.StreamErrorCode)
-		SetReadDeadline(time.Time) error
-		SetWriteDeadline(time.Time) error
-	}
-	local     net.Addr
-	remote    net.Addr
-	closeOnce sync.Once
-	closeErr  error
-}
-
-func (c *probeVirtualRouterH3Conn) Read(p []byte) (int, error) {
-	if c == nil || c.stream == nil {
-		return 0, net.ErrClosed
-	}
-	return c.stream.Read(p)
-}
-
-func (c *probeVirtualRouterH3Conn) Write(p []byte) (int, error) {
-	if c == nil || c.stream == nil {
-		return 0, net.ErrClosed
-	}
-	return c.stream.Write(p)
-}
-
-func (c *probeVirtualRouterH3Conn) Close() error {
-	if c == nil || c.stream == nil {
-		return nil
-	}
-	c.closeOnce.Do(func() {
-		c.stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		c.stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		c.closeErr = c.stream.Close()
-	})
-	return c.closeErr
-}
-
-func (c *probeVirtualRouterH3Conn) LocalAddr() net.Addr {
-	if c == nil || c.local == nil {
-		return probeRouteRelayNetAddr{label: "probe-vrouter-h3-local"}
-	}
-	return c.local
-}
-
-func (c *probeVirtualRouterH3Conn) RemoteAddr() net.Addr {
-	if c == nil || c.remote == nil {
-		return probeRouteRelayNetAddr{label: "probe-vrouter-h3-remote"}
-	}
-	return c.remote
-}
-
-func (c *probeVirtualRouterH3Conn) SetDeadline(t time.Time) error {
-	if c == nil || c.stream == nil {
-		return net.ErrClosed
-	}
-	if err := c.stream.SetReadDeadline(t); err != nil {
-		return err
-	}
-	return c.stream.SetWriteDeadline(t)
-}
-
-func (c *probeVirtualRouterH3Conn) SetReadDeadline(t time.Time) error {
-	if c == nil || c.stream == nil {
-		return net.ErrClosed
-	}
-	return c.stream.SetReadDeadline(t)
-}
-
-func (c *probeVirtualRouterH3Conn) SetWriteDeadline(t time.Time) error {
-	if c == nil || c.stream == nil {
-		return net.ErrClosed
-	}
-	return c.stream.SetWriteDeadline(t)
-}
-
 type probeVirtualRouterFrameLink struct {
 	key               string
 	runtime           *probeVirtualRouterRuntime
 	carrier           *probeVirtualRouterPhysicalCarrier
 	carriers          map[int]*probeVirtualRouterPhysicalCarrier
 	flowBindings      map[uint32]probeVirtualRouterCarrierFlowBinding
+	nextFlowSlot      int
 	requestPath       []string
 	openedAt          time.Time
 	lastUsed          time.Time
@@ -430,7 +347,6 @@ func isSameProbeVirtualRouterRuntimeConfig(routeID string, cfg probeVirtualRoute
 		c.peerIP == cfg.peerIP &&
 		c.peerHost == cfg.peerHost &&
 		c.peerPort == cfg.peerPort &&
-		normalizeProbeVirtualRouterCarrierCount(c.carrierCount) == normalizeProbeVirtualRouterCarrierCount(cfg.carrierCount) &&
 		c.dialer == cfg.dialer &&
 		c.secret == cfg.secret &&
 		c.rawPublicKey == cfg.rawPublicKey
@@ -551,13 +467,13 @@ func startProbeVirtualRouterRelayServer(rt *probeVirtualRouterRuntime) error {
 	probeVirtualRouterRelayServerState.mu.Unlock()
 	go func() {
 		if serveErr := relay.httpsServer.ServeTLS(tcpListener, cert.CertPath, cert.KeyPath); serveErr != nil && serveErr != http.ErrServerClosed {
-			log.Printf("probe virtual router relay exited: layer=websocket listen=%s err=%v", listenAddr, serveErr)
+			log.Printf("probe virtual router relay exited: layer=tls-direct listen=%s err=%v", listenAddr, serveErr)
 		}
 	}()
 	if relay.http3Server != nil && relay.udpPacketConn != nil {
 		go func() {
 			if serveErr := relay.http3Server.Serve(relay.udpPacketConn); serveErr != nil && serveErr != http.ErrServerClosed {
-				log.Printf("probe virtual router relay exited: layer=websocket-h3 listen=%s err=%v", listenAddr, serveErr)
+				log.Printf("probe virtual router public endpoint exited: layer=http3 listen=%s err=%v", listenAddr, serveErr)
 			}
 		}()
 	}
@@ -748,74 +664,28 @@ func handleProbeVirtualRouterRelayDispatch(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "virtual router runtime not found", http.StatusNotFound)
 		return
 	}
+	if !routewire.DirectRequest(r) {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	if err := verifyProbeVirtualRouterRelayRequestAuth(rt, r, routeID); err != nil {
 		log.Printf("probe virtual router relay request rejected: route=%s remote=%s method=%s proto=%s host=%s reason=unauthorized err=%v", rt.cfg.routeID, r.RemoteAddr, r.Method, r.Proto, r.Host, err)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	bridgeRole := normalizeProbeRouteBridgeRole(r.Header.Get(probeRouteCodexRelayRoleHeader))
-	if isProbeVirtualRouterH3Connect(r) {
-		handleProbeVirtualRouterBridgeRelayH3(rt, bridgeRole, w, r)
-		return
-	}
-	if websocket.IsWebSocketUpgrade(r) {
-		handleProbeVirtualRouterBridgeRelayWebSocket(rt, bridgeRole, w, r)
-		return
-	}
-	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-}
-
-func handleProbeVirtualRouterBridgeRelayWebSocket(rt *probeVirtualRouterRuntime, bridgeRole string, w http.ResponseWriter, r *http.Request) {
-	if rt == nil {
-		http.Error(w, "virtual router runtime not found", http.StatusNotFound)
-		return
-	}
-	upgrader := websocket.Upgrader{
-		CheckOrigin:       func(*http.Request) bool { return true },
-		ReadBufferSize:    probeRouteRelayWebSocketBufferBytes,
-		WriteBufferSize:   probeRouteRelayWebSocketBufferBytes,
-		EnableCompression: false,
-	}
 	slot, err := probeVirtualRouterCarrierSlotFromRequest(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	responseHeader := http.Header{}
-	responseHeader.Set(probeRouteCodexMultiCarrierHeader, "1")
-	responseHeader.Set(routewire.Header, "1")
-	ws, err := upgrader.Upgrade(w, r, responseHeader)
+	stream, conn, err := routewire.AcceptDirect(w)
 	if err != nil {
-		log.Printf("probe virtual router websocket relay upgrade failed: route=%s remote=%s err=%v", rt.cfg.routeID, r.RemoteAddr, err)
+		log.Printf("probe virtual router TLS carrier upgrade failed: route=%s remote=%s err=%v", rt.cfg.routeID, r.RemoteAddr, err)
 		return
 	}
-	conn := tcpwindow.Carrier(startWebSocketNetConn(ws), ws.UnderlyingConn())
-	defer conn.Close()
-	sessionID := rt.nextBridgeSessionID("vrouter-carrier")
-	runProbeVirtualRouterPhysicalCarrier(rt, slot, &probeVirtualRouterNegotiatedConn{Conn: conn, multiCarrier: true, binaryPath: strings.TrimSpace(r.Header.Get(routewire.Header)) == "1"}, sessionID, strings.TrimSpace(r.RemoteAddr))
-}
-
-func handleProbeVirtualRouterBridgeRelayH3(rt *probeVirtualRouterRuntime, bridgeRole string, w http.ResponseWriter, r *http.Request) {
-	if rt == nil {
-		http.Error(w, "virtual router runtime not found", http.StatusNotFound)
-		return
-	}
-	slot, err := probeVirtualRouterCarrierSlotFromRequest(r)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	w.Header().Set(probeRouteCodexMultiCarrierHeader, "1")
-	w.Header().Set(routewire.Header, "1")
-	conn, ok := probeVirtualRouterConnFromH3(w, r, "probe-vrouter-h3-bridge")
-	if !ok {
-		log.Printf("probe virtual router h3 relay stream unavailable: route=%s remote=%s proto=%s", rt.cfg.routeID, r.RemoteAddr, r.Proto)
-		http.Error(w, "http3 stream unavailable", http.StatusInternalServerError)
-		return
-	}
-	defer conn.Close()
-	sessionID := rt.nextBridgeSessionID("vrouter-carrier")
-	runProbeVirtualRouterPhysicalCarrier(rt, slot, &probeVirtualRouterNegotiatedConn{Conn: conn, multiCarrier: true, binaryPath: strings.TrimSpace(r.Header.Get(routewire.Header)) == "1"}, sessionID, strings.TrimSpace(r.RemoteAddr))
+	carrier := &probeVirtualRouterNegotiatedConn{Conn: tcpwindow.Carrier(stream, conn), multiCarrier: true, binaryPath: true}
+	defer carrier.Close()
+	runProbeVirtualRouterPhysicalCarrier(rt, slot, carrier, rt.nextBridgeSessionID("vrouter-carrier"), strings.TrimSpace(r.RemoteAddr))
 }
 
 func probeVirtualRouterCarrierSlotFromRequest(r *http.Request) (int, error) {
@@ -831,25 +701,6 @@ func probeVirtualRouterCarrierSlotFromRequest(r *http.Request) (int, error) {
 		return 0, fmt.Errorf("invalid virtual router carrier slot")
 	}
 	return slot, nil
-}
-
-func isProbeVirtualRouterH3Connect(r *http.Request) bool {
-	return r != nil && r.Method == http.MethodConnect && r.ProtoMajor == 3 && strings.EqualFold(strings.TrimSpace(r.Proto), "websocket")
-}
-
-func probeVirtualRouterConnFromH3(w http.ResponseWriter, r *http.Request, label string) (net.Conn, bool) {
-	streamer, ok := w.(http3.HTTPStreamer)
-	if !ok {
-		return nil, false
-	}
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.WriteHeader(http.StatusOK)
-	stream := streamer.HTTPStream()
-	return &probeVirtualRouterH3Conn{
-		stream: stream,
-		local:  probeRouteRelayNetAddr{label: strings.TrimSpace(label)},
-		remote: probeRouteRelayNetAddr{label: strings.TrimSpace(r.RemoteAddr)},
-	}, true
 }
 
 func verifyProbeVirtualRouterRelayRequestAuth(rt *probeVirtualRouterRuntime, r *http.Request, routeID string) error {
@@ -988,56 +839,12 @@ func startProbeVirtualRouterBridgeWorker(rt *probeVirtualRouterRuntime) {
 	if rt == nil || !rt.cfg.dialer || strings.TrimSpace(rt.cfg.peerHost) == "" || rt.cfg.peerPort <= 0 {
 		return
 	}
-	go runProbeVirtualRouterBridgeDialer(rt)
-}
-
-func runProbeVirtualRouterBridgeDialer(rt *probeVirtualRouterRuntime) {
-	extraStarted := false
-	backoff := probeRouteBridgeRetryMin
-	for {
-		select {
-		case <-rt.stopCh:
-			return
-		default:
-		}
-		conn, multiCarrier, err := openProbeVirtualRouterBridgeRelayNetConnWithDomainPolicyForSlot(
-			rt.cfg.routeID,
-			rt.cfg.secret,
-			rt.cfg.peerHost,
-			rt.cfg.peerPort,
-			rt.cfg.routeLayer,
-			probeRouteBridgeRoleToNext,
-			probeRouteRelayDialTimeout+probeRouteRelayResponseReadDeadline,
-			isProbeVirtualRouterCloudflareCopilotDomain(rt.cfg.peerHost),
-			0,
-		)
-		if err != nil {
-			key := fmt.Sprintf("bridge_dial|%s|%s:%d|%s", rt.cfg.routeID, rt.cfg.peerHost, rt.cfg.peerPort, strings.TrimSpace(err.Error()))
-			if allowed, suppressed := takeProbeVirtualRouterLogThrottle(key, probeVirtualRouterDiagnosticLogPeriod, time.Now()); allowed {
-				log.Printf("probe virtual router bridge dial failed: route=%s peer=%s:%d suppressed=%d err=%v", rt.cfg.routeID, rt.cfg.peerHost, rt.cfg.peerPort, suppressed, err)
-			}
-			sleepProbeVirtualRouterBridgeBackoff(rt, backoff)
-			backoff = nextProbeRouteBridgeBackoff(backoff)
-			continue
-		}
-		backoff = probeRouteBridgeRetryMin
-		if multiCarrier && !extraStarted {
-			extraStarted = true
-			for slot := 1; slot < normalizeProbeVirtualRouterCarrierCount(rt.cfg.carrierCount); slot++ {
-				go runProbeVirtualRouterBridgeSlotDialer(rt, slot)
-			}
-		}
-		sessionID := rt.nextBridgeSessionID("vrouter-carrier-0")
-		runProbeVirtualRouterPhysicalCarrier(rt, 0, conn, sessionID, net.JoinHostPort(rt.cfg.peerHost, strconv.Itoa(rt.cfg.peerPort)))
-		sleepProbeVirtualRouterBridgeBackoff(rt, backoff)
-		backoff = nextProbeRouteBridgeBackoff(backoff)
+	for slot := range probeVirtualRouterCarrierMaxCount {
+		go runProbeVirtualRouterBridgeDialer(rt, slot)
 	}
 }
 
-func runProbeVirtualRouterBridgeSlotDialer(rt *probeVirtualRouterRuntime, slot int) {
-	if rt == nil || slot <= 0 || slot >= normalizeProbeVirtualRouterCarrierCount(rt.cfg.carrierCount) {
-		return
-	}
+func runProbeVirtualRouterBridgeDialer(rt *probeVirtualRouterRuntime, slot int) {
 	backoff := probeRouteBridgeRetryMin
 	for {
 		select {
@@ -1059,7 +866,7 @@ func runProbeVirtualRouterBridgeSlotDialer(rt *probeVirtualRouterRuntime, slot i
 		if err != nil {
 			key := fmt.Sprintf("bridge_dial|%s|slot=%d|%s:%d|%s", rt.cfg.routeID, slot, rt.cfg.peerHost, rt.cfg.peerPort, strings.TrimSpace(err.Error()))
 			if allowed, suppressed := takeProbeVirtualRouterLogThrottle(key, probeVirtualRouterDiagnosticLogPeriod, time.Now()); allowed {
-				log.Printf("probe virtual router bridge slot dial failed: route=%s slot=%d peer=%s:%d suppressed=%d err=%v", rt.cfg.routeID, slot, rt.cfg.peerHost, rt.cfg.peerPort, suppressed, err)
+				log.Printf("probe virtual router bridge dial failed: route=%s slot=%d peer=%s:%d suppressed=%d err=%v", rt.cfg.routeID, slot, rt.cfg.peerHost, rt.cfg.peerPort, suppressed, err)
 			}
 			sleepProbeVirtualRouterBridgeBackoff(rt, backoff)
 			backoff = nextProbeRouteBridgeBackoff(backoff)
@@ -1070,15 +877,6 @@ func runProbeVirtualRouterBridgeSlotDialer(rt *probeVirtualRouterRuntime, slot i
 		runProbeVirtualRouterPhysicalCarrier(rt, slot, conn, sessionID, net.JoinHostPort(rt.cfg.peerHost, strconv.Itoa(rt.cfg.peerPort)))
 		sleepProbeVirtualRouterBridgeBackoff(rt, backoff)
 		backoff = nextProbeRouteBridgeBackoff(backoff)
-	}
-}
-
-func normalizeProbeVirtualRouterCarrierCount(value int) int {
-	switch value {
-	case 4, 16, 64, probeVirtualRouterCarrierMaxCount:
-		return value
-	default:
-		return probeVirtualRouterCarrierDefaultCount
 	}
 }
 
@@ -1288,7 +1086,6 @@ func buildProbeVirtualRouterRuntimeConfigForRule(config probeVirtualRouterConfig
 		listenHost:    "", // Wildcard tcp/udp listeners accept both address families.
 		listenPort:    localPort,
 		routeLayer:    normalizeProbeRouteRouteLayer(firstNonEmpty(strings.TrimSpace(rule.RouteLayer), probeVirtualRouterRuntimeRouteLayer)),
-		carrierCount:  normalizeProbeVirtualRouterCarrierCount(rule.CarrierCount),
 		fromNodeID:    fromNodeID,
 		toNodeID:      toNodeID,
 		localNodeID:   localNodeID,

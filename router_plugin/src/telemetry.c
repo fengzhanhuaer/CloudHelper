@@ -37,10 +37,10 @@ static void buffer(json_object *items,vr_engine *e,vr_link *l,const char *stage,
 static json_object *state(vr_link *base,int connected,const char *endpoint,const char *now)
 {
     json_object *o=json_object_new_object();str(o,"endpoint",endpoint);str(o,"updated_at",now);
-    if(connected)str(o,"selected_protocol","websocket");
+    if(connected)str(o,"selected_protocol",VR_DIRECT_TRANSPORT);
     else if(*base->error) {
         json_object *qualities=json_object_new_array(),*q=json_object_new_object();
-        str(q,"protocol","websocket");str(q,"last_error",base->error);json_object_array_add(qualities,q);json_object_object_add(o,"protocol_qualities",qualities);
+        str(q,"protocol",VR_DIRECT_TRANSPORT);str(q,"last_error",base->error);json_object_array_add(qualities,q);json_object_object_add(o,"protocol_qualities",qualities);
     }
     return o;
 }
@@ -63,7 +63,7 @@ void vr_telemetry_publish(vr_engine *e)
         json_object *row=json_object_new_object(),*sessions=json_object_new_array(),*bridge=json_object_new_object(),*stats=json_object_new_object();int active=0,upstream=0,downstream=0;
         uint64_t opens=0,sent=0,received=0,sent_bytes=0,received_bytes=0;
         for(size_t j=i;j<e->link_count&&j<i+VR_CARRIER_SLOTS;j++) {
-            vr_link *l=&e->links[j];if(!l->rule||l->slot>=vr_carrier_count(base->rule))continue;
+            vr_link *l=&e->links[j];if(!l->rule)continue;
             if(reset){l->tx_peak=l->used;l->tx_memory_peak=l->tx_memory;l->decoder.peak=l->rx_peak=l->decoder.used;l->tx_enqueued=l->tx_dequeued=l->tx_full=0;
                 l->tx_wait_samples=l->tx_wait_total_ms=l->tx_wait_max_ms=l->tx_backlog_peak_ms=0;l->tx_stats_reset_at=vr_millis();l->tx_backlog_since=l->tx_memory?l->tx_stats_reset_at:0;}
             if(l->decoder.peak>l->rx_peak)l->rx_peak=l->decoder.peak;
@@ -84,18 +84,18 @@ void vr_telemetry_publish(vr_engine *e)
             num(s,"streams_current",1);json_object_array_add(sessions,s);
         }
         str(row,"route_id",id);str(row,"route_name",vr_string(base->rule,"name"));str(row,"route_type","virtual_router");str(row,"role","virtual_router");
-        const char *layer=vr_string(base->rule,"route_layer");str(row,"route_layer",*layer?layer:"auto");str(row,"updated_at",now);
+        str(row,"route_layer",VR_DIRECT_TRANSPORT);str(row,"updated_at",now);
         num(stats,"link_open_count",opens);num(stats,"frames_sent",sent);num(stats,"frame_bytes_sent",sent_bytes);
         num(stats,"frames_received",received);num(stats,"frame_bytes_received",received_bytes);
         json_object_object_add(row,"virtual_router",stats);
         str(row,outbound?"next_host":"prev_host",host);num(row,outbound?"next_port":"prev_port",(unsigned)(port>0?port:0));
         str(row,outbound?"next_node_id":"prev_node_id",base->peer);
-        str(row,outbound?"next_route_layer":"prev_route_layer","websocket");
+        str(row,outbound?"next_route_layer":"prev_route_layer",VR_DIRECT_TRANSPORT);
         json_object_object_add(row,outbound?"next_state":"prev_state",state(base,active,endpoint,now));
         if(!outbound) {
             str(row,"listen_host","0.0.0.0");num(row,"listen_port",(unsigned)e->config.port);
             json_object *listen=state(base,0,"",now),*statuses=json_object_new_array(),*s=json_object_new_object();
-            str(s,"protocol","websocket");str(s,"status",e->tls?"listening":"failed");json_object_array_add(statuses,s);
+            str(s,"protocol",VR_DIRECT_TRANSPORT);str(s,"status",e->tls?"listening":"failed");json_object_array_add(statuses,s);
             json_object_object_add(listen,"listener_statuses",statuses);json_object_object_add(row,"listen_state",listen);
         }
         num(bridge,"upstream_active",(unsigned)upstream);num(bridge,"downstream_active",(unsigned)downstream);str(bridge,"updated_at",now);

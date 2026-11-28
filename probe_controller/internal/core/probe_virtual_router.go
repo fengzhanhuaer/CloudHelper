@@ -82,7 +82,6 @@ type probeVirtualRouterTopologyRule struct {
 	ToServicePort     int    `json:"to_service_port,omitempty"`
 	ToTLSSPKISHA256   string `json:"to_tls_spki_sha256,omitempty"`
 	RouteLayer        string `json:"route_layer,omitempty"`
-	CarrierCount      int    `json:"carrier_count,omitempty"`
 	UserID            string `json:"user_id,omitempty"`
 	UserPublicKey     string `json:"user_public_key,omitempty"`
 	Secret            string `json:"secret,omitempty"`
@@ -191,7 +190,6 @@ func buildProbeVirtualRouterConfigForNodeLocked(nodeID string) probeVirtualRoute
 	config = enrichProbeVirtualRouterAuthTickets(config)
 	config = enrichProbeVirtualRouterProbeIPDisplayNames(config)
 	config = scopeProbeVirtualRouterCredentialsForNode(config, nodeID)
-	config = applyProbeRouterTransportCapabilities(config)
 	config.RouteRules = appendProbeLinuxRouterPublishedRouteRules(config.RouteRules, listProbeRuntimes(), nodeID)
 	config.RouteRules = appendProbeGatewayPublishedRules(config.RouteRules, listProbeRuntimes(), nodeID)
 	config.FakeIPLibrary = probeVirtualRouterFakeIPLibrary{}
@@ -199,34 +197,6 @@ func buildProbeVirtualRouterConfigForNodeLocked(nodeID string) probeVirtualRoute
 		config.ProbeIPs = []probeVirtualRouterProbeIP{}
 		config.TopologyRules = []probeVirtualRouterTopologyRule{}
 		return config
-	}
-	return config
-}
-
-// Apply endpoint capabilities to both sides of an edge. The stored topology is
-// unchanged, so replacing an ASUS endpoint restores the original transport.
-func applyProbeRouterTransportCapabilities(config probeVirtualRouterConfig) probeVirtualRouterConfig {
-	config.TopologyRules = append([]probeVirtualRouterTopologyRule(nil), config.TopologyRules...)
-	for i := range config.TopologyRules {
-		rule := &config.TopologyRules[i]
-		carrierLimit := 0
-		for _, id := range []string{rule.FromNodeID, rule.ToNodeID} {
-			if node, ok := getProbeNodeByID(id); ok && normalizeProbeNodeKind(node.NodeKind) == probeNodeKindAsus56UV2 {
-				rule.RouteLayer = "http2" // Existing protocol name for TLS/WebSocket.
-				probeRuntimeStore.mu.Lock()
-				limit := probeRuntimeStore.data[id].RouterPluginCarrierSlots
-				probeRuntimeStore.mu.Unlock()
-				if limit != 4 {
-					limit = 1
-				}
-				if carrierLimit == 0 || limit < carrierLimit {
-					carrierLimit = limit
-				}
-			}
-		}
-		if carrierLimit > 0 && (rule.CarrierCount <= 0 || rule.CarrierCount > carrierLimit) {
-			rule.CarrierCount = carrierLimit
-		}
 	}
 	return config
 }
@@ -591,7 +561,6 @@ func normalizeProbeVirtualRouterTopologyRules(items []probeVirtualRouterTopology
 			ToServicePort:     toServicePort,
 			ToTLSSPKISHA256:   normalizeProbeVirtualRouterTLSSPKI(item.ToTLSSPKISHA256),
 			RouteLayer:        normalizeProbeVirtualRouterRouteLayer(item.RouteLayer),
-			CarrierCount:      normalizeProbeVirtualRouterCarrierCount(item.CarrierCount),
 			UserID:            strings.TrimSpace(item.UserID),
 			UserPublicKey:     strings.TrimSpace(item.UserPublicKey),
 			Secret:            firstNonEmptyProbeVirtualRouter(strings.TrimSpace(item.Secret), randomProbeNodeSecret(probeVirtualRouterDefaultSecretLen)),
@@ -1545,15 +1514,6 @@ func normalizeProbeVirtualRouterRouteLayer(raw string) string {
 		return "http3"
 	default:
 		return "auto"
-	}
-}
-
-func normalizeProbeVirtualRouterCarrierCount(value int) int {
-	switch value {
-	case 4, 16, 64, 264:
-		return value
-	default:
-		return 4
 	}
 }
 

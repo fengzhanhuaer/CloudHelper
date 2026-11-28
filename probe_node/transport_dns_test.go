@@ -95,8 +95,8 @@ func TestProbeTransportIPv6AuthenticatedCarrierSlots(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer releaseProbeVirtualRouterRelayServer(rt)
-	for slot := range 4 {
-		conn, err := openProbeRouteRelayWebSocketNetConn(routeID, secret, "::1", port, probeRouteBridgeRoleToNext, probeRouteRelayModeBridge, "vrouter-carrier-slot-"+strconv.Itoa(slot), "::1", "::1", 2*time.Second, false)
+	for slot := range 2 {
+		conn, err := openProbeVirtualRouterBridgeRelayNetConnWithResolvedHostAndSlot(routeID, secret, "::1", port, "auto", probeRouteBridgeRoleToNext, "::1", "::1", 2*time.Second, false, slot)
 		if err != nil {
 			t.Fatalf("slot %d: %v", slot, err)
 		}
@@ -116,7 +116,7 @@ func TestProbeTransportIPv6AuthenticatedCarrierSlots(t *testing.T) {
 			count = len(link.carriers)
 			link.mu.Unlock()
 		}
-		if count == 4 {
+		if count == 2 {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -124,11 +124,11 @@ func TestProbeTransportIPv6AuthenticatedCarrierSlots(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	bad, err := openProbeRouteRelayWebSocketNetConn(routeID, "wrong-secret", "::1", port, probeRouteBridgeRoleToNext, probeRouteRelayModeBridge, "vrouter-carrier-slot-4", "::1", "::1", 2*time.Second, false)
+	bad, err := openProbeVirtualRouterBridgeRelayNetConnWithResolvedHostAndSlot(routeID, "wrong-secret", "::1", port, "auto", probeRouteBridgeRoleToNext, "::1", "::1", 2*time.Second, false, 1)
 	if bad != nil {
 		bad.Close()
 	}
-	if err == nil || !strings.Contains(err.Error(), "status=401") {
+	if err == nil || !strings.Contains(err.Error(), "HTTP 401") {
 		t.Fatalf("bad auth accepted: %v", err)
 	}
 	// The default production listener also accepts native IPv6 UDP/QUIC.
@@ -148,13 +148,13 @@ func TestProbeTransportIPv6AuthenticatedCarrierSlots(t *testing.T) {
 		t.Fatalf("QUIC fallback endpoint=%s elapsed=%s", endpoint, time.Since(started))
 	}
 	// Failed HMAC is counted on this source; a good handshake must still work.
-	conn, err := openProbeRouteRelayHTTP3WebSocketNetConn(routeID, secret, "::1", port, probeRouteBridgeRoleToNext, probeRouteRelayModeBridge, "vrouter-carrier-slot-4", "::1", "::1", 2*time.Second, false)
+	conn, err := openProbeVirtualRouterBridgeRelayNetConnWithResolvedHostAndSlot(routeID, secret, "::1", port, "websocket-h3", probeRouteBridgeRoleToNext, "::1", "::1", 2*time.Second, false, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
 	if !probeVirtualRouterConnSupportsMultiCarrier(conn) {
-		t.Fatal("IPv6 H3 lost slot negotiation")
+		t.Fatal("IPv6 direct TLS lost slot negotiation")
 	}
 }
 

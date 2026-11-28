@@ -14,13 +14,13 @@ int main(int argc,char **argv)
     vr_engine *e=calloc(1,sizeof(*e));assert(e);pthread_mutex_init(&e->mutex,NULL);strcpy(e->config.node_id,"7");e->config.port=12040;
     json_object *rules=json_object_new_array();
     for(unsigned route=0;route<VR_LINK_MAX;route++) {
-        char rule[512];snprintf(rule,sizeof(rule),"{\"id\":\"vrouter-test-%u\",\"name\":\"fixture-%u\",\"from_node_id\":\"%s\",\"to_node_id\":\"%s\",\"to_service_domain\":\"peer.example\",\"from_service_domain\":\"source.example\",\"to_service_port\":12040,\"from_service_port\":12041,\"carrier_count\":4}",route,route,route%2?"8":"7",route%2?"7":"8");
+        char rule[512];snprintf(rule,sizeof(rule),"{\"id\":\"vrouter-test-%u\",\"name\":\"fixture-%u\",\"from_node_id\":\"%s\",\"to_node_id\":\"%s\",\"to_service_domain\":\"peer.example\",\"from_service_domain\":\"source.example\",\"to_service_port\":12040,\"from_service_port\":12041}",route,route,route%2?"8":"7",route%2?"7":"8");
         json_object *r=vr_json_parse(rule,strlen(rule));assert(r);json_object_array_add(rules,r);
         for(unsigned slot=0;slot<VR_CARRIER_SLOTS;slot++) {
             vr_link *l=&e->links[e->link_count++];l->rule=r;l->fd=-1;l->slot=(int)slot;assert(!vr_route_id(vr_string(r,"id"),l->route));
-            strcpy(l->peer,"8");l->client=!(route%2);l->connected_at=vr_millis()-2500;l->rtt=12;l->session=route*4+slot+1;
+            strcpy(l->peer,"8");l->client=!(route%2);l->connected_at=vr_millis()-2500;l->rtt=12;l->session=route*VR_CARRIER_SLOTS+slot+1;
             /* Snapshot code only checks whether TLS is present; no TLS I/O. */
-            if(slot<3)l->ssl=(SSL *)1;else strcpy(l->error,"fixture disconnected");
+            if(slot==0)l->ssl=(SSL *)1;else strcpy(l->error,"fixture disconnected");
             l->used=128;l->tx_memory=256;l->tx_peak=1024;l->tx_memory_peak=1152;l->tx_enqueued=10;l->tx_dequeued=8;l->tx_full=2;
             l->decoder.used=5;l->decoder.peak=256;
         }
@@ -32,7 +32,7 @@ int main(int argc,char **argv)
     assert(!vr_member(tx,"dropped")&&!vr_member(tx,"retry_events")&&!vr_member(rx,"timing_supported"));
     assert(strlen(json_object_to_json_string_ext(before,JSON_C_TO_STRING_PLAIN))>16384);
     assert(strlen(json_object_to_json_string_ext(before,JSON_C_TO_STRING_PLAIN))<256*1024);
-    assert(json_object_array_length(vr_member(json_object_array_get_idx(rows,0),"bridge_sessions"))==3);
+    assert(json_object_array_length(vr_member(json_object_array_get_idx(rows,0),"bridge_sessions"))==1);
     assert(vr_member(json_object_array_get_idx(rows,1),"listen_state"));
     if(argc==2&&!strcmp(argv[1],"--json")){puts(json_object_to_json_string_ext(before,JSON_C_TO_STRING_PLAIN));return 0;}
     e->buffers_reset=1;vr_telemetry_publish(e);assert(e->telemetry_epoch==1);
@@ -40,7 +40,7 @@ int main(int argc,char **argv)
     assert(json_object_get_int(vr_member(json_object_array_get_idx(items,0),"peak_depth"))==1024);
     assert(json_object_get_int(vr_member(json_object_array_get_idx(after,0),"peak_depth"))==128);
     assert(json_object_get_int(vr_member(json_object_array_get_idx(after,0),"enqueued"))==0&&e->links[0].used==128&&e->links[0].ssl);
-    for(unsigned i=0;i<4;i++)e->links[i].rule=NULL;
+    for(unsigned i=0;i<VR_CARRIER_SLOTS;i++)e->links[i].rule=NULL;
     vr_telemetry_publish(e);assert(json_object_array_length(vr_member(e->telemetry,"relay_status"))==VR_LINK_MAX-1);
     char ip[46];assert(!vr_public_ip("8.8.8.8\n",AF_INET,ip,sizeof(ip))&&!strcmp(ip,"8.8.8.8"));
     const char *bad[]={"192.168.1.1","198.18.0.1","100.64.0.1","127.0.0.1","0.0.0.0","224.0.0.1","8.8.8.8 injected","<html>"};

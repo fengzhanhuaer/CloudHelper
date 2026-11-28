@@ -11,7 +11,6 @@ import (
 )
 
 type probeReportMessage struct {
-	RouterPluginCarrierSlots  int                            `json:"router_plugin_carrier_slots,omitempty"`
 	RouterPluginUpgrade       bool                           `json:"router_plugin_upgrade,omitempty"`
 	RouterPluginUpgradeStatus *probeRouterUpgradeStatus      `json:"router_plugin_upgrade_status,omitempty"`
 	GatewayProxy              *probeGatewayProxyConfig       `json:"gateway_proxy,omitempty"`
@@ -127,8 +126,7 @@ func ProbeWSHandler(w http.ResponseWriter, r *http.Request) {
 			gatewayChanged := updateProbeRuntimeGatewayProxy(nodeID, msg.GatewayProxy)
 			updateProbeRuntimePhysicalInterfaces(nodeID, msg.LANIP, msg.WANIP)
 			productChanged := updateProbeRuntimeProductStatus(nodeID, msg.BuildKind, msg.SpecialExit, msg.LinuxRouter)
-			carriersChanged := updateProbeRuntimeRouterPluginCarriers(nodeID, msg.RouterPluginCarrierSlots)
-			if productChanged || gatewayChanged || carriersChanged {
+			if productChanged || gatewayChanged {
 				scheduleProbeRouteConfigSyncToKnownNodes()
 			}
 			updateProbeRuntimeRouterPluginUpgrade(nodeID, msg.RouterPluginUpgrade)

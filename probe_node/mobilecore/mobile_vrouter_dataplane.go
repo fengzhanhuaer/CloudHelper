@@ -25,25 +25,21 @@ import (
 	"time"
 
 	"github.com/cloudhelper/probe_node/internal/tcpwindow"
-	"github.com/gorilla/websocket"
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/http3"
 )
 
 const (
 	mobileVRouteRelayAPIPath = "/api/node/route/relay"
 
-	mobileVRouteLegacyRouteIDHeader     = "X-CH-Route-ID"
-	mobileVRouteCodexRouteIDHeader      = "X-Codex-Route-Id"
-	mobileVRouteCodexAuthModeHeader     = "X-Codex-Auth-Mode"
-	mobileVRouteCodexMACHeader          = "X-Codex-Mac"
-	mobileVRouteCodexAuthTicketHeader   = "X-Codex-User-Auth-Ticket"
-	mobileVRouteCodexVersionHeader      = "X-Codex-Api-Version"
-	mobileVRouteCodexRelayModeHeader    = "X-Codex-Relay-Mode"
-	mobileVRouteCodexRelayRoleHeader    = "X-Codex-Relay-Role"
-	mobileVRouteCodexSourceNodeHeader   = "X-Codex-Source-Node-Id"
-	mobileVRouteCodexCarrierSlotHeader  = "X-Codex-VRouter-Carrier-Slot"
-	mobileVRouteCodexMultiCarrierHeader = "X-Codex-VRouter-Multi-Carrier"
+	mobileVRouteLegacyRouteIDHeader    = "X-CH-Route-ID"
+	mobileVRouteCodexRouteIDHeader     = "X-Codex-Route-Id"
+	mobileVRouteCodexAuthModeHeader    = "X-Codex-Auth-Mode"
+	mobileVRouteCodexMACHeader         = "X-Codex-Mac"
+	mobileVRouteCodexAuthTicketHeader  = "X-Codex-User-Auth-Ticket"
+	mobileVRouteCodexVersionHeader     = "X-Codex-Api-Version"
+	mobileVRouteCodexRelayModeHeader   = "X-Codex-Relay-Mode"
+	mobileVRouteCodexRelayRoleHeader   = "X-Codex-Relay-Role"
+	mobileVRouteCodexSourceNodeHeader  = "X-Codex-Source-Node-Id"
+	mobileVRouteCodexCarrierSlotHeader = "X-Codex-VRouter-Carrier-Slot"
 
 	mobileVRouteAuthPacketVersion = "2025-03-22"
 	mobileVRouteRelayModeBridge   = "bridge"
@@ -82,9 +78,6 @@ const (
 	mobileVRouteCarrierRXBufferFrames               = 512
 	mobileVRouteMaxHops                             = 3
 	mobileVRouteRelayResolveTimeout                 = 5 * time.Second
-	mobileVRouteH3StreamOpenTimeout                 = 6 * time.Second
-	mobileVRouteCarrierDefaultCount                 = 4
-	mobileVRouteCarrierMaxCount                     = 264
 	mobileVRouteCarrierFlowBindingMax               = 65536
 	mobileVRouteCarrierFlowBindingTTL               = 5 * time.Minute
 )
@@ -114,10 +107,10 @@ type mobileVRouteForwardPlan struct {
 	BridgeRole    string
 	Layer         string
 	CarrierSlot   int
-	CarrierCount  int
 }
 
 type mobileVRouteCarrier struct {
+	nextFlowSlot    int // Protected by mobileVRouteCarrierState.mu.
 	key             string
 	plan            mobileVRouteForwardPlan
 	conn            net.Conn
@@ -196,7 +189,6 @@ var mobileVRouteCarrierState = struct {
 
 var mobileVRouteCarrierDial = dialMobileVRouteCarrier
 var mobileVRouteLookupIP = net.DefaultResolver.LookupIP
-var mobileVRouteH3QUICDial = quic.DialAddr
 
 type mobileVRouteRelayDialCandidate struct {
 	URLHost  string
@@ -208,94 +200,6 @@ type mobileVRouteRelayLookupResult struct {
 	Network string
 	IPs     []net.IP
 	Err     error
-}
-
-type mobileVRouteNetAddr struct {
-	label string
-}
-
-func (a mobileVRouteNetAddr) Network() string {
-	return "mobile-vroute"
-}
-
-func (a mobileVRouteNetAddr) String() string {
-	return strings.TrimSpace(a.label)
-}
-
-type mobileVRouteH3StreamNetConn struct {
-	stream  mobileVRouteH3Stream
-	local   net.Addr
-	remote  net.Addr
-	closeFn func() error
-}
-
-type mobileVRouteH3Stream interface {
-	io.ReadWriteCloser
-	SetDeadline(time.Time) error
-	SetReadDeadline(time.Time) error
-	SetWriteDeadline(time.Time) error
-}
-
-func (c *mobileVRouteH3StreamNetConn) Read(payload []byte) (int, error) {
-	if c == nil || c.stream == nil {
-		return 0, io.EOF
-	}
-	return c.stream.Read(payload)
-}
-
-func (c *mobileVRouteH3StreamNetConn) Write(payload []byte) (int, error) {
-	if c == nil || c.stream == nil {
-		return 0, io.ErrClosedPipe
-	}
-	return c.stream.Write(payload)
-}
-
-func (c *mobileVRouteH3StreamNetConn) Close() error {
-	if c == nil {
-		return nil
-	}
-	if c.closeFn != nil {
-		return c.closeFn()
-	}
-	if c.stream != nil {
-		return c.stream.Close()
-	}
-	return nil
-}
-
-func (c *mobileVRouteH3StreamNetConn) LocalAddr() net.Addr {
-	if c != nil && c.local != nil {
-		return c.local
-	}
-	return mobileVRouteNetAddr{label: "mobile-vroute-h3-local"}
-}
-
-func (c *mobileVRouteH3StreamNetConn) RemoteAddr() net.Addr {
-	if c != nil && c.remote != nil {
-		return c.remote
-	}
-	return mobileVRouteNetAddr{label: "mobile-vroute-h3-remote"}
-}
-
-func (c *mobileVRouteH3StreamNetConn) SetDeadline(t time.Time) error {
-	if c == nil || c.stream == nil {
-		return nil
-	}
-	return c.stream.SetDeadline(t)
-}
-
-func (c *mobileVRouteH3StreamNetConn) SetReadDeadline(t time.Time) error {
-	if c == nil || c.stream == nil {
-		return nil
-	}
-	return c.stream.SetReadDeadline(t)
-}
-
-func (c *mobileVRouteH3StreamNetConn) SetWriteDeadline(t time.Time) error {
-	if c == nil || c.stream == nil {
-		return nil
-	}
-	return c.stream.SetWriteDeadline(t)
 }
 
 var mobileVRouteCarrierRetryMin = time.Second
@@ -449,18 +353,17 @@ func mobileVRoutePlanFromConfig(config mobileVRouteConfig, routeID string) (mobi
 		bridgeRole = mobileVRouteBridgeRoleToPrev
 	}
 	return mobileVRouteForwardPlan{
-		LocalNode:    localNode,
-		ExitNode:     exitNode,
-		Path:         path,
-		NextNode:     nextNode,
-		Config:       config,
-		Rule:         rule,
-		RouteID:      mobileVRouteRuntimeRouteID(rule),
-		RelayHost:    host,
-		RelayPort:    port,
-		BridgeRole:   bridgeRole,
-		Layer:        normalizeMobileVRouteRelayLayer(rule.RouteLayer),
-		CarrierCount: normalizeMobileVRouteCarrierCount(rule.CarrierCount),
+		LocalNode:  localNode,
+		ExitNode:   exitNode,
+		Path:       path,
+		NextNode:   nextNode,
+		Config:     config,
+		Rule:       rule,
+		RouteID:    mobileVRouteRuntimeRouteID(rule),
+		RelayHost:  host,
+		RelayPort:  port,
+		BridgeRole: bridgeRole,
+		Layer:      normalizeMobileVRouteRelayLayer(rule.RouteLayer),
 	}, nil
 }
 
@@ -487,32 +390,21 @@ func buildMobileVRouteAdjacentPlan(config mobileVRouteConfig, path []string, loc
 		bridgeRole = mobileVRouteBridgeRoleToPrev
 	}
 	return mobileVRouteForwardPlan{
-		LocalNode:    localNode,
-		ExitNode:     path[len(path)-1],
-		Path:         append([]string(nil), path...),
-		NextNode:     nextNode,
-		Config:       config,
-		Rule:         rule,
-		RouteID:      mobileVRouteRuntimeRouteID(rule),
-		RelayHost:    host,
-		RelayPort:    port,
-		BridgeRole:   bridgeRole,
-		Layer:        normalizeMobileVRouteRelayLayer(rule.RouteLayer),
-		CarrierCount: normalizeMobileVRouteCarrierCount(rule.CarrierCount),
+		LocalNode:  localNode,
+		ExitNode:   path[len(path)-1],
+		Path:       append([]string(nil), path...),
+		NextNode:   nextNode,
+		Config:     config,
+		Rule:       rule,
+		RouteID:    mobileVRouteRuntimeRouteID(rule),
+		RelayHost:  host,
+		RelayPort:  port,
+		BridgeRole: bridgeRole,
+		Layer:      normalizeMobileVRouteRelayLayer(rule.RouteLayer),
 	}, nil
 }
 
-func normalizeMobileVRouteCarrierCount(value int) int {
-	switch value {
-	case 4, 16, 64, mobileVRouteCarrierMaxCount:
-		return value
-	default:
-		return mobileVRouteCarrierDefaultCount
-	}
-}
-
 func ensureMobileVRouteCarrier(plan mobileVRouteForwardPlan, writeBack func([]byte) error) (*mobileVRouteCarrier, error) {
-	plan.CarrierCount = normalizeMobileVRouteCarrierCount(plan.CarrierCount)
 	key := mobileVRouteCarrierKey(plan)
 	mobileVRouteCarrierState.mu.Lock()
 	if existing := mobileVRouteCarrierState.items[key]; existing != nil {
@@ -539,64 +431,75 @@ func ensureMobileVRouteCarrier(plan mobileVRouteForwardPlan, writeBack func([]by
 	mobileVRouteCarrierState.items[key] = carrier
 	mobileVRouteCarrierState.mu.Unlock()
 	carrier.start()
-	if plan.CarrierSlot == 0 && carrier.multiCarrier {
-		startMobileVRouteExtraCarrierWorkers(plan)
-	}
 	return carrier, nil
 }
 
 func selectMobileVRouteCarrier(plan mobileVRouteForwardPlan, frame mobileVRouteFrame, writeBack func([]byte) error) (*mobileVRouteCarrier, error) {
+	if carrier := selectMobileVRouteActiveCarrier(plan, frame, writeBack); carrier != nil {
+		return carrier, nil
+	}
 	plan.CarrierSlot = 0
-	plan.CarrierCount = normalizeMobileVRouteCarrierCount(plan.CarrierCount)
+	if _, err := ensureMobileVRouteCarrier(plan, writeBack); err != nil {
+		return nil, err
+	}
+	// Bind the first frame too, including when it had to establish a carrier.
+	if carrier := selectMobileVRouteActiveCarrier(plan, frame, writeBack); carrier != nil {
+		return carrier, nil
+	}
+	return nil, net.ErrClosed
+}
+
+func selectMobileVRouteActiveCarrier(plan mobileVRouteForwardPlan, frame mobileVRouteFrame, writeBack func([]byte) error) *mobileVRouteCarrier {
 	baseKey := mobileVRouteCarrierBaseKey(plan)
 	now := time.Now()
 	mobileVRouteCarrierState.mu.Lock()
-	active := make([]*mobileVRouteCarrier, 0, plan.CarrierCount)
-	for _, carrier := range mobileVRouteCarrierState.items {
-		if carrier == nil || mobileVRouteCarrierBaseKey(carrier.plan) != baseKey {
+	defer mobileVRouteCarrierState.mu.Unlock()
+	var slots [routewire.DirectCarrierSlots]*mobileVRouteCarrier
+	var first *mobileVRouteCarrier
+	for slot := range slots {
+		carrier := mobileVRouteCarrierState.items[baseKey+"|"+strconv.Itoa(slot)]
+		if carrier == nil {
 			continue
 		}
 		carrier.setWriteBack(writeBack)
-		active = append(active, carrier)
-	}
-	sort.Slice(active, func(i, j int) bool { return active[i].plan.CarrierSlot < active[j].plan.CarrierSlot })
-	if len(active) > 0 {
-		selected := active[0]
-		if frame.MainType == mobileVRouteFrameMainTypeIP {
-			hash := mobileVRoutePacketFlowHash(frame.Data, 2166136261)
-			bindingKey := mobileVRouteBindingKey(plan, hash)
-			if binding, ok := mobileVRouteCarrierState.flowBindings[bindingKey]; ok {
-				if carrier := mobileVRouteCarrierState.items[binding.CarrierKey]; carrier != nil && carrier.plan.NextNode == plan.NextNode && mobileVRouteCarrierBaseKey(carrier.plan) == baseKey && now.Sub(binding.LastSeen) <= mobileVRouteCarrierFlowBindingTTL {
-					if !plan.pathCheckedAt.IsZero() {
-						binding.carrierCreated = carrier.createdUnixNS
-						binding.configGeneration = plan.Config.generation
-						if carrier.plan.Rule != plan.Rule {
-							binding.configGeneration = 0
-						}
-						binding.pathCheckedAt = plan.pathCheckedAt
-						binding.Path = append([]string(nil), plan.Path...)
-					}
-					binding.LastSeen = now
-					mobileVRouteCarrierState.flowBindings[bindingKey] = binding
-					selected = carrier
-					mobileVRouteCarrierState.mu.Unlock()
-					return selected, nil
-				}
-				delete(mobileVRouteCarrierState.flowBindings, bindingKey)
-			}
-			selected = active[int(hash%uint32(len(active)))]
-			generation := plan.Config.generation
-			if selected.plan.Rule != plan.Rule {
-				generation = 0
-			}
-			mobileVRouteCarrierState.flowBindings[bindingKey] = mobileVRouteCarrierFlowBinding{carrierCreated: selected.createdUnixNS, configGeneration: generation, pathCheckedAt: plan.pathCheckedAt, CarrierKey: selected.key, Path: append([]string(nil), plan.Path...), LastSeen: now}
-			pruneMobileVRouteCarrierFlowBindingsLocked(now)
+		slots[slot] = carrier
+		if first == nil {
+			first = carrier
 		}
-		mobileVRouteCarrierState.mu.Unlock()
-		return selected, nil
 	}
-	mobileVRouteCarrierState.mu.Unlock()
-	return ensureMobileVRouteCarrier(plan, writeBack)
+	if first == nil || frame.MainType != mobileVRouteFrameMainTypeIP {
+		return first
+	}
+	hash := mobileVRoutePacketFlowHash(frame.Data, 2166136261)
+	bindingKey := mobileVRouteBindingKey(plan, hash)
+	if binding, ok := mobileVRouteCarrierState.flowBindings[bindingKey]; ok {
+		if carrier := mobileVRouteCarrierState.items[binding.CarrierKey]; carrier != nil && carrier.plan.NextNode == plan.NextNode && mobileVRouteCarrierBaseKey(carrier.plan) == baseKey && now.Sub(binding.LastSeen) <= mobileVRouteCarrierFlowBindingTTL {
+			if !plan.pathCheckedAt.IsZero() {
+				binding.carrierCreated = carrier.createdUnixNS
+				binding.configGeneration = plan.Config.generation
+				if carrier.plan.Rule != plan.Rule {
+					binding.configGeneration = 0
+				}
+				binding.pathCheckedAt = plan.pathCheckedAt
+				binding.Path = append([]string(nil), plan.Path...)
+			}
+			binding.LastSeen = now
+			mobileVRouteCarrierState.flowBindings[bindingKey] = binding
+			return carrier
+		}
+	}
+	selected := first
+	if preferred := slots[first.nextFlowSlot]; preferred != nil {
+		selected = preferred
+	}
+	first.nextFlowSlot = (selected.plan.CarrierSlot + 1) % routewire.DirectCarrierSlots
+	generation := plan.Config.generation
+	if selected.plan.Rule != plan.Rule {
+		generation = 0
+	}
+	mobileVRouteCarrierState.flowBindings[bindingKey] = mobileVRouteCarrierFlowBinding{carrierCreated: selected.createdUnixNS, configGeneration: generation, pathCheckedAt: plan.pathCheckedAt, CarrierKey: selected.key, Path: append([]string(nil), plan.Path...), LastSeen: now}
+	pruneMobileVRouteCarrierFlowBindingsLocked(now)
+	return selected
 }
 
 func pruneMobileVRouteCarrierFlowBindingsLocked(now time.Time) {
@@ -898,6 +801,19 @@ func (c *mobileVRouteCarrier) readLoop() {
 			}
 			return
 		}
+		if frame.MainType == routewire.KeepaliveMain {
+			if !routewire.ValidKeepalive(frame.SubType, frame.Control, frame.Data) {
+				c.markError(errors.New("invalid carrier keepalive"))
+				return
+			}
+			if frame.SubType == routewire.KeepalivePing {
+				if err := c.enqueueFrame(mobileVRouteFrame{MainType: routewire.KeepaliveMain, SubType: routewire.KeepalivePong}); err != nil {
+					c.markError(err)
+					return
+				}
+			}
+			continue
+		}
 		if err := c.handleIncomingFrame(frame); err != nil {
 			c.markError(err)
 			recordMobileVRouteCarrierStateError(err)
@@ -1044,7 +960,10 @@ func (c *mobileVRouteCarrier) currentWriteBack() func([]byte) error {
 
 func startMobileVRouteCarrierWorkers(config mobileVRouteConfig) {
 	for _, plan := range mobileVRouteOutboundCarrierPlans(config) {
-		startMobileVRouteCarrierWorker(plan)
+		for slot := range routewire.DirectCarrierSlots {
+			plan.CarrierSlot = slot
+			startMobileVRouteCarrierWorker(plan)
+		}
 	}
 }
 
@@ -1063,16 +982,6 @@ func startMobileVRouteCarrierWorker(plan mobileVRouteForwardPlan) {
 	mobileVRouteCarrierState.workers[key] = worker
 	mobileVRouteCarrierState.mu.Unlock()
 	go worker.run()
-}
-
-func startMobileVRouteExtraCarrierWorkers(plan mobileVRouteForwardPlan) {
-	count := normalizeMobileVRouteCarrierCount(plan.CarrierCount)
-	for slot := 1; slot < count; slot++ {
-		extra := plan
-		extra.CarrierSlot = slot
-		extra.CarrierCount = count
-		startMobileVRouteCarrierWorker(extra)
-	}
 }
 
 func startMobileVRouteCarrierWorkersFromConfigDir(configDir string) {
@@ -1127,9 +1036,6 @@ func (w *mobileVRouteCarrierWorker) run() {
 		}
 		clearMobileVRouteCarrierStateError()
 		backoff = mobileVRouteCarrierRetryMin
-		if w.plan.CarrierSlot == 0 && carrier != nil && carrier.multiCarrier {
-			startMobileVRouteExtraCarrierWorkers(w.plan)
-		}
 		if !w.waitCarrier(carrier) {
 			if carrier != nil {
 				carrier.close()
@@ -1250,19 +1156,18 @@ func mobileVRouteOutboundCarrierPlans(config mobileVRouteConfig) []mobileVRouteF
 			bridgeRole = mobileVRouteBridgeRoleToPrev
 		}
 		plans = append(plans, mobileVRouteForwardPlan{
-			LocalNode:    localNode,
-			ExitNode:     nextNode,
-			Path:         []string{localNode, nextNode},
-			NextNode:     nextNode,
-			Config:       config,
-			Rule:         rule,
-			RouteID:      mobileVRouteRuntimeRouteID(rule),
-			RelayHost:    host,
-			RelayPort:    port,
-			BridgeRole:   bridgeRole,
-			Layer:        normalizeMobileVRouteRelayLayer(rule.RouteLayer),
-			CarrierSlot:  0,
-			CarrierCount: normalizeMobileVRouteCarrierCount(rule.CarrierCount),
+			LocalNode:   localNode,
+			ExitNode:    nextNode,
+			Path:        []string{localNode, nextNode},
+			NextNode:    nextNode,
+			Config:      config,
+			Rule:        rule,
+			RouteID:     mobileVRouteRuntimeRouteID(rule),
+			RelayHost:   host,
+			RelayPort:   port,
+			BridgeRole:  bridgeRole,
+			Layer:       normalizeMobileVRouteRelayLayer(rule.RouteLayer),
+			CarrierSlot: 0,
 		})
 	}
 	sort.Slice(plans, func(i, j int) bool {
@@ -1341,8 +1246,7 @@ func mobileVRouteCapabilitiesPayload() map[string]any {
 	return map[string]any{
 		"ip_frame":           true,
 		"ipv4":               true,
-		"websocket_carrier":  true,
-		"websocket_h3":       true,
+		"direct_tls_carrier": true,
 		"outbound_dialer":    true,
 		"inbound_listener":   false,
 		"reverse_first_hop":  true,
@@ -1394,9 +1298,9 @@ func snapshotMobileVRouteCarriers() map[string]any {
 			"exit_node":           item.plan.ExitNode,
 			"relay":               net.JoinHostPort(item.plan.RelayHost, strconv.Itoa(item.plan.RelayPort)),
 			"bridge_role":         item.plan.BridgeRole,
-			"layer":               item.plan.Layer,
+			"layer":               routewire.DirectTransport,
 			"carrier_slot":        item.plan.CarrierSlot,
-			"carrier_count":       item.plan.CarrierCount,
+			"carrier_count":       routewire.DirectCarrierSlots,
 			"multi_carrier":       item.multiCarrier,
 			"tx_frames":           item.txFrames.Load(),
 			"tx_bytes":            item.txBytes.Load(),
@@ -1445,218 +1349,67 @@ func mobileVRouteUnixNanoRFC3339(value int64) string {
 }
 
 func dialMobileVRouteCarrier(plan mobileVRouteForwardPlan) (net.Conn, error) {
-	switch normalizeMobileVRouteRelayLayer(plan.Layer) {
-	case "websocket":
-		return dialMobileVRouteWebSocketCarrier(plan)
-	case "websocket-h3":
-		return dialMobileVRouteH3Carrier(plan)
-	default:
-		return nil, fmt.Errorf("unsupported vroute relay protocol: %s", strings.TrimSpace(plan.Layer))
-	}
-}
-
-func dialMobileVRouteWebSocketCarrier(plan mobileVRouteForwardPlan) (net.Conn, error) {
-	header := http.Header{}
-	header.Set(mobileVRouteLegacyRouteIDHeader, strings.TrimSpace(plan.RouteID))
-	header.Set(mobileVRouteCodexRouteIDHeader, strings.TrimSpace(plan.RouteID))
-	header.Set(mobileVRouteCodexVersionHeader, mobileVRouteAuthPacketVersion)
-	header.Set(mobileVRouteCodexRelayModeHeader, mobileVRouteRelayModeBridge)
-	header.Set(mobileVRouteCodexRelayRoleHeader, plan.BridgeRole)
-	header.Set(mobileVRouteCodexCarrierSlotHeader, strconv.Itoa(plan.CarrierSlot))
-	header.Set(routewire.Header, "1")
-	if err := applyMobileVRouteSecretAuthHeaders(header, plan.RouteID, plan.Rule.Secret, plan.Rule.AuthTicket, plan.LocalNode, http.MethodGet, mobileVRouteRelayAPIPath, plan.BridgeRole); err != nil {
-		return nil, err
-	}
 	candidates, err := mobileVRouteRelayDialCandidates(plan.RelayHost)
 	if err != nil {
 		return nil, err
 	}
 	var attempts []string
 	for _, candidate := range candidates {
-		conn, err := dialMobileVRouteWebSocketCarrierCandidate(plan, header, candidate)
+		conn, err := dialMobileVRouteCarrierCandidate(plan, candidate)
 		if err == nil {
-			androidLogStore.add("vpn", "info", "vroute carrier connected: route="+plan.RouteID+" path="+strings.Join(plan.Path, ">")+" dial="+candidate.DialHost)
+			androidLogStore.add("vpn", "info", "vroute TLS carrier connected: route="+plan.RouteID+" path="+strings.Join(plan.Path, ">")+" dial="+candidate.DialHost)
 			return conn, nil
 		}
-		attempts = append(attempts, strings.TrimSpace(candidate.DialHost)+": "+err.Error())
-		androidLogStore.add("vpn", "warn", "vroute carrier dial failed: route="+plan.RouteID+" dial="+candidate.DialHost+" err="+err.Error())
+		attempts = append(attempts, candidate.DialHost+": "+err.Error())
+		androidLogStore.add("vpn", "warn", "vroute TLS carrier dial failed: route="+plan.RouteID+" dial="+candidate.DialHost+" err="+err.Error())
 	}
-	if len(attempts) == 0 {
-		return nil, errors.New("vroute websocket dial failed: no relay candidate")
-	}
-	return nil, fmt.Errorf("vroute websocket dial failed: %s", strings.Join(attempts, "; "))
+	return nil, fmt.Errorf("vroute TLS carrier dial failed: %s", strings.Join(attempts, "; "))
 }
 
-func dialMobileVRouteWebSocketCarrierCandidate(plan mobileVRouteForwardPlan, header http.Header, candidate mobileVRouteRelayDialCandidate) (net.Conn, error) {
-	relayURL, err := mobileVRouteRelayWebSocketURL(candidate.URLHost, plan.RelayPort, plan.RouteID)
-	if err != nil {
-		return nil, err
-	}
-	dialHostPort := net.JoinHostPort(candidate.DialHost, strconv.Itoa(plan.RelayPort))
-	dialer := websocket.Dialer{
-		HandshakeTimeout:  mobileVRouteCarrierDialTimeout,
-		Proxy:             nil,
-		ReadBufferSize:    64 * 1024,
-		WriteBufferSize:   64 * 1024,
-		EnableCompression: false,
-		NetDialContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
-			dialNetwork := strings.TrimSpace(candidate.Network)
-			if dialNetwork == "" {
-				dialNetwork = network
-			}
-			netDialer := &net.Dialer{Timeout: mobileVRouteCarrierDialTimeout, KeepAlive: mobileRelayTCPKeepAlivePeriod, Control: tcpwindow.Control}
-			return netDialer.DialContext(ctx, dialNetwork, dialHostPort)
-		},
-	}
-	tlsConfig, err := newMobileVRouteRelayTLSConfig(plan, candidate, tls.VersionTLS12, nil)
-	if err != nil {
-		return nil, err
-	}
-	dialer.TLSClientConfig = tlsConfig
-	ws, resp, err := dialer.Dial(relayURL, header)
-	if err != nil {
-		if resp != nil && resp.Body != nil {
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-			_ = resp.Body.Close()
-			return nil, fmt.Errorf("vroute websocket failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
-		}
-		return nil, err
-	}
-	multiCarrier := resp != nil && strings.TrimSpace(resp.Header.Get(mobileVRouteCodexMultiCarrierHeader)) == "1"
-	return &mobileVRouteNegotiatedConn{Conn: tcpwindow.Carrier(startWebSocketNetConn(ws), ws.UnderlyingConn()), multiCarrier: multiCarrier, binaryPath: resp != nil && strings.TrimSpace(resp.Header.Get(routewire.Header)) == "1"}, nil
-}
-
-func dialMobileVRouteH3Carrier(plan mobileVRouteForwardPlan) (net.Conn, error) {
-	candidates, err := mobileVRouteRelayDialCandidates(plan.RelayHost)
-	if err != nil {
-		return nil, err
-	}
-	var attempts []string
-	for _, candidate := range candidates {
-		conn, err := dialMobileVRouteH3CarrierCandidate(plan, candidate)
-		if err == nil {
-			androidLogStore.add("vpn", "info", "vroute h3 carrier connected: route="+plan.RouteID+" path="+strings.Join(plan.Path, ">")+" dial="+candidate.DialHost)
-			return conn, nil
-		}
-		attempts = append(attempts, strings.TrimSpace(candidate.DialHost)+": "+err.Error())
-		androidLogStore.add("vpn", "warn", "vroute h3 carrier dial failed: route="+plan.RouteID+" dial="+candidate.DialHost+" err="+err.Error())
-	}
-	if len(attempts) == 0 {
-		return nil, errors.New("vroute h3 dial failed: no relay candidate")
-	}
-	return nil, fmt.Errorf("vroute h3 dial failed: %s", strings.Join(attempts, "; "))
-}
-
-func dialMobileVRouteH3CarrierCandidate(plan mobileVRouteForwardPlan, candidate mobileVRouteRelayDialCandidate) (net.Conn, error) {
-	relayURL, err := mobileVRouteRelayWebSocketURL(candidate.URLHost, plan.RelayPort, plan.RouteID)
-	if err != nil {
-		return nil, err
-	}
-	dialHostPort := net.JoinHostPort(candidate.DialHost, strconv.Itoa(plan.RelayPort))
-	tlsConf, err := newMobileVRouteRelayTLSConfig(plan, candidate, tls.VersionTLS13, []string{http3.NextProtoH3})
+func dialMobileVRouteCarrierCandidate(plan mobileVRouteForwardPlan, candidate mobileVRouteRelayDialCandidate) (net.Conn, error) {
+	relayURL, err := mobileVRouteRelayURL(candidate.URLHost, plan.RelayPort, plan.RouteID)
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), mobileVRouteCarrierDialTimeout)
 	defer cancel()
-	quicConn, err := mobileVRouteH3QUICDial(ctx, dialHostPort, tlsConf, mobileVRouteQUICConfig())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, relayURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	clientConn := (&http3.Transport{}).NewClientConn(quicConn)
-	select {
-	case <-clientConn.ReceivedSettings():
-	case <-ctx.Done():
-		_ = quicConn.CloseWithError(0, "mobile vroute h3 settings timeout")
-		return nil, fmt.Errorf("vroute h3 settings timeout: relay=%s", dialHostPort)
-	case <-clientConn.Context().Done():
-		_ = quicConn.CloseWithError(0, "mobile vroute h3 connection closed")
-		return nil, fmt.Errorf("vroute h3 connection failed: %w", context.Cause(clientConn.Context()))
+	req.Header.Set(mobileVRouteCodexRouteIDHeader, strings.TrimSpace(plan.RouteID))
+	req.Header.Set(mobileVRouteCodexVersionHeader, mobileVRouteAuthPacketVersion)
+	req.Header.Set(mobileVRouteCodexRelayModeHeader, mobileVRouteRelayModeBridge)
+	req.Header.Set(mobileVRouteCodexRelayRoleHeader, plan.BridgeRole)
+	req.Header.Set(mobileVRouteCodexCarrierSlotHeader, strconv.Itoa(plan.CarrierSlot))
+	if err := applyMobileVRouteSecretAuthHeaders(req.Header, plan.RouteID, plan.Rule.Secret, plan.Rule.AuthTicket, plan.LocalNode, req.Method, req.URL.Path, plan.BridgeRole); err != nil {
+		return nil, err
 	}
-	if settings := clientConn.Settings(); settings == nil || !settings.EnableExtendedConnect {
-		_ = quicConn.CloseWithError(0, "mobile vroute h3 extended connect disabled")
-		return nil, errors.New("vroute h3 failed: server did not enable extended connect")
-	}
-	stream, err := clientConn.OpenRequestStream(ctx)
+	tlsConfig, err := newMobileVRouteRelayTLSConfig(plan, candidate, tls.VersionTLS12, []string{"http/1.1"})
 	if err != nil {
-		_ = quicConn.CloseWithError(0, "mobile vroute h3 stream open failed")
 		return nil, err
 	}
-	_ = stream.SetDeadline(time.Now().Add(mobileVRouteH3StreamOpenTimeout))
-	request, err := http.NewRequestWithContext(ctx, http.MethodConnect, relayURL, nil)
+	network := candidate.Network
+	if network == "" {
+		network = "tcp"
+	}
+	dialer := net.Dialer{KeepAlive: mobileRelayTCPKeepAlivePeriod, Control: tcpwindow.Control}
+	tcpConn, err := dialer.DialContext(ctx, network, net.JoinHostPort(candidate.DialHost, strconv.Itoa(plan.RelayPort)))
 	if err != nil {
-		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		_ = quicConn.CloseWithError(0, "mobile vroute h3 request build failed")
 		return nil, err
 	}
-	request.Proto = "websocket"
-	request.ProtoMajor = 3
-	request.ProtoMinor = 0
-	request.Header.Set(mobileVRouteLegacyRouteIDHeader, strings.TrimSpace(plan.RouteID))
-	request.Header.Set(mobileVRouteCodexRouteIDHeader, strings.TrimSpace(plan.RouteID))
-	request.Header.Set(mobileVRouteCodexVersionHeader, mobileVRouteAuthPacketVersion)
-	request.Header.Set(mobileVRouteCodexRelayModeHeader, mobileVRouteRelayModeBridge)
-	request.Header.Set(mobileVRouteCodexRelayRoleHeader, plan.BridgeRole)
-	request.Header.Set(mobileVRouteCodexCarrierSlotHeader, strconv.Itoa(plan.CarrierSlot))
-	request.Header.Set(routewire.Header, "1")
-	if err := applyMobileVRouteSecretAuthHeaders(request.Header, plan.RouteID, plan.Rule.Secret, plan.Rule.AuthTicket, plan.LocalNode, http.MethodConnect, mobileVRouteRelayAPIPath, plan.BridgeRole); err != nil {
-		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		_ = quicConn.CloseWithError(0, "mobile vroute h3 auth failed")
+	tlsConn := tls.Client(tcpConn, tlsConfig)
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		tcpConn.Close()
 		return nil, err
 	}
-	if strings.TrimSpace(candidate.URLHost) != "" {
-		request.Host = strings.TrimSpace(candidate.URLHost)
-	}
-	if err := stream.SendRequestHeader(request); err != nil {
-		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		_ = quicConn.CloseWithError(0, "mobile vroute h3 header send failed")
-		return nil, err
-	}
-	response, err := stream.ReadResponse()
+	deadline, _ := ctx.Deadline()
+	stream, err := routewire.OpenDirect(tlsConn, req, deadline)
 	if err != nil {
-		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		_ = quicConn.CloseWithError(0, "mobile vroute h3 response failed")
+		tlsConn.Close()
 		return nil, err
 	}
-	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
-		_ = response.Body.Close()
-		stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-		_ = quicConn.CloseWithError(0, "mobile vroute h3 status failed")
-		return nil, fmt.Errorf("vroute h3 failed: status=%d body=%s", response.StatusCode, strings.TrimSpace(string(body)))
-	}
-	_ = stream.SetDeadline(time.Time{})
-	cancelOnce := sync.Once{}
-	conn := &mobileVRouteH3StreamNetConn{
-		stream: stream,
-		local:  mobileVRouteNetAddr{label: "mobile-vroute-h3-local"},
-		remote: mobileVRouteNetAddr{label: dialHostPort},
-		closeFn: func() error {
-			var closeErr error
-			cancelOnce.Do(func() {
-				stream.CancelRead(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-				stream.CancelWrite(quic.StreamErrorCode(http3.ErrCodeRequestCanceled))
-				closeErr = quicConn.CloseWithError(0, "mobile vroute h3 closed")
-			})
-			return closeErr
-		},
-	}
-	return &mobileVRouteNegotiatedConn{Conn: conn, multiCarrier: strings.TrimSpace(response.Header.Get(mobileVRouteCodexMultiCarrierHeader)) == "1", binaryPath: strings.TrimSpace(response.Header.Get(routewire.Header)) == "1"}, nil
-}
-
-func mobileVRouteQUICConfig() *quic.Config {
-	return &quic.Config{
-		InitialStreamReceiveWindow:     512 * 1024,
-		MaxStreamReceiveWindow:         tcpwindow.Payload,
-		InitialConnectionReceiveWindow: 1024 * 1024,
-		MaxConnectionReceiveWindow:     2 * tcpwindow.Payload,
-		EnableDatagrams:                true,
-	}
+	return &mobileVRouteNegotiatedConn{Conn: tcpwindow.Carrier(stream, tcpConn), multiCarrier: true, binaryPath: true}, nil
 }
 
 func applyMobileVRouteSecretAuthHeaders(headers http.Header, routeID string, secret string, authTicket string, sourceNodeID string, method string, requestPath string, relayRole string) error {
@@ -1857,7 +1610,7 @@ func mobileVRouteTCPNetworkForIP(ip net.IP) string {
 	return "tcp"
 }
 
-func mobileVRouteRelayWebSocketURL(host string, port int, routeID string) (string, error) {
+func mobileVRouteRelayURL(host string, port int, routeID string) (string, error) {
 	host = strings.TrimSpace(strings.Trim(host, "[]"))
 	if host == "" {
 		return "", errors.New("relay host is required")
@@ -1866,7 +1619,7 @@ func mobileVRouteRelayWebSocketURL(host string, port int, routeID string) (strin
 		return "", fmt.Errorf("invalid relay port: %d", port)
 	}
 	u := &url.URL{
-		Scheme: "wss",
+		Scheme: "https",
 		Host:   net.JoinHostPort(host, strconv.Itoa(port)),
 		Path:   mobileVRouteRelayAPIPath,
 	}

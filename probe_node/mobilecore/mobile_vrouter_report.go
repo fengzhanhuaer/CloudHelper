@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/cloudhelper/probe_node/internal/routewire"
 )
 
 const mobileProbeVirtualRouterRuntimeRole = "virtual_router"
@@ -111,7 +113,7 @@ func snapshotMobileVRouteRelayReports(configDir string) []mobileProbeRouteRelayR
 			RouteName:  strings.TrimSpace(rule.Name),
 			RouteType:  mobileProbeVirtualRouterRuntimeRole,
 			Role:       mobileProbeVirtualRouterRuntimeRole,
-			RouteLayer: strings.TrimSpace(rule.RouteLayer),
+			RouteLayer: routewire.DirectTransport,
 			UpdatedAt:  now,
 			VirtualRouter: &mobileProbeVirtualRouterRuntimeStats{
 				TUNDataPlane: mobileVRouteVPNRuntimeRunning(),
@@ -204,7 +206,7 @@ func applyMobileVRouteCarrierReport(item *mobileProbeRouteRelayReportItem, carri
 	if item.NextState == nil {
 		item.NextState = &mobileProbeRouteRelayProtocolStateSnapshot{
 			Endpoint:         net.JoinHostPort(strings.TrimSpace(carrier.plan.RelayHost), strconv.Itoa(carrier.plan.RelayPort)),
-			SelectedProtocol: normalizeMobileVRouteRelayLayer(carrier.plan.Layer),
+			SelectedProtocol: routewire.DirectTransport,
 			SelectionReason:  "mobile_vroute_connected",
 			UpdatedAt:        firstNonEmptyString(lastActivityAt, now),
 		}

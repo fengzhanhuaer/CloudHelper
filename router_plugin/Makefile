@@ -108,7 +108,7 @@ $(BUILD)/test-dns-system: $(CORE) tests/test_dns_system.c $(wildcard include/*.h
 $(BUILD)/test-network-monitor: $(CORE) src/network_monitor.c tests/test_network_monitor.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/network_monitor.c tests/test_network_monitor.c $(LDFLAGS) $(LDLIBS) -o $@
 $(BUILD)/test-path-selection: $(CORE) src/carrier.c src/measure.c src/external_speed.c tests/test_path_selection.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/carrier.c src/measure.c src/external_speed.c tests/test_path_selection.c $(LDFLAGS) -Wl,--wrap=json_object_new_object -Wl,--wrap=vr_ws_encode $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(CORE) src/carrier.c src/measure.c src/external_speed.c tests/test_path_selection.c $(LDFLAGS) -Wl,--wrap=json_object_new_object -Wl,--wrap=vr_frame_encode $(LDLIBS) -o $@
 
 $(BUILD)/test-external-speed: $(CORE) tests/test_external_speed.c src/external_speed.c $(wildcard include/*.h) $(BUILD)/build-version.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -ffunction-sections -fdata-sections $(CORE) tests/test_external_speed.c $(LDFLAGS) $(LDLIBS) -o $@

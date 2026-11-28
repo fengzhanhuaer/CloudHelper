@@ -11,13 +11,12 @@
 #include <openssl/pem.h>
 #include <openssl/sha.h>
 
-/* Exercise the actual WS encoder, scheduler, retry and decoder. Inject TLS
+/* Exercise the actual frame encoder, scheduler, retry and decoder. Inject TLS
    backpressure without relying on timing or the host kernel's buffer sizes. */
 static unsigned calls,want,frames,mains[4096],subs[4096],seqs[4096];
 static const void *retry_bytes;
 static size_t retry_n;
 static uint8_t retry_copy[VR_TX_WRITE_MAX];
-static vr_ws_decoder ws;
 static vr_decoder decoder;
 static unsigned ssl_error=SSL_ERROR_WANT_WRITE;
 static int real_tls;
@@ -32,24 +31,21 @@ void vr_link_frame(vr_link *l,const vr_frame *f,char path[VR_PATH_MAX][129],size
 
 static int receive_frame(const vr_frame *f,void *arg)
 {
-    (void)arg;assert(frames<4096);mains[frames]=f->main;subs[frames]=f->sub;
+    (void)arg;if(!f->main){assert(f->sub==VR_KEEPALIVE_PING&&!f->control_len&&!f->data_len);return 0;}assert(frames<4096);mains[frames]=f->main;subs[frames]=f->sub;
     seqs[frames]=f->data_len?f->data[0]:0;
     for(size_t i=0;i<f->data_len;i++)assert(f->data[i]==(uint8_t)seqs[frames]);
     frames++;return 0;
 }
-static int receive_ws(int opcode,const uint8_t *p,size_t n,void *arg)
-{(void)arg;if(opcode==2)return vr_decoder_feed(&decoder,p,n,receive_frame,NULL);assert(opcode==9||opcode==10);return 0;}
-
 int __wrap_SSL_read(SSL *ssl,void *p,int n)
 {
     if (ssl != busy_reader) return __real_SSL_read(ssl,p,n);
     if (!busy_reads) frames_before_read = frames;
     busy_reads++;
-    /* A slow receive batch on another slot. Each read returns a WS pong. */
-    assert(n >= 2);
-    memcpy(p, "\x8a\x00", 2);
+    /* A slow receive batch on another slot. Each read returns a carrier pong. */
+    vr_frame pong={VR_KEEPALIVE_MAIN,VR_KEEPALIVE_PONG,NULL,NULL,0,0};size_t length;
+    assert(n>=12&&!vr_frame_encode(&pong,p,(size_t)n,&length));
     usleep(4000);
-    return 2;
+    return (int)length;
 }
 
 int __wrap_SSL_write(SSL *ssl,const void *p,int n)
@@ -61,7 +57,7 @@ int __wrap_SSL_write(SSL *ssl,const void *p,int n)
         if(!retry_bytes){retry_bytes=p;retry_n=(size_t)n;memcpy(retry_copy,p,retry_n);}
         want--;return -1;
     }
-    retry_bytes=NULL;retry_n=0;assert(!vr_ws_feed(&ws,p,(size_t)n,receive_ws,NULL));return n;
+    retry_bytes=NULL;retry_n=0;assert(!vr_decoder_feed(&decoder,p,(size_t)n,receive_frame,NULL));return n;
 }
 int __wrap_SSL_get_error(const SSL *ssl,int result)
 {if(real_tls)return __real_SSL_get_error(ssl,result);(void)ssl;assert(result==-1);return (int)ssl_error;}
@@ -70,14 +66,14 @@ static int enqueue(vr_link *l,unsigned main,unsigned sub,unsigned seq,size_t n)
 {
     uint8_t data[VR_DATA_MAX],wire[VR_FRAME_MAX];assert(n<=sizeof(data));memset(data,(int)seq,n);
     vr_frame f={(uint16_t)main,(uint16_t)sub,NULL,data,0,n};size_t size;
-    assert(!vr_frame_encode(&f,wire,sizeof(wire),&size));return vr_link_queue(l,2,wire,size);
+    assert(!vr_frame_encode(&f,wire,sizeof(wire),&size));return vr_link_queue(l,wire,size);
 }
 static void reset(vr_link *l,SSL_CTX *ctx)
 {
     vr_link_close(l,"");assert(!l->used&&!l->tx_memory&&!l->writing);
     for(unsigned lane=0;lane<3;lane++)assert(!l->tx_head[lane]&&!l->tx_tail[lane]&&!l->tx_bytes[lane]);
     l->ssl=SSL_new(ctx);assert(l->ssl);l->client=1;
-    memset(&ws,0,sizeof(ws));memset(&decoder,0,sizeof(decoder));ws.expect_mask=1;
+    memset(&decoder,0,sizeof(decoder));
     frames=calls=want=0;retry_bytes=NULL;retry_n=0;ssl_error=SSL_ERROR_WANT_WRITE;
 }
 static void poll_one(vr_link *l, short events)
@@ -101,7 +97,8 @@ static void test_poll_dispatch(SSL_CTX *ctx)
         links[i].fd = -1;
         reset(&links[i],ctx);
     }
-    busy_reader = links[0].ssl;
+    vr_engine *engine=calloc(1,sizeof(*engine));assert(engine);
+    links[0].engine=engine;busy_reader = links[0].ssl;
     /* Neither fd requested writes when poll started. TUN supplies work on
        the second carrier immediately after the first becomes readable. */
     struct pollfd fds[] = {{-1,POLLIN,POLLIN},{-1,POLLIN,0}};
@@ -124,7 +121,7 @@ static void test_poll_dispatch(SSL_CTX *ctx)
     assert(frames==2 && seqs[0]==5 && seqs[1]==6 && busy_reads==4);
     busy_reader=NULL;
     for (size_t i=0; i<2; i++) vr_link_close(&links[i],"");
-    free(links);
+    free(engine);free(links);
     puts("PASS: new TUN output sent before busy TLS input in the same poll, backpressure and RX fairness retained");
 }
 
@@ -168,7 +165,7 @@ static void *slow_peer(void *arg)
     usleep(100000);uint8_t data[4096];
     while(frames<4) {
         int n=SSL_read(ssl,data,sizeof(data));assert(n>0);
-        assert(!vr_ws_feed(&ws,data,(size_t)n,receive_ws,NULL));usleep(5000);
+        assert(!vr_decoder_feed(&decoder,data,(size_t)n,receive_frame,NULL));usleep(5000);
     }
     SSL_free(ssl);close(fd);return NULL;
 }
@@ -186,7 +183,7 @@ static void test_real_tls(const char *certfile,const char *keyfile)
     struct sockaddr_in address={0};address.sin_family=AF_INET;address.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
     assert(!bind(peer.listener,(struct sockaddr *)&address,sizeof(address))&&!listen(peer.listener,1));
     socklen_t length=sizeof(address);assert(!getsockname(peer.listener,(struct sockaddr *)&address,&length));
-    pthread_t thread;frames=0;memset(&ws,0,sizeof(ws));memset(&decoder,0,sizeof(decoder));ws.expect_mask=1;
+    pthread_t thread;frames=0;memset(&decoder,0,sizeof(decoder));
     assert(!pthread_create(&thread,NULL,slow_peer,&peer));
     /* The TLS listener is local test material. Pin exactly its public key. */
     BIO *bio=BIO_new_mem_buf(cert,-1);X509 *x=PEM_read_bio_X509(bio,NULL,NULL,NULL);assert(x);
@@ -219,7 +216,7 @@ int main(int argc,char **argv)
     /* Filling business/bulk must leave capacity for ping and pong. */
     unsigned count=0;while(!enqueue(l,1,1,count%256,2048))count++;
     assert(count>64&&l->tx_memory<VR_TX_CAP);
-    assert(!enqueue(l,2,1,201,64)&&!vr_link_queue(l,9,"keepalive",9));
+    assert(!enqueue(l,2,1,201,64)&&!vr_link_keepalive(l,VR_KEEPALIVE_PING));
     assert(enqueue(l,1,1,0,2048)<0);drain(l);
     assert(frames==count+1&&mains[0]==2);
     assert(l->tx_wait_samples==count+2&&!l->tx_backlog_since);
@@ -248,7 +245,7 @@ int main(int argc,char **argv)
     for(unsigned i=0;i<8;i++)assert(mains[i]==1&&seqs[i]==i);
 
     /* WANT_WRITE: same pointer, length and bytes on every retry, even after
-       a high priority frame arrives. Complete the current WS frame first. */
+       a high priority frame arrives. Complete the current frame first. */
     reset(l,ctx);assert(!enqueue(l,8,3,1,60000));assert(!enqueue(l,8,4,2,64));
     want=2;poll_one(l,POLLOUT);assert(l->writing&&l->write_pending);
     assert(!enqueue(l,3,1,3,64));poll_one(l,POLLOUT);assert(!frames);
@@ -265,7 +262,7 @@ int main(int argc,char **argv)
     reset(l,ctx);count=0;while(!enqueue(l,4,2,0,8192))count++;
     assert(count>=4&&count<=12&&l->tx_memory_class[2]<=VR_TX_BULK_CAP);
     assert(!enqueue(l,8,1,0,2048)&&!enqueue(l,2,1,0,64));
-    reset(l,ctx);while(!vr_link_queue(l,9,"",0))assert(l->tx_memory<=VR_TX_CAP);
+    reset(l,ctx);while(!vr_link_keepalive(l,VR_KEEPALIVE_PING))assert(l->tx_memory<=VR_TX_CAP);
     assert(l->tx_memory_class[0]<=VR_TX_CONTROL_CAP);assert(!enqueue(l,1,1,0,2048));
     /* Every lane must accept a maximum legal wire frame, not silently lower
        the existing protocol's data/control limits. */
@@ -274,9 +271,9 @@ int main(int argc,char **argv)
         memset(control,' ',sizeof(control));memset(data,77,sizeof(data));
         vr_frame frame={(uint16_t)type,1,control,data,sizeof(control),sizeof(data)};size_t size;
         assert(!vr_frame_encode(&frame,wire,sizeof(wire),&size));
-        assert(!vr_link_queue(l,2,wire,size));drain(l);assert(frames==1&&mains[0]==type);
+        assert(!vr_link_queue(l,wire,size));drain(l);assert(frames==1&&mains[0]==type);
     }
-    reset(l,ctx);assert(vr_link_queue(l,2,"",SIZE_MAX)<0);
+    reset(l,ctx);assert(vr_link_queue(l,"",SIZE_MAX)<0);
 
     /* Cleanup includes a frame held by a failed SSL_write. */
     assert(!enqueue(l,1,1,0,2048));want=1;poll_one(l,POLLOUT);assert(l->writing);

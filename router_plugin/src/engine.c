@@ -205,7 +205,7 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
             if(l->ssl)vr_tcp_windows_tick(&l->windows,l->fd,now,l->rx,l->tx);
             if(l->ssl && (l->auth_expires<=time(NULL)||now-l->last_rx>90000))vr_link_close(l,"link authorization or idle timeout");
             if(l->ssl&&now-l->keepalive_at>=20000) {
-                if(!vr_link_queue(l,9,"",0))l->keepalive_at=now;
+                if(!vr_link_keepalive(l,VR_KEEPALIVE_PING))l->keepalive_at=now;
             }
             if(!l->ssl&&!pending_policy)vr_link_dial(l);
         }

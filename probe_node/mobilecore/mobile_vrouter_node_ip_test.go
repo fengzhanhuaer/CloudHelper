@@ -102,11 +102,18 @@ func TestMobileVRouteNodeIPPacketUsesCarrierWithoutExitRule(t *testing.T) {
 	frames := make(chan mobileVRouteFrame, 1)
 	errs := make(chan error, 1)
 	go func() {
-		f, e := readMobileVRouteFrame(bufio.NewReader(right))
-		if e != nil {
-			errs <- e
-		} else {
+		reader := bufio.NewReader(right)
+		for {
+			f, err := readMobileVRouteFrame(reader)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if f.MainType == mobileVRouteFrameMainTypePathRTT {
+				continue
+			}
 			frames <- f
+			return
 		}
 	}()
 	packet := buildMobileVRouteTestIPv4Packet(6, "198.18.0.2", "198.18.0.19", 12345, 8080)

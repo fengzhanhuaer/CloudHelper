@@ -21,7 +21,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go"
 	"golang.org/x/net/dns/dnsmessage"
 
 	"github.com/cloudhelper/probe_node/internal/dnsupstream"
@@ -782,10 +781,10 @@ func TestMobileVRouteRuntimeStatusDeclaresMobileCapabilityBoundary(t *testing.T)
 	if !ok {
 		t.Fatalf("capabilities missing from status: %+v", status)
 	}
-	if capabilities["ip_frame"] != true || capabilities["websocket_carrier"] != true || capabilities["vpn_tun_writeback"] != true {
+	if capabilities["ip_frame"] != true || capabilities["direct_tls_carrier"] != true || capabilities["vpn_tun_writeback"] != true {
 		t.Fatalf("required mobile vroute capabilities missing: %+v", capabilities)
 	}
-	if capabilities["websocket_h3"] != true || capabilities["inbound_listener"] != false || capabilities["reverse_first_hop"] != true || capabilities["relay_forwarding"] != true || capabilities["control_ping"] != true || capabilities["path_rtt"] != true {
+	if capabilities["inbound_listener"] != false || capabilities["reverse_first_hop"] != true || capabilities["relay_forwarding"] != true || capabilities["control_ping"] != true || capabilities["path_rtt"] != true {
 		t.Fatalf("unexpected mobile vroute capabilities: %+v", capabilities)
 	}
 	if capabilities["debug_log_pull"] != true {
@@ -954,18 +953,13 @@ func TestMobileVRouteOutboundCarrierPlansIncludeForwardAndReverseRules(t *testin
 	}
 }
 
-func TestMobileVRouteCarrierCountAndSlotKey(t *testing.T) {
-	for input, want := range map[int]int{0: 4, 4: 4, 16: 16, 64: 64, 264: 264, 8: 4} {
-		if got := normalizeMobileVRouteCarrierCount(input); got != want {
-			t.Fatalf("normalize carrier count %d=%d, want %d", input, got, want)
-		}
-	}
+func TestMobileVRouteCarrierSlotKey(t *testing.T) {
 	plan := mobileVRouteForwardPlan{RouteID: "route", BridgeRole: mobileVRouteBridgeRoleToNext, RelayHost: "edge.example.com", RelayPort: 12040}
 	key0 := mobileVRouteCarrierKey(plan)
-	plan.CarrierSlot = 3
-	key3 := mobileVRouteCarrierKey(plan)
-	if key0 == key3 || !strings.HasSuffix(key0, "|0") || !strings.HasSuffix(key3, "|3") {
-		t.Fatalf("carrier slot keys are not distinct: slot0=%q slot3=%q", key0, key3)
+	plan.CarrierSlot = 1
+	key1 := mobileVRouteCarrierKey(plan)
+	if key0 == key1 || !strings.HasSuffix(key0, "|0") || !strings.HasSuffix(key1, "|1") {
+		t.Fatalf("carrier slot keys are not distinct: slot0=%q slot1=%q", key0, key1)
 	}
 }
 
@@ -981,8 +975,8 @@ func TestMobileVRoutePacketFlowHashIsBidirectional(t *testing.T) {
 
 func TestMobileVRouteCarrierSelectionKeepsFlowAffinity(t *testing.T) {
 	resetMobileVRouteVPNStateForTest(t, t.TempDir())
-	plan := mobileVRouteForwardPlan{RouteID: "route-affinity", BridgeRole: mobileVRouteBridgeRoleToNext, RelayHost: "edge.example.com", RelayPort: 12040, CarrierCount: 4}
-	for slot := 0; slot < 4; slot++ {
+	plan := mobileVRouteForwardPlan{RouteID: "route-affinity", BridgeRole: mobileVRouteBridgeRoleToNext, RelayHost: "edge.example.com", RelayPort: 12040}
+	for slot := range 2 {
 		slotPlan := plan
 		slotPlan.CarrierSlot = slot
 		carrier := &mobileVRouteCarrier{key: mobileVRouteCarrierKey(slotPlan), plan: slotPlan}
@@ -1000,6 +994,39 @@ func TestMobileVRouteCarrierSelectionKeepsFlowAffinity(t *testing.T) {
 	}
 	if selectedForward.plan.CarrierSlot != selectedReverse.plan.CarrierSlot {
 		t.Fatalf("flow changed slots: forward=%d reverse=%d", selectedForward.plan.CarrierSlot, selectedReverse.plan.CarrierSlot)
+	}
+	for port := 41002; port < 41010; port += 2 {
+		frame := forward
+		frame.Data = buildMobileVRouteTestIPv4Packet(6, "198.18.0.9", "198.18.0.17", uint16(port), 443)
+		carrier, err := selectMobileVRouteCarrier(plan, frame, nil)
+		want := (selectedForward.plan.CarrierSlot + (port-41000)/2) % 2
+		if err != nil || carrier.plan.CarrierSlot != want {
+			t.Fatalf("new flow port %d carrier=%v want slot %d err=%v", port, carrier, want, err)
+		}
+	}
+}
+
+func TestMobileVRouteFirstFrameBindsCarrierAfterDial(t *testing.T) {
+	resetMobileVRouteVPNStateForTest(t, t.TempDir())
+	left, right := net.Pipe()
+	defer right.Close()
+	oldDial := mobileVRouteCarrierDial
+	t.Cleanup(func() { mobileVRouteCarrierDial = oldDial })
+	mobileVRouteCarrierDial = func(mobileVRouteForwardPlan) (net.Conn, error) {
+		return left, nil
+	}
+	plan := mobileVRouteForwardPlan{RouteID: "cold-carrier", RelayHost: "localhost", RelayPort: 12040}
+	frame := mobileVRouteFrame{MainType: mobileVRouteFrameMainTypeIP, Data: buildMobileVRouteTestIPv4Packet(6, "198.18.0.9", "198.18.0.17", 41000, 443)}
+	carrier, err := selectMobileVRouteCarrier(plan, frame, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := mobileVRoutePacketFlowHash(frame.Data, 2166136261)
+	mobileVRouteCarrierState.mu.Lock()
+	binding, ok := mobileVRouteCarrierState.flowBindings[mobileVRouteBindingKey(plan, hash)]
+	mobileVRouteCarrierState.mu.Unlock()
+	if !ok || binding.CarrierKey != carrier.key {
+		t.Fatal("the first packet did not bind to its carrier")
 	}
 }
 
@@ -1432,10 +1459,6 @@ func TestMobileVRouteCarrierBuffersAreBounded(t *testing.T) {
 	if cap(carrier.tx) != mobileVRouteCarrierTXBufferFrames || cap(carrier.txControl) != mobileVRouteCarrierTXControlBufferFrames || cap(carrier.rx) != mobileVRouteCarrierRXBufferFrames {
 		t.Fatalf("unexpected queue capacities: ip=%d control=%d rx=%d", cap(carrier.tx), cap(carrier.txControl), cap(carrier.rx))
 	}
-	quicConfig := mobileVRouteQUICConfig()
-	if quicConfig.InitialStreamReceiveWindow >= quicConfig.MaxStreamReceiveWindow || quicConfig.MaxStreamReceiveWindow != 18_750_000 || quicConfig.MaxConnectionReceiveWindow != 37_500_000 {
-		t.Fatalf("unexpected mobile h3 receive windows: stream=%d connection=%d", quicConfig.MaxStreamReceiveWindow, quicConfig.MaxConnectionReceiveWindow)
-	}
 }
 
 func TestMobileVRouteRelayReportMatchesProbeNodeStatusShape(t *testing.T) {
@@ -1506,7 +1529,7 @@ func TestMobileVRouteRelayReportMatchesProbeNodeStatusShape(t *testing.T) {
 	if report.NextNodeID != "17" || report.NextHost != "edge-17.example.com" || report.NextPort != 12041 || report.NextDialMode != "forward" {
 		t.Fatalf("unexpected relay next endpoint: %+v", report)
 	}
-	if report.NextState == nil || report.NextState.SelectedProtocol != "websocket" {
+	if report.RouteLayer != "tls-direct" || report.NextState == nil || report.NextState.SelectedProtocol != "tls-direct" {
 		t.Fatalf("next state missing selected protocol: %+v", report.NextState)
 	}
 	if report.VirtualRouter == nil || report.VirtualRouter.FramesSent != 7 || report.VirtualRouter.FramesReceived != 5 || report.VirtualRouter.LinkOpenCount != 2 {
@@ -1574,34 +1597,6 @@ func TestMobileVRouteForwardPlanRequiresAuthTicket(t *testing.T) {
 
 	if _, err := buildMobileVRouteForwardPlan(configDir, "vroute:17"); err == nil || !strings.Contains(err.Error(), "auth ticket missing") {
 		t.Fatalf("build forward plan err=%v, want auth ticket missing", err)
-	}
-}
-
-func TestMobileVRouteExplicitHTTP3IsNotSilentlyDowngraded(t *testing.T) {
-	if got := normalizeMobileVRouteRelayLayer("http3"); got != "websocket-h3" {
-		t.Fatalf("http3 normalized to %q, want websocket-h3", got)
-	}
-	oldDial := mobileVRouteH3QUICDial
-	defer func() { mobileVRouteH3QUICDial = oldDial }()
-	called := false
-	mobileVRouteH3QUICDial = func(context.Context, string, *tls.Config, *quic.Config) (*quic.Conn, error) {
-		called = true
-		return nil, errors.New("h3 dial hook")
-	}
-	plan := mobileVRouteForwardPlan{
-		LocalNode: "9",
-		NextNode:  "17",
-		Layer:     "websocket-h3",
-		RouteID:   "vrouter-h3",
-		RelayHost: "203.0.113.17",
-		RelayPort: 12040,
-		Rule:      mobileVRouteTopology{FromNodeID: "9", ToNodeID: "17", Secret: "secret", AuthTicket: "ticket", ToTLSSPKISHA256: strings.Repeat("ab", 32)},
-	}
-	if _, err := dialMobileVRouteCarrier(plan); err == nil || !strings.Contains(err.Error(), "h3 dial hook") {
-		t.Fatalf("dial h3 err=%v, want hook error", err)
-	}
-	if !called {
-		t.Fatalf("h3 dial hook was not called")
 	}
 }
 
