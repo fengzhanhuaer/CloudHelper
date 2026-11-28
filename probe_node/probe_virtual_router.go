@@ -4809,7 +4809,7 @@ func (s *probeVirtualRouterFrameLink) runCarrierTXWorker(token *probeVirtualRout
 			}
 			frame, ok = token.tx.TryPop()
 		}
-		if !ok || len(frame.Data) == 0 {
+		if !ok || (len(frame.Data) == 0 && frame.MainType != routewire.KeepaliveMain) {
 			continue
 		}
 		frames := []probeVirtualRouterFrame{frame}
@@ -4840,7 +4840,7 @@ func (s *probeVirtualRouterFrameLink) runCarrierTXWorker(token *probeVirtualRout
 			if !available {
 				break
 			}
-			if len(next.Data) == 0 {
+			if len(next.Data) == 0 && next.MainType != routewire.KeepaliveMain {
 				continue
 			}
 			if _, queueName := s.txQueueForFrame(next); queueName == "control" {
@@ -4953,7 +4953,8 @@ func (s *probeVirtualRouterFrameLink) txQueueForFrame(frame probeVirtualRouterFr
 		return nil, ""
 	}
 	switch frame.MainType {
-	case probeVirtualRouterFrameMainTypePingPong,
+	case routewire.KeepaliveMain,
+		probeVirtualRouterFrameMainTypePingPong,
 		probeVirtualRouterFrameMainTypePathRTT,
 		probeVirtualRouterFrameMainTypeRouteTest,
 		probeVirtualRouterFrameMainTypeFakeIPVerify:

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cloudhelper/probe_node/internal/routewire"
 	"github.com/quic-go/quic-go/http3"
 )
 
@@ -104,6 +106,19 @@ func TestProbeTransportIPv6AuthenticatedCarrierSlots(t *testing.T) {
 		if !probeVirtualRouterConnSupportsMultiCarrier(conn) {
 			t.Fatal("multi-slot negotiation missing")
 		}
+		// An idle router slot requires an empty pong on this same connection.
+		conn.SetReadDeadline(time.Now().Add(time.Second))
+		if err := writeProbeVirtualRouterWireFrameRaw(conn, probeVirtualRouterFrame{
+			MainType: routewire.KeepaliveMain, SubType: routewire.KeepalivePing,
+		}); err != nil {
+			t.Fatalf("slot %d ping: %v", slot, err)
+		}
+		pong, err := readProbeVirtualRouterWireFrame(bufio.NewReader(conn))
+		if err != nil || pong.MainType != routewire.KeepaliveMain || pong.SubType != routewire.KeepalivePong ||
+			!routewire.ValidKeepalive(pong.SubType, pong.Control, pong.Data) {
+			t.Fatalf("slot %d pong=%+v err=%v", slot, pong, err)
+		}
+		conn.SetReadDeadline(time.Time{})
 	}
 	deadline := time.Now().Add(time.Second)
 	for {
