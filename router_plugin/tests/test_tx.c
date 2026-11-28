@@ -129,6 +129,37 @@ static void test_poll_dispatch(SSL_CTX *ctx)
 }
 
 typedef struct {SSL_CTX *ctx;int listener;} tls_peer;
+
+static void test_inbound_cipher(SSL_CTX *server_ctx,const char *offered,int version,const char *expected)
+{
+    SSL_CTX *client_ctx=SSL_CTX_new(TLS_client_method());
+    assert(client_ctx&&SSL_CTX_set_min_proto_version(client_ctx,version)==1);
+    assert(SSL_CTX_set_max_proto_version(client_ctx,version)==1);
+    if(offered)assert(SSL_CTX_set_ciphersuites(client_ctx,offered)==1);
+    SSL *client=SSL_new(client_ctx),*server=SSL_new(server_ctx);
+    BIO *client_io=NULL,*server_io=NULL;
+    assert(client&&server&&BIO_new_bio_pair(&client_io,0,&server_io,0)==1);
+    SSL_set_bio(client,client_io,client_io);
+    SSL_set_bio(server,server_io,server_io);
+    SSL_set_connect_state(client);
+    SSL_set_accept_state(server);
+    for(int i=0;i<16&&(!SSL_is_init_finished(client)||!SSL_is_init_finished(server));i++) {
+        SSL *peers[]={client,server};
+        for(size_t j=0;j<2;j++) {
+            SSL *peer=peers[j];
+            if(SSL_is_init_finished(peer))continue;
+            int result=SSL_do_handshake(peer);
+            if(result!=1)assert(SSL_get_error(peer,result)==SSL_ERROR_WANT_READ);
+        }
+    }
+    assert(SSL_is_init_finished(client)&&SSL_is_init_finished(server));
+    assert(SSL_version(server)==version);
+    if(expected)assert(!strcmp(SSL_get_cipher_name(server),expected));
+    SSL_free(server);
+    SSL_free(client);
+    SSL_CTX_free(client_ctx);
+}
+
 static void *slow_peer(void *arg)
 {
     tls_peer *peer=arg;int fd=accept(peer->listener,NULL,NULL);assert(fd>=0);
@@ -147,11 +178,15 @@ static void test_real_tls(const char *certfile,const char *keyfile)
     assert(!vr_read_file(certfile,cert,sizeof(cert),&n));cert[n]=0;
     assert(!vr_read_file(keyfile,key,sizeof(key),&n));key[n]=0;
     SSL_CTX *ctx=vr_tls_server_context(cert,key);assert(ctx);
+    real_tls=1;
+    test_inbound_cipher(ctx,"TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256",TLS1_3_VERSION,"TLS_CHACHA20_POLY1305_SHA256");
+    test_inbound_cipher(ctx,"TLS_AES_128_GCM_SHA256",TLS1_3_VERSION,"TLS_AES_128_GCM_SHA256");
+    test_inbound_cipher(ctx,NULL,TLS1_2_VERSION,NULL);
     tls_peer peer={ctx,socket(AF_INET,SOCK_STREAM,0)};assert(peer.listener>=0);
     struct sockaddr_in address={0};address.sin_family=AF_INET;address.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
     assert(!bind(peer.listener,(struct sockaddr *)&address,sizeof(address))&&!listen(peer.listener,1));
     socklen_t length=sizeof(address);assert(!getsockname(peer.listener,(struct sockaddr *)&address,&length));
-    pthread_t thread;real_tls=1;frames=0;memset(&ws,0,sizeof(ws));memset(&decoder,0,sizeof(decoder));ws.expect_mask=1;
+    pthread_t thread;frames=0;memset(&ws,0,sizeof(ws));memset(&decoder,0,sizeof(decoder));ws.expect_mask=1;
     assert(!pthread_create(&thread,NULL,slow_peer,&peer));
     /* The TLS listener is local test material. Pin exactly its public key. */
     BIO *bio=BIO_new_mem_buf(cert,-1);X509 *x=PEM_read_bio_X509(bio,NULL,NULL,NULL);assert(x);

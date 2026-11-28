@@ -17,6 +17,11 @@
 #include <openssl/sha.h>
 #include <openssl/x509v3.h>
 
+/* AX56U V2 software crypto is faster with ChaCha20-Poly1305. Keep AES
+   available for clients and servers that do not offer it. */
+static const char relay_tls13_suites[] =
+    "TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256";
+
 uint64_t vr_millis(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (uint64_t)t.tv_sec*1000+(uint64_t)t.tv_nsec/1000000;}
 
 void vr_tls_error(char *out,size_t cap,const char *operation,int error)
@@ -64,7 +69,9 @@ static int handshake(SSL *ssl,int client,uint64_t deadline)
 SSL_CTX *vr_tls_server_context(const char *cert,const char *key)
 {
     SSL_CTX *ctx=SSL_CTX_new(TLS_server_method());if(!ctx)return NULL;
-    SSL_CTX_set_min_proto_version(ctx,TLS1_2_VERSION);SSL_CTX_set_options(ctx,SSL_OP_NO_COMPRESSION);
+    SSL_CTX_set_min_proto_version(ctx,TLS1_2_VERSION);
+    SSL_CTX_set_options(ctx,SSL_OP_NO_COMPRESSION|SSL_OP_CIPHER_SERVER_PREFERENCE);
+    if(SSL_CTX_set_ciphersuites(ctx,relay_tls13_suites)!=1){SSL_CTX_free(ctx);return NULL;}
     BIO *b=BIO_new_mem_buf(cert,-1),*k=BIO_new_mem_buf(key,-1);
     X509 *x=b?PEM_read_bio_X509(b,NULL,NULL,NULL):NULL;EVP_PKEY *p=k?PEM_read_bio_PrivateKey(k,NULL,NULL,NULL):NULL;
     int ok=x&&p&&SSL_CTX_use_certificate(ctx,x)==1&&SSL_CTX_use_PrivateKey(ctx,p)==1&&SSL_CTX_check_private_key(ctx)==1;
@@ -112,8 +119,7 @@ static SSL *start_at(const char *host,const char *ip,int port,const char *pin,co
     SSL_CTX_set_min_proto_version(ctx,TLS1_2_VERSION);SSL_CTX_set_options(ctx,SSL_OP_NO_COMPRESSION);
     /* The router uses software crypto. Offering ChaCha first lets a relay
        select it while keeping the stock TLS 1.3 suite set and TLS 1.2 fallback. */
-    if(relay&&SSL_CTX_set_ciphersuites(ctx,
-        "TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256")!=1)goto fail;
+    if(relay&&SSL_CTX_set_ciphersuites(ctx,relay_tls13_suites)!=1)goto fail;
     if(*pin)SSL_CTX_set_verify(ctx,SSL_VERIFY_NONE,NULL);
     else {
         SSL_CTX_set_verify(ctx,SSL_VERIFY_PEER,NULL);
