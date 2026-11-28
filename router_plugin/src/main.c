@@ -158,16 +158,19 @@ json_object *vr_service_dispatch(vr_service *s,json_object *request)
     if(!strcmp(action,"measure")) {
         const char *node=vr_string(request,"node"),*kind=vr_string(request,"kind");
         if(!*node || strlen(node)>128 || (strcmp(kind,"ping") && strcmp(kind,"upload") && strcmp(kind,"download") && strcmp(kind,"external")))return error_reply("invalid measurement request");
+        int external=!strcmp(kind,"external");const char *protocol=vr_string(request,"protocol");
+        if(external&&*protocol&&strcmp(protocol,"http")&&strcmp(protocol,"https"))return error_reply("invalid external speed protocol");
         pthread_mutex_lock(&s->mutex);
         if(!json_object_get_boolean(vr_member(s->status,"ready")) || *s->measure_node || json_object_get_boolean(vr_member(s->measurement,"running"))) {
             pthread_mutex_unlock(&s->mutex);return error_reply("service not ready or measurement busy");
         }
-        s->measure_cancel=0;strcpy(s->measure_node,node);strcpy(s->measure_kind,kind);
+        s->measure_cancel=0;s->measure_http=external&&!strcmp(protocol,"http");strcpy(s->measure_node,node);strcpy(s->measure_kind,kind);
         json_object_put(s->measurement);s->measurement=json_object_new_object();
         json_object_object_add(s->measurement,"running",json_object_new_boolean(1));
         json_object_object_add(s->measurement,"kind",json_object_new_string(kind));
-        if(!strcmp(kind,"external")) {
+        if(external) {
             json_object *r=json_object_new_object();json_object_object_add(r,"mode",json_object_new_string(!strcmp(node,"direct")?"direct":"node"));
+            json_object_object_add(r,"protocol",json_object_new_string(s->measure_http?"http":"https"));
             json_object_object_add(r,"node_id",json_object_new_string(!strcmp(node,"direct")?"":node));json_object_object_add(s->measurement,"result",r);
         }
         pthread_mutex_unlock(&s->mutex);return status_reply(s);

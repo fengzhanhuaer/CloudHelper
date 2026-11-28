@@ -57,6 +57,6 @@ int main(void)
     puts("PASS: 3/10-second receive windows, bounded Probe defaults, delayed finish ignored");return 0;
 }
 
-int vr_external_start(vr_engine *e,const char *node){(void)e;(void)node;return -1;}
+int vr_external_start(vr_engine *e,const char *node,int http){(void)e;(void)node;(void)http;return -1;}
 void vr_external_tick(vr_engine *e){(void)e;}
 void vr_external_stop(vr_engine *e){(void)e;}

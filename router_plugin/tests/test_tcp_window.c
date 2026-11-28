@@ -6,6 +6,7 @@
 
 static void check_decay(void)
 {
+    assert(VR_TCP_TARGET_WINDOW >= 200000 / 8 * 300);
     vr_tcp_window_lane lane = {.limit = VR_TCP_START_WINDOW};
     uint64_t bytes = VR_TCP_START_WINDOW / 4;
     lane.limit = vr_tcp_window_next(&lane, bytes, 300, 300);

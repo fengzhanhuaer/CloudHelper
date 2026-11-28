@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/binary"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
@@ -37,6 +38,12 @@ func TestTestPortIsReservedAndReleased(t *testing.T) {
 }
 
 func TestExternalDownloadThroughBusinessPackets(t *testing.T) {
+	t.Run("HTTP", func(t *testing.T) { testExternalDownloadThroughBusinessPackets(t, "http", 80) })
+	t.Run("HTTPS", func(t *testing.T) { testExternalDownloadThroughBusinessPackets(t, "https", 443) })
+}
+
+func testExternalDownloadThroughBusinessPackets(t *testing.T, protocol string, port uint16) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	s := stack.New(stack.Options{NetworkProtocols: []stack.NetworkProtocolFactory{ipv4.NewProtocol}, TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol}})
@@ -50,7 +57,7 @@ func TestExternalDownloadThroughBusinessPackets(t *testing.T) {
 		t.Fatal(e)
 	}
 	s.SetRouteTable([]tcpip.Route{{Destination: header.IPv4EmptySubnet, NIC: 1}})
-	listener, err := gonet.ListenTCP(s, tcpip.FullAddress{NIC: 1, Addr: tcpip.AddrFrom4([4]byte{1, 1, 1, 1}), Port: 443}, ipv4.ProtocolNumber)
+	listener, err := gonet.ListenTCP(s, tcpip.FullAddress{NIC: 1, Addr: tcpip.AddrFrom4([4]byte{1, 1, 1, 1}), Port: port}, ipv4.ProtocolNumber)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,9 +79,13 @@ func TestExternalDownloadThroughBusinessPackets(t *testing.T) {
 		w.Write(make([]byte, 128<<10))
 	})}
 	defer server.Close()
-	go server.Serve(tlsListener)
+	var serving net.Listener = listener
+	if protocol == "https" {
+		serving = tlsListener
+	}
+	go server.Serve(serving)
 	var outbound atomic.Int64
-	p, err := NewPacketConn(ctx, "198.18.0.15", "1.1.1.1", func(data []byte) error {
+	p, err := NewPacketConnWithPort(ctx, "198.18.0.15", "1.1.1.1", port, func(data []byte) error {
 		outbound.Add(1)
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(data)})
 		link.InjectInbound(ipv4.ProtocolNumber, pkt)
@@ -100,8 +111,8 @@ func TestExternalDownloadThroughBusinessPackets(t *testing.T) {
 	}()
 	client := Client(p.DialContext)
 	client.Transport.(*http.Transport).TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
-	result := Run(ctx, client, 64<<10, time.Second, nil)
-	if !result.OK || result.Bytes != 64<<10 || result.Mbps <= 0 {
+	result := run(ctx, client, protocol, 64<<10, time.Second, nil)
+	if !result.OK || result.Protocol != protocol || result.Bytes != 64<<10 || result.Mbps <= 0 {
 		t.Fatalf("result=%+v", result)
 	}
 	if outbound.Load() == 0 {
@@ -112,9 +123,9 @@ func TestExternalDownloadThroughBusinessPackets(t *testing.T) {
 	bad[9] = 6
 	copy(bad[12:16], []byte{1, 1, 1, 1})
 	copy(bad[16:20], []byte{198, 18, 0, 15})
-	bad[20] = 1
-	bad[21] = 0xbb
+	binary.BigEndian.PutUint16(bad[20:], port+1)
+	binary.BigEndian.PutUint16(bad[22:], p.port)
 	if p.Feed(bad) {
-		t.Fatal("unrelated destination port consumed")
+		t.Fatal("unrelated source port consumed")
 	}
 }

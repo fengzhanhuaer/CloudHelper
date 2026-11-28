@@ -196,7 +196,7 @@ size_t vr_tcp_pollfds(vr_engine *e,struct pollfd *fds);
 void vr_tcp_poll(vr_engine *e,struct pollfd *fds);
 void vr_tcp_frame(vr_engine *e,const vr_frame *f,char path[VR_PATH_MAX][129],size_t count);
 void vr_tcp_stop(vr_engine *e);
-int vr_external_start(vr_engine *e,const char *node);
+int vr_external_start(vr_engine *e,const char *node,int http);
 void vr_external_tick(vr_engine *e);
 void vr_external_stop(vr_engine *e);
 int vr_external_target(vr_engine *e,const vr_packet *p,uint32_t *real,char node[129]);

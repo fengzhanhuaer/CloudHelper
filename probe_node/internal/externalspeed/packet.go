@@ -27,6 +27,7 @@ type PacketConn struct {
 	link          *channel.Endpoint
 	local, remote netip.Addr
 	port          uint16
+	remotePort    uint16
 	closed        bool
 	cancel        context.CancelFunc
 	done          chan struct{}
@@ -34,6 +35,13 @@ type PacketConn struct {
 }
 
 func NewPacketConn(ctx context.Context, local, remote string, send func([]byte) error) (*PacketConn, error) {
+	return NewPacketConnWithPort(ctx, local, remote, 443, send)
+}
+
+func NewPacketConnWithPort(ctx context.Context, local, remote string, remotePort uint16, send func([]byte) error) (*PacketConn, error) {
+	if remotePort != 80 && remotePort != 443 {
+		return nil, errors.New("invalid test destination port")
+	}
 	a, e := netip.ParseAddr(local)
 	if e != nil || !a.Is4() {
 		return nil, errors.New("invalid test source IPv4")
@@ -65,7 +73,7 @@ func NewPacketConn(ctx context.Context, local, remote string, send func([]byte) 
 		link.Close()
 		return nil, err
 	}
-	p := &PacketConn{stack: s, link: link, local: a, remote: b, port: port, releasePort: release, cancel: cancel, done: make(chan struct{})}
+	p := &PacketConn{stack: s, link: link, local: a, remote: b, port: port, remotePort: remotePort, releasePort: release, cancel: cancel, done: make(chan struct{})}
 	go func() {
 		defer close(p.done)
 		for {
@@ -87,7 +95,7 @@ func NewPacketConn(ctx context.Context, local, remote string, send func([]byte) 
 }
 
 func (p *PacketConn) DialContext(ctx context.Context, _, _ string) (net.Conn, error) {
-	return gonet.DialTCPWithBind(ctx, p.stack, tcpip.FullAddress{NIC: 1, Addr: tcpip.AddrFrom4(p.local.As4()), Port: p.port}, tcpip.FullAddress{NIC: 1, Addr: tcpip.AddrFrom4(p.remote.As4()), Port: 443}, ipv4.ProtocolNumber)
+	return gonet.DialTCPWithBind(ctx, p.stack, tcpip.FullAddress{NIC: 1, Addr: tcpip.AddrFrom4(p.local.As4()), Port: p.port}, tcpip.FullAddress{NIC: 1, Addr: tcpip.AddrFrom4(p.remote.As4()), Port: p.remotePort}, ipv4.ProtocolNumber)
 }
 
 func (p *PacketConn) Feed(data []byte) bool {
@@ -100,7 +108,7 @@ func (p *PacketConn) Feed(data []byte) bool {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.closed || p.port == 0 || netip.AddrFrom4([4]byte(data[12:16])) != p.remote || netip.AddrFrom4([4]byte(data[16:20])) != p.local || binary.BigEndian.Uint16(data[ihl:]) != 443 || binary.BigEndian.Uint16(data[ihl+2:]) != p.port {
+	if p.closed || p.port == 0 || netip.AddrFrom4([4]byte(data[12:16])) != p.remote || netip.AddrFrom4([4]byte(data[16:20])) != p.local || binary.BigEndian.Uint16(data[ihl:]) != p.remotePort || binary.BigEndian.Uint16(data[ihl+2:]) != p.port {
 		return false
 	}
 	pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(data)})

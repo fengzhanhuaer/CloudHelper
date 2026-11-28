@@ -473,8 +473,8 @@
       </section>
       <section class="card" style="margin-top:14px;">
         <h2>外部下载测速</h2>
-        <p>下载 Cloudflare HTTPS 文件；单连接，最多 10 秒或 64 MiB。节点模式经过实际代理链路，不修改路由规则。</p>
-        <div class="toolbar"><div class="field"><label for="externalSpeedNode">测速路径</label><select id="externalSpeedNode"><option value="">直连</option></select></div></div>
+        <p>单连接 Cloudflare 下载，最多 10 秒或 64 MiB。</p>
+        <div class="toolbar"><div class="field"><label for="externalSpeedNode">测速路径</label><select id="externalSpeedNode"><option value="">直连</option></select></div><div class="field"><label for="externalSpeedProtocol">测速协议</label><select id="externalSpeedProtocol"><option value="http">HTTP</option><option value="https">HTTPS</option></select></div></div>
         <div class="actions"><button id="externalSpeedStart">开始外部测速</button><button id="externalSpeedStop" class="secondary" disabled>停止</button></div>
         <p id="externalSpeedResult" role="status" style="overflow-wrap:anywhere">尚未测速</p>
       </section>
@@ -2697,11 +2697,12 @@
       document.getElementById('externalSpeedStart').disabled=!!r.running;
       document.getElementById('externalSpeedStop').disabled=!r.running;
       select.disabled=!!r.running;
-      document.getElementById('externalSpeedResult').textContent=(r.mode==='node'?'经节点 '+r.node_id:'直连')+' · '+(r.running?'测速中':r.cancelled?'已停止':r.ok?'已完成':r.error?'失败':'尚未测速')+(r.bytes?' · '+Number(r.mbps||0).toFixed(2)+' Mbps / '+Number(r.mb_per_second||0).toFixed(2)+' MB/s · '+(r.bytes/1048576).toFixed(2)+' MiB':'')+(r.path&&r.path.length?' · '+r.path.join(' → '):'')+(r.error?' · '+r.error:'');
+      document.getElementById('externalSpeedProtocol').disabled=!!r.running;
+      document.getElementById('externalSpeedResult').textContent=(r.mode==='node'?'经节点 '+r.node_id:'直连')+' · '+(r.protocol||'https').toUpperCase()+' · '+(r.running?'测速中':r.cancelled?'已停止':r.ok?'已完成':r.error?'失败':'尚未测速')+(r.bytes?' · '+Number(r.mbps||0).toFixed(2)+' Mbps / '+Number(r.mb_per_second||0).toFixed(2)+' MB/s · '+(r.bytes/1048576).toFixed(2)+' MiB':'')+(r.path&&r.path.length?' · '+r.path.join(' → '):'')+(r.error?' · '+r.error:'');
       clearTimeout(externalSpeedTimer);if(r.running)externalSpeedTimer=setTimeout(()=>externalSpeedRequest().catch(externalSpeedError),800);
     }
-    function externalSpeedError(e){document.getElementById('externalSpeedResult').textContent='测速状态读取失败：'+e.message;document.getElementById('externalSpeedStart').disabled=false;document.getElementById('externalSpeedStop').disabled=false;document.getElementById('externalSpeedNode').disabled=false;}
-    async function externalSpeedRequest(action){const options=action?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,node_id:document.getElementById('externalSpeedNode').value})}:{};renderExternalSpeed(await requestJSON('/local/api/virtual_router/external_speed',options));}
+    function externalSpeedError(e){document.getElementById('externalSpeedResult').textContent='测速状态读取失败：'+e.message;document.getElementById('externalSpeedStart').disabled=false;document.getElementById('externalSpeedStop').disabled=false;document.getElementById('externalSpeedNode').disabled=false;document.getElementById('externalSpeedProtocol').disabled=false;}
+    async function externalSpeedRequest(action){const options=action?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,node_id:document.getElementById('externalSpeedNode').value,protocol:document.getElementById('externalSpeedProtocol').value})}:{};renderExternalSpeed(await requestJSON('/local/api/virtual_router/external_speed',options));}
     document.getElementById('externalSpeedStart').onclick=()=>externalSpeedRequest('start').catch(externalSpeedError);
     document.getElementById('externalSpeedStop').onclick=()=>externalSpeedRequest('stop').catch(externalSpeedError);
     externalSpeedRequest().catch(externalSpeedError);

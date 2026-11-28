@@ -26,9 +26,15 @@ int main(void)
     x.source=inet_addr("198.18.0.7");x.destination=inet_addr("198.19.255.254");x.resolved=inet_addr("1.1.1.1");x.port=40001;x.active=1;strcpy(x.node,"8");e->external=&x;
     vr_packet p={.src=x.source,.dst=x.destination,.sport=x.port,.dport=443,.protocol=6};uint32_t real=0;char node[129]={0};
     assert(vr_external_target(e,&p,&real,node)&&real==x.resolved&&!strcmp(node,"8"));
+    x.http=1;
+    assert(!vr_external_target(e,&p,&real,node));p.dport=80;
+    assert(vr_external_target(e,&p,&real,node)&&real==x.resolved&&!strcmp(node,"8"));
+    x.first=x.last=vr_millis();publish(&x,0,NULL,0);
+    assert(!strcmp(vr_string(vr_member(s.measurement,"result"),"protocol"),"http"));
+    x.http=0;p.dport=443;
     p.sport++;assert(!vr_external_target(e,&p,&real,node));p.sport--;p.protocol=17;assert(!vr_external_target(e,&p,&real,node));p.protocol=6;x.active=0;assert(!vr_external_target(e,&p,&real,node));
     x.first=x.last=vr_millis();publish(&x,0,NULL,0);assert(!json_object_get_boolean(vr_member(s.measurement,"running")));
     assert(json_object_get_boolean(vr_member(vr_member(s.measurement,"result"),"ok")));
     json_object_put(s.measurement);pthread_mutex_destroy(&e->mutex);pthread_mutex_destroy(&s.mutex);free(e);
-    puts("PASS: external HTTPS status, byte/time/cancel limits and exact TCP tuple isolation");return 0;
+    puts("PASS: external HTTP/HTTPS status, byte/time/cancel limits and exact TCP tuple isolation");return 0;
 }

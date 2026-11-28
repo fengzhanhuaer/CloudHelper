@@ -23,10 +23,12 @@ struct vr_external_state {
     vr_engine *engine;pthread_t thread;vr_config config;
     char node[129],iface[16],own[16],real[16],fake[16];
     uint32_t source,destination,resolved;uint16_t port;
-    int done,stop,fd,active;uint64_t start,first,last,bytes,published;
+    int done,stop,fd,active,http;uint64_t start,first,last,bytes,published;
     vr_tcp_windows windows;
     long status;CURL *curl;uint8_t tcp_info[256];size_t tcp_info_length;uint64_t tcp_info_at;
 };
+static int external_port(const struct vr_external_state *x)
+{return x->http?80:443;}
 static int cancelled(struct vr_external_state *x)
 {
     pthread_mutex_lock(&x->engine->service->mutex);int stop=x->engine->service->measure_cancel;pthread_mutex_unlock(&x->engine->service->mutex);
@@ -44,6 +46,7 @@ static void publish(struct vr_external_state *x,int running,const char *error,in
     json_object_object_add(r,"mode",json_object_new_string(*x->node?"node":"direct"));
     json_object_object_add(r,"node_id",json_object_new_string(x->node));
     json_object_object_add(r,"source",json_object_new_string("Cloudflare"));
+    json_object_object_add(r,"protocol",json_object_new_string(x->http?"http":"https"));
     json_object_object_add(r,"real_ip",json_object_new_string(x->real));
     json_object_object_add(r,"bytes",json_object_new_int64((int64_t)x->bytes));
     json_object_object_add(r,"duration_ms",json_object_new_int64((int64_t)elapsed));
@@ -102,12 +105,13 @@ static void *worker(void *opaque)
     if(vr_resolve_config4("speed.cloudflare.com",&x->config,x->iface,x->real)||vr_public_ip(x->real,AF_INET,x->real,sizeof(x->real))){error="测速源没有可用公网 IPv4";goto done;}
     if(cancelled(x))goto done;
     x->resolved=inet_addr(x->real);x->curl=curl_easy_init();if(!x->curl){error="无法创建测速连接";goto done;}
-    char entry[128];snprintf(entry,sizeof(entry),"speed.cloudflare.com:443:%s",*x->node?x->fake:x->real);resolve=curl_slist_append(resolve,entry);
+    char entry[128];
+    snprintf(entry,sizeof(entry),"speed.cloudflare.com:%d:%s",external_port(x),*x->node?x->fake:x->real);resolve=curl_slist_append(resolve,entry);
     headers=curl_slist_append(headers,"Accept-Encoding: identity");headers=curl_slist_append(headers,"Cache-Control: no-cache");
-    curl_easy_setopt(x->curl,CURLOPT_URL,"https://speed.cloudflare.com/__down?bytes=67108864");
+    curl_easy_setopt(x->curl,CURLOPT_URL,x->http?"http://speed.cloudflare.com/__down?bytes=67108864":"https://speed.cloudflare.com/__down?bytes=67108864");
     curl_easy_setopt(x->curl,CURLOPT_RESOLVE,resolve);curl_easy_setopt(x->curl,CURLOPT_HTTPHEADER,headers);
     curl_easy_setopt(x->curl,CURLOPT_PROXY,"");curl_easy_setopt(x->curl,CURLOPT_FOLLOWLOCATION,0L);
-    curl_easy_setopt(x->curl,CURLOPT_PROTOCOLS,(long)CURLPROTO_HTTPS);curl_easy_setopt(x->curl,CURLOPT_HTTP_VERSION,CURL_HTTP_VERSION_1_1);
+    curl_easy_setopt(x->curl,CURLOPT_PROTOCOLS,(long)(x->http?CURLPROTO_HTTP:CURLPROTO_HTTPS));curl_easy_setopt(x->curl,CURLOPT_HTTP_VERSION,CURL_HTTP_VERSION_1_1);
     curl_easy_setopt(x->curl,CURLOPT_IPRESOLVE,CURL_IPRESOLVE_V4);curl_easy_setopt(x->curl,CURLOPT_CONNECTTIMEOUT_MS,8000L);
     curl_easy_setopt(x->curl,CURLOPT_TIMEOUT_MS,25000L);curl_easy_setopt(x->curl,CURLOPT_NOSIGNAL,1L);
     curl_easy_setopt(x->curl,CURLOPT_SSL_VERIFYPEER,1L);curl_easy_setopt(x->curl,CURLOPT_SSL_VERIFYHOST,2L);
@@ -130,10 +134,10 @@ void vr_external_tick(vr_engine *e)
     pthread_mutex_lock(&e->mutex);struct vr_external_state *x=e->external;int done=x&&x->done;pthread_mutex_unlock(&e->mutex);
     if(done){pthread_join(x->thread,NULL);pthread_mutex_lock(&e->mutex);e->external=NULL;pthread_mutex_unlock(&e->mutex);memset(x,0,sizeof(*x));free(x);}
 }
-int vr_external_start(vr_engine *e,const char *node)
+int vr_external_start(vr_engine *e,const char *node,int http)
 {
     vr_external_tick(e);if(e->external)return -1;
-    struct vr_external_state *x=calloc(1,sizeof(*x));if(!x)return -1;x->engine=e;x->config=e->config;x->fd=-1;
+    struct vr_external_state *x=calloc(1,sizeof(*x));if(!x)return -1;x->engine=e;x->config=e->config;x->fd=-1;x->http=http;
     if(strcmp(node,"direct")){strcpy(x->node,node);char path[VR_PATH_MAX][129];size_t n;if(!strcmp(node,e->config.node_id)||vr_path(e,node,path,&n)||n<2){free(x);return -1;}}
     strcpy(x->iface,e->addresses.wan_if);strcpy(x->own,e->own_ip);x->source=inet_addr(x->own);
     /* A private test destination inside the already installed TUN prefix. Only
@@ -148,7 +152,7 @@ int vr_external_start(vr_engine *e,const char *node)
 int vr_external_target(vr_engine *e,const vr_packet *p,uint32_t *real,char node[129])
 {
     pthread_mutex_lock(&e->mutex);struct vr_external_state *x=e->external;
-    int match=x&&*x->node&&x->active&&!x->done&&p->protocol==6&&p->src==x->source&&p->dst==x->destination&&p->sport==x->port&&p->dport==443;
+    int match=x&&*x->node&&x->active&&!x->done&&p->protocol==6&&p->src==x->source&&p->dst==x->destination&&p->sport==x->port&&p->dport==external_port(x);
     if(match){*real=x->resolved;strcpy(node,x->node);}pthread_mutex_unlock(&e->mutex);return match;
 }
 void vr_external_stop(vr_engine *e)

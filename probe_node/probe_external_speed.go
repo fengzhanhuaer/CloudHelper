@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"strconv"
 
 	"sync"
 	"sync/atomic"
@@ -39,9 +40,9 @@ func feedProbeExternalPacket(data []byte, path []string) bool {
 	defer probeExternalPacket.Unlock()
 	return probeExternalPacket.packet != nil && slices.Equal(path, probeExternalPacket.path) && probeExternalPacket.packet.Feed(data)
 }
-func probeExternalSpeedFactory(ctx context.Context, node string) (*http.Client, func(), []string, error) {
+func probeExternalSpeedFactory(ctx context.Context, node string, targetPort uint16) (*http.Client, func(), []string, error) {
 	if node == "" {
-		return probeExternalSpeedClient(), nil, nil, nil
+		return probeExternalSpeedClient(targetPort), nil, nil, nil
 	}
 	config := currentProbeVirtualRouterConfig()
 	local := currentProbeVirtualRouterLocalNodeID()
@@ -63,7 +64,7 @@ func probeExternalSpeedFactory(ctx context.Context, node string) (*http.Client, 
 	if target == "" {
 		return nil, nil, path, errors.New("测速源没有可用公网 IPv4")
 	}
-	packet, err := externalspeed.NewPacketConn(ctx, probeVirtualRouterIPForNode(config, local), target, func(data []byte) error { return forwardProbeVirtualRouterPacketAlongPath(data, target, path, nil) })
+	packet, err := externalspeed.NewPacketConnWithPort(ctx, probeVirtualRouterIPForNode(config, local), target, targetPort, func(data []byte) error { return forwardProbeVirtualRouterPacketAlongPath(data, target, path, nil) })
 	if err != nil {
 		return nil, nil, path, err
 	}
@@ -85,14 +86,14 @@ func probeExternalSpeedFactory(ctx context.Context, node string) (*http.Client, 
 	return externalspeed.Client(packet.DialContext), cleanup, path, nil
 }
 
-func probeExternalSpeedClient() *http.Client {
+func probeExternalSpeedClient(targetPort uint16) *http.Client {
 	transport := &http.Transport{Proxy: nil, DisableCompression: true, DisableKeepAlives: true, ForceAttemptHTTP2: false, TLSHandshakeTimeout: 6 * time.Second, ResponseHeaderTimeout: 8 * time.Second}
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(address)
 		if err != nil {
 			return nil, err
 		}
-		if host != "speed.cloudflare.com" || port != "443" {
+		if host != "speed.cloudflare.com" || port != strconv.Itoa(int(targetPort)) {
 			return nil, errors.New("测速目标不受支持")
 		}
 		ips, err := resolveProbeLocalDNSRealIPv4sFromUpstreamsWithContext(ctx, host, probeLocalDNSRouteDecision{})
@@ -134,8 +135,9 @@ func probeLocalExternalSpeedHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPost {
 		var input struct {
-			Action string `json:"action"`
-			NodeID string `json:"node_id"`
+			Action   string `json:"action"`
+			NodeID   string `json:"node_id"`
+			Protocol string `json:"protocol"`
 		}
 		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
 		decoder.DisallowUnknownFields()
@@ -154,7 +156,20 @@ func probeLocalExternalSpeedHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		switch input.Action {
 		case "start":
-			if err := probeExternalSpeedState.Start(input.NodeID, probeExternalSpeedFactory); err != nil {
+			var targetPort uint16 = 443
+			switch input.Protocol {
+			case "http":
+				targetPort = 80
+			case "", "https":
+				input.Protocol = "https"
+			default:
+				writeJSON(w, 400, map[string]string{"error": "无效测速协议"})
+				return
+			}
+			factory := func(ctx context.Context, node string) (*http.Client, func(), []string, error) {
+				return probeExternalSpeedFactory(ctx, node, targetPort)
+			}
+			if err := probeExternalSpeedState.StartProtocol(input.NodeID, input.Protocol, factory); err != nil {
 				writeJSON(w, 409, map[string]string{"error": err.Error()})
 				return
 			}

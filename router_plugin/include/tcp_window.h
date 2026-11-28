@@ -7,8 +7,11 @@
 #include <asm/socket.h>
 #include <stdint.h>
 
-/* 100 megabits/s for one 300 ms round trip, in payload bytes. */
-enum { VR_TCP_TARGET_WINDOW = 100000 / 8 * 300, VR_TCP_START_WINDOW = 256 * 1024 };
+/* 200 Mbps over 300 ms needs 7.5 MB in flight. Allow a third more for
+   window and scheduling variation, with the same small initial budget. */
+enum { VR_TCP_FLIGHT_BYTES = 200000 / 8 * 300,
+       VR_TCP_TARGET_WINDOW = VR_TCP_FLIGHT_BYTES * 4 / 3,
+       VR_TCP_START_WINDOW = 256 * 1024 };
 
 typedef struct {
     uint64_t bytes, low_since;

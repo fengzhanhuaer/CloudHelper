@@ -12,7 +12,7 @@ import (
 
 const MaxBytes = 64 << 20
 const Duration = 10 * time.Second
-const URL = "https://speed.cloudflare.com/__down"
+const speedHostPath = "://speed.cloudflare.com/__down"
 
 type Result struct {
 	NodeID      string   `json:"node_id,omitempty"`
@@ -22,6 +22,7 @@ type Result struct {
 	Cancelled   bool     `json:"cancelled"`
 	Mode        string   `json:"mode"`
 	Source      string   `json:"source"`
+	Protocol    string   `json:"protocol,omitempty"`
 	Bytes       int64    `json:"bytes"`
 	DurationMS  int64    `json:"duration_ms"`
 	TotalMS     int64    `json:"total_ms"`
@@ -33,8 +34,12 @@ type Result struct {
 }
 
 func Run(ctx context.Context, client *http.Client, maxBytes int64, duration time.Duration, publish func(Result)) Result {
+	return run(ctx, client, "https", maxBytes, duration, publish)
+}
+
+func run(ctx context.Context, client *http.Client, protocol string, maxBytes int64, duration time.Duration, publish func(Result)) Result {
 	started := time.Now()
-	result := Result{Running: true, Mode: "direct", Source: "Cloudflare", StartedAt: started.UTC().Format(time.RFC3339Nano)}
+	result := Result{Running: true, Mode: "direct", Source: "Cloudflare", Protocol: protocol, StartedAt: started.UTC().Format(time.RFC3339Nano)}
 	var first, lastData time.Time
 	update := func() {
 		now := time.Now()
@@ -67,7 +72,7 @@ func Run(ctx context.Context, client *http.Client, maxBytes int64, duration time
 	if ctx.Err() != nil {
 		return finish(ctx.Err())
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, URL+"?bytes="+strconv.FormatInt(maxBytes, 10), nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, protocol+speedHostPath+"?bytes="+strconv.FormatInt(maxBytes, 10), nil)
 	if err != nil {
 		return finish(err)
 	}

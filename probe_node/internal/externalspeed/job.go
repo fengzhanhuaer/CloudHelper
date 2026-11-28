@@ -33,6 +33,15 @@ func (j *Job) Stop() {
 	}
 }
 func (j *Job) Start(node string, factory Factory) error {
+	return j.StartProtocol(node, "https", factory)
+}
+
+func (j *Job) StartProtocol(node, protocol string, factory Factory) error {
+	switch protocol {
+	case "http", "https":
+	default:
+		return errors.New("无效测速协议")
+	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if j.result.Running {
@@ -44,7 +53,7 @@ func (j *Job) Start(node string, factory Factory) error {
 	if node != "" {
 		mode = "node"
 	}
-	j.result = Result{Running: true, NodeID: node, Mode: mode, Source: "Cloudflare"}
+	j.result = Result{Running: true, NodeID: node, Mode: mode, Source: "Cloudflare", Protocol: protocol}
 	go func() {
 		defer cancel()
 		client, cleanup, path, err := factory(ctx, node)
@@ -60,6 +69,7 @@ func (j *Job) Start(node string, factory Factory) error {
 		publish := func(r Result) {
 			r.Running = true
 			r.Mode = mode
+			r.Protocol = protocol
 			r.NodeID = node
 			r.Path = append([]string(nil), path...)
 			j.mu.Lock()
@@ -76,7 +86,7 @@ func (j *Job) Start(node string, factory Factory) error {
 			return
 		}
 		defer client.CloseIdleConnections()
-		Run(ctx, client, MaxBytes, Duration, publish)
+		run(ctx, client, protocol, MaxBytes, Duration, publish)
 	}()
 	return nil
 }
