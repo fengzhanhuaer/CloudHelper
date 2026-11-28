@@ -92,6 +92,7 @@ struct vr_engine {
     pthread_t public_ip_thread;int public_ip_started;
     vr_monitor *monitor;
     int tun,lan,wan,dns_udp,dns_tcp,platform_started,carrier6;
+    struct vr_tun_reader *tun_reader;
     struct vr_tun_writer *tun_writer;
     char carrier6_iface[16];
     pthread_mutex_t mutex;pthread_cond_t jobs_changed;
@@ -165,6 +166,10 @@ int vr_mapping_dns_blocked(vr_engine *e,uint32_t ip,size_t *scanned);
 vr_decision vr_mapping_decision(vr_engine *e,const vr_mapping *mapping);
 void vr_outgoing(vr_engine *e,uint8_t *bytes,size_t n);
 void vr_tun_drain(vr_engine *e);
+int vr_tun_reader_start(vr_engine *e);
+int vr_tun_reader_poll_fd(vr_engine *e);
+json_object *vr_tun_reader_status(vr_engine *e);
+void vr_tun_reader_stop(vr_engine *e);
 int vr_tun_writer_start(vr_engine *e);
 void vr_tun_write(vr_engine *e,const void *bytes,size_t length);
 void vr_tun_writer_flush(vr_engine *e);

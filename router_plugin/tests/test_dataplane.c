@@ -3,6 +3,7 @@
 #include <arpa/inet.h>
 #include <assert.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -64,7 +65,7 @@ int vr_send(vr_engine *e,uint16_t main,uint16_t sub,char path[VR_PATH_MAX][129],
 {
     (void)e;(void)path;assert(main==1&&sub==1&&n==2&&len<=sizeof(carried));memcpy(carried,b,len);carried_len=len;
     if (drain_clock) {
-        assert(carried[5] == drain_forwarded++);
+        assert(((unsigned)carried[4]<<8 | carried[5]) == drain_forwarded++);
         drain_clock += packet_cost_ms;
     }
     return 0;
@@ -216,12 +217,74 @@ static void test_tun_writer(void)
     puts("PASS: TUN worker writes in order, drains bounded backlog, and preserves timing samples");
 }
 
+static void wait_reader_queue(vr_engine *e,int depth)
+{
+    for(unsigned i=0;i<1000;i++) {
+        json_object *status=vr_tun_reader_status(e);
+        int queued=json_object_get_int(vr_member(status,"queued_packets"));
+        json_object_put(status);
+        if(queued==depth)return;
+        usleep(1000);
+    }
+    assert(!"TUN reader did not fill its queue");
+}
+
+static void test_tun_reader(void)
+{
+    int pipes[2],pair[2];vr_engine *e=engine("7","198.18.0.7",pipes);
+    assert(!socketpair(AF_UNIX,SOCK_DGRAM|SOCK_NONBLOCK,0,pair));
+    int send_buffer=512*1024;
+    assert(!setsockopt(pair[1],SOL_SOCKET,SO_SNDBUF,&send_buffer,sizeof(send_buffer)));
+    e->tun=pair[0];
+    assert(!vr_tun_reader_start(e));
+    struct pollfd wake={vr_tun_reader_poll_fd(e),POLLIN,0};
+    assert(wake.fd!=e->tun&&poll(&wake,1,0)==0);
+
+    uint8_t ack[40]={0x45,0,0,40,0,0,0x40,0,64,6};
+    ack[32]=0x50;ack[33]=0x10;tcp_checksums(ack);
+    assert(!vr_packet_rewrite(ack,sizeof(ack),inet_addr("198.18.0.7"),inet_addr("198.18.0.8"),40001,443));
+    enum { packets=320 };
+    for(unsigned i=0;i<packets;i++) {
+        ack[4]=(uint8_t)(i>>8);ack[5]=(uint8_t)i;tcp_checksums(ack);
+        assert(write(pair[1],ack,sizeof(ack))==sizeof(ack));
+    }
+    assert(poll(&wake,1,1000)==1&&(wake.revents&POLLIN));
+    wait_reader_queue(e,256);
+    drain_clock=100;drain_forwarded=0;
+    vr_tun_drain(e);
+    assert(drain_forwarded==64&&poll(&wake,1,0)==1);
+    while(drain_forwarded<packets) {
+        assert(poll(&wake,1,1000)==1&&(wake.revents&POLLIN));
+        vr_tun_drain(e);
+    }
+    assert(drain_forwarded==packets&&poll(&wake,1,0)==0);
+    drain_clock=0;
+    json_object *status=vr_tun_reader_status(e);
+    assert(json_object_get_int(vr_member(status,"capacity_packets"))==256);
+    assert(json_object_get_int(vr_member(status,"peak_packets"))==256);
+    assert(json_object_get_int64(vr_member(status,"read_packets"))==packets);
+    assert(json_object_get_int64(vr_member(status,"full_events"))>0);
+    assert(json_object_get_int(vr_member(status,"read_errors"))==0);
+    json_object_put(status);
+    vr_tun_reader_stop(e);
+    assert(vr_tun_reader_poll_fd(e)==e->tun);
+
+    assert(!vr_tun_reader_start(e));
+    for(unsigned i=0;i<packets;i++)assert(write(pair[1],ack,sizeof(ack))==sizeof(ack));
+    wait_reader_queue(e,256);
+    vr_tun_reader_stop(e);
+    close(pair[0]);close(pair[1]);close(pipes[0]);close(pipes[1]);
+    json_object_put(e->policy);pthread_mutex_destroy(&e->mutex);free(e);
+    puts("PASS: TUN reader keeps order, wakes the engine and shuts down with bounded backpressure");
+}
+
 int main(void)
 {
     test_fake_dns_blacklist();
     test_fake_dns_blacklist_scan();
     test_tun_drain();
     test_tun_writer();
+    test_tun_reader();
     {
         int pipes[2];vr_engine *e=engine("7","198.18.0.7",pipes);
         uint8_t packet[40]={0x45,0,0,40,0,0,0x40,0,64,6};packet[32]=0x50;packet[33]=2;tcp_checksums(packet);

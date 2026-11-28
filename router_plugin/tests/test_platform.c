@@ -83,6 +83,7 @@ int main(int argc,char **argv)
     e->wan=e->config.allow_wan?vr_bind4(e->addresses.wan,e->config.port,1):-1;
     assert(!e->config.allow_wan||e->wan>=0);
     e->tun=vr_platform_start(&e->config,&e->addresses,e->own_ip,e->cidr);assert(e->tun>=0&&vr_platform_healthy());
+    assert(!vr_tun_reader_start(e));
     if(routing)assert(!vr_platform_routes(e->policy)&&!vr_tcp_start(e));
     if(readdress){e->carrier6=vr_bind6_carrier(e->config.port,e->addresses.wan_if);if(e->carrier6<0)perror("IPv6 WAN listener");assert(e->carrier6>=0);assert(!vr_platform_carrier6(&e->config,&e->addresses));}
     if(gateway){carrier=vr_bind4(e->addresses.wan,18082,0);assert(carrier>=0);}
@@ -120,7 +121,7 @@ int main(int argc,char **argv)
             }
         }
         if(toggle_tls) {toggle_tls=0;e->config.tls_sni_enabled=!e->config.tls_sni_enabled;assert(!vr_platform_tls(&e->addresses,e->cidr,e->config.tls_sni_enabled));puts(e->config.tls_sni_enabled?"TLS_ON":"TLS_OFF");fflush(stdout);}
-        struct pollfd p[2+VR_TCP_POLL_MAX]={{e->tun,POLLIN,0},{carrier,POLLIN,0}};size_t count=vr_tcp_pollfds(e,p+2);if(poll(p,2+count,50)<0)continue;
+        struct pollfd p[2+VR_TCP_POLL_MAX]={{vr_tun_reader_poll_fd(e),POLLIN,0},{carrier,POLLIN,0}};size_t count=vr_tcp_pollfds(e,p+2);if(poll(p,2+count,50)<0)continue;
         uint8_t b[2048];ssize_t n;
         if(p[0].revents&POLLIN)vr_tun_drain(e);
         if(p[1].revents&POLLIN){peer_len=sizeof(peer);n=recvfrom(carrier,b,sizeof(b),0,(struct sockaddr *)&peer,&peer_len);if(n>1){char path[VR_PATH_MAX][129]={{"7"},{"8"}};if(b[0]!=7)strcpy(path[0],"9");vr_frame f={1,1,NULL,b+1,0,(size_t)n-1};vr_incoming(e,&f,path,2);}}
@@ -130,6 +131,6 @@ int main(int argc,char **argv)
     if(e->carrier6>=0)close(e->carrier6);
     vr_platform_carrier6_stop();
     for(size_t i=0;i<32;i++)if(streams[i]>=0)close(streams[i]);
-    vr_tcp_stop(e);vr_platform_stop(e->cidr);close(e->tun);close(e->lan);if(e->wan>=0)close(e->wan);
+    vr_tun_reader_stop(e);vr_tcp_stop(e);vr_platform_stop(e->cidr);close(e->tun);close(e->lan);if(e->wan>=0)close(e->wan);
     json_object_put(e->policy);pthread_mutex_destroy(&e->mutex);free(e);return 0;
 }

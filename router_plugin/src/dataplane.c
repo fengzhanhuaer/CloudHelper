@@ -6,22 +6,6 @@
 #include <string.h>
 #include <unistd.h>
 
-void vr_tun_drain(vr_engine *e)
-{
-    /* TUN is nonblocking. Drain queued ACKs, then yield to TLS, DNS and control. */
-    enum { max_packets = 16, budget_ms = 4 };
-    uint8_t packet[2048];
-    uint64_t start = vr_millis();
-    for (unsigned i = 0; i < max_packets; i++) {
-        ssize_t length = read(e->tun, packet, sizeof(packet));
-        if (length <= 0)
-            break;
-        vr_outgoing(e, packet, (size_t)length);
-        if (vr_millis() - start >= budget_ms)
-            break;
-    }
-}
-
 static int node_for_ip(vr_engine *e,uint32_t ip,char id[129])
 {
     json_object *nodes=vr_member(e->policy,"probe_ips");

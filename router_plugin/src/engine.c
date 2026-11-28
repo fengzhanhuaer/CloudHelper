@@ -12,6 +12,7 @@ static void status(vr_engine *e,int ready)
 {
     vr_telemetry_publish(e);
     json_object *o=json_object_new_object(),*links=vr_links_status(e),*nodes=json_object_new_array();
+    json_object_object_add(o,"tun_reader",vr_tun_reader_status(e));
     json_object_object_add(o,"tun_writer",vr_tun_writer_status(e));
     json_object_object_add(o,"observation",vr_observe_report(e,vr_millis()));
     json_object_object_add(o,"enabled",json_object_new_boolean(e->config.enabled));
@@ -151,6 +152,7 @@ static int prepare(vr_engine *e)
     if(vr_platform_exit_routes(NULL,e->policy,NULL,&e->config.exit_overrides)){strcpy(e->error,"published route initialization failed");return -1;}
     if(vr_dataplane_start(e)){strcpy(e->error,"mapping resolver initialization failed");return -1;}
     if(vr_tun_writer_start(e))vr_service_log(e->service,"service","TUN writer thread unavailable; using synchronous writes");
+    if(vr_tun_reader_start(e))vr_service_log(e->service,"service","TUN reader thread unavailable; using synchronous reads");
     if(e->config.enabled&&e->config.dns_enabled&&vr_dns_start(e)){strcpy(e->error,"DNS initialization failed");return -1;}
     vr_telemetry_publish(e);
     if(vr_control_start(e)){strcpy(e->error,"controller worker initialization failed");return -1;}
@@ -213,7 +215,7 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
             }
             if(!l->ssl&&!pending_policy)vr_link_dial(l);
         }
-        struct pollfd fds[6+VR_CARRIER_MAX+VR_TCP_POLL_MAX];fds[0]=(struct pollfd){e->tun,POLLIN,0};fds[1]=(struct pollfd){e->lan,POLLIN,0};
+        struct pollfd fds[6+VR_CARRIER_MAX+VR_TCP_POLL_MAX];fds[0]=(struct pollfd){vr_tun_reader_poll_fd(e),POLLIN,0};fds[1]=(struct pollfd){e->lan,POLLIN,0};
         fds[2]=(struct pollfd){e->wan,POLLIN,0};fds[3]=(struct pollfd){e->dns_udp,POLLIN,0};fds[4]=(struct pollfd){e->dns_tcp,POLLIN,0};
         fds[5]=(struct pollfd){e->carrier6,POLLIN,0};
         for(size_t i=0;i<e->link_count;i++)fds[6+i]=(struct pollfd){e->links[i].fd,(short)(POLLIN|(e->links[i].used?(e->links[i].write_events?e->links[i].write_events:POLLOUT):0)),0};
@@ -257,6 +259,7 @@ void vr_engine_run(vr_service *service,const vr_config *config,unsigned generati
         }
     }
 done:
+    vr_tun_reader_stop(e);
     vr_tun_writer_flush(e);
     vr_dns_filter_stop(e);
     /* Restore ordinary DNS before waiting for controller network deadlines. */
